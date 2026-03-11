@@ -27,7 +27,9 @@ export class FormatDetector {
 
     try {
       // Check if path exists
-      if (!fs.existsSync(configPath)) {
+      try {
+        await fs.promises.access(configPath);
+      } catch {
         Logger.warn(`Configuration path does not exist: ${configPath}`);
         return ConfigFormat.Unknown;
       }
@@ -57,36 +59,61 @@ export class FormatDetector {
    * @param workspacePath Path to workspace
    * @returns Configuration root path or null
    */
-  static findConfigurationRoot(workspacePath: string): string | null {
+  static async findConfigurationRoot(workspacePath: string): Promise<string | null> {
     try {
       // Look for 1cv8.cf or 1cv8.cfe in workspace
       const cfPath = path.join(workspacePath, '1cv8.cf');
       const cfePath = path.join(workspacePath, '1cv8.cfe');
 
-      if (fs.existsSync(cfPath) || fs.existsSync(cfePath)) {
+      try {
+        await fs.promises.access(cfPath);
         return workspacePath;
+      } catch {
+        // Continue checking
+      }
+
+      try {
+        await fs.promises.access(cfePath);
+        return workspacePath;
+      } catch {
+        // Continue checking
       }
 
       // Look for Configuration.xml in workspace
       const configXmlPath = path.join(workspacePath, 'Configuration.xml');
-      if (fs.existsSync(configXmlPath)) {
+      try {
+        await fs.promises.access(configXmlPath);
         return workspacePath;
+      } catch {
+        // Continue checking
       }
 
       // Search in subdirectories (one level deep)
-      const items = fs.readdirSync(workspacePath);
+      const items = await fs.promises.readdir(workspacePath);
+      
       for (const item of items) {
         const itemPath = path.join(workspacePath, item);
-        const stat = fs.statSync(itemPath);
+        try {
+          const stat = await fs.promises.stat(itemPath);
 
-        if (stat.isDirectory()) {
-          const cfPath2 = path.join(itemPath, '1cv8.cf');
-          const cfePath2 = path.join(itemPath, '1cv8.cfe');
-          const configXmlPath2 = path.join(itemPath, 'Configuration.xml');
+          if (stat.isDirectory()) {
+            const cfPath2 = path.join(itemPath, '1cv8.cf');
+            const cfePath2 = path.join(itemPath, '1cv8.cfe');
+            const configXmlPath2 = path.join(itemPath, 'Configuration.xml');
 
-          if (fs.existsSync(cfPath2) || fs.existsSync(cfePath2) || fs.existsSync(configXmlPath2)) {
-            return itemPath;
+            // Check all paths in parallel
+            const checks = await Promise.allSettled([
+              fs.promises.access(cfPath2),
+              fs.promises.access(cfePath2),
+              fs.promises.access(configXmlPath2),
+            ]);
+
+            if (checks.some(result => result.status === 'fulfilled')) {
+              return itemPath;
+            }
           }
+        } catch (error) {
+          Logger.debug(`Error checking subdirectory ${itemPath}`, error);
         }
       }
 
@@ -102,13 +129,16 @@ export class FormatDetector {
    * @param configPath Path to validate
    * @returns true if valid configuration path
    */
-  static isValidConfigurationPath(configPath: string): boolean {
+  static async isValidConfigurationPath(configPath: string): Promise<boolean> {
     try {
-      if (!fs.existsSync(configPath)) {
+      // Check if path exists
+      try {
+        await fs.promises.access(configPath);
+      } catch {
         return false;
       }
 
-      const stat = fs.statSync(configPath);
+      const stat = await fs.promises.stat(configPath);
       if (!stat.isDirectory()) {
         return false;
       }
@@ -119,12 +149,15 @@ export class FormatDetector {
       const configXmlPath = path.join(configPath, 'Configuration.xml');
       const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
 
-      return (
-        fs.existsSync(cfPath) ||
-        fs.existsSync(cfePath) ||
-        fs.existsSync(configXmlPath) ||
-        fs.existsSync(configDumpPath)
-      );
+      // Check all paths in parallel
+      const checks = await Promise.allSettled([
+        fs.promises.access(cfPath),
+        fs.promises.access(cfePath),
+        fs.promises.access(configXmlPath),
+        fs.promises.access(configDumpPath),
+      ]);
+
+      return checks.some(result => result.status === 'fulfilled');
     } catch (error) {
       Logger.debug('Error validating configuration path', error);
       return false;

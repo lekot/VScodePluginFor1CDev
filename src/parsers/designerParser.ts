@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
+import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 
 /**
  * Parser for 1C Designer format metadata
@@ -30,7 +31,7 @@ export class DesignerParser {
       }
 
       XmlParser.parseFile(configXmlPath);
-      const rootNode = this.buildTreeFromConfiguration(configPath);
+      const rootNode = await this.buildTreeFromConfiguration(configPath);
 
       Logger.info('Designer format parsing completed');
       return rootNode;
@@ -45,9 +46,9 @@ export class DesignerParser {
    * @param configPath Path to configuration root
    * @returns Root tree node
    */
-  private static buildTreeFromConfiguration(
+  private static async buildTreeFromConfiguration(
     configPath: string
-  ): TreeNode {
+  ): Promise<TreeNode> {
     const rootNode: TreeNode = {
       id: 'root',
       name: 'Configuration',
@@ -58,15 +59,25 @@ export class DesignerParser {
     };
 
     // Parse metadata directories
-    const metadataTypes = this.getMetadataTypes();
+    const metadataTypes = MetadataTypeMapper.getMetadataTypes();
 
-    for (const metadataType of metadataTypes) {
-      const typePath = path.join(configPath, metadataType);
-      if (fs.existsSync(typePath)) {
-        const typeNode = this.parseMetadataType(typePath, metadataType);
-        if (typeNode.children && typeNode.children.length > 0) {
-          rootNode.children?.push(typeNode);
+    // Process all metadata types in parallel
+    const typeNodes = await Promise.all(
+      metadataTypes.map(async (metadataType) => {
+        const typePath = path.join(configPath, metadataType);
+        try {
+          await fs.promises.access(typePath);
+          return await this.parseMetadataType(typePath, metadataType);
+        } catch {
+          return null;
         }
+      })
+    );
+
+    // Add non-empty type nodes to root
+    for (const typeNode of typeNodes) {
+      if (typeNode && typeNode.children && typeNode.children.length > 0) {
+        rootNode.children?.push(typeNode);
       }
     }
 
@@ -79,8 +90,8 @@ export class DesignerParser {
    * @param typeName Name of metadata type
    * @returns Tree node for metadata type
    */
-  private static parseMetadataType(typePath: string, typeName: string): TreeNode {
-    const metadataType = this.mapStringToMetadataType(typeName);
+  private static async parseMetadataType(typePath: string, typeName: string): Promise<TreeNode> {
+    const metadataType = MetadataTypeMapper.map(typeName);
 
     const typeNode: TreeNode = {
       id: typeName,
@@ -93,15 +104,29 @@ export class DesignerParser {
 
     // Read items in this type directory
     try {
-      const items = fs.readdirSync(typePath);
+      const items = await fs.promises.readdir(typePath);
 
-      for (const item of items) {
-        const itemPath = path.join(typePath, item);
-        const stat = fs.statSync(itemPath);
+      // Process all items in parallel
+      const elementNodes = await Promise.all(
+        items.map(async (item) => {
+          const itemPath = path.join(typePath, item);
+          try {
+            const stat = await fs.promises.stat(itemPath);
 
-        if (stat.isDirectory()) {
-          // This is a metadata element directory
-          const elementNode = this.parseMetadataElement(itemPath, item, typeName);
+            if (stat.isDirectory()) {
+              // This is a metadata element directory
+              return await this.parseMetadataElement(itemPath, item, typeName);
+            }
+          } catch (error) {
+            Logger.debug(`Error processing item ${itemPath}`, error);
+          }
+          return null;
+        })
+      );
+
+      // Add non-null element nodes
+      for (const elementNode of elementNodes) {
+        if (elementNode) {
           typeNode.children?.push(elementNode);
         }
       }
@@ -119,8 +144,8 @@ export class DesignerParser {
    * @param typeName Type of element
    * @returns Tree node for metadata element
    */
-  private static parseMetadataElement(elementPath: string, elementName: string, typeName: string): TreeNode {
-    const metadataType = this.mapStringToMetadataType(typeName);
+  private static async parseMetadataElement(elementPath: string, elementName: string, typeName: string): Promise<TreeNode> {
+    const metadataType = MetadataTypeMapper.map(typeName);
 
     const elementNode: TreeNode = {
       id: `${typeName}.${elementName}`,
@@ -133,7 +158,8 @@ export class DesignerParser {
 
     // Try to read metadata XML file
     const xmlPath = path.join(elementPath, `${elementName}.xml`);
-    if (fs.existsSync(xmlPath)) {
+    try {
+      await fs.promises.access(xmlPath);
       try {
         const xmlContent = XmlParser.parseFile(xmlPath);
         const properties = this.extractPropertiesFromElement(xmlContent);
@@ -141,17 +167,19 @@ export class DesignerParser {
       } catch (error) {
         Logger.warn(`Error parsing element XML ${xmlPath}`, error);
       }
+    } catch {
+      // XML file doesn't exist, skip
     }
 
     // Parse sub-elements (Ext, Forms, etc.)
     try {
-      const items = fs.readdirSync(elementPath);
+      const items = await fs.promises.readdir(elementPath);
 
       for (const item of items) {
         if (item === 'Ext') {
           // Parse extensions
           const extPath = path.join(elementPath, item);
-          const extNode = this.parseExtensions(extPath);
+          const extNode = await this.parseExtensions(extPath);
           if (extNode.children && extNode.children.length > 0) {
             elementNode.children?.push(extNode);
           }
@@ -169,7 +197,7 @@ export class DesignerParser {
    * @param extPath Path to Ext directory
    * @returns Tree node for extensions
    */
-  private static parseExtensions(extPath: string): TreeNode {
+  private static async parseExtensions(extPath: string): Promise<TreeNode> {
     const extNode: TreeNode = {
       id: 'Ext',
       name: 'Extensions',
@@ -180,21 +208,34 @@ export class DesignerParser {
     };
 
     try {
-      const items = fs.readdirSync(extPath);
+      const items = await fs.promises.readdir(extPath);
 
-      for (const item of items) {
-        const itemPath = path.join(extPath, item);
-        const stat = fs.statSync(itemPath);
+      // Process all extension items in parallel
+      const extElementNodes = await Promise.all(
+        items.map(async (item) => {
+          const itemPath = path.join(extPath, item);
+          try {
+            const stat = await fs.promises.stat(itemPath);
 
-        if (stat.isDirectory()) {
-          const extElementNode: TreeNode = {
-            id: `Ext.${item}`,
-            name: item,
-            type: MetadataType.Extension,
-            properties: { isExtension: true },
-            filePath: itemPath,
-          };
+            if (stat.isDirectory()) {
+              return {
+                id: `Ext.${item}`,
+                name: item,
+                type: MetadataType.Extension,
+                properties: { isExtension: true },
+                filePath: itemPath,
+              };
+            }
+          } catch (error) {
+            Logger.debug(`Error processing extension ${itemPath}`, error);
+          }
+          return null;
+        })
+      );
 
+      // Add non-null extension nodes
+      for (const extElementNode of extElementNodes) {
+        if (extElementNode) {
           extNode.children?.push(extElementNode);
         }
       }
@@ -245,95 +286,6 @@ export class DesignerParser {
     }
 
     return result;
-  }
-
-  /**
-   * Get list of metadata type directories
-   * @returns Array of metadata type names
-   */
-  private static getMetadataTypes(): string[] {
-    return [
-      'Catalogs',
-      'Documents',
-      'Enums',
-      'Reports',
-      'DataProcessors',
-      'ChartsOfCharacteristicTypes',
-      'ChartsOfAccounts',
-      'ChartsOfCalculationTypes',
-      'InformationRegisters',
-      'AccumulationRegisters',
-      'AccountingRegisters',
-      'CalculationRegisters',
-      'BusinessProcesses',
-      'Tasks',
-      'ExternalDataSources',
-      'Constants',
-      'SessionParameters',
-      'FilterCriteria',
-      'ScheduledJobs',
-      'FunctionalOptions',
-      'FunctionalOptionsParameters',
-      'SettingsStorages',
-      'EventSubscriptions',
-      'CommonModules',
-      'CommandGroups',
-      'Roles',
-      'Interfaces',
-      'Styles',
-      'WebServices',
-      'HTTPServices',
-      'IntegrationServices',
-      'Subsystems',
-      'Languages',
-      'CommonPictures',
-    ];
-  }
-
-  /**
-   * Map string type to MetadataType enum
-   * @param typeString Type string from directory name
-   * @returns MetadataType enum value
-   */
-  private static mapStringToMetadataType(typeString: string): MetadataType {
-    const typeMap: Record<string, MetadataType> = {
-      Catalogs: MetadataType.Catalog,
-      Documents: MetadataType.Document,
-      Enums: MetadataType.Enum,
-      Reports: MetadataType.Report,
-      DataProcessors: MetadataType.DataProcessor,
-      ChartsOfCharacteristicTypes: MetadataType.ChartOfCharacteristicTypes,
-      ChartsOfAccounts: MetadataType.ChartOfAccounts,
-      ChartsOfCalculationTypes: MetadataType.ChartOfCalculationTypes,
-      InformationRegisters: MetadataType.InformationRegister,
-      AccumulationRegisters: MetadataType.AccumulationRegister,
-      AccountingRegisters: MetadataType.AccountingRegister,
-      CalculationRegisters: MetadataType.CalculationRegister,
-      BusinessProcesses: MetadataType.BusinessProcess,
-      Tasks: MetadataType.Task,
-      ExternalDataSources: MetadataType.ExternalDataSource,
-      Constants: MetadataType.Constant,
-      SessionParameters: MetadataType.SessionParameter,
-      FilterCriteria: MetadataType.FilterCriterion,
-      ScheduledJobs: MetadataType.ScheduledJob,
-      FunctionalOptions: MetadataType.FunctionalOption,
-      FunctionalOptionsParameters: MetadataType.FunctionalOptionsParameter,
-      SettingsStorages: MetadataType.SettingsStorage,
-      EventSubscriptions: MetadataType.EventSubscription,
-      CommonModules: MetadataType.CommonModule,
-      CommandGroups: MetadataType.CommandGroup,
-      Roles: MetadataType.Role,
-      Interfaces: MetadataType.Interface,
-      Styles: MetadataType.Style,
-      WebServices: MetadataType.WebService,
-      HTTPServices: MetadataType.HTTPService,
-      IntegrationServices: MetadataType.IntegrationService,
-      Subsystems: MetadataType.Subsystem,
-      Languages: MetadataType.Unknown,
-      CommonPictures: MetadataType.Unknown,
-    };
-
-    return typeMap[typeString] || MetadataType.Unknown;
   }
 
   /**

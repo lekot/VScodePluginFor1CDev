@@ -18,7 +18,7 @@ export class MetadataParser {
 
     try {
       // Validate configuration path
-      if (!FormatDetector.isValidConfigurationPath(configPath)) {
+      if (!(await FormatDetector.isValidConfigurationPath(configPath))) {
         throw new Error(`Invalid configuration path: ${configPath}`);
       }
 
@@ -56,7 +56,7 @@ export class MetadataParser {
    */
   static async parseFromWorkspace(workspacePath: string): Promise<TreeNode | null> {
     try {
-      const configPath = FormatDetector.findConfigurationRoot(workspacePath);
+      const configPath = await FormatDetector.findConfigurationRoot(workspacePath);
 
       if (!configPath) {
         Logger.warn('Configuration not found in workspace', workspacePath);
@@ -84,7 +84,7 @@ export class MetadataParser {
    * @param workspacePath Path to workspace
    * @returns Configuration root path or null
    */
-  static findConfigurationRoot(workspacePath: string): string | null {
+  static async findConfigurationRoot(workspacePath: string): Promise<string | null> {
     return FormatDetector.findConfigurationRoot(workspacePath);
   }
 }
