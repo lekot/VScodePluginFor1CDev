@@ -298,16 +298,29 @@ export class DesignerParser {
       // Designer format has 1cv8.cf or 1cv8.cfe file in root
       const cfPath = path.join(configPath, '1cv8.cf');
       const cfePath = path.join(configPath, '1cv8.cfe');
+      const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
+      const configXmlPath = path.join(configPath, 'Configuration.xml');
 
-      if (!fs.existsSync(cfPath) && !fs.existsSync(cfePath)) {
-        return false;
+      // Check if binary files exist (full Designer format)
+      const hasBinaryFiles = fs.existsSync(cfPath) || fs.existsSync(cfePath);
+      
+      // Check if XML metadata exists (exported Designer format)
+      const hasXmlMetadata = fs.existsSync(configDumpPath) || fs.existsSync(configXmlPath);
+
+      // Designer format if either binary files or XML metadata exists
+      // AND has typical Designer directory structure (Catalogs, Documents, etc.)
+      if (hasXmlMetadata) {
+        // Check for at least one metadata type directory
+        const metadataTypes = ['Catalogs', 'Documents', 'Enums', 'Reports', 'DataProcessors'];
+        for (const type of metadataTypes) {
+          const typePath = path.join(configPath, type);
+          if (fs.existsSync(typePath)) {
+            return true;
+          }
+        }
       }
 
-      // Check if ConfigDumpInfo.xml or Configuration.xml exists
-      const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
-      const configPath2 = path.join(configPath, 'Configuration.xml');
-
-      return fs.existsSync(configDumpPath) || fs.existsSync(configPath2);
+      return hasBinaryFiles && hasXmlMetadata;
     } catch (error) {
       Logger.debug('Designer format detection failed', error);
       return false;
