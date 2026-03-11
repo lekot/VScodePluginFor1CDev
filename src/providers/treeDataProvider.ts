@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TreeNode } from '../models/treeNode';
+import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 
 /**
@@ -13,7 +13,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private rootNode: TreeNode | null = null;
 
-  constructor() {
+  constructor(_context: vscode.ExtensionContext) {
     Logger.info('MetadataTreeDataProvider initialized');
   }
 
@@ -28,36 +28,69 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   /**
    * Refresh tree view
    */
-  refresh(): void {
-    Logger.debug('Refreshing tree view');
-    this._onDidChangeTreeData.fire();
+  refresh(element?: TreeNode): void {
+    Logger.debug('Refreshing tree view', element ? element.name : 'root');
+    this._onDidChangeTreeData.fire(element);
   }
 
   /**
    * Get tree item for a node
    */
   getTreeItem(element: TreeNode): vscode.TreeItem {
-    const treeItem = new vscode.TreeItem(
-      element.name,
-      element.children && element.children.length > 0
-        ? vscode.TreeItemCollapsibleState.Collapsed
-        : vscode.TreeItemCollapsibleState.None
-    );
+    // Determine collapsible state
+    const hasChildren = element.children && element.children.length > 0;
+    const collapsibleState = hasChildren
+      ? element.isExpanded
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed
+      : vscode.TreeItemCollapsibleState.None;
 
+    const treeItem = new vscode.TreeItem(element.name, collapsibleState);
+
+    // Set context value for context menu
     treeItem.contextValue = element.type;
-    treeItem.tooltip = `${element.type}: ${element.name}`;
+
+    // Set tooltip with additional information
+    const synonym = element.properties.synonym as string | undefined;
+    treeItem.tooltip = synonym
+      ? `${element.type}: ${element.name}\nСиноним: ${synonym}`
+      : `${element.type}: ${element.name}`;
+
+    // Set description (shown next to the label)
+    if (synonym) {
+      treeItem.description = synonym;
+    }
+
+    // Set icon based on metadata type
+    treeItem.iconPath = this.getIconForType(element.type);
+
+    // Set command to open file on click (if file path exists)
+    if (element.filePath) {
+      treeItem.command = {
+        command: 'vscode.open',
+        title: 'Open File',
+        arguments: [vscode.Uri.file(element.filePath)],
+      };
+    }
+
+    // Set resource URI for file operations
+    if (element.filePath) {
+      treeItem.resourceUri = vscode.Uri.file(element.filePath);
+    }
 
     return treeItem;
   }
 
   /**
-   * Get children for a node
+   * Get children for a node (lazy loading)
    */
   getChildren(element?: TreeNode): Thenable<TreeNode[]> {
     if (!element) {
+      // Return root node
       return Promise.resolve(this.rootNode ? [this.rootNode] : []);
     }
 
+    // Return children (lazy loading - children are already parsed)
     return Promise.resolve(element.children || []);
   }
 
@@ -66,5 +99,111 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   getParent(element: TreeNode): vscode.ProviderResult<TreeNode> {
     return element.parent || null;
+  }
+
+  /**
+   * Get icon for metadata type
+   */
+  private getIconForType(type: MetadataType): vscode.ThemeIcon {
+    // Map metadata types to VS Code built-in icons
+    const iconMap: Record<MetadataType, string> = {
+      // Root
+      [MetadataType.Configuration]: 'package',
+
+      // Main types
+      [MetadataType.Catalog]: 'book',
+      [MetadataType.Document]: 'file-text',
+      [MetadataType.Enum]: 'symbol-enum',
+      [MetadataType.Report]: 'graph',
+      [MetadataType.DataProcessor]: 'gear',
+      [MetadataType.ChartOfCharacteristicTypes]: 'symbol-class',
+      [MetadataType.ChartOfAccounts]: 'symbol-numeric',
+      [MetadataType.ChartOfCalculationTypes]: 'calculator',
+      [MetadataType.InformationRegister]: 'database',
+      [MetadataType.AccumulationRegister]: 'archive',
+      [MetadataType.AccountingRegister]: 'symbol-ruler',
+      [MetadataType.CalculationRegister]: 'symbol-operator',
+      [MetadataType.BusinessProcess]: 'git-branch',
+      [MetadataType.Task]: 'checklist',
+      [MetadataType.ExternalDataSource]: 'cloud',
+      [MetadataType.Constant]: 'symbol-constant',
+      [MetadataType.SessionParameter]: 'symbol-parameter',
+      [MetadataType.FilterCriterion]: 'filter',
+      [MetadataType.ScheduledJob]: 'watch',
+      [MetadataType.FunctionalOption]: 'symbol-boolean',
+      [MetadataType.FunctionalOptionsParameter]: 'symbol-variable',
+      [MetadataType.SettingsStorage]: 'save',
+      [MetadataType.EventSubscription]: 'bell',
+      [MetadataType.CommonModule]: 'symbol-module',
+      [MetadataType.CommandGroup]: 'folder',
+      [MetadataType.Command]: 'terminal',
+      [MetadataType.Role]: 'shield',
+      [MetadataType.Interface]: 'symbol-interface',
+      [MetadataType.Style]: 'paintcan',
+      [MetadataType.WebService]: 'globe',
+      [MetadataType.HTTPService]: 'server',
+      [MetadataType.IntegrationService]: 'plug',
+      [MetadataType.Subsystem]: 'folder-library',
+
+      // Sub-elements
+      [MetadataType.Attribute]: 'symbol-field',
+      [MetadataType.TabularSection]: 'table',
+      [MetadataType.Form]: 'layout',
+      [MetadataType.Template]: 'file-code',
+      [MetadataType.CommandSubElement]: 'symbol-method',
+      [MetadataType.Recurrence]: 'sync',
+      [MetadataType.Method]: 'symbol-method',
+      [MetadataType.Parameter]: 'symbol-parameter',
+
+      // Extensions
+      [MetadataType.Extension]: 'extensions',
+
+      // Unknown
+      [MetadataType.Unknown]: 'question',
+    };
+
+    const iconName = iconMap[type] || 'file';
+    return new vscode.ThemeIcon(iconName);
+  }
+
+  /**
+   * Find node by ID
+   */
+  findNodeById(id: string, node?: TreeNode): TreeNode | null {
+    const searchNode = node || this.rootNode;
+    if (!searchNode) {
+      return null;
+    }
+
+    if (searchNode.id === id) {
+      return searchNode;
+    }
+
+    if (searchNode.children) {
+      for (const child of searchNode.children) {
+        const found = this.findNodeById(id, child);
+        if (found) {
+          return found;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Expand node
+   */
+  expandNode(node: TreeNode): void {
+    node.isExpanded = true;
+    this.refresh(node);
+  }
+
+  /**
+   * Collapse node
+   */
+  collapseNode(node: TreeNode): void {
+    node.isExpanded = false;
+    this.refresh(node);
   }
 }
