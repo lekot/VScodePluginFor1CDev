@@ -5,76 +5,58 @@ import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
 
 /**
- * Parser for 1C Designer format metadata
- * Designer format uses structured XML files in specific directory structure
- * with 1cv8.cf or 1cv8.cfe file in root
+ * Parser for 1C EDT (Eclipse Development Tools) format metadata
+ * EDT format uses .mdo files in specific directory structure
+ * Structure: src/Catalogs/CatalogName/Catalog.mdo, src/Documents/DocName/Document.mdo, etc.
  */
-export class DesignerParser {
+export class EdtParser {
   /**
-   * Parse Designer format configuration
-   * @param configPath Path to configuration root directory
+   * Parse EDT format configuration
+   * @param configPath Path to configuration root directory (usually contains 'src' folder)
    * @returns Root tree node
    */
   static async parse(configPath: string): Promise<TreeNode> {
-    Logger.info('Starting Designer format parsing', configPath);
+    Logger.info('Starting EDT format parsing', configPath);
 
     try {
-      // Read ConfigDumpInfo.xml or Configuration.xml
-      let configXmlPath = path.join(configPath, 'ConfigDumpInfo.xml');
-      if (!fs.existsSync(configXmlPath)) {
-        configXmlPath = path.join(configPath, 'Configuration.xml');
+      // EDT format has src directory with metadata
+      const srcPath = path.join(configPath, 'src');
+      if (!fs.existsSync(srcPath)) {
+        throw new Error(`EDT src directory not found at ${srcPath}`);
       }
 
-      if (!fs.existsSync(configXmlPath)) {
-        throw new Error(`Configuration metadata file not found at ${configPath}`);
+      const rootNode: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        children: [],
+        filePath: srcPath,
+      };
+
+      // Parse metadata directories in src
+      const metadataTypes = this.getMetadataTypes();
+
+      for (const metadataType of metadataTypes) {
+        const typePath = path.join(srcPath, metadataType);
+        if (fs.existsSync(typePath)) {
+          const typeNode = this.parseMetadataType(typePath, metadataType);
+          if (typeNode.children && typeNode.children.length > 0) {
+            rootNode.children?.push(typeNode);
+          }
+        }
       }
 
-      XmlParser.parseFile(configXmlPath);
-      const rootNode = this.buildTreeFromConfiguration(configPath);
-
-      Logger.info('Designer format parsing completed');
+      Logger.info('EDT format parsing completed');
       return rootNode;
     } catch (error) {
-      Logger.error('Error parsing Designer format', error);
+      Logger.error('Error parsing EDT format', error);
       throw error;
     }
   }
 
   /**
-   * Build tree from configuration metadata
-   * @param configPath Path to configuration root
-   * @returns Root tree node
-   */
-  private static buildTreeFromConfiguration(
-    configPath: string
-  ): TreeNode {
-    const rootNode: TreeNode = {
-      id: 'root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-      children: [],
-      filePath: configPath,
-    };
-
-    // Parse metadata directories
-    const metadataTypes = this.getMetadataTypes();
-
-    for (const metadataType of metadataTypes) {
-      const typePath = path.join(configPath, metadataType);
-      if (fs.existsSync(typePath)) {
-        const typeNode = this.parseMetadataType(typePath, metadataType);
-        if (typeNode.children && typeNode.children.length > 0) {
-          rootNode.children?.push(typeNode);
-        }
-      }
-    }
-
-    return rootNode;
-  }
-
-  /**
-   * Parse metadata type directory
+   * Parse metadata type directory (e.g., src/Catalogs/)
    * @param typePath Path to metadata type directory
    * @param typeName Name of metadata type
    * @returns Tree node for metadata type
@@ -106,14 +88,14 @@ export class DesignerParser {
         }
       }
     } catch (error) {
-      Logger.warn(`Error reading metadata type directory ${typePath}`, error);
+      Logger.warn(`Error reading EDT metadata type directory ${typePath}`, error);
     }
 
     return typeNode;
   }
 
   /**
-   * Parse metadata element directory
+   * Parse metadata element directory (e.g., src/Catalogs/CatalogName/)
    * @param elementPath Path to element directory
    * @param elementName Name of element
    * @param typeName Type of element
@@ -131,90 +113,92 @@ export class DesignerParser {
       filePath: elementPath,
     };
 
-    // Try to read metadata XML file
-    const xmlPath = path.join(elementPath, `${elementName}.xml`);
-    if (fs.existsSync(xmlPath)) {
+    // Try to read .mdo file (e.g., Catalog.mdo)
+    const mdoFileName = this.getMdoFileName(typeName);
+    const mdoPath = path.join(elementPath, mdoFileName);
+
+    if (fs.existsSync(mdoPath)) {
       try {
-        const xmlContent = XmlParser.parseFile(xmlPath);
-        const properties = this.extractPropertiesFromElement(xmlContent);
+        const mdoContent = XmlParser.parseFile(mdoPath);
+        const properties = this.extractPropertiesFromMdo(mdoContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
       } catch (error) {
-        Logger.warn(`Error parsing element XML ${xmlPath}`, error);
+        Logger.warn(`Error parsing MDO file ${mdoPath}`, error);
       }
     }
 
-    // Parse sub-elements (Ext, Forms, etc.)
+    // Parse sub-elements (Forms, Attributes, etc.)
     try {
       const items = fs.readdirSync(elementPath);
 
       for (const item of items) {
-        if (item === 'Ext') {
-          // Parse extensions
-          const extPath = path.join(elementPath, item);
-          const extNode = this.parseExtensions(extPath);
-          if (extNode.children && extNode.children.length > 0) {
-            elementNode.children?.push(extNode);
+        if (item === 'Forms' || item === 'Ext') {
+          const subPath = path.join(elementPath, item);
+          const subNode = this.parseSubElements(subPath, item);
+          if (subNode.children && subNode.children.length > 0) {
+            elementNode.children?.push(subNode);
           }
         }
       }
     } catch (error) {
-      Logger.debug(`Error reading element directory ${elementPath}`, error);
+      Logger.debug(`Error reading EDT element directory ${elementPath}`, error);
     }
 
     return elementNode;
   }
 
   /**
-   * Parse extensions directory
-   * @param extPath Path to Ext directory
-   * @returns Tree node for extensions
+   * Parse sub-elements (Forms, Ext, etc.)
+   * @param subPath Path to sub-elements directory
+   * @param subType Type of sub-elements
+   * @returns Tree node for sub-elements
    */
-  private static parseExtensions(extPath: string): TreeNode {
-    const extNode: TreeNode = {
-      id: 'Ext',
-      name: 'Extensions',
-      type: MetadataType.Extension,
+  private static parseSubElements(subPath: string, subType: string): TreeNode {
+    const subNode: TreeNode = {
+      id: subType,
+      name: subType,
+      type: subType === 'Forms' ? MetadataType.Form : MetadataType.Extension,
       properties: {},
       children: [],
-      filePath: extPath,
+      filePath: subPath,
     };
 
     try {
-      const items = fs.readdirSync(extPath);
+      const items = fs.readdirSync(subPath);
 
       for (const item of items) {
-        const itemPath = path.join(extPath, item);
+        const itemPath = path.join(subPath, item);
         const stat = fs.statSync(itemPath);
 
         if (stat.isDirectory()) {
-          const extElementNode: TreeNode = {
-            id: `Ext.${item}`,
+          const subElementNode: TreeNode = {
+            id: `${subType}.${item}`,
             name: item,
-            type: MetadataType.Extension,
-            properties: { isExtension: true },
+            type: subType === 'Forms' ? MetadataType.Form : MetadataType.Extension,
+            properties: {},
             filePath: itemPath,
           };
 
-          extNode.children?.push(extElementNode);
+          subNode.children?.push(subElementNode);
         }
       }
     } catch (error) {
-      Logger.debug(`Error reading extensions directory ${extPath}`, error);
+      Logger.debug(`Error reading EDT sub-elements directory ${subPath}`, error);
     }
 
-    return extNode;
+    return subNode;
   }
 
   /**
-   * Extract properties from metadata element XML
-   * @param xmlContent Parsed XML content
+   * Extract properties from .mdo file
+   * @param mdoContent Parsed MDO content
    * @returns Properties object
    */
-  private static extractPropertiesFromElement(xmlContent: Record<string, unknown>): Record<string, unknown> {
+  private static extractPropertiesFromMdo(mdoContent: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
 
     // Find the root element (Catalog, Document, etc.)
-    for (const [key, value] of Object.entries(xmlContent)) {
+    for (const [key, value] of Object.entries(mdoContent)) {
       if (key === '@_' || key.startsWith('#')) {
         continue;
       }
@@ -245,6 +229,50 @@ export class DesignerParser {
     }
 
     return result;
+  }
+
+  /**
+   * Get .mdo file name for metadata type
+   * @param typeName Type name (e.g., 'Catalogs')
+   * @returns MDO file name (e.g., 'Catalog.mdo')
+   */
+  private static getMdoFileName(typeName: string): string {
+    const typeMap: Record<string, string> = {
+      Catalogs: 'Catalog.mdo',
+      Documents: 'Document.mdo',
+      Enums: 'Enum.mdo',
+      Reports: 'Report.mdo',
+      DataProcessors: 'DataProcessor.mdo',
+      ChartsOfCharacteristicTypes: 'ChartOfCharacteristicTypes.mdo',
+      ChartsOfAccounts: 'ChartOfAccounts.mdo',
+      ChartsOfCalculationTypes: 'ChartOfCalculationTypes.mdo',
+      InformationRegisters: 'InformationRegister.mdo',
+      AccumulationRegisters: 'AccumulationRegister.mdo',
+      AccountingRegisters: 'AccountingRegister.mdo',
+      CalculationRegisters: 'CalculationRegister.mdo',
+      BusinessProcesses: 'BusinessProcess.mdo',
+      Tasks: 'Task.mdo',
+      ExternalDataSources: 'ExternalDataSource.mdo',
+      Constants: 'Constant.mdo',
+      SessionParameters: 'SessionParameter.mdo',
+      FilterCriteria: 'FilterCriterion.mdo',
+      ScheduledJobs: 'ScheduledJob.mdo',
+      FunctionalOptions: 'FunctionalOption.mdo',
+      FunctionalOptionsParameters: 'FunctionalOptionsParameter.mdo',
+      SettingsStorages: 'SettingsStorage.mdo',
+      EventSubscriptions: 'EventSubscription.mdo',
+      CommonModules: 'CommonModule.mdo',
+      CommandGroups: 'CommandGroup.mdo',
+      Roles: 'Role.mdo',
+      Interfaces: 'Interface.mdo',
+      Styles: 'Style.mdo',
+      WebServices: 'WebService.mdo',
+      HTTPServices: 'HTTPService.mdo',
+      IntegrationServices: 'IntegrationService.mdo',
+      Subsystems: 'Subsystem.mdo',
+    };
+
+    return typeMap[typeName] || 'Object.mdo';
   }
 
   /**
@@ -337,27 +365,42 @@ export class DesignerParser {
   }
 
   /**
-   * Detect if path contains Designer format configuration
+   * Detect if path contains EDT format configuration
    * @param configPath Path to check
-   * @returns true if Designer format detected
+   * @returns true if EDT format detected
    */
-  static async isDesignerFormat(configPath: string): Promise<boolean> {
+  static async isEdtFormat(configPath: string): Promise<boolean> {
     try {
-      // Designer format has 1cv8.cf or 1cv8.cfe file in root
-      const cfPath = path.join(configPath, '1cv8.cf');
-      const cfePath = path.join(configPath, '1cv8.cfe');
-
-      if (!fs.existsSync(cfPath) && !fs.existsSync(cfePath)) {
+      // EDT format has src directory with .mdo files
+      const srcPath = path.join(configPath, 'src');
+      if (!fs.existsSync(srcPath)) {
         return false;
       }
 
-      // Check if ConfigDumpInfo.xml or Configuration.xml exists
-      const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
-      const configPath2 = path.join(configPath, 'Configuration.xml');
+      // Check if there are metadata type directories with .mdo files
+      const metadataTypes = ['Catalogs', 'Documents', 'Enums', 'Reports', 'DataProcessors'];
 
-      return fs.existsSync(configDumpPath) || fs.existsSync(configPath2);
+      for (const type of metadataTypes) {
+        const typePath = path.join(srcPath, type);
+        if (fs.existsSync(typePath)) {
+          const items = fs.readdirSync(typePath);
+          for (const item of items) {
+            const itemPath = path.join(typePath, item);
+            const stat = fs.statSync(itemPath);
+            if (stat.isDirectory()) {
+              // Check for .mdo file
+              const mdoFiles = fs.readdirSync(itemPath).filter(f => f.endsWith('.mdo'));
+              if (mdoFiles.length > 0) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+
+      return false;
     } catch (error) {
-      Logger.debug('Designer format detection failed', error);
+      Logger.debug('EDT format detection failed', error);
       return false;
     }
   }

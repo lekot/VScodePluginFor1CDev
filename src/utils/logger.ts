@@ -1,13 +1,25 @@
-import * as vscode from 'vscode';
+let vscode: any;
+try {
+  vscode = require('vscode');
+} catch {
+  vscode = null;
+}
 
 /**
  * Logger utility for the extension
  */
 export class Logger {
-  private static outputChannel: vscode.OutputChannel;
+  private static outputChannel: any = null;
 
   static initialize(): void {
-    this.outputChannel = vscode.window.createOutputChannel('1C Metadata Tree');
+    try {
+      if (vscode && vscode.window) {
+        this.outputChannel = vscode.window.createOutputChannel('1C Metadata Tree');
+      }
+    } catch {
+      // vscode not available (e.g., in tests)
+      this.outputChannel = null;
+    }
   }
 
   static info(message: string, ...args: unknown[]): void {
@@ -32,7 +44,9 @@ export class Logger {
     const argsStr = args.length > 0 ? ` ${JSON.stringify(args)}` : '';
     const logMessage = `[${timestamp}] [${level}] ${message}${argsStr}`;
 
-    this.outputChannel.appendLine(logMessage);
+    if (this.outputChannel) {
+      this.outputChannel.appendLine(logMessage);
+    }
 
     if (level === 'ERROR') {
       console.error(logMessage);
@@ -42,6 +56,8 @@ export class Logger {
   }
 
   static show(): void {
-    this.outputChannel.show();
+    if (this.outputChannel) {
+      this.outputChannel.show();
+    }
   }
 }
