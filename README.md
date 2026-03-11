@@ -1,165 +1,192 @@
-# 1C Metadata Tree - VS Code Extension
+# 1C Metadata Tree for VS Code
 
-VS Code extension for visualizing and editing 1C configuration metadata tree.
+VS Code расширение для визуализации дерева метаданных конфигураций 1С:Предприятие.
 
-## Status
+## Возможности
 
-**Phase 1: Infrastructure** ✅ COMPLETED  
-**Phase 2: Parsers** ✅ COMPLETED (11 марта 2026)
+- 📁 Отображение иерархии метаданных конфигурации 1С
+- 🎨 Иконки для всех типов метаданных (40+ типов)
+- 🔍 Быстрая навигация по элементам конфигурации
+- 📝 Отображение синонимов и свойств элементов
+- 🔄 Автоматическая загрузка при открытии workspace
+- ⚡ Ленивая загрузка для производительности
+- 🎯 Поддержка EDT и Designer форматов
 
-- ✅ XML парсер (fast-xml-parser)
-- ✅ Designer format parser
-- ✅ EDT format parser
-- ✅ Format auto-detection
-- ✅ Error handling system
-- ✅ Async/await refactoring (performance optimization)
-- ✅ MetadataTypeMapper (code deduplication)
-- ✅ Unit tests for all parsers
+## Установка
 
-**Next**: Phase 3 - UI Components (Tree View)
+### Из исходников
 
-## Features
+1. Клонируйте репозиторий:
+```bash
+git clone <repository-url>
+cd 1c-metadata-tree-vscode
+```
 
-- **Metadata Tree View**: Display complete hierarchy of 1C configuration metadata
-- **Properties Panel**: Edit metadata element properties
-- **File Synchronization**: Automatic sync between UI and XML files
-- **Search & Filter**: Quick search and filtering by metadata type
-- **Element Operations**: Create, duplicate, delete, and rename metadata elements
+2. Установите зависимости:
+```bash
+npm install
+```
 
-## Supported Formats
+3. Скомпилируйте проект:
+```bash
+npm run compile
+```
 
-- ✅ Designer format (structured XML)
-- ✅ EDT format (structured XML with .mdo files)
-- ✅ Automatic format detection
+4. Запустите расширение:
+- Нажмите `F5` в VS Code для запуска в режиме отладки
 
-## Installation
+## Использование
 
-1. Clone the repository
-2. Run `npm install`
-3. Press `F5` to start debugging
+### Открытие панели метаданных
 
-## Development
+1. Откройте папку с конфигурацией 1С в VS Code
+2. Панель "1C Metadata" появится автоматически в Explorer
+3. Или используйте команду: `Ctrl+Shift+M` (Windows/Linux) / `Cmd+Shift+M` (macOS)
 
-### Build
+### Навигация
+
+- **Развернуть/свернуть узел**: Клик на стрелку рядом с элементом
+- **Открыть файл**: Клик на элемент с файлом
+- **Обновить дерево**: Кнопка "Refresh" в панели или команда `1C: Refresh`
+
+### Поддерживаемые типы метаданных
+
+#### Основные объекты
+- Справочники (Catalogs)
+- Документы (Documents)
+- Перечисления (Enums)
+- Отчеты (Reports)
+- Обработки (DataProcessors)
+- Регистры (Information/Accumulation/Accounting/Calculation)
+- Бизнес-процессы (BusinessProcesses)
+- Задачи (Tasks)
+
+#### Другие объекты
+- Константы (Constants)
+- Общие модули (CommonModules)
+- Роли (Roles)
+- Подсистемы (Subsystems)
+- Web-сервисы (WebServices)
+- HTTP-сервисы (HTTPServices)
+- И многое другое...
+
+## Требования
+
+- VS Code версии 1.80.0 или выше
+- Node.js 16.x или выше (для разработки)
+- Конфигурация 1С в формате EDT или Designer
+
+## Структура проекта
+
+```
+1c-metadata-tree-vscode/
+├── src/
+│   ├── extension.ts              # Точка входа расширения
+│   ├── models/                   # Модели данных
+│   │   └── treeNode.ts          # Модель узла дерева
+│   ├── parsers/                  # Парсеры XML
+│   │   ├── metadataParser.ts    # Главный парсер
+│   │   ├── edtParser.ts         # EDT формат
+│   │   ├── designerParser.ts    # Designer формат
+│   │   └── xmlParser.ts         # Базовый XML парсер
+│   ├── providers/                # VS Code провайдеры
+│   │   └── treeDataProvider.ts  # Tree View провайдер
+│   ├── utils/                    # Утилиты
+│   │   ├── logger.ts            # Логирование
+│   │   └── metadataTypeMapper.ts # Маппинг типов
+│   └── constants/                # Константы
+│       └── messages.ts          # UI сообщения
+├── test/                         # Тесты
+│   └── suite/
+│       └── treeDataProvider.test.ts
+└── package.json                  # Манифест расширения
+```
+
+## Разработка
+
+### Компиляция
 
 ```bash
 npm run compile
 ```
 
-### Watch Mode
+### Режим watch
 
 ```bash
 npm run watch
 ```
 
-### Lint
+### Запуск тестов
+
+Используйте VS Code Test Runner или:
+
+```bash
+npm test
+```
+
+### Линтинг
 
 ```bash
 npm run lint
 ```
 
-### Format
+### Форматирование
 
 ```bash
 npm run format
 ```
 
-### Test
+## Архитектура
 
-```bash
-npm run test
-```
+Расширение использует следующую архитектуру:
 
-### Debug in VS Code
+1. **Extension** - точка входа, регистрация команд и провайдеров
+2. **MetadataParser** - парсинг XML файлов конфигурации
+3. **TreeDataProvider** - реализация VS Code TreeDataProvider API
+4. **TreeNode** - модель данных для узлов дерева
 
-Press `F5` to launch the extension in debug mode. A new VS Code window will open with the extension loaded.
-
-## Build Artifacts
-
-- **Source:** `src/` (TypeScript)
-- **Compiled:** `dist/` (JavaScript + source maps + type definitions)
-- **Archive:** `build/` (copy of dist for backup)
-
-### Compilation Details
-
-- **Compiler:** TypeScript 5.0.0
-- **Target:** ES2020, CommonJS
-- **Source Maps:** Generated for debugging
-- **Type Definitions:** Generated (.d.ts files)
-- **Total Files:** 24 (8 JS + 8 D.TS + 8 source maps)
-
-## Project Structure
+### Поток данных
 
 ```
-src/
-├── extension.ts           # Extension entry point
-├── models/               # Data models
-├── parsers/              # XML parsers
-├── providers/            # VS Code providers
-└── utils/                # Utility functions
+Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree View
 ```
 
-## Architecture
+## Производительность
 
-### Phase 1: Infrastructure (✅ COMPLETED)
-- Project initialization
-- Basic VS Code integration
-- Logger setup
-- Tree and Properties providers skeleton
+- **Ленивая загрузка**: Дочерние элементы загружаются только при развёртывании узла
+- **Кэширование**: Используется Map для быстрого поиска узлов по ID
+- **Асинхронность**: Все операции ввода-вывода выполняются асинхронно
 
-### Phase 2: Parsing & Tree Building (NEXT)
-- Designer format parser implementation
-- Tree node building
-- Caching system
+## Известные ограничения
 
-### Phase 3: UI Display
-- Tree view rendering
-- Context menu
-- Keyboard shortcuts
+1. Тесты требуют VS Code Test Runner для запуска
+2. Поддерживаются только конфигурации в формате EDT и Designer
+3. Для очень больших конфигураций (100K+ элементов) может потребоваться дополнительная оптимизация
 
-### Phase 4: Properties Panel
-- Properties view implementation
-- Property editing
-- Validation
+## Roadmap
 
-### Phase 5: File Synchronization
-- File watcher
-- Conflict resolution
-- Change persistence
+- [ ] Контекстное меню для операций с элементами
+- [ ] Поиск по дереву метаданных
+- [ ] Фильтрация по типам
+- [ ] Панель свойств элементов
+- [ ] Синхронизация с изменениями файлов
+- [ ] Поддержка расширений конфигурации
 
-## Solutions & Decisions
+## Вклад в проект
 
-### Node.js PATH Issue
-**Problem:** npm not found in PATH on Windows
-**Solution:** Use full path with cmd.exe: `C:\Program Files\nodejs\npm.cmd`
+Приветствуются pull requests! Для крупных изменений сначала откройте issue для обсуждения.
 
-### TypeScript Strict Mode
-**Decision:** Enabled strict mode for type safety
-- `noImplicitAny`: true
-- `strictNullChecks`: true
-- `noUnusedLocals`: true
+## Лицензия
 
-### Designer Format Priority
-**Decision:** Start with Designer format (structured XML)
-- Has local test examples
-- EDT format will follow after MVP
+[MIT](LICENSE)
 
-### Conflict Resolution Strategy
-**Decision:** Last write wins (default)
-- Merge when possible
-- Prompt user on conflicts
-- Documented in architecture.md
+## Авторы
 
-## Configuration
+- Разработано с использованием Kiro AI
 
-The extension activates when:
-- A workspace contains `1cv8.cf` or `1cv8.cfe` files
-- User runs the "1C: Open Metadata Tree" command
+## Поддержка
 
-## Keyboard Shortcuts
-
-- `Ctrl+Shift+M` (Cmd+Shift+M on Mac): Open/close metadata tree panel
-
-## License
-
-MIT
+Если у вас возникли проблемы или вопросы:
+1. Проверьте [Issues](../../issues)
+2. Создайте новый Issue с описанием проблемы
+3. Приложите логи из Output канала "1C Metadata Tree"
