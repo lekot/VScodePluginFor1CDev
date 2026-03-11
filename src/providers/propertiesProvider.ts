@@ -78,21 +78,20 @@ export class PropertiesProvider {
     }
 
     // Update content with new node
-    // Use parentFilePath for nested elements (Attributes), filePath for regular elements
-    const sourceFilePath = node.parentFilePath || node.filePath;
-    
-    if (sourceFilePath) {
+    // For nested elements (Attributes), properties are already loaded from XML during parsing
+    // Only reload from file for root elements that have filePath
+    if (node.filePath && !node.parentFilePath) {
       try {
         const { XMLWriter } = await import('../utils/XMLWriter');
-        const xmlProperties = await XMLWriter.readProperties(sourceFilePath);
+        const xmlProperties = await XMLWriter.readProperties(node.filePath);
         
         // Update node properties with fresh data from XML
         node.properties = { ...xmlProperties };
         
-        Logger.debug(`Successfully loaded properties from ${sourceFilePath}`);
+        Logger.debug(`Successfully loaded properties from ${node.filePath}`);
       } catch (error) {
         // Log detailed error
-        Logger.error(`Failed to read properties from ${sourceFilePath}`, error);
+        Logger.error(`Failed to read properties from ${node.filePath}`, error);
         
         // Display error in properties panel
         this.showErrorInPanel(
@@ -103,6 +102,7 @@ export class PropertiesProvider {
         return;
       }
     }
+    // For nested elements with parentFilePath, use already loaded properties from node.properties
 
     this.updateWebviewContent();
   }
@@ -309,7 +309,7 @@ export class PropertiesProvider {
           }
           .property-label {
             font-weight: bold;
-            min-width: 150px;
+            min-width: 280px;
             flex-shrink: 0;
             color: var(--vscode-foreground);
           }
@@ -321,6 +321,13 @@ export class PropertiesProvider {
             border: 1px solid var(--vscode-input-border);
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
+          }
+          .property-input[type="checkbox"] {
+            flex-grow: 0;
+            width: 18px;
+            height: 18px;
+            padding: 0;
+            cursor: pointer;
           }
           .property-input:focus {
             outline: 1px solid var(--vscode-focusBorder);
@@ -476,10 +483,14 @@ export class PropertiesProvider {
     const propertyReadOnly = globalReadOnly || (isRootElement && isTypeProperty);
     
     const disabled = propertyReadOnly ? 'disabled' : '';
+    
+    // Get Russian label for property name
+    const { getPropertyLabel } = require('../constants/propertyLabels');
+    const displayName = getPropertyLabel(name);
 
     return `
       <div class="property-row">
-        <label class="property-label">${this.escapeHtml(name)}</label>
+        <label class="property-label">${this.escapeHtml(displayName)}</label>
         <input
           type="${inputType}"
           class="property-input"
