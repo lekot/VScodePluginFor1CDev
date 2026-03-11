@@ -1,138 +1,107 @@
-# 1C Metadata Tree VS Code Extension
+# 1C Metadata Tree - VS Code Extension
 
-VS Code расширение для визуализации и редактирования дерева метаданных 1С конфигураций, аналогично EDT (Eclipse Development Tools).
+VS Code extension for visualizing and editing 1C configuration metadata tree.
 
-## Возможности
+## Features
 
-- 📦 **Визуализация метаданных** — Полная иерархия метаданных 1С конфигурации в боковой панели
-- ✏️ **Редактирование свойств** — Редактирование свойств элементов через панель свойств
-- 🔄 **Двусторонняя синхронизация** — Автоматическая синхронизация между панелью и файлами
-- 🔍 **Поиск и фильтрация** — Быстрый поиск по названиям элементов и фильтрация по типам
-- ⚙️ **Операции с элементами** — Создание, дублирование, удаление, переименование элементов
-- 📊 **Поддержка больших конфигураций** — Оптимизирована для конфигураций с 100000+ элементами
-- 🎯 **Поддержка форматов** — EDT и Designer форматы, включая расширения (Ext)
+- **Metadata Tree View**: Display complete hierarchy of 1C configuration metadata
+- **Properties Panel**: Edit metadata element properties
+- **File Synchronization**: Automatic sync between UI and XML files
+- **Search & Filter**: Quick search and filtering by metadata type
+- **Element Operations**: Create, duplicate, delete, and rename metadata elements
 
-## Требования
+## Supported Formats
 
-- VS Code 1.80+
-- Node.js 14+ (встроен в VS Code)
+- Designer format (structured XML)
+- EDT format (coming soon)
 
-## Установка
+## Installation
 
-1. Клонируй репозиторий
-2. Установи зависимости: `npm install`
-3. Запусти расширение: `npm run dev`
+1. Clone the repository
+2. Run `npm install`
+3. Press `F5` to start debugging
 
-## Использование
+## Development
 
-### Открытие панели метаданных
-- Нажми `Ctrl+Shift+M` или используй командную палитру (`Ctrl+Shift+P`) и выбери `1C Metadata: Open Panel`
+### Build
 
-### Поиск элементов
-- Нажми `Ctrl+F` в панели метаданных для открытия поиска
-- Введи название элемента для фильтрации дерева
-
-### Редактирование свойств
-- Кликни на элемент в дереве
-- Отредактируй свойства в панели свойств
-- Нажми `Enter` или кликни вне поля для сохранения
-
-### Операции с элементами
-- Правый клик на элемент для открытия контекстного меню
-- Выбери нужную операцию (Создать, Дублировать, Удалить, Переименовать и т.д.)
-
-## Горячие клавиши
-
-| Клавиша | Действие |
-|---------|----------|
-| `Ctrl+Shift+M` | Открыть/закрыть панель метаданных |
-| `Ctrl+F` | Поиск в дереве |
-| `Delete` | Удалить элемент |
-| `F2` | Переименовать элемент |
-| `Ctrl+D` | Дублировать элемент |
-| `Ctrl+C` | Копировать имя элемента |
-| `Enter` | Открыть элемент в редакторе |
-
-## Архитектура
-
-```
-VS Code Extension (TypeScript)
-├── Tree View Panel (Metadata Tree)
-├── Properties Panel (Element Properties)
-└── File System Watcher & Sync Manager
-    ├── XML Parser (Node.js)
-    ├── Tree Builder
-    └── Validator
+```bash
+npm run compile
 ```
 
-## Поддерживаемые типы метаданных
+### Watch Mode
 
-- Справочники (Catalogs)
-- Документы (Documents)
-- Регистры (Registers)
-- Константы (Constants)
-- Отчёты (Reports)
-- Обработки (DataProcessors)
-- Планы видов характеристик (ChartOfCharacteristicTypes)
-- Планы счетов (ChartOfAccounts)
-- Планы обмена (ExchangePlans)
-- Последовательности (Sequences)
-- Бизнес-процессы (BusinessProcesses)
-- Задачи (Tasks)
-- Роли (Roles)
-- Модули (Modules)
-- Расширения конфигурации (Ext)
+```bash
+npm run watch
+```
 
-## Разработка
+### Lint
 
-### Структура проекта
+```bash
+npm run lint
+```
+
+### Format
+
+```bash
+npm run format
+```
+
+### Test
+
+```bash
+npm run test
+```
+
+## Project Structure
 
 ```
 src/
-├── extension.ts          # Точка входа расширения
-├── parser/               # XML парсер
-├── tree/                 # Построение дерева метаданных
-├── ui/                   # UI компоненты
-├── sync/                 # Синхронизация файлов
-├── search/               # Поиск и фильтрация
-└── utils/                # Утилиты
+├── extension.ts           # Extension entry point
+├── models/               # Data models
+├── parsers/              # XML parsers
+├── providers/            # VS Code providers
+└── utils/                # Utility functions
 ```
 
-### Запуск в режиме разработки
+## Architecture
 
-```bash
-npm install
-npm run dev
-```
+### Phase 1: Infrastructure (Current)
+- Project initialization
+- Basic VS Code integration
+- Logger setup
+- Tree and Properties providers skeleton
 
-### Сборка
+### Phase 2: Parsing & Tree Building
+- Designer format parser implementation
+- Tree node building
+- Caching system
 
-```bash
-npm run build
-```
+### Phase 3: UI Display
+- Tree view rendering
+- Context menu
+- Keyboard shortcuts
 
-### Тестирование
+### Phase 4: Properties Panel
+- Properties view implementation
+- Property editing
+- Validation
 
-```bash
-npm test
-```
+### Phase 5: File Synchronization
+- File watcher
+- Conflict resolution
+- Change persistence
 
-## Производительность
+## Configuration
 
-- Загрузка дерева < 2 сек для 10000 элементов
-- Загрузка дерева < 5 сек для 100000+ элементов
-- Поиск < 500 мс
-- Синхронизация файлов < 1 сек
-- Использование памяти < 300 МБ
+The extension activates when:
+- A workspace contains `1cv8.cf` or `1cv8.cfe` files
+- User runs the "1C: Open Metadata Tree" command
 
-## Лицензия
+## Keyboard Shortcuts
+
+- `Ctrl+Shift+M` (Cmd+Shift+M on Mac): Open/close metadata tree panel
+
+## License
 
 MIT
-
-## Автор
-
-Максим
-
-## Благодарности
-
-Вдохновлено EDT (Eclipse Development Tools) для 1С.

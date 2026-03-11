@@ -1,0 +1,71 @@
+{
+  "name": "1c-metadata-tree-vscode",
+  "displayName": "1C Metadata Tree",
+  "description": "VS Code extension for visualizing 1C configuration metadata tree",
+  "version": "0.1.0",
+  "publisher": "1c-dev",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/1cv8.cf",
+    "workspaceContains:**/1cv8.cfe",
+    "onCommand:1c-metadata-tree.openPanel"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "1c-metadata-tree.openPanel",
+        "title": "1C: Open Metadata Tree",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.refresh",
+        "title": "Refresh",
+        "category": "1C Metadata",
+        "icon": "$(refresh)"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "1c-metadata-tree",
+          "name": "1C Metadata",
+          "when": "1c-metadata-tree:enabled"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "1c-metadata-tree.openPanel",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.3.0"
+  }
+}
