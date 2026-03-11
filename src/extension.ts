@@ -48,10 +48,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Set context for conditional activation
   vscode.commands.executeCommand('setContext', '1c-metadata-tree:enabled', true);
 
-  // Auto-load metadata tree if workspace is open
+  // Auto-load metadata tree if workspace is open (non-blocking, catch errors)
   if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-    await loadMetadataTree();
+    loadMetadataTree().catch((error) => {
+      Logger.error('Error during auto-load', error);
+      // Don't throw - extension should still activate
+    });
   }
+
+  Logger.info('Extension activation completed');
 }
 
 /**

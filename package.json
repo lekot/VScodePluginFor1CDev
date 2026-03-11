@@ -14,7 +14,11 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:1c-metadata-tree.openPanel",
+    "onCommand:1c-metadata-tree.refresh",
+    "onView:1c-metadata-tree"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -64,6 +68,7 @@
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
     "@vscode/test-electron": "^2.3.0",
+    "@vscode/vsce": "^3.7.1",
     "eslint": "^8.0.0",
     "glob": "^10.0.0",
     "mocha": "^10.0.0",

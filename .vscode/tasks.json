@@ -2,6 +2,17 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "compile-direct",
+      "type": "shell",
+      "command": "node",
+      "args": ["node_modules/typescript/bin/tsc", "-p", "."],
+      "problemMatcher": "$tsc",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
       "label": "npm: compile",
       "type": "shell",
       "command": "npm",
@@ -9,7 +20,7 @@
       "problemMatcher": "$tsc",
       "group": {
         "kind": "build",
-        "isDefault": true
+        "isDefault": false
       }
     },
     {
