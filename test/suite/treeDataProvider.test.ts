@@ -25,6 +25,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       extensionMode: vscode.ExtensionMode.Test,
       extension: {} as any,
       environmentVariableCollection: {} as any,
+      languageModelAccessInformation: {} as any,
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 

@@ -12,6 +12,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this._onDidChangeTreeData.event;
 
   private rootNode: TreeNode | null = null;
+  private nodeCache = new Map<string, TreeNode>();
 
   constructor(_context: vscode.ExtensionContext) {
     Logger.info('MetadataTreeDataProvider initialized');
@@ -21,8 +22,25 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Set root node and refresh tree
    */
   setRootNode(node: TreeNode): void {
+    if (!node) {
+      Logger.error('Cannot set null or undefined root node');
+      return;
+    }
     this.rootNode = node;
+    this.buildCache(node);
     this.refresh();
+  }
+
+  /**
+   * Build cache for fast node lookup
+   */
+  private buildCache(node: TreeNode): void {
+    this.nodeCache.set(node.id, node);
+    if (node.children) {
+      for (const child of node.children) {
+        this.buildCache(child);
+      }
+    }
   }
 
   /**
@@ -37,61 +55,72 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Get tree item for a node
    */
   getTreeItem(element: TreeNode): vscode.TreeItem {
-    // Determine collapsible state
-    const hasChildren = element.children && element.children.length > 0;
-    const collapsibleState = hasChildren
-      ? element.isExpanded
-        ? vscode.TreeItemCollapsibleState.Expanded
-        : vscode.TreeItemCollapsibleState.Collapsed
-      : vscode.TreeItemCollapsibleState.None;
+    try {
+      // Determine collapsible state
+      const hasChildren = element.children && element.children.length > 0;
+      const collapsibleState = hasChildren
+        ? element.isExpanded
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None;
 
-    const treeItem = new vscode.TreeItem(element.name, collapsibleState);
+      const treeItem = new vscode.TreeItem(element.name, collapsibleState);
 
-    // Set context value for context menu
-    treeItem.contextValue = element.type;
+      // Set context value for context menu
+      treeItem.contextValue = element.type;
 
-    // Set tooltip with additional information
-    const synonym = element.properties.synonym as string | undefined;
-    treeItem.tooltip = synonym
-      ? `${element.type}: ${element.name}\nСиноним: ${synonym}`
-      : `${element.type}: ${element.name}`;
+      // Set tooltip with additional information
+      const synonym = element.properties.synonym as string | undefined;
+      treeItem.tooltip = synonym
+        ? `${element.type}: ${element.name}\nСиноним: ${synonym}`
+        : `${element.type}: ${element.name}`;
 
-    // Set description (shown next to the label)
-    if (synonym) {
-      treeItem.description = synonym;
+      // Set description (shown next to the label)
+      if (synonym) {
+        treeItem.description = synonym;
+      }
+
+      // Set icon based on metadata type
+      treeItem.iconPath = this.getIconForType(element.type);
+
+      // Set command to open file on click (if file path exists)
+      if (element.filePath) {
+        treeItem.command = {
+          command: 'vscode.open',
+          title: 'Open File',
+          arguments: [vscode.Uri.file(element.filePath)],
+        };
+      }
+
+      // Set resource URI for file operations
+      if (element.filePath) {
+        treeItem.resourceUri = vscode.Uri.file(element.filePath);
+      }
+
+      return treeItem;
+    } catch (error) {
+      Logger.error('Error creating tree item', error);
+      // Return minimal tree item on error
+      return new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.None);
     }
-
-    // Set icon based on metadata type
-    treeItem.iconPath = this.getIconForType(element.type);
-
-    // Set command to open file on click (if file path exists)
-    if (element.filePath) {
-      treeItem.command = {
-        command: 'vscode.open',
-        title: 'Open File',
-        arguments: [vscode.Uri.file(element.filePath)],
-      };
-    }
-
-    // Set resource URI for file operations
-    if (element.filePath) {
-      treeItem.resourceUri = vscode.Uri.file(element.filePath);
-    }
-
-    return treeItem;
   }
 
   /**
    * Get children for a node (lazy loading)
    */
   getChildren(element?: TreeNode): Thenable<TreeNode[]> {
-    if (!element) {
-      // Return root node
-      return Promise.resolve(this.rootNode ? [this.rootNode] : []);
-    }
+    try {
+      if (!element) {
+        // Return root node
+        return Promise.resolve(this.rootNode ? [this.rootNode] : []);
+      }
 
-    // Return children (lazy loading - children are already parsed)
-    return Promise.resolve(element.children || []);
+      // Return children (lazy loading - children are already parsed)
+      return Promise.resolve(element.children || []);
+    } catch (error) {
+      Logger.error('Error getting children', error);
+      return Promise.resolve([]);
+    }
   }
 
   /**
@@ -167,28 +196,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
-   * Find node by ID
+   * Find node by ID (uses cache for performance)
    */
-  findNodeById(id: string, node?: TreeNode): TreeNode | null {
-    const searchNode = node || this.rootNode;
-    if (!searchNode) {
-      return null;
-    }
-
-    if (searchNode.id === id) {
-      return searchNode;
-    }
-
-    if (searchNode.children) {
-      for (const child of searchNode.children) {
-        const found = this.findNodeById(id, child);
-        if (found) {
-          return found;
-        }
-      }
-    }
-
-    return null;
+  findNodeById(id: string): TreeNode | null {
+    return this.nodeCache.get(id) || null;
   }
 
   /**

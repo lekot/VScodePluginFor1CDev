@@ -2,16 +2,18 @@ import * as vscode from 'vscode';
 import { Logger } from './utils/logger';
 import { MetadataTreeDataProvider } from './providers/treeDataProvider';
 import { MetadataParser } from './parsers/metadataParser';
+import { TreeNode } from './models/treeNode';
+import { MESSAGES } from './constants/messages';
 
 let treeDataProvider: MetadataTreeDataProvider | null = null;
-let treeView: vscode.TreeView<any> | null = null;
+let treeView: vscode.TreeView<TreeNode> | null = null;
 
 /**
  * Activate the extension
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   Logger.initialize();
-  Logger.info('1C Metadata Tree extension activated');
+  Logger.info(MESSAGES.EXTENSION_ACTIVATED);
 
   // Create tree data provider
   treeDataProvider = new MetadataTreeDataProvider(context);
@@ -28,7 +30,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const openPanelCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.openPanel',
     async () => {
-      Logger.info('Opening metadata tree panel');
+      Logger.info(MESSAGES.OPENING_PANEL);
       await loadMetadataTree();
     }
   );
@@ -36,7 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const refreshCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.refresh',
     async () => {
-      Logger.info('Refreshing metadata tree');
+      Logger.info(MESSAGES.REFRESHING);
       await loadMetadataTree();
     }
   );
@@ -57,59 +59,67 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
  */
 async function loadMetadataTree(): Promise<void> {
   if (!treeDataProvider) {
-    Logger.error('Tree data provider not initialized');
+    Logger.error(MESSAGES.ERROR_PROVIDER_NOT_INITIALIZED);
     return;
   }
 
   if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
-    vscode.window.showWarningMessage('Откройте папку с конфигурацией 1С');
+    vscode.window.showWarningMessage(MESSAGES.NO_WORKSPACE);
     return;
   }
 
   const workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
 
   try {
-    // Show progress
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: 'Загрузка метаданных 1С...',
+        title: MESSAGES.LOADING,
         cancellable: false,
       },
       async (progress) => {
         progress.report({ increment: 0 });
 
-        // Parse metadata
-        const rootNode = await MetadataParser.parseFromWorkspace(workspacePath);
-
+        const rootNode = await parseMetadata(workspacePath);
         if (!rootNode) {
-          vscode.window.showWarningMessage(
-            'Конфигурация 1С не найдена в рабочей области'
-          );
+          vscode.window.showWarningMessage(MESSAGES.NO_CONFIGURATION);
           return;
         }
 
         progress.report({ increment: 50 });
 
-        // Set root node
         treeDataProvider!.setRootNode(rootNode);
 
         progress.report({ increment: 100 });
 
-        vscode.window.showInformationMessage('Метаданные 1С успешно загружены');
-        Logger.info('Metadata tree loaded successfully');
+        vscode.window.showInformationMessage(MESSAGES.SUCCESS);
+        Logger.info(MESSAGES.TREE_LOADED);
       }
     );
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    Logger.error('Error loading metadata tree', error);
-    vscode.window.showErrorMessage(`Ошибка загрузки метаданных: ${errorMessage}`);
+    handleLoadError(error);
   }
+}
+
+/**
+ * Parse metadata from workspace
+ */
+async function parseMetadata(workspacePath: string): Promise<TreeNode | null> {
+  return await MetadataParser.parseFromWorkspace(workspacePath);
+}
+
+/**
+ * Handle metadata loading error
+ */
+function handleLoadError(error: unknown): void {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  Logger.error('Error loading metadata tree', error);
+  vscode.window.showErrorMessage(`${MESSAGES.ERROR_LOADING}: ${errorMessage}`);
 }
 
 /**
  * Deactivate the extension
  */
 export function deactivate(): void {
-  Logger.info('1C Metadata Tree extension deactivated');
+  Logger.info(MESSAGES.EXTENSION_DEACTIVATED);
 }
