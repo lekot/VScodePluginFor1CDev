@@ -157,7 +157,8 @@ export class DesignerParser {
     };
 
     // Try to read metadata XML file
-    const xmlPath = path.join(elementPath, `${elementName}.xml`);
+    // XML file is in the parent directory (e.g., CommonModules/Module.xml, not CommonModules/Module/Module.xml)
+    const xmlPath = path.join(path.dirname(elementPath), `${elementName}.xml`);
     let xmlContent: any = null;
     try {
       await fs.promises.access(xmlPath);
@@ -189,11 +190,33 @@ export class DesignerParser {
 
       for (const item of items) {
         if (item === 'Ext') {
-          // Parse extensions
-          const extPath = path.join(elementPath, item);
-          const extNode = await this.parseExtensions(extPath);
-          if (extNode.children && extNode.children.length > 0) {
-            elementNode.children?.push(extNode);
+          // Special handling for CommonModule - add .bsl files directly without Extensions container
+          if (typeName === 'CommonModules') {
+            const extPath = path.join(elementPath, item);
+            try {
+              const extItems = await fs.promises.readdir(extPath);
+              for (const extItem of extItems) {
+                if (extItem.endsWith('.bsl')) {
+                  const bslPath = path.join(extPath, extItem);
+                  elementNode.children?.push({
+                    id: `${typeName}.${elementName}.${extItem}`,
+                    name: extItem,
+                    type: MetadataType.Method,
+                    properties: {},
+                    filePath: bslPath,
+                  });
+                }
+              }
+            } catch (error) {
+              Logger.debug(`Error reading Ext directory for CommonModule ${elementPath}`, error);
+            }
+          } else {
+            // For other types, use Extensions container
+            const extPath = path.join(elementPath, item);
+            const extNode = await this.parseExtensions(extPath);
+            if (extNode.children && extNode.children.length > 0) {
+              elementNode.children?.push(extNode);
+            }
           }
         } else if (item === 'Forms') {
           // Parse forms
@@ -329,13 +352,28 @@ export class DesignerParser {
                 // XML doesn't exist, use default properties
               }
 
-              return {
+              const formNode: TreeNode = {
                 id: `Forms.${item}`,
                 name: item,
                 type: MetadataType.Form,
                 properties,
                 filePath: xmlPath,
+                children: [],
               };
+
+              // Parse form's Ext directory for modules
+              const extPath = path.join(itemPath, 'Ext');
+              try {
+                await fs.promises.access(extPath);
+                const extNode = await this.parseExtensions(extPath);
+                if (extNode.children && extNode.children.length > 0) {
+                  formNode.children?.push(extNode);
+                }
+              } catch {
+                // No Ext directory
+              }
+
+              return formNode;
             }
           } catch (error) {
             Logger.debug(`Error processing form ${itemPath}`, error);
