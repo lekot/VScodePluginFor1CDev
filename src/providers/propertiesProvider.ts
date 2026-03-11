@@ -681,8 +681,7 @@ export class PropertiesProvider {
 
     for (const [name, value] of Object.entries(properties)) {
       // Get expected type from original properties
-      const originalValue = this.currentNode.properties[name];
-      const expectedType = typeof originalValue;
+      const expectedType = this.getExpectedType(name);
 
       // Type validation
       const actualType = typeof value;
@@ -706,18 +705,12 @@ export class PropertiesProvider {
         continue;
       }
 
-      // Required field validation (common required properties in 1C metadata)
-      const requiredProperties = ['name', 'Name', 'Имя'];
-      if (requiredProperties.includes(name)) {
+      // Required field validation
+      if (this.isRequiredProperty(name)) {
         if (value === '' || value === null || value === undefined) {
           errors[name] = 'This field is required';
           continue;
         }
-      }
-
-      // String length validation
-      if (actualType === 'string' && (value as string).length > 1000) {
-        errors[name] = 'Value is too long (max 1000 characters)';
       }
     }
 
@@ -725,6 +718,26 @@ export class PropertiesProvider {
       valid: Object.keys(errors).length === 0,
       errors
     };
+  }
+
+  /**
+   * Get expected type for a property based on original value
+   */
+  private getExpectedType(propertyName: string): string {
+    if (!this.currentNode) {
+      return 'unknown';
+    }
+    const originalValue = this.currentNode.properties[propertyName];
+    return typeof originalValue;
+  }
+
+  /**
+   * Check if a property is required
+   */
+  private isRequiredProperty(propertyName: string): boolean {
+    // Common required properties in 1C metadata
+    const requiredProperties = ['name', 'Name', 'Имя'];
+    return requiredProperties.includes(propertyName);
   }
 
   /**
