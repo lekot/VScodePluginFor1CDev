@@ -7,3 +7,4 @@ out/
 .vscode-test/
 .env
 .env.local
+structure_samples/

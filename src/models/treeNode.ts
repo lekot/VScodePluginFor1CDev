@@ -59,7 +59,7 @@ export enum MetadataType {
   TabularSection = 'TabularSection',
   Form = 'Form',
   Template = 'Template',
-  Command_SubElement = 'Command',
+  CommandSubElement = 'CommandSubElement',
   Recurrence = 'Recurrence',
   Method = 'Method',
   Parameter = 'Parameter',

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<Document uuid="d0f24999-7c1d-4190-b654-f02a9bedcd09">
+		<Properties>
+			<Name>TestDocument1</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Test Document 1</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+			<NumberType>String</NumberType>
+			<NumberLength>9</NumberLength>
+		</Properties>
+		<ChildObjects/>
+	</Document>
+</MetaDataObject>
