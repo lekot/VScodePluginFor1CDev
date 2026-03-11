@@ -4,6 +4,10 @@
   "description": "VS Code extension for visualizing 1C configuration metadata tree",
   "version": "0.1.0",
   "publisher": "1c-dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1c-dev/1c-metadata-tree-vscode"
+  },
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -11,9 +15,7 @@
     "Other"
   ],
   "activationEvents": [
-    "workspaceContains:**/1cv8.cf",
-    "workspaceContains:**/1cv8.cfe",
-    "onCommand:1c-metadata-tree.openPanel"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
