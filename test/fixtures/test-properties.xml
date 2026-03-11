@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Catalog uuid="test-uuid-123">
+		<Properties>
+			<Name>TestCatalog</Name>
+			<Synonym>Test Catalog Synonym</Synonym>
+			<Comment>Test comment</Comment>
+			<UseStandardCommands>true</UseStandardCommands>
+			<InputByString>true</InputByString>
+			<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
+			<StandardAttributes>
+				<Attribute>
+					<Name>Code</Name>
+					<Type>String</Type>
+					<Length>10</Length>
+				</Attribute>
+			</StandardAttributes>
+		</Properties>
+	</Catalog>
+</MetaDataObject>

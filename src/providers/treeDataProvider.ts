@@ -83,14 +83,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Set icon based on metadata type
       treeItem.iconPath = this.getIconForType(element.type);
 
-      // Set command to open file on click (if file path exists)
-      if (element.filePath) {
-        treeItem.command = {
-          command: 'vscode.open',
-          title: 'Open File',
-          arguments: [vscode.Uri.file(element.filePath)],
-        };
-      }
+      // Remove default file open command - selection will trigger properties panel instead
+      // Context menu will provide "Open XML" option for direct file access
 
       // Set resource URI for file operations
       if (element.filePath) {

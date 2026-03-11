@@ -15,9 +15,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:1c-metadata-tree.openPanel",
-    "onCommand:1c-metadata-tree.refresh",
-    "onView:1c-metadata-tree"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -32,8 +30,27 @@
         "title": "Refresh",
         "category": "1C Metadata",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "1c-metadata-tree.showProperties",
+        "title": "Show Properties",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.openXML",
+        "title": "Open XML File",
+        "category": "1C Metadata"
       }
     ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "1c-metadata-tree.openXML",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        }
+      ]
+    },
     "views": {
       "explorer": [
         {
@@ -46,8 +63,8 @@
     "keybindings": [
       {
         "command": "1c-metadata-tree.openPanel",
-        "key": "ctrl+shift+m",
-        "mac": "cmd+shift+m"
+        "key": "ctrl+alt+1",
+        "mac": "cmd+alt+1"
       }
     ]
   },

@@ -1,12 +1,14 @@
 import * as vscode from 'vscode';
 import { Logger } from './utils/logger';
 import { MetadataTreeDataProvider } from './providers/treeDataProvider';
+import { PropertiesProvider } from './providers/propertiesProvider';
 import { MetadataParser } from './parsers/metadataParser';
 import { TreeNode } from './models/treeNode';
 import { MESSAGES } from './constants/messages';
 
 let treeDataProvider: MetadataTreeDataProvider | null = null;
 let treeView: vscode.TreeView<TreeNode> | null = null;
+let propertiesProvider: PropertiesProvider | null = null;
 
 /**
  * Activate the extension
@@ -26,6 +28,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(treeView);
 
+  // Create properties provider
+  propertiesProvider = new PropertiesProvider(context, treeDataProvider);
+  context.subscriptions.push(propertiesProvider);
+
   // Register commands
   const openPanelCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.openPanel',
@@ -43,7 +49,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
-  context.subscriptions.push(openPanelCommand, refreshCommand);
+  // Register properties command
+  const showPropertiesCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.showProperties',
+    async (node: TreeNode) => {
+      if (propertiesProvider && node) {
+        Logger.info(`Showing properties for: ${node.name}`);
+        await propertiesProvider.showProperties(node);
+      }
+    }
+  );
+
+  // Register open XML command for context menu
+  const openXMLCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openXML',
+    async (node: TreeNode) => {
+      if (node && node.filePath) {
+        Logger.info(`Opening XML file: ${node.filePath}`);
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(node.filePath));
+      } else {
+        vscode.window.showWarningMessage('No XML file associated with this element');
+      }
+    }
+  );
+
+  context.subscriptions.push(openPanelCommand, refreshCommand, showPropertiesCommand, openXMLCommand);
+
+  // Handle tree view selection to show properties
+  treeView.onDidChangeSelection(async (e) => {
+    if (e.selection.length > 0 && propertiesProvider) {
+      const selectedNode = e.selection[0];
+      Logger.debug(`Tree selection changed: ${selectedNode.name}`);
+      await vscode.commands.executeCommand('1c-metadata-tree.showProperties', selectedNode);
+    }
+  });
 
   // Set context for conditional activation
   vscode.commands.executeCommand('setContext', '1c-metadata-tree:enabled', true);
