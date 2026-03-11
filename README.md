@@ -4,12 +4,19 @@ VS Code extension for visualizing and editing 1C configuration metadata tree.
 
 ## Status
 
-**Phase 1: Infrastructure** ✅ COMPLETED
-- Project structure created
-- Dependencies installed (140 packages)
-- TypeScript compiled successfully
-- Build artifacts in `/build` and `/dist`
-- Ready for Phase 2: Parser Implementation
+**Phase 1: Infrastructure** ✅ COMPLETED  
+**Phase 2: Parsers** ✅ COMPLETED (11 марта 2026)
+
+- ✅ XML парсер (fast-xml-parser)
+- ✅ Designer format parser
+- ✅ EDT format parser
+- ✅ Format auto-detection
+- ✅ Error handling system
+- ✅ Async/await refactoring (performance optimization)
+- ✅ MetadataTypeMapper (code deduplication)
+- ✅ Unit tests for all parsers
+
+**Next**: Phase 3 - UI Components (Tree View)
 
 ## Features
 
@@ -21,8 +28,9 @@ VS Code extension for visualizing and editing 1C configuration metadata tree.
 
 ## Supported Formats
 
-- Designer format (structured XML) - **Priority**
-- EDT format (coming soon)
+- ✅ Designer format (structured XML)
+- ✅ EDT format (structured XML with .mdo files)
+- ✅ Automatic format detection
 
 ## Installation
 

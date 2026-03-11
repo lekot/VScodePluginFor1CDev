@@ -17,31 +17,31 @@ suite('FormatDetector', () => {
     assert.strictEqual(format, ConfigFormat.Unknown);
   });
 
-  test('should validate configuration path', () => {
+  test('should validate configuration path', async () => {
     const configPath = path.join(__dirname, '../fixtures/designer-config');
-    const isValid = FormatDetector.isValidConfigurationPath(configPath);
+    const isValid = await FormatDetector.isValidConfigurationPath(configPath);
 
     assert.strictEqual(isValid, true);
   });
 
-  test('should return false for invalid configuration path', () => {
+  test('should return false for invalid configuration path', async () => {
     const configPath = path.join(__dirname, '../fixtures/non-existent');
-    const isValid = FormatDetector.isValidConfigurationPath(configPath);
+    const isValid = await FormatDetector.isValidConfigurationPath(configPath);
 
     assert.strictEqual(isValid, false);
   });
 
-  test('should find configuration root in workspace', () => {
+  test('should find configuration root in workspace', async () => {
     const workspacePath = path.join(__dirname, '../fixtures');
-    const configRoot = FormatDetector.findConfigurationRoot(workspacePath);
+    const configRoot = await FormatDetector.findConfigurationRoot(workspacePath);
 
     assert.ok(configRoot);
     assert.ok(configRoot?.includes('designer-config'));
   });
 
-  test('should return null if configuration not found', () => {
+  test('should return null if configuration not found', async () => {
     const workspacePath = path.join(__dirname, '../fixtures/non-existent');
-    const configRoot = FormatDetector.findConfigurationRoot(workspacePath);
+    const configRoot = await FormatDetector.findConfigurationRoot(workspacePath);
 
     assert.strictEqual(configRoot, null);
   });

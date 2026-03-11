@@ -32,9 +32,9 @@ suite('MetadataParser', () => {
     assert.strictEqual(format, ConfigFormat.Designer);
   });
 
-  test('should find configuration root in workspace', () => {
+  test('should find configuration root in workspace', async () => {
     const workspacePath = path.join(__dirname, '../fixtures');
-    const configRoot = MetadataParser.findConfigurationRoot(workspacePath);
+    const configRoot = await MetadataParser.findConfigurationRoot(workspacePath);
 
     assert.ok(configRoot);
     assert.ok(configRoot?.includes('designer-config'));
