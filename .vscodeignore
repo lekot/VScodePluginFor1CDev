@@ -6,7 +6,6 @@ out/test/**
 .kiro/**
 structure_samples/**
 build/**
-node_modules/**
 .gitignore
 .prettierrc.json
 .eslintrc.json
@@ -18,3 +17,5 @@ mcp-*.json
 mcp-*.md
 **/*.map
 **/*.ts
+!node_modules/fast-xml-parser/**
+node_modules/**
