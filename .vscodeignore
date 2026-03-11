@@ -17,5 +17,3 @@ mcp-*.json
 mcp-*.md
 **/*.map
 **/*.ts
-!node_modules/fast-xml-parser/**
-node_modules/**
