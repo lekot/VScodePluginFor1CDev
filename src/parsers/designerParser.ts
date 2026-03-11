@@ -33,10 +33,10 @@ export class DesignerParser {
 
   /**
    * Detect if path contains Designer format configuration
-   * @param configPath Path to check
+   * @param _configPath Path to check
    * @returns true if Designer format detected
    */
-  static async isDesignerFormat(configPath: string): Promise<boolean> {
+  static async isDesignerFormat(_configPath: string): Promise<boolean> {
     // TODO: Implement detection logic
     // Designer format typically has specific directory structure
     return false;
