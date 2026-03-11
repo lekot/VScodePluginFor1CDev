@@ -55,6 +55,20 @@ export class PropertiesProvider {
   public async showProperties(node: TreeNode): Promise<void> {
     this.currentNode = node;
 
+    // Check if this is a .bsl module file - open it as text instead of properties
+    if (node.filePath && node.filePath.endsWith('.bsl')) {
+      try {
+        const uri = vscode.Uri.file(node.filePath);
+        await vscode.window.showTextDocument(uri);
+        Logger.info(`Opened .bsl module file: ${node.filePath}`);
+        return;
+      } catch (error) {
+        Logger.error(`Failed to open .bsl file: ${node.filePath}`, error);
+        vscode.window.showErrorMessage(`Failed to open module file: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+
     // Create panel if it doesn't exist (singleton pattern)
     if (!this.panel) {
       this.panel = this.createPanel();
@@ -64,6 +78,32 @@ export class PropertiesProvider {
     }
 
     // Update content with new node
+    // Use parentFilePath for nested elements (Attributes), filePath for regular elements
+    const sourceFilePath = node.parentFilePath || node.filePath;
+    
+    if (sourceFilePath) {
+      try {
+        const { XMLWriter } = await import('../utils/XMLWriter');
+        const xmlProperties = await XMLWriter.readProperties(sourceFilePath);
+        
+        // Update node properties with fresh data from XML
+        node.properties = { ...xmlProperties };
+        
+        Logger.debug(`Successfully loaded properties from ${sourceFilePath}`);
+      } catch (error) {
+        // Log detailed error
+        Logger.error(`Failed to read properties from ${sourceFilePath}`, error);
+        
+        // Display error in properties panel
+        this.showErrorInPanel(
+          node,
+          `Failed to read properties from file`,
+          error instanceof Error ? error.message : String(error)
+        );
+        return;
+      }
+    }
+
     this.updateWebviewContent();
   }
 
@@ -118,6 +158,95 @@ export class PropertiesProvider {
   }
 
   /**
+   * Show error message in properties panel
+   */
+  private showErrorInPanel(node: TreeNode, title: string, details: string): void {
+    if (!this.panel) {
+      return;
+    }
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="Content-Security-Policy" 
+              content="default-src 'none'; 
+                       style-src 'unsafe-inline';">
+        <title>Properties - Error</title>
+        <style>
+          body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            padding: 16px;
+          }
+          .header {
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+          }
+          .header h2 {
+            margin: 0 0 8px 0;
+            color: var(--vscode-foreground);
+          }
+          .header p {
+            margin: 0;
+            color: var(--vscode-descriptionForeground);
+          }
+          .error-box {
+            background: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+            padding: 16px;
+            margin: 16px 0;
+            border-radius: 3px;
+          }
+          .error-box h3 {
+            margin: 0 0 12px 0;
+            color: var(--vscode-inputValidation-errorForeground);
+          }
+          .error-box p {
+            margin: 0;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 0.9em;
+            word-break: break-word;
+          }
+          .file-path {
+            background: var(--vscode-textCodeBlock-background);
+            padding: 8px;
+            margin-top: 12px;
+            border-radius: 3px;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 0.9em;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h2>${this.escapeHtml(node.name)}</h2>
+          <p>${this.escapeHtml(node.type)}</p>
+        </div>
+        <div class="error-box">
+          <h3>${this.escapeHtml(title)}</h3>
+          <p>${this.escapeHtml(details)}</p>
+          ${node.filePath ? `
+            <div class="file-path">
+              <strong>File:</strong> ${this.escapeHtml(node.filePath)}
+            </div>
+          ` : ''}
+        </div>
+      </body>
+      </html>
+    `;
+
+    this.panel.webview.html = html;
+    Logger.debug(`Error displayed in properties panel for node: ${node.name}`);
+  }
+
+  /**
    * Generate HTML content for webview
    */
   private getWebviewContent(node: TreeNode): string {
@@ -128,6 +257,8 @@ export class PropertiesProvider {
 
     const properties = node.properties || {};
     const hasProperties = Object.keys(properties).length > 0;
+    
+    // Switch to read-only mode when file path is missing
     const readOnly = !node.filePath;
 
     return `
@@ -161,6 +292,14 @@ export class PropertiesProvider {
           .header p {
             margin: 0;
             color: var(--vscode-descriptionForeground);
+          }
+          .read-only-notice {
+            background: var(--vscode-inputValidation-warningBackground);
+            color: var(--vscode-inputValidation-warningForeground);
+            border: 1px solid var(--vscode-inputValidation-warningBorder);
+            padding: 8px 12px;
+            margin-bottom: 16px;
+            border-radius: 3px;
           }
           .property-row {
             display: flex;
@@ -240,6 +379,11 @@ export class PropertiesProvider {
           <h2>${this.escapeHtml(node.name)}</h2>
           <p>${this.escapeHtml(node.type)}</p>
         </div>
+        ${readOnly ? `
+          <div class="read-only-notice">
+            <strong>Read-Only Mode:</strong> This element has no associated file path. Properties cannot be saved.
+          </div>
+        ` : ''}
         ${hasProperties ? `
           <div id="properties">
             ${this.renderProperties(properties, readOnly)}
@@ -320,12 +464,18 @@ export class PropertiesProvider {
   /**
    * Render a single property input field
    */
-  private renderPropertyInput(name: string, value: any, readOnly: boolean): string {
+  private renderPropertyInput(name: string, value: any, globalReadOnly: boolean): string {
     const propertyType = this.detectPropertyType(value);
     const inputType = propertyType === 'boolean' ? 'checkbox' : propertyType === 'number' ? 'number' : 'text';
     const checked = propertyType === 'boolean' && value ? 'checked' : '';
     const inputValue = propertyType === 'boolean' ? '' : this.escapeHtml(String(value ?? ''));
-    const disabled = readOnly ? 'disabled' : '';
+    
+    // Determine if this specific property should be read-only
+    const isTypeProperty = name === 'type';
+    const isRootElement = this.isRootElement(this.currentNode);
+    const propertyReadOnly = globalReadOnly || (isRootElement && isTypeProperty);
+    
+    const disabled = propertyReadOnly ? 'disabled' : '';
 
     return `
       <div class="property-row">
@@ -340,6 +490,42 @@ export class PropertiesProvider {
         />
       </div>
     `;
+  }
+
+  /**
+   * Check if node is a root metadata element (Catalog, Document, etc.)
+   */
+  private isRootElement(node: TreeNode | undefined): boolean {
+    if (!node) {
+      return false;
+    }
+    
+    // Root elements are direct children of Configuration or have no parent
+    // or their parent type is 'Configuration'
+    if (!node.parent) {
+      return true;
+    }
+    
+    // Check if parent is Configuration
+    if (node.parent.type === 'Configuration') {
+      return true;
+    }
+    
+    // Root metadata types
+    const rootTypes = [
+      'Catalog', 'Document', 'Register', 'InformationRegister', 
+      'AccumulationRegister', 'ChartOfCharacteristicTypes', 
+      'ChartOfAccounts', 'ChartOfCalculationTypes', 'BusinessProcess',
+      'Task', 'ExchangePlan', 'Enum', 'Report', 'DataProcessor',
+      'CommonModule', 'Role', 'CommonAttribute', 'CommonCommand',
+      'CommandGroup', 'FunctionalOption', 'FunctionalOptionsParameter',
+      'DefinedType', 'SettingsStorage', 'CommonForm', 'CommonTemplate',
+      'CommonPicture', 'XDTOPackage', 'WebService', 'HTTPService',
+      'WSReference', 'Style', 'Language', 'Subsystem', 'StyleItem',
+      'Interface', 'SessionParameter'
+    ];
+    
+    return rootTypes.includes(node.type);
   }
 
   /**
@@ -653,18 +839,51 @@ export class PropertiesProvider {
     node: TreeNode,
     properties: Record<string, unknown>
   ): Promise<void> {
-    if (!node.filePath) {
+    // Use parentFilePath for nested elements (Attributes), filePath for regular elements
+    const targetFilePath = node.parentFilePath || node.filePath;
+    
+    if (!targetFilePath) {
       throw new Error('Cannot save properties: no file path associated with this element');
     }
 
-    // For now, we'll update the in-memory properties
-    // XML file writing will be implemented in a later task
-    node.properties = { ...properties };
-    
-    // Refresh tree view to reflect changes
-    this.treeDataProvider.refresh();
-    
-    Logger.info(`Properties updated in memory for: ${node.filePath}`);
+    try {
+      // Import XMLWriter dynamically to avoid circular dependencies
+      const { XMLWriter } = await import('../utils/XMLWriter');
+      
+      // Write properties to XML file with error handling
+      try {
+        await XMLWriter.writeProperties(targetFilePath, properties);
+      } catch (writeError) {
+        // Log detailed error to extension output channel
+        Logger.error(`Failed to write properties to ${targetFilePath}`, writeError);
+        
+        // Show VS Code error notification with file path and reason
+        const errorMessage = writeError instanceof Error ? writeError.message : String(writeError);
+        vscode.window.showErrorMessage(
+          `Failed to save properties: ${errorMessage}`,
+          'Show Output'
+        ).then(selection => {
+          if (selection === 'Show Output') {
+            Logger.show();
+          }
+        });
+        
+        // Re-throw to be handled by caller (which will retain edited values in webview)
+        throw new Error(`Failed to write properties to file: ${targetFilePath}. ${errorMessage}`);
+      }
+      
+      // Update TreeNode.properties with new values after successful save
+      node.properties = { ...properties };
+      
+      // Refresh tree view to reflect changes
+      this.treeDataProvider.refresh();
+      
+      Logger.info(`Properties saved successfully to: ${targetFilePath}`);
+    } catch (error) {
+      // Log detailed error to extension output channel
+      Logger.error(`Failed to save properties to ${targetFilePath}`, error);
+      throw error; // Re-throw to be handled by caller
+    }
   }
 
   /**

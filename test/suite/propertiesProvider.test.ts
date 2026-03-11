@@ -191,3 +191,134 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     assert.strictEqual(escapeHtml("It's a test"), 'It&#039;s a test');
   });
 });
+
+suite('PropertiesProvider Save Operation Test Suite', () => {
+  let provider: PropertiesProvider;
+  let treeDataProvider: MetadataTreeDataProvider;
+  let mockContext: vscode.ExtensionContext;
+
+  setup(() => {
+    // Create mock context
+    mockContext = {
+      subscriptions: [],
+      extensionPath: '',
+      extensionUri: vscode.Uri.file(''),
+      globalState: {} as any,
+      workspaceState: {} as any,
+      secrets: {} as any,
+      storageUri: undefined,
+      storagePath: undefined,
+      globalStorageUri: vscode.Uri.file(''),
+      globalStoragePath: '',
+      logUri: vscode.Uri.file(''),
+      logPath: '',
+      extensionMode: vscode.ExtensionMode.Test,
+      extension: {} as any,
+      environmentVariableCollection: {} as any,
+      languageModelAccessInformation: {} as any,
+      asAbsolutePath: (relativePath: string) => relativePath,
+    };
+
+    treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    provider = new PropertiesProvider(mockContext, treeDataProvider);
+  });
+
+  teardown(() => {
+    provider.dispose();
+  });
+
+  test('Save operation should throw error when node has no file path', async () => {
+    const node: TreeNode = {
+      id: 'test',
+      name: 'TestCatalog',
+      type: MetadataType.Catalog,
+      properties: {
+        name: 'TestCatalog',
+      },
+      // No filePath
+    };
+
+    const saveProperties = (provider as any).saveProperties.bind(provider);
+
+    await assert.rejects(
+      async () => {
+        await saveProperties(node, { name: 'UpdatedCatalog' });
+      },
+      {
+        message: /Cannot save properties: no file path associated with this element/,
+      }
+    );
+  });
+
+  test('Save operation should update node properties after successful save', async () => {
+    const path = require('path');
+    const fs = require('fs');
+    
+    // Use a test fixture file
+    const fixturesPath = path.join(__dirname, '../../../test/fixtures');
+    const testXmlPath = path.join(fixturesPath, 'test-properties.xml');
+    const tempXmlPath = path.join(fixturesPath, 'temp-save-test.xml');
+
+    // Copy test file to temp location
+    fs.copyFileSync(testXmlPath, tempXmlPath);
+
+    try {
+      const node: TreeNode = {
+        id: 'test',
+        name: 'TestCatalog',
+        type: MetadataType.Catalog,
+        properties: {
+          Name: 'TestCatalog',
+          Synonym: 'Test Catalog Synonym',
+        },
+        filePath: tempXmlPath,
+      };
+
+      const newProperties = {
+        Name: 'UpdatedCatalog',
+        Synonym: 'Updated Synonym',
+      };
+
+      const saveProperties = (provider as any).saveProperties.bind(provider);
+      await saveProperties(node, newProperties);
+
+      // Verify node properties were updated
+      assert.strictEqual(node.properties.Name, 'UpdatedCatalog');
+      assert.strictEqual(node.properties.Synonym, 'Updated Synonym');
+
+      // Verify file was actually written
+      const { XMLWriter } = await import('../../src/utils/XMLWriter');
+      const savedProperties = await XMLWriter.readProperties(tempXmlPath);
+      assert.strictEqual(savedProperties.Name, 'UpdatedCatalog');
+      assert.strictEqual(savedProperties.Synonym, 'Updated Synonym');
+    } finally {
+      // Clean up temp file
+      if (fs.existsSync(tempXmlPath)) {
+        fs.unlinkSync(tempXmlPath);
+      }
+    }
+  });
+
+  test('Save operation should handle file write errors gracefully', async () => {
+    const node: TreeNode = {
+      id: 'test',
+      name: 'TestCatalog',
+      type: MetadataType.Catalog,
+      properties: {
+        Name: 'TestCatalog',
+      },
+      filePath: '/non/existent/path/file.xml',
+    };
+
+    const saveProperties = (provider as any).saveProperties.bind(provider);
+
+    await assert.rejects(
+      async () => {
+        await saveProperties(node, { Name: 'UpdatedCatalog' });
+      },
+      {
+        message: /Failed to write properties/,
+      }
+    );
+  });
+});

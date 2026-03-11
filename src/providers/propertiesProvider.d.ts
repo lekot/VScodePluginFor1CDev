@@ -73,6 +73,14 @@ export declare class PropertiesProvider {
      */
     private validateProperties;
     /**
+     * Get expected type for a property based on original value
+     */
+    private getExpectedType;
+    /**
+     * Check if a property is required
+     */
+    private isRequiredProperty;
+    /**
      * Send message to webview
      */
     private postMessage;

@@ -9,6 +9,7 @@ export interface TreeNode {
   children?: TreeNode[];
   properties: Record<string, unknown>;
   filePath?: string;
+  parentFilePath?: string; // Path to parent XML file for nested elements (Attributes, etc.)
   isExpanded?: boolean;
 }
 
