@@ -37,12 +37,10 @@ export class XMLWriter {
    */
   static async readProperties(filePath: string): Promise<Record<string, unknown>> {
     try {
-      // Check if file exists
       if (!fs.existsSync(filePath)) {
         throw new Error(`File not found: ${filePath}`);
       }
 
-      // Read file content
       let xmlContent: string;
       try {
         xmlContent = await fs.promises.readFile(filePath, 'utf-8');
@@ -52,12 +50,10 @@ export class XMLWriter {
         );
       }
 
-      // Parse XML with error handling
       let parsed: any;
       try {
         parsed = this.parser.parse(xmlContent);
       } catch (parseError) {
-        // Handle XML parse errors with user-friendly messages
         const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
         Logger.error(`XML parsing failed for ${filePath}`, parseError);
         throw new Error(
@@ -65,18 +61,14 @@ export class XMLWriter {
         );
       }
 
-      // Extract properties from parsed XML
       const properties = this.extractProperties(parsed);
-
       Logger.info(`Successfully read properties from ${filePath}`);
       return properties;
     } catch (error) {
-      // Log detailed error to extension output channel
       Logger.error(`Error reading properties from ${filePath}`, error);
       
-      // Re-throw with context
       if (error instanceof Error && error.message.includes('Invalid XML structure')) {
-        throw error; // Already has user-friendly message
+        throw error;
       }
       
       throw new Error(
@@ -99,7 +91,6 @@ export class XMLWriter {
     properties: Record<string, unknown>
   ): Promise<void> {
     try {
-      // Read existing XML content
       let xmlContent: string;
       try {
         xmlContent = await fs.promises.readFile(filePath, 'utf-8');
@@ -110,12 +101,10 @@ export class XMLWriter {
         );
       }
 
-      // Parse existing XML with error handling
       let parsed: any;
       try {
         parsed = this.parser.parse(xmlContent);
       } catch (parseError) {
-        // Handle XML parse errors with user-friendly messages
         const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
         Logger.error(`XML parsing failed for ${filePath}`, parseError);
         throw new Error(
@@ -123,10 +112,8 @@ export class XMLWriter {
         );
       }
 
-      // Update properties in parsed structure
       const updated = this.updatePropertiesInStructure(parsed, properties);
 
-      // Build XML string with preserved formatting
       let xmlString: string;
       try {
         xmlString = this.builder.build(updated);
@@ -137,7 +124,6 @@ export class XMLWriter {
         );
       }
 
-      // Write back to file with error handling
       try {
         await fs.promises.writeFile(filePath, xmlString, 'utf-8');
       } catch (writeError) {
@@ -151,14 +137,12 @@ export class XMLWriter {
 
       Logger.info(`Successfully wrote properties to ${filePath}`);
     } catch (error) {
-      // Log detailed error to extension output channel
       Logger.error(`Error writing properties to ${filePath}`, error);
       
-      // Re-throw with context (preserve user-friendly messages)
       if (error instanceof Error && 
           (error.message.includes('Invalid XML structure') || 
            error.message.includes('Unable to'))) {
-        throw error; // Already has user-friendly message
+        throw error;
       }
       
       throw new Error(
@@ -183,15 +167,9 @@ export class XMLWriter {
     value: unknown
   ): Promise<void> {
     try {
-      // Read existing properties
       const properties = await this.readProperties(filePath);
-
-      // Update specific property
       properties[propertyName] = value;
-
-      // Write back all properties
       await this.writeProperties(filePath, properties);
-
       Logger.info(`Successfully updated property '${propertyName}' in ${filePath}`);
     } catch (error) {
       Logger.error(`Error updating property '${propertyName}' in ${filePath}`, error);
@@ -204,11 +182,83 @@ export class XMLWriter {
   }
 
   /**
-   * Extract properties from parsed XML structure
-   * Handles preserveOrder mode where structure is array-based
-   * @param parsed Parsed XML object (array format from preserveOrder: true)
-   * @returns Flat properties object
+   * Write properties for a nested element (Attribute, TabularSection, etc.)
+   * Updates only the specific nested element, not the entire file
+   * @param filePath Path to XML file
+   * @param elementType Type of nested element (e.g., 'Attribute', 'TabularSection')
+   * @param elementName Name of the nested element to update
+   * @param properties Properties object to write
+   * @throws Error if file cannot be written
    */
+  static async writeNestedElementProperties(
+    filePath: string,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>
+  ): Promise<void> {
+    try {
+      let xmlContent: string;
+      try {
+        xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+      } catch (readError) {
+        Logger.error(`Failed to read file for writing: ${filePath}`, readError);
+        throw new Error(
+          `Unable to read file for updating. ${readError instanceof Error ? readError.message : String(readError)}`
+        );
+      }
+
+      let parsed: any;
+      try {
+        parsed = this.parser.parse(xmlContent);
+      } catch (parseError) {
+        const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+        Logger.error(`XML parsing failed for ${filePath}`, parseError);
+        throw new Error(
+          `Invalid XML structure in file. Cannot update properties in a corrupted XML file. ${errorMsg}`
+        );
+      }
+
+      const updated = this.updateNestedElementInStructure(parsed, elementType, elementName, properties);
+
+      let xmlString: string;
+      try {
+        xmlString = this.builder.build(updated);
+      } catch (buildError) {
+        Logger.error(`Failed to build XML for ${filePath}`, buildError);
+        throw new Error(
+          `Failed to generate XML content. ${buildError instanceof Error ? buildError.message : String(buildError)}`
+        );
+      }
+
+      try {
+        await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+      } catch (writeError) {
+        Logger.error(`Failed to write file: ${filePath}`, writeError);
+        throw new Error(
+          `Unable to write to file. Check file permissions and disk space. ${
+            writeError instanceof Error ? writeError.message : String(writeError)
+          }`
+        );
+      }
+
+      Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
+    } catch (error) {
+      Logger.error(`Error writing nested element properties to ${filePath}`, error);
+      
+      if (error instanceof Error && 
+          (error.message.includes('Invalid XML structure') || 
+           error.message.includes('Unable to'))) {
+        throw error;
+      }
+      
+      throw new Error(
+        `Failed to write nested element properties to XML file: ${filePath}. ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
   private static extractProperties(parsed: unknown): Record<string, unknown> {
     const properties: Record<string, unknown> = {};
 
@@ -216,23 +266,18 @@ export class XMLWriter {
       return properties;
     }
 
-    // Handle array of nodes (preserveOrder mode)
     if (Array.isArray(parsed)) {
       for (const item of parsed) {
         if (item && typeof item === 'object') {
-          // Each item is { tagName: [children], ":@": attributes }
           for (const [key, value] of Object.entries(item)) {
-            // Skip attributes and special nodes
             if (key === ':@' || key.startsWith('?')) {
               continue;
             }
 
-            // Check if this is a Properties node
             if (key === 'Properties' && Array.isArray(value)) {
               return this.flattenPropertiesArray(value);
             }
 
-            // Recursively search in children
             if (Array.isArray(value)) {
               const nested = this.extractProperties(value);
               if (Object.keys(nested).length > 0) {
@@ -245,7 +290,6 @@ export class XMLWriter {
       return properties;
     }
 
-    // Fallback for non-array structure (shouldn't happen with preserveOrder: true)
     const obj = parsed as Record<string, unknown>;
     if (obj.Properties && typeof obj.Properties === 'object') {
       return this.flattenProperties(obj.Properties as Record<string, unknown>);
@@ -254,11 +298,6 @@ export class XMLWriter {
     return properties;
   }
 
-  /**
-   * Flatten properties array from preserveOrder mode
-   * @param propertiesArray Array of property nodes
-   * @returns Flattened properties object
-   */
   private static flattenPropertiesArray(propertiesArray: unknown[]): Record<string, unknown> {
     const flattened: Record<string, unknown> = {};
 
@@ -267,20 +306,16 @@ export class XMLWriter {
         continue;
       }
 
-      // Each item is { propertyName: [{ "#text": value }] }
       for (const [key, value] of Object.entries(item)) {
-        // Skip attributes
         if (key === ':@') {
           continue;
         }
 
-        // Extract value from array structure
         if (Array.isArray(value) && value.length > 0) {
           const firstChild = value[0];
           if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
             flattened[key] = (firstChild as any)['#text'];
           } else {
-            // Complex nested structure - keep as is for now
             flattened[key] = value;
           }
         } else {
@@ -292,21 +327,14 @@ export class XMLWriter {
     return flattened;
   }
 
-  /**
-   * Flatten properties object to simple key-value pairs
-   * @param properties Properties object
-   * @returns Flattened properties
-   */
   private static flattenProperties(properties: Record<string, unknown>): Record<string, unknown> {
     const flattened: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(properties)) {
-      // Skip XML attributes and special nodes
       if (key.startsWith('@_') || key.startsWith('#')) {
         continue;
       }
 
-      // Extract text content if it's a simple node
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         const obj = value as Record<string, unknown>;
         if ('#text' in obj) {
@@ -322,13 +350,6 @@ export class XMLWriter {
     return flattened;
   }
 
-  /**
-   * Update properties in parsed XML structure
-   * Handles preserveOrder mode where structure is array-based
-   * @param parsed Parsed XML object
-   * @param properties Properties to update
-   * @returns Updated XML structure
-   */
   private static updatePropertiesInStructure(
     parsed: unknown,
     properties: Record<string, unknown>
@@ -337,7 +358,6 @@ export class XMLWriter {
       return parsed;
     }
 
-    // Handle array of nodes (preserveOrder mode)
     if (Array.isArray(parsed)) {
       return parsed.map((item) => {
         if (!item || typeof item !== 'object') {
@@ -347,17 +367,14 @@ export class XMLWriter {
         const result: Record<string, unknown> = {};
         
         for (const [key, value] of Object.entries(item)) {
-          // Preserve attributes
           if (key === ':@') {
             result[key] = value;
             continue;
           }
 
-          // Check if this is a Properties node
           if (key === 'Properties' && Array.isArray(value)) {
             result[key] = this.updatePropertiesArray(value, properties);
           } else if (Array.isArray(value)) {
-            // Recursively update children
             result[key] = this.updatePropertiesInStructure(value, properties);
           } else {
             result[key] = value;
@@ -371,12 +388,6 @@ export class XMLWriter {
     return parsed;
   }
 
-  /**
-   * Update properties array from preserveOrder mode
-   * @param propertiesArray Array of property nodes
-   * @param properties Properties to update
-   * @returns Updated properties array
-   */
   private static updatePropertiesArray(
     propertiesArray: unknown[],
     properties: Record<string, unknown>
@@ -389,22 +400,17 @@ export class XMLWriter {
       const result: Record<string, unknown> = {};
 
       for (const [key, value] of Object.entries(item)) {
-        // Preserve attributes
         if (key === ':@') {
           result[key] = value;
           continue;
         }
 
-        // Check if this property should be updated
         if (key in properties) {
-          // Update the value while preserving structure
           const newValue = properties[key];
           
           if (Array.isArray(value) && value.length > 0) {
             const firstChild = value[0];
             if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
-              // Preserve the array structure with #text
-              // Convert value to appropriate type for XML
               const textValue = typeof newValue === 'boolean' || typeof newValue === 'number' 
                 ? newValue 
                 : String(newValue);
@@ -422,7 +428,148 @@ export class XMLWriter {
             result[key] = [{ '#text': textValue }];
           }
         } else {
-          // Keep original value
+          result[key] = value;
+        }
+      }
+
+      return result;
+    });
+  }
+
+  private static updateNestedElementInStructure(
+    parsed: unknown,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => {
+        if (!item || typeof item !== 'object') {
+          return item;
+        }
+
+        const result: Record<string, unknown> = {};
+        
+        for (const [key, value] of Object.entries(item)) {
+          if (key === ':@') {
+            result[key] = value;
+            continue;
+          }
+
+          const containerName = elementType + 's';
+          if (key === containerName && Array.isArray(value)) {
+            result[key] = this.updateNestedElementArray(value, elementType, elementName, properties);
+          } else if (Array.isArray(value)) {
+            result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties);
+          } else {
+            result[key] = value;
+          }
+        }
+
+        return result;
+      });
+    }
+
+    return parsed;
+  }
+
+  private static updateNestedElementArray(
+    elementsArray: unknown[],
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>
+  ): unknown[] {
+    return elementsArray.map((item) => {
+      if (!item || typeof item !== 'object') {
+        return item;
+      }
+
+      const result: Record<string, unknown> = {};
+
+      for (const [key, value] of Object.entries(item)) {
+        if (key === ':@') {
+          result[key] = value;
+          continue;
+        }
+
+        if (key === elementType && Array.isArray(value)) {
+          const elementData = this.extractNestedElementData(value);
+          if (elementData.name === elementName) {
+            result[key] = this.updateNestedElementProperties(value, properties);
+          } else {
+            result[key] = value;
+          }
+        } else {
+          result[key] = value;
+        }
+      }
+
+      return result;
+    });
+  }
+
+  private static extractNestedElementData(elementArray: unknown[]): { name: string } {
+    for (const item of elementArray) {
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>;
+        if ('Name' in obj && Array.isArray(obj.Name)) {
+          const nameArray = obj.Name as unknown[];
+          if (nameArray.length > 0 && nameArray[0] && typeof nameArray[0] === 'object') {
+            const nameObj = nameArray[0] as Record<string, unknown>;
+            if ('#text' in nameObj) {
+              return { name: String(nameObj['#text']) };
+            }
+          }
+        }
+      }
+    }
+    return { name: '' };
+  }
+
+  private static updateNestedElementProperties(
+    elementArray: unknown[],
+    properties: Record<string, unknown>
+  ): unknown[] {
+    return elementArray.map((item) => {
+      if (!item || typeof item !== 'object') {
+        return item;
+      }
+
+      const result: Record<string, unknown> = {};
+
+      for (const [key, value] of Object.entries(item)) {
+        if (key === ':@') {
+          result[key] = value;
+          continue;
+        }
+
+        if (key in properties) {
+          const newValue = properties[key];
+          
+          if (Array.isArray(value) && value.length > 0) {
+            const firstChild = value[0];
+            if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
+              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number' 
+                ? newValue 
+                : String(newValue);
+              result[key] = [{ ...firstChild, '#text': textValue }];
+            } else {
+              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
+                ? newValue
+                : String(newValue);
+              result[key] = [{ '#text': textValue }];
+            }
+          } else {
+            const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
+              ? newValue
+              : String(newValue);
+            result[key] = [{ '#text': textValue }];
+          }
+        } else {
           result[key] = value;
         }
       }

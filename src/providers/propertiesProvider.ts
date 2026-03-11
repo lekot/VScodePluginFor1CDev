@@ -259,7 +259,8 @@ export class PropertiesProvider {
     const hasProperties = Object.keys(properties).length > 0;
     
     // Switch to read-only mode when file path is missing
-    const readOnly = !node.filePath;
+    // For nested elements (Attributes), check parentFilePath; for root elements, check filePath
+    const readOnly = !(node.parentFilePath || node.filePath);
 
     return `
       <!DOCTYPE html>
@@ -863,7 +864,18 @@ export class PropertiesProvider {
       
       // Write properties to XML file with error handling
       try {
-        await XMLWriter.writeProperties(targetFilePath, properties);
+        // For nested elements (Attributes, TabularSections, etc.), use specialized method
+        if (node.parentFilePath) {
+          await XMLWriter.writeNestedElementProperties(
+            targetFilePath,
+            node.type,
+            node.name,
+            properties
+          );
+        } else {
+          // For root elements, use standard write method
+          await XMLWriter.writeProperties(targetFilePath, properties);
+        }
       } catch (writeError) {
         // Log detailed error to extension output channel
         Logger.error(`Failed to write properties to ${targetFilePath}`, writeError);
