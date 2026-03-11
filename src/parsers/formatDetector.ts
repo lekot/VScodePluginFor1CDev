@@ -83,33 +83,79 @@ export class FormatDetector {
       const configXmlPath = path.join(workspacePath, 'Configuration.xml');
       try {
         await fs.promises.access(configXmlPath);
-        return workspacePath;
+        // Also check for metadata directories to confirm it's a valid config
+        const hasMetadata = await this.hasMetadataDirectories(workspacePath);
+        if (hasMetadata) {
+          return workspacePath;
+        }
       } catch {
         // Continue checking
       }
 
-      // Search in subdirectories (one level deep)
-      const items = await fs.promises.readdir(workspacePath);
-      
+      // Search in subdirectories recursively (max depth 5)
+      const found = await this.searchConfigurationRecursive(workspacePath, 0, 5);
+      return found;
+    } catch (error) {
+      Logger.error('Error finding configuration root', error);
+      return null;
+    }
+  }
+
+  /**
+   * Recursively search for configuration in subdirectories
+   * @param dirPath Directory to search
+   * @param currentDepth Current recursion depth
+   * @param maxDepth Maximum recursion depth
+   * @returns Configuration path or null
+   */
+  private static async searchConfigurationRecursive(
+    dirPath: string,
+    currentDepth: number,
+    maxDepth: number
+  ): Promise<string | null> {
+    if (currentDepth >= maxDepth) {
+      return null;
+    }
+
+    try {
+      const items = await fs.promises.readdir(dirPath);
+
       for (const item of items) {
-        const itemPath = path.join(workspacePath, item);
+        // Skip common non-config directories
+        if (item === 'node_modules' || item === '.git' || item === '.vscode' || item === 'dist' || item === 'out') {
+          continue;
+        }
+
+        const itemPath = path.join(dirPath, item);
         try {
           const stat = await fs.promises.stat(itemPath);
 
           if (stat.isDirectory()) {
-            const cfPath2 = path.join(itemPath, '1cv8.cf');
-            const cfePath2 = path.join(itemPath, '1cv8.cfe');
-            const configXmlPath2 = path.join(itemPath, 'Configuration.xml');
+            // Check if this directory is a configuration root
+            const cfPath = path.join(itemPath, '1cv8.cf');
+            const cfePath = path.join(itemPath, '1cv8.cfe');
+            const configXmlPath = path.join(itemPath, 'Configuration.xml');
 
             // Check all paths in parallel
             const checks = await Promise.allSettled([
-              fs.promises.access(cfPath2),
-              fs.promises.access(cfePath2),
-              fs.promises.access(configXmlPath2),
+              fs.promises.access(cfPath),
+              fs.promises.access(cfePath),
+              fs.promises.access(configXmlPath),
             ]);
 
             if (checks.some(result => result.status === 'fulfilled')) {
-              return itemPath;
+              // Also verify metadata directories exist
+              const hasMetadata = await this.hasMetadataDirectories(itemPath);
+              if (hasMetadata) {
+                Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
+                return itemPath;
+              }
+            }
+
+            // Recursively search in this subdirectory
+            const found = await this.searchConfigurationRecursive(itemPath, currentDepth + 1, maxDepth);
+            if (found) {
+              return found;
             }
           }
         } catch (error) {
@@ -119,9 +165,33 @@ export class FormatDetector {
 
       return null;
     } catch (error) {
-      Logger.error('Error finding configuration root', error);
+      Logger.debug(`Error reading directory ${dirPath}`, error);
       return null;
     }
+  }
+
+  /**
+   * Check if directory has metadata type directories
+   * @param dirPath Directory to check
+   * @returns true if has at least one metadata directory
+   */
+  private static async hasMetadataDirectories(dirPath: string): Promise<boolean> {
+    const metadataTypes = ['Catalogs', 'Documents', 'Enums', 'Reports', 'DataProcessors', 'CommonModules'];
+    
+    for (const type of metadataTypes) {
+      const typePath = path.join(dirPath, type);
+      try {
+        await fs.promises.access(typePath);
+        const stat = await fs.promises.stat(typePath);
+        if (stat.isDirectory()) {
+          return true;
+        }
+      } catch {
+        // Continue checking
+      }
+    }
+    
+    return false;
   }
 
   /**
