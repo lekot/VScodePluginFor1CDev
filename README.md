@@ -2,6 +2,15 @@
 
 VS Code extension for visualizing and editing 1C configuration metadata tree.
 
+## Status
+
+**Phase 1: Infrastructure** ✅ COMPLETED
+- Project structure created
+- Dependencies installed (140 packages)
+- TypeScript compiled successfully
+- Build artifacts in `/build` and `/dist`
+- Ready for Phase 2: Parser Implementation
+
 ## Features
 
 - **Metadata Tree View**: Display complete hierarchy of 1C configuration metadata
@@ -12,7 +21,7 @@ VS Code extension for visualizing and editing 1C configuration metadata tree.
 
 ## Supported Formats
 
-- Designer format (structured XML)
+- Designer format (structured XML) - **Priority**
 - EDT format (coming soon)
 
 ## Installation
@@ -53,6 +62,24 @@ npm run format
 npm run test
 ```
 
+### Debug in VS Code
+
+Press `F5` to launch the extension in debug mode. A new VS Code window will open with the extension loaded.
+
+## Build Artifacts
+
+- **Source:** `src/` (TypeScript)
+- **Compiled:** `dist/` (JavaScript + source maps + type definitions)
+- **Archive:** `build/` (copy of dist for backup)
+
+### Compilation Details
+
+- **Compiler:** TypeScript 5.0.0
+- **Target:** ES2020, CommonJS
+- **Source Maps:** Generated for debugging
+- **Type Definitions:** Generated (.d.ts files)
+- **Total Files:** 24 (8 JS + 8 D.TS + 8 source maps)
+
 ## Project Structure
 
 ```
@@ -66,13 +93,13 @@ src/
 
 ## Architecture
 
-### Phase 1: Infrastructure (Current)
+### Phase 1: Infrastructure (✅ COMPLETED)
 - Project initialization
 - Basic VS Code integration
 - Logger setup
 - Tree and Properties providers skeleton
 
-### Phase 2: Parsing & Tree Building
+### Phase 2: Parsing & Tree Building (NEXT)
 - Designer format parser implementation
 - Tree node building
 - Caching system
@@ -91,6 +118,29 @@ src/
 - File watcher
 - Conflict resolution
 - Change persistence
+
+## Solutions & Decisions
+
+### Node.js PATH Issue
+**Problem:** npm not found in PATH on Windows
+**Solution:** Use full path with cmd.exe: `C:\Program Files\nodejs\npm.cmd`
+
+### TypeScript Strict Mode
+**Decision:** Enabled strict mode for type safety
+- `noImplicitAny`: true
+- `strictNullChecks`: true
+- `noUnusedLocals`: true
+
+### Designer Format Priority
+**Decision:** Start with Designer format (structured XML)
+- Has local test examples
+- EDT format will follow after MVP
+
+### Conflict Resolution Strategy
+**Decision:** Last write wins (default)
+- Merge when possible
+- Prompt user on conflicts
+- Documented in architecture.md
 
 ## Configuration
 
