@@ -274,15 +274,31 @@ export class DesignerParser {
             const stat = await fs.promises.stat(itemPath);
 
             if (stat.isDirectory()) {
-              return {
-                id: `Ext.${item}`,
-                name: item,
-                type: MetadataType.Extension,
-                properties: { isExtension: true },
-                filePath: itemPath,
-              };
+              // For directories like "Form", recursively search for .bsl files
+              const bslFiles = await this.findBslFilesRecursive(itemPath);
+              if (bslFiles.length > 0) {
+                // Create a container node with .bsl files as children
+                return {
+                  id: `Ext.${item}`,
+                  name: item,
+                  type: MetadataType.Extension,
+                  properties: { isExtension: true },
+                  filePath: itemPath,
+                  children: bslFiles.map(bslPath => ({
+                    id: `Ext.${item}.${path.basename(bslPath)}`,
+                    name: path.basename(bslPath),
+                    type: MetadataType.Method,
+                    properties: { 
+                      isModule: true,
+                      fileType: 'bsl'
+                    },
+                    filePath: bslPath,
+                  })),
+                };
+              }
+              return null; // Skip empty directories
             } else if (stat.isFile() && item.endsWith('.bsl')) {
-              // Add .bsl module files
+              // Add .bsl module files directly
               return {
                 id: `Ext.${item}`,
                 name: item,
@@ -312,6 +328,38 @@ export class DesignerParser {
     }
 
     return extNode;
+  }
+
+  /**
+   * Recursively find all .bsl files in a directory
+   */
+  private static async findBslFilesRecursive(dirPath: string): Promise<string[]> {
+    const bslFiles: string[] = [];
+    
+    try {
+      const items = await fs.promises.readdir(dirPath);
+      
+      for (const item of items) {
+        const itemPath = path.join(dirPath, item);
+        try {
+          const stat = await fs.promises.stat(itemPath);
+          
+          if (stat.isDirectory()) {
+            // Recursively search subdirectories
+            const subFiles = await this.findBslFilesRecursive(itemPath);
+            bslFiles.push(...subFiles);
+          } else if (stat.isFile() && item.endsWith('.bsl')) {
+            bslFiles.push(itemPath);
+          }
+        } catch (error) {
+          Logger.debug(`Error processing ${itemPath}`, error);
+        }
+      }
+    } catch (error) {
+      Logger.debug(`Error reading directory ${dirPath}`, error);
+    }
+    
+    return bslFiles;
   }
 
   /**
@@ -563,7 +611,8 @@ export class DesignerParser {
       const attributes = this.extractAttributes(childObjects);
       
       for (const attr of attributes) {
-        const attrName = attr.Name || 'Unknown';
+        // Name is inside Properties section
+        const attrName = (attr.Properties && attr.Properties.Name) || attr.Name || 'Unknown';
         
         // Create attribute node with properties from XML
         const attributeNode: TreeNode = {
