@@ -382,6 +382,20 @@ export class PropertiesProvider {
             opacity: 0.5;
             cursor: not-allowed;
           }
+          .edit-type-btn {
+            padding: 4px 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 28px;
+          }
+          .edit-type-icon {
+            display: inline-flex;
+            line-height: 0;
+          }
+          .edit-type-icon svg {
+            vertical-align: middle;
+          }
           .empty-state {
             text-align: center;
             padding: 40px;
@@ -491,6 +505,14 @@ export class PropertiesProvider {
         Logger.error('Failed to format Type in renderPropertyInput', error);
         displayValue = '[Invalid Type]';
       }
+    } else if (isTypeProperty && typeof value === 'string' && value.includes('<')) {
+      try {
+        const typeDef = TypeParser.parse(value);
+        displayValue = TypeFormatter.formatTypeDisplay(typeDef);
+      } catch (error) {
+        Logger.error('Failed to parse Type XML in renderPropertyInput', error);
+        displayValue = '[Invalid Type]';
+      }
     }
     
     const propertyType = this.detectPropertyType(displayValue);
@@ -510,8 +532,8 @@ export class PropertiesProvider {
     const displayName = getPropertyLabel(name);
 
     const editTypeButton = isTypeProperty && !propertyReadOnly ? `
-      <button class="edit-type-btn" data-property="${this.escapeHtml(name)}">
-        <span class="octicon octicon-pencil"></span> Редактировать тип
+      <button type="button" class="edit-type-btn" data-property="${this.escapeHtml(name)}" aria-label="Редактировать тип" title="Редактировать тип">
+        <span class="edit-type-icon" aria-hidden="true">${this.getEditTypePencilSvg()}</span>
       </button>
     ` : '';
 
@@ -529,6 +551,14 @@ export class PropertiesProvider {
         ${editTypeButton}
       </div>
     `;
+  }
+
+  /**
+   * Inline SVG for pencil (edit) icon — used in webview; no external font required.
+   * Matches VSCode codicon-edit style; aria-hidden on parent span.
+   */
+  private getEditTypePencilSvg(): string {
+    return `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M13.23 1h-1.46L3.52 9.85l-.16.22L1 13.11 2.41 14.5l3.04-2.35.22-.16L15 4.23V2.77L13.23 1zM2.41 11.59l.59-.59.59.59-.59.59-.59-.59zm1.83-1.83l.59-.59 3.54 3.54-.59.59-3.54-3.54zM11.77 2L14 4.23l-1.17 1.17L10.6 3.17 11.77 2z"/></svg>`;
   }
 
   /**
@@ -934,10 +964,9 @@ export class PropertiesProvider {
       return;
     }
 
-    // Get current Type value from currentNode.properties
-    const currentTypeXML = this.currentNode.properties['Type'] as string;
-
-    if (!currentTypeXML) {
+    // Get current Type value — may be object (from XML) or XML string. Editor expects XML.
+    const rawType = this.currentNode.properties['Type'];
+    if (rawType === undefined || rawType === null) {
       Logger.warn('Edit type attempted but Type property is empty');
       this.postMessage({
         type: 'error',
@@ -946,16 +975,48 @@ export class PropertiesProvider {
       return;
     }
 
+    let typeXMLForEditor: string;
+    if (typeof rawType === 'object' && rawType !== null && !Array.isArray(rawType)) {
+      try {
+        const typeDef = TypeParser.parseFromObject(rawType as Record<string, unknown>);
+        const { TypeSerializer } = await import('../serializers/typeSerializer');
+        typeXMLForEditor = TypeSerializer.serialize(typeDef);
+      } catch (e) {
+        Logger.error('Failed to serialize Type object for editor', e);
+        this.postMessage({ type: 'error', message: 'Failed to open type editor: invalid type data' });
+        return;
+      }
+    } else if (typeof rawType === 'string' && rawType.includes('<')) {
+      typeXMLForEditor = rawType;
+    } else {
+      // Display-only string (e.g. "Number(15,0)") — no XML; editor needs object or XML
+      Logger.warn('Edit type attempted but Type is display string, not XML or object');
+      this.postMessage({
+        type: 'error',
+        message: 'Type cannot be edited: internal format is display-only. Re-open the attribute and try again.'
+      });
+      return;
+    }
+
+    if (!typeXMLForEditor || typeXMLForEditor.trim() === '') {
+      Logger.warn('Edit type attempted but Type serialized to empty');
+      this.postMessage({ type: 'error', message: 'Type property is empty' });
+      return;
+    }
+
     try {
-      // Call TypeEditorProvider.show(typeXML) and await result
-      const result = await this.typeEditorProvider.show(currentTypeXML);
+      const result = await this.typeEditorProvider.show(typeXMLForEditor);
 
       // If result not null, serialize TypeDefinition back to XML string
       if (result !== null) {
         const { TypeSerializer } = await import('../serializers/typeSerializer');
         const updatedTypeXML = TypeSerializer.serialize(result);
 
-        // Update value in webview via postMessage with type 'typeUpdated'
+        // Keep node in sync so next render and next edit use the new type
+        if (this.currentNode) {
+          this.currentNode.properties['Type'] = updatedTypeXML;
+        }
+
         this.postMessage({
           type: 'typeUpdated',
           property: 'Type',

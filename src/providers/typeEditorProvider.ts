@@ -71,10 +71,13 @@ export class TypeEditorProvider {
     const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
     const typesJson = JSON.stringify(typeDefinition.types);
     
-    // Determine which primitive type is currently selected (if any)
+    // Determine which primitive type is currently selected (if any).
+    // When category is primitive but types are empty, default to 'string' so qualifier fields are visible.
     let currentPrimitiveType: string | null = null;
-    if (typeDefinition.category === 'primitive' && typeDefinition.types.length > 0) {
-      currentPrimitiveType = typeDefinition.types[0].kind;
+    if (typeDefinition.category === 'primitive') {
+      currentPrimitiveType = typeDefinition.types.length > 0
+        ? typeDefinition.types[0].kind
+        : 'string';
     }
     
     return `
@@ -530,10 +533,12 @@ export class TypeEditorProvider {
               currentCategory = e.target.value;
               // Hide all config sections
               for (const section of Object.values(configSections)) {
-                section.classList.remove('active');
+                if (section) section.classList.remove('active');
               }
               // Show selected config section
-              configSections[currentCategory].classList.add('active');
+              const activeSection = configSections[currentCategory];
+              if (activeSection) activeSection.classList.add('active');
+              syncStateFromQualifierInputs();
               markAsChanged();
               updatePreview();
             });
@@ -545,7 +550,7 @@ export class TypeEditorProvider {
             
             // Hide all qualifier groups first
             for (const group of Object.values(qualifierGroups)) {
-              group.classList.remove('active');
+              if (group) group.classList.remove('active');
             }
             
             // Show qualifier group for selected type
@@ -558,9 +563,41 @@ export class TypeEditorProvider {
             }
             // Boolean has no qualifiers, so no group is shown
             
+            syncStateFromQualifierInputs();
             markAsChanged();
             updatePreview();
           });
+          
+          // Sync currentState from qualifier/reference form inputs (for primitive or reference single-type).
+          function syncStateFromQualifierInputs() {
+            if (currentCategory === 'primitive') {
+              const kind = primitiveTypeSelect.value;
+              let qualifiers = undefined;
+              if (kind === 'string') {
+                const lenEl = document.getElementById('string-length');
+                const allowedEl = document.getElementById('string-allowed-length');
+                const len = lenEl && lenEl.value !== '' ? parseInt(lenEl.value, 10) : undefined;
+                if (len !== undefined) qualifiers = { length: len, allowedLength: (allowedEl && allowedEl.value) || 'Variable' };
+              } else if (kind === 'number') {
+                const d = document.getElementById('number-digits');
+                const f = document.getElementById('number-fraction-digits');
+                const s = document.getElementById('number-allowed-sign');
+                const digits = d && d.value !== '' ? parseInt(d.value, 10) : undefined;
+                const fractionDigits = f && f.value !== '' ? parseInt(f.value, 10) : undefined;
+                if (digits !== undefined && fractionDigits !== undefined) qualifiers = { digits, fractionDigits, allowedSign: (s && s.value) || 'Any' };
+              } else if (kind === 'date') {
+                const df = document.getElementById('date-fractions');
+                if (df && df.value) qualifiers = { dateFractions: df.value };
+              }
+              currentState = [{ kind, qualifiers }];
+            } else if (currentCategory === 'reference') {
+              const kindEl = document.getElementById('reference-kind');
+              const objEl = document.getElementById('reference-object');
+              const referenceKind = (kindEl && kindEl.value) || 'CatalogRef';
+              const objectName = (objEl && objEl.value) || '';
+              currentState = [{ kind: 'reference', referenceType: { referenceKind, objectName } }];
+            }
+          }
           
           // Add change detection to all qualifier input fields
           const stringLengthInput = document.getElementById('string-length');
@@ -571,22 +608,22 @@ export class TypeEditorProvider {
           const dateFractionsSelect = document.getElementById('date-fractions');
           
           if (stringLengthInput) {
-            stringLengthInput.addEventListener('input', markAsChanged);
+            stringLengthInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           if (stringAllowedLengthSelect) {
-            stringAllowedLengthSelect.addEventListener('change', markAsChanged);
+            stringAllowedLengthSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           if (numberDigitsInput) {
-            numberDigitsInput.addEventListener('input', markAsChanged);
+            numberDigitsInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           if (numberFractionDigitsInput) {
-            numberFractionDigitsInput.addEventListener('input', markAsChanged);
+            numberFractionDigitsInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           if (numberAllowedSignSelect) {
-            numberAllowedSignSelect.addEventListener('change', markAsChanged);
+            numberAllowedSignSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           if (dateFractionsSelect) {
-            dateFractionsSelect.addEventListener('change', markAsChanged);
+            dateFractionsSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           
           // Add change detection to reference fields
@@ -594,10 +631,10 @@ export class TypeEditorProvider {
           const referenceObjectInput = document.getElementById('reference-object');
           
           if (referenceKindSelect) {
-            referenceKindSelect.addEventListener('change', markAsChanged);
+            referenceKindSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           if (referenceObjectInput) {
-            referenceObjectInput.addEventListener('input', markAsChanged);
+            referenceObjectInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
           }
           
           // Update preview function
@@ -625,10 +662,8 @@ export class TypeEditorProvider {
             }).join(' | ');
             
             previewValue.textContent = display;
-            // Only disable Save button if there are no types AND no changes have been made
-            if (!hasChanges) {
-              saveBtn.disabled = currentState.length === 0;
-            }
+            // Enable Save when there are types or user has made changes
+            saveBtn.disabled = !hasChanges && currentState.length === 0;
           }
           
           // Button handlers
@@ -637,10 +672,12 @@ export class TypeEditorProvider {
           });
           
           document.getElementById('save-btn').addEventListener('click', () => {
+            syncStateFromQualifierInputs();
             vscode.postMessage({ type: 'save', typeDefinition: { category: currentCategory, types: currentState } });
           });
           
-          // Initialize
+          // Initialize: sync state from form when primitive so Save is enabled and qualifiers apply
+          if (currentCategory === 'primitive') syncStateFromQualifierInputs();
           updatePreview();
         </script>
       </body>
@@ -768,9 +805,10 @@ export class TypeEditorProvider {
   }
 
   private async handleCancelMessage(): Promise<void> {
-    if (!this.resolvePromise) return;
-    this.resolvePromise(null);
-    this.resolvePromise = undefined;
+    if (this.resolvePromise) {
+      this.resolvePromise(null);
+      this.resolvePromise = undefined;
+    }
     if (this.panel) {
       const p = this.panel;
       this.panel = undefined;
