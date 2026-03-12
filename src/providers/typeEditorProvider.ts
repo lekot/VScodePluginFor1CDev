@@ -512,7 +512,7 @@ export class TypeEditorProvider {
             reference: document.getElementById('config-reference'),
             composite: document.getElementById('config-composite')
           };
-          const primitiveTypeSelect = document.getElementById('primitive-type') as HTMLSelectElement;
+          const primitiveTypeSelect = document.getElementById('primitive-type');
           const qualifierGroups = {
             string: document.getElementById('string-qualifiers'),
             number: document.getElementById('number-qualifiers'),
@@ -732,6 +732,9 @@ export class TypeEditorProvider {
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
     Logger.debug(`Received: ${message.type}`);
+    if (message.type === 'save' || message.type === 'cancel') {
+      Logger.info(`Type editor: ${message.type} received from webview`);
+    }
     try {
       switch (message.type) {
         case 'save': await this.handleSaveMessage(message); break;
@@ -793,18 +796,31 @@ export class TypeEditorProvider {
   }
 
   private async handleSaveMessage(message: WebviewMessage): Promise<void> {
-    if (!message.typeDefinition || !this.resolvePromise) return;
+    if (!message.typeDefinition || !this.resolvePromise) {
+      Logger.warn('Type editor save ignored: missing typeDefinition or resolvePromise');
+      return;
+    }
     const def = message.typeDefinition;
-    if (!Array.isArray(def.types) || def.types.length === 0) return;
+    if (!Array.isArray(def.types) || def.types.length === 0) {
+      Logger.warn('Type editor save ignored: types empty or not array');
+      return;
+    }
     const typeDefinition: TypeDefinition = {
       category: def.category === 'reference' || def.category === 'composite' ? def.category : 'primitive',
       types: def.types,
     };
     this.resolvePromise(typeDefinition);
     this.resolvePromise = undefined;
+    Logger.info('Type editor: save applied, closing panel');
+    if (this.panel) {
+      const p = this.panel;
+      this.panel = undefined;
+      p.dispose();
+    }
   }
 
   private async handleCancelMessage(): Promise<void> {
+    Logger.info('Type editor: cancel applied, closing panel');
     if (this.resolvePromise) {
       this.resolvePromise(null);
       this.resolvePromise = undefined;

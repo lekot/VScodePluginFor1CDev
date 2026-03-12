@@ -6,6 +6,7 @@ import { TypeEditorProvider } from './typeEditorProvider';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeFormatter } from '../utils/typeFormatter';
 import { getPropertyLabel } from '../constants/propertyLabels';
+import type { TypeDefinition } from '../types/typeDefinitions';
 
 /**
  * Message types sent from webview to extension
@@ -703,10 +704,10 @@ export class PropertiesProvider {
         }
       }
 
-      // Handle edit type button click
+      // Handle edit type button click (listener is on the button, so currentTarget is the button)
       function handleEditType(event) {
-        const btn = event.target.closest('.edit-type-btn');
-        if (btn) {
+        const btn = event.currentTarget || (event.target && event.target.closest && event.target.closest('.edit-type-btn'));
+        if (btn && btn.dataset && btn.dataset.property) {
           vscode.postMessage({
             type: 'editType',
             property: btn.dataset.property
@@ -849,6 +850,7 @@ export class PropertiesProvider {
           break;
         
         case 'editType':
+          Logger.info('editType message received from webview');
           await this.handleEditTypeMessage(message);
           break;
         
@@ -952,6 +954,55 @@ export class PropertiesProvider {
   }
 
   /**
+   * Parse display-only type string (e.g. "Number(15,0)", "String(50)") into TypeDefinition
+   * so the type editor can open when the node only has a formatted string.
+   */
+  private parseDisplayTypeString(display: string): TypeDefinition | null {
+    const s = display.trim();
+    if (!s || s === 'Not set') return null;
+    const numMatch = s.match(/^Number\((\d+),(\d+)\)$/);
+    if (numMatch) {
+      return {
+        category: 'primitive',
+        types: [{
+          kind: 'number',
+          qualifiers: { digits: parseInt(numMatch[1], 10), fractionDigits: parseInt(numMatch[2], 10), allowedSign: 'Any' },
+        }],
+      };
+    }
+    const strMatch = s.match(/^String\((\d+)\)$/);
+    if (strMatch) {
+      return {
+        category: 'primitive',
+        types: [{ kind: 'string', qualifiers: { length: parseInt(strMatch[1], 10), allowedLength: 'Variable' } }],
+      };
+    }
+    if (/^Boolean$/i.test(s)) {
+      return { category: 'primitive', types: [{ kind: 'boolean' }] };
+    }
+    if (/^Date$/i.test(s)) {
+      return { category: 'primitive', types: [{ kind: 'date', qualifiers: { dateFractions: 'Date' } }] };
+    }
+    if (/^DateTime$/i.test(s)) {
+      return { category: 'primitive', types: [{ kind: 'date', qualifiers: { dateFractions: 'DateTime' } }] };
+    }
+    if (/^Time$/i.test(s)) {
+      return { category: 'primitive', types: [{ kind: 'date', qualifiers: { dateFractions: 'Time' } }] };
+    }
+    const refMatch = s.match(/^(CatalogRef|DocumentRef|EnumRef|ChartOfCharacteristicTypesRef|ChartOfAccountsRef|ChartOfCalculationTypesRef|DefinedType)\.(.+)$/);
+    if (refMatch) {
+      return {
+        category: 'reference',
+        types: [{
+          kind: 'reference',
+          referenceType: { referenceKind: refMatch[1] as any, objectName: refMatch[2].trim() },
+        }],
+      };
+    }
+    return null;
+  }
+
+  /**
    * Handle editType message from webview
    */
   private async handleEditTypeMessage(_message: WebviewMessage): Promise<void> {
@@ -965,7 +1016,13 @@ export class PropertiesProvider {
     }
 
     // Get current Type value — may be object (from XML) or XML string. Editor expects XML.
-    const rawType = this.currentNode.properties['Type'];
+    // Support both 'Type' and 'v8:Type' keys (XML parser / format may vary).
+    const rawType = this.currentNode.properties['Type'] ?? this.currentNode.properties['v8:Type'];
+    Logger.info(`handleEditTypeMessage: rawType type=${typeof rawType}, present=${rawType !== undefined && rawType !== null}`);
+    if (rawType !== undefined && rawType !== null && typeof rawType === 'string') {
+      Logger.info(`handleEditTypeMessage: rawType string preview=${(rawType as string).substring(0, 80)}`);
+    }
+
     if (rawType === undefined || rawType === null) {
       Logger.warn('Edit type attempted but Type property is empty');
       this.postMessage({
@@ -981,6 +1038,7 @@ export class PropertiesProvider {
         const typeDef = TypeParser.parseFromObject(rawType as Record<string, unknown>);
         const { TypeSerializer } = await import('../serializers/typeSerializer');
         typeXMLForEditor = TypeSerializer.serialize(typeDef);
+        Logger.info('handleEditTypeMessage: serialized Type from object');
       } catch (e) {
         Logger.error('Failed to serialize Type object for editor', e);
         this.postMessage({ type: 'error', message: 'Failed to open type editor: invalid type data' });
@@ -988,13 +1046,31 @@ export class PropertiesProvider {
       }
     } else if (typeof rawType === 'string' && rawType.includes('<')) {
       typeXMLForEditor = rawType;
+      Logger.info('handleEditTypeMessage: using Type as XML string');
+    } else if (typeof rawType === 'string') {
+      // Display string (e.g. "Number(15,0)") — try to parse and open editor
+      const typeDef = this.parseDisplayTypeString(rawType as string);
+      if (typeDef) {
+        try {
+          const { TypeSerializer } = await import('../serializers/typeSerializer');
+          typeXMLForEditor = TypeSerializer.serialize(typeDef);
+          Logger.info('handleEditTypeMessage: parsed display string to XML');
+        } catch (e) {
+          Logger.error('Failed to serialize parsed display type', e);
+          this.postMessage({ type: 'error', message: 'Failed to open type editor' });
+          return;
+        }
+      } else {
+        Logger.warn('Edit type attempted but Type is display string and could not parse it');
+        this.postMessage({
+          type: 'error',
+          message: 'Type cannot be edited: could not parse type. Re-open the attribute and try again.'
+        });
+        return;
+      }
     } else {
-      // Display-only string (e.g. "Number(15,0)") — no XML; editor needs object or XML
-      Logger.warn('Edit type attempted but Type is display string, not XML or object');
-      this.postMessage({
-        type: 'error',
-        message: 'Type cannot be edited: internal format is display-only. Re-open the attribute and try again.'
-      });
+      Logger.warn('Edit type attempted but Type has unexpected type');
+      this.postMessage({ type: 'error', message: 'Type property has unexpected format' });
       return;
     }
 
@@ -1005,6 +1081,7 @@ export class PropertiesProvider {
     }
 
     try {
+      Logger.info('handleEditTypeMessage: calling typeEditorProvider.show()');
       const result = await this.typeEditorProvider.show(typeXMLForEditor);
 
       // If result not null, serialize TypeDefinition back to XML string
