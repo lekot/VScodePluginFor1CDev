@@ -4,6 +4,7 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { convertStringBooleans } from '../utils/xmlPropertyUtils';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -53,9 +54,10 @@ export class EdtParser {
         })
       );
 
-      // Add non-empty type nodes to root
+      // Add non-empty type nodes to root and set parent
       for (const typeNode of typeNodes) {
         if (typeNode && typeNode.children && typeNode.children.length > 0) {
+          typeNode.parent = rootNode;
           rootNode.children?.push(typeNode);
         }
       }
@@ -108,9 +110,10 @@ export class EdtParser {
         })
       );
 
-      // Add non-null element nodes
+      // Add non-null element nodes and set parent
       for (const elementNode of elementNodes) {
         if (elementNode) {
+          elementNode.parent = typeNode;
           typeNode.children?.push(elementNode);
         }
       }
@@ -166,6 +169,7 @@ export class EdtParser {
           const subPath = path.join(elementPath, item);
           const subNode = await this.parseSubElements(subPath, item);
           if (subNode.children && subNode.children.length > 0) {
+            subNode.parent = elementNode;
             elementNode.children?.push(subNode);
           }
         }
@@ -204,13 +208,15 @@ export class EdtParser {
             const stat = await fs.promises.stat(itemPath);
 
             if (stat.isDirectory()) {
-              return {
+              const child: TreeNode = {
                 id: `${subType}.${item}`,
                 name: item,
                 type: subType === 'Forms' ? MetadataType.Form : MetadataType.Extension,
                 properties: {},
                 filePath: itemPath,
               };
+              child.parent = subNode;
+              return child;
             }
           } catch (error) {
             Logger.debug(`Error processing sub-element ${itemPath}`, error);
@@ -230,27 +236,6 @@ export class EdtParser {
     }
 
     return subNode;
-  }
-
-  /**
-   * Convert string boolean values to actual boolean primitives
-   * @param properties Properties object that may contain string "false"/"true" values
-   * @returns Properties object with string booleans converted to primitives
-   */
-  private static convertStringBooleans(properties: Record<string, unknown>): Record<string, unknown> {
-    const converted: Record<string, unknown> = {};
-    
-    for (const [key, value] of Object.entries(properties)) {
-      if (value === 'false') {
-        converted[key] = false;
-      } else if (value === 'true') {
-        converted[key] = true;
-      } else {
-        converted[key] = value;
-      }
-    }
-    
-    return converted;
   }
 
   /**
@@ -293,7 +278,7 @@ export class EdtParser {
     }
 
     // Convert string "false"/"true" values to boolean primitives
-    return this.convertStringBooleans(result);
+    return convertStringBooleans(result);
   }
 
   /**

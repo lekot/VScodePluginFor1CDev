@@ -57,6 +57,9 @@ export class XmlParser {
    * @returns Parsed XML object
    */
   static parseString(xmlString: string): Record<string, unknown> {
+    if (typeof xmlString !== 'string' || xmlString.trim() === '') {
+      throw new Error('Invalid XML: empty or not a string');
+    }
     try {
       const parsed = this.parser.parse(xmlString);
       return parsed as Record<string, unknown>;
@@ -73,7 +76,8 @@ export class XmlParser {
    */
   static objectToXml(obj: Record<string, unknown>): string {
     try {
-      return this.builder.build(obj) as string;
+      const body = this.builder.build(obj) as string;
+      return body ? `<?xml version="1.0" encoding="UTF-8"?>\n${body}` : '';
     } catch (error) {
       Logger.error('Error converting object to XML', error);
       throw new Error(`Failed to convert object to XML: ${error instanceof Error ? error.message : String(error)}`);

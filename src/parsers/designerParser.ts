@@ -6,6 +6,7 @@ import { XmlParser } from './xmlParser';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { TypeParser } from './typeParser';
 import { TypeFormatter } from '../utils/typeFormatter';
+import { convertStringBooleans } from '../utils/xmlPropertyUtils';
 
 /**
  * Parser for 1C Designer format metadata
@@ -32,7 +33,6 @@ export class DesignerParser {
         throw new Error(`Configuration metadata file not found at ${configPath}`);
       }
 
-      XmlParser.parseFile(configXmlPath);
       const rootNode = await this.buildTreeFromConfiguration(configPath);
 
       Logger.info('Designer format parsing completed');
@@ -76,9 +76,10 @@ export class DesignerParser {
       })
     );
 
-    // Add non-empty type nodes to root
+    // Add non-empty type nodes to root and set parent
     for (const typeNode of typeNodes) {
       if (typeNode && typeNode.children && typeNode.children.length > 0) {
+        typeNode.parent = rootNode;
         rootNode.children?.push(typeNode);
       }
     }
@@ -126,9 +127,10 @@ export class DesignerParser {
         })
       );
 
-      // Add non-null element nodes
+      // Add non-null element nodes and set parent
       for (const elementNode of elementNodes) {
         if (elementNode) {
+          elementNode.parent = typeNode;
           typeNode.children?.push(elementNode);
         }
       }
@@ -182,6 +184,7 @@ export class DesignerParser {
     if (xmlContent) {
       const attributesNode = await this.parseAttributesFromXML(xmlContent, elementPath, elementName);
       if (attributesNode && attributesNode.children && attributesNode.children.length > 0) {
+        attributesNode.parent = elementNode;
         elementNode.children?.push(attributesNode);
       }
     }
@@ -200,13 +203,15 @@ export class DesignerParser {
               for (const extItem of extItems) {
                 if (extItem.endsWith('.bsl')) {
                   const bslPath = path.join(extPath, extItem);
-                  elementNode.children?.push({
+                  const child: TreeNode = {
                     id: `${typeName}.${elementName}.${extItem}`,
                     name: extItem,
                     type: MetadataType.Method,
                     properties: {},
                     filePath: bslPath,
-                  });
+                  };
+                  child.parent = elementNode;
+                  elementNode.children?.push(child);
                 }
               }
             } catch (error) {
@@ -217,6 +222,7 @@ export class DesignerParser {
             const extPath = path.join(elementPath, item);
             const extNode = await this.parseExtensions(extPath);
             if (extNode.children && extNode.children.length > 0) {
+              extNode.parent = elementNode;
               elementNode.children?.push(extNode);
             }
           }
@@ -225,6 +231,7 @@ export class DesignerParser {
           const formsPath = path.join(elementPath, item);
           const formsNode = await this.parseForms(formsPath);
           if (formsNode.children && formsNode.children.length > 0) {
+            formsNode.parent = elementNode;
             elementNode.children?.push(formsNode);
           }
         } else if (item === 'Attributes') {
@@ -232,6 +239,7 @@ export class DesignerParser {
           const attributesPath = path.join(elementPath, item);
           const attributesNode = await this.parseAttributes(attributesPath);
           if (attributesNode.children && attributesNode.children.length > 0) {
+            attributesNode.parent = elementNode;
             elementNode.children?.push(attributesNode);
           }
         } else if (item === 'TabularSections') {
@@ -239,6 +247,7 @@ export class DesignerParser {
           const tabularPath = path.join(elementPath, item);
           const tabularNode = await this.parseTabularSections(tabularPath);
           if (tabularNode.children && tabularNode.children.length > 0) {
+            tabularNode.parent = elementNode;
             elementNode.children?.push(tabularNode);
           }
         }
@@ -319,9 +328,10 @@ export class DesignerParser {
         })
       );
 
-      // Add non-null extension nodes
+      // Add non-null extension nodes and set parent
       for (const extElementNode of extElementNodes) {
         if (extElementNode) {
+          (extElementNode as TreeNode).parent = extNode;
           extNode.children?.push(extElementNode);
         }
       }
@@ -417,12 +427,14 @@ export class DesignerParser {
                 await fs.promises.access(extPath);
                 const extNode = await this.parseExtensions(extPath);
                 if (extNode.children && extNode.children.length > 0) {
+                  extNode.parent = formNode;
                   formNode.children?.push(extNode);
                 }
               } catch {
                 // No Ext directory
               }
 
+              formNode.parent = formsNode;
               return formNode;
             }
           } catch (error) {
@@ -435,6 +447,7 @@ export class DesignerParser {
       // Add non-null form nodes
       for (const formNode of formNodes) {
         if (formNode) {
+          formNode.parent = formsNode;
           formsNode.children?.push(formNode);
         }
       }
@@ -483,13 +496,15 @@ export class DesignerParser {
                 // XML doesn't exist, use default properties
               }
 
-              return {
+              const attrNode: TreeNode = {
                 id: `Attributes.${item}`,
                 name: item,
                 type: MetadataType.Attribute,
                 properties,
                 filePath: xmlPath,
               };
+              attrNode.parent = attributesNode;
+              return attrNode;
             }
           } catch (error) {
             Logger.debug(`Error processing attribute ${itemPath}`, error);
@@ -549,13 +564,15 @@ export class DesignerParser {
                 // XML doesn't exist, use default properties
               }
 
-              return {
+              const tsNode: TreeNode = {
                 id: `TabularSections.${item}`,
                 name: item,
                 type: MetadataType.TabularSection,
                 properties,
                 filePath: xmlPath,
               };
+              tsNode.parent = tabularNode;
+              return tsNode;
             }
           } catch (error) {
             Logger.debug(`Error processing tabular section ${itemPath}`, error);
@@ -626,6 +643,7 @@ export class DesignerParser {
           parentFilePath: parentXmlPath,
         };
         
+        attributeNode.parent = attributesNode;
         attributesNode.children?.push(attributeNode);
       }
     } catch (error) {
@@ -755,27 +773,7 @@ export class DesignerParser {
     }
     
     // Convert string "false"/"true" values to boolean primitives
-    return this.convertStringBooleans(properties);
-  }
-  /**
-   * Convert string boolean values to actual boolean primitives
-   * @param properties Properties object that may contain string "false"/"true" values
-   * @returns Properties object with string booleans converted to primitives
-   */
-  private static convertStringBooleans(properties: Record<string, unknown>): Record<string, unknown> {
-    const converted: Record<string, unknown> = {};
-    
-    for (const [key, value] of Object.entries(properties)) {
-      if (value === 'false') {
-        converted[key] = false;
-      } else if (value === 'true') {
-        converted[key] = true;
-      } else {
-        converted[key] = value;
-      }
-    }
-    
-    return converted;
+    return convertStringBooleans(properties);
   }
 
   /**
@@ -849,7 +847,7 @@ export class DesignerParser {
       }
 
       // Convert string "false"/"true" values to boolean primitives
-      return this.convertStringBooleans(result);
+      return convertStringBooleans(result);
     }
 
 
