@@ -71,6 +71,12 @@ export class TypeEditorProvider {
     const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
     const typesJson = JSON.stringify(typeDefinition.types);
     
+    // Determine which primitive type is currently selected (if any)
+    let currentPrimitiveType: string | null = null;
+    if (typeDefinition.category === 'primitive' && typeDefinition.types.length > 0) {
+      currentPrimitiveType = typeDefinition.types[0].kind;
+    }
+    
     return `
       <!DOCTYPE html>
       <html>
@@ -391,14 +397,14 @@ export class TypeEditorProvider {
                 <div class="form-group">
                   <label for="primitive-type">Type</label>
                   <select id="primitive-type">
-                    <option value="string">String</option>
-                    <option value="number">Number</option>
-                    <option value="boolean">Boolean</option>
-                    <option value="date">Date</option>
+                    <option value="string" ${currentPrimitiveType === 'string' ? 'selected' : ''}>String</option>
+                    <option value="number" ${currentPrimitiveType === 'number' ? 'selected' : ''}>Number</option>
+                    <option value="boolean" ${currentPrimitiveType === 'boolean' ? 'selected' : ''}>Boolean</option>
+                    <option value="date" ${currentPrimitiveType === 'date' ? 'selected' : ''}>Date</option>
                   </select>
                 </div>
                 
-                <div id="string-qualifiers" class="qualifier-group">
+                <div id="string-qualifiers" class="qualifier-group ${currentPrimitiveType === 'string' ? 'active' : ''}">
                   <div class="form-row">
                     <div class="form-group">
                       <label for="string-length">Length</label>
@@ -414,7 +420,7 @@ export class TypeEditorProvider {
                   </div>
                 </div>
                 
-                <div id="number-qualifiers" class="qualifier-group">
+                <div id="number-qualifiers" class="qualifier-group ${currentPrimitiveType === 'number' ? 'active' : ''}">
                   <div class="form-row">
                     <div class="form-group">
                       <label for="number-digits">Digits</label>
@@ -434,7 +440,7 @@ export class TypeEditorProvider {
                   </div>
                 </div>
                 
-                <div id="date-qualifiers" class="qualifier-group">
+                <div id="date-qualifiers" class="qualifier-group ${currentPrimitiveType === 'date' ? 'active' : ''}">
                   <div class="form-group">
                     <label for="date-fractions">Date Fractions</label>
                     <select id="date-fractions">
@@ -494,6 +500,7 @@ export class TypeEditorProvider {
           // State
           let currentState = ${typesJson};
           let currentCategory = '${typeDefinition.category}';
+          let hasChanges = false;
           
           // DOM Elements
           const categoryRadios = document.querySelectorAll('input[name="category"]');
@@ -511,12 +518,23 @@ export class TypeEditorProvider {
           const saveBtn = document.getElementById('save-btn');
           const previewValue = document.getElementById('preview-value');
           
+          // Change detection function
+          function markAsChanged() {
+            hasChanges = true;
+            saveBtn.disabled = false;
+          }
+          
           // Category selection handler
           categoryRadios.forEach(radio => {
             radio.addEventListener('change', (e) => {
               currentCategory = e.target.value;
-              Object.values(configSections).forEach(section => section.classList.remove('active'));
+              // Hide all config sections
+              for (const section of Object.values(configSections)) {
+                section.classList.remove('active');
+              }
+              // Show selected config section
               configSections[currentCategory].classList.add('active');
+              markAsChanged();
               updatePreview();
             });
           });
@@ -526,7 +544,9 @@ export class TypeEditorProvider {
             const selectedType = primitiveTypeSelect.value;
             
             // Hide all qualifier groups first
-            Object.values(qualifierGroups).forEach(group => group.classList.remove('active'));
+            for (const group of Object.values(qualifierGroups)) {
+              group.classList.remove('active');
+            }
             
             // Show qualifier group for selected type
             if (selectedType === 'string' && qualifierGroups.string) {
@@ -538,8 +558,47 @@ export class TypeEditorProvider {
             }
             // Boolean has no qualifiers, so no group is shown
             
+            markAsChanged();
             updatePreview();
           });
+          
+          // Add change detection to all qualifier input fields
+          const stringLengthInput = document.getElementById('string-length');
+          const stringAllowedLengthSelect = document.getElementById('string-allowed-length');
+          const numberDigitsInput = document.getElementById('number-digits');
+          const numberFractionDigitsInput = document.getElementById('number-fraction-digits');
+          const numberAllowedSignSelect = document.getElementById('number-allowed-sign');
+          const dateFractionsSelect = document.getElementById('date-fractions');
+          
+          if (stringLengthInput) {
+            stringLengthInput.addEventListener('input', markAsChanged);
+          }
+          if (stringAllowedLengthSelect) {
+            stringAllowedLengthSelect.addEventListener('change', markAsChanged);
+          }
+          if (numberDigitsInput) {
+            numberDigitsInput.addEventListener('input', markAsChanged);
+          }
+          if (numberFractionDigitsInput) {
+            numberFractionDigitsInput.addEventListener('input', markAsChanged);
+          }
+          if (numberAllowedSignSelect) {
+            numberAllowedSignSelect.addEventListener('change', markAsChanged);
+          }
+          if (dateFractionsSelect) {
+            dateFractionsSelect.addEventListener('change', markAsChanged);
+          }
+          
+          // Add change detection to reference fields
+          const referenceKindSelect = document.getElementById('reference-kind');
+          const referenceObjectInput = document.getElementById('reference-object');
+          
+          if (referenceKindSelect) {
+            referenceKindSelect.addEventListener('change', markAsChanged);
+          }
+          if (referenceObjectInput) {
+            referenceObjectInput.addEventListener('input', markAsChanged);
+          }
           
           // Update preview function
           function updatePreview() {
@@ -566,7 +625,10 @@ export class TypeEditorProvider {
             }).join(' | ');
             
             previewValue.textContent = display;
-            saveBtn.disabled = currentState.length === 0;
+            // Only disable Save button if there are no types AND no changes have been made
+            if (!hasChanges) {
+              saveBtn.disabled = currentState.length === 0;
+            }
           }
           
           // Button handlers
