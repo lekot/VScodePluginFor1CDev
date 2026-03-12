@@ -2,6 +2,16 @@
 
 All notable changes to the "1C Metadata Tree" extension will be documented in this file.
 
+## [0.2.9] - 2025-03-12
+
+### Fixed
+- Fixed boolean properties in Attributes displaying as text strings ("false"/"true") instead of checkboxes
+- Applied `convertStringBooleans` conversion to `flattenAttributeProperties` method in designerParser
+
+### Added
+- Added Russian labels for Attribute properties (PasswordMode → "Режим пароля", Format → "Формат", etc.)
+- Added 40+ property label mappings for common attribute properties
+
 ## [0.1.2] - 2025-03-11
 
 ### Fixed

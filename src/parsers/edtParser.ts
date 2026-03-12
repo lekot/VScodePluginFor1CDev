@@ -233,6 +233,27 @@ export class EdtParser {
   }
 
   /**
+   * Convert string boolean values to actual boolean primitives
+   * @param properties Properties object that may contain string "false"/"true" values
+   * @returns Properties object with string booleans converted to primitives
+   */
+  private static convertStringBooleans(properties: Record<string, unknown>): Record<string, unknown> {
+    const converted: Record<string, unknown> = {};
+    
+    for (const [key, value] of Object.entries(properties)) {
+      if (value === 'false') {
+        converted[key] = false;
+      } else if (value === 'true') {
+        converted[key] = true;
+      } else {
+        converted[key] = value;
+      }
+    }
+    
+    return converted;
+  }
+
+  /**
    * Extract properties from .mdo file
    * @param mdoContent Parsed MDO content
    * @returns Properties object
@@ -271,7 +292,8 @@ export class EdtParser {
       }
     }
 
-    return result;
+    // Convert string "false"/"true" values to boolean primitives
+    return this.convertStringBooleans(result);
   }
 
   /**

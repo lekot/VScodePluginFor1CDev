@@ -259,6 +259,27 @@ export class XMLWriter {
     }
   }
 
+  /**
+   * Convert string boolean values to actual boolean primitives
+   * @param properties Properties object that may contain string "false"/"true" values
+   * @returns Properties object with string booleans converted to primitives
+   */
+  private static convertStringBooleans(properties: Record<string, unknown>): Record<string, unknown> {
+    const converted: Record<string, unknown> = {};
+    
+    for (const [key, value] of Object.entries(properties)) {
+      if (value === 'false') {
+        converted[key] = false;
+      } else if (value === 'true') {
+        converted[key] = true;
+      } else {
+        converted[key] = value;
+      }
+    }
+    
+    return converted;
+  }
+
   private static extractProperties(parsed: unknown): Record<string, unknown> {
     const properties: Record<string, unknown> = {};
 
@@ -275,7 +296,7 @@ export class XMLWriter {
             }
 
             if (key === 'Properties' && Array.isArray(value)) {
-              return this.flattenPropertiesArray(value);
+              return this.convertStringBooleans(this.flattenPropertiesArray(value));
             }
 
             if (Array.isArray(value)) {
@@ -292,7 +313,7 @@ export class XMLWriter {
 
     const obj = parsed as Record<string, unknown>;
     if (obj.Properties && typeof obj.Properties === 'object') {
-      return this.flattenProperties(obj.Properties as Record<string, unknown>);
+      return this.convertStringBooleans(this.flattenProperties(obj.Properties as Record<string, unknown>));
     }
 
     return properties;
