@@ -27,6 +27,14 @@ export interface DateQualifiers {
 }
 
 /**
+ * Group of referenceable metadata objects for the type editor (e.g. catalogs under CatalogRef).
+ */
+export interface ReferenceableGroup {
+  referenceKind: string;
+  objectNames: string[];
+}
+
+/**
  * Reference type information
  */
 export interface ReferenceTypeInfo {

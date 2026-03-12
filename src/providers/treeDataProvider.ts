@@ -1,6 +1,64 @@
 import * as vscode from 'vscode';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
+import type { ReferenceableGroup } from '../types/typeDefinitions';
+
+/** MetadataType → reference kind string for type editor. */
+const METADATA_TYPE_TO_REFERENCE_KIND: Record<MetadataType, string | undefined> = {
+  [MetadataType.Catalog]: 'CatalogRef',
+  [MetadataType.Document]: 'DocumentRef',
+  [MetadataType.Enum]: 'EnumRef',
+  [MetadataType.ChartOfCharacteristicTypes]: 'ChartOfCharacteristicTypesRef',
+  [MetadataType.ChartOfAccounts]: 'ChartOfAccountsRef',
+  [MetadataType.ChartOfCalculationTypes]: 'ChartOfCalculationTypesRef',
+  [MetadataType.Configuration]: undefined,
+  [MetadataType.Report]: undefined,
+  [MetadataType.DataProcessor]: undefined,
+  [MetadataType.InformationRegister]: undefined,
+  [MetadataType.AccumulationRegister]: undefined,
+  [MetadataType.AccountingRegister]: undefined,
+  [MetadataType.CalculationRegister]: undefined,
+  [MetadataType.BusinessProcess]: undefined,
+  [MetadataType.Task]: undefined,
+  [MetadataType.ExternalDataSource]: undefined,
+  [MetadataType.Constant]: undefined,
+  [MetadataType.SessionParameter]: undefined,
+  [MetadataType.FilterCriterion]: undefined,
+  [MetadataType.ScheduledJob]: undefined,
+  [MetadataType.FunctionalOption]: undefined,
+  [MetadataType.FunctionalOptionsParameter]: undefined,
+  [MetadataType.SettingsStorage]: undefined,
+  [MetadataType.EventSubscription]: undefined,
+  [MetadataType.CommonModule]: undefined,
+  [MetadataType.CommandGroup]: undefined,
+  [MetadataType.Command]: undefined,
+  [MetadataType.Role]: undefined,
+  [MetadataType.Interface]: undefined,
+  [MetadataType.Style]: undefined,
+  [MetadataType.WebService]: undefined,
+  [MetadataType.HTTPService]: undefined,
+  [MetadataType.IntegrationService]: undefined,
+  [MetadataType.Subsystem]: undefined,
+  [MetadataType.Attribute]: undefined,
+  [MetadataType.TabularSection]: undefined,
+  [MetadataType.Form]: undefined,
+  [MetadataType.Template]: undefined,
+  [MetadataType.CommandSubElement]: undefined,
+  [MetadataType.Recurrence]: undefined,
+  [MetadataType.Method]: undefined,
+  [MetadataType.Parameter]: undefined,
+  [MetadataType.Extension]: undefined,
+  [MetadataType.Unknown]: undefined,
+};
+
+const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
+  MetadataType.Catalog,
+  MetadataType.Document,
+  MetadataType.Enum,
+  MetadataType.ChartOfCharacteristicTypes,
+  MetadataType.ChartOfAccounts,
+  MetadataType.ChartOfCalculationTypes,
+]);
 
 /**
  * Tree Data Provider for VS Code Tree View
@@ -210,5 +268,43 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   collapseNode(node: TreeNode): void {
     node.isExpanded = false;
     this.refresh(node);
+  }
+
+  /**
+   * Returns referenceable objects for the type editor: each reference kind with its project object names.
+   * If root is not set, returns [].
+   */
+  getReferenceableObjects(): ReferenceableGroup[] {
+    if (!this.rootNode || !this.rootNode.children) {
+      return [];
+    }
+    const result: ReferenceableGroup[] = [];
+    const refKindOrder = [
+      'CatalogRef',
+      'DocumentRef',
+      'EnumRef',
+      'ChartOfCharacteristicTypesRef',
+      'ChartOfAccountsRef',
+      'ChartOfCalculationTypesRef',
+    ];
+    const byKind = new Map<string, string[]>();
+    for (const node of this.rootNode.children) {
+      if (!REFERENCEABLE_METADATA_TYPES.has(node.type)) {
+        continue;
+      }
+      const referenceKind = METADATA_TYPE_TO_REFERENCE_KIND[node.type];
+      if (!referenceKind) {
+        continue;
+      }
+      const objectNames = (node.children || []).map((c) => c.name);
+      byKind.set(referenceKind, objectNames);
+    }
+    for (const refKind of refKindOrder) {
+      result.push({
+        referenceKind: refKind,
+        objectNames: byKind.get(refKind) || [],
+      });
+    }
+    return result;
   }
 }

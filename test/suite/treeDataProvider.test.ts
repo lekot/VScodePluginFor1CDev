@@ -221,4 +221,48 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     assert.strictEqual(node.isExpanded, false);
   });
+
+  test('getReferenceableObjects should return empty array when no root', () => {
+    const result = provider.getReferenceableObjects();
+    assert.strictEqual(Array.isArray(result), true);
+    assert.strictEqual(result.length, 0);
+  });
+
+  test('getReferenceableObjects should return groups for referenceable metadata types', () => {
+    const catalogChild1: TreeNode = {
+      id: 'cat1',
+      name: 'Products',
+      type: MetadataType.Attribute,
+      properties: {},
+    };
+    const catalogChild2: TreeNode = {
+      id: 'cat2',
+      name: 'Users',
+      type: MetadataType.Attribute,
+      properties: {},
+    };
+    const catalogsNode: TreeNode = {
+      id: 'catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [catalogChild1, catalogChild2],
+    };
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [catalogsNode],
+    };
+    provider.setRootNode(rootNode);
+    const result = provider.getReferenceableObjects();
+    assert.ok(Array.isArray(result));
+    const catalogRef = result.find((g) => g.referenceKind === 'CatalogRef');
+    assert.ok(catalogRef);
+    assert.strictEqual(catalogRef.objectNames.length, 2);
+    assert.ok(catalogRef.objectNames.includes('Products'));
+    assert.ok(catalogRef.objectNames.includes('Users'));
+    assert.strictEqual(result.filter((g) => g.referenceKind.endsWith('Ref')).length, 6);
+  });
 });

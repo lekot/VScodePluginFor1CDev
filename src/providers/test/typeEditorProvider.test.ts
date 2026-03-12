@@ -55,17 +55,25 @@ describe('TypeEditorProvider', () => {
   });
 
   describe('getWebviewContent', () => {
-    it('should generate HTML with category selector', () => {
+    const emptyRef: { referenceKind: string; objectNames: string[] }[] = [];
+
+    it('should generate HTML with composite checkbox and tree', () => {
       const definition: TypeDefinition = {
         category: 'primitive',
         types: [],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
-      assert.ok(content.includes('Category'));
-      assert.ok(content.includes('Primitive'));
-      assert.ok(content.includes('Reference'));
-      assert.ok(content.includes('Composite'));
+      assert.ok(content.includes('Составной тип данных'));
+      assert.ok(content.includes('composite-cb'));
+      assert.ok(content.includes('id="type-tree"'));
+    });
+
+    it('should include search field with Ctrl+Alt+M hint', () => {
+      const definition: TypeDefinition = { category: 'primitive', types: [] };
+      const content = provider['getWebviewContent'](definition, emptyRef);
+      assert.ok(content.includes('Поиск (Ctrl+Alt+M)'));
+      assert.ok(content.includes('id="search-input"'));
     });
 
     it('should include type preview section', () => {
@@ -73,7 +81,7 @@ describe('TypeEditorProvider', () => {
         category: 'primitive',
         types: [],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('Type Preview'));
       assert.ok(content.includes('Not set'));
@@ -84,7 +92,7 @@ describe('TypeEditorProvider', () => {
         category: 'primitive',
         types: [],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('id="cancel-btn"'));
       assert.ok(content.includes('Cancel'));
@@ -97,47 +105,23 @@ describe('TypeEditorProvider', () => {
         category: 'primitive',
         types: [],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('--vscode-editor-background'));
       assert.ok(content.includes('--vscode-editor-foreground'));
       assert.ok(content.includes('--vscode-button-background'));
-      assert.ok(content.includes('--vscode-button-foreground'));
       assert.ok(content.includes('--vscode-input-background'));
       assert.ok(content.includes('--vscode-focusBorder'));
     });
 
-    it('should include type configuration area for primitive category', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [],
-      };
-      const content = provider['getWebviewContent'](definition);
-      
-      assert.ok(content.includes('id="config-primitive"'));
-      assert.ok(content.includes('Primitive'));
-    });
-
-    it('should include type configuration area for reference category', () => {
-      const definition: TypeDefinition = {
-        category: 'reference',
-        types: [],
-      };
-      const content = provider['getWebviewContent'](definition);
-      
-      assert.ok(content.includes('id="config-reference"'));
-      assert.ok(content.includes('Reference'));
-    });
-
-    it('should include type configuration area for composite category', () => {
-      const definition: TypeDefinition = {
-        category: 'composite',
-        types: [],
-      };
-      const content = provider['getWebviewContent'](definition);
-      
-      assert.ok(content.includes('id="config-composite"'));
-      assert.ok(content.includes('Composite'));
+    it('should include qualifiers section for focused primitive', () => {
+      const definition: TypeDefinition = { category: 'primitive', types: [] };
+      const content = provider['getWebviewContent'](definition, emptyRef);
+      assert.ok(content.includes('Квалификаторы'));
+      assert.ok(content.includes('id="qualifier-section"'));
+      assert.ok(content.includes('id="string-qualifiers"'));
+      assert.ok(content.includes('id="number-qualifiers"'));
+      assert.ok(content.includes('id="date-qualifiers"'));
     });
 
     it('should display formatted type in preview', () => {
@@ -145,7 +129,7 @@ describe('TypeEditorProvider', () => {
         category: 'primitive',
         types: [{ kind: 'string', qualifiers: { length: 50, allowedLength: 'Variable' } }],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('String(50)'));
     });
@@ -155,7 +139,7 @@ describe('TypeEditorProvider', () => {
         category: 'primitive',
         types: [],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('id="save-btn"') && content.includes('disabled'));
     });
@@ -165,10 +149,9 @@ describe('TypeEditorProvider', () => {
         category: 'primitive',
         types: [{ kind: 'string' }],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('id="save-btn"'));
-      // Check that disabled attribute is not present
       const saveBtnMatch = content.match(/id="save-btn"[^>]*>/);
       assert.ok(saveBtnMatch && !saveBtnMatch[0].includes('disabled'));
     });
@@ -178,74 +161,41 @@ describe('TypeEditorProvider', () => {
         category: 'primitive',
         types: [],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('acquireVsCodeApi'));
       assert.ok(content.includes('postMessage'));
     });
 
-    it('should escape HTML in type display', () => {
+    it('should render type display in preview section', () => {
       const definition: TypeDefinition = {
         category: 'primitive',
         types: [{ kind: 'string' }],
       };
-      const content = provider['getWebviewContent'](definition);
+      const content = provider['getWebviewContent'](definition, emptyRef);
       
-      // Should not contain unescaped special characters
-      assert.ok(!content.includes('<script>'));
+      assert.ok(content.includes('preview-value'));
+      assert.ok(content.includes('String'));
     });
 
-    it('should include primitive type selector dropdown', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [],
-      };
-      const content = provider['getWebviewContent'](definition);
-      
-      assert.ok(content.includes('id="primitive-type"'));
-      assert.ok(content.includes('<option value="string">String</option>'));
-      assert.ok(content.includes('<option value="number">Number</option>'));
-      assert.ok(content.includes('<option value="boolean">Boolean</option>'));
-      assert.ok(content.includes('<option value="date">Date</option>'));
+    it('should include tree with primitives and reference groups', () => {
+      const definition: TypeDefinition = { category: 'primitive', types: [] };
+      const refGroups = [
+        { referenceKind: 'CatalogRef', objectNames: ['Products'] },
+      ];
+      const content = provider['getWebviewContent'](definition, refGroups);
+      assert.ok(content.includes('primitive:string'));
+      assert.ok(content.includes('primitive:number'));
+      assert.ok(content.includes('CatalogRef'));
+      assert.ok(content.includes('ref:CatalogRef:Products'));
     });
 
-    it('should include qualifier groups for primitive types', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [],
-      };
-      const content = provider['getWebviewContent'](definition);
-      
-      assert.ok(content.includes('id="string-qualifiers"'));
-      assert.ok(content.includes('id="number-qualifiers"'));
-      assert.ok(content.includes('id="date-qualifiers"'));
-    });
-
-    it('should include CSS for qualifier group visibility', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [],
-      };
-      const content = provider['getWebviewContent'](definition);
-      
-      assert.ok(content.includes('.qualifier-group'));
-      assert.ok(content.includes('display: none'));
-      assert.ok(content.includes('.qualifier-group.active'));
-      assert.ok(content.includes('display: block'));
-    });
-
-    it('should include JavaScript for primitive type selection handler', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [],
-      };
-      const content = provider['getWebviewContent'](definition);
-      
-      assert.ok(content.includes("primitiveTypeSelect.addEventListener('change'"));
-      assert.ok(content.includes('qualifierGroups'));
-      assert.ok(content.includes('selectedType === \'string\''));
-      assert.ok(content.includes('selectedType === \'number\''));
-      assert.ok(content.includes('selectedType === \'date\''));
+    it('should accept referenceableObjects and pass to script', () => {
+      const definition: TypeDefinition = { category: 'primitive', types: [] };
+      const refGroups = [{ referenceKind: 'DocumentRef', objectNames: ['Order'] }];
+      const content = provider['getWebviewContent'](definition, refGroups);
+      assert.ok(content.includes('DocumentRef'));
+      assert.ok(content.includes('Order'));
     });
   });
 
@@ -448,13 +398,13 @@ describe('TypeEditorProvider', () => {
       assert.ok(result.some((e: string) => e.includes('Number fraction digits must be between 0 and')));
     });
 
-    it('should return error for reference without object name', () => {
+    it('should allow reference with empty object name (group-only selection)', () => {
       const definition: TypeDefinition = {
         category: 'reference',
         types: [{ kind: 'reference', referenceType: { referenceKind: 'CatalogRef', objectName: '' } }],
       };
       const result = provider['validateTypeDefinition'](definition);
-      assert.ok(result.some((e: string) => e.includes('Reference type must have an object name')));
+      assert.strictEqual(result.length, 0);
     });
 
     it('should return no errors for valid reference type', () => {

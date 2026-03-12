@@ -1081,8 +1081,9 @@ export class PropertiesProvider {
     }
 
     try {
+      const referenceableObjects = this.treeDataProvider.getReferenceableObjects();
       Logger.info('handleEditTypeMessage: calling typeEditorProvider.show()');
-      const result = await this.typeEditorProvider.show(typeXMLForEditor);
+      const result = await this.typeEditorProvider.show(typeXMLForEditor, referenceableObjects);
 
       // If result not null, serialize TypeDefinition back to XML string
       if (result !== null) {
