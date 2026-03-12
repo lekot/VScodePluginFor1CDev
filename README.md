@@ -1,3 +1,6 @@
+Плагин для просмотра дерева метаданных 1С в VSCode (в разработке)
+<img width="929" height="660" alt="image" src="https://github.com/user-attachments/assets/fd51e88b-3c98-4d46-ad5a-ebc0d1fbe4aa" />
+
 # 1C Metadata Tree for VS Code
 
 VS Code расширение для визуализации дерева метаданных конфигураций 1С:Предприятие.
@@ -14,26 +17,18 @@ VS Code расширение для визуализации дерева мет
 
 ## Установка
 
-### Из исходников
+### Из VSIX (рекомендуется)
 
-1. Клонируйте репозиторий:
-```bash
-git clone <repository-url>
-cd 1c-metadata-tree-vscode
-```
+1. Скачайте файл `.vsix` из папки [releases](releases/) в репозитории (или со страницы Releases на GitHub).
+2. В VS Code: `Ctrl+Shift+P` → **Install from VSIX…** → укажите скачанный файл.
+3. Перезагрузите окно при необходимости.
 
-2. Установите зависимости:
-```bash
-npm install
-```
+### Из исходников (для разработки)
 
-3. Скомпилируйте проект:
-```bash
-npm run compile
-```
-
-4. Запустите расширение:
-- Нажмите `F5` в VS Code для запуска в режиме отладки
+1. Клонируйте репозиторий и перейдите в каталог проекта.
+2. Установите зависимости: `npm install`
+3. Соберите проект: `npm run compile` (или `.\build-all.bat` для сборки VSIX).
+4. Запуск: нажмите `F5` в VS Code для отладки.
 
 ## Использование
 
@@ -41,7 +36,7 @@ npm run compile
 
 1. Откройте папку с конфигурацией 1С в VS Code
 2. Панель "1C Metadata" появится автоматически в Explorer
-3. Или используйте команду: `Ctrl+Shift+M` (Windows/Linux) / `Cmd+Shift+M` (macOS)
+3. Или: **Ctrl+Alt+1** (Windows/Linux) / **Cmd+Alt+1** (macOS), либо Command Palette (**Ctrl+Shift+P**) → «1C: Open Metadata Tree»
 
 ### Навигация
 
@@ -163,15 +158,6 @@ Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree 
 2. Поддерживаются только конфигурации в формате EDT и Designer
 3. Для очень больших конфигураций (100K+ элементов) может потребоваться дополнительная оптимизация
 
-## Roadmap
-
-- [ ] Контекстное меню для операций с элементами
-- [ ] Поиск по дереву метаданных
-- [ ] Фильтрация по типам
-- [ ] Панель свойств элементов
-- [ ] Синхронизация с изменениями файлов
-- [ ] Поддержка расширений конфигурации
-
 ## Вклад в проект
 
 Приветствуются pull requests! Для крупных изменений сначала откройте issue для обсуждения.
@@ -179,10 +165,6 @@ Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree 
 ## Лицензия
 
 [MIT](LICENSE)
-
-## Авторы
-
-- Разработано с использованием Kiro AI
 
 ## Поддержка
 
