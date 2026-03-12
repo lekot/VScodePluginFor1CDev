@@ -33,22 +33,35 @@ export class XmlParser {
   private static builder = new XMLBuilder(XML_PARSER_OPTIONS);
 
   /**
-   * Parse XML file and return parsed object
-   * @param filePath Path to XML file
-   * @returns Parsed XML object
+   * Parse XML file synchronously (can block on large files).
+   * Prefer parseFileAsync in async context.
    */
   static parseFile(filePath: string): Record<string, unknown> {
     try {
       if (!fs.existsSync(filePath)) {
         throw new Error(`File not found: ${filePath}`);
       }
-
       const xmlContent = fs.readFileSync(filePath, 'utf-8');
       return this.parseString(xmlContent);
     } catch (error) {
       Logger.error(`Error parsing XML file: ${filePath}`, error);
       throw new Error(`Failed to parse XML file: ${filePath}. ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * Parse XML file asynchronously (non-blocking).
+   * @param filePath Path to XML file
+   * @returns Parsed XML object
+   */
+  static async parseFileAsync(filePath: string): Promise<Record<string, unknown>> {
+    try {
+      await fs.promises.access(filePath);
+    } catch (err) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    return this.parseString(xmlContent);
   }
 
   /**

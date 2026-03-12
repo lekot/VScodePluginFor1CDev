@@ -74,7 +74,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "tsc -p ./ && npx mocha out/test/suite/**/*.test.js",
+    "test": "tsc -p tsconfig.test.json && node node_modules/mocha/bin/mocha --ui tdd out/test/suite/*.test.js",
     "format": "prettier --write \"src/**/*.ts\""
   },
   "devDependencies": {

@@ -270,8 +270,7 @@ export class PropertiesProvider {
     // For nested elements (Attributes), check parentFilePath; for root elements, check filePath
     const readOnly = !(node.parentFilePath || node.filePath);
     
-    // Debug logging
-    Logger.debug(`getWebviewContent: node.name="${node.name}", node.type="${node.type}", parentFilePath="${node.parentFilePath}", filePath="${node.filePath}", readOnly=${readOnly}, properties keys: ${Object.keys(properties).join(', ')}`);
+    Logger.debug(`getWebviewContent: node.name="${node.name}", node.type="${node.type}", readOnly=${readOnly}`);
 
     return `
       <!DOCTYPE html>
@@ -279,10 +278,7 @@ export class PropertiesProvider {
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="Content-Security-Policy" 
-              content="default-src 'none'; 
-                       style-src 'unsafe-inline'; 
-                       script-src 'unsafe-inline';">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
         <title>Properties</title>
         <style>
           body {
@@ -471,7 +467,7 @@ export class PropertiesProvider {
     `;
   }
 
-  private renderProperties(properties: Record<string, any>, readOnly: boolean): string {
+  private renderProperties(properties: Record<string, unknown>, readOnly: boolean): string {
     return Object.entries(properties)
       .map(([key, value]) => this.renderPropertyInput(key, value, readOnly))
       .join('');
@@ -480,14 +476,14 @@ export class PropertiesProvider {
   /**
    * Render a single property input field
    */
-  private renderPropertyInput(name: string, value: any, globalReadOnly: boolean): string {
+  private renderPropertyInput(name: string, value: unknown, globalReadOnly: boolean): string {
     // Format Type property if it's an object (defensive fallback)
     let displayValue = value;
     const isTypeProperty = name.toLowerCase() === 'type';
     
     if (isTypeProperty && typeof value === 'object' && value !== null) {
       try {
-        const typeDef = TypeParser.parseFromObject(value);
+        const typeDef = TypeParser.parseFromObject(value as Record<string, unknown>);
         displayValue = TypeFormatter.formatTypeDisplay(typeDef);
       } catch (error) {
         Logger.error('Failed to format Type in renderPropertyInput', error);
@@ -511,12 +507,6 @@ export class PropertiesProvider {
     // Get Russian label for property name
     const displayName = getPropertyLabel(name);
 
-    // Add Edit Type button for type property (only for non-root elements)
-    // Debug logging
-    if (isTypeProperty) {
-      Logger.debug(`Type property detected: name="${name}", isRootElement=${isRootElement}, propertyReadOnly=${propertyReadOnly}, currentNode.type=${this.currentNode?.type}`);
-    }
-    
     const editTypeButton = isTypeProperty && !propertyReadOnly ? `
       <button class="edit-type-btn" data-property="${this.escapeHtml(name)}">
         <span class="octicon octicon-pencil"></span> Редактировать тип
@@ -586,7 +576,7 @@ export class PropertiesProvider {
   /**
    * Detect property type from value
    */
-  private detectPropertyType(value: any): 'string' | 'boolean' | 'number' | 'unknown' {
+  private detectPropertyType(value: unknown): 'string' | 'boolean' | 'number' | 'unknown' {
     if (typeof value === 'boolean') {
       return 'boolean';
     }
@@ -776,12 +766,10 @@ export class PropertiesProvider {
             break;
 
           case 'typeUpdated':
-            // Update Type value in properties panel after save
             const propertyName = message.property;
             const newValue = message.value;
-            
-            // Find the input element for this property
-            const input = document.querySelector(\`.property-input[data-property="\${propertyName}"]\`);
+            const esc = (s) => (s || '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+            const input = document.querySelector(\`.property-input[data-property="\${esc(propertyName)}"]\`);
             if (input) {
               // Update the input value
               input.value = newValue;

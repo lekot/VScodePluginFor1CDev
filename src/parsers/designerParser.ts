@@ -163,11 +163,11 @@ export class DesignerParser {
     // Try to read metadata XML file
     // XML file is in the parent directory (e.g., CommonModules/Module.xml, not CommonModules/Module/Module.xml)
     const xmlPath = path.join(path.dirname(elementPath), `${elementName}.xml`);
-    let xmlContent: any = null;
+    let xmlContent: Record<string, unknown> | null = null;
     try {
       await fs.promises.access(xmlPath);
       try {
-        xmlContent = XmlParser.parseFile(xmlPath);
+        xmlContent = await XmlParser.parseFileAsync(xmlPath);
         const properties = this.extractPropertiesFromElement(xmlContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
         
@@ -406,7 +406,7 @@ export class DesignerParser {
               
               try {
                 await fs.promises.access(xmlPath);
-                const xmlContent = XmlParser.parseFile(xmlPath);
+                const xmlContent = await XmlParser.parseFileAsync(xmlPath);
                 properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
               } catch {
                 // XML doesn't exist, use default properties
@@ -490,7 +490,7 @@ export class DesignerParser {
               
               try {
                 await fs.promises.access(xmlPath);
-                const xmlContent = XmlParser.parseFile(xmlPath);
+                const xmlContent = await XmlParser.parseFileAsync(xmlPath);
                 properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
               } catch {
                 // XML doesn't exist, use default properties
@@ -558,7 +558,7 @@ export class DesignerParser {
               
               try {
                 await fs.promises.access(xmlPath);
-                const xmlContent = XmlParser.parseFile(xmlPath);
+                const xmlContent = await XmlParser.parseFileAsync(xmlPath);
                 properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
               } catch {
                 // XML doesn't exist, use default properties
@@ -602,7 +602,7 @@ export class DesignerParser {
    * @returns Tree node for attributes container
    */
   private static async parseAttributesFromXML(
-    xmlContent: any,
+    xmlContent: Record<string, unknown>,
     elementPath: string,
     elementName: string
   ): Promise<TreeNode> {
@@ -621,24 +621,20 @@ export class DesignerParser {
     try {
       // Navigate through XML structure to find ChildObjects
       const childObjects = this.findChildObjects(xmlContent);
-      
-      if (!childObjects) {
+      if (childObjects == null) {
         return attributesNode;
       }
 
-      // Extract Attribute elements from ChildObjects
       const attributes = this.extractAttributes(childObjects);
       
       for (const attr of attributes) {
-        // Name is inside Properties section
-        const attrName = (attr.Properties && attr.Properties.Name) || attr.Name || 'Unknown';
-        
-        // Create attribute node with properties from XML
+        const a = attr as Record<string, unknown>;
+        const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) || a.Name || 'Unknown';
         const attributeNode: TreeNode = {
-          id: `Attributes.${attrName}`,
-          name: attrName,
+          id: `Attributes.${String(attrName)}`,
+          name: String(attrName),
           type: MetadataType.Attribute,
-          properties: this.flattenAttributeProperties(attr),
+          properties: this.flattenAttributeProperties(a),
           // Use parentFilePath instead of filePath to avoid collision
           parentFilePath: parentXmlPath,
         };
@@ -658,7 +654,7 @@ export class DesignerParser {
    * @param xmlContent Parsed XML content
    * @returns ChildObjects section or null
    */
-  private static findChildObjects(xmlContent: any): any {
+  private static findChildObjects(xmlContent: Record<string, unknown>): unknown {
     if (!xmlContent || typeof xmlContent !== 'object') {
       return null;
     }
@@ -672,8 +668,7 @@ export class DesignerParser {
       }
       
       if (typeof value === 'object' && value !== null) {
-        // Recursively search in nested objects
-        const found = this.findChildObjects(value);
+        const found = this.findChildObjects(value as Record<string, unknown>);
         if (found) {
           return found;
         }
@@ -688,18 +683,14 @@ export class DesignerParser {
    * @param childObjects ChildObjects section
    * @returns Array of attribute objects
    */
-  private static extractAttributes(childObjects: any): any[] {
-    const attributes: any[] = [];
-    
+  private static extractAttributes(childObjects: unknown): unknown[] {
+    const attributes: unknown[] = [];
     if (!childObjects || typeof childObjects !== 'object') {
       return attributes;
     }
-
-    // ChildObjects can be an object with Attribute properties
-    if (childObjects.Attribute) {
-      const attrData = childObjects.Attribute;
-      
-      // Can be single attribute or array of attributes
+    const obj = childObjects as Record<string, unknown>;
+    if (obj.Attribute) {
+      const attrData = obj.Attribute;
       if (Array.isArray(attrData)) {
         attributes.push(...attrData);
       } else {
@@ -715,7 +706,7 @@ export class DesignerParser {
    * @param attr Attribute object from XML
    * @returns Flattened properties
    */
-  private static flattenAttributeProperties(attr: any): Record<string, unknown> {
+  private static flattenAttributeProperties(attr: Record<string, unknown>): Record<string, unknown> {
     const properties: Record<string, unknown> = {};
     
     if (!attr || typeof attr !== 'object') {
@@ -750,7 +741,7 @@ export class DesignerParser {
             if (Array.isArray(items) && items.length > 0) {
               const firstItem = items[0];
               if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
-                properties[key] = (firstItem as any)['v8:content'];
+                properties[key] = (firstItem as Record<string, unknown>)['v8:content'];
               }
             }
           } else if ('v8:Type' in obj) {
@@ -816,7 +807,7 @@ export class DesignerParser {
                   if (Array.isArray(items) && items.length > 0) {
                     const firstItem = items[0];
                     if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
-                      result[propKey] = (firstItem as any)['v8:content'];
+                      result[propKey] = (firstItem as Record<string, unknown>)['v8:content'];
                     }
                   }
                 } else if ('v8:Type' in obj) {

@@ -1,5 +1,5 @@
 import { XmlParser } from './xmlParser';
-import {
+import type {
   TypeDefinition,
   TypeEntry,
   StringQualifiers,
@@ -177,7 +177,7 @@ export class TypeParser {
       throw new Error(`Invalid reference type format: ${typeValue}`);
     }
 
-    const referenceKind = match[1] as any;
+    const referenceKind = match[1] as ReferenceTypeInfo['referenceKind'];
     const objectName = match[2];
 
     const validKinds = [

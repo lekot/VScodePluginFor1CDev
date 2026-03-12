@@ -5,11 +5,19 @@ try {
   vscode = null;
 }
 
+/** Minimum level to output. In production use 'info' or higher so debug is not written. */
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
 /**
  * Logger utility for the extension
  */
 export class Logger {
-  private static outputChannel: any = null;
+  private static outputChannel: { appendLine: (s: string) => void; show: () => void } | null = null;
+  private static minLevel: LogLevel = 'info';
+
+  static setMinLevel(level: LogLevel): void {
+    this.minLevel = level;
+  }
 
   static initialize(): void {
     try {
@@ -40,6 +48,13 @@ export class Logger {
   }
 
   private static log(level: string, message: string, args: unknown[]): void {
+    const levelOrder = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+    const minOrder = levelOrder[this.minLevel.toUpperCase() as keyof typeof levelOrder] ?? 1;
+    const currentOrder = levelOrder[level as keyof typeof levelOrder] ?? 1;
+    if (currentOrder < minOrder) {
+      return;
+    }
+
     const timestamp = new Date().toISOString();
     const argsStr = args.length > 0 ? ` ${JSON.stringify(args)}` : '';
     const logMessage = `[${timestamp}] [${level}] ${message}${argsStr}`;
