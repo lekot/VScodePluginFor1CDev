@@ -604,7 +604,8 @@ export class XMLWriter {
             continue;
           }
 
-          const containerName = elementType + 's';
+          // Designer format: attributes live under ChildObjects, not Attributes
+          const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
           if (key === containerName && Array.isArray(value)) {
             result[key] = this.updateNestedElementArray(value, elementType, elementName, properties);
           } else if (Array.isArray(value)) {
@@ -657,21 +658,42 @@ export class XMLWriter {
   }
 
   private static extractNestedElementData(elementArray: unknown[]): { name: string } {
-    for (const item of elementArray) {
-      if (item && typeof item === 'object') {
-        const obj = item as Record<string, unknown>;
-        if ('Name' in obj && Array.isArray(obj.Name)) {
-          const nameArray = obj.Name as unknown[];
-          if (nameArray.length > 0 && nameArray[0] && typeof nameArray[0] === 'object') {
-            const nameObj = nameArray[0] as Record<string, unknown>;
-            if ('#text' in nameObj) {
-              return { name: String(nameObj['#text']) };
-            }
+    const extractNameFrom = (arr: unknown[]): string => {
+      for (const it of arr) {
+        if (!it || typeof it !== 'object') continue;
+        const o = it as Record<string, unknown>;
+        if ('Name' in o && Array.isArray(o.Name)) {
+          const nameArr = o.Name as unknown[];
+          if (nameArr.length > 0 && nameArr[0] && typeof nameArr[0] === 'object') {
+            const nameObj = nameArr[0] as Record<string, unknown>;
+            if ('#text' in nameObj) return String(nameObj['#text']);
           }
         }
+        if ('Properties' in o && Array.isArray(o.Properties)) {
+          const inner = extractNameFrom(o.Properties as unknown[]);
+          if (inner) return inner;
+        }
       }
+      return '';
+    };
+    const name = extractNameFrom(elementArray);
+    return { name };
+  }
+
+  /** Extract Type element content from parser output (handles preserveOrder root array) */
+  private static extractTypeContentFromParsed(parsed: unknown): unknown[] | unknown | null {
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (item && typeof item === 'object' && 'Type' in (item as Record<string, unknown>)) {
+          const inner = (item as Record<string, unknown>).Type;
+          return inner != null ? inner : null;
+        }
+      }
+      return null;
     }
-    return { name: '' };
+    const obj = parsed as Record<string, unknown>;
+    return 'Type' in obj ? obj.Type ?? null : null;
   }
 
   private static updateNestedElementProperties(
@@ -691,16 +713,28 @@ export class XMLWriter {
           continue;
         }
 
+        // Designer format: Attribute props (Type, Name, etc.) live inside Properties
+        if (key === 'Properties' && Array.isArray(value)) {
+          result[key] = this.updateNestedElementProperties(value, properties);
+          continue;
+        }
+
         if (key in properties) {
           const newValue = properties[key];
+
+          // Don't write object values as "[object Object]" — 1C XDTO expects proper XML or primitives
+          if (typeof newValue === 'object' && newValue !== null && !Array.isArray(newValue)) {
+            result[key] = value;
+            continue;
+          }
 
           // Type from type editor is sent as XML string; write as structured content, not #text
           if (key === 'Type' && typeof newValue === 'string' && newValue.trim().includes('<')) {
             try {
-              const typeParsed = this.parser.parse(newValue.trim()) as Record<string, unknown>;
-              if (typeParsed && typeof typeParsed === 'object' && 'Type' in typeParsed) {
-                const inner = typeParsed.Type;
-                result[key] = Array.isArray(inner) ? inner : inner != null ? [inner] : [{ '#text': newValue }];
+              const typeParsed = this.parser.parse(newValue.trim());
+              const inner = this.extractTypeContentFromParsed(typeParsed);
+              if (inner != null) {
+                result[key] = Array.isArray(inner) ? inner : [inner];
               } else {
                 result[key] = [{ '#text': newValue }];
               }
@@ -711,8 +745,8 @@ export class XMLWriter {
           } else if (Array.isArray(value) && value.length > 0) {
             const firstChild = value[0];
             if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
-              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number' 
-                ? newValue 
+              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
+                ? newValue
                 : String(newValue);
               result[key] = [{ ...firstChild, '#text': textValue }];
             } else {
