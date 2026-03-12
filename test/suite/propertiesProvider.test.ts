@@ -2,11 +2,13 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { PropertiesProvider } from '../../src/providers/propertiesProvider';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 
 suite('PropertiesProvider Message Protocol Test Suite', () => {
   let provider: PropertiesProvider;
   let treeDataProvider: MetadataTreeDataProvider;
+  let typeEditorProvider: TypeEditorProvider;
   let mockContext: vscode.ExtensionContext;
 
   setup(() => {
@@ -32,7 +34,8 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     };
 
     treeDataProvider = new MetadataTreeDataProvider(mockContext);
-    provider = new PropertiesProvider(mockContext, treeDataProvider);
+    typeEditorProvider = new TypeEditorProvider(mockContext);
+    provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });
 
   teardown(() => {
@@ -297,6 +300,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
 suite('PropertiesProvider Save Operation Test Suite', () => {
   let provider: PropertiesProvider;
   let treeDataProvider: MetadataTreeDataProvider;
+  let typeEditorProvider: TypeEditorProvider;
   let mockContext: vscode.ExtensionContext;
 
   setup(() => {
@@ -322,7 +326,8 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
     };
 
     treeDataProvider = new MetadataTreeDataProvider(mockContext);
-    provider = new PropertiesProvider(mockContext, treeDataProvider);
+    typeEditorProvider = new TypeEditorProvider(mockContext);
+    provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });
 
   teardown(() => {

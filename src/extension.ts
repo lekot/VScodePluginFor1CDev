@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { Logger } from './utils/logger';
 import { MetadataTreeDataProvider } from './providers/treeDataProvider';
 import { PropertiesProvider } from './providers/propertiesProvider';
+import { TypeEditorProvider } from './providers/typeEditorProvider';
 import { MetadataParser } from './parsers/metadataParser';
 import { TreeNode } from './models/treeNode';
 import { MESSAGES } from './constants/messages';
@@ -9,6 +10,7 @@ import { MESSAGES } from './constants/messages';
 let treeDataProvider: MetadataTreeDataProvider | null = null;
 let treeView: vscode.TreeView<TreeNode> | null = null;
 let propertiesProvider: PropertiesProvider | null = null;
+let typeEditorProvider: TypeEditorProvider | null = null;
 
 /**
  * Activate the extension
@@ -28,8 +30,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(treeView);
 
+  // Create type editor provider
+  typeEditorProvider = new TypeEditorProvider(context);
+
   // Create properties provider
-  propertiesProvider = new PropertiesProvider(context, treeDataProvider);
+  propertiesProvider = new PropertiesProvider(context, treeDataProvider, typeEditorProvider);
   context.subscriptions.push(propertiesProvider);
 
   // Register commands

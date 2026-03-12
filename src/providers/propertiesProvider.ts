@@ -2,12 +2,13 @@ import * as vscode from 'vscode';
 import { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { MetadataTreeDataProvider } from './treeDataProvider';
+import { TypeEditorProvider } from './typeEditorProvider';
 
 /**
  * Message types sent from webview to extension
  */
 interface WebviewMessage {
-  type: 'save' | 'cancel' | 'validate' | 'propertyChanged';
+  type: 'save' | 'cancel' | 'validate' | 'propertyChanged' | 'editType';
   properties?: Record<string, unknown>;
   propertyName?: string;
   value?: unknown;
@@ -17,10 +18,12 @@ interface WebviewMessage {
  * Message types sent from extension to webview
  */
 interface ExtensionMessage {
-  type: 'update' | 'saved' | 'error' | 'validationError';
+  type: 'update' | 'saved' | 'error' | 'validationError' | 'typeUpdated';
   node?: TreeNode;
   message?: string;
   errors?: Record<string, string>;
+  property?: string;
+  value?: string;
 }
 
 /**
@@ -40,13 +43,15 @@ export class PropertiesProvider {
   private disposables: vscode.Disposable[] = [];
 
   constructor(
-    private context: vscode.ExtensionContext,
-    private treeDataProvider: MetadataTreeDataProvider
-  ) {
-    Logger.info('PropertiesProvider initialized');
-    // Store reference for future use (tree refresh will be implemented in later tasks)
-    void this.treeDataProvider;
-  }
+      private context: vscode.ExtensionContext,
+      private treeDataProvider: MetadataTreeDataProvider,
+      private typeEditorProvider: TypeEditorProvider
+    ) {
+      Logger.info('PropertiesProvider initialized');
+      // Store reference for future use (tree refresh will be implemented in later tasks)
+      void this.treeDataProvider;
+    }
+
 
   /**
    * Show properties for a tree node
@@ -662,11 +667,26 @@ export class PropertiesProvider {
         }
       }
 
+      // Handle edit type button click
+      function handleEditType(event) {
+        const btn = event.target.closest('.edit-type-btn');
+        if (btn) {
+          vscode.postMessage({
+            type: 'editType',
+            property: btn.dataset.property
+          });
+        }
+      }
+
       // Attach event listeners
       function attachEventListeners() {
         document.querySelectorAll('.property-input').forEach(input => {
           input.addEventListener('change', handlePropertyChange);
           input.addEventListener('input', handlePropertyChange);
+        });
+
+        document.querySelectorAll('.edit-type-btn').forEach(btn => {
+          btn.addEventListener('click', handleEditType);
         });
 
         const saveBtn = document.getElementById('save-btn');
@@ -740,6 +760,31 @@ export class PropertiesProvider {
             
             updateUI();
             break;
+
+          case 'typeUpdated':
+            // Update Type value in properties panel after save
+            const propertyName = message.property;
+            const newValue = message.value;
+            
+            // Find the input element for this property
+            const input = document.querySelector(\`.property-input[data-property="\${propertyName}"]\`);
+            if (input) {
+              // Update the input value
+              input.value = newValue;
+              
+              // Update state
+              state.currentProperties[propertyName] = newValue;
+              
+              // Mark field as changed
+              if (JSON.stringify(newValue) !== JSON.stringify(state.originalProperties[propertyName])) {
+                state.changedProperties.add(propertyName);
+                input.classList.add('changed');
+              }
+              
+              // Activate Save button
+              updateUI();
+            }
+            break;
         }
       });
 
@@ -767,6 +812,10 @@ export class PropertiesProvider {
         
         case 'validate':
           this.handleValidateMessage(message);
+          break;
+        
+        case 'editType':
+          await this.handleEditTypeMessage(message);
           break;
         
         default:
@@ -864,6 +913,60 @@ export class PropertiesProvider {
       this.postMessage({
         type: 'validationError',
         errors: validationResult.errors
+      });
+    }
+  }
+
+  /**
+   * Handle editType message from webview
+   */
+  private async handleEditTypeMessage(_message: WebviewMessage): Promise<void> {
+    if (!this.currentNode) {
+      Logger.warn('Edit type attempted with no current node');
+      this.postMessage({
+        type: 'error',
+        message: 'No element selected'
+      });
+      return;
+    }
+
+    // Get current Type value from currentNode.properties
+    const currentTypeXML = this.currentNode.properties['Type'] as string;
+
+    if (!currentTypeXML) {
+      Logger.warn('Edit type attempted but Type property is empty');
+      this.postMessage({
+        type: 'error',
+        message: 'Type property is empty'
+      });
+      return;
+    }
+
+    try {
+      // Call TypeEditorProvider.show(typeXML) and await result
+      const result = await this.typeEditorProvider.show(currentTypeXML);
+
+      // If result not null, serialize TypeDefinition back to XML string
+      if (result !== null) {
+        const { TypeSerializer } = await import('../serializers/typeSerializer');
+        const updatedTypeXML = TypeSerializer.serialize(result);
+
+        // Update value in webview via postMessage with type 'typeUpdated'
+        this.postMessage({
+          type: 'typeUpdated',
+          property: 'Type',
+          value: updatedTypeXML
+        });
+
+        Logger.info('Type updated successfully');
+      } else {
+        Logger.info('Type editing cancelled by user');
+      }
+    } catch (error) {
+      Logger.error(`Failed to edit type: ${error}`);
+      this.postMessage({
+        type: 'error',
+        message: `Failed to edit type: ${error instanceof Error ? error.message : 'Unknown error'}`
       });
     }
   }
