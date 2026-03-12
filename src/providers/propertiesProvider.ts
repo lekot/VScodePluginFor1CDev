@@ -478,7 +478,7 @@ export class PropertiesProvider {
     // Determine if this specific property should be read-only
     // For root elements (Catalog, Document, etc.), type property is read-only
     // For nested elements (Attribute, etc.), type property is editable
-    const isTypeProperty = name === 'type';
+    const isTypeProperty = name.toLowerCase() === 'type';
     const isRootElement = this.isRootElement(this.currentNode);
     const propertyReadOnly = globalReadOnly || (isRootElement && isTypeProperty);
     
@@ -489,7 +489,7 @@ export class PropertiesProvider {
     const displayName = getPropertyLabel(name);
 
     // Add Edit Type button for type property (only for non-root elements)
-    const editTypeButton = name === 'type' && !propertyReadOnly ? `
+    const editTypeButton = isTypeProperty && !propertyReadOnly ? `
       <button class="edit-type-btn" data-property="${this.escapeHtml(name)}">
         <span class="octicon octicon-pencil"></span> Редактировать тип
       </button>
