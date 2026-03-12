@@ -55,9 +55,6 @@ export class PropertiesProvider {
   public async showProperties(node: TreeNode): Promise<void> {
     this.currentNode = node;
 
-    // Log for debugging
-    Logger.debug(`showProperties called: node=${node.name}, type=${node.type}, filePath=${node.filePath}, parentFilePath=${node.parentFilePath}`);
-
     // Check if this is a .bsl module file - open it as text instead of properties
     if (node.filePath && node.filePath.endsWith('.bsl')) {
       try {
@@ -463,16 +460,8 @@ export class PropertiesProvider {
     `;
   }
 
-  /**
-   * Render properties as input fields
-   */
   private renderProperties(properties: Record<string, any>, readOnly: boolean): string {
-    const entries = Object.entries(properties);
-    Logger.debug(`renderProperties: node=${this.currentNode?.name}, properties count=${entries.length}, readOnly=${readOnly}`);
-    entries.forEach(([key, value]) => {
-      Logger.debug(`  Property: ${key} = ${value}`);
-    });
-    return entries
+    return Object.entries(properties)
       .map(([key, value]) => this.renderPropertyInput(key, value, readOnly))
       .join('');
   }
@@ -505,11 +494,6 @@ export class PropertiesProvider {
         <span class="octicon octicon-pencil"></span> Редактировать тип
       </button>
     ` : '';
-
-    // Log for debugging
-    if (isTypeProperty && this.currentNode) {
-      Logger.debug(`Type property rendering: node=${this.currentNode.name}, type=${this.currentNode.type}, isRootElement=${isRootElement}, propertyReadOnly=${propertyReadOnly}, globalReadOnly=${globalReadOnly}`);
-    }
 
     return `
       <div class="property-row">
