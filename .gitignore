@@ -9,6 +9,7 @@ out/
 .env
 .env.local
 structure_samples/
+structure_backup/
 
 # Specs (tracked only on branch local-specs, not pushed to origin)
 .kiro/
