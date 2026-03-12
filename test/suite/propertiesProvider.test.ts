@@ -266,7 +266,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     const html = renderPropertyInput('type', 'xs:string', false);
 
     assert.ok(html.includes('disabled'), 'Type property should be disabled for root elements');
-    assert.ok(!html.includes('Редактировать тип'), 'Edit Type button should not appear for root elements');
+    assert.ok(!html.includes('edit-type-btn'), 'Edit Type button should not appear for root elements');
   });
 
   test('renderPropertyInput should enable type for Attribute (nested element)', () => {
@@ -293,7 +293,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     const html = renderPropertyInput('type', 'xs:string', false);
 
     assert.ok(!html.includes('disabled'), 'Type property should be enabled for Attribute');
-    assert.ok(html.includes('Редактировать тип'), 'Edit Type button should appear for Attribute');
+    assert.ok(html.includes('edit-type-btn') && html.includes('aria-label="Редактировать тип"'), 'Edit Type button (pencil icon) should appear for Attribute');
   });
 
   // attribute-type-editor bugfix: Type must not display as "[object Object]"
