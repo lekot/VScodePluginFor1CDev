@@ -362,7 +362,17 @@ export class XMLWriter {
           flattened[key] = obj['#text'];
         } else if ('v8:Type' in obj) {
           // Handle Type element with v8:Type child
-          flattened[key] = obj['v8:Type'];
+          // Parse and format the type for display
+          try {
+            const { TypeParser } = require('../parsers/typeParser');
+            const { TypeFormatter } = require('../utils/typeFormatter');
+            const typeDef = TypeParser.parseFromObject(obj);
+            flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
+          } catch (error) {
+            // If parsing fails, fall back to raw v8:Type value
+            Logger.error('Failed to parse type in XMLWriter.flattenProperties', error);
+            flattened[key] = obj['v8:Type'];
+          }
         } else {
           flattened[key] = value;
         }
