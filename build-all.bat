@@ -5,7 +5,7 @@ for /f "tokens=2 delims=:, " %%a in ('findstr /C:"\"version\"" package.json') do
 echo Current version: %VERSION%
 
 echo Incrementing version...
-node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));const v=p.version.split('.');v[2]=parseInt(v[2])+1;p.version=v.join('.');fs.writeFileSync('package.json',JSON.stringify(p,null,2));"
+node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));const v=p.version.split('.');let major=parseInt(v[0]), minor=parseInt(v[1]), patch=parseInt(v[2]);if(patch>=9){minor++;patch=0;}else{patch++;}p.version=[major,minor,patch].join('.');fs.writeFileSync('package.json',JSON.stringify(p,null,2));"
 
 for /f "tokens=2 delims=:, " %%a in ('findstr /C:"\"version\"" package.json') do set NEWVERSION=%%~a
 echo New version: %NEWVERSION%
