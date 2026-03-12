@@ -713,7 +713,7 @@ export class DesignerParser {
       
       for (const [key, value] of Object.entries(props)) {
         // Skip XML metadata keys
-        if (key.startsWith('@_') || key.startsWith('#') || key === 'Type') {
+        if (key.startsWith('@_') || key.startsWith('#')) {
           continue;
         }
         
@@ -733,6 +733,9 @@ export class DesignerParser {
                 properties[key] = (firstItem as any)['v8:content'];
               }
             }
+          } else if ('v8:Type' in obj) {
+            // Handle Type element with v8:Type child
+            properties[key] = obj['v8:Type'];
           } else {
             // For other complex types, store as-is or extract text
             properties[key] = value;

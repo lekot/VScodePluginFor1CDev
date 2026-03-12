@@ -55,6 +55,9 @@ export class PropertiesProvider {
   public async showProperties(node: TreeNode): Promise<void> {
     this.currentNode = node;
 
+    // Log for debugging
+    Logger.debug(`showProperties called: node=${node.name}, type=${node.type}, filePath=${node.filePath}, parentFilePath=${node.parentFilePath}`);
+
     // Check if this is a .bsl module file - open it as text instead of properties
     if (node.filePath && node.filePath.endsWith('.bsl')) {
       try {
@@ -464,7 +467,12 @@ export class PropertiesProvider {
    * Render properties as input fields
    */
   private renderProperties(properties: Record<string, any>, readOnly: boolean): string {
-    return Object.entries(properties)
+    const entries = Object.entries(properties);
+    Logger.debug(`renderProperties: node=${this.currentNode?.name}, properties count=${entries.length}, readOnly=${readOnly}`);
+    entries.forEach(([key, value]) => {
+      Logger.debug(`  Property: ${key} = ${value}`);
+    });
+    return entries
       .map(([key, value]) => this.renderPropertyInput(key, value, readOnly))
       .join('');
   }
@@ -479,6 +487,8 @@ export class PropertiesProvider {
     const inputValue = propertyType === 'boolean' ? '' : this.escapeHtml(String(value ?? ''));
     
     // Determine if this specific property should be read-only
+    // For root elements (Catalog, Document, etc.), type property is read-only
+    // For nested elements (Attribute, etc.), type property is editable
     const isTypeProperty = name === 'type';
     const isRootElement = this.isRootElement(this.currentNode);
     const propertyReadOnly = globalReadOnly || (isRootElement && isTypeProperty);
@@ -488,6 +498,18 @@ export class PropertiesProvider {
     // Get Russian label for property name
     const { getPropertyLabel } = require('../constants/propertyLabels');
     const displayName = getPropertyLabel(name);
+
+    // Add Edit Type button for type property (only for non-root elements)
+    const editTypeButton = name === 'type' && !propertyReadOnly ? `
+      <button class="edit-type-btn" data-property="${this.escapeHtml(name)}">
+        <span class="octicon octicon-pencil"></span> Редактировать тип
+      </button>
+    ` : '';
+
+    // Log for debugging
+    if (isTypeProperty && this.currentNode) {
+      Logger.debug(`Type property rendering: node=${this.currentNode.name}, type=${this.currentNode.type}, isRootElement=${isRootElement}, propertyReadOnly=${propertyReadOnly}, globalReadOnly=${globalReadOnly}`);
+    }
 
     return `
       <div class="property-row">
@@ -500,12 +522,15 @@ export class PropertiesProvider {
           ${checked}
           ${disabled}
         />
+        ${editTypeButton}
       </div>
     `;
   }
 
   /**
    * Check if node is a root metadata element (Catalog, Document, etc.)
+   * Note: Attribute is NOT in this list because it's a nested element
+   * and should have an editable type property
    */
   private isRootElement(node: TreeNode | undefined): boolean {
     if (!node) {
@@ -523,7 +548,7 @@ export class PropertiesProvider {
       return true;
     }
     
-    // Root metadata types
+    // Root metadata types (elements that have their own XML file)
     const rootTypes = [
       'Catalog', 'Document', 'Register', 'InformationRegister', 
       'AccumulationRegister', 'ChartOfCharacteristicTypes', 
