@@ -470,15 +470,30 @@ export class PropertiesProvider {
    * Render a single property input field
    */
   private renderPropertyInput(name: string, value: any, globalReadOnly: boolean): string {
-    const propertyType = this.detectPropertyType(value);
+    // Format Type property if it's an object (defensive fallback)
+    let displayValue = value;
+    const isTypeProperty = name.toLowerCase() === 'type';
+    
+    if (isTypeProperty && typeof value === 'object' && value !== null) {
+      try {
+        const { TypeParser } = require('../parsers/typeParser');
+        const { TypeFormatter } = require('../utils/typeFormatter');
+        const typeDef = TypeParser.parseFromObject(value);
+        displayValue = TypeFormatter.formatTypeDisplay(typeDef);
+      } catch (error) {
+        Logger.error('Failed to format Type in renderPropertyInput', error);
+        displayValue = '[Invalid Type]';
+      }
+    }
+    
+    const propertyType = this.detectPropertyType(displayValue);
     const inputType = propertyType === 'boolean' ? 'checkbox' : propertyType === 'number' ? 'number' : 'text';
-    const checked = propertyType === 'boolean' && value ? 'checked' : '';
-    const inputValue = propertyType === 'boolean' ? '' : this.escapeHtml(String(value ?? ''));
+    const checked = propertyType === 'boolean' && displayValue ? 'checked' : '';
+    const inputValue = propertyType === 'boolean' ? '' : this.escapeHtml(String(displayValue ?? ''));
     
     // Determine if this specific property should be read-only
     // For root elements (Catalog, Document, etc.), type property is read-only
     // For nested elements (Attribute, etc.), type property is editable
-    const isTypeProperty = name.toLowerCase() === 'type';
     const isRootElement = this.isRootElement(this.currentNode);
     const propertyReadOnly = globalReadOnly || (isRootElement && isTypeProperty);
     
