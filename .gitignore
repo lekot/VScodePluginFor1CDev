@@ -8,3 +8,9 @@ out/
 .env
 .env.local
 structure_samples/
+
+# Cursor and MCP (local / tooling)
+.cursor/
+mcp/
+mcp-*
+shcntx_help.db
