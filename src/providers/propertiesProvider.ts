@@ -266,6 +266,9 @@ export class PropertiesProvider {
     // Switch to read-only mode when file path is missing
     // For nested elements (Attributes), check parentFilePath; for root elements, check filePath
     const readOnly = !(node.parentFilePath || node.filePath);
+    
+    // Debug logging
+    Logger.debug(`getWebviewContent: node.name="${node.name}", node.type="${node.type}", parentFilePath="${node.parentFilePath}", filePath="${node.filePath}", readOnly=${readOnly}, properties keys: ${Object.keys(properties).join(', ')}`);
 
     return `
       <!DOCTYPE html>
@@ -509,6 +512,11 @@ export class PropertiesProvider {
     const displayName = getPropertyLabel(name);
 
     // Add Edit Type button for type property (only for non-root elements)
+    // Debug logging
+    if (isTypeProperty) {
+      Logger.debug(`Type property detected: name="${name}", isRootElement=${isRootElement}, propertyReadOnly=${propertyReadOnly}, currentNode.type=${this.currentNode?.type}`);
+    }
+    
     const editTypeButton = isTypeProperty && !propertyReadOnly ? `
       <button class="edit-type-btn" data-property="${this.escapeHtml(name)}">
         <span class="octicon octicon-pencil"></span> Редактировать тип
@@ -538,6 +546,12 @@ export class PropertiesProvider {
    */
   private isRootElement(node: TreeNode | undefined): boolean {
     if (!node) {
+      return false;
+    }
+    
+    // Nested elements (Attributes, TabularSections, etc.) have parentFilePath
+    // They are NOT root elements even if they don't have parent reference
+    if (node.parentFilePath) {
       return false;
     }
     
