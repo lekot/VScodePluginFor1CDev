@@ -296,15 +296,12 @@ export class XMLWriter {
             }
 
             if (key === 'Properties' && Array.isArray(value)) {
-              const result = this.convertStringBooleans(this.flattenPropertiesArray(value));
-              Logger.debug(`extractProperties from array: ${JSON.stringify(Object.keys(result))}`);
-              return result;
+              return this.convertStringBooleans(this.flattenPropertiesArray(value));
             }
 
             if (Array.isArray(value)) {
               const nested = this.extractProperties(value);
               if (Object.keys(nested).length > 0) {
-                Logger.debug(`extractProperties from nested array: ${JSON.stringify(Object.keys(nested))}`);
                 return nested;
               }
             }
@@ -316,9 +313,7 @@ export class XMLWriter {
 
     const obj = parsed as Record<string, unknown>;
     if (obj.Properties && typeof obj.Properties === 'object') {
-      const result = this.convertStringBooleans(this.flattenProperties(obj.Properties as Record<string, unknown>));
-      Logger.debug(`extractProperties from object: ${JSON.stringify(Object.keys(result))}`);
-      return result;
+      return this.convertStringBooleans(this.flattenProperties(obj.Properties as Record<string, unknown>));
     }
 
     return properties;
