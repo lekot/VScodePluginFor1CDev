@@ -637,7 +637,7 @@ export class TypeEditorProvider {
           });
           
           document.getElementById('save-btn').addEventListener('click', () => {
-            vscode.postMessage({ type: 'save', typeDefinition: currentState });
+            vscode.postMessage({ type: 'save', typeDefinition: { category: currentCategory, types: currentState } });
           });
           
           // Initialize
@@ -757,8 +757,13 @@ export class TypeEditorProvider {
 
   private async handleSaveMessage(message: WebviewMessage): Promise<void> {
     if (!message.typeDefinition || !this.resolvePromise) return;
-    if (message.typeDefinition.types.length === 0) return;
-    this.resolvePromise(message.typeDefinition);
+    const def = message.typeDefinition;
+    if (!Array.isArray(def.types) || def.types.length === 0) return;
+    const typeDefinition: TypeDefinition = {
+      category: def.category === 'reference' || def.category === 'composite' ? def.category : 'primitive',
+      types: def.types,
+    };
+    this.resolvePromise(typeDefinition);
     this.resolvePromise = undefined;
   }
 

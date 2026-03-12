@@ -3,6 +3,9 @@ import { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { MetadataTreeDataProvider } from './treeDataProvider';
 import { TypeEditorProvider } from './typeEditorProvider';
+import { TypeParser } from '../parsers/typeParser';
+import { TypeFormatter } from '../utils/typeFormatter';
+import { getPropertyLabel } from '../constants/propertyLabels';
 
 /**
  * Message types sent from webview to extension
@@ -484,8 +487,6 @@ export class PropertiesProvider {
     
     if (isTypeProperty && typeof value === 'object' && value !== null) {
       try {
-        const { TypeParser } = require('../parsers/typeParser');
-        const { TypeFormatter } = require('../utils/typeFormatter');
         const typeDef = TypeParser.parseFromObject(value);
         displayValue = TypeFormatter.formatTypeDisplay(typeDef);
       } catch (error) {
@@ -508,7 +509,6 @@ export class PropertiesProvider {
     const disabled = propertyReadOnly ? 'disabled' : '';
     
     // Get Russian label for property name
-    const { getPropertyLabel } = require('../constants/propertyLabels');
     const displayName = getPropertyLabel(name);
 
     // Add Edit Type button for type property (only for non-root elements)

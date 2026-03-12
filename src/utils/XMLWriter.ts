@@ -46,8 +46,12 @@ export class XMLWriter {
         xmlContent = await fs.promises.readFile(filePath, 'utf-8');
       } catch (readError) {
         throw new Error(
-          `Unable to read file. ${readError instanceof Error ? readError.message : String(readError)}`
+          `Failed to read properties. Unable to read file. ${readError instanceof Error ? readError.message : String(readError)}`
         );
+      }
+
+      if (!xmlContent || xmlContent.trim() === '') {
+        throw new Error('Failed to read properties. File is empty or invalid.');
       }
 
       let parsed: any;
@@ -57,8 +61,12 @@ export class XMLWriter {
         const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
         Logger.error(`XML parsing failed for ${filePath}`, parseError);
         throw new Error(
-          `Invalid XML structure in file. The file may be corrupted or not a valid XML document. ${errorMsg}`
+          `Failed to read properties. Invalid XML structure in file. The file may be corrupted or not a valid XML document. ${errorMsg}`
         );
+      }
+
+      if (!parsed || typeof parsed !== 'object' || (Object.keys(parsed).length === 0 && xmlContent.trim().length > 0)) {
+        throw new Error('Failed to read properties. Invalid XML structure in file.');
       }
 
       const properties = this.extractProperties(parsed);
@@ -97,7 +105,7 @@ export class XMLWriter {
       } catch (readError) {
         Logger.error(`Failed to read file for writing: ${filePath}`, readError);
         throw new Error(
-          `Unable to read file for updating. ${readError instanceof Error ? readError.message : String(readError)}`
+          `Failed to write properties. Unable to read file for updating. ${readError instanceof Error ? readError.message : String(readError)}`
         );
       }
 

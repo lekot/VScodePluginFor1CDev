@@ -32,5 +32,5 @@
     "eqeqeq": "warn",
     "no-throw-literal": "warn"
   },
-  "ignorePatterns": ["dist", "node_modules"]
+  "ignorePatterns": ["dist", "node_modules", "out", "build"]
 }
