@@ -741,7 +741,28 @@ export class DesignerParser {
       }
     }
     
-    return properties;
+    // Convert string "false"/"true" values to boolean primitives
+    return this.convertStringBooleans(properties);
+  }
+  /**
+   * Convert string boolean values to actual boolean primitives
+   * @param properties Properties object that may contain string "false"/"true" values
+   * @returns Properties object with string booleans converted to primitives
+   */
+  private static convertStringBooleans(properties: Record<string, unknown>): Record<string, unknown> {
+    const converted: Record<string, unknown> = {};
+    
+    for (const [key, value] of Object.entries(properties)) {
+      if (value === 'false') {
+        converted[key] = false;
+      } else if (value === 'true') {
+        converted[key] = true;
+      } else {
+        converted[key] = value;
+      }
+    }
+    
+    return converted;
   }
 
   /**
@@ -750,61 +771,63 @@ export class DesignerParser {
    * @returns Properties object
    */
   private static extractPropertiesFromElement(xmlContent: Record<string, unknown>): Record<string, unknown> {
-    const result: Record<string, unknown> = {};
+      const result: Record<string, unknown> = {};
 
-    // Find the root element (Catalog, Document, CommonModule, etc.)
-    for (const [key, value] of Object.entries(xmlContent)) {
-      if (key === '@_' || key.startsWith('#')) {
-        continue;
-      }
+      // Find the root element (Catalog, Document, CommonModule, etc.)
+      for (const [key, value] of Object.entries(xmlContent)) {
+        if (key === '@_' || key.startsWith('#')) {
+          continue;
+        }
 
-      if (typeof value === 'object' && value !== null) {
-        const element = value as Record<string, unknown>;
-        const properties = element.Properties as Record<string, unknown>;
+        if (typeof value === 'object' && value !== null) {
+          const element = value as Record<string, unknown>;
+          const properties = element.Properties as Record<string, unknown>;
 
-        if (properties) {
-          for (const [propKey, propValue] of Object.entries(properties)) {
-            if (propKey === '@_' || propKey.startsWith('#')) {
-              continue;
-            }
+          if (properties) {
+            for (const [propKey, propValue] of Object.entries(properties)) {
+              if (propKey === '@_' || propKey.startsWith('#')) {
+                continue;
+              }
 
-            // Handle different value types
-            if (typeof propValue === 'boolean' || typeof propValue === 'number') {
-              // Direct boolean or number values
-              result[propKey] = propValue;
-            } else if (typeof propValue === 'string') {
-              // Direct string values
-              result[propKey] = propValue;
-            } else if (typeof propValue === 'object' && propValue !== null) {
-              const obj = propValue as Record<string, unknown>;
-              
-              // Check for v8:item structure (localized strings like Synonym)
-              if (obj['v8:item']) {
-                const items = obj['v8:item'];
-                if (Array.isArray(items) && items.length > 0) {
-                  const firstItem = items[0];
-                  if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
-                    result[propKey] = (firstItem as any)['v8:content'];
+              // Handle different value types
+              if (typeof propValue === 'boolean' || typeof propValue === 'number') {
+                // Direct boolean or number values
+                result[propKey] = propValue;
+              } else if (typeof propValue === 'string') {
+                // Direct string values
+                result[propKey] = propValue;
+              } else if (typeof propValue === 'object' && propValue !== null) {
+                const obj = propValue as Record<string, unknown>;
+
+                // Check for v8:item structure (localized strings like Synonym)
+                if (obj['v8:item']) {
+                  const items = obj['v8:item'];
+                  if (Array.isArray(items) && items.length > 0) {
+                    const firstItem = items[0];
+                    if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
+                      result[propKey] = (firstItem as any)['v8:content'];
+                    }
                   }
+                } else if (obj.item) {
+                  // Simple item wrapper
+                  result[propKey] = obj.item;
+                } else {
+                  // Complex object - store as-is
+                  result[propKey] = propValue;
                 }
-              } else if (obj.item) {
-                // Simple item wrapper
-                result[propKey] = obj.item;
               } else {
-                // Complex object - store as-is
+                // Other types (null, undefined, etc.)
                 result[propKey] = propValue;
               }
-            } else {
-              // Other types (null, undefined, etc.)
-              result[propKey] = propValue;
             }
           }
         }
       }
+
+      // Convert string "false"/"true" values to boolean primitives
+      return this.convertStringBooleans(result);
     }
 
-    return result;
-  }
 
   /**
    * Detect if path contains Designer format configuration
