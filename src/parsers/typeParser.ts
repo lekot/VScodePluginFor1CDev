@@ -89,8 +89,8 @@ export class TypeParser {
   private static extractTypeEntries(typeElement: Record<string, unknown>): TypeEntry[] {
     const entries: TypeEntry[] = [];
     
-    // Get all v8:Type elements
-    const v8Types = typeElement['v8:Type'];
+    // Get all v8:Type elements (or v8:TypeSet for DefinedTypes)
+    const v8Types = typeElement['v8:Type'] || typeElement['v8:TypeSet'];
     if (!v8Types) {
       return entries;
     }
@@ -187,6 +187,7 @@ export class TypeParser {
       'ChartOfCharacteristicTypesRef',
       'ChartOfAccountsRef',
       'ChartOfCalculationTypesRef',
+      'DefinedType',
     ];
 
     if (!validKinds.includes(referenceKind)) {
