@@ -32,7 +32,7 @@ export interface DateQualifiers {
 export interface ReferenceTypeInfo {
   referenceKind: 'CatalogRef' | 'DocumentRef' | 'EnumRef' | 
                  'ChartOfCharacteristicTypesRef' | 'ChartOfAccountsRef' | 
-                 'ChartOfCalculationTypesRef';
+                 'ChartOfCalculationTypesRef' | 'DefinedType';
   objectName: string;
 }
 
