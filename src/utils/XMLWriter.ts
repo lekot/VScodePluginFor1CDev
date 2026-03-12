@@ -296,12 +296,15 @@ export class XMLWriter {
             }
 
             if (key === 'Properties' && Array.isArray(value)) {
-              return this.convertStringBooleans(this.flattenPropertiesArray(value));
+              const result = this.convertStringBooleans(this.flattenPropertiesArray(value));
+              Logger.debug(`extractProperties from array: ${JSON.stringify(Object.keys(result))}`);
+              return result;
             }
 
             if (Array.isArray(value)) {
               const nested = this.extractProperties(value);
               if (Object.keys(nested).length > 0) {
+                Logger.debug(`extractProperties from nested array: ${JSON.stringify(Object.keys(nested))}`);
                 return nested;
               }
             }
@@ -313,7 +316,9 @@ export class XMLWriter {
 
     const obj = parsed as Record<string, unknown>;
     if (obj.Properties && typeof obj.Properties === 'object') {
-      return this.convertStringBooleans(this.flattenProperties(obj.Properties as Record<string, unknown>));
+      const result = this.convertStringBooleans(this.flattenProperties(obj.Properties as Record<string, unknown>));
+      Logger.debug(`extractProperties from object: ${JSON.stringify(Object.keys(result))}`);
+      return result;
     }
 
     return properties;
@@ -360,6 +365,9 @@ export class XMLWriter {
         const obj = value as Record<string, unknown>;
         if ('#text' in obj) {
           flattened[key] = obj['#text'];
+        } else if ('v8:Type' in obj) {
+          // Handle Type element with v8:Type child
+          flattened[key] = obj['v8:Type'];
         } else {
           flattened[key] = value;
         }

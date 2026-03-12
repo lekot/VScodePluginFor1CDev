@@ -190,6 +190,108 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     assert.strictEqual(escapeHtml('Test & Co'), 'Test &amp; Co');
     assert.strictEqual(escapeHtml("It's a test"), 'It&#039;s a test');
   });
+
+  test('isRootElement should return false for Attribute (nested element)', () => {
+    const node: TreeNode = {
+      id: 'test',
+      name: 'MyAttribute',
+      type: MetadataType.Attribute,
+      parent: {
+        id: 'parent',
+        name: 'TestCatalog',
+        type: MetadataType.Catalog,
+        parent: {
+          id: 'grandparent',
+          name: 'Configuration',
+          type: MetadataType.Configuration,
+          properties: {},
+        },
+        properties: {},
+      },
+      properties: {},
+      filePath: '/test/path.xml',
+      parentFilePath: '/test/parent.xml',
+    };
+
+    const isRootElement = (provider as any).isRootElement.bind(provider);
+    const result = isRootElement(node);
+
+    assert.strictEqual(result, false, 'Attribute should not be a root element');
+  });
+
+  test('isRootElement should return true for Catalog (root element)', () => {
+    const node: TreeNode = {
+      id: 'test',
+      name: 'TestCatalog',
+      type: MetadataType.Catalog,
+      parent: {
+        id: 'parent',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+      },
+      properties: {},
+      filePath: '/test/path.xml',
+    };
+
+    const isRootElement = (provider as any).isRootElement.bind(provider);
+    const result = isRootElement(node);
+
+    assert.strictEqual(result, true, 'Catalog should be a root element');
+  });
+
+  test('renderPropertyInput should disable type for root elements', () => {
+    const node: TreeNode = {
+      id: 'test',
+      name: 'TestCatalog',
+      type: MetadataType.Catalog,
+      parent: {
+        id: 'parent',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+      },
+      properties: {
+        type: 'xs:string',
+      },
+      filePath: '/test/path.xml',
+    };
+
+    (provider as any).currentNode = node;
+
+    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const html = renderPropertyInput('type', 'xs:string', false);
+
+    assert.ok(html.includes('disabled'), 'Type property should be disabled for root elements');
+    assert.ok(!html.includes('Редактировать тип'), 'Edit Type button should not appear for root elements');
+  });
+
+  test('renderPropertyInput should enable type for Attribute (nested element)', () => {
+    const node: TreeNode = {
+      id: 'test',
+      name: 'MyAttribute',
+      type: MetadataType.Attribute,
+      parent: {
+        id: 'parent',
+        name: 'TestCatalog',
+        type: MetadataType.Catalog,
+        properties: {},
+      },
+      properties: {
+        type: 'xs:string',
+      },
+      filePath: '/test/path.xml',
+      parentFilePath: '/test/parent.xml',
+    };
+
+    (provider as any).currentNode = node;
+
+    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const html = renderPropertyInput('type', 'xs:string', false);
+
+    assert.ok(!html.includes('disabled'), 'Type property should be enabled for Attribute');
+    assert.ok(html.includes('Редактировать тип'), 'Edit Type button should appear for Attribute');
+  });
 });
 
 suite('PropertiesProvider Save Operation Test Suite', () => {
