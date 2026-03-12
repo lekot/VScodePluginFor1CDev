@@ -693,8 +693,22 @@ export class XMLWriter {
 
         if (key in properties) {
           const newValue = properties[key];
-          
-          if (Array.isArray(value) && value.length > 0) {
+
+          // Type from type editor is sent as XML string; write as structured content, not #text
+          if (key === 'Type' && typeof newValue === 'string' && newValue.trim().includes('<')) {
+            try {
+              const typeParsed = this.parser.parse(newValue.trim()) as Record<string, unknown>;
+              if (typeParsed && typeof typeParsed === 'object' && 'Type' in typeParsed) {
+                const inner = typeParsed.Type;
+                result[key] = Array.isArray(inner) ? inner : inner != null ? [inner] : [{ '#text': newValue }];
+              } else {
+                result[key] = [{ '#text': newValue }];
+              }
+            } catch (parseErr) {
+              Logger.error('Failed to parse Type XML in updateNestedElementProperties', parseErr);
+              result[key] = [{ '#text': newValue }];
+            }
+          } else if (Array.isArray(value) && value.length > 0) {
             const firstChild = value[0];
             if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
               const textValue = typeof newValue === 'boolean' || typeof newValue === 'number' 
