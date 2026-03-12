@@ -150,7 +150,7 @@ export class EdtParser {
     try {
       await fs.promises.access(mdoPath);
       try {
-        const mdoContent = XmlParser.parseFile(mdoPath);
+        const mdoContent = await XmlParser.parseFileAsync(mdoPath);
         const properties = this.extractPropertiesFromMdo(mdoContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
       } catch (error) {

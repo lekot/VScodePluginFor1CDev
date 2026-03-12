@@ -54,7 +54,7 @@ export class XMLWriter {
         throw new Error('Failed to read properties. File is empty or invalid.');
       }
 
-      let parsed: any;
+      let parsed: unknown;
       try {
         parsed = this.parser.parse(xmlContent);
       } catch (parseError) {
@@ -65,7 +65,7 @@ export class XMLWriter {
         );
       }
 
-      if (!parsed || typeof parsed !== 'object' || (Object.keys(parsed).length === 0 && xmlContent.trim().length > 0)) {
+      if (!parsed || typeof parsed !== 'object' || (Object.keys(parsed as object).length === 0 && xmlContent.trim().length > 0)) {
         throw new Error('Failed to read properties. Invalid XML structure in file.');
       }
 
@@ -109,7 +109,7 @@ export class XMLWriter {
         );
       }
 
-      let parsed: any;
+      let parsed: unknown;
       try {
         parsed = this.parser.parse(xmlContent);
       } catch (parseError) {
@@ -215,7 +215,7 @@ export class XMLWriter {
         );
       }
 
-      let parsed: any;
+      let parsed: unknown;
       try {
         parsed = this.parser.parse(xmlContent);
       } catch (parseError) {
