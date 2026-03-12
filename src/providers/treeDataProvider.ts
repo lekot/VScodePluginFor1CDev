@@ -276,6 +276,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   getReferenceableObjects(): ReferenceableGroup[] {
     if (!this.rootNode || !this.rootNode.children) {
+      Logger.debug('getReferenceableObjects: no root, returning empty');
       return [];
     }
     const result: ReferenceableGroup[] = [];
