@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TypeDefinition } from '../types/typeDefinitions';
+import { TypeDefinition, ReferenceableGroup } from '../types/typeDefinitions';
 import { TypeParser } from '../parsers/typeParser';
 import { Logger } from '../utils/logger';
 
@@ -19,7 +19,7 @@ export class TypeEditorProvider {
     Logger.info('TypeEditorProvider initialized');
   }
 
-  public async show(typeXML: string): Promise<TypeDefinition | null> {
+  public async show(typeXML: string, referenceableObjects?: ReferenceableGroup[]): Promise<TypeDefinition | null> {
     if (!this.panel) {
       this.panel = this.createPanel();
     } else {
@@ -34,7 +34,8 @@ export class TypeEditorProvider {
       throw new Error(`Failed to parse current type: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    this.updateWebviewContent(typeDefinition);
+    const refObjs = referenceableObjects ?? [];
+    this.updateWebviewContent(typeDefinition, refObjs);
 
     return new Promise<TypeDefinition | null>((resolve, reject) => {
       this.resolvePromise = resolve;
@@ -61,31 +62,103 @@ export class TypeEditorProvider {
     return panel;
   }
 
-  private updateWebviewContent(typeDefinition: TypeDefinition): void {
+  private updateWebviewContent(typeDefinition: TypeDefinition, referenceableObjects: ReferenceableGroup[]): void {
     if (!this.panel) return;
-    this.panel.webview.html = this.getWebviewContent(typeDefinition);
+    this.panel.webview.html = this.getWebviewContent(typeDefinition, referenceableObjects);
     Logger.debug('Type editor panel updated');
   }
 
-  private getWebviewContent(typeDefinition: TypeDefinition): string {
-    const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
-    const typesJson = JSON.stringify(typeDefinition.types);
-    
-    // Determine which primitive type is currently selected (if any).
-    // When category is primitive but types are empty, default to 'string' so qualifier fields are visible.
-    let currentPrimitiveType: string | null = null;
-    if (typeDefinition.category === 'primitive') {
-      currentPrimitiveType = typeDefinition.types.length > 0
-        ? typeDefinition.types[0].kind
-        : 'string';
+  private getInitialSelectedNodeIds(typeDefinition: TypeDefinition, referenceableObjects: ReferenceableGroup[]): string[] {
+    const ids: string[] = [];
+    const refNamesByKind = new Map<string, Set<string>>();
+    for (const g of referenceableObjects) {
+      refNamesByKind.set(g.referenceKind, new Set(g.objectNames));
     }
+    for (const entry of typeDefinition.types) {
+      if (entry.kind === 'reference' && entry.referenceType) {
+        const { referenceKind, objectName } = entry.referenceType;
+        ids.push('ref:' + referenceKind + ':' + objectName);
+        continue;
+      }
+      if (entry.kind === 'string' || entry.kind === 'number' || entry.kind === 'boolean' || entry.kind === 'date') {
+        ids.push('primitive:' + entry.kind);
+      }
+    }
+    return ids;
+  }
+
+  private getInitialQualifierState(typeDefinition: TypeDefinition): Record<string, unknown> {
+    const state: Record<string, unknown> = {};
+    const primitives = ['string', 'number', 'boolean', 'date'] as const;
+    for (const kind of primitives) {
+      const entry = typeDefinition.types.find((t) => t.kind === kind);
+      if (entry && entry.qualifiers) {
+        state[kind] = entry.qualifiers;
+      }
+    }
+    return state;
+  }
+
+  /** Build tree nodes for webview: primitives + reference groups (with virtual children for current type refs not in list). */
+  private buildTreeData(
+    typeDefinition: TypeDefinition,
+    referenceableObjects: ReferenceableGroup[]
+  ): { id: string; label: string; children?: { id: string; label: string }[] }[] {
+    const primitives: { id: string; label: string }[] = [
+      { id: 'primitive:string', label: 'String' },
+      { id: 'primitive:number', label: 'Number' },
+      { id: 'primitive:boolean', label: 'Boolean' },
+      { id: 'primitive:date', label: 'Date' },
+    ];
+    const refEntries = typeDefinition.types.filter((t) => t.kind === 'reference' && t.referenceType) as { kind: 'reference'; referenceType: { referenceKind: string; objectName: string } }[];
+    const virtualRefs = new Map<string, Set<string>>(); // refKind -> Set of objectNames not in refGroups
+    for (const entry of refEntries) {
+      const kind = entry.referenceType.referenceKind;
+      const name = entry.referenceType.objectName;
+      if (!name) continue;
+      const group = referenceableObjects.find((g) => g.referenceKind === kind);
+      const inList = group && group.objectNames.includes(name);
+      if (!inList) {
+        if (!virtualRefs.has(kind)) virtualRefs.set(kind, new Set());
+        virtualRefs.get(kind)!.add(name);
+      }
+    }
+    const refGroups: { id: string; label: string; children: { id: string; label: string }[] }[] = [];
+    for (const g of referenceableObjects) {
+      const children = g.objectNames.map((name) => ({ id: 'ref:' + g.referenceKind + ':' + name, label: name }));
+      const virtual = virtualRefs.get(g.referenceKind);
+      if (virtual) {
+        virtual.forEach((name) => children.push({ id: 'ref:' + g.referenceKind + ':' + name, label: name }));
+      }
+      if (children.length === 0) {
+        children.push({ id: 'ref:' + g.referenceKind + ':', label: g.referenceKind });
+      }
+      refGroups.push({
+        id: 'group:' + g.referenceKind,
+        label: g.referenceKind,
+        children,
+      });
+    }
+    return [{ id: 'primitives', label: '', children: primitives }, ...refGroups];
+  }
+
+  private getWebviewContent(typeDefinition: TypeDefinition, referenceableObjects: ReferenceableGroup[]): string {
+    const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
+    const refGroupsJson = JSON.stringify(referenceableObjects);
+    const initialComposite = typeDefinition.types.length > 1;
+    const initialSelectedIds = this.getInitialSelectedNodeIds(typeDefinition, referenceableObjects);
+    const initialQualifierState = this.getInitialQualifierState(typeDefinition);
+    const treeData = this.buildTreeData(typeDefinition, referenceableObjects);
+    const treeDataJson = JSON.stringify(treeData);
+    const initialSelectedJson = JSON.stringify(initialSelectedIds);
+    const initialQualifierStateJson = JSON.stringify(initialQualifierState);
     
     return `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
-        <title>Type Editor</title>
+        <title>Редактирование типа данных</title>
         <style>
           :root {
             --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif;
@@ -101,20 +174,12 @@ export class TypeEditorProvider {
             --vscode-input-background: #3c3c3c;
             --vscode-input-foreground: #cccccc;
             --vscode-input-border: #cccccc;
-            --vscode-dropdown-background: #3c3c3c;
-            --vscode-dropdown-foreground: #cccccc;
-            --vscode-dropdown-border: #cccccc;
             --vscode-list-hoverBackground: #2a2d2e;
             --vscode-focusBorder: #007fd4;
-            --vscode-textLink-foreground: #3794ff;
             --vscode-errorForeground: #f48771;
             --vscode-descriptionForeground: #cccccc;
           }
-          
-          * {
-            box-sizing: border-box;
-          }
-          
+          * { box-sizing: border-box; }
           body {
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
@@ -124,89 +189,20 @@ export class TypeEditorProvider {
             padding: 16px;
             line-height: 1.5;
           }
-          
-          .container {
-            max-width: 600px;
-            margin: 0 auto;
-          }
-          
+          .container { max-width: 600px; margin: 0 auto; }
           .header {
-            margin-bottom: 20px;
-            border-bottom: 1px solid var(--vscode-dropdown-border);
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--vscode-input-border);
             padding-bottom: 12px;
           }
-          
-          .header h2 {
-            margin: 0;
-            font-size: 18px;
-            font-weight: 600;
-          }
-          
-          .section {
-            margin-bottom: 20px;
-          }
-          
-          .section-title {
-            font-size: 14px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            display: block;
-          }
-          
-          .category-selector {
-            display: flex;
-            gap: 16px;
-            flex-wrap: wrap;
-          }
-          
-          .category-option {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-          }
-          
-          .category-option input[type="radio"] {
-            accent-color: var(--vscode-button-background);
-            width: 14px;
-            height: 14px;
-          }
-          
-          .category-option label {
-            cursor: pointer;
-            margin: 0;
-          }
-          
-          .type-config-area {
-            background-color: var(--vscode-input-background);
-            border: 1px solid var(--vscode-input-border);
-            border-radius: 4px;
-            padding: 16px;
-            min-height: 150px;
-          }
-          
-          .config-section {
-            display: none;
-          }
-          
-          .config-section.active {
-            display: block;
-          }
-          
-          .form-group {
-            margin-bottom: 12px;
-          }
-          
-          .form-group label {
-            display: block;
-            font-size: 13px;
-            margin-bottom: 4px;
-            color: var(--vscode-descriptionForeground);
-          }
-          
-          .form-group input[type="text"],
-          .form-group input[type="number"],
-          .form-group select {
+          .header h2 { margin: 0; font-size: 18px; font-weight: 600; }
+          .section { margin-bottom: 16px; }
+          .section-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; display: block; }
+          .composite-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+          .composite-row input[type="checkbox"] { accent-color: var(--vscode-button-background); width: 16px; height: 16px; cursor: pointer; }
+          .composite-row label { cursor: pointer; margin: 0; }
+          .search-row { margin-bottom: 10px; }
+          .search-row input {
             width: 100%;
             padding: 6px 8px;
             background-color: var(--vscode-input-background);
@@ -214,109 +210,65 @@ export class TypeEditorProvider {
             border: 1px solid var(--vscode-input-border);
             border-radius: 3px;
             font-size: 13px;
-            font-family: var(--vscode-font-family);
           }
-          
-          .form-group input:focus,
-          .form-group select:focus {
-            outline: 1px solid var(--vscode-focusBorder);
-            outline-offset: -1px;
+          .search-row input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+          .tree-area {
+            background-color: var(--vscode-input-background);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            padding: 8px;
+            max-height: 220px;
+            overflow-y: auto;
           }
-          
-          .qualifier-group {
-            display: none;
-            margin-top: 12px;
-          }
-          
-          .qualifier-group.active {
-            display: block;
-          }
-          
-          .form-row {
-            display: flex;
-            gap: 12px;
-          }
-          
-          .form-row .form-group {
-            flex: 1;
-          }
-          
-          .type-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-          }
-          
-          .type-item {
+          .tree-node { margin: 2px 0; }
+          .tree-node-children { margin-left: 16px; }
+          .tree-leaf {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            padding: 8px 12px;
-            background-color: var(--vscode-list-hoverBackground);
-            border-radius: 3px;
-            margin-bottom: 8px;
-          }
-          
-          .type-item-info {
-            flex: 1;
-          }
-          
-          .type-item-actions {
-            display: flex;
-            gap: 8px;
-          }
-          
-          .btn-icon {
-            background: none;
-            border: none;
-            color: var(--vscode-textLink-foreground);
+            gap: 6px;
+            padding: 4px 6px;
             cursor: pointer;
-            padding: 4px;
-            font-size: 16px;
-          }
-          
-          .btn-icon:hover {
-            text-decoration: underline;
-          }
-          
-          .btn-add {
-            width: 100%;
-            padding: 8px;
-            background-color: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
-            border: none;
             border-radius: 3px;
-            cursor: pointer;
-            font-size: 13px;
-            font-family: var(--vscode-font-family);
+          }
+          .tree-leaf:hover { background-color: var(--vscode-list-hoverBackground); }
+          .tree-leaf input[type="checkbox"] { accent-color: var(--vscode-button-background); flex-shrink: 0; cursor: pointer; }
+          .tree-leaf label { cursor: pointer; margin: 0; flex: 1; }
+          .tree-group-label { font-weight: 600; padding: 4px 0; cursor: pointer; }
+          .tree-group-label:hover { color: var(--vscode-focusBorder); }
+          .tree-group-children { margin-left: 16px; }
+          .tree-leaf.hidden, .tree-group.hidden { display: none !important; }
+          .qualifier-section {
+            background-color: var(--vscode-input-background);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            padding: 12px;
             margin-bottom: 12px;
           }
-          
-          .btn-add:hover {
-            background-color: var(--vscode-button-secondaryHoverBackground);
+          .qualifier-section.empty { color: var(--vscode-descriptionForeground); }
+          .form-group { margin-bottom: 10px; }
+          .form-group label { display: block; font-size: 12px; margin-bottom: 4px; color: var(--vscode-descriptionForeground); }
+          .form-group input, .form-group select {
+            width: 100%;
+            padding: 6px 8px;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 3px;
+            font-size: 13px;
           }
-          
+          .form-row { display: flex; gap: 12px; }
+          .form-row .form-group { flex: 1; }
+          .qualifier-group { display: none; }
+          .qualifier-group.active { display: block; }
           .preview-section {
             background-color: var(--vscode-input-background);
             border: 1px solid var(--vscode-input-border);
             border-radius: 4px;
             padding: 12px;
-            min-height: 60px;
+            min-height: 44px;
           }
-          
-          .preview-value {
-            font-family: "Consolas", "Courier New", monospace;
-            font-size: 14px;
-            word-break: break-all;
-          }
-          
-          .button-row {
-            display: flex;
-            gap: 8px;
-            justify-content: flex-end;
-            margin-top: 20px;
-          }
-          
+          .preview-value { font-family: Consolas, monospace; font-size: 13px; word-break: break-all; }
+          .button-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
           button {
             padding: 6px 14px;
             cursor: pointer;
@@ -325,360 +277,279 @@ export class TypeEditorProvider {
             border-radius: 3px;
             border: none;
           }
-          
-          #save-btn {
-            background-color: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-          }
-          
-          #save-btn:hover {
-            background-color: var(--vscode-button-hoverBackground);
-          }
-          
-          #save-btn:disabled {
-            background-color: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
-            cursor: not-allowed;
-          }
-          
-          #cancel-btn {
-            background-color: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
-          }
-          
-          #cancel-btn:hover {
-            background-color: var(--vscode-button-secondaryHoverBackground);
-          }
-          
-          .error-message {
-            color: var(--vscode-errorForeground);
-            font-size: 12px;
-            margin-top: 4px;
-            display: none;
-          }
-          
-          .error-message.visible {
-            display: block;
-          }
-          
-          .empty-state {
-            text-align: center;
-            color: var(--vscode-descriptionForeground);
-            padding: 20px;
-          }
+          #save-btn { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+          #save-btn:hover { background-color: var(--vscode-button-hoverBackground); }
+          #save-btn:disabled { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); cursor: not-allowed; }
+          #cancel-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+          #cancel-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
         </style>
       </head>
       <body>
         <div class="container">
           <div class="header">
-            <h2>Type Editor</h2>
+            <h2>Редактирование типа данных</h2>
           </div>
-          
           <div class="section">
-            <span class="section-title">Category</span>
-            <div class="category-selector">
-              <label class="category-option">
-                <input type="radio" name="category" value="primitive" ${typeDefinition.category === 'primitive' ? 'checked' : ''}>
-                Primitive
-              </label>
-              <label class="category-option">
-                <input type="radio" name="category" value="reference" ${typeDefinition.category === 'reference' ? 'checked' : ''}>
-                Reference
-              </label>
-              <label class="category-option">
-                <input type="radio" name="category" value="composite" ${typeDefinition.category === 'composite' ? 'checked' : ''}>
-                Composite
-              </label>
+            <div class="composite-row">
+              <input type="checkbox" id="composite-cb" ${initialComposite ? 'checked' : ''}>
+              <label for="composite-cb">Составной тип данных</label>
             </div>
+            <div class="search-row">
+              <input type="text" id="search-input" placeholder="Поиск (Ctrl+Alt+M)" autocomplete="off">
+            </div>
+            <div class="section-title">Тип</div>
+            <div class="tree-area" id="type-tree"></div>
           </div>
-          
           <div class="section">
-            <span class="section-title">Type Configuration</span>
-            <div class="type-config-area">
-              <!-- Primitive Type Config -->
-              <div id="config-primitive" class="config-section ${typeDefinition.category === 'primitive' ? 'active' : ''}">
-                <div class="form-group">
-                  <label for="primitive-type">Type</label>
-                  <select id="primitive-type">
-                    <option value="string" ${currentPrimitiveType === 'string' ? 'selected' : ''}>String</option>
-                    <option value="number" ${currentPrimitiveType === 'number' ? 'selected' : ''}>Number</option>
-                    <option value="boolean" ${currentPrimitiveType === 'boolean' ? 'selected' : ''}>Boolean</option>
-                    <option value="date" ${currentPrimitiveType === 'date' ? 'selected' : ''}>Date</option>
-                  </select>
-                </div>
-                
-                <div id="string-qualifiers" class="qualifier-group ${currentPrimitiveType === 'string' ? 'active' : ''}">
+            <span class="section-title">Квалификаторы</span>
+            <div id="qualifier-section" class="qualifier-section">
+              <div id="qualifier-empty" class="empty-state">Выберите примитивный тип в дереве</div>
+              <div id="qualifier-fields" style="display:none;">
+                <div id="string-qualifiers" class="qualifier-group">
                   <div class="form-row">
-                    <div class="form-group">
-                      <label for="string-length">Length</label>
-                      <input type="number" id="string-length" min="1" max="1024" value="${this.getQualifierValue(typeDefinition, 'string', 'length') || ''}">
-                    </div>
-                    <div class="form-group">
-                      <label for="string-allowed-length">Allowed Length</label>
-                      <select id="string-allowed-length">
-                        <option value="Fixed" ${this.getQualifierValue(typeDefinition, 'string', 'allowedLength') === 'Fixed' ? 'selected' : ''}>Fixed</option>
-                        <option value="Variable" ${this.getQualifierValue(typeDefinition, 'string', 'allowedLength') === 'Variable' ? 'selected' : ''}>Variable</option>
-                      </select>
-                    </div>
+                    <div class="form-group"><label for="string-length">Length</label><input type="number" id="string-length" min="1" max="1024"></div>
+                    <div class="form-group"><label for="string-allowed-length">Allowed Length</label><select id="string-allowed-length"><option value="Fixed">Fixed</option><option value="Variable">Variable</option></select></div>
                   </div>
                 </div>
-                
-                <div id="number-qualifiers" class="qualifier-group ${currentPrimitiveType === 'number' ? 'active' : ''}">
+                <div id="number-qualifiers" class="qualifier-group">
                   <div class="form-row">
-                    <div class="form-group">
-                      <label for="number-digits">Digits</label>
-                      <input type="number" id="number-digits" min="1" max="38" value="${this.getQualifierValue(typeDefinition, 'number', 'digits') || ''}">
-                    </div>
-                    <div class="form-group">
-                      <label for="number-fraction-digits">Fraction Digits</label>
-                      <input type="number" id="number-fraction-digits" min="0" max="38" value="${this.getQualifierValue(typeDefinition, 'number', 'fractionDigits') || ''}">
-                    </div>
+                    <div class="form-group"><label for="number-digits">Digits</label><input type="number" id="number-digits" min="1" max="38"></div>
+                    <div class="form-group"><label for="number-fraction-digits">Fraction Digits</label><input type="number" id="number-fraction-digits" min="0" max="38"></div>
                   </div>
-                  <div class="form-group">
-                    <label for="number-allowed-sign">Allowed Sign</label>
-                    <select id="number-allowed-sign">
-                      <option value="Any" ${this.getQualifierValue(typeDefinition, 'number', 'allowedSign') === 'Any' ? 'selected' : ''}>Any</option>
-                      <option value="Nonnegative" ${this.getQualifierValue(typeDefinition, 'number', 'allowedSign') === 'Nonnegative' ? 'selected' : ''}>Nonnegative</option>
-                    </select>
-                  </div>
+                  <div class="form-group"><label for="number-allowed-sign">Allowed Sign</label><select id="number-allowed-sign"><option value="Any">Any</option><option value="Nonnegative">Nonnegative</option></select></div>
                 </div>
-                
-                <div id="date-qualifiers" class="qualifier-group ${currentPrimitiveType === 'date' ? 'active' : ''}">
-                  <div class="form-group">
-                    <label for="date-fractions">Date Fractions</label>
-                    <select id="date-fractions">
-                      <option value="Date" ${this.getQualifierValue(typeDefinition, 'date', 'dateFractions') === 'Date' ? 'selected' : ''}>Date</option>
-                      <option value="DateTime" ${this.getQualifierValue(typeDefinition, 'date', 'dateFractions') === 'DateTime' ? 'selected' : ''}>DateTime</option>
-                      <option value="Time" ${this.getQualifierValue(typeDefinition, 'date', 'dateFractions') === 'Time' ? 'selected' : ''}>Time</option>
-                    </select>
-                  </div>
+                <div id="date-qualifiers" class="qualifier-group">
+                  <div class="form-group"><label for="date-fractions">Date Fractions</label><select id="date-fractions"><option value="Date">Date</option><option value="DateTime">DateTime</option><option value="Time">Time</option></select></div>
                 </div>
-              </div>
-              
-              <!-- Reference Type Config -->
-              <div id="config-reference" class="config-section ${typeDefinition.category === 'reference' ? 'active' : ''}">
-                <div class="form-group">
-                  <label for="reference-kind">Reference Kind</label>
-                  <select id="reference-kind">
-                    <option value="CatalogRef">CatalogRef</option>
-                    <option value="DocumentRef">DocumentRef</option>
-                    <option value="EnumRef">EnumRef</option>
-                    <option value="ChartOfCharacteristicTypesRef">ChartOfCharacteristicTypesRef</option>
-                    <option value="ChartOfAccountsRef">ChartOfAccountsRef</option>
-                    <option value="ChartOfCalculationTypesRef">ChartOfCalculationTypesRef</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label for="reference-object">Object Name</label>
-                  <input type="text" id="reference-object" value="${this.getReferenceValue(typeDefinition) || ''}" placeholder="Enter object name">
-                </div>
-              </div>
-              
-              <!-- Composite Type Config -->
-              <div id="config-composite" class="config-section ${typeDefinition.category === 'composite' ? 'active' : ''}">
-                <div id="composite-list">
-                  ${this.renderCompositeList(typeDefinition)}
-                </div>
-                <button type="button" class="btn-add" id="add-type-btn">+ Add Type</button>
               </div>
             </div>
           </div>
-          
           <div class="section">
             <span class="section-title">Type Preview</span>
-            <div class="preview-section">
-              <div id="preview-value" class="preview-value">${this.escapeHtml(currentTypeDisplay)}</div>
-            </div>
+            <div class="preview-section"><div id="preview-value" class="preview-value">${this.escapeHtml(currentTypeDisplay)}</div></div>
           </div>
-          
           <div class="button-row">
             <button type="button" id="cancel-btn">Cancel</button>
             <button type="button" id="save-btn" ${typeDefinition.types.length === 0 ? 'disabled' : ''}>Save</button>
           </div>
         </div>
-        
         <script>
           const vscode = acquireVsCodeApi();
-          
-          // State
-          let currentState = ${typesJson};
-          let currentCategory = '${typeDefinition.category}';
-          let hasChanges = false;
-          
-          // DOM Elements
-          const categoryRadios = document.querySelectorAll('input[name="category"]');
-          const configSections = {
-            primitive: document.getElementById('config-primitive'),
-            reference: document.getElementById('config-reference'),
-            composite: document.getElementById('config-composite')
-          };
-          const primitiveTypeSelect = document.getElementById('primitive-type');
-          const qualifierGroups = {
-            string: document.getElementById('string-qualifiers'),
-            number: document.getElementById('number-qualifiers'),
-            date: document.getElementById('date-qualifiers')
-          };
+          const refGroups = ${refGroupsJson};
+          const treeData = ${treeDataJson};
+          let selectedIds = new Set(${initialSelectedJson});
+          let composite = ${JSON.stringify(initialComposite)};
+          let qualifierState = ${initialQualifierStateJson};
           const saveBtn = document.getElementById('save-btn');
           const previewValue = document.getElementById('preview-value');
-          
-          // Change detection function
-          function markAsChanged() {
-            hasChanges = true;
-            saveBtn.disabled = false;
+          const searchInput = document.getElementById('search-input');
+          const compositeCb = document.getElementById('composite-cb');
+          const treeContainer = document.getElementById('type-tree');
+          const qualifierEmpty = document.getElementById('qualifier-empty');
+          const qualifierFields = document.getElementById('qualifier-fields');
+          const qualifierGroups = { string: document.getElementById('string-qualifiers'), number: document.getElementById('number-qualifiers'), date: document.getElementById('date-qualifiers') };
+
+          function nodeIdToLabel(id) {
+            if (id.startsWith('primitive:')) {
+              const k = id.replace('primitive:', '');
+              return { string: 'String', number: 'Number', boolean: 'Boolean', date: 'Date' }[k] || k;
+            }
+            if (id.startsWith('ref:')) {
+              const parts = id.split(':');
+              return parts.length >= 3 ? parts[2] : parts[1] || id;
+            }
+            return id;
           }
-          
-          // Category selection handler
-          categoryRadios.forEach(radio => {
-            radio.addEventListener('change', (e) => {
-              currentCategory = e.target.value;
-              // Hide all config sections
-              for (const section of Object.values(configSections)) {
-                if (section) section.classList.remove('active');
+
+          function renderTree() {
+            const query = (searchInput && searchInput.value) ? searchInput.value.trim().toLowerCase() : '';
+            let html = '';
+            for (const group of treeData) {
+              if (group.id === 'primitives' && group.children) {
+                for (const c of group.children) {
+                  const label = c.label;
+                  const show = !query || label.toLowerCase().includes(query);
+                  const checked = selectedIds.has(c.id);
+                  html += '<div class="tree-node tree-leaf' + (show ? '' : ' hidden') + '" data-id="' + escapeAttr(c.id) + '">' +
+                    '<input type="checkbox" id="cb-' + escapeAttr(c.id) + '"' + (checked ? ' checked' : '') + '><label for="cb-' + escapeAttr(c.id) + '">' + escapeHtml(label) + '</label></div>';
+                }
+              } else if (group.children) {
+                const groupShow = !query || group.label.toLowerCase().includes(query);
+                let childShowCount = 0;
+                let childrenHtml = '';
+                for (const c of group.children) {
+                  const show = !query || c.label.toLowerCase().includes(query);
+                  if (show) childShowCount++;
+                  const checked = selectedIds.has(c.id);
+                  childrenHtml += '<div class="tree-node tree-leaf' + (show ? '' : ' hidden') + '" data-id="' + escapeAttr(c.id) + '">' +
+                    '<input type="checkbox" id="cb-' + escapeAttr(c.id) + '"' + (checked ? ' checked' : '') + '><label for="cb-' + escapeAttr(c.id) + '">' + escapeHtml(c.label) + '</label></div>';
+                }
+                const groupVisible = groupShow || childShowCount > 0;
+                html += '<div class="tree-group' + (groupVisible ? '' : ' hidden') + '">';
+                html += '<div class="tree-group-label" data-group-id="' + escapeAttr(group.id) + '">' + escapeHtml(group.label) + '</div>';
+                html += '<div class="tree-group-children">' + childrenHtml + '</div></div>';
               }
-              // Show selected config section
-              const activeSection = configSections[currentCategory];
-              if (activeSection) activeSection.classList.add('active');
-              syncStateFromQualifierInputs();
-              markAsChanged();
-              updatePreview();
+            }
+            treeContainer.innerHTML = html;
+            treeContainer.querySelectorAll('.tree-leaf').forEach(el => {
+              const id = el.getAttribute('data-id');
+              const cb = el.querySelector('input[type="checkbox"]');
+              if (!id || !cb) return;
+              el.addEventListener('click', (e) => { if (e.target !== cb) cb.checked = !cb.checked; toggleSelection(id, cb.checked); });
+              cb.addEventListener('change', () => toggleSelection(id, cb.checked));
             });
-          });
-          
-          // Primitive type selection handler
-          primitiveTypeSelect.addEventListener('change', () => {
-            const selectedType = primitiveTypeSelect.value;
-            
-            // Hide all qualifier groups first
-            for (const group of Object.values(qualifierGroups)) {
-              if (group) group.classList.remove('active');
+          }
+
+          function escapeAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+          function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+          function toggleSelection(id, checked) {
+            if (!composite && checked) {
+              selectedIds.clear();
+              selectedIds.add(id);
+              renderTree();
+            } else {
+              if (checked) selectedIds.add(id); else selectedIds.delete(id);
             }
-            
-            // Show qualifier group for selected type
-            if (selectedType === 'string' && qualifierGroups.string) {
-              qualifierGroups.string.classList.add('active');
-            } else if (selectedType === 'number' && qualifierGroups.number) {
-              qualifierGroups.number.classList.add('active');
-            } else if (selectedType === 'date' && qualifierGroups.date) {
-              qualifierGroups.date.classList.add('active');
-            }
-            // Boolean has no qualifiers, so no group is shown
-            
-            syncStateFromQualifierInputs();
-            markAsChanged();
+            updateQualifierPanel();
             updatePreview();
-          });
-          
-          // Sync currentState from qualifier/reference form inputs (for primitive or reference single-type).
-          function syncStateFromQualifierInputs() {
-            if (currentCategory === 'primitive') {
-              const kind = primitiveTypeSelect.value;
-              let qualifiers = undefined;
-              if (kind === 'string') {
-                const lenEl = document.getElementById('string-length');
-                const allowedEl = document.getElementById('string-allowed-length');
-                const len = lenEl && lenEl.value !== '' ? parseInt(lenEl.value, 10) : undefined;
-                if (len !== undefined) qualifiers = { length: len, allowedLength: (allowedEl && allowedEl.value) || 'Variable' };
-              } else if (kind === 'number') {
-                const d = document.getElementById('number-digits');
-                const f = document.getElementById('number-fraction-digits');
-                const s = document.getElementById('number-allowed-sign');
-                const digits = d && d.value !== '' ? parseInt(d.value, 10) : undefined;
-                const fractionDigits = f && f.value !== '' ? parseInt(f.value, 10) : undefined;
-                if (digits !== undefined && fractionDigits !== undefined) qualifiers = { digits, fractionDigits, allowedSign: (s && s.value) || 'Any' };
-              } else if (kind === 'date') {
-                const df = document.getElementById('date-fractions');
-                if (df && df.value) qualifiers = { dateFractions: df.value };
-              }
-              currentState = [{ kind, qualifiers }];
-            } else if (currentCategory === 'reference') {
-              const kindEl = document.getElementById('reference-kind');
-              const objEl = document.getElementById('reference-object');
-              const referenceKind = (kindEl && kindEl.value) || 'CatalogRef';
-              const objectName = (objEl && objEl.value) || '';
-              currentState = [{ kind: 'reference', referenceType: { referenceKind, objectName } }];
+            saveBtn.disabled = selectedIds.size === 0;
+          }
+
+          function updateQualifierPanel() {
+            let focusedKey = null;
+            const arr = Array.from(selectedIds);
+            for (let i = arr.length - 1; i >= 0; i--) {
+              const id = arr[i];
+              if (id.startsWith('primitive:')) { focusedKey = id.replace('primitive:', ''); break; }
+            }
+            if (!focusedKey) {
+              qualifierEmpty.style.display = 'block';
+              qualifierFields.style.display = 'none';
+              return;
+            }
+            qualifierEmpty.style.display = 'none';
+            qualifierFields.style.display = 'block';
+            for (const k of Object.keys(qualifierGroups)) {
+              const g = qualifierGroups[k];
+              if (g) g.classList.toggle('active', k === focusedKey);
+            }
+            const q = qualifierState[focusedKey];
+            if (focusedKey === 'string') {
+              const lenEl = document.getElementById('string-length');
+              const allowedEl = document.getElementById('string-allowed-length');
+              if (lenEl) lenEl.value = (q && q.length) != null ? q.length : '';
+              if (allowedEl) allowedEl.value = (q && q.allowedLength) || 'Variable';
+            } else if (focusedKey === 'number') {
+              const d = document.getElementById('number-digits');
+              const f = document.getElementById('number-fraction-digits');
+              const s = document.getElementById('number-allowed-sign');
+              if (d) d.value = (q && q.digits) != null ? q.digits : '';
+              if (f) f.value = (q && q.fractionDigits) != null ? q.fractionDigits : '';
+              if (s) s.value = (q && q.allowedSign) || 'Any';
+            } else if (focusedKey === 'date') {
+              const df = document.getElementById('date-fractions');
+              if (df) df.value = (q && q.dateFractions) || 'Date';
             }
           }
-          
-          // Add change detection to all qualifier input fields
-          const stringLengthInput = document.getElementById('string-length');
-          const stringAllowedLengthSelect = document.getElementById('string-allowed-length');
-          const numberDigitsInput = document.getElementById('number-digits');
-          const numberFractionDigitsInput = document.getElementById('number-fraction-digits');
-          const numberAllowedSignSelect = document.getElementById('number-allowed-sign');
-          const dateFractionsSelect = document.getElementById('date-fractions');
-          
-          if (stringLengthInput) {
-            stringLengthInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
+
+          function collectQualifiersFromInputs() {
+            const key = document.querySelector('.qualifier-group.active');
+            if (!key) return;
+            let k = null;
+            if (qualifierGroups.string && qualifierGroups.string.classList.contains('active')) k = 'string';
+            else if (qualifierGroups.number && qualifierGroups.number.classList.contains('active')) k = 'number';
+            else if (qualifierGroups.date && qualifierGroups.date.classList.contains('active')) k = 'date';
+            if (!k) return;
+            if (k === 'string') {
+              const lenEl = document.getElementById('string-length');
+              const allowedEl = document.getElementById('string-allowed-length');
+              const len = lenEl && lenEl.value !== '' ? parseInt(lenEl.value, 10) : undefined;
+              qualifierState.string = len !== undefined ? { length: len, allowedLength: (allowedEl && allowedEl.value) || 'Variable' } : undefined;
+            } else if (k === 'number') {
+              const d = document.getElementById('number-digits');
+              const f = document.getElementById('number-fraction-digits');
+              const s = document.getElementById('number-allowed-sign');
+              const digits = d && d.value !== '' ? parseInt(d.value, 10) : undefined;
+              const fractionDigits = f && f.value !== '' ? parseInt(f.value, 10) : undefined;
+              qualifierState.number = (digits !== undefined && fractionDigits !== undefined) ? { digits, fractionDigits, allowedSign: (s && s.value) || 'Any' } : undefined;
+            } else if (k === 'date') {
+              const df = document.getElementById('date-fractions');
+              qualifierState.date = df && df.value ? { dateFractions: df.value } : undefined;
+            }
           }
-          if (stringAllowedLengthSelect) {
-            stringAllowedLengthSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
-          }
-          if (numberDigitsInput) {
-            numberDigitsInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
-          }
-          if (numberFractionDigitsInput) {
-            numberFractionDigitsInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
-          }
-          if (numberAllowedSignSelect) {
-            numberAllowedSignSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
-          }
-          if (dateFractionsSelect) {
-            dateFractionsSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
-          }
-          
-          // Add change detection to reference fields
-          const referenceKindSelect = document.getElementById('reference-kind');
-          const referenceObjectInput = document.getElementById('reference-object');
-          
-          if (referenceKindSelect) {
-            referenceKindSelect.addEventListener('change', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
-          }
-          if (referenceObjectInput) {
-            referenceObjectInput.addEventListener('input', () => { syncStateFromQualifierInputs(); markAsChanged(); updatePreview(); });
-          }
-          
-          // Update preview function
-          function updatePreview() {
-            const display = currentState.length === 0 ? 'Not set' : currentState.map(entry => {
-              switch (entry.kind) {
-                case 'string': {
-                  const q = entry.qualifiers;
-                  return q ? 'String(' + q.length + ')' : 'String';
-                }
-                case 'number': {
-                  const q = entry.qualifiers;
-                  return q ? 'Number(' + q.digits + ',' + q.fractionDigits + ')' : 'Number';
-                }
-                case 'boolean': return 'Boolean';
-                case 'date': {
-                  const q = entry.qualifiers;
-                  return q ? q.dateFractions : 'Date';
-                }
-                case 'reference': {
-                  return entry.referenceType ? entry.referenceType.referenceKind + '.' + entry.referenceType.objectName : 'Reference';
-                }
-                default: return 'Unknown';
+
+          function buildTypesFromSelection() {
+            const types = [];
+            const order = [];
+            for (const group of treeData) {
+              if (group.id === 'primitives' && group.children) { for (const c of group.children) order.push(c.id); }
+              else if (group.children) { for (const c of group.children) order.push(c.id); }
+            }
+            for (const id of order) {
+              if (!selectedIds.has(id)) continue;
+              if (id.startsWith('primitive:')) {
+                const kind = id.replace('primitive:', '');
+                const q = qualifierState[kind];
+                types.push({ kind: kind, qualifiers: q || undefined });
+              } else if (id.startsWith('ref:')) {
+                const parts = id.split(':');
+                const referenceKind = parts[1] || 'CatalogRef';
+                const objectName = parts.slice(2).join(':') || '';
+                types.push({ kind: 'reference', referenceType: { referenceKind, objectName } });
               }
-            }).join(' | ');
-            
-            previewValue.textContent = display;
-            // Enable Save when there are types or user has made changes
-            saveBtn.disabled = !hasChanges && currentState.length === 0;
+            }
+            return types;
           }
-          
-          // Button handlers
-          document.getElementById('cancel-btn').addEventListener('click', () => {
-            vscode.postMessage({ type: 'cancel' });
+
+          function updatePreview() {
+            const types = buildTypesFromSelection();
+            const display = types.length === 0 ? 'Not set' : types.map(entry => {
+              if (entry.kind === 'string') { const q = entry.qualifiers; return q ? 'String(' + q.length + ')' : 'String'; }
+              if (entry.kind === 'number') { const q = entry.qualifiers; return q ? 'Number(' + q.digits + ',' + q.fractionDigits + ')' : 'Number'; }
+              if (entry.kind === 'boolean') return 'Boolean';
+              if (entry.kind === 'date') { const q = entry.qualifiers; return q ? q.dateFractions : 'Date'; }
+              if (entry.kind === 'reference' && entry.referenceType) return entry.referenceType.referenceKind + '.' + (entry.referenceType.objectName || '');
+              return 'Unknown';
+            }).join(' | ');
+            previewValue.textContent = display;
+          }
+
+          compositeCb.addEventListener('change', () => {
+            composite = compositeCb.checked;
+            if (!composite && selectedIds.size > 1) {
+              const first = Array.from(selectedIds)[0];
+              selectedIds = new Set([first]);
+              renderTree();
+            }
+            updateQualifierPanel();
+            updatePreview();
+            saveBtn.disabled = selectedIds.size === 0;
           });
-          
+
+          searchInput.addEventListener('input', () => renderTree());
+          searchInput.addEventListener('keydown', (e) => { if (e.ctrlKey && e.altKey && e.key === 'm') { e.preventDefault(); searchInput.focus(); } });
+          document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.altKey && e.key === 'm') { e.preventDefault(); searchInput.focus(); } });
+
+          document.getElementById('cancel-btn').addEventListener('click', () => vscode.postMessage({ type: 'cancel' }));
           document.getElementById('save-btn').addEventListener('click', () => {
-            syncStateFromQualifierInputs();
-            vscode.postMessage({ type: 'save', typeDefinition: { category: currentCategory, types: currentState } });
+            collectQualifiersFromInputs();
+            const types = buildTypesFromSelection();
+            const category = types.length > 1 ? 'composite' : (types.length === 1 && types[0].kind === 'reference' ? 'reference' : 'primitive');
+            vscode.postMessage({ type: 'save', typeDefinition: { category, types } });
           });
-          
-          // Initialize: sync state from form when primitive so Save is enabled and qualifiers apply
-          if (currentCategory === 'primitive') syncStateFromQualifierInputs();
+
+          qualifierGroups.string && document.getElementById('string-length') && document.getElementById('string-length').addEventListener('input', () => { collectQualifiersFromInputs(); updatePreview(); });
+          qualifierGroups.string && document.getElementById('string-allowed-length') && document.getElementById('string-allowed-length').addEventListener('change', () => { collectQualifiersFromInputs(); updatePreview(); });
+          qualifierGroups.number && document.getElementById('number-digits') && document.getElementById('number-digits').addEventListener('input', () => { collectQualifiersFromInputs(); updatePreview(); });
+          qualifierGroups.number && document.getElementById('number-fraction-digits') && document.getElementById('number-fraction-digits').addEventListener('input', () => { collectQualifiersFromInputs(); updatePreview(); });
+          qualifierGroups.number && document.getElementById('number-allowed-sign') && document.getElementById('number-allowed-sign').addEventListener('change', () => { collectQualifiersFromInputs(); updatePreview(); });
+          qualifierGroups.date && document.getElementById('date-fractions') && document.getElementById('date-fractions').addEventListener('change', () => { collectQualifiersFromInputs(); updatePreview(); });
+
+          renderTree();
+          updateQualifierPanel();
           updatePreview();
+          saveBtn.disabled = selectedIds.size === 0;
         </script>
       </body>
       </html>
@@ -785,8 +656,8 @@ export class TypeEditorProvider {
           break;
           
         case 'reference':
-          if (!entry.referenceType || !entry.referenceType.objectName) {
-            errors.push('Reference type must have an object name');
+          if (!entry.referenceType) {
+            errors.push('Reference type must have referenceKind and objectName');
           }
           break;
       }
