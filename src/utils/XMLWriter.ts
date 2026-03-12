@@ -296,7 +296,8 @@ export class XMLWriter {
             }
 
             if (key === 'Properties' && Array.isArray(value)) {
-              return this.convertStringBooleans(this.flattenPropertiesArray(value));
+              const flattened = this.flattenPropertiesArray(value);
+              return this.convertStringBooleans(this.postProcessProperties(flattened));
             }
 
             if (Array.isArray(value)) {
@@ -313,9 +314,58 @@ export class XMLWriter {
 
     const obj = parsed as Record<string, unknown>;
     if (obj.Properties && typeof obj.Properties === 'object') {
-      return this.convertStringBooleans(this.flattenProperties(obj.Properties as Record<string, unknown>));
+      const flattened = this.flattenProperties(obj.Properties as Record<string, unknown>);
+      return this.convertStringBooleans(this.postProcessProperties(flattened));
     }
 
+    return properties;
+  }
+
+  /**
+   * Post-process properties to format Type arrays
+   */
+  private static postProcessProperties(properties: Record<string, unknown>): Record<string, unknown> {
+    // Check if Type property is an array that needs formatting
+    if (properties.Type && Array.isArray(properties.Type)) {
+      try {
+        const { TypeParser } = require('../parsers/typeParser');
+        const { TypeFormatter } = require('./typeFormatter');
+        
+        // Merge all type-related elements into a single object
+        const typeObject: Record<string, unknown> = {};
+        const v8Types: unknown[] = [];
+        
+        for (const typeItem of properties.Type) {
+          if (typeItem && typeof typeItem === 'object') {
+            for (const [typeKey, typeValue] of Object.entries(typeItem)) {
+              if (typeKey === 'v8:Type') {
+                // Collect all v8:Type elements
+                if (Array.isArray(typeValue)) {
+                  v8Types.push(...typeValue);
+                } else {
+                  v8Types.push(typeValue);
+                }
+              } else if (typeKey.startsWith('v8:')) {
+                // Collect qualifiers (v8:StringQualifiers, v8:NumberQualifiers, etc.)
+                typeObject[typeKey] = typeValue;
+              }
+            }
+          }
+        }
+        
+        // Add collected v8:Type elements to typeObject
+        if (v8Types.length > 0) {
+          typeObject['v8:Type'] = v8Types;
+        }
+        
+        const typeDef = TypeParser.parseFromObject(typeObject);
+        properties.Type = TypeFormatter.formatTypeDisplay(typeDef);
+      } catch (error) {
+        // If parsing fails, leave as-is
+        Logger.error('Failed to format Type property in postProcessProperties', error);
+      }
+    }
+    
     return properties;
   }
 
@@ -332,12 +382,64 @@ export class XMLWriter {
           continue;
         }
 
-        if (Array.isArray(value) && value.length > 0) {
+        if (key === 'Type' && Array.isArray(value) && value.length > 0) {
+          // Handle Type element - collect all v8:Type, qualifiers, etc. from array
+          try {
+            const { TypeParser } = require('../parsers/typeParser');
+            const { TypeFormatter } = require('../utils/typeFormatter');
+            
+            // Merge all type-related elements into a single object
+            const typeObject: Record<string, unknown> = {};
+            const v8Types: unknown[] = [];
+            
+            for (const typeItem of value) {
+              if (typeItem && typeof typeItem === 'object') {
+                for (const [typeKey, typeValue] of Object.entries(typeItem)) {
+                  if (typeKey === 'v8:Type') {
+                    // Collect all v8:Type elements
+                    if (Array.isArray(typeValue)) {
+                      v8Types.push(...typeValue);
+                    } else {
+                      v8Types.push(typeValue);
+                    }
+                  } else if (typeKey.startsWith('v8:')) {
+                    // Collect qualifiers (v8:StringQualifiers, v8:NumberQualifiers, etc.)
+                    typeObject[typeKey] = typeValue;
+                  }
+                }
+              }
+            }
+            
+            // Add collected v8:Type elements to typeObject
+            if (v8Types.length > 0) {
+              typeObject['v8:Type'] = v8Types;
+            }
+            
+            const typeDef = TypeParser.parseFromObject(typeObject);
+            flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
+          } catch (error) {
+            // If parsing fails, fall back to raw value
+            Logger.error('Failed to parse type in XMLWriter.flattenPropertiesArray', error);
+            flattened[key] = value;
+          }
+        } else if (Array.isArray(value) && value.length > 0) {
           const firstChild = value[0];
           if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
             flattened[key] = (firstChild as any)['#text'];
           } else {
             flattened[key] = value;
+          }
+        } else if (key === 'Type' && value && typeof value === 'object' && 'v8:Type' in value) {
+          // Handle Type element when it's a single object (not array)
+          try {
+            const { TypeParser } = require('../parsers/typeParser');
+            const { TypeFormatter } = require('../utils/typeFormatter');
+            const typeDef = TypeParser.parseFromObject(value as Record<string, unknown>);
+            flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
+          } catch (error) {
+            Logger.error('Failed to parse type in XMLWriter.flattenPropertiesArray', error);
+            const typeValue = (value as any)['v8:Type'];
+            flattened[key] = Array.isArray(typeValue) ? typeValue[0] : typeValue;
           }
         } else {
           flattened[key] = value;
