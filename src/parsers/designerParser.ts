@@ -178,9 +178,9 @@ export class DesignerParser {
       // XML file doesn't exist, skip
     }
 
-    // Parse Attributes from XML ChildObjects if available
+    // Parse Attributes from XML ChildObjects if available (use xmlPath — same file we read from)
     if (xmlContent) {
-      const attributesNode = await this.parseAttributesFromXML(xmlContent, elementPath, elementName);
+      const attributesNode = await this.parseAttributesFromXML(xmlContent, xmlPath, elementName);
       if (attributesNode && attributesNode.children && attributesNode.children.length > 0) {
         attributesNode.parent = elementNode;
         elementNode.children?.push(attributesNode);
@@ -595,16 +595,16 @@ export class DesignerParser {
   /**
    * Parse attributes from XML ChildObjects section
    * @param xmlContent Parsed XML content
-   * @param elementPath Path to element directory
+   * @param xmlFilePath Path to the element's XML file (same file we read attributes from)
    * @param elementName Name of element
    * @returns Tree node for attributes container
    */
   private static async parseAttributesFromXML(
     xmlContent: Record<string, unknown>,
-    elementPath: string,
+    xmlFilePath: string,
     elementName: string
   ): Promise<TreeNode> {
-    const parentXmlPath = path.join(elementPath, `${elementName}.xml`);
+    const parentXmlPath = xmlFilePath;
     
     const attributesNode: TreeNode = {
       id: 'Attributes',
