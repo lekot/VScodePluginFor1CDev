@@ -480,8 +480,10 @@ export class PropertiesProvider {
     // Format Type property if it's an object (defensive fallback)
     let displayValue = value;
     const isTypeProperty = name.toLowerCase() === 'type';
-    
-    if (isTypeProperty && typeof value === 'object' && value !== null) {
+
+    if (isTypeProperty && (value === null || value === undefined)) {
+      displayValue = 'Not set';
+    } else if (isTypeProperty && typeof value === 'object' && value !== null) {
       try {
         const typeDef = TypeParser.parseFromObject(value as Record<string, unknown>);
         displayValue = TypeFormatter.formatTypeDisplay(typeDef);

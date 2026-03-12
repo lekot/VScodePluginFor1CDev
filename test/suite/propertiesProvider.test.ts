@@ -295,6 +295,51 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     assert.ok(!html.includes('disabled'), 'Type property should be enabled for Attribute');
     assert.ok(html.includes('Редактировать тип'), 'Edit Type button should appear for Attribute');
   });
+
+  // attribute-type-editor bugfix: Type must not display as "[object Object]"
+  test('renderPropertyInput Type as object should display formatted string not [object Object]', () => {
+    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const typeObject = {
+      'v8:Type': 'xs:string',
+      'v8:StringQualifiers': { 'v8:Length': 50 },
+    };
+    const html = renderPropertyInput('Type', typeObject, false);
+    assert.ok(html.includes('String(50)'), 'Type object should render as String(50)');
+    assert.ok(!html.includes('[object Object]'), 'Must not display [object Object]');
+  });
+
+  test('renderPropertyInput Type as string should display as-is', () => {
+    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const html = renderPropertyInput('Type', 'CatalogRef.Products', false);
+    assert.ok(html.includes('CatalogRef.Products'), 'String Type should be shown as-is');
+  });
+
+  test('renderPropertyInput Type null/undefined should display Not set', () => {
+    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const htmlNull = renderPropertyInput('Type', null, false);
+    const htmlUndef = renderPropertyInput('Type', undefined, false);
+    assert.ok(htmlNull.includes('Not set'), 'null Type should show Not set');
+    assert.ok(htmlUndef.includes('Not set'), 'undefined Type should show Not set');
+  });
+
+  test('renderPropertyInput malformed Type object should display [Invalid Type]', () => {
+    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const html = renderPropertyInput('Type', { 'v8:Type': 'cfg:BadRef.Obj' }, false);
+    assert.ok(html.includes('[Invalid Type]'), 'Malformed type object should show [Invalid Type]');
+  });
+
+  test('renderPropertyInput Type property name should be case-insensitive', () => {
+    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const htmlLower = renderPropertyInput('type', 'String(10)', false);
+    const htmlUpper = renderPropertyInput('TYPE', 'String(10)', false);
+    assert.ok(htmlLower.includes('String(10)'));
+    assert.ok(htmlUpper.includes('String(10)'));
+  });
 });
 
 suite('PropertiesProvider Save Operation Test Suite', () => {
