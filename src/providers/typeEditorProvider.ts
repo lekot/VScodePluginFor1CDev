@@ -771,6 +771,11 @@ export class TypeEditorProvider {
     if (!this.resolvePromise) return;
     this.resolvePromise(null);
     this.resolvePromise = undefined;
+    if (this.panel) {
+      const p = this.panel;
+      this.panel = undefined;
+      p.dispose();
+    }
   }
 
   private escapeHtml(text: string): string {
