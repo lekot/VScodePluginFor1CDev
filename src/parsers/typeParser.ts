@@ -14,6 +14,35 @@ import { Logger } from '../utils/logger';
  */
 export class TypeParser {
   /**
+   * Parse already-parsed XML object into TypeDefinition
+   * @param typeObject Already parsed Type element object
+   * @returns Parsed type definition
+   */
+  static parseFromObject(typeObject: Record<string, unknown>): TypeDefinition {
+    try {
+      const typeEntries = this.extractTypeEntries(typeObject);
+      
+      // Determine category based on number of types
+      let category: 'primitive' | 'reference' | 'composite';
+      if (typeEntries.length === 0) {
+        category = 'primitive';
+      } else if (typeEntries.length === 1) {
+        category = typeEntries[0].kind === 'reference' ? 'reference' : 'primitive';
+      } else {
+        category = 'composite';
+      }
+
+      return {
+        category,
+        types: typeEntries,
+      };
+    } catch (error) {
+      Logger.error('Error parsing type object', error);
+      throw new Error(`Failed to parse type object: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
    * Parse XML type structure into TypeDefinition
    * @param xmlContent Raw XML content from Type element
    * @returns Parsed type definition

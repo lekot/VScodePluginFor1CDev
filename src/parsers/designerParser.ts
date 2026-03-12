@@ -4,6 +4,8 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { TypeParser } from './typeParser';
+import { TypeFormatter } from '../utils/typeFormatter';
 
 /**
  * Parser for 1C Designer format metadata
@@ -735,7 +737,15 @@ export class DesignerParser {
             }
           } else if ('v8:Type' in obj) {
             // Handle Type element with v8:Type child
-            properties[key] = obj['v8:Type'];
+            // Parse the type object and format it for display
+            try {
+              const typeDef = TypeParser.parseFromObject(obj as Record<string, unknown>);
+              properties[key] = TypeFormatter.formatTypeDisplay(typeDef);
+            } catch (error) {
+              // If parsing fails, fall back to showing the raw v8:Type value
+              Logger.error('Failed to parse type in flattenAttributeProperties', error);
+              properties[key] = obj['v8:Type'];
+            }
           } else {
             // For other complex types, store as-is or extract text
             properties[key] = value;
@@ -810,6 +820,17 @@ export class DesignerParser {
                     if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
                       result[propKey] = (firstItem as any)['v8:content'];
                     }
+                  }
+                } else if ('v8:Type' in obj) {
+                  // Handle Type element with v8:Type child
+                  // Parse the type object and format it for display
+                  try {
+                    const typeDef = TypeParser.parseFromObject(obj as Record<string, unknown>);
+                    result[propKey] = TypeFormatter.formatTypeDisplay(typeDef);
+                  } catch (error) {
+                    // If parsing fails, fall back to showing the raw v8:Type value
+                    Logger.error('Failed to parse type in extractPropertiesFromElement', error);
+                    result[propKey] = obj['v8:Type'];
                   }
                 } else if (obj.item) {
                   // Simple item wrapper
