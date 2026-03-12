@@ -1,7 +1,12 @@
 import * as vscode from 'vscode';
-import { TypeDefinition, ReferenceableGroup } from '../types/typeDefinitions';
+import { TypeDefinition, ReferenceableGroup, StringQualifiers, NumberQualifiers, DateQualifiers } from '../types/typeDefinitions';
 import { TypeParser } from '../parsers/typeParser';
 import { Logger } from '../utils/logger';
+
+/** Escapes JSON for safe embedding inside a <script> tag (prevents </script> from breaking out). */
+function escapeJsonForScript(json: string): string {
+  return json.replace(/<\/script>/gi, '<\\/script>');
+}
 
 interface WebviewMessage {
   type: 'save' | 'cancel' | 'validate';
@@ -46,7 +51,7 @@ export class TypeEditorProvider {
   private createPanel(): vscode.WebviewPanel {
     const panel = vscode.window.createWebviewPanel(
       '1c-metadata-type-editor',
-      'Type Editor',
+      'Редактирование типа данных',
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
@@ -123,8 +128,17 @@ export class TypeEditorProvider {
         virtualRefs.get(kind)!.add(name);
       }
     }
+    const REFERENCE_KINDS_ORDER = [
+      'CatalogRef',
+      'DocumentRef',
+      'EnumRef',
+      'ChartOfCharacteristicTypesRef',
+      'ChartOfAccountsRef',
+      'ChartOfCalculationTypesRef',
+    ];
     const refGroups: { id: string; label: string; children: { id: string; label: string }[] }[] = [];
-    for (const g of referenceableObjects) {
+    const groupsToIterate = referenceableObjects.length > 0 ? referenceableObjects : REFERENCE_KINDS_ORDER.map((referenceKind) => ({ referenceKind, objectNames: [] as string[] }));
+    for (const g of groupsToIterate) {
       const children = g.objectNames.map((name) => ({ id: 'ref:' + g.referenceKind + ':' + name, label: name }));
       const virtual = virtualRefs.get(g.referenceKind);
       if (virtual) {
@@ -144,15 +158,15 @@ export class TypeEditorProvider {
 
   private getWebviewContent(typeDefinition: TypeDefinition, referenceableObjects: ReferenceableGroup[]): string {
     const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
-    const refGroupsJson = JSON.stringify(referenceableObjects);
+    const refGroupsJson = escapeJsonForScript(JSON.stringify(referenceableObjects));
     const initialComposite = typeDefinition.types.length > 1;
     const initialSelectedIds = this.getInitialSelectedNodeIds(typeDefinition, referenceableObjects);
     const initialQualifierState = this.getInitialQualifierState(typeDefinition);
     const treeData = this.buildTreeData(typeDefinition, referenceableObjects);
-    const treeDataJson = JSON.stringify(treeData);
-    const initialSelectedJson = JSON.stringify(initialSelectedIds);
-    const initialQualifierStateJson = JSON.stringify(initialQualifierState);
-    
+    const treeDataJson = escapeJsonForScript(JSON.stringify(treeData));
+    const initialSelectedJson = escapeJsonForScript(JSON.stringify(initialSelectedIds));
+    const initialQualifierStateJson = escapeJsonForScript(JSON.stringify(initialQualifierState));
+
     return `
       <!DOCTYPE html>
       <html>
@@ -295,10 +309,10 @@ export class TypeEditorProvider {
               <label for="composite-cb">Составной тип данных</label>
             </div>
             <div class="search-row">
-              <input type="text" id="search-input" placeholder="Поиск (Ctrl+Alt+M)" autocomplete="off">
+              <input type="text" id="search-input" placeholder="Поиск (Ctrl+Alt+M)" autocomplete="off" aria-label="Поиск по дереву типов">
             </div>
             <div class="section-title">Тип</div>
-            <div class="tree-area" id="type-tree"></div>
+            <div class="tree-area" id="type-tree" role="tree" aria-label="Дерево типов данных"></div>
           </div>
           <div class="section">
             <span class="section-title">Квалификаторы</span>
@@ -329,8 +343,8 @@ export class TypeEditorProvider {
             <div class="preview-section"><div id="preview-value" class="preview-value">${this.escapeHtml(currentTypeDisplay)}</div></div>
           </div>
           <div class="button-row">
-            <button type="button" id="cancel-btn">Cancel</button>
-            <button type="button" id="save-btn" ${typeDefinition.types.length === 0 ? 'disabled' : ''}>Save</button>
+            <button type="button" id="cancel-btn">Отмена</button>
+            <button type="button" id="save-btn" ${typeDefinition.types.length === 0 ? 'disabled' : ''}>Сохранить</button>
           </div>
         </div>
         <script>
@@ -349,18 +363,6 @@ export class TypeEditorProvider {
           const qualifierFields = document.getElementById('qualifier-fields');
           const qualifierGroups = { string: document.getElementById('string-qualifiers'), number: document.getElementById('number-qualifiers'), date: document.getElementById('date-qualifiers') };
 
-          function nodeIdToLabel(id) {
-            if (id.startsWith('primitive:')) {
-              const k = id.replace('primitive:', '');
-              return { string: 'String', number: 'Number', boolean: 'Boolean', date: 'Date' }[k] || k;
-            }
-            if (id.startsWith('ref:')) {
-              const parts = id.split(':');
-              return parts.length >= 3 ? parts[2] : parts[1] || id;
-            }
-            return id;
-          }
-
           function renderTree() {
             const query = (searchInput && searchInput.value) ? searchInput.value.trim().toLowerCase() : '';
             let html = '';
@@ -370,7 +372,7 @@ export class TypeEditorProvider {
                   const label = c.label;
                   const show = !query || label.toLowerCase().includes(query);
                   const checked = selectedIds.has(c.id);
-                  html += '<div class="tree-node tree-leaf' + (show ? '' : ' hidden') + '" data-id="' + escapeAttr(c.id) + '">' +
+                  html += '<div class="tree-node tree-leaf' + (show ? '' : ' hidden') + '" data-id="' + escapeAttr(c.id) + '" role="treeitem" aria-selected="' + (checked ? 'true' : 'false') + '">' +
                     '<input type="checkbox" id="cb-' + escapeAttr(c.id) + '"' + (checked ? ' checked' : '') + '><label for="cb-' + escapeAttr(c.id) + '">' + escapeHtml(label) + '</label></div>';
                 }
               } else if (group.children) {
@@ -381,7 +383,7 @@ export class TypeEditorProvider {
                   const show = !query || c.label.toLowerCase().includes(query);
                   if (show) childShowCount++;
                   const checked = selectedIds.has(c.id);
-                  childrenHtml += '<div class="tree-node tree-leaf' + (show ? '' : ' hidden') + '" data-id="' + escapeAttr(c.id) + '">' +
+                  childrenHtml += '<div class="tree-node tree-leaf' + (show ? '' : ' hidden') + '" data-id="' + escapeAttr(c.id) + '" role="treeitem" aria-selected="' + (checked ? 'true' : 'false') + '">' +
                     '<input type="checkbox" id="cb-' + escapeAttr(c.id) + '"' + (checked ? ' checked' : '') + '><label for="cb-' + escapeAttr(c.id) + '">' + escapeHtml(c.label) + '</label></div>';
                 }
                 const groupVisible = groupShow || childShowCount > 0;
@@ -539,12 +541,19 @@ export class TypeEditorProvider {
             vscode.postMessage({ type: 'save', typeDefinition: { category, types } });
           });
 
-          qualifierGroups.string && document.getElementById('string-length') && document.getElementById('string-length').addEventListener('input', () => { collectQualifiersFromInputs(); updatePreview(); });
-          qualifierGroups.string && document.getElementById('string-allowed-length') && document.getElementById('string-allowed-length').addEventListener('change', () => { collectQualifiersFromInputs(); updatePreview(); });
-          qualifierGroups.number && document.getElementById('number-digits') && document.getElementById('number-digits').addEventListener('input', () => { collectQualifiersFromInputs(); updatePreview(); });
-          qualifierGroups.number && document.getElementById('number-fraction-digits') && document.getElementById('number-fraction-digits').addEventListener('input', () => { collectQualifiersFromInputs(); updatePreview(); });
-          qualifierGroups.number && document.getElementById('number-allowed-sign') && document.getElementById('number-allowed-sign').addEventListener('change', () => { collectQualifiersFromInputs(); updatePreview(); });
-          qualifierGroups.date && document.getElementById('date-fractions') && document.getElementById('date-fractions').addEventListener('change', () => { collectQualifiersFromInputs(); updatePreview(); });
+          function syncQualifiersOnBlur() { collectQualifiersFromInputs(); updatePreview(); }
+          const stringLengthEl = document.getElementById('string-length');
+          const stringAllowedEl = document.getElementById('string-allowed-length');
+          const numberDigitsEl = document.getElementById('number-digits');
+          const numberFracEl = document.getElementById('number-fraction-digits');
+          const numberSignEl = document.getElementById('number-allowed-sign');
+          const dateFracEl = document.getElementById('date-fractions');
+          if (stringLengthEl) { stringLengthEl.addEventListener('input', syncQualifiersOnBlur); stringLengthEl.addEventListener('blur', syncQualifiersOnBlur); }
+          if (stringAllowedEl) { stringAllowedEl.addEventListener('change', syncQualifiersOnBlur); stringAllowedEl.addEventListener('blur', syncQualifiersOnBlur); }
+          if (numberDigitsEl) { numberDigitsEl.addEventListener('input', syncQualifiersOnBlur); numberDigitsEl.addEventListener('blur', syncQualifiersOnBlur); }
+          if (numberFracEl) { numberFracEl.addEventListener('input', syncQualifiersOnBlur); numberFracEl.addEventListener('blur', syncQualifiersOnBlur); }
+          if (numberSignEl) { numberSignEl.addEventListener('change', syncQualifiersOnBlur); numberSignEl.addEventListener('blur', syncQualifiersOnBlur); }
+          if (dateFracEl) { dateFracEl.addEventListener('change', syncQualifiersOnBlur); dateFracEl.addEventListener('blur', syncQualifiersOnBlur); }
 
           renderTree();
           updateQualifierPanel();
@@ -560,45 +569,14 @@ export class TypeEditorProvider {
     if (typeDefinition.types.length === 0) return 'Not set';
     return typeDefinition.types.map(entry => {
       switch (entry.kind) {
-        case 'string': return entry.qualifiers ? `String(${(entry.qualifiers as any).length})` : 'String';
-        case 'number': return entry.qualifiers ? `Number(${(entry.qualifiers as any).digits},${(entry.qualifiers as any).fractionDigits})` : 'Number';
+        case 'string': return entry.qualifiers ? `String(${(entry.qualifiers as StringQualifiers).length})` : 'String';
+        case 'number': return entry.qualifiers ? `Number(${(entry.qualifiers as NumberQualifiers).digits},${(entry.qualifiers as NumberQualifiers).fractionDigits})` : 'Number';
         case 'boolean': return 'Boolean';
-        case 'date': return entry.qualifiers ? (entry.qualifiers as any).dateFractions : 'Date';
+        case 'date': return entry.qualifiers ? (entry.qualifiers as DateQualifiers).dateFractions : 'Date';
         case 'reference': return entry.referenceType ? `${entry.referenceType.referenceKind}.${entry.referenceType.objectName}` : 'Reference';
         default: return 'Unknown';
       }
     }).join(' | ');
-  }
-
-  private getQualifierValue(typeDefinition: TypeDefinition, kind: string, qualifier: string): any {
-    const entry = typeDefinition.types.find(t => t.kind === kind);
-    if (entry && entry.qualifiers) {
-      return (entry.qualifiers as any)[qualifier];
-    }
-    return undefined;
-  }
-
-  private getReferenceValue(typeDefinition: TypeDefinition): string | undefined {
-    const entry = typeDefinition.types.find(t => t.kind === 'reference');
-    return entry?.referenceType?.objectName;
-  }
-
-  private renderCompositeList(typeDefinition: TypeDefinition): string {
-    if (typeDefinition.types.length === 0) {
-      return '<div class="empty-state">No types added yet. Click "+ Add Type" to add a type.</div>';
-    }
-    
-    return typeDefinition.types.map((entry, index) => {
-      const display = this.formatTypeDisplay({ category: typeDefinition.category, types: [entry] });
-      return `
-        <li class="type-item">
-          <span class="type-item-info">${this.escapeHtml(display)}</span>
-          <div class="type-item-actions">
-            <button type="button" class="btn-icon" data-action="remove" data-index="${index}">&times;</button>
-          </div>
-        </li>
-      `;
-    }).join('');
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
@@ -614,12 +592,17 @@ export class TypeEditorProvider {
       }
     } catch (error) {
       Logger.error('Error handling message', error);
+      if (this.panel) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.panel.webview.postMessage({ type: 'error', message });
+      }
     }
   }
 
+  /** Validation and validationResult messaging are reserved for future use (pre-save validation in UI). */
   private async handleValidateMessage(message: WebviewMessage): Promise<void> {
     if (!this.panel) return;
-    
+
     const errors = this.validateTypeDefinition(message.typeDefinition);
     this.panel.webview.postMessage({ type: 'validationResult', errors });
   }
@@ -636,16 +619,16 @@ export class TypeEditorProvider {
       switch (entry.kind) {
         case 'string':
           if (entry.qualifiers) {
-            const q = entry.qualifiers as any;
+            const q = entry.qualifiers as StringQualifiers;
             if (q.length !== undefined && (q.length < 1 || q.length > 1024)) {
               errors.push(`String length must be between 1 and 1024, got ${q.length}`);
             }
           }
           break;
-          
+
         case 'number':
           if (entry.qualifiers) {
-            const q = entry.qualifiers as any;
+            const q = entry.qualifiers as NumberQualifiers;
             if (q.digits !== undefined && (q.digits < 1 || q.digits > 38)) {
               errors.push(`Number digits must be between 1 and 38, got ${q.digits}`);
             }

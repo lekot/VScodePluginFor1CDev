@@ -95,9 +95,9 @@ describe('TypeEditorProvider', () => {
       const content = provider['getWebviewContent'](definition, emptyRef);
       
       assert.ok(content.includes('id="cancel-btn"'));
-      assert.ok(content.includes('Cancel'));
+      assert.ok(content.includes('Отмена'));
       assert.ok(content.includes('id="save-btn"'));
-      assert.ok(content.includes('Save'));
+      assert.ok(content.includes('Сохранить'));
     });
 
     it('should apply VS Code theme colors', () => {
@@ -265,76 +265,6 @@ describe('TypeEditorProvider', () => {
       };
       const result = provider['formatTypeDisplay'](definition);
       assert.strictEqual(result, 'String(50) | Number(10,2) | CatalogRef.Products');
-    });
-  });
-
-  describe('getQualifierValue', () => {
-    it('should return qualifier value for existing type', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [{ kind: 'string', qualifiers: { length: 100, allowedLength: 'Variable' } }],
-      };
-      const result = provider['getQualifierValue'](definition, 'string', 'length');
-      assert.strictEqual(result, 100);
-    });
-
-    it('should return undefined for non-existent type', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [{ kind: 'string' }],
-      };
-      const result = provider['getQualifierValue'](definition, 'number', 'digits');
-      assert.strictEqual(result, undefined);
-    });
-
-    it('should return undefined for non-existent qualifier', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [{ kind: 'string' }],
-      };
-      const result = provider['getQualifierValue'](definition, 'string', 'length');
-      assert.strictEqual(result, undefined);
-    });
-  });
-
-  describe('getReferenceValue', () => {
-    it('should return object name for reference type', () => {
-      const definition: TypeDefinition = {
-        category: 'reference',
-        types: [{ kind: 'reference', referenceType: { referenceKind: 'CatalogRef', objectName: 'Products' } }],
-      };
-      const result = provider['getReferenceValue'](definition);
-      assert.strictEqual(result, 'Products');
-    });
-
-    it('should return undefined for non-reference type', () => {
-      const definition: TypeDefinition = {
-        category: 'primitive',
-        types: [{ kind: 'string' }],
-      };
-      const result = provider['getReferenceValue'](definition);
-      assert.strictEqual(result, undefined);
-    });
-  });
-
-  describe('renderCompositeList', () => {
-    it('should return empty state message for empty types', () => {
-      const definition: TypeDefinition = {
-        category: 'composite',
-        types: [],
-      };
-      const result = provider['renderCompositeList'](definition);
-      assert.ok(result.includes('No types added yet'));
-    });
-
-    it('should render type items with remove buttons', () => {
-      const definition: TypeDefinition = {
-        category: 'composite',
-        types: [{ kind: 'string' }],
-      };
-      const result = provider['renderCompositeList'](definition);
-      assert.ok(result.includes('type-item'));
-      assert.ok(result.includes('data-action="remove"'));
     });
   });
 
