@@ -1,4 +1,4 @@
-let vscode: any;
+let vscode: typeof import('vscode') | null;
 try {
   vscode = require('vscode');
 } catch {
