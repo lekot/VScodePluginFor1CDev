@@ -13,7 +13,7 @@ import {
   DEFAULT_SECTION_TITLE,
 } from '../constants/propertySections';
 import { MESSAGES } from '../constants/messages';
-import type { TypeDefinition } from '../types/typeDefinitions';
+import type { TypeDefinition, ReferenceTypeInfo } from '../types/typeDefinitions';
 import { validateElementName } from '../utils/elementNameValidator';
 import * as path from 'path';
 
@@ -995,7 +995,7 @@ export class PropertiesProvider {
           break;
         
         default:
-          Logger.warn(`Unknown message type: ${(message as any).type}`);
+          Logger.warn(`Unknown message type: ${message && typeof message === 'object' && 'type' in message ? String((message as WebviewMessage).type) : 'unknown'}`);
       }
     } catch (error) {
       Logger.error(`Error handling message: ${error}`);
@@ -1142,7 +1142,7 @@ export class PropertiesProvider {
         category: 'reference',
         types: [{
           kind: 'reference',
-          referenceType: { referenceKind: refMatch[1] as any, objectName: refMatch[2].trim() },
+          referenceType: { referenceKind: refMatch[1] as ReferenceTypeInfo['referenceKind'], objectName: refMatch[2].trim() },
         }],
       };
     }

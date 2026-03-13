@@ -733,7 +733,8 @@ ${defaultPropsLines}\t\t</Properties>
         } else if (Array.isArray(value) && value.length > 0) {
           const firstChild = value[0];
           if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
-            flattened[key] = (firstChild as any)['#text'];
+            const rec = firstChild as Record<string, unknown>;
+            flattened[key] = rec['#text'];
           } else {
             flattened[key] = value;
           }
@@ -746,7 +747,8 @@ ${defaultPropsLines}\t\t</Properties>
             flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
           } catch (error) {
             Logger.error('Failed to parse type in XMLWriter.flattenPropertiesArray', error);
-            const typeValue = (value as any)['v8:Type'];
+            const valueRec = value as Record<string, unknown>;
+            const typeValue = valueRec['v8:Type'];
             flattened[key] = Array.isArray(typeValue) ? typeValue[0] : typeValue;
           }
         } else {

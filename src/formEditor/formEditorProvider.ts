@@ -598,6 +598,11 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     let formXmlPath = '';
     let modulePath = '';
 
+    function esc(s) {
+      if (s == null) return '';
+      var t = String(s);
+      return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
     var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
     function isDescendantOfItem(items, sourceId, targetId) {
@@ -721,20 +726,20 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       if (propsHeader) propsHeader.textContent = (el.name || '') + ' (' + (el.tag || '') + ')';
       placeholder.style.display = 'none';
       actions.style.display = 'block';
-      let html = '<div class="prop-row"><label>Тип</label> ' + (el.tag || '') + '</div>';
-      html += '<div class="prop-row"><label>Имя</label> <input id="prop-name" value="' + (el.name || '') + '"></div>';
-      html += '<div class="prop-row"><label>ID</label> <input id="prop-id" value="' + (el.id || '') + '"></div>';
+      let html = '<div class="prop-row"><label>Тип</label> ' + esc(el.tag) + '</div>';
+      html += '<div class="prop-row"><label>Имя</label> <input id="prop-name" value="' + esc(el.name) + '"></div>';
+      html += '<div class="prop-row"><label>ID</label> <input id="prop-id" value="' + esc(el.id) + '"></div>';
       if (el.properties && typeof el.properties === 'object') {
         for (const [k, v] of Object.entries(el.properties)) {
           if (k === ':@' || k.startsWith('@')) continue;
           var val = (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (typeof v === 'string' ? v : String(v));
-          html += '<div class="prop-row"><label>' + k + '</label> <input data-key="' + k + '" value="' + (val || '').toString().replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '"></div>';
+          html += '<div class="prop-row"><label>' + esc(k) + '</label> <input data-key="' + esc(k) + '" value="' + esc(val || '') + '"></div>';
         }
       }
       if (el.events && typeof el.events === 'object' && Object.keys(el.events).length) {
         html += '<div class="prop-row" style="margin-top:8px;"><strong>События</strong></div>';
         for (const [evName, methodName] of Object.entries(el.events)) {
-          html += '<div class="prop-row">' + evName + ' → ' + (methodName || '') + ' <button type="button" class="btn-goto-proc" data-proc="' + (methodName || '').replace(/"/g, '&quot;') + '">Перейти</button></div>';
+          html += '<div class="prop-row">' + esc(evName) + ' → ' + esc(methodName || '') + ' <button type="button" class="btn-goto-proc" data-proc="' + esc(methodName || '') + '">Перейти</button></div>';
         }
       }
       content.innerHTML = html;
