@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as path from 'path';
 import { DesignerParser } from '../../src/parsers/designerParser';
 import { MetadataType } from '../../src/models/treeNode';
@@ -80,5 +81,20 @@ suite('DesignerParser', () => {
     assert.deepStrictEqual(attrNames, ['Col1', 'Col2']);
     assert.strictEqual(section.children![0].type, MetadataType.Attribute);
     assert.strictEqual(section.children![1].type, MetadataType.Attribute);
+  });
+
+  test('should parse extensions_samples if present (configuration extension with Ext)', async function () {
+    const projectRoot = path.resolve(__dirname, '../../..');
+    const extensionsSamplesPath = path.join(projectRoot, 'extensions_samples');
+    if (!fs.existsSync(extensionsSamplesPath)) {
+      this.skip();
+    }
+    const rootNode = await DesignerParser.parse(extensionsSamplesPath);
+    assert.ok(rootNode);
+    assert.strictEqual(rootNode.name, 'Configuration');
+    assert.strictEqual(rootNode.type, MetadataType.Configuration);
+    assert.ok(Array.isArray(rootNode.children));
+    const catalogs = rootNode.children?.find((c) => c.name === 'Catalogs');
+    assert.ok(catalogs, 'Catalogs type node should exist');
   });
 });

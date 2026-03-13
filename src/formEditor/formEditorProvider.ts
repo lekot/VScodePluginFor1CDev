@@ -12,6 +12,7 @@ import { isFormParseError, isFormParseFileMissing } from './formModel';
 import type { FormModel, FormChildItem } from './formModel';
 import { writeFormXml } from './formXmlWriter';
 import { parseBslModuleProcedures } from './bslModuleParser';
+import { getFormPaths } from './formPaths';
 
 /** Minimal custom document for form editor. */
 class FormEditorDocument implements vscode.CustomDocument {
@@ -200,26 +201,30 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     document: FormEditorDocument,
     msg: Record<string, unknown>
   ): Promise<void> {
-    const formXmlPath = document.uri.fsPath;
-    const modulePath = path.join(
-      path.dirname(path.dirname(formXmlPath)),
-      'Ext',
-      'Form',
-      'Module.bsl'
-    );
+    const { modulePath } = getFormPaths(document.uri.fsPath);
     const procedureName = msg.procedureName as string | undefined;
-    const uri = vscode.Uri.file(modulePath);
-    const doc = await vscode.workspace.openTextDocument(uri);
-    const editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One });
-    if (procedureName) {
-      const procedures = await parseBslModuleProcedures(modulePath);
-      const proc = procedures.find((p) => p.name === procedureName);
-      if (proc && proc.line) {
-        const line = Math.max(0, proc.line - 1);
-        const range = new vscode.Range(line, 0, line, 0);
-        editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-        editor.selection = new vscode.Selection(line, 0, line, 0);
+    try {
+      const uri = vscode.Uri.file(modulePath);
+      const doc = await vscode.workspace.openTextDocument(uri);
+      const editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One });
+      if (procedureName) {
+        const procedures = await parseBslModuleProcedures(modulePath);
+        const proc = procedures.find((p) => p.name === procedureName);
+        if (proc && proc.line) {
+          const line = Math.max(0, proc.line - 1);
+          const range = new vscode.Range(line, 0, line, 0);
+          editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+          editor.selection = new vscode.Selection(line, 0, line, 0);
+        }
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor: openModule failed', err);
+      vscode.window.showErrorMessage(
+        message.includes('ENOENT') || message.includes('not found')
+          ? `Файл модуля формы не найден: ${modulePath}`
+          : `Не удалось открыть модуль: ${message}`
+      );
     }
   }
 
@@ -355,27 +360,54 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       color: var(--vscode-foreground);
       background: var(--vscode-editor-background);
       height: 100vh;
-      display: grid;
-      grid-template-columns: 280px 1fr;
-      grid-template-rows: 1fr 200px;
-      grid-template-areas: "tree props" "tree preview";
+      display: flex;
+      flex-direction: row;
+      overflow: hidden;
+      --tree-width: 280px;
+      --preview-height: 200px;
     }
     .zone-tree {
-      grid-area: tree;
+      width: var(--tree-width);
+      min-width: 120px;
+      max-width: 80%;
       border-right: 1px solid var(--vscode-panel-border);
       overflow: auto;
       padding: 8px;
+      flex-shrink: 0;
+    }
+    .splitter-v {
+      width: 6px;
+      flex-shrink: 0;
+      cursor: col-resize;
+      background: var(--vscode-panel-border);
+    }
+    .splitter-v:hover { background: var(--vscode-focusBorder); }
+    .right-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
     }
     .zone-props {
-      grid-area: props;
+      flex: 1;
+      min-height: 80px;
       border-bottom: 1px solid var(--vscode-panel-border);
       overflow: auto;
       padding: 8px;
     }
+    .splitter-h {
+      height: 6px;
+      flex-shrink: 0;
+      cursor: row-resize;
+      background: var(--vscode-panel-border);
+    }
+    .splitter-h:hover { background: var(--vscode-focusBorder); }
     .zone-preview {
-      grid-area: preview;
+      height: var(--preview-height);
+      min-height: 60px;
       overflow: auto;
       padding: 8px;
+      flex-shrink: 0;
     }
     .zone-tree h3, .zone-props h3, .zone-preview h3 {
       margin: 0 0 8px 0;
@@ -397,6 +429,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .tree-node.drop-target { outline: 2px solid var(--vscode-focusBorder); }
     .tree-children { margin-left: 12px; }
     .placeholder { color: var(--vscode-descriptionForeground); font-style: italic; }
+    .preview-placeholder { color: var(--vscode-descriptionForeground); font-style: italic; padding: 8px 0; }
     .empty-state { text-align: center; padding: 16px; color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 8px 0; font-size: 1em; }
     .empty-state p { margin: 0; font-size: 0.9em; }
@@ -410,19 +443,20 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       cursor: pointer;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      border-radius: 2px;
+      border-radius: 3px;
     }
     .tabs button:hover { background: var(--vscode-button-hoverBackground); }
     .prop-row { margin-bottom: 6px; }
     .prop-row label { display: inline-block; width: 100px; color: var(--vscode-descriptionForeground); }
     .prop-row input {
       width: 200px;
-      padding: 4px 8px;
+      padding: 6px 8px;
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
       border: 1px solid var(--vscode-input-border);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
+      border-radius: 3px;
     }
     .prop-row input:focus {
       outline: 1px solid var(--vscode-focusBorder);
@@ -434,7 +468,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       cursor: pointer;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      border-radius: 2px;
+      border-radius: 3px;
     }
     #btn-save {
       background: var(--vscode-button-background);
@@ -454,9 +488,20 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       cursor: pointer;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      border-radius: 2px;
+      border-radius: 3px;
     }
     .btn-goto-proc:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    #btn-open-module {
+      padding: 6px 14px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      border-radius: 3px;
+    }
+    #btn-open-module:hover { background: var(--vscode-button-hoverBackground); }
   </style>
 </head>
 <body>
@@ -469,32 +514,87 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     </div>
     <div id="tree-error" class="error" style="display:none;"></div>
   </div>
-  <div class="zone-props">
-    <h3>Свойства</h3>
-    <div id="props-header" class="props-selection-header"></div>
-    <div id="props-content" style="display:none;"></div>
-    <div id="props-placeholder" class="placeholder">Выберите элемент</div>
-    <div id="props-actions" style="margin-top:8px;display:none;">
-      <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
-      <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
-      <span id="save-status" style="margin-left:8px;"></span>
+  <div class="splitter-v" id="splitter-v" title="Изменить ширину панели"></div>
+  <div class="right-col">
+    <div class="zone-props">
+      <h3>Свойства</h3>
+      <div id="props-header" class="props-selection-header"></div>
+      <div id="props-content" style="display:none;"></div>
+      <div id="props-placeholder" class="placeholder">Выберите элемент</div>
+      <div id="props-actions" style="margin-top:8px;display:none;">
+        <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
+        <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
+        <span id="save-status" style="margin-left:8px;"></span>
+      </div>
     </div>
-  </div>
-  <div class="zone-preview">
+    <div class="splitter-h" id="splitter-h" title="Изменить высоту превью"></div>
+    <div class="zone-preview">
     <h3>Превью</h3>
     <div class="tabs">
       <button type="button" data-tab="form" title="Форма">Форма</button>
       <button type="button" data-tab="module" title="Модуль">Модуль</button>
     </div>
-    <div id="preview-form" class="placeholder">Превью формы</div>
+    <div id="preview-form" class="preview-placeholder">Превью не реализовано</div>
     <div id="preview-module" style="display:none;">
       <button type="button" id="btn-open-module" title="Модуль формы">Модуль формы</button>
       <p class="placeholder">Открывает Ext/Form/Module.bsl в редакторе</p>
+    </div>
     </div>
   </div>
   <script>
     const vscode = acquireVsCodeApi();
     let formModel = null;
+    (function setupSplitters() {
+      var root = document.body;
+      var sv = document.getElementById('splitter-v');
+      var sh = document.getElementById('splitter-h');
+      function px(val) { return val + 'px'; }
+      function parsePx(str) { return str ? parseInt(str, 10) || 0 : 0; }
+      if (sv) {
+        sv.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          var startX = e.clientX;
+          var startW = parsePx(getComputedStyle(root).getPropertyValue('--tree-width')) || 280;
+          function move(e2) {
+            var dx = e2.clientX - startX;
+            var newW = Math.max(120, Math.min(window.innerWidth * 0.8, startW + dx));
+            root.style.setProperty('--tree-width', px(newW));
+          }
+          function up() {
+            document.removeEventListener('mousemove', move);
+            document.removeEventListener('mouseup', up);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+          }
+          document.body.style.cursor = 'col-resize';
+          document.body.style.userSelect = 'none';
+          document.addEventListener('mousemove', move);
+          document.addEventListener('mouseup', up);
+        });
+      }
+      if (sh) {
+        sh.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          var startY = e.clientY;
+          var startH = parsePx(getComputedStyle(root).getPropertyValue('--preview-height')) || 200;
+          function move(e2) {
+            var dy = startY - e2.clientY;
+            var newH = Math.max(60, Math.min(window.innerHeight - 100, startH + dy));
+            root.style.setProperty('--preview-height', px(newH));
+          }
+          function up() {
+            document.removeEventListener('mousemove', move);
+            document.removeEventListener('mouseup', up);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+          }
+          document.body.style.cursor = 'row-resize';
+          document.body.style.userSelect = 'none';
+          document.addEventListener('mousemove', move);
+          document.addEventListener('mouseup', up);
+        });
+      }
+    })();
     let formXmlPath = '';
     let modulePath = '';
 
@@ -570,6 +670,41 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       return find(model.childItemsRoot || []);
     }
 
+    function extractDisplayValue(v) {
+      if (v == null) return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) {
+        if (v.length === 0) return '';
+        return extractDisplayValue(v[0]);
+      }
+      if (typeof v === 'object') {
+        if (v['#text'] !== undefined && v['#text'] !== null) return String(v['#text']).trim();
+        var keys = Object.keys(v);
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var local = key.indexOf(':') >= 0 ? key.split(':').pop() : key;
+          if (local === 'content') {
+            var c = v[key];
+            if (Array.isArray(c) && c.length) return extractDisplayValue(c[0]);
+            if (c && typeof c === 'object' && c['#text'] !== undefined) return String(c['#text']).trim();
+            return extractDisplayValue(c);
+          }
+        }
+        for (var j = 0; j < keys.length; j++) {
+          var key2 = keys[j];
+          var local2 = key2.indexOf(':') >= 0 ? key2.split(':').pop() : key2;
+          if (local2 === 'item') {
+            return extractDisplayValue(v[key2]);
+          }
+        }
+        for (var n = 0; n < keys.length; n++) {
+          if (keys[n] === ':@' || keys[n].startsWith('@')) continue;
+          var res = extractDisplayValue(v[keys[n]]);
+          if (res !== '') return res;
+        }
+      }
+      return '';
+    }
     function renderProps(el) {
       const placeholder = document.getElementById('props-placeholder');
       const content = document.getElementById('props-content');
@@ -592,8 +727,8 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       if (el.properties && typeof el.properties === 'object') {
         for (const [k, v] of Object.entries(el.properties)) {
           if (k === ':@' || k.startsWith('@')) continue;
-          const val = (typeof v === 'object' && v !== null && v['#text'] !== undefined) ? v['#text'] : (typeof v === 'string' ? v : JSON.stringify(v));
-          html += '<div class="prop-row"><label>' + k + '</label> <input data-key="' + k + '" value="' + (val || '').toString().replace(/"/g, '&quot;') + '"></div>';
+          var val = (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (typeof v === 'string' ? v : String(v));
+          html += '<div class="prop-row"><label>' + k + '</label> <input data-key="' + k + '" value="' + (val || '').toString().replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '"></div>';
         }
       }
       if (el.events && typeof el.events === 'object' && Object.keys(el.events).length) {

@@ -58,3 +58,12 @@ npm run format
 - **Панель свойств и редактор типа**: `propertiesProvider.test.ts`, тесты в `src/providers/test/`.
 
 Фикстуры в `test/fixtures/designer-config/` повторяют минимальную структуру конфигурации Designer (Configuration.xml, Catalogs, Documents и т.д.) и используются в интеграционных и парсер-тестах.
+
+## Примеры конфигураций и расширений
+
+В корне проекта могут находиться папки-примеры (не коммитятся, указаны в `.gitignore`):
+
+- **extensions_samples** — пример расширения конфигурации (Configuration.xml, Catalogs, форма с папкой Ext: Form.xml, Module.bsl). Удобно использовать для ручной проверки поддержки расширений: откройте папку `extensions_samples` в VS Code как workspace и убедитесь, что дерево метаданных отображает конфигурацию и узлы Ext (например, форма элемента справочника с Ext/Form).
+- **structure_samples**, **structure_backup** — образцы структуры конфигурации Designer для разработки и отладки.
+
+Содержимое этих папок не попадает в VSIX (указано в `.vscodeignore`).
