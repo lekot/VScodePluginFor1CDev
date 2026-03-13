@@ -9,6 +9,64 @@ import { FormatDetector, ConfigFormat } from './formatDetector';
  */
 export class MetadataParser {
   /**
+   * Build only root and type nodes without loading element contents (for lazy loading).
+   * @param configPath Path to configuration root directory
+   * @returns Root tree node with type nodes that have empty children
+   */
+  static async parseStructureOnly(configPath: string): Promise<TreeNode> {
+    if (!(await FormatDetector.isValidConfigurationPath(configPath))) {
+      throw new Error(`Invalid configuration path: ${configPath}`);
+    }
+    const format = await FormatDetector.detect(configPath);
+    if (format === ConfigFormat.Unknown) {
+      throw new Error(`Unknown configuration format at ${configPath}`);
+    }
+    if (format === ConfigFormat.Designer) {
+      return await DesignerParser.parseStructureOnly(configPath);
+    }
+    return await EdtParser.parseStructureOnly(configPath);
+  }
+
+  /**
+   * Load element nodes for a single metadata type (e.g. Catalogs).
+   * @param configPath Path to configuration root directory
+   * @param typeName Type directory name (e.g. Catalogs)
+   * @returns Array of element tree nodes for this type
+   */
+  static async parseTypeContents(configPath: string, typeName: string): Promise<TreeNode[]> {
+    const format = await FormatDetector.detect(configPath);
+    if (format === ConfigFormat.Designer) {
+      return await DesignerParser.parseTypeContents(configPath, typeName);
+    }
+    if (format === ConfigFormat.EDT) {
+      return await EdtParser.parseTypeContents(configPath, typeName);
+    }
+    return [];
+  }
+
+  /**
+   * Load direct children (Attributes, Forms, Ext, etc.) for a metadata element.
+   * Used when expanding an element that was loaded in shallow (lazy) mode.
+   */
+  static async loadElementChildren(
+    configPath: string,
+    format: ConfigFormat,
+    element: TreeNode
+  ): Promise<TreeNode[]> {
+    const id = element.id;
+    const dot = id.indexOf('.');
+    const typeName = dot >= 0 ? id.slice(0, dot) : id;
+    const elementName = dot >= 0 ? id.slice(dot + 1) : element.name;
+    if (format === ConfigFormat.Designer) {
+      return await DesignerParser.loadChildrenForElement(configPath, typeName, elementName);
+    }
+    if (format === ConfigFormat.EDT) {
+      return await EdtParser.loadChildrenForElement(configPath, typeName, elementName);
+    }
+    return [];
+  }
+
+  /**
    * Parse configuration metadata
    * @param configPath Path to configuration root directory
    * @returns Root tree node

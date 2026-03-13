@@ -6,7 +6,16 @@ import { TypeEditorProvider } from './typeEditorProvider';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeFormatter } from '../utils/typeFormatter';
 import { getPropertyLabel } from '../constants/propertyLabels';
+import {
+  getPropertySectionsForType,
+  getKnownPropertyNamesForType,
+  OTHER_SECTION_TITLE,
+  DEFAULT_SECTION_TITLE,
+} from '../constants/propertySections';
+import { MESSAGES } from '../constants/messages';
 import type { TypeDefinition } from '../types/typeDefinitions';
+import { validateElementName } from '../utils/elementNameValidator';
+import * as path from 'path';
 
 /**
  * Message types sent from webview to extension
@@ -58,11 +67,21 @@ export class PropertiesProvider {
 
 
   /**
-   * Show properties for a tree node
+   * Show properties for a tree node (or empty state when node is undefined)
    * Creates new panel or reuses existing one (singleton pattern)
    */
-  public async showProperties(node: TreeNode): Promise<void> {
+  public async showProperties(node: TreeNode | undefined): Promise<void> {
     this.currentNode = node;
+
+    if (!node) {
+      if (!this.panel) {
+        this.panel = this.createPanel();
+      } else {
+        this.panel.reveal(vscode.ViewColumn.Beside);
+      }
+      this.updateWebviewContent();
+      return;
+    }
 
     // Check if this is a .bsl module file - open it as text instead of properties
     if (node.filePath && node.filePath.endsWith('.bsl')) {
@@ -114,6 +133,54 @@ export class PropertiesProvider {
     // For nested elements with parentFilePath, use already loaded properties from node.properties
 
     this.updateWebviewContent();
+  }
+
+  /**
+   * Returns the file path of the currently shown node (for comparison with watcher events).
+   */
+  public getCurrentFilePath(): string | undefined {
+    if (!this.currentNode) {
+      return undefined;
+    }
+    const p = this.currentNode.parentFilePath || this.currentNode.filePath;
+    return p ? path.normalize(p) : undefined;
+  }
+
+  /**
+   * If the changed file is the current node's file (or parent file), re-read from disk and update the panel.
+   * Shows a brief notification that the file was changed externally.
+   */
+  public async refreshIfCurrentNode(changedFilePath: string): Promise<void> {
+    const node = this.currentNode;
+    if (!node) {
+      return;
+    }
+    const normalized = path.normalize(changedFilePath);
+    const nodePath = node.parentFilePath || node.filePath;
+    if (!nodePath || path.normalize(nodePath) !== normalized) {
+      return;
+    }
+    await this.showProperties(node);
+    vscode.window.showInformationMessage(MESSAGES.FILE_CHANGED_PANEL_REFRESHED);
+  }
+
+  /**
+   * Notify that a file was changed externally. If it's the current node's file, show prompt to reload.
+   */
+  public notifyFileChangedExternally(filePath: string): void {
+    const normalized = path.normalize(filePath);
+    if (!this.currentNode || this.getCurrentFilePath() !== normalized) {
+      return;
+    }
+    vscode.window.showInformationMessage(
+      MESSAGES.FILE_CHANGED_EXTERNALLY,
+      MESSAGES.FILE_CHANGED_UPDATE,
+      MESSAGES.FILE_CHANGED_LATER
+    ).then((selection) => {
+      if (selection === MESSAGES.FILE_CHANGED_UPDATE) {
+        void this.refreshIfCurrentNode(filePath);
+      }
+    });
   }
 
   /**
@@ -402,6 +469,17 @@ export class PropertiesProvider {
             padding: 40px;
             color: var(--vscode-descriptionForeground);
           }
+          .property-section {
+            margin-bottom: 20px;
+          }
+          .property-section-title {
+            font-size: 0.95em;
+            font-weight: 600;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+          }
         </style>
       </head>
       <body>
@@ -416,7 +494,7 @@ export class PropertiesProvider {
         ` : ''}
         ${hasProperties ? `
           <div id="properties">
-            ${this.renderProperties(properties, readOnly)}
+            ${this.renderPropertiesBySections(node, readOnly)}
           </div>
           ${!readOnly ? `
             <div class="button-row">
@@ -482,10 +560,56 @@ export class PropertiesProvider {
     `;
   }
 
-  private renderProperties(properties: Record<string, unknown>, readOnly: boolean): string {
-    return Object.entries(properties)
-      .map(([key, value]) => this.renderPropertyInput(key, value, readOnly))
-      .join('');
+  /**
+   * Render properties grouped by type-specific sections (4.3).
+   * Uses getPropertySectionsForType(node.type); properties not in any section go to "Прочее".
+   */
+  private renderPropertiesBySections(node: TreeNode, readOnly: boolean): string {
+    const properties = node.properties || {};
+    const sections = getPropertySectionsForType(node.type);
+    const knownNames = getKnownPropertyNamesForType(node.type);
+    const allKeys = Object.keys(properties);
+    const otherKeys = allKeys.filter((k) => !knownNames.has(k));
+
+    let html = '';
+
+    // Type-specific sections with defined propertyNames
+    for (const section of sections) {
+      const namesInSection =
+        section.propertyNames.length > 0
+          ? section.propertyNames.filter((name) => name in properties)
+          : allKeys;
+      if (namesInSection.length === 0 && section.title !== DEFAULT_SECTION_TITLE) {
+        continue;
+      }
+      if (section.propertyNames.length === 0 && section.title === DEFAULT_SECTION_TITLE) {
+        // Default: single block with all properties
+        html += `<div class="property-section"><div class="property-section-title">${this.escapeHtml(section.title)}</div>`;
+        for (const key of allKeys) {
+          html += this.renderPropertyInput(key, properties[key], readOnly);
+        }
+        html += '</div>';
+        break;
+      }
+      html += `<div class="property-section"><div class="property-section-title">${this.escapeHtml(section.title)}</div>`;
+      for (const name of namesInSection) {
+        if (name in properties) {
+          html += this.renderPropertyInput(name, properties[name], readOnly);
+        }
+      }
+      html += '</div>';
+    }
+
+    // "Прочее" only when we have type-specific sections (knownNames non-empty)
+    if (knownNames.size > 0 && otherKeys.length > 0) {
+      html += `<div class="property-section"><div class="property-section-title">${this.escapeHtml(OTHER_SECTION_TITLE)}</div>`;
+      for (const key of otherKeys) {
+        html += this.renderPropertyInput(key, properties[key], readOnly);
+      }
+      html += '</div>';
+    }
+
+    return html;
   }
 
   /**
@@ -896,6 +1020,7 @@ export class PropertiesProvider {
         type: 'validationError',
         errors: validationResult.errors
       });
+      vscode.window.showWarningMessage(MESSAGES.VALIDATION_ERROR_CHECK_PANEL);
       return;
     }
 
@@ -1150,18 +1275,21 @@ export class PropertiesProvider {
         // Log detailed error to extension output channel
         Logger.error(`Failed to write properties to ${targetFilePath}`, writeError);
         
-        // Show VS Code error notification with file path and reason
+        const { MESSAGES } = await import('../constants/messages');
         const errorMessage = writeError instanceof Error ? writeError.message : String(writeError);
         vscode.window.showErrorMessage(
-          `Failed to save properties: ${errorMessage}`,
+          `${MESSAGES.SAVE_FAILED_RESTORED} ${errorMessage}`,
           'Show Output'
         ).then(selection => {
           if (selection === 'Show Output') {
             Logger.show();
           }
         });
-        
-        // Re-throw to be handled by caller (which will retain edited values in webview)
+        // Rollback UI to last saved state
+        if (this.currentNode) {
+          this.postMessage({ type: 'update', node: this.currentNode });
+        }
+        // Re-throw to be handled by caller
         throw new Error(`Failed to write properties to file: ${targetFilePath}. ${errorMessage}`);
       }
       
@@ -1189,6 +1317,23 @@ export class PropertiesProvider {
 
     if (!this.currentNode) {
       return { valid: false, errors: { _general: 'No element selected' } };
+    }
+
+    // Validate element name if present (Name / name / Имя)
+    const nameKeys = ['Name', 'name', 'Имя'];
+    for (const key of nameKeys) {
+      if (key in properties) {
+        const raw = properties[key];
+        const nameStr = typeof raw === 'string' ? raw : raw != null ? String(raw) : '';
+        const siblingNames = (this.currentNode.parent?.children ?? [])
+          .map((c) => c.name)
+          .filter((n) => n !== this.currentNode!.name);
+        const nameError = validateElementName(nameStr, siblingNames);
+        if (nameError) {
+          errors[key] = nameError;
+        }
+        break;
+      }
     }
 
     for (const [name, value] of Object.entries(properties)) {

@@ -132,10 +132,27 @@ export class XMLWriter {
         );
       }
 
+      const backupPath = `${filePath}.bak`;
+      try {
+        await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+      } catch (backupErr) {
+        Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+      }
+
       try {
         await fs.promises.writeFile(filePath, xmlString, 'utf-8');
       } catch (writeError) {
         Logger.error(`Failed to write file: ${filePath}`, writeError);
+        try {
+          if (fs.existsSync(backupPath)) {
+            const restored = await fs.promises.readFile(backupPath, 'utf-8');
+            await fs.promises.writeFile(filePath, restored, 'utf-8');
+            await fs.promises.unlink(backupPath);
+            Logger.info(`Rolled back ${filePath} from backup`);
+          }
+        } catch (rollbackErr) {
+          Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+        }
         throw new Error(
           `Unable to write to file. Check file permissions and disk space. ${
             writeError instanceof Error ? writeError.message : String(writeError)
@@ -143,6 +160,13 @@ export class XMLWriter {
         );
       }
 
+      try {
+        if (fs.existsSync(backupPath)) {
+          await fs.promises.unlink(backupPath);
+        }
+      } catch {
+        Logger.debug(`Could not remove backup ${backupPath}`);
+      }
       Logger.info(`Successfully wrote properties to ${filePath}`);
     } catch (error) {
       Logger.error(`Error writing properties to ${filePath}`, error);
@@ -159,6 +183,215 @@ export class XMLWriter {
         }`
       );
     }
+  }
+
+  /**
+   * Add a nested element (Attribute or TabularSection) to ChildObjects in the XML file.
+   * @param filePath Path to XML file
+   * @param elementType 'Attribute' or 'TabularSection'
+   * @param elementName Name of the new element
+   * @param minimalProperties Optional minimal properties (Name is always set)
+   * @throws Error if file cannot be read or written
+   */
+  static async addNestedElement(
+    filePath: string,
+    elementType: string,
+    elementName: string,
+    minimalProperties?: Record<string, unknown>
+  ): Promise<void> {
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    const parsed = this.parser.parse(xmlContent);
+    const updated = this.addNestedElementInStructure(parsed, elementType, elementName, minimalProperties ?? {});
+    const xmlString = this.builder.build(updated);
+    await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    Logger.info(`Added ${elementType} '${elementName}' to ${filePath}`);
+  }
+
+  /**
+   * Remove a nested element from ChildObjects in the XML file.
+   * @param filePath Path to XML file
+   * @param elementType 'Attribute' or 'TabularSection'
+   * @param elementName Name of the element to remove
+   * @throws Error if file cannot be read or written
+   */
+  static async removeNestedElement(
+    filePath: string,
+    elementType: string,
+    elementName: string
+  ): Promise<void> {
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    const parsed = this.parser.parse(xmlContent);
+    const updated = this.removeNestedElementInStructure(parsed, elementType, elementName);
+    const xmlString = this.builder.build(updated);
+    await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    Logger.info(`Removed ${elementType} '${elementName}' from ${filePath}`);
+  }
+
+  /**
+   * Create a new XML file with minimal Designer structure for a metadata element.
+   * @param filePath Path for the new file
+   * @param rootTag Root element tag (e.g. 'Catalog', 'Document', 'Enum')
+   * @param elementName Name of the element
+   * @throws Error if file cannot be written
+   */
+  static async createMinimalElementFile(
+    filePath: string,
+    rootTag: string,
+    elementName: string
+  ): Promise<void> {
+    const uuid = this.generateSimpleUuid();
+    const content = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+\t<${rootTag} uuid="${uuid}">
+\t\t<Properties>
+\t\t\t<Name>${this.escapeXml(elementName)}</Name>
+\t\t\t<Synonym>
+\t\t\t\t<v8:item>
+\t\t\t\t\t<v8:lang>ru</v8:lang>
+\t\t\t\t\t<v8:content>${this.escapeXml(elementName)}</v8:content>
+\t\t\t\t</v8:item>
+\t\t\t</Synonym>
+\t\t\t<Comment/>
+\t\t</Properties>
+\t\t<ChildObjects/>
+\t</${rootTag}>
+</MetaDataObject>
+`;
+    await fs.promises.writeFile(filePath, content, 'utf-8');
+    Logger.info(`Created minimal ${rootTag} file ${filePath}`);
+  }
+
+  private static generateSimpleUuid(): string {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+
+  private static escapeXml(s: string): string {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  private static addNestedElementInStructure(
+    parsed: unknown,
+    elementType: string,
+    elementName: string,
+    minimalProperties: Record<string, unknown>
+  ): unknown {
+    const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
+    const newBlock = this.buildMinimalNestedElement(elementType, elementName, minimalProperties);
+    return this.mutateChildObjectsArray(parsed, containerName, elementType, (arr) => {
+      arr.push(newBlock);
+    });
+  }
+
+  private static removeNestedElementInStructure(
+    parsed: unknown,
+    elementType: string,
+    elementName: string
+  ): unknown {
+    const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
+    return this.mutateChildObjectsArray(parsed, containerName, elementType, (arr) => {
+      for (let i = arr.length - 1; i >= 0; i--) {
+        const item = arr[i];
+        if (item && typeof item === 'object' && elementType in (item as object)) {
+          const inner = (item as Record<string, unknown>)[elementType];
+          if (Array.isArray(inner)) {
+            const name = this.extractNameFromElementArray(inner);
+            if (name === elementName) {
+              arr.splice(i, 1);
+              return;
+            }
+          }
+        }
+      }
+    });
+  }
+
+  private static extractNameFromElementArray(elementArray: unknown[]): string {
+    for (const it of elementArray) {
+      if (!it || typeof it !== 'object') continue;
+      const o = it as Record<string, unknown>;
+      if ('Name' in o && Array.isArray(o.Name) && o.Name.length > 0) {
+        const first = o.Name[0];
+        if (first && typeof first === 'object' && '#text' in (first as object)) {
+          return String((first as Record<string, unknown>)['#text']);
+        }
+      }
+      if ('Properties' in o && Array.isArray(o.Properties)) {
+        const inner = this.extractNameFromElementArray(o.Properties as unknown[]);
+        if (inner) return inner;
+      }
+    }
+    return '';
+  }
+
+  private static buildMinimalNestedElement(
+    elementType: string,
+    elementName: string,
+    _minimalProperties: Record<string, unknown>
+  ): Record<string, unknown> {
+    const uuid = this.generateSimpleUuid();
+    const properties: unknown[] = [
+      { Name: [{ '#text': elementName }] },
+      {
+        Synonym: [
+          {
+            'v8:item': [
+              { 'v8:lang': [{ '#text': 'ru' }] },
+              { 'v8:content': [{ '#text': elementName }] },
+            ],
+          },
+        ],
+      },
+      {
+        Type: [
+          {
+            'v8:Type': [{ '#text': 'xs:string' }],
+            'v8:StringQualifiers': [{ Length: [{ '#text': '50' }] }, { AllowedLength: [{ '#text': 'Variable' }] }],
+          },
+        ],
+      },
+    ];
+    return {
+      [elementType]: [{ '@_uuid': uuid }, { Properties: properties }],
+    };
+  }
+
+  private static mutateChildObjectsArray(
+    parsed: unknown,
+    containerName: string,
+    _elementType: string,
+    mutate: (arr: unknown[]) => void
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') return parsed;
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        const obj = item as Record<string, unknown>;
+        for (const [key, value] of Object.entries(obj)) {
+          if (key === containerName && Array.isArray(value)) {
+            mutate(value);
+            return obj;
+          }
+          if (Array.isArray(value)) {
+            const updated = this.mutateChildObjectsArray(value, containerName, _elementType, mutate);
+            if (updated !== value) {
+              const result = { ...obj, [key]: updated };
+              return result;
+            }
+          }
+        }
+        return obj;
+      });
+    }
+    return parsed;
   }
 
   /**
@@ -238,10 +471,27 @@ export class XMLWriter {
         );
       }
 
+      const backupPath = `${filePath}.bak`;
+      try {
+        await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+      } catch (backupErr) {
+        Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+      }
+
       try {
         await fs.promises.writeFile(filePath, xmlString, 'utf-8');
       } catch (writeError) {
         Logger.error(`Failed to write file: ${filePath}`, writeError);
+        try {
+          if (fs.existsSync(backupPath)) {
+            const restored = await fs.promises.readFile(backupPath, 'utf-8');
+            await fs.promises.writeFile(filePath, restored, 'utf-8');
+            await fs.promises.unlink(backupPath);
+            Logger.info(`Rolled back ${filePath} from backup`);
+          }
+        } catch (rollbackErr) {
+          Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+        }
         throw new Error(
           `Unable to write to file. Check file permissions and disk space. ${
             writeError instanceof Error ? writeError.message : String(writeError)
@@ -249,6 +499,13 @@ export class XMLWriter {
         );
       }
 
+      try {
+        if (fs.existsSync(backupPath)) {
+          await fs.promises.unlink(backupPath);
+        }
+      } catch {
+        Logger.debug(`Could not remove backup ${backupPath}`);
+      }
       Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
     } catch (error) {
       Logger.error(`Error writing nested element properties to ${filePath}`, error);

@@ -25,6 +25,10 @@ VS Code расширение для визуализации дерева мет
 2. В VS Code: `Ctrl+Shift+P` → **Install from VSIX…** → укажите скачанный файл.
 3. Перезагрузите окно при необходимости.
 
+### Установка в Cursor и других редакторах на базе VS Code
+
+Расширение использует стандартный VS Code Extension API и совместимо с **Cursor**, **VSCodium** и другими редакторами на базе VS Code. Установка та же: скачайте `.vsix` из [releases](releases/), затем в редакторе откройте палитру команд (`Ctrl+Shift+P` / `Cmd+Shift+P`) → **Extensions: Install from VSIX…** → укажите файл. Рекомендуется проверить работу в вашем редакторе после установки.
+
 ### Из исходников (для разработки)
 
 1. Клонируйте репозиторий и перейдите в каталог проекта.
@@ -40,11 +44,49 @@ VS Code расширение для визуализации дерева мет
 2. Панель "1C Metadata" появится автоматически в Explorer
 3. Или: **Ctrl+Alt+1** (Windows/Linux) / **Cmd+Alt+1** (macOS), либо Command Palette (**Ctrl+Shift+P**) → «1C: Open Metadata Tree»
 
+### Команды (1C Metadata)
+
+| Команда | Описание |
+|--------|----------|
+| 1C: Open Metadata Tree | Открыть панель дерева метаданных |
+| Refresh | Обновить дерево |
+| Show Properties | Открыть панель свойств выбранного элемента |
+| Open XML File | Открыть XML файл элемента |
+| Create Element | Создать новый элемент |
+| Duplicate Element | Дублировать элемент |
+| Delete Element | Удалить элемент |
+| Rename Element | Переименовать элемент |
+| Copy Path / Name | Копировать путь или имя в буфер |
+| Search in tree | Фокус в поле поиска по дереву |
+| Clear search and filters | Сбросить поиск и фильтры |
+| Filter by metadata type | Фильтр по типу метаданных |
+| Next search result | Следующий результат поиска |
+| Previous search result | Предыдущий результат поиска |
+| Clear tree cache | Очистить кэш дерева |
+
+### Горячие клавиши (в панели 1C Metadata)
+
+- **Ctrl+Alt+1** / **Cmd+Alt+1** — открыть панель метаданных  
+- **Ctrl+Shift+M** / **Cmd+Shift+M** — открыть/закрыть панель  
+- **Ctrl+F** / **Cmd+F** — поиск в дереве  
+- **Delete** — удалить выбранный элемент  
+- **F2** — переименовать элемент  
+- **Ctrl+D** / **Cmd+D** — дублировать элемент  
+- **Ctrl+C** / **Cmd+C** — копировать имя/путь  
+
 ### Навигация
 
 - **Развернуть/свернуть узел**: Клик на стрелку рядом с элементом
 - **Открыть файл**: Клик на элемент с файлом
 - **Обновить дерево**: Кнопка "Refresh" в панели или команда `1C: Refresh`
+
+### Поиск и фильтрация
+
+- **Поиск по имени**: кнопка поиска в панели или Ctrl+F; ввод подстроки фильтрует дерево, показываются совпадающие узлы и их предки.
+- **По синониму и комментарию**: опция в поиске (при включении поиск идёт также по синониму и комментарию).
+- **Регулярные выражения**: опция «использовать regex» в поиске.
+- **Фильтр по типу**: команда «Filter by metadata type» — выбор типов метаданных (Справочники, Документы и т.д.).
+- **Навигация по результатам**: Next search result / Previous search result для перехода по совпадениям.
 
 ### Поддерживаемые типы метаданных
 
@@ -79,24 +121,38 @@ VS Code расширение для визуализации дерева мет
 1c-metadata-tree-vscode/
 ├── src/
 │   ├── extension.ts              # Точка входа расширения
-│   ├── models/                   # Модели данных
-│   │   └── treeNode.ts          # Модель узла дерева
-│   ├── parsers/                  # Парсеры XML
-│   │   ├── metadataParser.ts    # Главный парсер
+│   ├── models/
+│   │   └── treeNode.ts           # Модель узла дерева
+│   ├── parsers/
+│   │   ├── metadataParser.ts     # Главный парсер
 │   │   ├── edtParser.ts         # EDT формат
 │   │   ├── designerParser.ts    # Designer формат
+│   │   ├── formatDetector.ts    # Определение формата
 │   │   └── xmlParser.ts         # Базовый XML парсер
-│   ├── providers/                # VS Code провайдеры
-│   │   └── treeDataProvider.ts  # Tree View провайдер
-│   ├── utils/                    # Утилиты
-│   │   ├── logger.ts            # Логирование
-│   │   └── metadataTypeMapper.ts # Маппинг типов
-│   └── constants/                # Константы
-│       └── messages.ts          # UI сообщения
-├── test/                         # Тесты
-│   └── suite/
-│       └── treeDataProvider.test.ts
-└── package.json                  # Манифест расширения
+│   ├── providers/
+│   │   ├── treeDataProvider.ts  # Tree View провайдер
+│   │   ├── propertiesProvider.ts # Панель свойств
+│   │   └── typeEditorProvider.ts # Редактор типа
+│   ├── services/
+│   │   ├── elementOperations.ts # Создание/дублирование/удаление/переименование
+│   │   └── metadataWatcherService.ts # Слежение за изменениями XML
+│   ├── utils/
+│   │   ├── logger.ts
+│   │   ├── XMLWriter.ts         # Запись/чтение XML
+│   │   ├── metadataTypeMapper.ts
+│   │   ├── elementNameValidator.ts
+│   │   ├── referenceFinder.ts   # Поиск и замена ссылок
+│   │   └── ...
+│   ├── constants/
+│   │   ├── messages.ts
+│   │   ├── propertyLabels.ts
+│   │   └── propertySections.ts
+│   └── types/
+│       └── typeDefinitions.ts
+├── test/
+│   ├── fixtures/                 # Фикстуры (designer-config и др.)
+│   └── suite/                    # Модульные и интеграционные тесты
+└── package.json
 ```
 
 ## Разработка
@@ -115,11 +171,19 @@ npm run watch
 
 ### Запуск тестов
 
-Используйте VS Code Test Runner или:
+Полный прогон (компиляция, линт, все тесты):
 
 ```bash
 npm test
 ```
+
+Быстрый прогон парсеров и части тестов (Windows):
+
+```bash
+.\test-suite.bat
+```
+
+Подробнее: [DEVELOPING.md](DEVELOPING.md).
 
 ### Линтинг
 
@@ -156,7 +220,7 @@ Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree 
 
 ## Известные ограничения
 
-1. Тесты требуют VS Code Test Runner для запуска
+1. Тесты запускаются через `npm test` (Mocha) или `.\test-suite.bat`
 2. Поддерживаются только конфигурации в формате EDT и Designer
 3. Для очень больших конфигураций (100K+ элементов) может потребоваться дополнительная оптимизация
 
@@ -167,6 +231,10 @@ Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree 
 ## Лицензия
 
 [MIT](LICENSE)
+
+## Публикация в Marketplace
+
+Полное описание для вставки в карточку расширения при публикации: [MARKETPLACE.md](MARKETPLACE.md).
 
 ## Поддержка
 

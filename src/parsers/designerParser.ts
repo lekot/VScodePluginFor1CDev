@@ -86,12 +86,153 @@ export class DesignerParser {
   }
 
   /**
+   * Build only root and type nodes without parsing element contents (for lazy loading).
+   * @param configPath Path to configuration root
+   * @returns Root node with type nodes that have empty children
+   */
+  static async parseStructureOnly(configPath: string): Promise<TreeNode> {
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+      filePath: configPath,
+    };
+
+    const metadataTypes = MetadataTypeMapper.getMetadataTypes();
+    for (const typeName of metadataTypes) {
+      const typePath = path.join(configPath, typeName);
+      try {
+        await fs.promises.access(typePath);
+      } catch {
+        continue;
+      }
+      const metadataType = MetadataTypeMapper.map(typeName);
+      const typeNode: TreeNode = {
+        id: typeName,
+        name: typeName,
+        type: metadataType,
+        properties: { type: typeName },
+        children: [],
+        filePath: typePath,
+      };
+      typeNode.parent = rootNode;
+      rootNode.children!.push(typeNode);
+    }
+
+    Logger.info('Designer structure-only parsing completed');
+    return rootNode;
+  }
+
+  /**
+   * Parse contents of a single metadata type (e.g. Catalogs).
+   * Uses shallow mode so element nodes have no sub-elements until loaded on demand.
+   */
+  static async parseTypeContents(configPath: string, typeName: string): Promise<TreeNode[]> {
+    const typePath = path.join(configPath, typeName);
+    const typeNode = await this.parseMetadataType(typePath, typeName, { shallow: true });
+    return typeNode.children || [];
+  }
+
+  /**
+   * Load direct children (Attributes, Forms, Ext, TabularSections) for a metadata element.
+   * Used when expanding an element that was loaded in shallow mode.
+   */
+  static async loadChildrenForElement(
+    configPath: string,
+    typeName: string,
+    elementName: string
+  ): Promise<TreeNode[]> {
+    const elementPath = path.join(configPath, typeName, elementName);
+    const xmlPath = path.join(configPath, typeName, `${elementName}.xml`);
+    const children: TreeNode[] = [];
+
+    let xmlContent: Record<string, unknown> | null = null;
+    try {
+      await fs.promises.access(xmlPath);
+      xmlContent = await XmlParser.parseFileAsync(xmlPath);
+    } catch {
+      // No XML
+    }
+
+    if (xmlContent) {
+      const attributesNode = await this.parseAttributesFromXML(xmlContent, xmlPath, elementName);
+      if (attributesNode && attributesNode.children && attributesNode.children.length > 0) {
+        children.push(attributesNode);
+      }
+    }
+
+    try {
+      const items = await fs.promises.readdir(elementPath);
+      for (const item of items) {
+        if (item === 'Ext') {
+          if (typeName === 'CommonModules') {
+            const extPath = path.join(elementPath, item);
+            try {
+              const extItems = await fs.promises.readdir(extPath);
+              for (const extItem of extItems) {
+                if (extItem.endsWith('.bsl')) {
+                  const bslPath = path.join(extPath, extItem);
+                  const child: TreeNode = {
+                    id: `${typeName}.${elementName}.${extItem}`,
+                    name: extItem,
+                    type: MetadataType.Method,
+                    properties: {},
+                    filePath: bslPath,
+                  };
+                  children.push(child);
+                }
+              }
+            } catch (error) {
+              Logger.debug(`Error reading Ext for CommonModule ${elementPath}`, error);
+            }
+          } else {
+            const extPath = path.join(elementPath, item);
+            const extNode = await this.parseExtensions(extPath);
+            if (extNode.children && extNode.children.length > 0) {
+              children.push(extNode);
+            }
+          }
+        } else if (item === 'Forms') {
+          const formsPath = path.join(elementPath, item);
+          const formsNode = await this.parseForms(formsPath);
+          if (formsNode.children && formsNode.children.length > 0) {
+            children.push(formsNode);
+          }
+        } else if (item === 'Attributes') {
+          const attributesPath = path.join(elementPath, item);
+          const attributesNode = await this.parseAttributes(attributesPath);
+          if (attributesNode.children && attributesNode.children.length > 0) {
+            children.push(attributesNode);
+          }
+        } else if (item === 'TabularSections') {
+          const tabularPath = path.join(elementPath, item);
+          const tabularNode = await this.parseTabularSections(tabularPath);
+          if (tabularNode.children && tabularNode.children.length > 0) {
+            children.push(tabularNode);
+          }
+        }
+      }
+    } catch (error) {
+      Logger.debug(`Error reading element directory ${elementPath}`, error);
+    }
+
+    return children;
+  }
+
+  /**
    * Parse metadata type directory
    * @param typePath Path to metadata type directory
    * @param typeName Name of metadata type
+   * @param options shallow: if true, element nodes are created without sub-elements (_lazy)
    * @returns Tree node for metadata type
    */
-  private static async parseMetadataType(typePath: string, typeName: string): Promise<TreeNode> {
+  private static async parseMetadataType(
+    typePath: string,
+    typeName: string,
+    options?: { shallow?: boolean }
+  ): Promise<TreeNode> {
     const metadataType = MetadataTypeMapper.map(typeName);
 
     const typeNode: TreeNode = {
@@ -116,7 +257,7 @@ export class DesignerParser {
 
             if (stat.isDirectory()) {
               // This is a metadata element directory
-              return await this.parseMetadataElement(itemPath, item, typeName);
+              return await this.parseMetadataElement(itemPath, item, typeName, options?.shallow ?? false);
             }
           } catch (error) {
             Logger.debug(`Error processing item ${itemPath}`, error);
@@ -141,12 +282,14 @@ export class DesignerParser {
 
   /**
    * Parse metadata element directory
-   * @param elementPath Path to element directory
-   * @param elementName Name of element
-   * @param typeName Type of element
-   * @returns Tree node for metadata element
+   * @param shallow If true, do not parse sub-elements (Attributes, Forms, Ext); set _lazy for on-demand load
    */
-  private static async parseMetadataElement(elementPath: string, elementName: string, typeName: string): Promise<TreeNode> {
+  private static async parseMetadataElement(
+    elementPath: string,
+    elementName: string,
+    typeName: string,
+    shallow = false
+  ): Promise<TreeNode> {
     const metadataType = MetadataTypeMapper.map(typeName);
 
     const elementNode: TreeNode = {
@@ -157,6 +300,22 @@ export class DesignerParser {
       children: [],
       filePath: elementPath,
     };
+
+    if (shallow) {
+      elementNode.properties._lazy = true;
+      // Still read main XML for properties and filePath
+      const xmlPath = path.join(path.dirname(elementPath), `${elementName}.xml`);
+      try {
+        await fs.promises.access(xmlPath);
+        const xmlContent = await XmlParser.parseFileAsync(xmlPath);
+        const properties = this.extractPropertiesFromElement(xmlContent);
+        elementNode.properties = { ...elementNode.properties, ...properties };
+        elementNode.filePath = xmlPath;
+      } catch {
+        // Keep elementPath as filePath
+      }
+      return elementNode;
+    }
 
     // Try to read metadata XML file
     // XML file is in the parent directory (e.g., CommonModules/Module.xml, not CommonModules/Module/Module.xml)
