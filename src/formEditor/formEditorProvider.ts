@@ -6,6 +6,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { Logger } from '../utils/logger';
+import { MESSAGES } from '../constants/messages';
 import { parseFormXml } from './formXmlParser';
 import { isFormParseError, isFormParseFileMissing } from './formModel';
 import type { FormModel, FormChildItem } from './formModel';
@@ -165,6 +166,8 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       }
     } else if (msg.type === 'save') {
       await this.handleSave(document, webviewPanel, msg);
+    } else if (msg.type === 'cancel') {
+      await this.handleCancel(document, webviewPanel);
     } else if (msg.type === 'dragDrop') {
       await this.handleDragDrop(document, webviewPanel, msg);
     } else if (msg.type === 'getProcedures') {
@@ -282,14 +285,24 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       await writeFormXml(formXmlPath, model);
       this.documentModel.set(document.uri.toString(), model);
       webviewPanel.webview.postMessage({ type: 'saved' });
+      vscode.window.showInformationMessage(MESSAGES.SAVE_SUCCESS);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       Logger.error('Form editor save failed', err);
       webviewPanel.webview.postMessage({ type: 'error', message });
+      vscode.window.showErrorMessage(message);
     }
   }
 
   private async handleLoad(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel
+  ): Promise<void> {
+    await this.reloadFormAndSend(document, webviewPanel);
+  }
+
+  /** Reload form from disk and send to webview (used by load and cancel). */
+  private async reloadFormAndSend(
     document: FormEditorDocument,
     webviewPanel: vscode.WebviewPanel
   ): Promise<void> {
@@ -313,7 +326,16 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       formXmlPath,
       modulePath,
       fileMissing: fileMissing || undefined,
+      fileMissingTitle: fileMissing ? MESSAGES.EMPTY_STATE_FORM_XML_MISSING_TITLE : undefined,
+      fileMissingHint: fileMissing ? MESSAGES.EMPTY_STATE_FORM_XML_MISSING_HINT : undefined,
     });
+  }
+
+  private async handleCancel(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel
+  ): Promise<void> {
+    await this.reloadFormAndSend(document, webviewPanel);
   }
 
   private getWebviewHtml(_webview: vscode.Webview): string {
@@ -360,6 +382,11 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       font-size: 0.9em;
       color: var(--vscode-descriptionForeground);
     }
+    .props-selection-header {
+      margin-bottom: 8px;
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+    }
     .tree-node {
       padding: 2px 4px;
       cursor: pointer;
@@ -370,38 +397,98 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .tree-node.drop-target { outline: 2px solid var(--vscode-focusBorder); }
     .tree-children { margin-left: 12px; }
     .placeholder { color: var(--vscode-descriptionForeground); font-style: italic; }
+    .empty-state { text-align: center; padding: 16px; color: var(--vscode-descriptionForeground); }
+    .empty-state h4 { margin: 0 0 8px 0; font-size: 1em; }
+    .empty-state p { margin: 0; font-size: 0.9em; }
     .error { color: var(--vscode-errorForeground); padding: 8px; }
     .tabs { display: flex; gap: 8px; margin-bottom: 8px; }
-    .tabs button { padding: 4px 8px; cursor: pointer; }
+    .tabs button {
+      padding: 6px 14px;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      border-radius: 2px;
+    }
+    .tabs button:hover { background: var(--vscode-button-hoverBackground); }
     .prop-row { margin-bottom: 6px; }
     .prop-row label { display: inline-block; width: 100px; color: var(--vscode-descriptionForeground); }
-    .prop-row input { width: 200px; padding: 4px; }
+    .prop-row input {
+      width: 200px;
+      padding: 4px 8px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+    }
+    .prop-row input:focus {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -1px;
+    }
+    #btn-cancel, #btn-save {
+      padding: 6px 14px;
+      border: none;
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      border-radius: 2px;
+    }
+    #btn-save {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    #btn-save:hover { background: var(--vscode-button-hoverBackground); }
+    #btn-cancel {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+    #btn-cancel:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .btn-goto-proc {
+      padding: 4px 8px;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      border-radius: 2px;
+    }
+    .btn-goto-proc:hover { background: var(--vscode-button-secondaryHoverBackground); }
   </style>
 </head>
 <body>
   <div class="zone-tree">
     <h3>Элементы формы</h3>
     <div id="tree-root"></div>
+    <div id="tree-empty" class="empty-state" style="display:none;">
+      <h4 id="tree-empty-title"></h4>
+      <p id="tree-empty-hint"></p>
+    </div>
     <div id="tree-error" class="error" style="display:none;"></div>
   </div>
   <div class="zone-props">
     <h3>Свойства</h3>
+    <div id="props-header" class="props-selection-header"></div>
     <div id="props-content" style="display:none;"></div>
     <div id="props-placeholder" class="placeholder">Выберите элемент</div>
     <div id="props-actions" style="margin-top:8px;display:none;">
-      <button type="button" id="btn-save">Сохранить</button>
+      <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
+      <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
       <span id="save-status" style="margin-left:8px;"></span>
     </div>
   </div>
   <div class="zone-preview">
     <h3>Превью</h3>
     <div class="tabs">
-      <button type="button" data-tab="form">Форма</button>
-      <button type="button" data-tab="module">Модуль</button>
+      <button type="button" data-tab="form" title="Форма">Форма</button>
+      <button type="button" data-tab="module" title="Модуль">Модуль</button>
     </div>
     <div id="preview-form" class="placeholder">Превью формы</div>
     <div id="preview-module" style="display:none;">
-      <button type="button" id="btn-open-module">Модуль формы</button>
+      <button type="button" id="btn-open-module" title="Модуль формы">Модуль формы</button>
       <p class="placeholder">Открывает Ext/Form/Module.bsl в редакторе</p>
     </div>
   </div>
@@ -487,13 +574,16 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       const placeholder = document.getElementById('props-placeholder');
       const content = document.getElementById('props-content');
       const actions = document.getElementById('props-actions');
+      const propsHeader = document.getElementById('props-header');
       if (!el) {
+        if (propsHeader) propsHeader.textContent = '';
         placeholder.style.display = 'block';
         content.style.display = 'none';
         content.innerHTML = '';
         actions.style.display = 'none';
         return;
       }
+      if (propsHeader) propsHeader.textContent = (el.name || '') + ' (' + (el.tag || '') + ')';
       placeholder.style.display = 'none';
       actions.style.display = 'block';
       let html = '<div class="prop-row"><label>Тип</label> ' + (el.tag || '') + '</div>';
@@ -530,6 +620,9 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       });
     }
 
+    document.getElementById('btn-cancel').addEventListener('click', () => {
+      vscode.postMessage({ type: 'cancel' });
+    });
     document.getElementById('btn-save').addEventListener('click', () => {
       document.getElementById('save-status').textContent = 'Сохранение...';
       vscode.postMessage({ type: 'save', formModel: formModel });
@@ -556,13 +649,18 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         const treeError = document.getElementById('tree-error');
         treeRoot.innerHTML = '';
         treeError.style.display = 'none';
+        var treeEmpty = document.getElementById('tree-empty');
         if (msg.fileMissing) {
-          treeError.textContent = 'Файл структуры формы не найден.';
-          treeError.style.display = 'block';
-        } else if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
-          renderTree(formModel.childItemsRoot, treeRoot);
+          treeEmpty.style.display = 'block';
+          document.getElementById('tree-empty-title').textContent = msg.fileMissingTitle || '';
+          document.getElementById('tree-empty-hint').textContent = msg.fileMissingHint || '';
         } else {
-          treeRoot.textContent = 'Нет элементов';
+          treeEmpty.style.display = 'none';
+          if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
+            renderTree(formModel.childItemsRoot, treeRoot);
+          } else {
+            treeRoot.textContent = 'Нет элементов';
+          }
         }
         document.getElementById('props-actions').style.display = formModel && !msg.fileMissing ? 'block' : 'none';
       } else if (msg.type === 'error') {

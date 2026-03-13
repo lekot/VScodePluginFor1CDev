@@ -5,6 +5,7 @@ import { getFormPaths } from '../formEditor/formPaths';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
+import { MESSAGES } from '../constants/messages';
 
 /** MetadataType → reference kind string for type editor. */
 const METADATA_TYPE_TO_REFERENCE_KIND: Record<MetadataType, string | undefined> = {
@@ -95,12 +96,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   readonly onDidChangeTreeData: vscode.Event<TreeNode | undefined | null | void> =
     this._onDidChangeTreeData.event;
 
-  private rootNode: TreeNode | null = null;
+  private rootNodes: TreeNode[] = [];
   private nodeCache = new Map<string, TreeNode>();
   /** Normalized name (lowercase) → node ids, for fast search (Stage 8.3). */
   private nameIndex = new Map<string, string[]>();
-  /** When set, type nodes and lazy element nodes load children on first expand (Stage 8.1). */
-  private loadContext: { configPath: string; format: ConfigFormat } | null = null;
+  /** Per-root load context for lazy loading (key = root node id). */
+  private loadContextByRootId = new Map<string, { configPath: string; format: ConfigFormat }>();
 
   private searchQuery = '';
   private searchBySynonymComment = false;
@@ -118,10 +119,20 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.messageUpdater = updater;
   }
 
+  /** Display form of search query: *query* for plain substring search, else as-is (additional_req.md п.2). */
+  private getSearchQueryForDisplay(): string {
+    const q = this.searchQuery.trim();
+    if (!q) return q;
+    if (this.searchUseRegex) return q;
+    const trimmed = q;
+    if (trimmed.startsWith('*') || trimmed.endsWith('*')) return trimmed;
+    return `*${trimmed}*`;
+  }
+
   private updateFilterMessage(): void {
     if (!this.messageUpdater) return;
     const parts: string[] = [];
-    if (this.searchQuery.trim()) parts.push(`Поиск: ${this.searchQuery}`);
+    if (this.searchQuery.trim()) parts.push(`Поиск: ${this.getSearchQueryForDisplay()}`);
     if (this.typeFilter && this.typeFilter.size > 0) parts.push(`Типы: ${this.typeFilter.size}`);
     this.messageUpdater(parts.length > 0 ? parts.join(' · ') : undefined);
   }
@@ -286,7 +297,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
-   * Set root node and refresh tree.
+   * Set single root node and refresh tree (backward compat).
    * @param loadContext When provided, type nodes load their children on first expand (lazy loading).
    */
   setRootNode(node: TreeNode, loadContext?: { configPath: string; format: ConfigFormat }): void {
@@ -294,28 +305,70 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       Logger.error('Cannot set null or undefined root node');
       return;
     }
-    this.rootNode = node;
-    this.loadContext = loadContext ?? null;
+    this.rootNodes = [node];
+    this.loadContextByRootId.clear();
+    if (loadContext) this.loadContextByRootId.set(node.id, loadContext);
     this.nodeCache.clear();
     this.nameIndex.clear();
     this.buildCache(node);
     Logger.info('Tree cache size', { nodeCount: this.nodeCache.size });
     this.filterAncestorOrVisibleIds = null;
     this.refresh();
+    if (this.messageUpdater && !this.hasActiveFilter()) {
+      this.messageUpdater(undefined);
+    }
   }
 
   /**
-   * Get root node (for config path and operations).
+   * Set multiple root nodes (one per configuration) and per-root load context.
+   */
+  setRootNodes(
+    nodes: TreeNode[],
+    loadContextMap?: Map<string, { configPath: string; format: ConfigFormat }>
+  ): void {
+    this.rootNodes = nodes;
+    this.loadContextByRootId = new Map(loadContextMap ?? []);
+    this.nodeCache.clear();
+    this.nameIndex.clear();
+    for (const node of nodes) this.buildCache(node);
+    Logger.info('Tree cache size', { nodeCount: this.nodeCache.size, roots: nodes.length });
+    this.filterAncestorOrVisibleIds = null;
+    this.refresh();
+    if (this.messageUpdater) {
+      if (this.rootNodes.length === 0) {
+        this.messageUpdater(MESSAGES.EMPTY_TREE_MESSAGE);
+      } else if (!this.hasActiveFilter()) {
+        this.messageUpdater(undefined);
+      }
+    }
+  }
+
+  /**
+   * Get first root node (for backward compat when single root).
    */
   getRootNode(): TreeNode | null {
-    return this.rootNode;
+    return this.rootNodes.length > 0 ? this.rootNodes[0] : null;
   }
 
   /**
-   * Get configuration root path (set when tree was loaded).
+   * Get configuration root path for the tree (first root's context; backward compat).
    */
   getConfigPath(): string | null {
-    return this.loadContext?.configPath ?? null;
+    const first = this.rootNodes[0];
+    if (!first) return null;
+    return this.loadContextByRootId.get(first.id)?.configPath ?? first.filePath ?? null;
+  }
+
+  /**
+   * Get configuration root path for a node (walk up to Configuration node, return its filePath).
+   */
+  getConfigPathForNode(node: TreeNode): string | null {
+    let n: TreeNode | undefined = node;
+    while (n) {
+      if (n.type === MetadataType.Configuration && n.filePath) return n.filePath;
+      n = n.parent;
+    }
+    return null;
   }
 
   /**
@@ -363,21 +416,32 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this._onDidChangeTreeData.fire(element);
   }
 
+  private getConfigurationRoot(node: TreeNode): TreeNode | null {
+    let n: TreeNode | undefined = node;
+    while (n) {
+      if (n.type === MetadataType.Configuration) return n;
+      n = n.parent;
+    }
+    return null;
+  }
+
   /**
    * Get tree item for a node
    */
   private isLazyTypeNode(element: TreeNode): boolean {
+    const root = element.parent && this.rootNodes.includes(element.parent) ? element.parent : null;
     return (
-      this.loadContext !== null &&
-      this.rootNode !== null &&
-      element.parent === this.rootNode &&
+      root !== null &&
+      this.loadContextByRootId.has(root.id) &&
       (!element.children || element.children.length === 0)
     );
   }
 
   private isLazyElementNode(element: TreeNode): boolean {
+    const configRoot = this.getConfigurationRoot(element);
     return (
-      this.loadContext !== null &&
+      configRoot !== null &&
+      this.loadContextByRootId.has(configRoot.id) &&
       element.properties._lazy === true &&
       (!element.children || element.children.length === 0)
     );
@@ -398,14 +462,21 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
       const treeItem = new vscode.TreeItem(element.name, collapsibleState);
 
-      // Set context value for context menu
-      treeItem.contextValue = element.type;
+      // Set context value for context menu (Forms folder vs concrete Form node)
+      treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
 
-      // Set tooltip with additional information
+      // Set tooltip: name, type, path (additional_req.md п.14)
       const synonym = element.properties.synonym as string | undefined;
-      treeItem.tooltip = synonym
-        ? `${element.type}: ${element.name}\nСиноним: ${synonym}`
-        : `${element.type}: ${element.name}`;
+      let tooltipText =
+        synonym ? `${element.type}: ${element.name}\nСиноним: ${synonym}` : `${element.type}: ${element.name}`;
+      const pathStr = this.getPathForTooltip(element);
+      if (pathStr) tooltipText += `\n${pathStr}`;
+      // Highlight match in tooltip when search is active (additional_req.md п.2)
+      const q = this.searchQuery.trim();
+      if (q && !this.searchUseRegex && this.nodeMatchesSearch(element, q)) {
+        tooltipText += `\nНайдено: "${q}"`;
+      }
+      treeItem.tooltip = tooltipText;
 
       // Set description (shown next to the label)
       if (synonym) {
@@ -443,17 +514,17 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   getChildren(element?: TreeNode): Thenable<TreeNode[]> {
     try {
       if (!element) {
-        if (!this.rootNode) return Promise.resolve([]);
-        if (!this.hasActiveFilter()) return Promise.resolve([this.rootNode]);
+        if (this.rootNodes.length === 0) return Promise.resolve([]);
+        if (!this.hasActiveFilter()) return Promise.resolve(this.rootNodes);
         this.ensureFilterSets();
-        return Promise.resolve(
-          this.filterAncestorOrVisibleIds!.has(this.rootNode!.id) ? [this.rootNode!] : []
-        );
+        const ids = this.filterAncestorOrVisibleIds!;
+        return Promise.resolve(this.rootNodes.filter((r) => ids.has(r.id)));
       }
 
       // Lazy load: type node with no children yet
-      if (this.isLazyTypeNode(element)) {
-        const ctx = this.loadContext!;
+      if (this.isLazyTypeNode(element) && element.parent) {
+        const ctx = this.loadContextByRootId.get(element.parent.id);
+        if (!ctx) return Promise.resolve([]);
         return MetadataParser.parseTypeContents(ctx.configPath, element.id).then((children) => {
           for (const c of children) {
             c.parent = element;
@@ -475,7 +546,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
       // Lazy load: element node with _lazy and no children yet (Attributes, Forms, Ext, etc.)
       if (this.isLazyElementNode(element)) {
-        const ctx = this.loadContext!;
+        const configRoot = this.getConfigurationRoot(element);
+        const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
+        if (!ctx) return Promise.resolve([]);
         const format = ctx.format;
         if (format == null) {
           return Promise.resolve([]);
@@ -521,6 +594,18 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return this.searchQuery.trim() !== '' || (this.typeFilter != null && this.typeFilter.size > 0);
   }
 
+  /** Path for tooltip: filePath if set, otherwise parent chain (e.g. "Configuration / Catalogs / MyCatalog"). */
+  private getPathForTooltip(element: TreeNode): string {
+    if (element.filePath) return element.filePath;
+    const parts: string[] = [];
+    let p: TreeNode | undefined = element.parent;
+    while (p) {
+      parts.unshift(p.name);
+      p = p.parent;
+    }
+    return parts.length > 0 ? parts.join(' / ') : '';
+  }
+
   private ensureFilterSets(): void {
     if (this.filterAncestorOrVisibleIds != null) return;
     const visibleIds = new Set<string>();
@@ -542,7 +627,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   /** Ordered list of visible node ids (depth-first) for next/previous match navigation. */
   getVisibleOrderedNodeIds(): string[] {
-    if (!this.rootNode) return [];
+    if (this.rootNodes.length === 0) return [];
     this.ensureFilterSets();
     const ids = this.filterAncestorOrVisibleIds!;
     const out: string[] = [];
@@ -551,7 +636,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       out.push(n.id);
       for (const c of n.children || []) walk(c);
     };
-    walk(this.rootNode);
+    for (const root of this.rootNodes) walk(root);
     return out;
   }
 
@@ -675,14 +760,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   /**
    * Returns referenceable objects for the type editor: each reference kind with its project object names.
-   * If root is not set, returns [].
+   * Aggregates from all configuration roots (first root used for kind order; names merged per kind).
    */
   getReferenceableObjects(): ReferenceableGroup[] {
-    if (!this.rootNode || !this.rootNode.children) {
-      Logger.debug('getReferenceableObjects: no root, returning empty');
-      return [];
-    }
-    const result: ReferenceableGroup[] = [];
     const refKindOrder = [
       'CatalogRef',
       'DocumentRef',
@@ -691,24 +771,22 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       'ChartOfAccountsRef',
       'ChartOfCalculationTypesRef',
     ];
-    const byKind = new Map<string, string[]>();
-    for (const node of this.rootNode.children) {
-      if (!REFERENCEABLE_METADATA_TYPES.has(node.type)) {
-        continue;
+    const byKind = new Map<string, Set<string>>();
+    for (const root of this.rootNodes) {
+      if (!root.children) continue;
+      for (const node of root.children) {
+        if (!REFERENCEABLE_METADATA_TYPES.has(node.type)) continue;
+        const referenceKind = METADATA_TYPE_TO_REFERENCE_KIND[node.type];
+        if (!referenceKind) continue;
+        const names = (node.children || []).map((c) => c.name);
+        const set = byKind.get(referenceKind) ?? new Set<string>();
+        names.forEach((n) => set.add(n));
+        byKind.set(referenceKind, set);
       }
-      const referenceKind = METADATA_TYPE_TO_REFERENCE_KIND[node.type];
-      if (!referenceKind) {
-        continue;
-      }
-      const objectNames = (node.children || []).map((c) => c.name);
-      byKind.set(referenceKind, objectNames);
     }
-    for (const refKind of refKindOrder) {
-      result.push({
-        referenceKind: refKind,
-        objectNames: byKind.get(refKind) || [],
-      });
-    }
-    return result;
+    return refKindOrder.map((refKind) => ({
+      referenceKind: refKind,
+      objectNames: Array.from(byKind.get(refKind) ?? []),
+    }));
   }
 }

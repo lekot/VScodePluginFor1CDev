@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { Logger } from './utils/logger';
 import { MetadataTreeDataProvider } from './providers/treeDataProvider';
@@ -10,6 +11,7 @@ import { MetadataWatcherService } from './services/metadataWatcherService';
 import { loadTreeFromCache, saveTreeToCache, clearTreeCache } from './utils/diskCache';
 import {
   createElement as doCreateElement,
+  createForm as doCreateForm,
   duplicateElement as doDuplicateElement,
   deleteElement as doDeleteElement,
   renameElement as doRenameElement,
@@ -34,7 +36,7 @@ let treeView: vscode.TreeView<TreeNode> | null = null;
 let propertiesProvider: PropertiesProvider | null = null;
 let typeEditorProvider: TypeEditorProvider | null = null;
 let extensionContext: vscode.ExtensionContext | undefined;
-let metadataWatcher: MetadataWatcherService | null = null;
+let metadataWatchers: MetadataWatcherService[] = [];
 
 /**
  * Activate the extension
@@ -152,7 +154,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage('Выберите узел типа (Справочники, Документы и т.д.) или объект метаданных.');
         return;
       }
-      const configPath = treeDataProvider?.getConfigPath();
+      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
       if (!configPath) {
         vscode.window.showWarningMessage('Дерево метаданных не загружено. Откройте конфигурацию.');
         return;
@@ -182,6 +184,46 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
+  const createFormCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.createForm',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(node);
+      if (!target) {
+        vscode.window.showWarningMessage('Выберите узел «Forms» в дереве метаданных.');
+        return;
+      }
+      if (target.id !== 'Forms') {
+        vscode.window.showWarningMessage('Создание формы: выберите узел «Forms» (папку форм объекта).');
+        return;
+      }
+      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
+      if (!configPath) {
+        vscode.window.showWarningMessage('Дерево метаданных не загружено. Откройте конфигурацию.');
+        return;
+      }
+      const format = await FormatDetector.detect(configPath);
+      if (format !== ConfigFormat.Designer) {
+        vscode.window.showInformationMessage('Создание форм поддерживается только для формата Designer.');
+        return;
+      }
+      const siblingNames = (target.children || []).map((c) => c.name);
+      const name = await vscode.window.showInputBox({
+        prompt: 'Имя новой формы',
+        placeHolder: 'Введите имя формы (латиница, кириллица, цифры, _)',
+        validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
+      });
+      if (name === undefined || name.trim() === '') return;
+      try {
+        await doCreateForm(target, name.trim());
+        vscode.window.showInformationMessage(`Создана форма: ${name.trim()}`);
+        await loadMetadataTree();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(msg);
+      }
+    }
+  );
+
   const duplicateElementCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.duplicateElement',
     async (node?: TreeNode) => {
@@ -189,7 +231,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!target || target.type === MetadataType.Configuration) {
         return;
       }
-      const configPath = treeDataProvider?.getConfigPath();
+      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
       if (!configPath) {
         vscode.window.showWarningMessage('Дерево метаданных не загружено.');
         return;
@@ -225,7 +267,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!target || target.type === MetadataType.Configuration) {
         return;
       }
-      const configPath = treeDataProvider?.getConfigPath();
+      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
       if (!configPath) {
         vscode.window.showWarningMessage('Дерево метаданных не загружено.');
         return;
@@ -265,7 +307,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!target || target.type === MetadataType.Configuration) {
         return;
       }
-      const configPath = treeDataProvider?.getConfigPath();
+      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
       if (!configPath) {
         vscode.window.showWarningMessage('Дерево метаданных не загружено.');
         return;
@@ -449,6 +491,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     openXMLCommand,
     openFormEditorCommand,
     createElementCommand,
+    createFormCommand,
     duplicateElementCommand,
     deleteElementCommand,
     renameElementCommand,
@@ -486,7 +529,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 /**
- * Load metadata tree from workspace
+ * Path relative to workspace folder for display (e.g. "structure_backup" or ".").
+ */
+function getWorkspaceRelativePath(workspaceFolderPath: string, configRootPath: string): string {
+  const rel = path.relative(workspaceFolderPath, configRootPath);
+  const normalized = rel ? path.normalize(rel).replace(/\\/g, '/') : '.';
+  return normalized;
+}
+
+/**
+ * Load metadata tree from workspace (all configurations in all workspace folders).
  */
 async function loadMetadataTree(): Promise<void> {
   if (!treeDataProvider) {
@@ -494,16 +546,18 @@ async function loadMetadataTree(): Promise<void> {
     return;
   }
 
-  if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
     vscode.window.showWarningMessage(MESSAGES.NO_WORKSPACE);
+    treeDataProvider.setRootNodes([], undefined);
     return;
   }
 
-  const workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
-
-  const configRoot = await FormatDetector.findConfigurationRoot(workspacePath);
-  if (!configRoot) {
+  const workspacePaths = folders.map((f) => f.uri.fsPath);
+  const configs = await FormatDetector.findAllConfigurationRoots(workspacePaths);
+  if (configs.length === 0) {
     vscode.window.showWarningMessage(MESSAGES.NO_CONFIGURATION);
+    treeDataProvider.setRootNodes([], undefined);
     return;
   }
 
@@ -518,37 +572,54 @@ async function loadMetadataTree(): Promise<void> {
         progress.report({ increment: 0 });
 
         const storagePath = extensionContext?.globalStoragePath ?? '';
-        let rootNode: TreeNode | null = storagePath
-          ? await loadTreeFromCache(storagePath, configRoot)
-          : null;
+        const roots: TreeNode[] = [];
+        const loadContextMap = new Map<string, { configPath: string; format: ConfigFormat }>();
 
-        if (!rootNode) {
-          rootNode = await MetadataParser.parseStructureOnly(configRoot);
-          if (storagePath) {
-            await saveTreeToCache(storagePath, configRoot, rootNode);
+        for (let i = 0; i < configs.length; i++) {
+          const { configPath: configRoot, workspaceFolderPath } = configs[i];
+          let rootNode: TreeNode | null = storagePath
+            ? await loadTreeFromCache(storagePath, configRoot)
+            : null;
+          if (!rootNode) {
+            rootNode = await MetadataParser.parseStructureOnly(configRoot);
+            if (storagePath) {
+              await saveTreeToCache(storagePath, configRoot, rootNode);
+            }
           }
+          const relativePath = getWorkspaceRelativePath(workspaceFolderPath, configRoot);
+          const uniqueId = `config:${path.normalize(configRoot).replace(/\\/g, '_')}`;
+          rootNode.id = uniqueId;
+          rootNode.name =
+            relativePath && relativePath !== '.' ? `Configuration (~/${relativePath})` : 'Configuration';
+          rootNode.filePath = configRoot;
+          roots.push(rootNode);
+          const format = await FormatDetector.detect(configRoot);
+          loadContextMap.set(uniqueId, { configPath: configRoot, format });
+          progress.report({ increment: (100 * (i + 1)) / configs.length });
         }
 
-        progress.report({ increment: 50 });
+        const provider = treeDataProvider!;
+        if (roots.length === 1) {
+          provider.setRootNode(roots[0], loadContextMap.get(roots[0].id));
+        } else {
+          provider.setRootNodes(roots, loadContextMap);
+        }
 
-        const format = await FormatDetector.detect(configRoot);
-        treeDataProvider!.setRootNode(rootNode, { configPath: configRoot, format });
-
-        progress.report({ increment: 100 });
-
-        if (!metadataWatcher) {
-          metadataWatcher = new MetadataWatcherService();
-          metadataWatcher.start(configRoot, {
-            onTreeReload: () => {
-              loadMetadataTree().catch((err) => {
-                Logger.error('Error during watcher-triggered reload', err);
-              });
-            },
-            onFileChanged: (changedPath) => {
-              propertiesProvider?.notifyFileChangedExternally(changedPath);
-            },
-          });
-          extensionContext?.subscriptions.push(metadataWatcher);
+        for (const w of metadataWatchers) {
+          w.dispose();
+        }
+        metadataWatchers = [];
+        const onReload = () => {
+          loadMetadataTree().catch((err) => Logger.error('Error during watcher-triggered reload', err));
+        };
+        const onFileChanged = (changedPath: string) => {
+          propertiesProvider?.notifyFileChangedExternally(changedPath);
+        };
+        for (const { configPath: configRoot } of configs) {
+          const watcher = new MetadataWatcherService();
+          watcher.start(configRoot, { onTreeReload: onReload, onFileChanged });
+          metadataWatchers.push(watcher);
+          extensionContext?.subscriptions.push(watcher);
         }
 
         vscode.window.showInformationMessage(MESSAGES.SUCCESS);
@@ -573,7 +644,9 @@ function handleLoadError(error: unknown): void {
  * Deactivate the extension
  */
 export function deactivate(): void {
-  metadataWatcher?.dispose();
-  metadataWatcher = null;
+  for (const w of metadataWatchers) {
+    w.dispose();
+  }
+  metadataWatchers = [];
   Logger.info(MESSAGES.EXTENSION_DEACTIVATED);
 }

@@ -5,6 +5,12 @@ import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { convertStringBooleans } from '../utils/xmlPropertyUtils';
+import {
+  findChildObjects,
+  extractAttributes,
+  extractTabularSections,
+  flattenAttributeProperties,
+} from './xmlChildObjects';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -35,7 +41,7 @@ export class EdtParser {
         type: MetadataType.Configuration,
         properties: {},
         children: [],
-        filePath: srcPath,
+        filePath: path.join(configPath, 'Configuration.xml'),
       };
 
       // Parse metadata directories in src
@@ -89,7 +95,7 @@ export class EdtParser {
       type: MetadataType.Configuration,
       properties: {},
       children: [],
-      filePath: srcPath,
+      filePath: path.join(configPath, 'Configuration.xml'),
     };
 
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();
@@ -130,7 +136,7 @@ export class EdtParser {
   }
 
   /**
-   * Load direct children (Forms, Ext) for a metadata element. Used when expanding in lazy mode.
+   * Load direct children (Attributes, TabularSections from .mdo; Forms, Ext from filesystem) for a metadata element.
    */
   static async loadChildrenForElement(
     configPath: string,
@@ -139,6 +145,23 @@ export class EdtParser {
   ): Promise<TreeNode[]> {
     const elementPath = path.join(configPath, 'src', typeName, elementName);
     const children: TreeNode[] = [];
+    const mdoFileName = this.getMdoFileName(typeName);
+    const mdoPath = path.join(elementPath, mdoFileName);
+
+    try {
+      await fs.promises.access(mdoPath);
+      const mdoContent = await XmlParser.parseFileAsync(mdoPath);
+      const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath);
+      if (fromMdo.attributesNode?.children?.length) {
+        children.push(fromMdo.attributesNode);
+      }
+      if (fromMdo.tabularNode?.children?.length) {
+        children.push(fromMdo.tabularNode);
+      }
+    } catch {
+      // No .mdo or parse error — skip Attributes/TabularSections from MDO
+    }
+
     try {
       const items = await fs.promises.readdir(elementPath);
       for (const item of items) {
@@ -154,6 +177,92 @@ export class EdtParser {
       Logger.debug(`Error reading EDT element directory ${elementPath}`, error);
     }
     return children;
+  }
+
+  /**
+   * Build Attributes and TabularSections tree nodes from parsed .mdo ChildObjects.
+   */
+  private static buildAttributesAndTabularFromMdo(
+    mdoContent: Record<string, unknown>,
+    mdoPath: string
+  ): { attributesNode: TreeNode | null; tabularNode: TreeNode | null } {
+    const childObjects = findChildObjects(mdoContent);
+    if (!childObjects) {
+      return { attributesNode: null, tabularNode: null };
+    }
+
+    const attributesNode: TreeNode = {
+      id: 'Attributes',
+      name: 'Attributes',
+      type: MetadataType.Attribute,
+      properties: {},
+      children: [],
+      parentFilePath: mdoPath,
+    };
+    const attrList = extractAttributes(childObjects);
+    for (const attr of attrList) {
+      const a = attr as Record<string, unknown>;
+      const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? (a as Record<string, unknown>).Name ?? 'Unknown';
+      const attributeNode: TreeNode = {
+        id: `Attributes.${String(attrName)}`,
+        name: String(attrName),
+        type: MetadataType.Attribute,
+        properties: flattenAttributeProperties(a),
+        parentFilePath: mdoPath,
+      };
+      attributeNode.parent = attributesNode;
+      attributesNode.children!.push(attributeNode);
+    }
+
+    const tabularNode: TreeNode = {
+      id: 'TabularSections',
+      name: 'Tabular Sections',
+      type: MetadataType.TabularSection,
+      properties: {},
+      children: [],
+      parentFilePath: mdoPath,
+    };
+    const sectionList = extractTabularSections(childObjects);
+    for (const section of sectionList) {
+      const ts = section as Record<string, unknown>;
+      const props = this.extractPropertiesFromMdo({ TabularSection: ts });
+      const sectionName = String(props.Name ?? (ts.Properties && (ts.Properties as Record<string, unknown>).Name) ?? 'Unknown');
+      const tsChildObjects = ts.ChildObjects;
+      const tsAttrList = tsChildObjects && typeof tsChildObjects === 'object'
+        ? extractAttributes(tsChildObjects as Record<string, unknown>)
+        : [];
+
+      const tsNode: TreeNode = {
+        id: `TabularSections.${sectionName}`,
+        name: sectionName,
+        type: MetadataType.TabularSection,
+        properties: { ...props },
+        children: [],
+        parentFilePath: mdoPath,
+      };
+
+      for (const attr of tsAttrList) {
+        const a = attr as Record<string, unknown>;
+        const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? (a as Record<string, unknown>).Name ?? 'Unknown';
+        const attributeNode: TreeNode = {
+          id: `TabularSections.${sectionName}.${String(attrName)}`,
+          name: String(attrName),
+          type: MetadataType.Attribute,
+          properties: flattenAttributeProperties(a),
+          parentFilePath: mdoPath,
+        };
+        attributeNode.parent = tsNode;
+        tsNode.children!.push(attributeNode);
+      }
+
+      tsNode.parent = tabularNode;
+      tabularNode.children!.push(tsNode);
+    }
+
+    return {
+      attributesNode: attributesNode.children!.length > 0 ? attributesNode : null,
+      tabularNode: tabularNode.children!.length > 0 ? tabularNode : null,
+    };
   }
 
   /**
@@ -243,10 +352,11 @@ export class EdtParser {
     const mdoFileName = this.getMdoFileName(typeName);
     const mdoPath = path.join(elementPath, mdoFileName);
 
+    let mdoContent: Record<string, unknown> | null = null;
     try {
       await fs.promises.access(mdoPath);
       try {
-        const mdoContent = await XmlParser.parseFileAsync(mdoPath);
+        mdoContent = await XmlParser.parseFileAsync(mdoPath);
         const properties = this.extractPropertiesFromMdo(mdoContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
       } catch (error) {
@@ -259,6 +369,18 @@ export class EdtParser {
     if (shallow) {
       elementNode.properties._lazy = true;
       return elementNode;
+    }
+
+    if (mdoContent) {
+      const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath);
+      if (fromMdo.attributesNode?.children?.length) {
+        fromMdo.attributesNode.parent = elementNode;
+        elementNode.children?.push(fromMdo.attributesNode);
+      }
+      if (fromMdo.tabularNode?.children?.length) {
+        fromMdo.tabularNode.parent = elementNode;
+        elementNode.children?.push(fromMdo.tabularNode);
+      }
     }
 
     try {

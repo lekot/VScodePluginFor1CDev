@@ -5,6 +5,7 @@ import * as os from 'os';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import {
   createElement,
+  createForm,
   duplicateElement,
   deleteElement,
   renameElement,
@@ -77,6 +78,39 @@ suite('elementOperations', () => {
       async () => createElement(catalogsTypeNode, 'ExistingCatalog'),
       /уже существует/
     );
+  });
+
+  test('createForm throws when parent is not Forms node', async () => {
+    await assert.rejects(
+      async () => createForm(catalogsTypeNode, 'NewForm'),
+      /Создание формы: выберите узел «Forms»/
+    );
+  });
+
+  test('createForm creates form directory and minimal files', async () => {
+    const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
+    await fs.promises.mkdir(formsPath, { recursive: true });
+    const formsNode: TreeNode = {
+      id: 'Forms',
+      name: 'Forms',
+      type: MetadataType.Form,
+      properties: {},
+      children: [],
+      filePath: formsPath,
+    };
+    await createForm(formsNode, 'НоваяФорма');
+    const formDir = path.join(formsPath, 'НоваяФорма');
+    const formMetaPath = path.join(formDir, 'НоваяФорма.xml');
+    const formXmlPath = path.join(formDir, 'Ext', 'Form.xml');
+    const modulePath = path.join(formDir, 'Ext', 'Form', 'Module.bsl');
+    assert.ok(fs.existsSync(formDir) && fs.statSync(formDir).isDirectory());
+    assert.ok(fs.existsSync(formMetaPath));
+    assert.ok(fs.existsSync(formXmlPath));
+    assert.ok(fs.existsSync(modulePath));
+    const metaContent = await fs.promises.readFile(formMetaPath, 'utf-8');
+    assert.ok(metaContent.includes('<Name>НоваяФорма</Name>'));
+    const extContent = await fs.promises.readFile(formXmlPath, 'utf-8');
+    assert.ok(extContent.includes('http://v8.1c.ru/8.3/xcf/logform') && extContent.includes('<Form'));
   });
 
   test('duplicateElement creates copy of catalog', async () => {
