@@ -83,6 +83,42 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
+  /** Find first Form node by traversing tree (expands path when revealing). */
+  async function findFirstFormNode(element: TreeNode): Promise<TreeNode | null> {
+    if (element.type === MetadataType.Form) return element;
+    const children = await treeDataProvider!.getChildren(element);
+    for (const child of children) {
+      const found = await findFirstFormNode(child);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const focusTreeCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.focus',
+    async () => {
+      if (!treeView || !treeDataProvider) return;
+      let root = treeDataProvider.getRootNode();
+      if (!root) {
+        await new Promise((r) => setTimeout(r, 200));
+        root = treeDataProvider.getRootNode();
+      }
+      if (!root) {
+        await new Promise((r) => setTimeout(r, 400));
+        root = treeDataProvider.getRootNode();
+      }
+      if (!root) return;
+      const formNode = await findFirstFormNode(root);
+      const nodeToReveal = formNode ?? root;
+      await treeView.reveal(nodeToReveal, { focus: true });
+    }
+  );
+
+  const getTreeReadyForTestCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.getTreeReadyForTest',
+    (): boolean => !!(treeDataProvider?.getRootNode() ?? null)
+  );
+
   const refreshCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.refresh',
     async () => {
@@ -112,11 +148,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     '1c-metadata-tree.openXML',
     async (node?: TreeNode) => {
       const target = getSelectedNode(node);
-      if (target?.filePath) {
-        Logger.info(`Opening XML file: ${target.filePath}`);
-        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(target.filePath));
-      } else if (target) {
+      if (!target) return;
+      if (!target.filePath) {
         vscode.window.showWarningMessage('No XML file associated with this element');
+        return;
+      }
+      const pathToOpen =
+        target.type === MetadataType.Form
+          ? getFormPaths(target.filePath).formXmlPath
+          : target.filePath;
+      try {
+        Logger.info(`Opening XML file: ${pathToOpen}`);
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(pathToOpen));
+      } catch (err) {
+        Logger.error('Failed to open XML', err);
+        vscode.window.showErrorMessage(
+          `Не удалось открыть файл: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
   );
@@ -496,6 +544,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     openPanelCommand,
+    focusTreeCommand,
+    getTreeReadyForTestCommand,
     refreshCommand,
     showPropertiesCommand,
     openXMLCommand,

@@ -27,6 +27,11 @@
         "category": "1C Metadata"
       },
       {
+        "command": "1c-metadata-tree.focus",
+        "title": "Focus 1C Metadata Tree",
+        "category": "1C Metadata"
+      },
+      {
         "command": "1c-metadata-tree.refresh",
         "title": "Refresh",
         "category": "1C Metadata",
@@ -251,6 +256,7 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "tsc -p tsconfig.test.json && node node_modules/mocha/bin/mocha --ui tdd out/test/suite/*.test.js",
+    "test:smoke": "npm run compile && node node_modules/typescript/bin/tsc -p tsconfig.test.json && node out/test/runSmoke.js",
     "format": "prettier --write \"src/**/*.ts\""
   },
   "devDependencies": {
