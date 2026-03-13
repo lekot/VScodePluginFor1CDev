@@ -18,6 +18,11 @@ echo Building VSIX package...
 node node_modules/@vscode/vsce/vsce package
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+if not exist releases mkdir releases
+copy /Y "1c-metadata-tree-vscode-%NEWVERSION%.vsix" "releases\"
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 echo.
 echo Build complete! VSIX: 1c-metadata-tree-vscode-%NEWVERSION%.vsix
+echo Copy: releases\1c-metadata-tree-vscode-%NEWVERSION%.vsix
 echo Install via: Extensions: Install from VSIX...
