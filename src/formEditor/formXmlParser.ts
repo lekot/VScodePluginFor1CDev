@@ -121,7 +121,7 @@ function parseChildItemsArray(content: unknown[] | undefined): FormChildItem[] {
     if (!item || typeof item !== 'object') continue;
     const obj = item as Record<string, unknown>;
     for (const tag of Object.keys(obj)) {
-      if (tag.startsWith('@') || tag === '#text' || skipTags.has(localName(tag))) continue;
+      if (tag.startsWith('@') || tag === '#text' || tag === ':@' || skipTags.has(localName(tag))) continue;
       const childContent = obj[tag];
       const arr = Array.isArray(childContent) ? childContent : [];
       let { name: attrName, id: attrId } = getAttrsFromContent(arr);
