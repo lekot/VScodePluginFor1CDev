@@ -71,12 +71,103 @@ export class EdtParser {
   }
 
   /**
+   * Build only root and type nodes without parsing element contents (for lazy loading).
+   * @param configPath Path to configuration root
+   * @returns Root node with type nodes that have empty children
+   */
+  static async parseStructureOnly(configPath: string): Promise<TreeNode> {
+    const srcPath = path.join(configPath, 'src');
+    try {
+      await fs.promises.access(srcPath);
+    } catch {
+      throw new Error(`EDT src directory not found at ${srcPath}`);
+    }
+
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+      filePath: srcPath,
+    };
+
+    const metadataTypes = MetadataTypeMapper.getMetadataTypes();
+    for (const typeName of metadataTypes) {
+      const typePath = path.join(srcPath, typeName);
+      try {
+        await fs.promises.access(typePath);
+      } catch {
+        continue;
+      }
+      const metadataType = MetadataTypeMapper.map(typeName);
+      const typeNode: TreeNode = {
+        id: typeName,
+        name: typeName,
+        type: metadataType,
+        properties: { type: typeName },
+        children: [],
+        filePath: typePath,
+      };
+      typeNode.parent = rootNode;
+      rootNode.children!.push(typeNode);
+    }
+
+    Logger.info('EDT structure-only parsing completed');
+    return rootNode;
+  }
+
+  /**
+   * Parse contents of a single metadata type (e.g. Catalogs).
+   * @param configPath Path to configuration root
+   * @param typeName Type directory name (e.g. Catalogs)
+   * @returns Array of element nodes for this type
+   */
+  static async parseTypeContents(configPath: string, typeName: string): Promise<TreeNode[]> {
+    const typePath = path.join(configPath, 'src', typeName);
+    const typeNode = await this.parseMetadataType(typePath, typeName, { shallow: true });
+    return typeNode.children || [];
+  }
+
+  /**
+   * Load direct children (Forms, Ext) for a metadata element. Used when expanding in lazy mode.
+   */
+  static async loadChildrenForElement(
+    configPath: string,
+    typeName: string,
+    elementName: string
+  ): Promise<TreeNode[]> {
+    const elementPath = path.join(configPath, 'src', typeName, elementName);
+    const children: TreeNode[] = [];
+    try {
+      const items = await fs.promises.readdir(elementPath);
+      for (const item of items) {
+        if (item === 'Forms' || item === 'Ext') {
+          const subPath = path.join(elementPath, item);
+          const subNode = await this.parseSubElements(subPath, item);
+          if (subNode.children && subNode.children.length > 0) {
+            children.push(subNode);
+          }
+        }
+      }
+    } catch (error) {
+      Logger.debug(`Error reading EDT element directory ${elementPath}`, error);
+    }
+    return children;
+  }
+
+  /**
    * Parse metadata type directory (e.g., src/Catalogs/)
    * @param typePath Path to metadata type directory
    * @param typeName Name of metadata type
+   * @param options shallow: if true, element nodes are created without sub-elements (_lazy)
    * @returns Tree node for metadata type
    */
-  private static async parseMetadataType(typePath: string, typeName: string): Promise<TreeNode> {
+  private static async parseMetadataType(
+    typePath: string,
+    typeName: string,
+    options?: { shallow?: boolean }
+  ): Promise<TreeNode> {
     const metadataType = MetadataTypeMapper.map(typeName);
 
     const typeNode: TreeNode = {
@@ -100,8 +191,12 @@ export class EdtParser {
             const stat = await fs.promises.stat(itemPath);
 
             if (stat.isDirectory()) {
-              // This is a metadata element directory
-              return await this.parseMetadataElement(itemPath, item, typeName);
+              return await this.parseMetadataElement(
+                itemPath,
+                item,
+                typeName,
+                options?.shallow ?? false
+              );
             }
           } catch (error) {
             Logger.debug(`Error processing item ${itemPath}`, error);
@@ -126,12 +221,14 @@ export class EdtParser {
 
   /**
    * Parse metadata element directory (e.g., src/Catalogs/CatalogName/)
-   * @param elementPath Path to element directory
-   * @param elementName Name of element
-   * @param typeName Type of element
-   * @returns Tree node for metadata element
+   * @param shallow If true, do not parse sub-elements; set _lazy for on-demand load
    */
-  private static async parseMetadataElement(elementPath: string, elementName: string, typeName: string): Promise<TreeNode> {
+  private static async parseMetadataElement(
+    elementPath: string,
+    elementName: string,
+    typeName: string,
+    shallow = false
+  ): Promise<TreeNode> {
     const metadataType = MetadataTypeMapper.map(typeName);
 
     const elementNode: TreeNode = {
@@ -143,7 +240,6 @@ export class EdtParser {
       filePath: elementPath,
     };
 
-    // Try to read .mdo file (e.g., Catalog.mdo)
     const mdoFileName = this.getMdoFileName(typeName);
     const mdoPath = path.join(elementPath, mdoFileName);
 
@@ -160,10 +256,13 @@ export class EdtParser {
       // MDO file doesn't exist, skip
     }
 
-    // Parse sub-elements (Forms, Attributes, etc.)
+    if (shallow) {
+      elementNode.properties._lazy = true;
+      return elementNode;
+    }
+
     try {
       const items = await fs.promises.readdir(elementPath);
-
       for (const item of items) {
         if (item === 'Forms' || item === 'Ext') {
           const subPath = path.join(elementPath, item);

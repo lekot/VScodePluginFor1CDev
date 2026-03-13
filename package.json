@@ -2,7 +2,8 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "1C Metadata Tree",
   "description": "VS Code extension for visualizing 1C configuration metadata tree",
-  "version": "0.7.4",
+  "version": "0.7.5",
+  "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
     "type": "git",
@@ -40,14 +41,123 @@
         "command": "1c-metadata-tree.openXML",
         "title": "Open XML File",
         "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.createElement",
+        "title": "Create Element",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.duplicateElement",
+        "title": "Duplicate Element",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.deleteElement",
+        "title": "Delete Element",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.renameElement",
+        "title": "Rename Element",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.copyPathOrName",
+        "title": "Copy Path / Name",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.focusSearch",
+        "title": "Search in tree",
+        "category": "1C Metadata",
+        "icon": "$(search)"
+      },
+      {
+        "command": "1c-metadata-tree.clearSearch",
+        "title": "Clear search and filters",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.filterByType",
+        "title": "Filter by metadata type",
+        "category": "1C Metadata",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "1c-metadata-tree.nextMatch",
+        "title": "Next search result",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.previousMatch",
+        "title": "Previous search result",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.clearCache",
+        "title": "Clear tree cache",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.exportLogs",
+        "title": "Export logs",
+        "category": "1C Metadata"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "1c-metadata-tree.refresh",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.focusSearch",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.clearSearch",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        }
+      ],
       "view/item/context": [
         {
           "command": "1c-metadata-tree.openXML",
           "when": "view == 1c-metadata-tree",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.showProperties",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.createElement",
+          "when": "view == 1c-metadata-tree",
+          "group": "1_modify"
+        },
+        {
+          "command": "1c-metadata-tree.duplicateElement",
+          "when": "view == 1c-metadata-tree && viewItem != 'Configuration'",
+          "group": "1_modify"
+        },
+        {
+          "command": "1c-metadata-tree.deleteElement",
+          "when": "view == 1c-metadata-tree && viewItem != 'Configuration'",
+          "group": "1_modify"
+        },
+        {
+          "command": "1c-metadata-tree.renameElement",
+          "when": "view == 1c-metadata-tree && viewItem != 'Configuration'",
+          "group": "1_modify"
+        },
+        {
+          "command": "1c-metadata-tree.copyPathOrName",
+          "when": "view == 1c-metadata-tree",
+          "group": "3_copy"
         }
       ]
     },
@@ -65,11 +175,45 @@
         "command": "1c-metadata-tree.openPanel",
         "key": "ctrl+alt+1",
         "mac": "cmd+alt+1"
+      },
+      {
+        "command": "1c-metadata-tree.openPanel",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m"
+      },
+      {
+        "command": "1c-metadata-tree.copyPathOrName",
+        "key": "ctrl+c",
+        "mac": "cmd+c",
+        "when": "view == 1c-metadata-tree"
+      },
+      {
+        "command": "1c-metadata-tree.duplicateElement",
+        "key": "ctrl+d",
+        "mac": "cmd+d",
+        "when": "view == 1c-metadata-tree"
+      },
+      {
+        "command": "1c-metadata-tree.deleteElement",
+        "key": "Delete",
+        "when": "view == 1c-metadata-tree"
+      },
+      {
+        "command": "1c-metadata-tree.renameElement",
+        "key": "f2",
+        "when": "view == 1c-metadata-tree"
+      },
+      {
+        "command": "1c-metadata-tree.focusSearch",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "view == 1c-metadata-tree"
       }
     ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
+    "package": "npm run compile && node node_modules/@vscode/vsce/vsce package",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",

@@ -8,12 +8,15 @@ try {
 /** Minimum level to output. In production use 'info' or higher so debug is not written. */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+const MAX_BUFFER_LINES = 10000;
+
 /**
  * Logger utility for the extension
  */
 export class Logger {
   private static outputChannel: { appendLine: (s: string) => void; show: () => void } | null = null;
   private static minLevel: LogLevel = 'info';
+  private static buffer: string[] = [];
 
   static setMinLevel(level: LogLevel): void {
     this.minLevel = level;
@@ -24,10 +27,18 @@ export class Logger {
       if (vscode && vscode.window) {
         this.outputChannel = vscode.window.createOutputChannel('1C Metadata Tree');
       }
+      this.buffer = [];
     } catch {
       // vscode not available (e.g., in tests)
       this.outputChannel = null;
     }
+  }
+
+  /**
+   * Returns buffered log content for export (e.g. to file).
+   */
+  static getBufferedContent(): string {
+    return this.buffer.length > 0 ? this.buffer.join('\n') : '';
   }
 
   static info(message: string, ...args: unknown[]): void {
@@ -61,6 +72,12 @@ export class Logger {
 
     if (this.outputChannel) {
       this.outputChannel.appendLine(logMessage);
+    }
+    if (this.buffer.length >= 0) {
+      this.buffer.push(logMessage);
+      if (this.buffer.length > MAX_BUFFER_LINES) {
+        this.buffer.shift();
+      }
     }
 
     if (level === 'ERROR') {

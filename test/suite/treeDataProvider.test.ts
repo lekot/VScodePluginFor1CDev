@@ -265,4 +265,80 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.ok(catalogRef.objectNames.includes('Users'));
     assert.strictEqual(result.filter((g) => g.referenceKind.endsWith('Ref')).length, 6);
   });
+
+  test('searchByName returns nodes matching substring', () => {
+    const a: TreeNode = { id: 'a', name: 'Apple', type: MetadataType.Catalog, properties: {} };
+    const b: TreeNode = { id: 'b', name: 'Banana', type: MetadataType.Catalog, properties: {} };
+    const c: TreeNode = { id: 'c', name: 'Cherry', type: MetadataType.Catalog, properties: {} };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [a, b, c],
+    };
+    provider.setRootNode(root);
+    const results = provider.searchByName('an');
+    assert.strictEqual(results.length, 2);
+    assert.ok(results.some((n) => n.name === 'Banana'));
+    assert.ok(results.some((n) => n.name === 'Cherry'));
+    assert.strictEqual(provider.searchByName('xyz').length, 0);
+  });
+
+  test('setSearchQuery filters visible tree', async () => {
+    const a: TreeNode = { id: 'a', name: 'First', type: MetadataType.Catalog, properties: {} };
+    const b: TreeNode = { id: 'b', name: 'Second', type: MetadataType.Catalog, properties: {} };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [a, b],
+    };
+    provider.setRootNode(root);
+    provider.setSearchQuery('First');
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 1);
+    assert.strictEqual(children[0].name, 'Configuration');
+    const configChildren = await provider.getChildren(children[0]);
+    assert.strictEqual(configChildren.length, 1);
+    assert.strictEqual(configChildren[0].name, 'First');
+  });
+
+  test('setTypeFilter filters by metadata type', async () => {
+    const cat: TreeNode = { id: 'c', name: 'MyCatalog', type: MetadataType.Catalog, properties: {} };
+    const doc: TreeNode = { id: 'd', name: 'MyDocument', type: MetadataType.Document, properties: {} };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [cat, doc],
+    };
+    provider.setRootNode(root);
+    provider.setTypeFilter([MetadataType.Catalog]);
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 1);
+    const typeChildren = await provider.getChildren(children[0]);
+    assert.strictEqual(typeChildren.length, 1);
+    assert.strictEqual(typeChildren[0].type, MetadataType.Catalog);
+  });
+
+  test('clearSearch restores full tree', async () => {
+    const a: TreeNode = { id: 'a', name: 'Alpha', type: MetadataType.Catalog, properties: {} };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [a],
+    };
+    provider.setRootNode(root);
+    provider.setSearchQuery('Alpha');
+    provider.clearSearch();
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 1);
+    const typeChildren = await provider.getChildren(children[0]);
+    assert.strictEqual(typeChildren.length, 1);
+  });
 });
