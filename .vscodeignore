@@ -6,6 +6,7 @@ out/test/**
 .kiro/**
 structure_samples/**
 structure_backup/**
+extensions_samples/**
 build/**
 .gitignore
 .prettierrc.json

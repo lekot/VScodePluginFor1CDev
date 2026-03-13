@@ -404,6 +404,7 @@ export class EdtParser {
 
   /**
    * Parse sub-elements (Forms, Ext, etc.)
+   * For Ext: parity with Designer — recursive .bsl listing; folders as containers with Method children, single .bsl as Method.
    * @param subPath Path to sub-elements directory
    * @param subType Type of sub-elements
    * @returns Tree node for sub-elements
@@ -421,35 +422,91 @@ export class EdtParser {
     try {
       const items = await fs.promises.readdir(subPath);
 
-      // Process all sub-elements in parallel
-      const subElementNodes = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = path.join(subPath, item);
-          try {
-            const stat = await fs.promises.stat(itemPath);
+      if (subType === 'Ext') {
+        // Ext: same structure as Designer — .bsl files and folders with .bsl as children
+        const extElementNodes = await Promise.all(
+          items.map(async (item) => {
+            const itemPath = path.join(subPath, item);
+            try {
+              const stat = await fs.promises.stat(itemPath);
 
-            if (stat.isDirectory()) {
-              const child: TreeNode = {
-                id: `${subType}.${item}`,
-                name: item,
-                type: subType === 'Forms' ? MetadataType.Form : MetadataType.Extension,
-                properties: {},
-                filePath: itemPath,
-              };
-              child.parent = subNode;
-              return child;
+              if (stat.isDirectory()) {
+                const bslFiles = await this.findBslFilesRecursive(itemPath);
+                if (bslFiles.length > 0) {
+                  const container: TreeNode = {
+                    id: `${subType}.${item}`,
+                    name: item,
+                    type: MetadataType.Extension,
+                    properties: { isExtension: true },
+                    filePath: itemPath,
+                    children: bslFiles.map((bslPath) => ({
+                      id: `${subType}.${item}.${path.basename(bslPath)}`,
+                      name: path.basename(bslPath),
+                      type: MetadataType.Method,
+                      properties: { isModule: true, fileType: 'bsl' },
+                      filePath: bslPath,
+                    })),
+                  };
+                  return container;
+                }
+                return null;
+              }
+              if (stat.isFile() && item.endsWith('.bsl')) {
+                return {
+                  id: `${subType}.${item}`,
+                  name: item,
+                  type: MetadataType.Method,
+                  properties: { isModule: true, fileType: 'bsl' },
+                  filePath: itemPath,
+                } as TreeNode;
+              }
+            } catch (error) {
+              Logger.debug(`Error processing Ext sub-element ${itemPath}`, error);
             }
-          } catch (error) {
-            Logger.debug(`Error processing sub-element ${itemPath}`, error);
+            return null;
+          })
+        );
+        for (const node of extElementNodes) {
+          if (node) {
+            (node as TreeNode).parent = subNode;
+            if (node.children) {
+              for (const ch of node.children) {
+                (ch as TreeNode).parent = node as TreeNode;
+              }
+            }
+            subNode.children?.push(node as TreeNode);
           }
-          return null;
-        })
-      );
+        }
+      } else {
+        // Forms: directories as Form nodes
+        const subElementNodes = await Promise.all(
+          items.map(async (item) => {
+            const itemPath = path.join(subPath, item);
+            try {
+              const stat = await fs.promises.stat(itemPath);
 
-      // Add non-null sub-element nodes
-      for (const subElementNode of subElementNodes) {
-        if (subElementNode) {
-          subNode.children?.push(subElementNode);
+              if (stat.isDirectory()) {
+                const child: TreeNode = {
+                  id: `${subType}.${item}`,
+                  name: item,
+                  type: MetadataType.Form,
+                  properties: {},
+                  filePath: itemPath,
+                };
+                child.parent = subNode;
+                return child;
+              }
+            } catch (error) {
+              Logger.debug(`Error processing sub-element ${itemPath}`, error);
+            }
+            return null;
+          })
+        );
+
+        for (const subElementNode of subElementNodes) {
+          if (subElementNode) {
+            subNode.children?.push(subElementNode);
+          }
         }
       }
     } catch (error) {
@@ -457,6 +514,33 @@ export class EdtParser {
     }
 
     return subNode;
+  }
+
+  /**
+   * Recursively find all .bsl files in a directory (parity with DesignerParser for Ext).
+   */
+  private static async findBslFilesRecursive(dirPath: string): Promise<string[]> {
+    const bslFiles: string[] = [];
+    try {
+      const items = await fs.promises.readdir(dirPath);
+      for (const item of items) {
+        const itemPath = path.join(dirPath, item);
+        try {
+          const stat = await fs.promises.stat(itemPath);
+          if (stat.isDirectory()) {
+            const subFiles = await this.findBslFilesRecursive(itemPath);
+            bslFiles.push(...subFiles);
+          } else if (stat.isFile() && item.endsWith('.bsl')) {
+            bslFiles.push(itemPath);
+          }
+        } catch (error) {
+          Logger.debug(`Error processing ${itemPath}`, error);
+        }
+      }
+    } catch (error) {
+      Logger.debug(`Error reading directory ${dirPath}`, error);
+    }
+    return bslFiles;
   }
 
   /**

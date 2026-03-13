@@ -277,7 +277,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showInformationMessage('Операции с элементами поддерживаются только для формата Designer.');
         return;
       }
-      const refs = await findReferencesToElement(configPath, target.name, target.type);
+      // For Ext node or child of Ext, count references to the parent metadata object
+      const effectiveNode =
+        target.type === MetadataType.Extension
+          ? target.parent
+          : target.parent?.type === MetadataType.Extension
+            ? target.parent.parent
+            : target;
+      const refs =
+        effectiveNode && effectiveNode.type !== MetadataType.Configuration
+          ? await findReferencesToElement(configPath, effectiveNode.name, effectiveNode.type)
+          : [];
       const refMsg =
         refs.length > 0
           ? ` Найдено ссылок: ${refs.length} (файлов: ${new Set(refs.map((r) => r.filePath)).size}). Удаление может нарушить конфигурацию.`
