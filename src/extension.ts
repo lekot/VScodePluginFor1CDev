@@ -18,6 +18,8 @@ import {
 import { validateElementName } from './utils/elementNameValidator';
 import { TreeNode, MetadataType } from './models/treeNode';
 import { MESSAGES } from './constants/messages';
+import { FormEditorProvider } from './formEditor/formEditorProvider';
+import { getFormPaths } from './formEditor/formPaths';
 
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
@@ -62,6 +64,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   propertiesProvider = new PropertiesProvider(context, treeDataProvider, typeEditorProvider);
   context.subscriptions.push(propertiesProvider);
 
+  // Form editor (custom editor for Ext/Form.xml)
+  const formEditorProvider = new FormEditorProvider(context);
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider('1c-form-editor', formEditorProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+
   // Register commands
   const openPanelCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.openPanel',
@@ -105,6 +115,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(target.filePath));
       } else if (target) {
         vscode.window.showWarningMessage('No XML file associated with this element');
+      }
+    }
+  );
+
+  // Open form in visual form editor (for Form nodes)
+  const openFormEditorCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openFormEditor',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(node);
+      if (!target) {
+        vscode.window.showWarningMessage('Выберите узел формы в дереве метаданных.');
+        return;
+      }
+      if (target.type !== MetadataType.Form || !target.filePath) {
+        vscode.window.showWarningMessage('Редактор форм доступен только для узла формы.');
+        return;
+      }
+      const { formXmlPath } = getFormPaths(target.filePath);
+      const uri = vscode.Uri.file(formXmlPath);
+      try {
+        await vscode.commands.executeCommand('vscode.openWith', uri, '1c-form-editor');
+      } catch (err) {
+        Logger.error('Failed to open form editor', err);
+        vscode.window.showErrorMessage(`Не удалось открыть редактор формы: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   );
@@ -413,6 +447,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     refreshCommand,
     showPropertiesCommand,
     openXMLCommand,
+    openFormEditorCommand,
     createElementCommand,
     duplicateElementCommand,
     deleteElementCommand,

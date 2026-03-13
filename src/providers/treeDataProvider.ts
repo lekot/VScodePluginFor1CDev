@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
+import { getFormPaths } from '../formEditor/formPaths';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
@@ -417,9 +418,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Remove default file open command - selection will trigger properties panel instead
       // Context menu will provide "Open XML" option for direct file access
 
-      // Set resource URI for file operations
+      // Set resource URI: for Form open Ext/Form.xml in form editor, else open metadata file
       if (element.filePath) {
-        treeItem.resourceUri = vscode.Uri.file(element.filePath);
+        if (element.type === MetadataType.Form) {
+          const { formXmlPath } = getFormPaths(element.filePath);
+          treeItem.resourceUri = vscode.Uri.file(formXmlPath);
+        } else {
+          treeItem.resourceUri = vscode.Uri.file(element.filePath);
+        }
       }
 
       return treeItem;
