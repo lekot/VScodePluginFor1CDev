@@ -109,17 +109,22 @@ export class PropertiesProvider {
     // For nested elements (Attributes), properties are already loaded from XML during parsing
     // Only reload from file for root elements that have filePath
     if (node.filePath && !node.parentFilePath) {
+      const { getFormPaths } = await import('../formEditor/formPaths');
+      const pathToRead =
+        node.type === 'Form'
+          ? getFormPaths(node.filePath).formXmlPath
+          : node.filePath;
       try {
         const { XMLWriter } = await import('../utils/XMLWriter');
-        const xmlProperties = await XMLWriter.readProperties(node.filePath);
+        const xmlProperties = await XMLWriter.readProperties(pathToRead);
         
         // Update node properties with fresh data from XML
         node.properties = { ...xmlProperties };
         
-        Logger.debug(`Successfully loaded properties from ${node.filePath}`);
+        Logger.debug(`Successfully loaded properties from ${pathToRead}`);
       } catch (error) {
         // Log detailed error
-        Logger.error(`Failed to read properties from ${node.filePath}`, error);
+        Logger.error(`Failed to read properties from ${pathToRead}`, error);
         
         // Display error in properties panel
         this.showErrorInPanel(

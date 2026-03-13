@@ -602,24 +602,23 @@ export class DesignerParser {
             const stat = await fs.promises.stat(itemPath);
 
             if (stat.isDirectory()) {
-              // Parse form XML to get properties
+              // Form folder: real content is Ext/Form.xml; {FormName}.xml often absent in Designer
               const xmlPath = path.join(itemPath, `${item}.xml`);
               let properties: Record<string, unknown> = { name: item };
-              
               try {
                 await fs.promises.access(xmlPath);
                 const xmlContent = await XmlParser.parseFileAsync(xmlPath);
                 properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
               } catch {
-                // XML doesn't exist, use default properties
+                // {FormName}.xml doesn't exist; properties panel will read from Ext/Form.xml
               }
-
+              // filePath = form directory so getFormPaths() and properties panel resolve Ext/Form.xml
               const formNode: TreeNode = {
                 id: `Forms.${item}`,
                 name: item,
                 type: MetadataType.Form,
                 properties,
-                filePath: xmlPath,
+                filePath: itemPath,
                 children: [],
               };
 
