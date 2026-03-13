@@ -55,4 +55,30 @@ suite('DesignerParser', () => {
       assert.ok(firstChild.properties);
     }
   });
+
+  test('should load tabular sections and their attributes from XML', async () => {
+    const configPath = path.join(__dirname, '../fixtures/designer-config');
+    const children = await DesignerParser.loadChildrenForElement(
+      configPath,
+      'Catalogs',
+      'CatalogWithTabular'
+    );
+
+    const tabularNode = children.find((c) => c.id === 'TabularSections');
+    assert.ok(tabularNode, 'TabularSections node should exist');
+    assert.strictEqual(tabularNode!.type, MetadataType.TabularSection);
+    assert.ok(tabularNode!.children);
+    assert.strictEqual(tabularNode!.children!.length, 1, 'one tabular section');
+
+    const section = tabularNode!.children![0];
+    assert.strictEqual(section.name, 'Tabular1');
+    assert.strictEqual(section.type, MetadataType.TabularSection);
+    assert.ok(section.children);
+    assert.strictEqual(section.children!.length, 2, 'two attributes in tabular section');
+
+    const attrNames = section.children!.map((a) => a.name).sort();
+    assert.deepStrictEqual(attrNames, ['Col1', 'Col2']);
+    assert.strictEqual(section.children![0].type, MetadataType.Attribute);
+    assert.strictEqual(section.children![1].type, MetadataType.Attribute);
+  });
 });

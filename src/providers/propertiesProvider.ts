@@ -302,8 +302,7 @@ export class PropertiesProvider {
       </head>
       <body>
         <div class="header">
-          <h2>${this.escapeHtml(node.name)}</h2>
-          <p>${this.escapeHtml(node.type)}</p>
+          <h2>Свойства: ${this.escapeHtml(node.name)} (${this.escapeHtml(node.type)})</h2>
         </div>
         <div class="error-box">
           <h3>${this.escapeHtml(title)}</h3>
@@ -436,15 +435,25 @@ export class PropertiesProvider {
           }
           button {
             padding: 6px 14px;
-            background: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
             border: none;
             cursor: pointer;
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
+            border-radius: 2px;
           }
-          button:hover:not(:disabled) {
+          #save-btn {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+          }
+          #save-btn:hover:not(:disabled) {
             background: var(--vscode-button-hoverBackground);
+          }
+          #cancel-btn {
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+          }
+          #cancel-btn:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
           }
           button:disabled {
             opacity: 0.5;
@@ -456,6 +465,11 @@ export class PropertiesProvider {
             align-items: center;
             justify-content: center;
             min-width: 28px;
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+          }
+          .edit-type-btn:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
           }
           .edit-type-icon {
             display: inline-flex;
@@ -469,6 +483,8 @@ export class PropertiesProvider {
             padding: 40px;
             color: var(--vscode-descriptionForeground);
           }
+          .empty-state h3 { margin: 0 0 12px 0; }
+          .empty-state p { margin: 0; }
           .property-section {
             margin-bottom: 20px;
           }
@@ -484,8 +500,7 @@ export class PropertiesProvider {
       </head>
       <body>
         <div class="header">
-          <h2>${this.escapeHtml(node.name)}</h2>
-          <p>${this.escapeHtml(node.type)}</p>
+          <h2>Свойства: ${this.escapeHtml(node.name)} (${this.escapeHtml(node.type)})</h2>
         </div>
         ${readOnly ? `
           <div class="read-only-notice">
@@ -498,13 +513,14 @@ export class PropertiesProvider {
           </div>
           ${!readOnly ? `
             <div class="button-row">
-              <button id="save-btn" disabled>Save</button>
-              <button id="cancel-btn">Cancel</button>
+              <button id="cancel-btn" title="Отмена" aria-label="Отмена">Отмена</button>
+              <button id="save-btn" disabled title="Сохранить" aria-label="Сохранить">Сохранить</button>
             </div>
           ` : ''}
         ` : `
           <div class="empty-state">
-            <p>No properties available for this element</p>
+            <h3>${this.escapeHtml(MESSAGES.EMPTY_STATE_NO_PROPERTIES_TITLE)}</h3>
+            <p>${this.escapeHtml(MESSAGES.EMPTY_STATE_NO_PROPERTIES_HINT)}</p>
           </div>
         `}
         <script>
@@ -552,8 +568,8 @@ export class PropertiesProvider {
       </head>
       <body>
         <div class="empty-state">
-          <h3>No element selected</h3>
-          <p>Click on a tree element to view its properties</p>
+          <h3>${this.escapeHtml(MESSAGES.EMPTY_STATE_NO_SELECTION_TITLE)}</h3>
+          <p>${this.escapeHtml(MESSAGES.EMPTY_STATE_NO_SELECTION_HINT)}</p>
         </div>
       </body>
       </html>
@@ -1032,14 +1048,20 @@ export class PropertiesProvider {
       this.postMessage({
         type: 'saved'
       });
-      
+      vscode.window.showInformationMessage(MESSAGES.SAVE_SUCCESS);
+
       Logger.info(`Properties saved successfully for node: ${this.currentNode.name}`);
     } catch (error) {
       Logger.error(`Failed to save properties: ${error}`);
-      this.postMessage({
-        type: 'error',
-        message: `Failed to save properties: ${error instanceof Error ? error.message : 'Unknown error'}`
-      });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      // Write errors are already handled in saveProperties (notification + UI rollback); avoid duplicate alert in webview
+      const isWriteError = /Failed to write|Unable to write/i.test(errorMessage);
+      if (!isWriteError) {
+        this.postMessage({
+          type: 'error',
+          message: `Failed to save properties: ${errorMessage}`
+        });
+      }
     }
   }
 

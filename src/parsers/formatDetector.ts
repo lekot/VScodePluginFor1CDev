@@ -55,50 +55,122 @@ export class FormatDetector {
   }
 
   /**
-   * Get configuration root path from workspace
+   * Check if the given directory path is a configuration root (has 1cv8.cf/1cv8.cfe/Configuration.xml and metadata dirs).
+   */
+  private static async isConfigurationRoot(dirPath: string): Promise<boolean> {
+    const cfPath = path.join(dirPath, '1cv8.cf');
+    const cfePath = path.join(dirPath, '1cv8.cfe');
+    const configXmlPath = path.join(dirPath, 'Configuration.xml');
+    try {
+      await fs.promises.access(cfPath);
+      return true;
+    } catch {
+      // continue
+    }
+    try {
+      await fs.promises.access(cfePath);
+      return true;
+    } catch {
+      // continue
+    }
+    try {
+      await fs.promises.access(configXmlPath);
+      const hasMetadata = await this.hasMetadataDirectories(dirPath);
+      return hasMetadata;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Get configuration root path from workspace (first found only).
    * @param workspacePath Path to workspace
    * @returns Configuration root path or null
    */
   static async findConfigurationRoot(workspacePath: string): Promise<string | null> {
     try {
-      // Look for 1cv8.cf or 1cv8.cfe in workspace
-      const cfPath = path.join(workspacePath, '1cv8.cf');
-      const cfePath = path.join(workspacePath, '1cv8.cfe');
-
-      try {
-        await fs.promises.access(cfPath);
+      if (await this.isConfigurationRoot(workspacePath)) {
         return workspacePath;
-      } catch {
-        // Continue checking
       }
-
-      try {
-        await fs.promises.access(cfePath);
-        return workspacePath;
-      } catch {
-        // Continue checking
-      }
-
-      // Look for Configuration.xml in workspace
-      const configXmlPath = path.join(workspacePath, 'Configuration.xml');
-      try {
-        await fs.promises.access(configXmlPath);
-        // Also check for metadata directories to confirm it's a valid config
-        const hasMetadata = await this.hasMetadataDirectories(workspacePath);
-        if (hasMetadata) {
-          return workspacePath;
-        }
-      } catch {
-        // Continue checking
-      }
-
-      // Search in subdirectories recursively (max depth 5)
       const found = await this.searchConfigurationRecursive(workspacePath, 0, 5);
       return found;
     } catch (error) {
       Logger.error('Error finding configuration root', error);
       return null;
     }
+  }
+
+  /**
+   * Find all configuration roots in the given workspace folder paths.
+   * Each folder is scanned (including recursive subdirs); same config path appears only once.
+   * @param workspacePaths Array of workspace folder paths
+   * @returns Pairs of config root path and the workspace folder it was found under
+   */
+  static async findAllConfigurationRoots(
+    workspacePaths: string[]
+  ): Promise<Array<{ configPath: string; workspaceFolderPath: string }>> {
+    const seen = new Set<string>();
+    const result: Array<{ configPath: string; workspaceFolderPath: string }> = [];
+    const normalize = (p: string) => path.normalize(p);
+
+    for (const workspacePath of workspacePaths) {
+      try {
+        if (await this.isConfigurationRoot(workspacePath)) {
+          const n = normalize(workspacePath);
+          if (!seen.has(n)) {
+            seen.add(n);
+            result.push({ configPath: workspacePath, workspaceFolderPath: workspacePath });
+          }
+        }
+        const inSubdirs = await this.searchAllConfigurationsRecursive(workspacePath, 0, 5);
+        for (const configPath of inSubdirs) {
+          const n = normalize(configPath);
+          if (!seen.has(n)) {
+            seen.add(n);
+            result.push({ configPath, workspaceFolderPath: workspacePath });
+          }
+        }
+      } catch (error) {
+        Logger.debug(`Error scanning workspace folder ${workspacePath}`, error);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Recursively collect all configuration root paths under dirPath (does not check dirPath itself).
+   */
+  private static async searchAllConfigurationsRecursive(
+    dirPath: string,
+    currentDepth: number,
+    maxDepth: number
+  ): Promise<string[]> {
+    if (currentDepth >= maxDepth) return [];
+    const found: string[] = [];
+    try {
+      const items = await fs.promises.readdir(dirPath);
+      for (const item of items) {
+        if (item === 'node_modules' || item === '.git' || item === '.vscode' || item === 'dist' || item === 'out') {
+          continue;
+        }
+        const itemPath = path.join(dirPath, item);
+        try {
+          const stat = await fs.promises.stat(itemPath);
+          if (!stat.isDirectory()) continue;
+          if (await this.isConfigurationRoot(itemPath)) {
+            found.push(itemPath);
+            Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
+          }
+          const sub = await this.searchAllConfigurationsRecursive(itemPath, currentDepth + 1, maxDepth);
+          found.push(...sub);
+        } catch (error) {
+          Logger.debug(`Error checking subdirectory ${itemPath}`, error);
+        }
+      }
+    } catch (error) {
+      Logger.debug(`Error reading directory ${dirPath}`, error);
+    }
+    return found;
   }
 
   /**

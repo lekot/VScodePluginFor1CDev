@@ -196,8 +196,27 @@ const TABULAR_SECTION_SECTIONS: PropertySection[] = [
   },
 ];
 
+const CONFIGURATION_SECTIONS: PropertySection[] = [
+  {
+    title: 'Основные',
+    propertyNames: ['Name', 'Synonym', 'Comment'],
+  },
+  {
+    title: 'Конфигурация',
+    propertyNames: [
+      'NamePrefix',
+      'ConfigurationExtensionCompatibilityMode',
+      'DefaultRunMode',
+      'ScriptVariant',
+      'Vendor',
+      'Version',
+    ],
+  },
+];
+
 /** Map MetadataType to optional list of sections; empty or missing = use default (one "Свойства" block) */
 const SECTIONS_BY_TYPE: Partial<Record<MetadataType, PropertySection[]>> = {
+  [MetadataType.Configuration]: CONFIGURATION_SECTIONS,
   [MetadataType.Catalog]: CATALOG_SECTIONS,
   [MetadataType.Document]: DOCUMENT_SECTIONS,
   [MetadataType.InformationRegister]: REGISTER_SECTIONS,

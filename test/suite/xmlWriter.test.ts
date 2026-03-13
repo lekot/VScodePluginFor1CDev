@@ -1,6 +1,7 @@
 import * as assert from 'assert';
-import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 
 suite('XMLWriter', () => {
@@ -300,6 +301,46 @@ suite('XMLWriter', () => {
 
       assert.ok('Vendor' in properties);
       assert.strictEqual(properties.Vendor, 'Test Vendor');
+    });
+  });
+
+  suite('createMinimalElementFile', () => {
+    let tmpDir: string;
+
+    setup(async () => {
+      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-xml-'));
+    });
+
+    teardown(async () => {
+      try {
+        if (tmpDir && fs.existsSync(tmpDir)) {
+          await fs.promises.rm(tmpDir, { recursive: true });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    test('creates Catalog with default properties', async () => {
+      const catalogPath = path.join(tmpDir, 'TestCatalog.xml');
+      await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'TestCatalog');
+      assert.ok(fs.existsSync(catalogPath));
+      const properties = await XMLWriter.readProperties(catalogPath);
+      assert.strictEqual(properties.Name, 'TestCatalog');
+      assert.strictEqual(properties.Hierarchical, false);
+      assert.strictEqual(Number(properties.CodeLength), 9);
+      assert.strictEqual(Number(properties.DescriptionLength), 25);
+      assert.strictEqual(properties.CodeType, 'String');
+    });
+
+    test('creates Document with default properties', async () => {
+      const docPath = path.join(tmpDir, 'TestDocument.xml');
+      await XMLWriter.createMinimalElementFile(docPath, 'Document', 'TestDocument');
+      assert.ok(fs.existsSync(docPath));
+      const properties = await XMLWriter.readProperties(docPath);
+      assert.strictEqual(properties.Name, 'TestDocument');
+      assert.strictEqual(properties.NumberType, 'String');
+      assert.strictEqual(Number(properties.NumberLength), 9);
     });
   });
 });

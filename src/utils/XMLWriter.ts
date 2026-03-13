@@ -1,6 +1,10 @@
 import * as fs from 'fs';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { Logger } from './logger';
+import {
+  getDefaultPropertiesForRootTag,
+  getDefaultPropertiesForNestedElement,
+} from '../constants/metadataDefaultValues';
 
 /**
  * XML Writer options for preserving formatting and structure
@@ -240,6 +244,8 @@ export class XMLWriter {
     elementName: string
   ): Promise<void> {
     const uuid = this.generateSimpleUuid();
+    const defaultProps = getDefaultPropertiesForRootTag(rootTag);
+    const defaultPropsLines = this.formatDefaultPropertiesAsXml(defaultProps);
     const content = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 \t<${rootTag} uuid="${uuid}">
@@ -252,13 +258,20 @@ export class XMLWriter {
 \t\t\t\t</v8:item>
 \t\t\t</Synonym>
 \t\t\t<Comment/>
-\t\t</Properties>
+${defaultPropsLines}\t\t</Properties>
 \t\t<ChildObjects/>
 \t</${rootTag}>
 </MetaDataObject>
 `;
     await fs.promises.writeFile(filePath, content, 'utf-8');
     Logger.info(`Created minimal ${rootTag} file ${filePath}`);
+  }
+
+  private static formatDefaultPropertiesAsXml(props: Record<string, unknown>): string {
+    if (Object.keys(props).length === 0) return '';
+    return Object.entries(props)
+      .map(([key, value]) => `\t\t\t<${key}>${this.escapeXml(String(value))}</${key}>`)
+      .join('\n') + '\n';
   }
 
   private static generateSimpleUuid(): string {
@@ -335,9 +348,15 @@ export class XMLWriter {
   private static buildMinimalNestedElement(
     elementType: string,
     elementName: string,
-    _minimalProperties: Record<string, unknown>
+    minimalProperties: Record<string, unknown>
   ): Record<string, unknown> {
     const uuid = this.generateSimpleUuid();
+    const defaults =
+      elementType === 'Attribute' || elementType === 'TabularSection'
+        ? getDefaultPropertiesForNestedElement(elementType as 'Attribute' | 'TabularSection')
+        : {};
+    const merged = { ...defaults, ...minimalProperties, Name: elementName };
+
     const properties: unknown[] = [
       { Name: [{ '#text': elementName }] },
       {
@@ -350,15 +369,29 @@ export class XMLWriter {
           },
         ],
       },
-      {
+    ];
+
+    if (elementType === 'Attribute') {
+      properties.push({
         Type: [
           {
             'v8:Type': [{ '#text': 'xs:string' }],
-            'v8:StringQualifiers': [{ Length: [{ '#text': '50' }] }, { AllowedLength: [{ '#text': 'Variable' }] }],
+            'v8:StringQualifiers': [
+              { Length: [{ '#text': '50' }] },
+              { AllowedLength: [{ '#text': 'Variable' }] },
+            ],
           },
         ],
-      },
-    ];
+      });
+    }
+
+    for (const [key, value] of Object.entries(merged)) {
+      if (key === 'Name' || key === 'Synonym' || key === 'Type') continue;
+      if (value !== undefined && value !== null) {
+        properties.push({ [key]: [{ '#text': String(value) }] });
+      }
+    }
+
     return {
       [elementType]: [{ '@_uuid': uuid }, { Properties: properties }],
     };
@@ -581,6 +614,16 @@ export class XMLWriter {
     if (obj.Properties && typeof obj.Properties === 'object') {
       const flattened = this.flattenProperties(obj.Properties as Record<string, unknown>);
       return this.convertStringBooleans(this.postProcessProperties(flattened));
+    }
+
+    // Recurse into nested structure (e.g. MetaDataObject → Configuration → Properties)
+    for (const [k, value] of Object.entries(obj)) {
+      if (value === null || value === undefined) continue;
+      if (k === ':@' || (typeof k === 'string' && k.startsWith('?'))) continue;
+      const nested = this.extractProperties(value);
+      if (Object.keys(nested).length > 0) {
+        return nested;
+      }
     }
 
     return properties;

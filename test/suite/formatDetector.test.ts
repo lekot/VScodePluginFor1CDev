@@ -45,4 +45,29 @@ suite('FormatDetector', () => {
 
     assert.strictEqual(configRoot, null);
   });
+
+  test('findAllConfigurationRoots returns all configs in workspace folders', async () => {
+    const fixturesPath = path.join(__dirname, '../fixtures');
+    const result = await FormatDetector.findAllConfigurationRoots([fixturesPath]);
+
+    assert.ok(Array.isArray(result));
+    assert.ok(result.length >= 1, 'at least designer-config');
+    const designerEntry = result.find((r) => r.configPath.includes('designer-config'));
+    assert.ok(designerEntry);
+    assert.strictEqual(designerEntry.workspaceFolderPath, fixturesPath);
+  });
+
+  test('findAllConfigurationRoots deduplicates same config path', async () => {
+    const fixturesPath = path.join(__dirname, '../fixtures');
+    const result = await FormatDetector.findAllConfigurationRoots([fixturesPath, fixturesPath]);
+
+    const configPaths = result.map((r) => r.configPath);
+    const unique = new Set(configPaths);
+    assert.strictEqual(unique.size, result.length, 'no duplicate config paths');
+  });
+
+  test('findAllConfigurationRoots returns empty for empty input', async () => {
+    const result = await FormatDetector.findAllConfigurationRoots([]);
+    assert.deepStrictEqual(result, []);
+  });
 });

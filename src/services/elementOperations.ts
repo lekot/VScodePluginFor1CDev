@@ -101,6 +101,50 @@ export async function createElement(
   throw new Error('Создание элемента: выберите узел типа (Справочники, Документы и т.д.) или объект метаданных.');
 }
 
+/** Minimal Ext/Form.xml content for a new form (Designer). */
+const MINIMAL_EXT_FORM_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+\t<Events/>
+\t<ChildItems/>
+\t<Attributes/>
+\t<Commands/>
+</Form>
+`;
+
+/**
+ * Create a new form under the Forms node (Designer only). Creates form directory,
+ * FormName.xml (metadata), Ext/Form.xml (minimal structure), Ext/Form/Module.bsl (empty).
+ */
+export async function createForm(parentNode: TreeNode, formName: string): Promise<void> {
+  const name = formName.trim();
+  const err = validateElementName(name, getSiblingNames(parentNode));
+  if (err) {
+    throw new Error(err);
+  }
+  if (parentNode.id !== 'Forms') {
+    throw new Error('Создание формы: выберите узел «Forms» в дереве метаданных.');
+  }
+  const formsPath = parentNode.filePath;
+  if (!formsPath || !fs.existsSync(formsPath) || !fs.statSync(formsPath).isDirectory()) {
+    throw new Error(`Папка форм не найдена: ${formsPath}`);
+  }
+  const formDir = path.join(formsPath, name);
+  const formMetaPath = path.join(formDir, `${name}.xml`);
+  if (fs.existsSync(formDir)) {
+    throw new Error(`Форма с именем «${name}» уже существует.`);
+  }
+  await fs.promises.mkdir(formDir, { recursive: true });
+  await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name);
+  const extDir = path.join(formDir, 'Ext');
+  const formXmlPath = path.join(extDir, 'Form.xml');
+  const formModuleDir = path.join(extDir, 'Form');
+  const modulePath = path.join(formModuleDir, 'Module.bsl');
+  await fs.promises.mkdir(formModuleDir, { recursive: true });
+  await fs.promises.writeFile(formXmlPath, MINIMAL_EXT_FORM_XML, 'utf-8');
+  await fs.promises.writeFile(modulePath, '', 'utf-8');
+  Logger.info(`Created form: ${formMetaPath}`);
+}
+
 /**
  * Duplicate an element with a new name. Copies structure from XML.
  */

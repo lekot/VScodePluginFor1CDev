@@ -17,6 +17,14 @@ export const PropertyLabels: Record<string, string> = {
   'Synonym': 'Синоним',
   'Comment': 'Комментарий',
   'type': 'Тип',
+
+  // Configuration properties
+  'NamePrefix': 'Префикс имени',
+  'ConfigurationExtensionCompatibilityMode': 'Режим совместимости расширения конфигурации',
+  'DefaultRunMode': 'Режим запуска по умолчанию',
+  'ScriptVariant': 'Вариант языка',
+  'Vendor': 'Поставщик',
+  'Version': 'Версия',
   
   // Attribute properties
   'PasswordMode': 'Режим пароля',

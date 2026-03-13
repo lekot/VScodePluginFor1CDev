@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "1C Metadata Tree",
   "description": "VS Code extension for visualizing 1C configuration metadata tree",
-  "version": "0.7.6",
+  "version": "0.7.8",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -108,6 +108,11 @@
         "command": "1c-metadata-tree.openFormEditor",
         "title": "Открыть в редакторе форм",
         "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.createForm",
+        "title": "Создать форму",
+        "category": "1C Metadata"
       }
     ],
     "customEditors": [
@@ -151,8 +156,18 @@
           "group": "navigation"
         },
         {
+          "command": "1c-metadata-tree.openFormEditor",
+          "when": "view == 1c-metadata-tree && viewItem == 'Form'",
+          "group": "navigation"
+        },
+        {
           "command": "1c-metadata-tree.createElement",
           "when": "view == 1c-metadata-tree",
+          "group": "1_modify"
+        },
+        {
+          "command": "1c-metadata-tree.createForm",
+          "when": "view == 1c-metadata-tree && viewItem == 'Forms'",
           "group": "1_modify"
         },
         {
@@ -174,11 +189,6 @@
           "command": "1c-metadata-tree.copyPathOrName",
           "when": "view == 1c-metadata-tree",
           "group": "3_copy"
-        },
-        {
-          "command": "1c-metadata-tree.openFormEditor",
-          "when": "view == 1c-metadata-tree && viewItem == 'Form'",
-          "group": "navigation"
         }
       ]
     },
@@ -200,7 +210,8 @@
       {
         "command": "1c-metadata-tree.openPanel",
         "key": "ctrl+shift+m",
-        "mac": "cmd+shift+m"
+        "mac": "cmd+shift+m",
+        "when": "view == 1c-metadata-tree"
       },
       {
         "command": "1c-metadata-tree.copyPathOrName",

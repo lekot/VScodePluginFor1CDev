@@ -174,30 +174,11 @@ export class TypeEditorProvider {
         <meta charset="UTF-8">
         <title>Редактирование типа данных</title>
         <style>
-          :root {
-            --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif;
-            --vscode-font-size: 13px;
-            --vscode-editor-background: #1e1e1e;
-            --vscode-editor-foreground: #d4d4d4;
-            --vscode-button-background: #0e639c;
-            --vscode-button-foreground: #ffffff;
-            --vscode-button-hoverBackground: #1177bb;
-            --vscode-button-secondaryBackground: #3e3e3e;
-            --vscode-button-secondaryForeground: #ffffff;
-            --vscode-button-secondaryHoverBackground: #4e4e4e;
-            --vscode-input-background: #3c3c3c;
-            --vscode-input-foreground: #cccccc;
-            --vscode-input-border: #cccccc;
-            --vscode-list-hoverBackground: #2a2d2e;
-            --vscode-focusBorder: #007fd4;
-            --vscode-errorForeground: #f48771;
-            --vscode-descriptionForeground: #cccccc;
-          }
           * { box-sizing: border-box; }
           body {
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
-            color: var(--vscode-editor-foreground);
+            color: var(--vscode-foreground);
             background-color: var(--vscode-editor-background);
             margin: 0;
             padding: 16px;
@@ -259,16 +240,28 @@ export class TypeEditorProvider {
             margin-bottom: 12px;
           }
           .qualifier-section.empty { color: var(--vscode-descriptionForeground); }
+          .empty-state {
+            text-align: center;
+            padding: 16px;
+            color: var(--vscode-descriptionForeground);
+          }
+          .empty-state h3, .empty-state h4 { margin: 0 0 8px 0; }
+          .empty-state p { margin: 0; }
           .form-group { margin-bottom: 10px; }
           .form-group label { display: block; font-size: 12px; margin-bottom: 4px; color: var(--vscode-descriptionForeground); }
           .form-group input, .form-group select {
             width: 100%;
             padding: 6px 8px;
-            background-color: var(--vscode-editor-background);
+            background-color: var(--vscode-input-background);
             color: var(--vscode-input-foreground);
             border: 1px solid var(--vscode-input-border);
             border-radius: 3px;
-            font-size: 13px;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+          }
+          .form-group input:focus, .form-group select:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
           }
           .form-row { display: flex; gap: 12px; }
           .form-row .form-group { flex: 1; }
@@ -343,8 +336,8 @@ export class TypeEditorProvider {
             <div class="preview-section"><div id="preview-value" class="preview-value">${this.escapeHtml(currentTypeDisplay)}</div></div>
           </div>
           <div class="button-row">
-            <button type="button" id="cancel-btn">Отмена</button>
-            <button type="button" id="save-btn" ${typeDefinition.types.length === 0 ? 'disabled' : ''}>Сохранить</button>
+            <button type="button" id="cancel-btn" title="Отмена" aria-label="Отмена">Отмена</button>
+            <button type="button" id="save-btn" ${typeDefinition.types.length === 0 ? 'disabled' : ''} title="Сохранить" aria-label="Сохранить">Сохранить</button>
           </div>
         </div>
         <script>

@@ -5,6 +5,12 @@ import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { convertStringBooleans } from '../utils/xmlPropertyUtils';
+import {
+  findChildObjects,
+  extractAttributes,
+  extractTabularSections,
+  flattenAttributeProperties,
+} from './xmlChildObjects';
 
 /**
  * Parser for 1C Designer format metadata
@@ -42,6 +48,17 @@ export class DesignerParser {
   }
 
   /**
+   * Resolve path to configuration properties file (Configuration.xml or ConfigDumpInfo.xml).
+   */
+  private static getConfigurationXmlPath(configPath: string): string {
+    const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
+    if (fs.existsSync(configDumpPath)) {
+      return configDumpPath;
+    }
+    return path.join(configPath, 'Configuration.xml');
+  }
+
+  /**
    * Build tree from configuration metadata
    * @param configPath Path to configuration root
    * @returns Root tree node
@@ -55,7 +72,7 @@ export class DesignerParser {
       type: MetadataType.Configuration,
       properties: {},
       children: [],
-      filePath: configPath,
+      filePath: this.getConfigurationXmlPath(configPath),
     };
 
     // Parse metadata directories
@@ -97,7 +114,7 @@ export class DesignerParser {
       type: MetadataType.Configuration,
       properties: {},
       children: [],
-      filePath: configPath,
+      filePath: this.getConfigurationXmlPath(configPath),
     };
 
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();
@@ -161,6 +178,10 @@ export class DesignerParser {
       if (attributesNode && attributesNode.children && attributesNode.children.length > 0) {
         children.push(attributesNode);
       }
+      const tabularFromXml = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName);
+      if (tabularFromXml && tabularFromXml.children && tabularFromXml.children.length > 0) {
+        children.push(tabularFromXml);
+      }
     }
 
     try {
@@ -210,7 +231,17 @@ export class DesignerParser {
           const tabularPath = path.join(elementPath, item);
           const tabularNode = await this.parseTabularSections(tabularPath);
           if (tabularNode.children && tabularNode.children.length > 0) {
-            children.push(tabularNode);
+            const existingTabularId = children.find((c) => c.id === 'TabularSections');
+            if (!existingTabularId) {
+              children.push(tabularNode);
+            } else {
+              const existing = existingTabularId as TreeNode;
+              for (const ch of tabularNode.children ?? []) {
+                ch.parent = existing;
+                existing.children = existing.children ?? [];
+                existing.children.push(ch);
+              }
+            }
           }
         }
       }
@@ -344,6 +375,11 @@ export class DesignerParser {
         attributesNode.parent = elementNode;
         elementNode.children?.push(attributesNode);
       }
+      const tabularFromXml = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName);
+      if (tabularFromXml && tabularFromXml.children && tabularFromXml.children.length > 0) {
+        tabularFromXml.parent = elementNode;
+        elementNode.children?.push(tabularFromXml);
+      }
     }
 
     // Parse sub-elements (Ext, Forms, Attributes, etc.)
@@ -404,8 +440,17 @@ export class DesignerParser {
           const tabularPath = path.join(elementPath, item);
           const tabularNode = await this.parseTabularSections(tabularPath);
           if (tabularNode.children && tabularNode.children.length > 0) {
-            tabularNode.parent = elementNode;
-            elementNode.children?.push(tabularNode);
+            const existingTabular = elementNode.children?.find((c) => c.id === 'TabularSections');
+            if (!existingTabular) {
+              tabularNode.parent = elementNode;
+              elementNode.children?.push(tabularNode);
+            } else {
+              for (const ch of tabularNode.children ?? []) {
+                ch.parent = existingTabular;
+                existingTabular.children = existingTabular.children ?? [];
+                existingTabular.children.push(ch);
+              }
+            }
           }
         }
       }
@@ -709,14 +754,32 @@ export class DesignerParser {
             const stat = await fs.promises.stat(itemPath);
 
             if (stat.isDirectory()) {
-              // Parse tabular section XML to get properties
+              // Parse tabular section XML to get properties and child attributes
               const xmlPath = path.join(itemPath, `${item}.xml`);
               let properties: Record<string, unknown> = { name: item };
-              
+              const tsChildren: TreeNode[] = [];
+
               try {
                 await fs.promises.access(xmlPath);
                 const xmlContent = await XmlParser.parseFileAsync(xmlPath);
                 properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
+                const tsChildObjects = findChildObjects(xmlContent);
+                if (tsChildObjects) {
+                  const attrList = extractAttributes(tsChildObjects);
+                  for (const attr of attrList) {
+                    const a = attr as Record<string, unknown>;
+                    const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? (a as Record<string, unknown>).Name ?? 'Unknown';
+                    const attributeNode: TreeNode = {
+                      id: `TabularSections.${item}.${String(attrName)}`,
+                      name: String(attrName),
+                      type: MetadataType.Attribute,
+                      properties: flattenAttributeProperties(a),
+                      parentFilePath: xmlPath,
+                    };
+                    attributeNode.parent = undefined;
+                    tsChildren.push(attributeNode);
+                  }
+                }
               } catch {
                 // XML doesn't exist, use default properties
               }
@@ -726,8 +789,12 @@ export class DesignerParser {
                 name: item,
                 type: MetadataType.TabularSection,
                 properties,
+                children: tsChildren.length > 0 ? tsChildren : undefined,
                 filePath: xmlPath,
               };
+              for (const c of tsChildren) {
+                (c as TreeNode).parent = tsNode;
+              }
               tsNode.parent = tabularNode;
               return tsNode;
             }
@@ -777,12 +844,12 @@ export class DesignerParser {
 
     try {
       // Navigate through XML structure to find ChildObjects
-      const childObjects = this.findChildObjects(xmlContent);
+      const childObjects = findChildObjects(xmlContent);
       if (childObjects == null) {
         return attributesNode;
       }
 
-      const attributes = this.extractAttributes(childObjects);
+      const attributes = extractAttributes(childObjects);
       
       for (const attr of attributes) {
         const a = attr as Record<string, unknown>;
@@ -791,7 +858,7 @@ export class DesignerParser {
           id: `Attributes.${String(attrName)}`,
           name: String(attrName),
           type: MetadataType.Attribute,
-          properties: this.flattenAttributeProperties(a),
+          properties: flattenAttributeProperties(a),
           // Use parentFilePath instead of filePath to avoid collision
           parentFilePath: parentXmlPath,
         };
@@ -807,114 +874,69 @@ export class DesignerParser {
   }
 
   /**
-   * Find ChildObjects section in parsed XML
-   * @param xmlContent Parsed XML content
-   * @returns ChildObjects section or null
+   * Parse tabular sections and their attributes from object XML (single-file Designer format).
+   * @param xmlContent Parsed XML content of the object file
+   * @param xmlFilePath Path to the object XML file
+   * @param _elementName Name of the element (for logging)
+   * @returns Tree node for TabularSections container or null if none
    */
-  private static findChildObjects(xmlContent: Record<string, unknown>): unknown {
-    if (!xmlContent || typeof xmlContent !== 'object') {
-      return null;
-    }
+  private static async parseTabularSectionsFromXML(
+    xmlContent: Record<string, unknown>,
+    xmlFilePath: string,
+    _elementName: string
+  ): Promise<TreeNode | null> {
+    const childObjects = findChildObjects(xmlContent);
+    if (childObjects == null) return null;
 
-    // Search for ChildObjects in the XML structure
-    // The structure varies but typically: MetaDataObject -> Catalog/Document -> ChildObjects
-    
-    for (const [key, value] of Object.entries(xmlContent)) {
-      if (key === 'ChildObjects') {
-        return value;
+    const sectionList = extractTabularSections(childObjects);
+    if (sectionList.length === 0) return null;
+
+    const tabularNode: TreeNode = {
+      id: 'TabularSections',
+      name: 'Tabular Sections',
+      type: MetadataType.TabularSection,
+      properties: {},
+      children: [],
+      parentFilePath: xmlFilePath,
+    };
+
+    for (const section of sectionList) {
+      const ts = section as Record<string, unknown>;
+      const props = this.extractPropertiesFromElement({ TabularSection: ts });
+      const sectionName = String(props.Name ?? ts.Properties && (ts.Properties as Record<string, unknown>).Name ?? 'Unknown');
+      const tsChildObjects = ts.ChildObjects;
+      const attrList = tsChildObjects && typeof tsChildObjects === 'object'
+        ? extractAttributes(tsChildObjects as Record<string, unknown>)
+        : [];
+
+      const tsNode: TreeNode = {
+        id: `TabularSections.${sectionName}`,
+        name: sectionName,
+        type: MetadataType.TabularSection,
+        properties: { ...props },
+        children: [],
+        parentFilePath: xmlFilePath,
+      };
+
+      for (const attr of attrList) {
+        const a = attr as Record<string, unknown>;
+        const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? (a as Record<string, unknown>).Name ?? 'Unknown';
+        const attributeNode: TreeNode = {
+          id: `TabularSections.${sectionName}.${String(attrName)}`,
+          name: String(attrName),
+          type: MetadataType.Attribute,
+          properties: flattenAttributeProperties(a),
+          parentFilePath: xmlFilePath,
+        };
+        attributeNode.parent = tsNode;
+        tsNode.children?.push(attributeNode);
       }
-      
-      if (typeof value === 'object' && value !== null) {
-        const found = this.findChildObjects(value as Record<string, unknown>);
-        if (found) {
-          return found;
-        }
-      }
-    }
-    
-    return null;
-  }
 
-  /**
-   * Extract Attribute elements from ChildObjects
-   * @param childObjects ChildObjects section
-   * @returns Array of attribute objects
-   */
-  private static extractAttributes(childObjects: unknown): unknown[] {
-    const attributes: unknown[] = [];
-    if (!childObjects || typeof childObjects !== 'object') {
-      return attributes;
-    }
-    const obj = childObjects as Record<string, unknown>;
-    if (obj.Attribute) {
-      const attrData = obj.Attribute;
-      if (Array.isArray(attrData)) {
-        attributes.push(...attrData);
-      } else {
-        attributes.push(attrData);
-      }
-    }
-    
-    return attributes;
-  }
-
-  /**
-   * Flatten attribute properties from XML structure
-   * @param attr Attribute object from XML
-   * @returns Flattened properties
-   */
-  private static flattenAttributeProperties(attr: Record<string, unknown>): Record<string, unknown> {
-    const properties: Record<string, unknown> = {};
-    
-    if (!attr || typeof attr !== 'object') {
-      return properties;
+      tsNode.parent = tabularNode;
+      tabularNode.children?.push(tsNode);
     }
 
-    // Extract uuid if present
-    if (attr.uuid) {
-      properties.uuid = attr.uuid;
-    }
-
-    // Extract Properties section
-    if (attr.Properties && typeof attr.Properties === 'object') {
-      const props = attr.Properties;
-      
-      for (const [key, value] of Object.entries(props)) {
-        // Skip XML metadata keys
-        if (key.startsWith('@_') || key.startsWith('#')) {
-          continue;
-        }
-        
-        // Extract simple values
-        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-          properties[key] = value;
-        } else if (value && typeof value === 'object') {
-          // Handle complex types (like Synonym with v8:item)
-          const obj = value as Record<string, unknown>;
-          
-          // Check for v8:item structure (localized strings)
-          if (obj['v8:item']) {
-            const items = obj['v8:item'];
-            if (Array.isArray(items) && items.length > 0) {
-              const firstItem = items[0];
-              if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
-                properties[key] = (firstItem as Record<string, unknown>)['v8:content'];
-              }
-            }
-          } else if ('v8:Type' in obj) {
-            // Store raw type object so the type editor can open (serialize to XML).
-            // Properties panel formats for display via TypeParser.parseFromObject + TypeFormatter.
-            properties[key] = obj;
-          } else {
-            // For other complex types, store as-is or extract text
-            properties[key] = value;
-          }
-        }
-      }
-    }
-    
-    // Convert string "false"/"true" values to boolean primitives
-    return convertStringBooleans(properties);
+    return tabularNode;
   }
 
   /**
