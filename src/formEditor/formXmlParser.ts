@@ -98,8 +98,12 @@ function parseEventsContent(content: unknown[] | undefined): FormEventItem[] {
     for (const ev of evContent) {
       if (!ev || typeof ev !== 'object') continue;
       const e = ev as Record<string, unknown>;
-      if ('@_name' in e) name = e['@_name'] as string;
-      if ('#text' in e) method = String(e['#text'] ?? '');
+      const at = e[':@'];
+      if (at && typeof at === 'object' && !Array.isArray(at)) {
+        const atObj = at as Record<string, unknown>;
+        if (typeof atObj['@_name'] === 'string') name = atObj['@_name'];
+      }
+      if ('#text' in e && e['#text'] != null) method = String(e['#text']).trim();
     }
     if (name) out.push({ name, method });
   }

@@ -117,6 +117,14 @@ function applyPropertyChange(
     if (cmd) cmd.properties[payload.key] = payload.value;
     return;
   }
+  if (payload.section === 'events' && payload.elementId) {
+    const el = findElementById(model.childItemsRoot, payload.elementId);
+    if (el && payload.key) {
+      if (!el.events) el.events = {};
+      el.events[payload.key] = String(payload.value ?? '');
+    }
+    return;
+  }
   if (payload.elementId) {
     const el = findElementById(model.childItemsRoot, payload.elementId);
     if (el) {
@@ -157,7 +165,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       await this.handleLoad(document, webviewPanel);
     } else if (msg.type === 'propertyChange') {
       const model = this.documentModel.get(document.uri.toString());
-      if (model && msg.section !== undefined && msg.key !== undefined) {
+      if (model && msg.key !== undefined) {
         applyPropertyChange(model, {
           elementId: msg.elementId as string | undefined,
           section: msg.section as string | undefined,
@@ -361,10 +369,16 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       background: var(--vscode-editor-background);
       height: 100vh;
       display: flex;
-      flex-direction: row;
+      flex-direction: column;
       overflow: hidden;
       --tree-width: 280px;
       --preview-height: 200px;
+    }
+    .top-row {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: row;
     }
     .zone-tree {
       width: var(--tree-width);
@@ -382,16 +396,10 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       background: var(--vscode-panel-border);
     }
     .splitter-v:hover { background: var(--vscode-focusBorder); }
-    .right-col {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
     .zone-props {
       flex: 1;
+      min-width: 0;
       min-height: 80px;
-      border-bottom: 1px solid var(--vscode-panel-border);
       overflow: auto;
       padding: 8px;
     }
@@ -402,12 +410,16 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       background: var(--vscode-panel-border);
     }
     .splitter-h:hover { background: var(--vscode-focusBorder); }
+    /* Preview row: full width of editor, no tree/props in bottom part (§0.1) */
     .zone-preview {
       height: var(--preview-height);
       min-height: 60px;
+      width: 100%;
+      max-width: 100%;
       overflow: auto;
       padding: 8px;
       flex-shrink: 0;
+      align-self: stretch;
     }
     .zone-tree h3, .zone-props h3, .zone-preview h3 {
       margin: 0 0 8px 0;
@@ -428,6 +440,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .tree-node.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
     .tree-node.drop-target { outline: 2px solid var(--vscode-focusBorder); }
     .tree-children { margin-left: 12px; }
+    .tree-table-columns { display: flex; flex-direction: row; flex-wrap: wrap; gap: 6px; margin-left: 12px; }
     .placeholder { color: var(--vscode-descriptionForeground); font-style: italic; }
     .preview-placeholder { color: var(--vscode-descriptionForeground); font-style: italic; padding: 8px 0; }
     .preview-item { padding: 4px 8px; margin: 2px 0; cursor: pointer; border-radius: 2px; border: 1px solid var(--vscode-panel-border); }
@@ -437,6 +450,16 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .preview-container { background: var(--vscode-editor-inactiveSelectionBackground); min-height: 20px; }
     .preview-control { background: var(--vscode-input-background); }
     .preview-children { margin-left: 12px; }
+    .preview-control-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-height: 22px; }
+    .preview-input { flex: 1; min-width: 80px; padding: 2px 6px; font-size: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 2px; }
+    .preview-button { padding: 4px 12px; font-size: inherit; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 3px; cursor: default; }
+    .preview-label { color: var(--vscode-foreground); }
+    .preview-table { padding: 6px; border: 1px solid var(--vscode-panel-border); border-radius: 2px; font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+    .preview-table-columns { display: flex; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+    .preview-table-cols-row { display: flex; flex-direction: row; flex-wrap: wrap; gap: 4px; }
+    .preview-table-col { min-width: 60px; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 2px; font-size: 0.85em; }
+    .preview-page-caption, .preview-group-caption { font-weight: 600; font-size: 0.9em; margin-bottom: 4px; color: var(--vscode-foreground); }
+    .preview-fallback { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
     .empty-state { text-align: center; padding: 16px; color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 8px 0; font-size: 1em; }
     .empty-state p { margin: 0; font-size: 0.9em; }
@@ -469,6 +492,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       outline: 1px solid var(--vscode-focusBorder);
       outline-offset: -1px;
     }
+    .prop-row input.event-method-input { width: 140px; }
     #btn-cancel, #btn-save {
       padding: 6px 14px;
       border: none;
@@ -512,17 +536,17 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
   </style>
 </head>
 <body>
-  <div class="zone-tree">
-    <h3>Элементы формы</h3>
-    <div id="tree-root"></div>
-    <div id="tree-empty" class="empty-state" style="display:none;">
-      <h4 id="tree-empty-title"></h4>
-      <p id="tree-empty-hint"></p>
+  <div class="top-row">
+    <div class="zone-tree">
+      <h3>Элементы формы</h3>
+      <div id="tree-root"></div>
+      <div id="tree-empty" class="empty-state" style="display:none;">
+        <h4 id="tree-empty-title"></h4>
+        <p id="tree-empty-hint"></p>
+      </div>
+      <div id="tree-error" class="error" style="display:none;"></div>
     </div>
-    <div id="tree-error" class="error" style="display:none;"></div>
-  </div>
-  <div class="splitter-v" id="splitter-v" title="Изменить ширину панели"></div>
-  <div class="right-col">
+    <div class="splitter-v" id="splitter-v" title="Изменить ширину панели"></div>
     <div class="zone-props">
       <h3>Свойства</h3>
       <div id="props-header" class="props-selection-header"></div>
@@ -534,8 +558,9 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         <span id="save-status" style="margin-left:8px;"></span>
       </div>
     </div>
-    <div class="splitter-h" id="splitter-h" title="Изменить высоту превью"></div>
-    <div class="zone-preview">
+  </div>
+  <div class="splitter-h" id="splitter-h" title="Изменить высоту превью"></div>
+  <div class="zone-preview">
     <h3>Превью</h3>
     <div class="tabs">
       <button type="button" data-tab="form" title="Форма">Форма</button>
@@ -545,7 +570,6 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     <div id="preview-module" style="display:none;">
       <button type="button" id="btn-open-module" title="Модуль формы">Модуль формы</button>
       <p class="placeholder">Открывает Ext/Form/Module.bsl в редакторе</p>
-    </div>
     </div>
   </div>
   <script>
@@ -612,6 +636,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     }
     var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
+    function isRealElement(it) { var t = it.tag; return t && t !== ':@' && !String(t).startsWith('@'); }
     function isDescendantOfItem(items, sourceId, targetId) {
       if (sourceId === targetId) return true;
       for (var i = 0; i < items.length; i++) {
@@ -623,11 +648,13 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       }
       return false;
     }
-    function renderTree(items, parentEl) {
+    function renderTree(items, parentEl, parentItem) {
       if (!items || !items.length) return;
+      var list = (parentItem && parentItem.tag === 'Table') ? items.filter(function(it) { return isRealElement(it); }) : items;
+      if (!list.length) return;
       const ul = document.createElement('div');
-      ul.className = 'tree-children';
-      items.forEach(item => {
+      ul.className = 'tree-children' + (parentItem && parentItem.tag === 'Table' ? ' tree-table-columns' : '');
+      list.forEach(item => {
         const div = document.createElement('div');
         div.className = 'tree-node';
         div.draggable = true;
@@ -654,19 +681,74 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           if (formModel && formModel.childItemsRoot && isDescendantOfItem(formModel.childItemsRoot, srcId, div.dataset.id)) return;
           vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: div.dataset.id, index: 0 });
         };
-        div.addEventListener('click', () => {
+        div._formItem = item;
+        div.addEventListener('click', (e) => {
+          e.stopPropagation();
           document.querySelectorAll('.tree-node.selected').forEach(n => n.classList.remove('selected'));
           div.classList.add('selected');
-          const el = findElement(formModel, div.dataset.id);
-          renderProps(el);
+          renderProps(item);
           vscode.postMessage({ type: 'selectElement', elementId: div.dataset.id });
         });
         ul.appendChild(div);
-        if (item.childItems && item.childItems.length) renderTree(item.childItems, div);
+        if (item.childItems && item.childItems.length) renderTree(item.childItems, div, item);
       });
       parentEl.appendChild(ul);
     }
 
+    function createPreviewControl(item, tag) {
+      var label = (item.name || tag) + '';
+      var wrap = document.createElement('div');
+      wrap.className = 'preview-control-wrap';
+      if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'FormattedDocumentField' || tag === 'ValueList') {
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.placeholder = label;
+        inp.readOnly = true;
+        inp.className = 'preview-input';
+        wrap.appendChild(inp);
+      } else if (tag === 'CheckBoxField') {
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.disabled = true;
+        var lbl = document.createElement('label');
+        lbl.textContent = label;
+        lbl.style.marginLeft = '6px';
+        wrap.appendChild(cb);
+        wrap.appendChild(lbl);
+      } else if (tag === 'Button' || tag === 'Hyperlink') {
+        var btn = document.createElement(tag === 'Hyperlink' ? 'a' : 'button');
+        btn.textContent = label;
+        btn.disabled = true;
+        btn.className = 'preview-button';
+        wrap.appendChild(btn);
+      } else if (tag === 'LabelField') {
+        var lab = document.createElement('span');
+        lab.textContent = label;
+        lab.className = 'preview-label';
+        wrap.appendChild(lab);
+      } else if (tag === 'Table') {
+        var tbl = document.createElement('div');
+        tbl.className = 'preview-table';
+        tbl.textContent = label + ' (таблица)';
+        wrap.appendChild(tbl);
+      } else if (tag === 'Page' || tag === 'Pages') {
+        var cap = document.createElement('div');
+        cap.className = 'preview-page-caption';
+        cap.textContent = label;
+        wrap.appendChild(cap);
+      } else if (isContainerTag(tag)) {
+        var cap2 = document.createElement('div');
+        cap2.className = 'preview-group-caption';
+        cap2.textContent = label;
+        wrap.appendChild(cap2);
+      } else {
+        var fall = document.createElement('span');
+        fall.className = 'preview-fallback';
+        fall.textContent = label + ' (' + tag + ')';
+        wrap.appendChild(fall);
+      }
+      return wrap;
+    }
     function renderPreview(items, parentEl) {
       parentEl.innerHTML = '';
       parentEl.classList.remove('preview-placeholder');
@@ -682,7 +764,8 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         div.className = 'preview-item ' + (isContainer ? 'preview-container' : 'preview-control');
         div.dataset.id = id;
         div.dataset.tag = tag;
-        div.textContent = (item.name || tag) + ' (' + tag + ')';
+        var controlWrap = createPreviewControl(item, tag);
+        div.appendChild(controlWrap);
         div.draggable = true;
         div.ondragstart = function(e) { e.dataTransfer.setData('text/plain', id); e.dataTransfer.effectAllowed = 'move'; };
         div.ondragover = function(e) {
@@ -712,24 +795,55 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           }
           vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: id, index: idx, source: 'preview' });
         };
-        div.addEventListener('click', function() {
+        div._formItem = item;
+        div.addEventListener('click', function(e) {
+          e.stopPropagation();
           document.querySelectorAll('.preview-item.selected').forEach(function(n) { n.classList.remove('selected'); });
           document.querySelectorAll('.tree-node.selected').forEach(function(n) { n.classList.remove('selected'); });
           div.classList.add('selected');
-          var treeNodes = document.querySelectorAll('.tree-node');
-          for (var i = 0; i < treeNodes.length; i++) {
-            if (treeNodes[i].dataset.id === id) { treeNodes[i].classList.add('selected'); break; }
-          }
-          var el = findElement(formModel, id);
-          renderProps(el);
+          document.querySelectorAll('.tree-node').forEach(function(n) {
+            n.classList.toggle('selected', n._formItem === item);
+          });
+          renderProps(item);
           vscode.postMessage({ type: 'selectElement', elementId: id });
         });
         if (isContainer && item.childItems && item.childItems.length) {
           var childWrap = document.createElement('div');
-          childWrap.className = 'preview-children';
+          childWrap.className = 'preview-children' + (tag === 'Table' ? ' preview-table-columns' : '');
           parentEl.appendChild(div);
           div.appendChild(childWrap);
-          renderPreview(item.childItems, childWrap);
+          if (tag === 'Table') {
+            var tblRow = document.createElement('div');
+            tblRow.className = 'preview-table-cols-row';
+            var tableCols = item.childItems.filter(function(it) { return isRealElement(it); });
+            tableCols.forEach(function(colItem) {
+              var colDiv = document.createElement('div');
+              colDiv.className = 'preview-item preview-control preview-table-col';
+              colDiv.dataset.id = colItem.id || colItem.name || '';
+              colDiv.dataset.tag = colItem.tag || '';
+              colDiv._formItem = colItem;
+              var colLabel = document.createElement('span');
+              colLabel.className = 'preview-fallback';
+              colLabel.textContent = (colItem.name || colItem.tag) + (colItem.tag ? ' (' + colItem.tag + ')' : '');
+              colDiv.appendChild(colLabel);
+              colDiv.draggable = false;
+              colDiv.addEventListener('click', function(ev) {
+                ev.stopPropagation();
+                document.querySelectorAll('.preview-item.selected').forEach(function(n) { n.classList.remove('selected'); });
+                document.querySelectorAll('.tree-node.selected').forEach(function(n) { n.classList.remove('selected'); });
+                colDiv.classList.add('selected');
+                document.querySelectorAll('.tree-node').forEach(function(n) {
+                  n.classList.toggle('selected', n._formItem === colItem);
+                });
+                renderProps(colItem);
+                vscode.postMessage({ type: 'selectElement', elementId: colDiv.dataset.id });
+              });
+              tblRow.appendChild(colDiv);
+            });
+            childWrap.appendChild(tblRow);
+          } else {
+            renderPreview(item.childItems, childWrap);
+          }
         } else {
           parentEl.appendChild(div);
         }
@@ -753,30 +867,41 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
 
     function extractDisplayValue(v) {
       if (v == null) return '';
-      if (typeof v === 'string') return v;
+      if (typeof v === 'string') return v.trim();
       if (Array.isArray(v)) {
         if (v.length === 0) return '';
         return extractDisplayValue(v[0]);
       }
       if (typeof v === 'object') {
-        if (v['#text'] !== undefined && v['#text'] !== null) return String(v['#text']).trim();
         var keys = Object.keys(v);
+        if (v['#text'] !== undefined && v['#text'] !== null) return String(v['#text']).trim();
         for (var i = 0; i < keys.length; i++) {
           var key = keys[i];
+          if (key === ':@' || key.startsWith('@')) continue;
           var local = key.indexOf(':') >= 0 ? key.split(':').pop() : key;
           if (local === 'content') {
             var c = v[key];
+            if (typeof c === 'string') return c.trim();
             if (Array.isArray(c) && c.length) return extractDisplayValue(c[0]);
             if (c && typeof c === 'object' && c['#text'] !== undefined) return String(c['#text']).trim();
-            return extractDisplayValue(c);
+            var inner = extractDisplayValue(c);
+            if (inner !== '') return inner;
           }
         }
         for (var j = 0; j < keys.length; j++) {
           var key2 = keys[j];
+          if (key2 === ':@' || key2.startsWith('@')) continue;
           var local2 = key2.indexOf(':') >= 0 ? key2.split(':').pop() : key2;
           if (local2 === 'item') {
-            return extractDisplayValue(v[key2]);
+            var itemVal = v[key2];
+            var fromItem = extractDisplayValue(Array.isArray(itemVal) ? itemVal[0] : itemVal);
+            if (fromItem !== '') return fromItem;
           }
+        }
+        var atObj = v[':@'];
+        if (atObj && typeof atObj === 'object' && !Array.isArray(atObj)) {
+          var name = atObj['@_name'];
+          if (typeof name === 'string' && name.trim() !== '') return name.trim();
         }
         for (var n = 0; n < keys.length; n++) {
           if (keys[n] === ':@' || keys[n].startsWith('@')) continue;
@@ -815,22 +940,29 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       if (el.events && typeof el.events === 'object' && Object.keys(el.events).length) {
         html += '<div class="prop-row" style="margin-top:8px;"><strong>События</strong></div>';
         for (const [evName, methodName] of Object.entries(el.events)) {
-          html += '<div class="prop-row">' + esc(evName) + ' → ' + esc(methodName || '') + ' <button type="button" class="btn-goto-proc" data-proc="' + esc(methodName || '') + '">Перейти</button></div>';
+          html += '<div class="prop-row"><label>' + esc(evName) + '</label> <input class="event-method-input" data-event="' + esc(evName) + '" value="' + esc(methodName || '') + '" placeholder="Имя процедуры"> <button type="button" class="btn-goto-proc" data-proc="' + esc(methodName || '') + '">Перейти</button></div>';
         }
       }
       content.innerHTML = html;
       content.style.display = 'block';
       content.querySelectorAll('input').forEach(inp => {
         inp.addEventListener('change', () => {
+          var elementId = el.id || el.name;
+          if (inp.classList.contains('event-method-input') && inp.dataset.event) {
+            vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'events', key: inp.dataset.event, value: inp.value });
+            return;
+          }
           const key = inp.dataset.key || inp.id ? inp.id.replace('prop-', '') : null;
-          if (key) vscode.postMessage({ type: 'propertyChange', elementId: el.id || el.name, key, value: inp.value });
-          if (inp.id === 'prop-name') vscode.postMessage({ type: 'propertyChange', elementId: el.id || el.name, key: 'name', value: inp.value });
-          if (inp.id === 'prop-id') vscode.postMessage({ type: 'propertyChange', elementId: el.id || el.name, key: 'id', value: inp.value });
+          if (key) vscode.postMessage({ type: 'propertyChange', elementId: elementId, key, value: inp.value });
+          if (inp.id === 'prop-name') vscode.postMessage({ type: 'propertyChange', elementId: elementId, key: 'name', value: inp.value });
+          if (inp.id === 'prop-id') vscode.postMessage({ type: 'propertyChange', elementId: elementId, key: 'id', value: inp.value });
         });
       });
       content.querySelectorAll('.btn-goto-proc').forEach(btn => {
         btn.addEventListener('click', function() {
-          var proc = this.dataset.proc;
+          var row = this.closest('.prop-row');
+          var input = row ? row.querySelector('.event-method-input') : null;
+          var proc = (input && input.value && input.value.trim()) ? input.value.trim() : (this.dataset.proc || '');
           if (proc) vscode.postMessage({ type: 'openModule', procedureName: proc });
         });
       });
