@@ -511,7 +511,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       font-size: 0.95em;
     }
     .tree-children { margin-left: var(--fe-spacing-md); }
-    .tree-table-columns { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--fe-spacing-sm); margin-left: var(--fe-spacing-md); }
+    .tree-table-columns { margin-left: var(--fe-spacing-md); }
     .placeholder {
       color: var(--vscode-descriptionForeground);
       font-style: italic;
