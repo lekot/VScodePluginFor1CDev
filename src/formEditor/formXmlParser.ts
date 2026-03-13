@@ -264,6 +264,23 @@ function parseRootChildItems(formContent: unknown[]): FormChildItem[] {
 }
 
 /**
+ * Parse AutoCommandBar at form root: returns { name?, id? }.
+ * AutoCommandBar is a single element with attributes name and/or id.
+ */
+function parseAutoCommandBar(formContent: unknown[]): { name?: string; id?: string } {
+  for (const item of formContent) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const autoBar = getByLocalName(o, 'AutoCommandBar');
+    if (autoBar === undefined) continue;
+    const arr = Array.isArray(autoBar) ? autoBar : [autoBar];
+    const { name, id } = getAttrsFromContent(arr);
+    return { name, id };
+  }
+  return {};
+}
+
+/**
  * Parse Form.xml from file path.
  * @param formXmlPath Path to Ext/Form.xml
  * @param allowFileMissing If true, return fileMissing + empty model instead of error when file does not exist
@@ -325,11 +342,14 @@ export async function parseFormXml(
     return { error: 'В Form.xml не найден корневой элемент Form.' } as FormParseError;
   }
 
+  const autoCommandBar = parseAutoCommandBar(formContent);
   const model: FormModel = {
     childItemsRoot: parseRootChildItems(formContent),
     attributes: parseAttributesSection(formContent),
     commands: parseCommandsSection(formContent),
     formEvents: parseFormEventsSection(formContent),
+    autoCommandBarName: autoCommandBar.name,
+    autoCommandBarId: autoCommandBar.id,
   };
 
   return { model };
