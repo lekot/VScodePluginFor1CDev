@@ -395,7 +395,8 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       max-width: 80%;
       background: var(--vscode-sideBar-background);
       border-right: 1px solid var(--vscode-panel-border);
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
       padding: var(--fe-spacing-sm);
       flex-shrink: 0;
     }
@@ -487,7 +488,8 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .tree-node.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
     .tree-node.drop-target { outline: 2px solid var(--vscode-focusBorder); }
     .tree-node:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
-    .tree-node-container { font-weight: 600; }
+    .tree-node-container { font-weight: 600; flex-wrap: wrap; }
+    .tree-node-container > .tree-children { flex-basis: 100%; width: 100%; }
     .tree-chevron {
       flex-shrink: 0;
       width: 14px;
@@ -510,8 +512,18 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       text-align: center;
       font-size: 0.95em;
     }
-    .tree-children { margin-left: var(--fe-spacing-md); }
-    .tree-table-columns { margin-left: var(--fe-spacing-md); }
+    .tree-children {
+      margin-left: var(--fe-spacing-sm);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tree-table-columns {
+      margin-left: var(--fe-spacing-sm);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
     .placeholder {
       color: var(--vscode-descriptionForeground);
       font-style: italic;
