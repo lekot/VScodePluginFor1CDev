@@ -159,7 +159,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           : target.filePath;
       try {
         Logger.info(`Opening XML file: ${pathToOpen}`);
-        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(pathToOpen));
+        const uri = vscode.Uri.file(pathToOpen);
+        await vscode.window.showTextDocument(uri);
       } catch (err) {
         Logger.error('Failed to open XML', err);
         vscode.window.showErrorMessage(
