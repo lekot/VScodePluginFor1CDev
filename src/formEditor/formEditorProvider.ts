@@ -430,6 +430,13 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .tree-children { margin-left: 12px; }
     .placeholder { color: var(--vscode-descriptionForeground); font-style: italic; }
     .preview-placeholder { color: var(--vscode-descriptionForeground); font-style: italic; padding: 8px 0; }
+    .preview-item { padding: 4px 8px; margin: 2px 0; cursor: pointer; border-radius: 2px; border: 1px solid var(--vscode-panel-border); }
+    .preview-item:hover { background: var(--vscode-list-hoverBackground); }
+    .preview-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .preview-item.drop-target { outline: 2px solid var(--vscode-focusBorder); }
+    .preview-container { background: var(--vscode-editor-inactiveSelectionBackground); min-height: 20px; }
+    .preview-control { background: var(--vscode-input-background); }
+    .preview-children { margin-left: 12px; }
     .empty-state { text-align: center; padding: 16px; color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 8px 0; font-size: 1em; }
     .empty-state p { margin: 0; font-size: 0.9em; }
@@ -660,6 +667,75 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       parentEl.appendChild(ul);
     }
 
+    function renderPreview(items, parentEl) {
+      parentEl.innerHTML = '';
+      parentEl.classList.remove('preview-placeholder');
+      if (!items || !items.length) {
+        parentEl.textContent = 'Нет элементов';
+        return;
+      }
+      items.forEach(function(item) {
+        var id = item.id || item.name || '';
+        var tag = item.tag || '';
+        var isContainer = isContainerTag(tag);
+        var div = document.createElement('div');
+        div.className = 'preview-item ' + (isContainer ? 'preview-container' : 'preview-control');
+        div.dataset.id = id;
+        div.dataset.tag = tag;
+        div.textContent = (item.name || tag) + ' (' + tag + ')';
+        div.draggable = true;
+        div.ondragstart = function(e) { e.dataTransfer.setData('text/plain', id); e.dataTransfer.effectAllowed = 'move'; };
+        div.ondragover = function(e) {
+          e.preventDefault();
+          var srcId = e.dataTransfer.getData('text/plain');
+          if (!srcId || srcId === id) return;
+          if (!isContainer) return;
+          if (formModel && formModel.childItemsRoot && isDescendantOfItem(formModel.childItemsRoot, srcId, id)) return;
+          e.dataTransfer.dropEffect = 'move';
+          div.classList.add('drop-target');
+        };
+        div.ondragleave = function() { div.classList.remove('drop-target'); };
+        div.ondrop = function(e) {
+          e.preventDefault();
+          div.classList.remove('drop-target');
+          var srcId = e.dataTransfer.getData('text/plain');
+          if (!srcId || srcId === id) return;
+          if (!isContainer) return;
+          if (formModel && formModel.childItemsRoot && isDescendantOfItem(formModel.childItemsRoot, srcId, id)) return;
+          var ch = div.querySelector('.preview-children');
+          var kids = ch ? ch.children : [];
+          var dropY = e.clientY;
+          var idx = 0;
+          for (var i = 0; i < kids.length; i++) {
+            var r = kids[i].getBoundingClientRect();
+            if (dropY > r.top + r.height / 2) idx = i + 1;
+          }
+          vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: id, index: idx, source: 'preview' });
+        };
+        div.addEventListener('click', function() {
+          document.querySelectorAll('.preview-item.selected').forEach(function(n) { n.classList.remove('selected'); });
+          document.querySelectorAll('.tree-node.selected').forEach(function(n) { n.classList.remove('selected'); });
+          div.classList.add('selected');
+          var treeNodes = document.querySelectorAll('.tree-node');
+          for (var i = 0; i < treeNodes.length; i++) {
+            if (treeNodes[i].dataset.id === id) { treeNodes[i].classList.add('selected'); break; }
+          }
+          var el = findElement(formModel, id);
+          renderProps(el);
+          vscode.postMessage({ type: 'selectElement', elementId: id });
+        });
+        if (isContainer && item.childItems && item.childItems.length) {
+          var childWrap = document.createElement('div');
+          childWrap.className = 'preview-children';
+          parentEl.appendChild(div);
+          div.appendChild(childWrap);
+          renderPreview(item.childItems, childWrap);
+        } else {
+          parentEl.appendChild(div);
+        }
+      });
+    }
+
     function findElement(model, id) {
       if (!model || !id) return null;
       const find = (arr) => {
@@ -798,9 +874,17 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           treeEmpty.style.display = 'none';
           if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
             renderTree(formModel.childItemsRoot, treeRoot);
+            renderPreview(formModel.childItemsRoot, document.getElementById('preview-form'));
           } else {
             treeRoot.textContent = 'Нет элементов';
+            renderPreview(null, document.getElementById('preview-form'));
           }
+        }
+        if (msg.fileMissing) {
+          var pf = document.getElementById('preview-form');
+          pf.innerHTML = '';
+          pf.classList.add('preview-placeholder');
+          pf.textContent = 'Превью недоступно';
         }
         document.getElementById('props-actions').style.display = formModel && !msg.fileMissing ? 'block' : 'none';
       } else if (msg.type === 'error') {
