@@ -197,6 +197,15 @@ describe('TypeEditorProvider', () => {
       assert.ok(content.includes('DocumentRef'));
       assert.ok(content.includes('Order'));
     });
+
+    it('should show empty reference group without artificial child node', () => {
+      const definition: TypeDefinition = { category: 'primitive', types: [] };
+      const refGroups = [{ referenceKind: 'CatalogRef', objectNames: [] }];
+      const content = provider['getWebviewContent'](definition, refGroups);
+      assert.ok(content.includes('group:CatalogRef'), 'empty group header should be present');
+      assert.ok(content.includes('"children":[]'), 'empty group should have empty children array');
+      assert.ok(!content.includes('"id":"ref:CatalogRef:","label":"CatalogRef"'), 'must not add artificial child node for empty group');
+    });
   });
 
   describe('formatTypeDisplay', () => {

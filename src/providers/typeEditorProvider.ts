@@ -144,9 +144,6 @@ export class TypeEditorProvider {
       if (virtual) {
         virtual.forEach((name) => children.push({ id: 'ref:' + g.referenceKind + ':' + name, label: name }));
       }
-      if (children.length === 0) {
-        children.push({ id: 'ref:' + g.referenceKind + ':', label: g.referenceKind });
-      }
       refGroups.push({
         id: 'group:' + g.referenceKind,
         label: g.referenceKind,
