@@ -53,6 +53,10 @@ export interface FormModel {
   commands: FormCommand[];
   /** Form-level events. */
   formEvents: FormEventItem[];
+  /** Name of the form command bar element (from root AutoCommandBar). */
+  autoCommandBarName?: string;
+  /** Id of the form command bar element (from root AutoCommandBar), for round-trip. */
+  autoCommandBarId?: string;
   /** Optional: parameters, group list, etc. for future use. */
   parameters?: unknown[];
 }

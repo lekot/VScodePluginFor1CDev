@@ -9,10 +9,11 @@ import { Logger } from '../utils/logger';
 import { MESSAGES } from '../constants/messages';
 import { parseFormXml } from './formXmlParser';
 import { isFormParseError, isFormParseFileMissing } from './formModel';
-import type { FormModel, FormChildItem } from './formModel';
+import type { FormModel, FormChildItem, FormAttribute, FormCommand } from './formModel';
 import { writeFormXml } from './formXmlWriter';
 import { parseBslModuleProcedures } from './bslModuleParser';
 import { getFormPaths } from './formPaths';
+import { getFormEditorTitle } from './formEditorTitle';
 
 /** Minimal custom document for form editor. */
 class FormEditorDocument implements vscode.CustomDocument {
@@ -34,6 +35,34 @@ const CONTAINER_TAGS = new Set([
 
 function isContainer(item: FormChildItem): boolean {
   return CONTAINER_TAGS.has(item.tag);
+}
+
+/** Resolve attribute type string from FormAttribute.properties (Type or v8:Type etc.). */
+function getAttributeTypeString(attr: FormAttribute): string {
+  if (!attr?.properties) return '';
+  const v = attr.properties['Type'];
+  if (v != null) {
+    if (typeof v === 'string') return v.trim();
+    if (typeof v === 'object' && v !== null && '#text' in (v as object)) return String((v as { '#text'?: unknown })['#text'] ?? '').trim();
+  }
+  for (const k of Object.keys(attr.properties)) {
+    if (k === ':@' || k.startsWith('@')) continue;
+    const local = k.includes(':') ? k.split(':').pop()! : k;
+    if (local === 'Type') {
+      const val = attr.properties[k];
+      if (typeof val === 'string') return val.trim();
+      if (typeof val === 'object' && val !== null && '#text' in (val as object)) return String((val as { '#text'?: unknown })['#text'] ?? '').trim();
+    }
+  }
+  return '';
+}
+
+/** Map form attribute type to form element tag: boolean → CheckBoxField, else InputField. */
+function requisiteTypeToTag(attr: FormAttribute | undefined): string {
+  if (!attr) return 'InputField';
+  const typeStr = getAttributeTypeString(attr).toLowerCase();
+  if (typeStr === 'xs:boolean' || typeStr === 'boolean' || typeStr.includes('boolean')) return 'CheckBoxField';
+  return 'InputField';
 }
 
 /** Find element by id or name in tree (recursive). */
@@ -98,6 +127,98 @@ function moveNodeInModel(
   return true;
 }
 
+/** Remove node from model by elementId. Parent is found recursively; root (childItemsRoot) is not removed. */
+function removeNodeInModel(model: FormModel, elementId: string): boolean {
+  const loc = findParentAndIndex(model.childItemsRoot, elementId);
+  if (!loc) return false;
+  loc.parent.splice(loc.index, 1);
+  return true;
+}
+
+/** Move element among siblings: direction 'up' or 'down'. */
+function moveElementSiblingInModel(
+  model: FormModel,
+  elementId: string,
+  direction: 'up' | 'down'
+): boolean {
+  const loc = findParentAndIndex(model.childItemsRoot, elementId);
+  if (!loc) return false;
+  const idx = loc.index;
+  if (direction === 'up' && idx <= 0) return false;
+  if (direction === 'down' && idx >= loc.parent.length - 1) return false;
+  const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+  const [node] = loc.parent.splice(idx, 1);
+  if (!node) return false;
+  loc.parent.splice(newIdx, 0, node);
+  return true;
+}
+
+/** Collect all id values from tree (numeric ones for max). */
+function collectIds(items: FormChildItem[], out: Set<string>): void {
+  for (const item of items) {
+    if (item.id) out.add(item.id);
+    if (item.childItems?.length) collectIds(item.childItems, out);
+  }
+}
+
+/** Generate next free id (max numeric + 1). */
+function generateNextId(model: FormModel): string {
+  const ids = new Set<string>();
+  collectIds(model.childItemsRoot, ids);
+  let max = 0;
+  for (const id of ids) {
+    const n = parseInt(id, 10);
+    if (!Number.isNaN(n) && n > max) max = n;
+  }
+  return String(max + 1);
+}
+
+/** Next numeric id for attributes (max of attribute ids + 1). */
+function generateNextAttributeId(model: FormModel): string {
+  let max = 0;
+  for (const a of model.attributes || []) {
+    if (a.id) {
+      const n = parseInt(a.id, 10);
+      if (!Number.isNaN(n) && n > max) max = n;
+    }
+  }
+  return String(max + 1);
+}
+
+/** Next numeric id for commands (max of command ids + 1). */
+function generateNextCommandId(model: FormModel): string {
+  let max = 0;
+  for (const c of model.commands || []) {
+    if (c.id) {
+      const n = parseInt(c.id, 10);
+      if (!Number.isNaN(n) && n > max) max = n;
+    }
+  }
+  return String(max + 1);
+}
+
+/** Deep clone FormChildItem and assign new ids via nextId(). */
+function cloneWithNewIds(item: FormChildItem, nextId: () => string): FormChildItem {
+  const id = item.id ? nextId() : undefined;
+  return {
+    tag: item.tag,
+    id,
+    name: item.name,
+    properties: JSON.parse(JSON.stringify(item.properties || {})),
+    childItems: (item.childItems || []).map((c) => cloneWithNewIds(c, nextId)),
+    events: item.events ? { ...item.events } : undefined,
+  };
+}
+
+/** Create nextId generator for a model (uses generateNextId and then increments). */
+function createIdGenerator(model: FormModel): () => string {
+  let next = 0;
+  const initial = generateNextId(model);
+  next = parseInt(initial, 10);
+  if (Number.isNaN(next)) next = 1;
+  return () => String(next++);
+}
+
 /** Update property on an element (or attribute/command by section). */
 function applyPropertyChange(
   model: FormModel,
@@ -107,14 +228,22 @@ function applyPropertyChange(
     const attr = model.attributes.find(
       (a) => a.name === payload.elementId || a.id === payload.elementId
     );
-    if (attr) attr.properties[payload.key] = payload.value;
+    if (attr) {
+      if (payload.key === 'name') attr.name = String(payload.value ?? '');
+      else if (payload.key === 'id') attr.id = String(payload.value ?? '');
+      else attr.properties[payload.key] = payload.value;
+    }
     return;
   }
   if (payload.section === 'commands' && payload.elementId) {
     const cmd = model.commands.find(
       (c) => c.name === payload.elementId || c.id === payload.elementId
     );
-    if (cmd) cmd.properties[payload.key] = payload.value;
+    if (cmd) {
+      if (payload.key === 'name') cmd.name = String(payload.value ?? '');
+      else if (payload.key === 'id') cmd.id = String(payload.value ?? '');
+      else cmd.properties[payload.key] = payload.value;
+    }
     return;
   }
   if (payload.section === 'events' && payload.elementId) {
@@ -148,6 +277,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     document: FormEditorDocument,
     webviewPanel: vscode.WebviewPanel
   ): Promise<void> {
+    webviewPanel.title = getFormEditorTitle(document.uri.fsPath);
     webviewPanel.webview.options = {
       enableScripts: true,
       localResourceRoots: [this.context.extensionUri],
@@ -166,12 +296,24 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     } else if (msg.type === 'propertyChange') {
       const model = this.documentModel.get(document.uri.toString());
       if (model && msg.key !== undefined) {
-        applyPropertyChange(model, {
-          elementId: msg.elementId as string | undefined,
-          section: msg.section as string | undefined,
-          key: msg.key as string,
-          value: msg.value,
-        });
+        const elementIds = msg.elementIds as string[] | undefined;
+        if (elementIds && elementIds.length > 0) {
+          for (const elementId of elementIds) {
+            applyPropertyChange(model, {
+              elementId,
+              section: msg.section as string | undefined,
+              key: msg.key as string,
+              value: msg.value,
+            });
+          }
+        } else {
+          applyPropertyChange(model, {
+            elementId: msg.elementId as string | undefined,
+            section: msg.section as string | undefined,
+            key: msg.key as string,
+            value: msg.value,
+          });
+        }
       }
     } else if (msg.type === 'save') {
       await this.handleSave(document, webviewPanel, msg);
@@ -179,10 +321,28 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       await this.handleCancel(document, webviewPanel);
     } else if (msg.type === 'dragDrop') {
       await this.handleDragDrop(document, webviewPanel, msg);
+    } else if (msg.type === 'addElementFromRequisite') {
+      await this.handleAddElementFromRequisite(document, webviewPanel, msg);
     } else if (msg.type === 'getProcedures') {
       await this.handleGetProcedures(document, webviewPanel);
     } else if (msg.type === 'openModule') {
       await this.handleOpenModule(document, msg);
+    } else if (msg.type === 'deleteElement') {
+      await this.handleDeleteElement(document, webviewPanel, msg);
+    } else if (msg.type === 'moveElementSibling') {
+      await this.handleMoveElementSibling(document, webviewPanel, msg);
+    } else if (msg.type === 'addElement') {
+      await this.handleAddElement(document, webviewPanel, msg);
+    } else if (msg.type === 'pasteElement') {
+      await this.handlePasteElement(document, webviewPanel, msg);
+    } else if (msg.type === 'addAttribute') {
+      await this.handleAddAttribute(document, webviewPanel);
+    } else if (msg.type === 'deleteAttribute') {
+      await this.handleDeleteAttribute(document, webviewPanel, msg);
+    } else if (msg.type === 'addCommand') {
+      await this.handleAddCommand(document, webviewPanel);
+    } else if (msg.type === 'deleteCommand') {
+      await this.handleDeleteCommand(document, webviewPanel, msg);
     }
   }
 
@@ -270,15 +430,55 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     }
     try {
       await writeFormXml(document.uri.fsPath, model);
-      webviewPanel.webview.postMessage({
-        type: 'formData',
-        formModel: model,
-        formXmlPath: document.uri.fsPath,
-        modulePath: path.join(path.dirname(path.dirname(document.uri.fsPath)), 'Ext', 'Form', 'Module.bsl'),
-      });
+      this.sendFormData(document, webviewPanel, model);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       Logger.error('Form editor save after dragDrop failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  private async handleAddElementFromRequisite(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    const requisiteName = msg.requisiteName as string | undefined;
+    const dataPath = (msg.dataPath as string | undefined) ?? requisiteName;
+    const targetId = msg.targetId as string | undefined;
+    const index = (msg.index as number | undefined) ?? 0;
+    if (!model || !requisiteName || !targetId) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Неверные параметры addElementFromRequisite (requisiteName, targetId).' });
+      return;
+    }
+    const targetEl = findElementById(model.childItemsRoot, targetId);
+    if (!targetEl || !isContainer(targetEl)) {
+      webviewPanel.webview.postMessage({
+        type: 'error',
+        message: 'Цель должна быть контейнером (группа, страница, таблица и т.д.).',
+      });
+      return;
+    }
+    const attr = model.attributes?.find((a) => a.name === requisiteName);
+    const tag = requisiteTypeToTag(attr);
+    const newId = generateNextId(model);
+    const targetList = targetEl.childItems ?? (targetEl.childItems = []);
+    const insertIndex = typeof index === 'number' ? Math.max(0, Math.min(index, targetList.length)) : targetList.length;
+    const newItem: FormChildItem = {
+      tag,
+      id: newId,
+      name: requisiteName,
+      properties: { DataPath: dataPath },
+      childItems: [],
+    };
+    targetList.splice(insertIndex, 0, newItem);
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after addElementFromRequisite failed', err);
       webviewPanel.webview.postMessage({ type: 'error', message });
     }
   }
@@ -333,6 +533,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     const model = (result as { model: FormModel }).model;
     const fileMissing = isFormParseFileMissing(result);
     this.documentModel.set(document.uri.toString(), model);
+    webviewPanel.title = getFormEditorTitle(formXmlPath);
     webviewPanel.webview.postMessage({
       type: 'formData',
       formModel: model,
@@ -349,6 +550,308 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     webviewPanel: vscode.WebviewPanel
   ): Promise<void> {
     await this.reloadFormAndSend(document, webviewPanel);
+  }
+
+  private async handleDeleteElement(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    const elementIds = msg.elementIds as string[] | undefined;
+    const elementId = msg.elementId as string | undefined;
+    const ids = elementIds?.length ? elementIds : (elementId ? [elementId] : []);
+    if (!model || !ids.length) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Неверные параметры deleteElement.' });
+      return;
+    }
+    const toDelete = ids.length === 1
+      ? ids
+      : this.orderIdsForDeletion(model, ids);
+    const rootIds = new Set(
+      model.childItemsRoot.length === 1
+        ? [model.childItemsRoot[0].id || model.childItemsRoot[0].name].filter(Boolean)
+        : []
+    );
+    const toDeleteFiltered = toDelete.filter((id) => !rootIds.has(id));
+    let anyRemoved = false;
+    for (const id of toDeleteFiltered) {
+      if (removeNodeInModel(model, id)) anyRemoved = true;
+    }
+    if (!anyRemoved) {
+      const rootOnly = toDeleteFiltered.length < toDelete.length && ids.some((id) => rootIds.has(id));
+      webviewPanel.webview.postMessage({
+        type: 'error',
+        message: rootOnly ? 'Корневой элемент удалить нельзя.' : 'Не удалось удалить элементы.',
+      });
+      return;
+    }
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after delete failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  /** Order element ids so descendants are removed before ancestors (by depth, deeper first). */
+  private orderIdsForDeletion(model: FormModel, ids: string[]): string[] {
+    const depthMap = new Map<string, number>();
+    const walk = (items: FormChildItem[], d: number) => {
+      for (const item of items) {
+        const id = item.id || item.name;
+        if (id) depthMap.set(id, d);
+        if (item.childItems?.length) walk(item.childItems, d + 1);
+      }
+    };
+    walk(model.childItemsRoot, 0);
+    return ids.slice().sort((a, b) => (depthMap.get(b) ?? 0) - (depthMap.get(a) ?? 0));
+  }
+
+  private async handleMoveElementSibling(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    const elementId = msg.elementId as string | undefined;
+    const direction = msg.direction as 'up' | 'down' | undefined;
+    if (!model || !elementId || (direction !== 'up' && direction !== 'down')) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Неверные параметры moveElementSibling.' });
+      return;
+    }
+    if (!moveElementSiblingInModel(model, elementId, direction)) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Не удалось переместить элемент.' });
+      return;
+    }
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after moveSibling failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  private async handleAddElement(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    const parentId = msg.parentId as string | undefined;
+    const tag = (msg.tag as string) || 'InputField';
+    const name = (msg.name as string) || 'NewItem';
+    if (!model) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Нет модели формы.' });
+      return;
+    }
+    const parentList = parentId
+      ? (() => {
+          const parentEl = findElementById(model.childItemsRoot, parentId);
+          if (!parentEl || !isContainer(parentEl)) return null;
+          return parentEl.childItems ?? (parentEl.childItems = []);
+        })()
+      : model.childItemsRoot;
+    if (!parentList) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Родитель не является контейнером.' });
+      return;
+    }
+    const newId = generateNextId(model);
+    const newItem: FormChildItem = {
+      tag,
+      id: newId,
+      name,
+      properties: {},
+      childItems: [],
+    };
+    const index = typeof msg.index === 'number' ? Math.max(0, Math.min(msg.index, parentList.length)) : parentList.length;
+    parentList.splice(index, 0, newItem);
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after addElement failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  private async handlePasteElement(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    const targetId = msg.targetId as string | undefined;
+    const rawClipboard = msg.clipboard;
+    const clipboards: FormChildItem[] = Array.isArray(rawClipboard)
+      ? (rawClipboard as FormChildItem[]).filter((c): c is FormChildItem => c != null && typeof c === 'object')
+      : rawClipboard != null && typeof rawClipboard === 'object'
+        ? [rawClipboard as FormChildItem]
+        : [];
+    if (!model || !targetId || !clipboards.length) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Неверные параметры pasteElement (нужны targetId и clipboard).' });
+      return;
+    }
+    const targetEl = findElementById(model.childItemsRoot, targetId);
+    if (!targetEl || !isContainer(targetEl)) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Цель должна быть контейнером.' });
+      return;
+    }
+    const nextId = createIdGenerator(model);
+    const targetList = targetEl.childItems ?? (targetEl.childItems = []);
+    let index = typeof msg.index === 'number' ? Math.max(0, Math.min(msg.index, targetList.length)) : targetList.length;
+    for (const clipboard of clipboards) {
+      const cloned = cloneWithNewIds(clipboard, nextId);
+      targetList.splice(index, 0, cloned);
+      index += 1;
+    }
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after paste failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  private async handleAddAttribute(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    if (!model) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Нет модели формы.' });
+      return;
+    }
+    const name = 'NewAttribute';
+    const id = generateNextAttributeId(model);
+    const newAttr: FormAttribute = {
+      name,
+      id,
+      properties: { Type: 'xs:string' },
+    };
+    model.attributes = model.attributes || [];
+    model.attributes.push(newAttr);
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after addAttribute failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  private async handleDeleteAttribute(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    const attributeId = msg.attributeId as string | undefined;
+    const attributeName = msg.attributeName as string | undefined;
+    const key = attributeId ?? attributeName;
+    if (!model || key === undefined) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Неверные параметры deleteAttribute.' });
+      return;
+    }
+    const idx = model.attributes.findIndex(
+      (a) => a.id === key || a.name === key
+    );
+    if (idx < 0) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Реквизит не найден.' });
+      return;
+    }
+    model.attributes.splice(idx, 1);
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after deleteAttribute failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  private async handleAddCommand(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    if (!model) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Нет модели формы.' });
+      return;
+    }
+    const name = 'NewCommand';
+    const id = generateNextCommandId(model);
+    const newCmd: FormCommand = {
+      name,
+      id,
+      properties: {},
+    };
+    model.commands = model.commands || [];
+    model.commands.push(newCmd);
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after addCommand failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  private async handleDeleteCommand(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const model = this.documentModel.get(document.uri.toString());
+    const commandId = msg.commandId as string | undefined;
+    const commandName = msg.commandName as string | undefined;
+    const key = commandId ?? commandName;
+    if (!model || key === undefined) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Неверные параметры deleteCommand.' });
+      return;
+    }
+    const idx = model.commands.findIndex(
+      (c) => c.id === key || c.name === key
+    );
+    if (idx < 0) {
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Команда не найдена.' });
+      return;
+    }
+    model.commands.splice(idx, 1);
+    try {
+      await writeFormXml(document.uri.fsPath, model);
+      this.sendFormData(document, webviewPanel, model);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Logger.error('Form editor save after deleteCommand failed', err);
+      webviewPanel.webview.postMessage({ type: 'error', message });
+    }
+  }
+
+  /** Send formData message to webview (shared by load, cancel, dragDrop, delete, move, add, paste). */
+  private sendFormData(
+    document: FormEditorDocument,
+    webviewPanel: vscode.WebviewPanel,
+    model: FormModel
+  ): void {
+    const formXmlPath = document.uri.fsPath;
+    const modulePath = path.join(path.dirname(path.dirname(formXmlPath)), 'Ext', 'Form', 'Module.bsl');
+    webviewPanel.webview.postMessage({
+      type: 'formData',
+      formModel: model,
+      formXmlPath,
+      modulePath,
+    });
   }
 
   private getWebviewHtml(_webview: vscode.Webview): string {
@@ -382,6 +885,49 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       overflow: hidden;
       --tree-width: 280px;
       --preview-height: 200px;
+    }
+    .fe-toolbar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      background: var(--vscode-editor-background);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      min-height: 28px;
+    }
+    .fe-toolbar-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 24px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--vscode-foreground);
+      border-radius: var(--fe-radius-sm);
+      cursor: pointer;
+      font-size: 14px;
+      font-family: var(--vscode-font-family);
+    }
+    .fe-toolbar-btn:hover:not(:disabled) {
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+    .fe-toolbar-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .fe-toolbar-btn:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
+    }
+    .fe-toolbar-sep {
+      width: 1px;
+      height: 16px;
+      background: var(--vscode-panel-border);
+      margin: 0 var(--fe-spacing-xs);
+      flex-shrink: 0;
     }
     .top-row {
       flex: 1;
@@ -420,9 +966,89 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     }
     .splitter-v:hover { background: var(--vscode-focusBorder); }
     .splitter-v:hover::before { opacity: 0.6; }
-    .zone-props {
+    .zone-right-column {
       flex: 1;
       min-width: 0;
+      min-height: 80px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      --right-upper-ratio: 40%;
+    }
+    .zone-right-upper {
+      flex: 0 0 var(--right-upper-ratio);
+      min-height: 100px;
+      max-height: 50vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: var(--fe-spacing-sm);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .right-panel-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: var(--fe-spacing-sm);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      flex-shrink: 0;
+    }
+    .right-panel-tabs button {
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      background: transparent;
+      color: var(--vscode-foreground);
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      border-radius: 0;
+    }
+    .right-panel-tabs button:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+    .right-panel-tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: var(--vscode-tab-activeBackground, transparent); }
+    .right-tab-panel {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .fe-table-wrap { overflow: auto; flex: 1; min-height: 0; }
+    .fe-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--vscode-font-size);
+    }
+    .fe-table th, .fe-table td {
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      text-align: left;
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .fe-table th { color: var(--vscode-descriptionForeground); font-weight: 500; }
+    .fe-table tbody tr { cursor: pointer; }
+    .fe-table tbody tr:hover { background: var(--vscode-list-hoverBackground); }
+    .fe-table tbody tr.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .fe-toolbar-buttons {
+      display: flex;
+      gap: var(--fe-spacing-xs);
+      flex-wrap: wrap;
+      margin-top: var(--fe-spacing-sm);
+      flex-shrink: 0;
+    }
+    .fe-toolbar-buttons button {
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      font-size: var(--vscode-font-size);
+      font-family: var(--vscode-font-family);
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-radius: var(--fe-radius-md);
+      cursor: pointer;
+    }
+    .fe-toolbar-buttons button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .fe-toolbar-buttons button:disabled { opacity: 0.5; cursor: default; }
+    .zone-props {
+      flex: 1;
       min-height: 80px;
       display: flex;
       flex-direction: column;
@@ -512,6 +1138,13 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       text-align: center;
       font-size: 0.95em;
     }
+    .tree-node-data-bound {
+      flex-shrink: 0;
+      width: 0.6em;
+      font-size: 0.75em;
+      color: var(--vscode-descriptionForeground);
+      line-height: 1;
+    }
     .tree-children {
       margin-left: var(--fe-spacing-sm);
       display: flex;
@@ -547,6 +1180,24 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .preview-table-col { min-width: 60px; padding: var(--fe-spacing-xs) var(--fe-spacing-sm); border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); font-size: 0.85em; }
     .preview-page-caption, .preview-group-caption { font-weight: 600; font-size: 0.9em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-foreground); }
     .preview-fallback { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+    /* Form mockup (variant B): layout as form */
+    #preview-form.preview-mockup-form { padding: var(--fe-spacing-sm); }
+    .preview-field-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-sm); margin-bottom: var(--fe-spacing-xs); }
+    .preview-field-label { min-width: 80px; color: var(--vscode-foreground); font-size: inherit; flex-shrink: 0; }
+    .preview-field-row .preview-input { flex: 1; min-width: 100px; }
+    .preview-buttons-row { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-xs); align-items: center; }
+    .preview-table-mock { overflow-x: auto; border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); margin: var(--fe-spacing-xs) 0; }
+    .preview-table-mock table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+    .preview-table-mock th, .preview-table-mock td { padding: var(--fe-spacing-xs) var(--fe-spacing-sm); text-align: left; border-bottom: 1px solid var(--vscode-panel-border); }
+    .preview-table-mock th { background: var(--vscode-editor-inactiveSelectionBackground); font-weight: 600; color: var(--vscode-foreground); cursor: pointer; }
+    .preview-table-mock th:hover { background: var(--vscode-list-hoverBackground); }
+    .preview-table-mock th.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .preview-table-mock tbody tr:last-child td { border-bottom: none; }
+    .preview-page-block { margin: var(--fe-spacing-sm) 0; }
+    .preview-page-title { font-weight: 700; font-size: 0.95em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-foreground); padding-bottom: 2px; border-bottom: 1px solid var(--vscode-panel-border); }
+    .preview-group-block { margin-left: var(--fe-spacing-md); margin-bottom: var(--fe-spacing-xs); }
+    .preview-group-title { font-weight: 600; font-size: 0.9em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-descriptionForeground); }
+    .preview-children.preview-buttons-container { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-sm); align-items: center; margin-left: 0; }
     .empty-state { text-align: center; padding: var(--fe-spacing-lg); color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 var(--fe-spacing-sm) 0; font-size: 1em; color: var(--vscode-foreground); opacity: 0.9; }
     .empty-state p { margin: 0; font-size: 0.9em; }
@@ -574,6 +1225,37 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     }
     .tabs button:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
     .tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: var(--vscode-tab-activeBackground, transparent); }
+    .left-zone-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: var(--fe-spacing-sm);
+      border-bottom: 1px solid var(--vscode-panel-border);
+    }
+    .left-zone-tabs button {
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      background: transparent;
+      color: var(--vscode-foreground);
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      border-radius: 0;
+    }
+    .left-zone-tabs button:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+    .left-zone-tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: var(--vscode-tab-activeBackground, transparent); }
+    .command-interface-section { margin-bottom: var(--fe-spacing-md); }
+    .command-interface-section-title { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin: 0 0 var(--fe-spacing-xs) 0; text-transform: uppercase; letter-spacing: 0.02em; }
+    .command-interface-list { list-style: none; margin: 0; padding: 0; }
+    .command-interface-list li {
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      border-radius: var(--fe-radius-sm);
+      font-size: 0.9em;
+      color: var(--vscode-foreground);
+    }
+    .command-interface-list li:hover { background: var(--vscode-list-hoverBackground); }
+    .command-interface-empty { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 0.9em; padding: var(--fe-spacing-xs) 0; }
     .props-block { margin-bottom: var(--fe-spacing-md); }
     .props-block-title { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin: 0 0 var(--fe-spacing-xs) 0; text-transform: uppercase; letter-spacing: 0.02em; }
     .prop-row { margin-bottom: var(--fe-spacing-sm); display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-xs); }
@@ -658,28 +1340,86 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
   </style>
 </head>
 <body>
+  <div class="fe-toolbar" role="toolbar" aria-label="Панель инструментов формы">
+    <button type="button" class="fe-toolbar-btn" id="tb-add" title="Добавить элемент" aria-label="Добавить">&#43;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-delete" title="Удалить" aria-label="Удалить">&#x1F5D1;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-up" title="Вверх" aria-label="Вверх">&#x2191;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-down" title="Вниз" aria-label="Вниз">&#x2193;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-copy" title="Копировать" aria-label="Копировать">&#x2398;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-paste" title="Вставить" aria-label="Вставить">&#x2399;</button>
+    <span class="fe-toolbar-sep" aria-hidden="true"></span>
+    <button type="button" class="fe-toolbar-btn" id="tb-save" title="Сохранить" aria-label="Сохранить">&#x1F4BE;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-cancel" title="Отмена" aria-label="Отмена">&#x27F3;</button>
+  </div>
   <div class="top-row">
     <div class="zone-tree">
       <h3>Элементы формы</h3>
-      <div id="tree-root" role="tree" aria-label="Элементы формы"></div>
-      <div id="tree-empty" class="empty-state" style="display:none;">
-        <h4 id="tree-empty-title"></h4>
-        <p id="tree-empty-hint"></p>
+      <div class="left-zone-tabs" role="tablist">
+        <button type="button" role="tab" data-left-tab="elements" aria-selected="true">Элементы</button>
+        <button type="button" role="tab" data-left-tab="command-interface" aria-selected="false">Командный интерфейс</button>
       </div>
-      <div id="tree-error" class="error" style="display:none;"></div>
+      <div id="left-tab-elements" role="tabpanel">
+        <div id="tree-selection-count" class="props-selection-header" style="display:none;"></div>
+        <div id="tree-root" role="tree" aria-label="Элементы формы"></div>
+        <div id="tree-empty" class="empty-state" style="display:none;">
+          <h4 id="tree-empty-title"></h4>
+          <p id="tree-empty-hint"></p>
+        </div>
+        <div id="tree-error" class="error" style="display:none;"></div>
+      </div>
+      <div id="left-command-interface" role="tabpanel" style="display:none;">
+        <div id="command-interface-content"></div>
+      </div>
     </div>
     <div class="splitter-v" id="splitter-v" title="Изменить ширину панели"></div>
-    <div class="zone-props" role="region" aria-label="Свойства элемента">
-      <h3>Свойства</h3>
-      <div class="zone-props-scroll">
-        <div id="props-header" class="props-selection-header"></div>
-        <div id="props-content" style="display:none;"></div>
-        <div id="props-placeholder" class="placeholder">Выберите элемент</div>
+    <div class="zone-right-column">
+      <div class="zone-right-upper">
+        <div class="right-panel-tabs" role="tablist">
+          <button type="button" role="tab" data-right-tab="attributes" aria-selected="true">Реквизиты</button>
+          <button type="button" role="tab" data-right-tab="commands" aria-selected="false">Команды</button>
+          <button type="button" role="tab" data-right-tab="parameters" aria-selected="false">Параметры</button>
+        </div>
+        <div id="right-tab-attributes" class="right-tab-panel" role="tabpanel">
+          <div class="fe-table-wrap">
+            <table class="fe-table" id="attributes-table">
+              <thead><tr><th>Реквизит</th><th>Использование</th><th>Тип</th></tr></thead>
+              <tbody id="attributes-tbody"></tbody>
+            </table>
+          </div>
+          <div class="fe-toolbar-buttons">
+            <button type="button" id="btn-add-attribute" title="Добавить реквизит">Добавить</button>
+            <button type="button" id="btn-edit-attribute" title="Изменить выбранный" disabled>Изменить</button>
+            <button type="button" id="btn-delete-attribute" title="Удалить выбранный" disabled>Удалить</button>
+          </div>
+        </div>
+        <div id="right-tab-commands" class="right-tab-panel" role="tabpanel" style="display:none;">
+          <div class="fe-table-wrap">
+            <table class="fe-table" id="commands-table">
+              <thead><tr><th>Команда</th><th>Подпись</th></tr></thead>
+              <tbody id="commands-tbody"></tbody>
+            </table>
+          </div>
+          <div class="fe-toolbar-buttons">
+            <button type="button" id="btn-add-command" title="Добавить команду">Добавить</button>
+            <button type="button" id="btn-delete-command" title="Удалить выбранную" disabled>Удалить</button>
+          </div>
+        </div>
+        <div id="right-tab-parameters" class="right-tab-panel" role="tabpanel" style="display:none;">
+          <p class="placeholder">Параметры формы будут доступны после поддержки секции в Form.xml</p>
+        </div>
       </div>
-      <div id="props-actions" class="props-actions-sticky" style="display:none;">
-        <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
-        <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
-        <span id="save-status"></span>
+      <div class="zone-props" role="region" aria-label="Свойства элемента">
+        <h3>Свойства</h3>
+        <div class="zone-props-scroll">
+          <div id="props-header" class="props-selection-header"></div>
+          <div id="props-content" style="display:none;"></div>
+          <div id="props-placeholder" class="placeholder">Выберите элемент</div>
+        </div>
+        <div id="props-actions" class="props-actions-sticky" style="display:none;">
+          <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
+          <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
+          <span id="save-status"></span>
+        </div>
       </div>
     </div>
   </div>
@@ -704,6 +1444,11 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
   <script>
     const vscode = acquireVsCodeApi();
     let formModel = null;
+    let selectedIds = [];
+    let anchorId = null;
+    let clipboardBuffer = null;
+    let selectedAttributeId = null;
+    let selectedCommandId = null;
     (function setupSplitters() {
       var root = document.body;
       var sv = document.getElementById('splitter-v');
@@ -767,11 +1512,40 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     var expandedIds = new Set();
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
     function isRealElement(it) { var t = it.tag; return t && t !== ':@' && !String(t).startsWith('@'); }
+    function getItemTitle(item) {
+      if (!item) return '';
+      var props = item.properties;
+      if (props && props['Title'] != null) {
+        var t = extractDisplayValue(props['Title']);
+        if (t && String(t).trim() !== '') return String(t).trim();
+      }
+      return item.name || '';
+    }
     function getTreeIcon(tag) {
       if (!tag) return '';
       var icons = { Button: '\u25B6', InputField: '\u2395', SearchStringAddition: '\u2395', FormattedDocumentField: '\u2395', ValueList: '\u2395', CheckBoxField: '\u2610', Hyperlink: '\u1F517', LabelField: '\u2630', Table: '\u22EE', Page: '\u2302', Pages: '\u2302', Form: '\u2302', Group: '\u2302', UsualGroup: '\u2302', CollapsibleGroup: '\u2302', AutoCommandBar: '\u2699' };
       return icons[tag] || '\u25A0';
     }
+    function getDataPathValue(item) {
+      if (!item || !item.properties) return '';
+      var raw = item.properties['DataPath'];
+      if (raw != null) {
+        if (typeof raw === 'string') return raw.trim();
+        if (typeof raw === 'object' && raw !== null && raw['#text'] != null) return String(raw['#text']).trim();
+      }
+      for (var k in item.properties) {
+        if (k === ':@' || k.startsWith('@')) continue;
+        var local = k.indexOf(':') >= 0 ? k.split(':').pop() : k;
+        if (local === 'DataPath') {
+          var v = item.properties[k];
+          if (typeof v === 'string') return v.trim();
+          if (v && typeof v === 'object' && v['#text'] != null) return String(v['#text']).trim();
+          return v != null ? String(v).trim() : '';
+        }
+      }
+      return '';
+    }
+    function hasDataPath(item) { return getDataPathValue(item).length > 0; }
     function isDescendantOfItem(items, sourceId, targetId) {
       if (sourceId === targetId) return true;
       for (var i = 0; i < items.length; i++) {
@@ -782,6 +1556,38 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         if (items[i].childItems && isDescendantOfItem(items[i].childItems, sourceId, targetId)) return true;
       }
       return false;
+    }
+    function getFlatVisibleIds(items, expandedIds, parentItem) {
+      if (!items || !items.length) return [];
+      var list = (parentItem && parentItem.tag === 'Table') ? items.filter(function(it) { return isRealElement(it); }) : items;
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var itemId = item.id || item.name || '';
+        out.push(itemId);
+        var tag = item.tag || '';
+        if (isContainerTag(tag) && expandedIds.has(itemId) && item.childItems && item.childItems.length)
+          out = out.concat(getFlatVisibleIds(item.childItems, expandedIds, item));
+      }
+      return out;
+    }
+    function applyTreeSelection() {
+      document.querySelectorAll('.tree-node').forEach(function(n) {
+        var id = n.dataset.id;
+        var selected = selectedIds.indexOf(id) >= 0;
+        n.classList.toggle('selected', !!selected);
+        n.setAttribute('aria-selected', selected ? 'true' : 'false');
+      });
+      var countEl = document.getElementById('tree-selection-count');
+      if (countEl) {
+        if (selectedIds.length > 1) {
+          countEl.textContent = 'Выбрано элементов: ' + selectedIds.length;
+          countEl.style.display = 'block';
+        } else {
+          countEl.textContent = '';
+          countEl.style.display = 'none';
+        }
+      }
     }
     function renderTree(items, parentEl, parentItem) {
       if (!items || !items.length) return;
@@ -815,6 +1621,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
             var root = document.getElementById('tree-root');
             root.innerHTML = '';
             renderTree(formModel.childItemsRoot, root);
+            applyTreeSelection();
           });
         } else {
           chevronSpan.className = 'tree-chevron-placeholder';
@@ -829,10 +1636,26 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         labelSpan.title = labelText;
         div.appendChild(chevronSpan);
         div.appendChild(iconSpan);
+        if (hasDataPath(item)) {
+          var dataBoundSpan = document.createElement('span');
+          dataBoundSpan.className = 'tree-node-data-bound';
+          dataBoundSpan.textContent = '\u25A0';
+          dataBoundSpan.setAttribute('aria-hidden', 'true');
+          dataBoundSpan.title = getDataPathValue(item);
+          div.appendChild(dataBoundSpan);
+        }
         div.appendChild(labelSpan);
-        div.ondragstart = function(e) { e.dataTransfer.setData('text/plain', div.dataset.id); e.dataTransfer.effectAllowed = 'move'; };
+        div.ondragstart = function(e) {
+          if (selectedIds.length > 1) { e.preventDefault(); return; }
+          e.dataTransfer.setData('text/plain', div.dataset.id);
+          e.dataTransfer.effectAllowed = 'move';
+        };
         div.ondragover = function(e) {
           e.preventDefault();
+          if (e.dataTransfer.types.indexOf(REQUISITE_DROP_TYPE) >= 0) {
+            if (isContainerTag(div.dataset.tag)) { e.dataTransfer.dropEffect = 'copy'; div.classList.add('drop-target'); }
+            return;
+          }
           var srcId = e.dataTransfer.getData('text/plain');
           if (!srcId || srcId === div.dataset.id) return;
           if (!isContainerTag(div.dataset.tag)) return;
@@ -844,6 +1667,12 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         div.ondrop = function(e) {
           e.preventDefault();
           div.classList.remove('drop-target');
+          var requisiteName = e.dataTransfer.getData(REQUISITE_DROP_TYPE);
+          if (requisiteName) {
+            if (!isContainerTag(div.dataset.tag)) return;
+            vscode.postMessage({ type: 'addElementFromRequisite', requisiteName: requisiteName, dataPath: requisiteName, targetId: div.dataset.id, index: 0 });
+            return;
+          }
           var srcId = e.dataTransfer.getData('text/plain');
           if (!srcId || srcId === div.dataset.id) return;
           if (!isContainerTag(div.dataset.tag)) return;
@@ -854,11 +1683,40 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         div.addEventListener('click', function(e) {
           if (e.target.classList.contains('tree-chevron')) return;
           e.stopPropagation();
-          document.querySelectorAll('.tree-node.selected').forEach(function(n) { n.classList.remove('selected'); n.setAttribute('aria-selected', 'false'); });
-          div.classList.add('selected');
-          div.setAttribute('aria-selected', 'true');
-          renderProps(item);
-          vscode.postMessage({ type: 'selectElement', elementId: div.dataset.id });
+          var id = div.dataset.id;
+          var ctrl = e.ctrlKey || e.metaKey;
+          var shift = e.shiftKey;
+          if (shift && anchorId != null) {
+            var flat = getFlatVisibleIds(formModel.childItemsRoot, expandedIds, null);
+            var anchorIdx = flat.indexOf(anchorId);
+            var clickIdx = flat.indexOf(id);
+            if (anchorIdx >= 0 && clickIdx >= 0) {
+              var lo = Math.min(anchorIdx, clickIdx);
+              var hi = Math.max(anchorIdx, clickIdx);
+              selectedIds = flat.slice(lo, hi + 1);
+            } else {
+              selectedIds = [id];
+              anchorId = id;
+            }
+          } else if (ctrl) {
+            var idx = selectedIds.indexOf(id);
+            if (idx >= 0) {
+              selectedIds = selectedIds.slice(0, idx).concat(selectedIds.slice(idx + 1));
+              anchorId = selectedIds.length ? selectedIds[selectedIds.length - 1] : id;
+            } else {
+              selectedIds = selectedIds.concat([id]);
+              anchorId = id;
+            }
+          } else {
+            selectedIds = [id];
+            anchorId = id;
+          }
+          applyTreeSelection();
+          updateToolbarState();
+          selectedAttributeId = null;
+          selectedCommandId = null;
+          updatePropsPanel();
+          vscode.postMessage({ type: 'selectElement', elementId: selectedIds.length ? selectedIds[0] : undefined, selectedIds: selectedIds.slice(), ctrlKey: ctrl, shiftKey: shift });
         });
         ul.appendChild(div);
         if (hasChildren && expanded) renderTree(item.childItems, div, item);
@@ -867,55 +1725,98 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     }
 
     function createPreviewControl(item, tag) {
-      var label = (item.name || tag) + '';
+      var label = getItemTitle(item) || (item.name || tag) + '';
       var wrap = document.createElement('div');
       wrap.className = 'preview-control-wrap';
       if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'FormattedDocumentField' || tag === 'ValueList') {
+        wrap.className = 'preview-control-wrap preview-field-row';
+        var lbl = document.createElement('span');
+        lbl.className = 'preview-field-label';
+        lbl.textContent = label || '\u2014';
         var inp = document.createElement('input');
         inp.type = 'text';
-        inp.placeholder = label;
+        inp.placeholder = '';
         inp.readOnly = true;
         inp.className = 'preview-input';
+        wrap.appendChild(lbl);
         wrap.appendChild(inp);
       } else if (tag === 'CheckBoxField') {
+        wrap.className = 'preview-control-wrap preview-field-row';
         var cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.disabled = true;
-        var lbl = document.createElement('label');
-        lbl.textContent = label;
-        lbl.style.marginLeft = '6px';
+        var lblCb = document.createElement('span');
+        lblCb.className = 'preview-field-label';
+        lblCb.textContent = label || '\u2014';
+        wrap.appendChild(lblCb);
         wrap.appendChild(cb);
-        wrap.appendChild(lbl);
       } else if (tag === 'Button' || tag === 'Hyperlink') {
         var btn = document.createElement(tag === 'Hyperlink' ? 'a' : 'button');
-        btn.textContent = label;
+        btn.textContent = label || (item.name || tag);
         btn.disabled = true;
         btn.className = 'preview-button';
         wrap.appendChild(btn);
       } else if (tag === 'LabelField') {
         var lab = document.createElement('span');
-        lab.textContent = label;
+        lab.textContent = label || '\u2014';
         lab.className = 'preview-label';
         wrap.appendChild(lab);
       } else if (tag === 'Table') {
-        var tbl = document.createElement('div');
-        tbl.className = 'preview-table';
-        tbl.textContent = label + ' (таблица)';
-        wrap.appendChild(tbl);
+        var tableWrap = document.createElement('div');
+        tableWrap.className = 'preview-table-mock';
+        var tbl = document.createElement('table');
+        var thead = document.createElement('thead');
+        var headTr = document.createElement('tr');
+        var tableCols = (item.childItems || []).filter(function(it) { return isRealElement(it); });
+        tableCols.forEach(function(colItem) {
+          var th = document.createElement('th');
+          th.textContent = getItemTitle(colItem) || (colItem.name || colItem.tag) || '\u2014';
+          th.dataset.id = colItem.id || colItem.name || '';
+          th.setAttribute('data-id', th.dataset.id);
+          headTr.appendChild(th);
+        });
+        if (tableCols.length === 0) {
+          var thEmpty = document.createElement('th');
+          thEmpty.textContent = label || (item.name || 'Таблица');
+          headTr.appendChild(thEmpty);
+        }
+        thead.appendChild(headTr);
+        tbl.appendChild(thead);
+        var tbody = document.createElement('tbody');
+        var dataTr = document.createElement('tr');
+        var td = document.createElement('td');
+        td.colSpan = Math.max(1, tableCols.length);
+        td.textContent = '(пусто)';
+        td.style.color = 'var(--vscode-descriptionForeground)';
+        dataTr.appendChild(td);
+        tbody.appendChild(dataTr);
+        tbl.appendChild(tbody);
+        tableWrap.appendChild(tbl);
+        wrap.appendChild(tableWrap);
       } else if (tag === 'Page' || tag === 'Pages') {
-        var cap = document.createElement('div');
-        cap.className = 'preview-page-caption';
-        cap.textContent = label;
-        wrap.appendChild(cap);
+        var pageBlock = document.createElement('div');
+        pageBlock.className = tag === 'Pages' ? 'preview-group-block' : 'preview-page-block';
+        var pageTitle = document.createElement('div');
+        pageTitle.className = tag === 'Page' ? 'preview-page-title' : 'preview-group-title';
+        pageTitle.textContent = (tag === 'Pages' ? '' : (label || (item.name || 'Страница')));
+        if (pageTitle.textContent) pageBlock.appendChild(pageTitle);
+        wrap.appendChild(pageBlock);
+        wrap._mockupChildContainer = pageBlock;
       } else if (isContainerTag(tag)) {
-        var cap2 = document.createElement('div');
-        cap2.className = 'preview-group-caption';
-        cap2.textContent = label;
-        wrap.appendChild(cap2);
+        var groupBlock = document.createElement('div');
+        groupBlock.className = 'preview-group-block';
+        if (label) {
+          var groupTitle = document.createElement('div');
+          groupTitle.className = 'preview-group-title';
+          groupTitle.textContent = label;
+          groupBlock.appendChild(groupTitle);
+        }
+        wrap.appendChild(groupBlock);
+        wrap._mockupChildContainer = groupBlock;
       } else {
         var fall = document.createElement('span');
         fall.className = 'preview-fallback';
-        fall.textContent = label + ' (' + tag + ')';
+        fall.textContent = label + (tag ? ' (' + tag + ')' : '');
         wrap.appendChild(fall);
       }
       return wrap;
@@ -923,6 +1824,8 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     function renderPreview(items, parentEl) {
       parentEl.innerHTML = '';
       parentEl.classList.remove('preview-placeholder');
+      if (items && items.length) parentEl.classList.add('preview-mockup-form');
+      else parentEl.classList.remove('preview-mockup-form');
       if (!items || !items.length) {
         parentEl.textContent = 'Нет элементов';
         return;
@@ -941,6 +1844,10 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         div.ondragstart = function(e) { e.dataTransfer.setData('text/plain', id); e.dataTransfer.effectAllowed = 'move'; };
         div.ondragover = function(e) {
           e.preventDefault();
+          if (e.dataTransfer.types.indexOf(REQUISITE_DROP_TYPE) >= 0) {
+            if (isContainer) { e.dataTransfer.dropEffect = 'copy'; div.classList.add('drop-target'); }
+            return;
+          }
           var srcId = e.dataTransfer.getData('text/plain');
           if (!srcId || srcId === id) return;
           if (!isContainer) return;
@@ -952,6 +1859,20 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         div.ondrop = function(e) {
           e.preventDefault();
           div.classList.remove('drop-target');
+          var requisiteName = e.dataTransfer.getData(REQUISITE_DROP_TYPE);
+          if (requisiteName) {
+            if (!isContainer) return;
+            var ch = div.querySelector('.preview-children');
+            var kids = ch ? ch.children : [];
+            var dropY = e.clientY;
+            var idx = 0;
+            for (var i = 0; i < kids.length; i++) {
+              var r = kids[i].getBoundingClientRect();
+              if (dropY > r.top + r.height / 2) idx = i + 1;
+            }
+            vscode.postMessage({ type: 'addElementFromRequisite', requisiteName: requisiteName, dataPath: requisiteName, targetId: id, index: idx, source: 'preview' });
+            return;
+          }
           var srcId = e.dataTransfer.getData('text/plain');
           if (!srcId || srcId === id) return;
           if (!isContainer) return;
@@ -968,55 +1889,46 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         };
         div._formItem = item;
         div.addEventListener('click', function(e) {
+          if (e.target.closest && e.target.closest('th[data-id]')) return;
           e.stopPropagation();
           document.querySelectorAll('.preview-item.selected').forEach(function(n) { n.classList.remove('selected'); });
-          document.querySelectorAll('.tree-node.selected').forEach(function(n) { n.classList.remove('selected'); });
+          selectedIds = [id];
+          anchorId = id;
+          applyTreeSelection();
           div.classList.add('selected');
-          document.querySelectorAll('.tree-node').forEach(function(n) {
-            n.classList.toggle('selected', n._formItem === item);
-          });
-          renderProps(item);
-          vscode.postMessage({ type: 'selectElement', elementId: id });
+          updateToolbarState();
+          selectedAttributeId = null;
+          selectedCommandId = null;
+          updatePropsPanel();
+          vscode.postMessage({ type: 'selectElement', elementId: id, selectedIds: selectedIds.slice() });
         });
-        if (isContainer && item.childItems && item.childItems.length) {
-          var childWrap = document.createElement('div');
-          childWrap.className = 'preview-children' + (tag === 'Table' ? ' preview-table-columns' : '');
-          parentEl.appendChild(div);
-          div.appendChild(childWrap);
-          if (tag === 'Table') {
-            var tblRow = document.createElement('div');
-            tblRow.className = 'preview-table-cols-row';
-            var tableCols = item.childItems.filter(function(it) { return isRealElement(it); });
-            tableCols.forEach(function(colItem) {
-              var colDiv = document.createElement('div');
-              colDiv.className = 'preview-item preview-control preview-table-col';
-              colDiv.dataset.id = colItem.id || colItem.name || '';
-              colDiv.dataset.tag = colItem.tag || '';
-              colDiv._formItem = colItem;
-              var colLabel = document.createElement('span');
-              colLabel.className = 'preview-fallback';
-              colLabel.textContent = (colItem.name || colItem.tag) + (colItem.tag ? ' (' + colItem.tag + ')' : '');
-              colDiv.appendChild(colLabel);
-              colDiv.draggable = false;
-              colDiv.addEventListener('click', function(ev) {
+        parentEl.appendChild(div);
+        if (tag === 'Table') {
+          var ths = controlWrap.querySelectorAll('th[data-id]');
+          for (var ti = 0; ti < ths.length; ti++) {
+            (function(th) {
+              var colId = th.getAttribute('data-id');
+              if (!colId) return;
+              th.addEventListener('click', function(ev) {
                 ev.stopPropagation();
                 document.querySelectorAll('.preview-item.selected').forEach(function(n) { n.classList.remove('selected'); });
-                document.querySelectorAll('.tree-node.selected').forEach(function(n) { n.classList.remove('selected'); });
-                colDiv.classList.add('selected');
-                document.querySelectorAll('.tree-node').forEach(function(n) {
-                  n.classList.toggle('selected', n._formItem === colItem);
-                });
-                renderProps(colItem);
-                vscode.postMessage({ type: 'selectElement', elementId: colDiv.dataset.id });
+                controlWrap.querySelectorAll('th.selected').forEach(function(t) { t.classList.remove('selected'); });
+                selectedIds = [colId];
+                anchorId = colId;
+                th.classList.add('selected');
+                applyTreeSelection();
+                updateToolbarState();
+                selectedAttributeId = null;
+                selectedCommandId = null;
+                updatePropsPanel();
+                vscode.postMessage({ type: 'selectElement', elementId: colId, selectedIds: selectedIds.slice() });
               });
-              tblRow.appendChild(colDiv);
-            });
-            childWrap.appendChild(tblRow);
-          } else {
-            renderPreview(item.childItems, childWrap);
+            })(ths[ti]);
           }
-        } else {
-          parentEl.appendChild(div);
+        } else if (isContainer && item.childItems && item.childItems.length && controlWrap._mockupChildContainer) {
+          var childWrap = controlWrap._mockupChildContainer;
+          childWrap.className = 'preview-children' + (tag === 'AutoCommandBar' ? ' preview-buttons-container' : '');
+          renderPreview(item.childItems, childWrap);
         }
       });
     }
@@ -1034,6 +1946,53 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         return null;
       };
       return find(model.childItemsRoot || []);
+    }
+    function findParentAndIndex(root, elementId) {
+      if (!root || !elementId) return null;
+      for (var i = 0; i < root.length; i++) {
+        if ((root[i].id && root[i].id === elementId) || root[i].name === elementId) return { parent: root, index: i };
+        if (root[i].childItems && root[i].childItems.length) {
+          var found = findParentAndIndex(root[i].childItems, elementId);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    function getPasteTargetId() {
+      if (!formModel || !selectedIds.length) return null;
+      for (var i = 0; i < selectedIds.length; i++) {
+        var el = findElement(formModel, selectedIds[i]);
+        if (el && isContainerTag(el.tag)) return selectedIds[i];
+      }
+      return null;
+    }
+    function updateToolbarState() {
+      var addBtn = document.getElementById('tb-add');
+      var delBtn = document.getElementById('tb-delete');
+      var upBtn = document.getElementById('tb-up');
+      var downBtn = document.getElementById('tb-down');
+      var copyBtn = document.getElementById('tb-copy');
+      var pasteBtn = document.getElementById('tb-paste');
+      var saveBtn = document.getElementById('tb-save');
+      var cancelBtn = document.getElementById('tb-cancel');
+      if (!addBtn) return;
+      var hasModel = formModel && formModel.childItemsRoot;
+      var singleId = selectedIds.length === 1 ? selectedIds[0] : null;
+      var selectedItem = hasModel && singleId ? findElement(formModel, singleId) : null;
+      var isContainer = selectedItem && isContainerTag(selectedItem.tag);
+      var loc = hasModel && singleId ? findParentAndIndex(formModel.childItemsRoot, singleId) : null;
+      var isFirst = loc ? loc.index <= 0 : true;
+      var isLast = loc ? loc.index >= loc.parent.length - 1 : true;
+      var hasSelection = selectedIds.length > 0;
+      var pasteTarget = getPasteTargetId();
+      addBtn.disabled = !hasModel || (singleId && !isContainer);
+      delBtn.disabled = !hasModel || !hasSelection;
+      upBtn.disabled = !hasModel || !singleId || isFirst || selectedIds.length > 1;
+      downBtn.disabled = !hasModel || !singleId || isLast || selectedIds.length > 1;
+      copyBtn.disabled = !hasModel || !hasSelection;
+      pasteBtn.disabled = !hasModel || !clipboardBuffer || !pasteTarget;
+      saveBtn.disabled = !hasModel;
+      if (cancelBtn) cancelBtn.disabled = false;
     }
 
     function extractDisplayValue(v) {
@@ -1081,6 +2040,180 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         }
       }
       return '';
+    }
+    function valuesEqual(a, b) {
+      var sa = (typeof a === 'object' && a !== null) ? extractDisplayValue(a) : (a == null ? '' : String(a));
+      var sb = (typeof b === 'object' && b !== null) ? extractDisplayValue(b) : (b == null ? '' : String(b));
+      return sa === sb;
+    }
+    function getAttributeTypeDisplay(attr) {
+      if (!attr || !attr.properties) return '';
+      var v = attr.properties['Type'];
+      if (v != null) return extractDisplayValue(v) || '';
+      for (var k in attr.properties) {
+        if (k === ':@' || k.startsWith('@')) continue;
+        if (k === 'Type' || (k.indexOf('Type') >= 0 && k.length > 4)) return extractDisplayValue(attr.properties[k]) || '';
+      }
+      return '';
+    }
+    function getAttributeUsage(attr) {
+      if (!attr || !attr.properties) return '\u2014';
+      var v = attr.properties['Usage'] || attr.properties['Использование'];
+      if (v != null) return extractDisplayValue(v) || '\u2014';
+      for (var k in attr.properties) {
+        if (k === ':@' || k.startsWith('@')) continue;
+        if (k === 'Usage' || k.indexOf('Usage') >= 0) return extractDisplayValue(attr.properties[k]) || '\u2014';
+      }
+      return '\u2014';
+    }
+    var REQUISITE_DROP_TYPE = 'application/x-1c-form-requisite';
+    function renderAttributesTable(attributes) {
+      var tbody = document.getElementById('attributes-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      if (!attributes || !attributes.length) return;
+      attributes.forEach(function(attr) {
+        var tr = document.createElement('tr');
+        tr.dataset.id = attr.id || attr.name;
+        tr.dataset.name = attr.name;
+        tr.draggable = true;
+        tr.ondragstart = function(e) {
+          e.dataTransfer.setData(REQUISITE_DROP_TYPE, attr.name || '');
+          e.dataTransfer.effectAllowed = 'copy';
+        };
+        var nameCell = document.createElement('td');
+        nameCell.textContent = attr.name || '';
+        var usageCell = document.createElement('td');
+        usageCell.textContent = getAttributeUsage(attr);
+        var typeCell = document.createElement('td');
+        typeCell.textContent = getAttributeTypeDisplay(attr) || '\u2014';
+        tr.appendChild(nameCell);
+        tr.appendChild(usageCell);
+        tr.appendChild(typeCell);
+        tr.addEventListener('click', function() {
+          selectedAttributeId = attr.name || attr.id;
+          selectedCommandId = null;
+          document.querySelectorAll('#attributes-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
+          tr.classList.add('selected');
+          document.querySelectorAll('#commands-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
+          document.getElementById('btn-edit-attribute').disabled = false;
+          document.getElementById('btn-delete-attribute').disabled = false;
+          updatePropsPanel();
+        });
+        tbody.appendChild(tr);
+      });
+    }
+    function renderCommandsTable(commands) {
+      var tbody = document.getElementById('commands-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      if (!commands || !commands.length) return;
+      commands.forEach(function(cmd) {
+        var tr = document.createElement('tr');
+        tr.dataset.id = cmd.id || cmd.name;
+        tr.dataset.name = cmd.name;
+        var nameCell = document.createElement('td');
+        nameCell.textContent = cmd.name || '';
+        var titleCell = document.createElement('td');
+        titleCell.textContent = (cmd.properties && cmd.properties['Title'] != null) ? extractDisplayValue(cmd.properties['Title']) : '';
+        tr.appendChild(nameCell);
+        tr.appendChild(titleCell);
+        tr.addEventListener('click', function() {
+          selectedCommandId = cmd.name || cmd.id;
+          selectedAttributeId = null;
+          document.querySelectorAll('#commands-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
+          tr.classList.add('selected');
+          document.querySelectorAll('#attributes-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
+          document.getElementById('btn-delete-command').disabled = false;
+          updatePropsPanel();
+        });
+        tbody.appendChild(tr);
+      });
+    }
+    function updatePropsPanel() {
+      if (selectedAttributeId && formModel && formModel.attributes) {
+        var attr = formModel.attributes.find(function(a) { return a.name === selectedAttributeId || a.id === selectedAttributeId; });
+        if (attr) { renderAttributeProps(attr); return; }
+      }
+      if (selectedCommandId && formModel && formModel.commands) {
+        var cmd = formModel.commands.find(function(c) { return c.name === selectedCommandId || c.id === selectedCommandId; });
+        if (cmd) { renderCommandProps(cmd); return; }
+      }
+      if (selectedIds.length === 0) {
+        renderProps(null);
+      } else if (selectedIds.length === 1) {
+        var one = findElement(formModel, selectedIds[0]);
+        if (one) renderProps(one); else renderProps(null);
+      } else {
+        var elements = selectedIds.map(function(sid) { return findElement(formModel, sid); }).filter(Boolean);
+        if (elements.length) renderPropsMultiple(elements); else renderProps(null);
+      }
+    }
+    function renderAttributeProps(attr) {
+      var placeholder = document.getElementById('props-placeholder');
+      var content = document.getElementById('props-content');
+      var actions = document.getElementById('props-actions');
+      var propsHeader = document.getElementById('props-header');
+      if (!attr) return;
+      if (propsHeader) propsHeader.textContent = 'Реквизит: ' + (attr.name || '');
+      placeholder.style.display = 'none';
+      content.style.display = 'block';
+      actions.style.display = 'block';
+      var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
+      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="attr-prop-name" value="' + esc(attr.name) + '"></div></div>';
+      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="attr-prop-id" value="' + esc(attr.id) + '"></div></div></div>';
+      if (attr.properties && Object.keys(attr.properties).some(function(k) { return k !== ':@' && !k.startsWith('@'); })) {
+        html += '<div class="props-block"><p class="props-block-title">Свойства</p>';
+        for (var k in attr.properties) {
+          if (k === ':@' || k.startsWith('@')) continue;
+          var v = attr.properties[k];
+          var val = (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (typeof v === 'string' ? v : String(v));
+          html += '<div class="prop-row"><label>' + esc(k) + '</label> <div class="prop-input-wrap"><input data-key="' + esc(k) + '" data-attr-id="' + esc(attr.name || attr.id) + '" value="' + esc(val || '') + '"></div></div>';
+        }
+        html += '</div>';
+      }
+      content.innerHTML = html;
+      content.querySelectorAll('input').forEach(function(inp) {
+        inp.addEventListener('change', function() {
+          var elementId = attr.name || attr.id;
+          if (inp.id === 'attr-prop-name') vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'attributes', key: 'name', value: inp.value });
+          else if (inp.id === 'attr-prop-id') vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'attributes', key: 'id', value: inp.value });
+          else if (inp.dataset.key) vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'attributes', key: inp.dataset.key, value: inp.value });
+        });
+      });
+    }
+    function renderCommandProps(cmd) {
+      var placeholder = document.getElementById('props-placeholder');
+      var content = document.getElementById('props-content');
+      var actions = document.getElementById('props-actions');
+      var propsHeader = document.getElementById('props-header');
+      if (!cmd) return;
+      if (propsHeader) propsHeader.textContent = 'Команда: ' + (cmd.name || '');
+      placeholder.style.display = 'none';
+      content.style.display = 'block';
+      actions.style.display = 'block';
+      var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
+      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="cmd-prop-name" value="' + esc(cmd.name) + '"></div></div>';
+      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="cmd-prop-id" value="' + esc(cmd.id) + '"></div></div></div>';
+      if (cmd.properties && Object.keys(cmd.properties).some(function(k) { return k !== ':@' && !k.startsWith('@'); })) {
+        html += '<div class="props-block"><p class="props-block-title">Свойства</p>';
+        for (var k in cmd.properties) {
+          if (k === ':@' || k.startsWith('@')) continue;
+          var v = cmd.properties[k];
+          var val = (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (typeof v === 'string' ? v : String(v));
+          html += '<div class="prop-row"><label>' + esc(k) + '</label> <div class="prop-input-wrap"><input data-key="' + esc(k) + '" value="' + esc(val || '') + '"></div></div>';
+        }
+        html += '</div>';
+      }
+      content.innerHTML = html;
+      content.querySelectorAll('input').forEach(function(inp) {
+        inp.addEventListener('change', function() {
+          var elementId = cmd.name || cmd.id;
+          if (inp.id === 'cmd-prop-name') vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'commands', key: 'name', value: inp.value });
+          else if (inp.id === 'cmd-prop-id') vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'commands', key: 'id', value: inp.value });
+          else if (inp.dataset.key) vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'commands', key: inp.dataset.key, value: inp.value });
+        });
+      });
     }
     function renderProps(el) {
       const placeholder = document.getElementById('props-placeholder');
@@ -1144,6 +2277,92 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         });
       });
     }
+    function renderPropsMultiple(elements) {
+      const placeholder = document.getElementById('props-placeholder');
+      const content = document.getElementById('props-content');
+      const actions = document.getElementById('props-actions');
+      const propsHeader = document.getElementById('props-header');
+      if (!elements || !elements.length) {
+        if (propsHeader) propsHeader.textContent = '';
+        placeholder.style.display = 'block';
+        content.style.display = 'none';
+        content.innerHTML = '';
+        actions.style.display = 'block';
+        return;
+      }
+      var N = elements.length;
+      if (propsHeader) propsHeader.textContent = 'Выбрано элементов: ' + N;
+      placeholder.style.display = 'none';
+      actions.style.display = 'block';
+      var propKeys = {};
+      elements.forEach(function(el) {
+        if (el.properties && typeof el.properties === 'object') {
+          for (var k in el.properties) {
+            if (k === ':@' || k.startsWith('@')) continue;
+            propKeys[k] = (propKeys[k] || 0) + 1;
+          }
+        }
+      });
+      var commonPropKeys = Object.keys(propKeys).filter(function(k) { return propKeys[k] === N; });
+      var eventKeys = {};
+      elements.forEach(function(el) {
+        if (el.events && typeof el.events === 'object') {
+          for (var ev in el.events) { eventKeys[ev] = (eventKeys[ev] || 0) + 1; }
+        }
+      });
+      var commonEventKeys = Object.keys(eventKeys).filter(function(ev) { return eventKeys[ev] === N; });
+      var tags = elements.map(function(el) { return el.tag || ''; });
+      var sameTag = tags.every(function(t) { return t === tags[0]; });
+      var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
+      html += '<div class="prop-row"><label>Тип</label> <span class="fe-badge">' + (sameTag ? esc(tags[0]) : 'Разные') + '</span></div>';
+      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="prop-name" readonly placeholder="Разные" value=""></div></div>';
+      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="prop-id" readonly placeholder="Разные" value=""></div></div></div>';
+      if (commonPropKeys.length) {
+        html += '<div class="props-block"><p class="props-block-title">Свойства</p>';
+        commonPropKeys.forEach(function(k) {
+          var vals = elements.map(function(el) { var v = el.properties[k]; return (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (v == null ? '' : String(v)); });
+          var same = vals.every(function(v) { return v === vals[0]; });
+          var val = same ? (vals[0] || '') : '';
+          var placeholderAttr = same ? '' : ' placeholder="Разные значения"';
+          html += '<div class="prop-row"><label>' + esc(k) + '</label> <div class="prop-input-wrap"><input data-key="' + esc(k) + '" value="' + esc(val) + '"' + placeholderAttr + '></div></div>';
+        });
+        html += '</div>';
+      }
+      if (commonEventKeys.length) {
+        html += '<div class="props-block"><p class="props-block-title">События</p>';
+        commonEventKeys.forEach(function(evName) {
+          var vals = elements.map(function(el) { return (el.events && el.events[evName]) ? String(el.events[evName]).trim() : ''; });
+          var same = vals.every(function(v) { return v === vals[0]; });
+          var val = same ? (vals[0] || '') : '';
+          var placeholderAttr = same ? '' : ' placeholder="Разные значения"';
+          html += '<div class="prop-row"><label>' + esc(evName) + '</label> <div class="prop-input-wrap"><input class="event-method-input" data-event="' + esc(evName) + '" value="' + esc(val) + '"' + placeholderAttr + ' placeholder="Имя процедуры"></div> <button type="button" class="btn-goto-proc" data-proc="">Перейти</button></div>';
+        });
+        html += '</div>';
+      }
+      if (!commonPropKeys.length && !commonEventKeys.length) {
+        html = '<div class="placeholder">Нет общих свойств для выбранных элементов</div>';
+      }
+      content.innerHTML = html;
+      content.style.display = 'block';
+      content.querySelectorAll('input').forEach(inp => {
+        if (inp.id === 'prop-name' || inp.id === 'prop-id') return;
+        inp.addEventListener('change', function() {
+          var key = inp.dataset.key;
+          var section = inp.classList.contains('event-method-input') ? 'events' : undefined;
+          var evKey = inp.dataset.event;
+          var payloadKey = section === 'events' ? evKey : key;
+          vscode.postMessage({ type: 'propertyChange', elementIds: selectedIds.slice(), section: section, key: payloadKey, value: inp.value });
+        });
+      });
+      content.querySelectorAll('.btn-goto-proc').forEach(btn => {
+        btn.addEventListener('click', function() {
+          var row = this.closest('.prop-row');
+          var input = row ? row.querySelector('.event-method-input') : null;
+          var proc = (input && input.value && input.value.trim()) ? input.value.trim() : '';
+          if (proc) vscode.postMessage({ type: 'openModule', procedureName: proc });
+        });
+      });
+    }
 
     document.getElementById('btn-cancel').addEventListener('click', () => {
       vscode.postMessage({ type: 'cancel' });
@@ -1151,6 +2370,88 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     document.getElementById('btn-save').addEventListener('click', () => {
       document.getElementById('save-status').textContent = 'Сохранение...';
       vscode.postMessage({ type: 'save', formModel: formModel });
+    });
+    document.getElementById('tb-cancel').addEventListener('click', () => { vscode.postMessage({ type: 'cancel' }); });
+    document.getElementById('tb-save').addEventListener('click', () => {
+      document.getElementById('save-status').textContent = 'Сохранение...';
+      vscode.postMessage({ type: 'save', formModel: formModel });
+    });
+    document.getElementById('tb-add').addEventListener('click', () => {
+      if (!formModel) return;
+      var parentId = getPasteTargetId();
+      if (!parentId && selectedIds.length === 1) parentId = findElement(formModel, selectedIds[0]) && isContainerTag(findElement(formModel, selectedIds[0]).tag) ? selectedIds[0] : undefined;
+      vscode.postMessage({ type: 'addElement', parentId: parentId, tag: 'InputField', name: 'NewItem' });
+    });
+    document.getElementById('tb-delete').addEventListener('click', () => {
+      if (!selectedIds.length) return;
+      if (selectedIds.length === 1) {
+        vscode.postMessage({ type: 'deleteElement', elementId: selectedIds[0] });
+      } else {
+        vscode.postMessage({ type: 'deleteElement', elementIds: selectedIds.slice() });
+      }
+    });
+    document.getElementById('tb-up').addEventListener('click', () => {
+      if (selectedIds.length !== 1) return;
+      vscode.postMessage({ type: 'moveElementSibling', elementId: selectedIds[0], direction: 'up' });
+    });
+    document.getElementById('tb-down').addEventListener('click', () => {
+      if (selectedIds.length !== 1) return;
+      vscode.postMessage({ type: 'moveElementSibling', elementId: selectedIds[0], direction: 'down' });
+    });
+    document.getElementById('tb-copy').addEventListener('click', () => {
+      if (!selectedIds.length || !formModel) return;
+      var items = selectedIds.map(function(id) { return findElement(formModel, id); }).filter(Boolean);
+      if (items.length === 1) clipboardBuffer = JSON.parse(JSON.stringify(items[0]));
+      else if (items.length > 1) clipboardBuffer = items.map(function(it) { return JSON.parse(JSON.stringify(it)); });
+      if (items.length) updateToolbarState();
+    });
+    document.getElementById('tb-paste').addEventListener('click', () => {
+      var targetId = getPasteTargetId();
+      if (!clipboardBuffer || !targetId) return;
+      vscode.postMessage({ type: 'pasteElement', targetId: targetId, index: 0, clipboard: clipboardBuffer });
+    });
+    updateToolbarState();
+
+    document.querySelectorAll('[data-left-tab]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var t = this.dataset.leftTab;
+        document.querySelectorAll('[data-left-tab]').forEach(function(b) {
+          b.classList.toggle('active', b.dataset.leftTab === t);
+          b.setAttribute('aria-selected', b.dataset.leftTab === t ? 'true' : 'false');
+        });
+        document.getElementById('left-tab-elements').style.display = t === 'elements' ? 'block' : 'none';
+        document.getElementById('left-command-interface').style.display = t === 'command-interface' ? 'block' : 'none';
+      });
+    });
+    document.querySelector('[data-left-tab="elements"]').classList.add('active');
+
+    document.querySelectorAll('[data-right-tab]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var t = this.dataset.rightTab;
+        document.querySelectorAll('[data-right-tab]').forEach(function(b) {
+          b.classList.toggle('active', b.dataset.rightTab === t);
+          b.setAttribute('aria-selected', b.dataset.rightTab === t ? 'true' : 'false');
+        });
+        document.getElementById('right-tab-attributes').style.display = t === 'attributes' ? 'flex' : 'none';
+        document.getElementById('right-tab-commands').style.display = t === 'commands' ? 'flex' : 'none';
+        document.getElementById('right-tab-parameters').style.display = t === 'parameters' ? 'flex' : 'none';
+      });
+    });
+    document.querySelector('[data-right-tab="attributes"]').classList.add('active');
+
+    document.getElementById('btn-add-attribute').addEventListener('click', function() {
+      vscode.postMessage({ type: 'addAttribute' });
+    });
+    document.getElementById('btn-delete-attribute').addEventListener('click', function() {
+      if (!selectedAttributeId) return;
+      vscode.postMessage({ type: 'deleteAttribute', attributeId: selectedAttributeId, attributeName: selectedAttributeId });
+    });
+    document.getElementById('btn-add-command').addEventListener('click', function() {
+      vscode.postMessage({ type: 'addCommand' });
+    });
+    document.getElementById('btn-delete-command').addEventListener('click', function() {
+      if (!selectedCommandId) return;
+      vscode.postMessage({ type: 'deleteCommand', commandId: selectedCommandId, commandName: selectedCommandId });
     });
 
     document.querySelectorAll('[data-tab]').forEach(function(btn) {
@@ -1181,7 +2482,48 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       }
     }
     function getPreviewEmptyStateHtml() {
-      return '<div class="preview-empty-state"><p class="preview-empty-title">Визуальное превью формы пока не реализовано</p><p class="preview-empty-hint">Структуру можно просматривать в дереве элементов и в панели свойств.</p></div>';
+      return '<div class="preview-empty-state"><p class="preview-empty-title">Форма не содержит элементов</p><p class="preview-empty-hint">Добавьте элементы в дереве или перетащите реквизиты в превью.</p></div>';
+    }
+    function renderCommandInterface(model) {
+      var container = document.getElementById('command-interface-content');
+      if (!container) return;
+      var html = '';
+      html += '<div class="command-interface-section"><p class="command-interface-section-title">Команды формы</p>';
+      if (model.commands && model.commands.length) {
+        html += '<ul class="command-interface-list">';
+        model.commands.forEach(function(cmd) {
+          var title = extractDisplayValue(cmd.properties && cmd.properties['Title']);
+          var label = (cmd.name || '') + (title ? ' — ' + title : '');
+          html += '<li>' + esc(label || cmd.name || '') + '</li>';
+        });
+        html += '</ul>';
+      } else {
+        html += '<p class="command-interface-empty">Нет команд формы</p>';
+      }
+      html += '</div>';
+      html += '<div class="command-interface-section"><p class="command-interface-section-title">Командная панель</p>';
+      var barName = model.autoCommandBarName || model.autoCommandBarId;
+      if (!barName) {
+        html += '<p class="command-interface-empty">Командная панель не задана</p>';
+      } else {
+        html += '<p class="command-interface-list" style="list-style:none; padding:0; margin:0 0 var(--fe-spacing-sm) 0;">Командная панель: ' + esc(barName) + '</p>';
+        var barNode = findElement(model, barName);
+        if (!barNode) {
+          html += '<p class="command-interface-empty">Узел командной панели не найден</p>';
+        } else if (barNode.childItems && barNode.childItems.length) {
+          html += '<ul class="command-interface-list">';
+          barNode.childItems.forEach(function(child) {
+            var cmdName = child.properties && (child.properties['CommandName'] != null) ? extractDisplayValue(child.properties['CommandName']) : '';
+            var label = (cmdName && cmdName.trim()) ? cmdName : (child.name || child.tag || '');
+            html += '<li>' + esc(label) + '</li>';
+          });
+          html += '</ul>';
+        } else {
+          html += '<p class="command-interface-empty">Панель пуста</p>';
+        }
+      }
+      html += '</div>';
+      container.innerHTML = html;
     }
     window.addEventListener('message', function(event) {
       var msg = event.data;
@@ -1189,6 +2531,11 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         formModel = msg.formModel;
         formXmlPath = msg.formXmlPath || '';
         modulePath = msg.modulePath || '';
+        if (formModel) {
+          selectedIds = selectedIds.filter(function(id) { return findElement(formModel, id); });
+          if (anchorId && !findElement(formModel, anchorId)) anchorId = selectedIds.length ? selectedIds[selectedIds.length - 1] : null;
+        }
+        updateToolbarState();
         var treeRoot = document.getElementById('tree-root');
         var treeError = document.getElementById('tree-error');
         treeRoot.innerHTML = '';
@@ -1204,6 +2551,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           if (formModel && formModel.childItemsRoot) collectContainerIds(formModel.childItemsRoot, expandedIds);
           if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
             renderTree(formModel.childItemsRoot, treeRoot);
+            applyTreeSelection();
             renderPreview(formModel.childItemsRoot, document.getElementById('preview-form'));
           } else {
             treeRoot.textContent = 'Нет элементов';
@@ -1218,6 +2566,18 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           pf.classList.remove('preview-placeholder');
         }
         document.getElementById('props-actions').style.display = formModel && !msg.fileMissing ? 'block' : 'none';
+        if (formModel && !msg.fileMissing) {
+          renderCommandInterface(formModel);
+          renderAttributesTable(formModel.attributes);
+          renderCommandsTable(formModel.commands);
+          document.getElementById('btn-edit-attribute').disabled = true;
+          document.getElementById('btn-delete-attribute').disabled = true;
+          document.getElementById('btn-delete-command').disabled = true;
+          selectedAttributeId = null;
+          selectedCommandId = null;
+        }
+        applyTreeSelection();
+        updatePropsPanel();
       } else if (msg.type === 'error') {
         document.getElementById('tree-error').textContent = msg.message || 'Ошибка загрузки';
         document.getElementById('tree-error').style.display = 'block';

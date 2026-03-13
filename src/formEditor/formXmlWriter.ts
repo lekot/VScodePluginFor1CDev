@@ -56,6 +56,13 @@ function buildFormContent(model: FormModel): unknown[] {
       '@_version': '2.20',
     },
   });
+  if (model.autoCommandBarName !== undefined && model.autoCommandBarName !== '') {
+    const autoBarAttrs: Record<string, string> = { '@_name': model.autoCommandBarName };
+    if (model.autoCommandBarId !== undefined && model.autoCommandBarId !== '') {
+      autoBarAttrs['@_id'] = model.autoCommandBarId;
+    }
+    formContent.push({ AutoCommandBar: [{ ':@': autoBarAttrs }] });
+  }
   if (model.formEvents && model.formEvents.length) {
     formContent.push({ Events: buildEventsArray(model.formEvents) });
   }
