@@ -12,6 +12,7 @@ import {
   OTHER_SECTION_TITLE,
   DEFAULT_SECTION_TITLE,
 } from '../constants/propertySections';
+import { getPropertyEnumValues } from '../constants/propertyEnumValues';
 import { MESSAGES } from '../constants/messages';
 import type { TypeDefinition, ReferenceTypeInfo } from '../types/typeDefinitions';
 import { validateElementName } from '../utils/elementNameValidator';
@@ -661,19 +662,27 @@ export class PropertiesProvider {
       }
     }
     
+    // Complex objects/arrays (except Type which is handled above) — render as read-only summary
+    if (!isTypeProperty && (Array.isArray(displayValue) || (typeof displayValue === 'object' && displayValue !== null))) {
+      const displayName = getPropertyLabel(name);
+      const summary = Array.isArray(displayValue)
+        ? `[${displayValue.length} элем.]`
+        : '{...}';
+      return `
+        <div class="property-row">
+          <label class="property-label">${this.escapeHtml(displayName)}</label>
+          <input type="text" class="property-input" data-property="${this.escapeHtml(name)}" value="${this.escapeHtml(summary)}" disabled />
+        </div>
+      `;
+    }
+
     const propertyType = this.detectPropertyType(displayValue);
-    const inputType = propertyType === 'boolean' ? 'checkbox' : propertyType === 'number' ? 'number' : 'text';
-    const checked = propertyType === 'boolean' && displayValue ? 'checked' : '';
-    const inputValue = propertyType === 'boolean' ? '' : this.escapeHtml(String(displayValue ?? ''));
-    
+
     // Determine if this specific property should be read-only
-    // For root elements (Catalog, Document, etc.), type property is read-only
-    // For nested elements (Attribute, etc.), type property is editable
     const isRootElement = this.isRootElement(this.currentNode);
     const propertyReadOnly = globalReadOnly || (isRootElement && isTypeProperty);
-    
     const disabled = propertyReadOnly ? 'disabled' : '';
-    
+
     // Get Russian label for property name
     const displayName = getPropertyLabel(name);
 
@@ -682,6 +691,31 @@ export class PropertiesProvider {
         <span class="edit-type-icon" aria-hidden="true">${this.getEditTypePencilSvg()}</span>
       </button>
     ` : '';
+
+    // Render <select> for enum properties
+    const enumValues = getPropertyEnumValues(name);
+    if (enumValues && !isTypeProperty && !propertyReadOnly) {
+      const currentValue = String(displayValue ?? '');
+      const options = enumValues.map(v =>
+        `<option value="${this.escapeHtml(v)}"${v === currentValue ? ' selected' : ''}>${this.escapeHtml(v)}</option>`
+      ).join('');
+      // Add current value as option if not in the list (unknown/legacy value)
+      const unknownOption = currentValue && !enumValues.includes(currentValue)
+        ? `<option value="${this.escapeHtml(currentValue)}" selected>${this.escapeHtml(currentValue)}</option>`
+        : '';
+      return `
+        <div class="property-row">
+          <label class="property-label">${this.escapeHtml(displayName)}</label>
+          <select class="property-input" data-property="${this.escapeHtml(name)}" ${disabled}>
+            ${unknownOption}${options}
+          </select>
+        </div>
+      `;
+    }
+
+    const inputType = propertyType === 'boolean' ? 'checkbox' : propertyType === 'number' ? 'number' : 'text';
+    const checked = propertyType === 'boolean' && displayValue ? 'checked' : '';
+    const inputValue = propertyType === 'boolean' ? '' : this.escapeHtml(String(displayValue ?? ''));
 
     return `
       <div class="property-row">
