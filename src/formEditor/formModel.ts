@@ -59,6 +59,13 @@ export interface FormModel {
   autoCommandBarId?: string;
   /** Optional: parameters, group list, etc. for future use. */
   parameters?: unknown[];
+  /** All xmlns declarations from the original Form.xml root element, for round-trip. */
+  xmlnsDeclarations?: Record<string, string>;
+  /** version attribute from the root <Form> element, for round-trip. */
+  version?: string;
+  /** Top-level fields of <Form> that are not ChildItems/Attributes/Commands/Events/AutoCommandBar.
+   *  E.g. WindowOpeningMode, UseForFoldersAndItems. Stored as raw parsed content for round-trip. */
+  topLevelFields?: Array<{ tag: string; content: unknown[] }>;
 }
 
 /** Result of parsing when file is missing (allowed by option). */
