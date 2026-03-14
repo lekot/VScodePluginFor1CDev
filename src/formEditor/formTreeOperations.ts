@@ -78,6 +78,8 @@ export function moveNodeInModel(
   const sourceLoc = findParentAndIndex(model.childItemsRoot, sourceId);
   const targetEl = findElementById(model.childItemsRoot, targetId);
   if (!sourceLoc || !targetEl || !isContainer(targetEl)) return false;
+  // Guard: cannot move element into its own descendant
+  if (isDescendantOf(model, targetId, sourceId)) return false;
   const [node] = sourceLoc.parent.splice(sourceLoc.index, 1);
   if (!node) return false;
   // Guard: if the root was emptied by this splice, roll back and reject
