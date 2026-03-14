@@ -21,3 +21,5 @@ mcp-*.md
 **/*.ts
 shcntx_help.db
 releases/
+ut_demo_ForFormat/
+FormatSamples/
