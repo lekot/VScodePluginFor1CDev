@@ -23,15 +23,30 @@ function buildEventsArray(events: FormEventItem[]): unknown[] {
   }));
 }
 
+/** Normalize property value for XMLBuilder: skip undefined; primitives as text node; return array for preserveOrder. */
+function normalizePropertyValue(v: unknown): unknown[] | undefined {
+  if (v === undefined) return undefined;
+  if (v === null) return [{ '#text': '' }];
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+    return [{ '#text': String(v) }];
+  }
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'object' && v !== null) return [v];
+  return [{ '#text': String(v) }];
+}
+
 function buildChildItem(item: FormChildItem): Record<string, unknown[]> {
   const content: unknown[] = [];
   const at: Record<string, string> = {};
-  if (item.name) at['@_name'] = item.name;
-  if (item.id) at['@_id'] = item.id;
+  if (item.name != null && String(item.name) !== '') at['@_name'] = String(item.name);
+  if (item.id != null && String(item.id) !== '') at['@_id'] = String(item.id);
   if (Object.keys(at).length) content.push({ ':@': at });
-  for (const [k, v] of Object.entries(item.properties)) {
+  const props = item.properties ?? {};
+  for (const [k, v] of Object.entries(props)) {
     if (k === ':@' || k.startsWith('@')) continue;
-    content.push({ [k]: v });
+    const value = normalizePropertyValue(v);
+    if (value === undefined) continue;
+    content.push({ [k]: value });
   }
   if (item.childItems && item.childItems.length) {
     content.push({
@@ -76,12 +91,15 @@ function buildFormContent(model: FormModel): unknown[] {
       Attributes: model.attributes.map((attr) => {
         const arr: unknown[] = [];
         const at: Record<string, string> = {};
-        if (attr.name) at['@_name'] = attr.name;
-        if (attr.id) at['@_id'] = attr.id;
+        if (attr.name != null && String(attr.name) !== '') at['@_name'] = String(attr.name);
+        if (attr.id != null && String(attr.id) !== '') at['@_id'] = String(attr.id);
         if (Object.keys(at).length) arr.push({ ':@': at });
-        for (const [k, v] of Object.entries(attr.properties)) {
+        const props = attr.properties ?? {};
+        for (const [k, v] of Object.entries(props)) {
           if (k === ':@' || k.startsWith('@')) continue;
-          arr.push({ [k]: v });
+          const value = normalizePropertyValue(v);
+          if (value === undefined) continue;
+          arr.push({ [k]: value });
         }
         return { Attribute: arr };
       }),
@@ -92,12 +110,15 @@ function buildFormContent(model: FormModel): unknown[] {
       Commands: model.commands.map((cmd) => {
         const arr: unknown[] = [];
         const at: Record<string, string> = {};
-        if (cmd.name) at['@_name'] = cmd.name;
-        if (cmd.id) at['@_id'] = cmd.id;
+        if (cmd.name != null && String(cmd.name) !== '') at['@_name'] = String(cmd.name);
+        if (cmd.id != null && String(cmd.id) !== '') at['@_id'] = String(cmd.id);
         if (Object.keys(at).length) arr.push({ ':@': at });
-        for (const [k, v] of Object.entries(cmd.properties)) {
+        const props = cmd.properties ?? {};
+        for (const [k, v] of Object.entries(props)) {
           if (k === ':@' || k.startsWith('@')) continue;
-          arr.push({ [k]: v });
+          const value = normalizePropertyValue(v);
+          if (value === undefined) continue;
+          arr.push({ [k]: value });
         }
         return { Command: arr };
       }),

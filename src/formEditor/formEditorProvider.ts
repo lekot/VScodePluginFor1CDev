@@ -67,10 +67,11 @@ function requisiteTypeToTag(attr: FormAttribute | undefined): string {
 
 /** Find element by id or name in tree (recursive). */
 function findElementById(root: FormChildItem[], elementId: string): FormChildItem | undefined {
+  const id = String(elementId);
   for (const item of root) {
-    if ((item.id && item.id === elementId) || item.name === elementId) return item;
+    if ((item.id != null && String(item.id) === id) || (item.name != null && String(item.name) === id)) return item;
     if (item.childItems?.length) {
-      const found = findElementById(item.childItems, elementId);
+      const found = findElementById(item.childItems, id);
       if (found) return found;
     }
   }
@@ -84,8 +85,8 @@ function isDescendantOf(model: FormModel, sourceId: string, targetId: string): b
   if (!target?.childItems?.length) return false;
   const walk = (items: FormChildItem[]): boolean => {
     for (const item of items) {
-      const id = item.id || item.name;
-      if (id === sourceId) return true;
+      const id = item.id != null ? String(item.id) : (item.name != null ? String(item.name) : '');
+      if (id && id === sourceId) return true;
       if (item.childItems?.length && walk(item.childItems)) return true;
     }
     return false;
@@ -98,12 +99,13 @@ function findParentAndIndex(
   root: FormChildItem[],
   elementId: string
 ): { parent: FormChildItem[]; index: number } | null {
+  const id = String(elementId);
   for (let i = 0; i < root.length; i++) {
-    if ((root[i].id && root[i].id === elementId) || root[i].name === elementId) {
+    if ((root[i].id != null && String(root[i].id) === id) || (root[i].name != null && String(root[i].name) === id)) {
       return { parent: root, index: i };
     }
     if (root[i].childItems?.length) {
-      const found = findParentAndIndex(root[i].childItems!, elementId);
+      const found = findParentAndIndex(root[i].childItems!, id);
       if (found) return found;
     }
   }
@@ -119,6 +121,7 @@ function moveNodeInModel(
 ): boolean {
   const sourceLoc = findParentAndIndex(model.childItemsRoot, sourceId);
   const targetEl = findElementById(model.childItemsRoot, targetId);
+  Logger.debug('moveNodeInModel', { sourceLoc: sourceLoc != null, targetEl: targetEl != null, isContainer: targetEl ? isContainer(targetEl) : false });
   if (!sourceLoc || !targetEl || !isContainer(targetEl)) return false;
   const [node] = sourceLoc.parent.splice(sourceLoc.index, 1);
   if (!node) return false;
@@ -156,7 +159,7 @@ function moveElementSiblingInModel(
 /** Collect all id values from tree (numeric ones for max). */
 function collectIds(items: FormChildItem[], out: Set<string>): void {
   for (const item of items) {
-    if (item.id) out.add(item.id);
+    if (item.id != null) out.add(String(item.id));
     if (item.childItems?.length) collectIds(item.childItems, out);
   }
 }
@@ -402,18 +405,27 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     msg: Record<string, unknown>
   ): Promise<void> {
     const model = this.documentModel.get(document.uri.toString());
-    const sourceId = msg.sourceId as string | undefined;
-    const targetId = msg.targetId as string | undefined;
+    const rawSource = msg.sourceId as string | undefined;
+    const rawTarget = msg.targetId as string | undefined;
     const index = (msg.index as number | undefined) ?? 0;
-    if (!model || sourceId === undefined || targetId === undefined) {
+    if (!model || rawSource === undefined || rawTarget === undefined) {
       webviewPanel.webview.postMessage({ type: 'error', message: 'Неверные параметры dragDrop.' });
       return;
     }
+    const sourceId = String(rawSource);
+    const targetId = String(rawTarget);
+    Logger.debug('dragDrop', { sourceId, targetId, index });
     if (sourceId === targetId || isDescendantOf(model, sourceId, targetId)) {
       webviewPanel.webview.postMessage({
         type: 'error',
         message: 'Нельзя переместить элемент в себя или в своего потомка.',
       });
+      return;
+    }
+    const sourceLoc = findParentAndIndex(model.childItemsRoot, sourceId);
+    if (!sourceLoc) {
+      Logger.debug('dragDrop: source not found', { sourceId });
+      webviewPanel.webview.postMessage({ type: 'error', message: 'Элемент-источник не найден.' });
       return;
     }
     const targetEl = findElementById(model.childItemsRoot, targetId);
@@ -425,12 +437,14 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       return;
     }
     if (!moveNodeInModel(model, sourceId, targetId, index)) {
+      Logger.debug('dragDrop: moveNodeInModel returned false', { sourceId, targetId });
       webviewPanel.webview.postMessage({ type: 'error', message: 'Не удалось переместить элемент.' });
       return;
     }
     try {
       await writeFormXml(document.uri.fsPath, model);
       this.sendFormData(document, webviewPanel, model);
+      Logger.debug('dragDrop completed', { sourceId, targetId });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       Logger.error('Form editor save after dragDrop failed', err);
@@ -1085,10 +1099,12 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       min-height: 60px;
       width: 100%;
       max-width: 100%;
+      min-width: 0;
       overflow: auto;
       padding: var(--fe-spacing-sm);
       flex-shrink: 0;
       align-self: stretch;
+      box-sizing: border-box;
     }
     .zone-tree h3, .zone-props h3, .zone-preview h3 {
       margin: 0 0 var(--fe-spacing-sm) 0;
@@ -1163,13 +1179,14 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       padding: var(--fe-spacing-md) var(--fe-spacing-sm);
     }
     .preview-placeholder { color: var(--vscode-descriptionForeground); font-style: italic; padding: var(--fe-spacing-sm) 0; }
-    .preview-item { padding: var(--fe-spacing-xs) var(--fe-spacing-sm); margin: 2px 0; cursor: pointer; border-radius: var(--fe-radius-md); border: 1px solid var(--vscode-panel-border); }
+    #preview-form { width: 100%; min-width: 100%; box-sizing: border-box; }
+    .preview-item { width: 100%; min-width: 0; box-sizing: border-box; padding: var(--fe-spacing-xs) var(--fe-spacing-sm); margin: 2px 0; cursor: pointer; border-radius: var(--fe-radius-md); border: 1px solid var(--vscode-panel-border); }
     .preview-item:hover { background: var(--vscode-list-hoverBackground); }
     .preview-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
     .preview-item.drop-target { outline: 2px solid var(--vscode-focusBorder); }
-    .preview-container { background: var(--vscode-editor-inactiveSelectionBackground); min-height: 20px; }
-    .preview-control { background: var(--vscode-input-background); }
-    .preview-children { margin-left: var(--fe-spacing-md); }
+    .preview-container { background: var(--vscode-editor-inactiveSelectionBackground); min-height: 20px; width: 100%; box-sizing: border-box; }
+    .preview-control { background: var(--vscode-input-background); width: 100%; box-sizing: border-box; }
+    .preview-children { margin-left: var(--fe-spacing-md); width: 100%; box-sizing: border-box; min-width: 0; }
     .preview-control-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-xs); min-height: 22px; }
     .preview-input { flex: 1; min-width: 80px; padding: var(--fe-radius-sm) var(--fe-spacing-sm); font-size: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: var(--fe-radius-md); }
     .preview-button { padding: var(--fe-spacing-xs) var(--fe-spacing-md); font-size: inherit; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: var(--fe-radius-btn); cursor: default; }
@@ -1181,7 +1198,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     .preview-page-caption, .preview-group-caption { font-weight: 600; font-size: 0.9em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-foreground); }
     .preview-fallback { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
     /* Form mockup (variant B): layout as form */
-    #preview-form.preview-mockup-form { padding: var(--fe-spacing-sm); }
+    #preview-form.preview-mockup-form { padding: var(--fe-spacing-sm); width: 100%; min-width: 100%; box-sizing: border-box; }
     .preview-field-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-sm); margin-bottom: var(--fe-spacing-xs); }
     .preview-field-label { min-width: 80px; color: var(--vscode-foreground); font-size: inherit; flex-shrink: 0; }
     .preview-field-row .preview-input { flex: 1; min-width: 100px; }
@@ -1380,11 +1397,14 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           <button type="button" role="tab" data-right-tab="parameters" aria-selected="false">Параметры</button>
         </div>
         <div id="right-tab-attributes" class="right-tab-panel" role="tabpanel">
-          <div class="fe-table-wrap">
+          <div id="attributes-table-wrap" class="fe-table-wrap">
             <table class="fe-table" id="attributes-table">
               <thead><tr><th>Реквизит</th><th>Использование</th><th>Тип</th></tr></thead>
               <tbody id="attributes-tbody"></tbody>
             </table>
+          </div>
+          <div id="attributes-tree-wrap" class="fe-requisite-tree-wrap" style="display:none;">
+            <div id="attributes-tree-root" role="tree"></div>
           </div>
           <div class="fe-toolbar-buttons">
             <button type="button" id="btn-add-attribute" title="Добавить реквизит">Добавить</button>
@@ -1510,6 +1530,8 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     }
     var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
     var expandedIds = new Set();
+    var requisiteExpandedPaths = new Set();
+    var selectedRequisiteFullPath = null;
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
     function isRealElement(it) { var t = it.tag; return t && t !== ':@' && !String(t).startsWith('@'); }
     function getItemTitle(item) {
@@ -1563,7 +1585,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       var out = [];
       for (var i = 0; i < list.length; i++) {
         var item = list[i];
-        var itemId = item.id || item.name || '';
+        var itemId = (item.id != null ? String(item.id) : (item.name != null ? String(item.name) : ''));
         out.push(itemId);
         var tag = item.tag || '';
         if (isContainerTag(tag) && expandedIds.has(itemId) && item.childItems && item.childItems.length)
@@ -1596,7 +1618,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       var ul = document.createElement('div');
       ul.className = 'tree-children' + (parentItem && parentItem.tag === 'Table' ? ' tree-table-columns' : '');
       list.forEach(function(item) {
-        var itemId = item.id || item.name || '';
+        var itemId = (item.id != null ? String(item.id) : (item.name != null ? String(item.name) : ''));
         var tag = item.tag || '';
         var isContainer = isContainerTag(tag);
         var expanded = isContainer && expandedIds.has(itemId);
@@ -1831,7 +1853,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         return;
       }
       items.forEach(function(item) {
-        var id = item.id || item.name || '';
+        var id = (item.id != null ? String(item.id) : (item.name != null ? String(item.name) : ''));
         var tag = item.tag || '';
         var isContainer = isContainerTag(tag);
         var div = document.createElement('div');
@@ -2057,7 +2079,9 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       return '';
     }
     function getAttributeUsage(attr) {
-      if (!attr || !attr.properties) return '\u2014';
+      if (!attr) return '\u2014';
+      if (attr.usage != null) return String(attr.usage);
+      if (!attr.properties) return '\u2014';
       var v = attr.properties['Usage'] || attr.properties['Использование'];
       if (v != null) return extractDisplayValue(v) || '\u2014';
       for (var k in attr.properties) {
@@ -2066,27 +2090,111 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       }
       return '\u2014';
     }
+    function buildRequisiteTree(model) {
+      if (!model || !model.childItemsRoot || !model.childItemsRoot.length) return [];
+      var rootMap = {};
+      function ensureNode(segments) {
+        if (!segments || !segments.length) return null;
+        var first = segments[0];
+        if (!rootMap[first]) rootMap[first] = { pathSegment: first, fullPath: first, children: [], formElementIds: [] };
+        if (segments.length === 1) return rootMap[first];
+        var parent = rootMap[first];
+        for (var i = 1; i < segments.length; i++) {
+          var seg = segments[i];
+          var full = segments.slice(0, i + 1).join('.');
+          var child = parent.children.filter(function(c) { return c.fullPath === full; })[0];
+          if (!child) {
+            child = { pathSegment: seg, fullPath: full, children: [], formElementIds: [] };
+            parent.children.push(child);
+          }
+          parent = child;
+        }
+        return parent;
+      }
+      function walk(items) {
+        if (!items || !items.length) return;
+        items.forEach(function(item) {
+          var dataPath = getDataPathValue(item);
+          if (dataPath && dataPath.trim().length > 0) {
+            var segments = dataPath.split('.').map(function(s) { return s.trim(); }).filter(Boolean);
+            if (segments.length) {
+              var node = ensureNode(segments);
+              if (node) node.formElementIds.push(String(item.id != null ? item.id : (item.name != null ? item.name : '')));
+            }
+          }
+          if (item.childItems && item.childItems.length) walk(item.childItems);
+        });
+      }
+      walk(model.childItemsRoot);
+      return Object.keys(rootMap).sort().map(function(k) { return rootMap[k]; });
+    }
+    function collectRequisitesFromTree(model) {
+      if (!model || !model.childItemsRoot || !model.childItemsRoot.length) return [];
+      var map = {};
+      function walk(items) {
+        if (!items || !items.length) return;
+        items.forEach(function(item) {
+          var dataPath = getDataPathValue(item);
+          if (dataPath && dataPath.length > 0) {
+            var segment = dataPath.indexOf('.') >= 0 ? dataPath.split('.')[0].trim() : dataPath.trim();
+            if (segment) {
+              if (!map[segment]) map[segment] = [];
+              var label = (typeof item.name === 'string' ? item.name : extractDisplayValue(item.name)) || (item.id != null ? String(item.id) : '') || dataPath;
+              if (map[segment].indexOf(label) < 0) map[segment].push(label);
+            }
+          }
+          if (item.childItems && item.childItems.length) walk(item.childItems);
+        });
+      }
+      walk(model.childItemsRoot);
+      return Object.keys(map).sort().map(function(name) {
+        return { name: name, usage: map[name].join(', '), fromTree: true };
+      });
+    }
+    function collectCommandsFromTree(model) {
+      if (!model || !model.childItemsRoot || !model.childItemsRoot.length) return [];
+      var set = {};
+      function walk(items) {
+        if (!items || !items.length) return;
+        items.forEach(function(item) {
+          var cmdName = (item.properties && (item.properties['CommandName'] != null || item.properties['Command'] != null)) ?
+            (extractDisplayValue(item.properties['CommandName']) || extractDisplayValue(item.properties['Command']) || '') : '';
+          if (cmdName && cmdName.length > 0) {
+            var normalized = cmdName.replace(/^Form\\.Command\\./i, '').trim();
+            if (normalized) set[normalized] = true;
+          }
+          if (item.childItems && item.childItems.length) walk(item.childItems);
+        });
+      }
+      walk(model.childItemsRoot);
+      return Object.keys(set).sort().map(function(name) {
+        return { name: name, fromTree: true };
+      });
+    }
     var REQUISITE_DROP_TYPE = 'application/x-1c-form-requisite';
-    function renderAttributesTable(attributes) {
+    function renderAttributesTable(attributes, fromTree) {
       var tbody = document.getElementById('attributes-tbody');
       if (!tbody) return;
       tbody.innerHTML = '';
       if (!attributes || !attributes.length) return;
       attributes.forEach(function(attr) {
         var tr = document.createElement('tr');
-        tr.dataset.id = attr.id || attr.name;
+        tr.dataset.id = String(attr.id || attr.name);
         tr.dataset.name = attr.name;
-        tr.draggable = true;
-        tr.ondragstart = function(e) {
-          e.dataTransfer.setData(REQUISITE_DROP_TYPE, attr.name || '');
-          e.dataTransfer.effectAllowed = 'copy';
-        };
+        if (attr.fromTree) tr.dataset.fromTree = 'true';
+        tr.draggable = !attr.fromTree;
+        if (!attr.fromTree) {
+          tr.ondragstart = function(e) {
+            e.dataTransfer.setData(REQUISITE_DROP_TYPE, attr.name || '');
+            e.dataTransfer.effectAllowed = 'copy';
+          };
+        }
         var nameCell = document.createElement('td');
         nameCell.textContent = attr.name || '';
         var usageCell = document.createElement('td');
         usageCell.textContent = getAttributeUsage(attr);
         var typeCell = document.createElement('td');
-        typeCell.textContent = getAttributeTypeDisplay(attr) || '\u2014';
+        typeCell.textContent = attr.fromTree ? '\u2014' : (getAttributeTypeDisplay(attr) || '\u2014');
         tr.appendChild(nameCell);
         tr.appendChild(usageCell);
         tr.appendChild(typeCell);
@@ -2096,26 +2204,110 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           document.querySelectorAll('#attributes-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
           tr.classList.add('selected');
           document.querySelectorAll('#commands-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
-          document.getElementById('btn-edit-attribute').disabled = false;
-          document.getElementById('btn-delete-attribute').disabled = false;
+          if (!attr.fromTree) {
+            document.getElementById('btn-edit-attribute').disabled = false;
+            document.getElementById('btn-delete-attribute').disabled = false;
+          }
           updatePropsPanel();
         });
         tbody.appendChild(tr);
       });
     }
-    function renderCommandsTable(commands) {
+    function renderRequisiteTree(nodes, containerEl) {
+      if (!containerEl) return;
+      containerEl.innerHTML = '';
+      if (!nodes || !nodes.length) return;
+      containerEl.className = 'tree-children';
+      function renderNode(node, parentEl, depth) {
+        var depthPx = (depth || 0) * 16;
+        var div = document.createElement('div');
+        div.className = 'tree-node requisite-tree-node' + (node.children && node.children.length ? ' tree-node-container' : '');
+        div.setAttribute('role', 'treeitem');
+        div.dataset.fullPath = node.fullPath || '';
+        div.style.paddingLeft = depthPx + 'px';
+        var hasChildren = node.children && node.children.length;
+        var expanded = hasChildren && requisiteExpandedPaths.has(node.fullPath);
+        if (hasChildren) div.setAttribute('aria-expanded', expanded);
+        var chevronSpan = document.createElement('span');
+        chevronSpan.className = 'tree-chevron' + (hasChildren ? (expanded ? '' : ' collapsed') : ' tree-chevron-placeholder');
+        if (hasChildren) chevronSpan.textContent = '\u25BC';
+        chevronSpan.setAttribute('aria-hidden', 'true');
+        var labelSpan = document.createElement('span');
+        labelSpan.className = 'tree-node-label';
+        labelSpan.textContent = node.pathSegment || node.fullPath || '';
+        if (node.formElementIds && node.formElementIds.length > 0) {
+          var badge = document.createElement('span');
+          badge.className = 'fe-badge requisite-count';
+          badge.textContent = node.formElementIds.length;
+          badge.title = 'Элементов формы: ' + node.formElementIds.length;
+          labelSpan.appendChild(badge);
+        }
+        div.appendChild(chevronSpan);
+        div.appendChild(labelSpan);
+        if (hasChildren) {
+          chevronSpan.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (requisiteExpandedPaths.has(node.fullPath)) requisiteExpandedPaths.delete(node.fullPath);
+            else requisiteExpandedPaths.add(node.fullPath);
+            renderRequisiteTree(buildRequisiteTree(formModel), document.getElementById('attributes-tree-root'));
+            applyRequisiteTreeSelection();
+          });
+        }
+        if (node.formElementIds && selectedIds.length === 1 && node.formElementIds.indexOf(selectedIds[0]) >= 0) div.classList.add('selected');
+        if (selectedRequisiteFullPath === node.fullPath) div.classList.add('selected');
+        div.addEventListener('click', function(e) {
+          if (e.target.closest && e.target.closest('.tree-chevron')) return;
+          document.querySelectorAll('#attributes-tree-root .requisite-tree-node.selected').forEach(function(n) { n.classList.remove('selected'); });
+          document.querySelectorAll('#attributes-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
+          div.classList.add('selected');
+          selectedRequisiteFullPath = node.fullPath;
+          selectedAttributeId = null;
+          selectedCommandId = null;
+          if (node.formElementIds && node.formElementIds.length > 0) {
+            selectedIds = [node.formElementIds[0]];
+            anchorId = selectedIds[0];
+            applyTreeSelection();
+            updateToolbarState();
+            updatePropsPanel();
+            vscode.postMessage({ type: 'selectElement', elementId: selectedIds[0], selectedIds: selectedIds.slice() });
+          } else {
+            selectedIds = [];
+            anchorId = null;
+            applyTreeSelection();
+            updateToolbarState();
+            updatePropsPanel();
+          }
+        });
+        parentEl.appendChild(div);
+        if (hasChildren && expanded) {
+          var childContainer = document.createElement('div');
+          childContainer.className = 'tree-children';
+          div.appendChild(childContainer);
+          node.children.forEach(function(ch) { renderNode(ch, childContainer, (depth || 0) + 1); });
+        }
+      }
+      nodes.forEach(function(n) { renderNode(n, containerEl, 0); });
+    }
+    function applyRequisiteTreeSelection() {
+      document.querySelectorAll('#attributes-tree-root .requisite-tree-node').forEach(function(n) {
+        var path = n.dataset.fullPath;
+        n.classList.toggle('selected', path && selectedRequisiteFullPath === path);
+      });
+    }
+    function renderCommandsTable(commands, fromTree) {
       var tbody = document.getElementById('commands-tbody');
       if (!tbody) return;
       tbody.innerHTML = '';
       if (!commands || !commands.length) return;
       commands.forEach(function(cmd) {
         var tr = document.createElement('tr');
-        tr.dataset.id = cmd.id || cmd.name;
+        tr.dataset.id = String(cmd.id || cmd.name);
         tr.dataset.name = cmd.name;
+        if (cmd.fromTree) tr.dataset.fromTree = 'true';
         var nameCell = document.createElement('td');
         nameCell.textContent = cmd.name || '';
         var titleCell = document.createElement('td');
-        titleCell.textContent = (cmd.properties && cmd.properties['Title'] != null) ? extractDisplayValue(cmd.properties['Title']) : '';
+        titleCell.textContent = (cmd.properties && cmd.properties['Title'] != null) ? extractDisplayValue(cmd.properties['Title']) : (cmd.fromTree ? '' : '');
         tr.appendChild(nameCell);
         tr.appendChild(titleCell);
         tr.addEventListener('click', function() {
@@ -2124,7 +2316,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           document.querySelectorAll('#commands-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
           tr.classList.add('selected');
           document.querySelectorAll('#attributes-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
-          document.getElementById('btn-delete-command').disabled = false;
+          if (!cmd.fromTree) document.getElementById('btn-delete-command').disabled = false;
           updatePropsPanel();
         });
         tbody.appendChild(tr);
@@ -2135,9 +2327,53 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         var attr = formModel.attributes.find(function(a) { return a.name === selectedAttributeId || a.id === selectedAttributeId; });
         if (attr) { renderAttributeProps(attr); return; }
       }
+      if (selectedAttributeId && document.querySelector('#attributes-tbody tr.selected[data-from-tree="true"]')) {
+        var placeholder = document.getElementById('props-placeholder');
+        var content = document.getElementById('props-content');
+        var actions = document.getElementById('props-actions');
+        var header = document.getElementById('props-header');
+        if (placeholder && content && header) {
+          header.textContent = 'Реквизит по элементам';
+          content.style.display = 'none';
+          content.innerHTML = '';
+          placeholder.style.display = 'block';
+          placeholder.textContent = 'Секция Attributes в Form.xml пуста. Реквизиты показаны по привязкам элементов (DataPath).';
+          if (actions) actions.style.display = 'none';
+        }
+        return;
+      }
       if (selectedCommandId && formModel && formModel.commands) {
         var cmd = formModel.commands.find(function(c) { return c.name === selectedCommandId || c.id === selectedCommandId; });
         if (cmd) { renderCommandProps(cmd); return; }
+      }
+      if (selectedCommandId && document.querySelector('#commands-tbody tr.selected[data-from-tree="true"]')) {
+        var placeholder = document.getElementById('props-placeholder');
+        var content = document.getElementById('props-content');
+        var actions = document.getElementById('props-actions');
+        var header = document.getElementById('props-header');
+        if (placeholder && content && header) {
+          header.textContent = 'Команда по элементам';
+          content.style.display = 'none';
+          content.innerHTML = '';
+          placeholder.style.display = 'block';
+          placeholder.textContent = 'Секция Commands в Form.xml пуста. Команды показаны по кнопкам (CommandName).';
+          if (actions) actions.style.display = 'none';
+        }
+        return;
+      }
+      if (selectedRequisiteFullPath && selectedIds.length === 0) {
+        var placeholder = document.getElementById('props-placeholder');
+        var content = document.getElementById('props-content');
+        var actions = document.getElementById('props-actions');
+        var header = document.getElementById('props-header');
+        if (placeholder && content && header) {
+          header.textContent = 'Реквизит: ' + selectedRequisiteFullPath;
+          content.style.display = 'none';
+          placeholder.style.display = 'block';
+          placeholder.textContent = '';
+          if (actions) actions.style.display = 'none';
+        }
+        return;
       }
       if (selectedIds.length === 0) {
         renderProps(null);
@@ -2568,8 +2804,24 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         document.getElementById('props-actions').style.display = formModel && !msg.fileMissing ? 'block' : 'none';
         if (formModel && !msg.fileMissing) {
           renderCommandInterface(formModel);
-          renderAttributesTable(formModel.attributes);
-          renderCommandsTable(formModel.commands);
+          var tableWrap = document.getElementById('attributes-table-wrap');
+          var treeWrap = document.getElementById('attributes-tree-wrap');
+          var treeRootEl = document.getElementById('attributes-tree-root');
+          if (formModel.attributes && formModel.attributes.length > 0) {
+            selectedRequisiteFullPath = null;
+            if (tableWrap) tableWrap.style.display = '';
+            if (treeWrap) treeWrap.style.display = 'none';
+            renderAttributesTable(formModel.attributes, false);
+          } else {
+            if (tableWrap) tableWrap.style.display = 'none';
+            if (treeWrap) treeWrap.style.display = '';
+            selectedRequisiteFullPath = null;
+            requisiteExpandedPaths = new Set();
+            var requisiteNodes = buildRequisiteTree(formModel);
+            renderRequisiteTree(requisiteNodes, treeRootEl);
+          }
+          var cmds = (formModel.commands && formModel.commands.length) ? formModel.commands : collectCommandsFromTree(formModel);
+          renderCommandsTable(cmds, !!cmds.length && cmds[0].fromTree);
           document.getElementById('btn-edit-attribute').disabled = true;
           document.getElementById('btn-delete-attribute').disabled = true;
           document.getElementById('btn-delete-command').disabled = true;
