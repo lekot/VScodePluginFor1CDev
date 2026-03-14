@@ -83,6 +83,28 @@ suite('DesignerParser', () => {
     assert.strictEqual(section.children![1].type, MetadataType.Attribute);
   });
 
+  test('should load tabular section attributes from filesystem folder structure', async () => {
+    const configPath = path.join(__dirname, '../fixtures/designer-config');
+    const children = await DesignerParser.loadChildrenForElement(
+      configPath,
+      'Catalogs',
+      'CatalogWithTabular'
+    );
+
+    const tabularNode = children.find((c) => c.id === 'TabularSections');
+    assert.ok(tabularNode, 'TabularSections node should exist');
+
+    const section = tabularNode!.children!.find((c) => c.name === 'Tabular1');
+    assert.ok(section, 'Tabular1 section should exist');
+    assert.ok(section!.children && section!.children.length > 0, 'Tabular1 should have attribute children');
+
+    for (const attr of section!.children!) {
+      assert.notStrictEqual(attr.name, 'Tabular1', `Attribute name should not be the TS name, got: ${attr.name}`);
+      assert.ok(attr.name === 'Col1' || attr.name === 'Col2', `Expected Col1 or Col2, got: ${attr.name}`);
+      assert.strictEqual(attr.type, MetadataType.Attribute);
+    }
+  });
+
   test('should parse extensions_samples if present (configuration extension with Ext)', async function () {
     const projectRoot = path.resolve(__dirname, '../../..');
     const extensionsSamplesPath = path.join(projectRoot, 'extensions_samples');

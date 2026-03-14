@@ -236,9 +236,13 @@ export class DesignerParser {
               children.push(tabularNode);
             } else {
               const existing = existingTabularId as TreeNode;
+              existing.children = existing.children ?? [];
               for (const ch of tabularNode.children ?? []) {
+                // Skip if a TS node with the same name already exists (from XML parse)
+                if (existing.children.some((e) => e.name === ch.name)) {
+                  continue;
+                }
                 ch.parent = existing;
-                existing.children = existing.children ?? [];
                 existing.children.push(ch);
               }
             }
@@ -445,9 +449,13 @@ export class DesignerParser {
               tabularNode.parent = elementNode;
               elementNode.children?.push(tabularNode);
             } else {
+              existingTabular.children = existingTabular.children ?? [];
               for (const ch of tabularNode.children ?? []) {
+                // Skip if a TS node with the same name already exists (from XML parse)
+                if (existingTabular.children.some((e) => e.name === ch.name)) {
+                  continue;
+                }
                 ch.parent = existingTabular;
-                existingTabular.children = existingTabular.children ?? [];
                 existingTabular.children.push(ch);
               }
             }
