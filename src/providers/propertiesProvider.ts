@@ -55,6 +55,7 @@ export class PropertiesProvider {
   private panel: vscode.WebviewPanel | undefined;
   private currentNode: TreeNode | undefined;
   private disposables: vscode.Disposable[] = [];
+  private _isSaving = false;
 
   constructor(
       private context: vscode.ExtensionContext,
@@ -174,6 +175,10 @@ export class PropertiesProvider {
    * Notify that a file was changed externally. If it's the current node's file, show prompt to reload.
    */
   public notifyFileChangedExternally(filePath: string): void {
+    // Ignore notifications triggered by our own save
+    if (this._isSaving) {
+      return;
+    }
     const normalized = path.normalize(filePath);
     if (!this.currentNode || this.getCurrentFilePath() !== normalized) {
       return;
@@ -1320,6 +1325,7 @@ export class PropertiesProvider {
       
       // Write properties to XML file with error handling
       try {
+        this._isSaving = true;
         // For nested elements (Attributes, TabularSections, etc.), use specialized method
         if (node.parentFilePath) {
           await XMLWriter.writeNestedElementProperties(
@@ -1333,6 +1339,7 @@ export class PropertiesProvider {
           await XMLWriter.writeProperties(targetFilePath, properties);
         }
       } catch (writeError) {
+        this._isSaving = false;
         // Log detailed error to extension output channel
         Logger.error(`Failed to write properties to ${targetFilePath}`, writeError);
         
@@ -1354,6 +1361,10 @@ export class PropertiesProvider {
         throw new Error(`Failed to write properties to file: ${targetFilePath}. ${errorMessage}`);
       }
       
+      // Reset flag after successful write — watcher debounce (400ms) will fire after this
+      // Use a small delay to ensure the watcher event is suppressed
+      setTimeout(() => { this._isSaving = false; }, 600);
+
       // Update TreeNode.properties with new values after successful save
       node.properties = { ...properties };
       
