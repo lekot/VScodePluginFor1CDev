@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+	<TabularSection uuid="b0000000-0000-0000-0000-000000000001">
+		<Properties>
+			<Name>Tabular1</Name>
+			<Synonym/>
+			<Comment/>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="c0000000-0000-0000-0000-000000000001">
+				<Properties>
+					<Name>Col1</Name>
+					<Type><v8:Type>xs:string</v8:Type></Type>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="c0000000-0000-0000-0000-000000000002">
+				<Properties>
+					<Name>Col2</Name>
+					<Type><v8:Type>xs:decimal</v8:Type></Type>
+				</Properties>
+			</Attribute>
+		</ChildObjects>
+	</TabularSection>
+</MetaDataObject>
