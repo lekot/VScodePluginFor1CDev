@@ -48,13 +48,9 @@ export class DesignerParser {
   }
 
   /**
-   * Resolve path to configuration properties file (Configuration.xml or ConfigDumpInfo.xml).
+   * Resolve path to configuration properties file (Configuration.xml).
    */
   private static getConfigurationXmlPath(configPath: string): string {
-    const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
-    if (fs.existsSync(configDumpPath)) {
-      return configDumpPath;
-    }
     return path.join(configPath, 'Configuration.xml');
   }
 
