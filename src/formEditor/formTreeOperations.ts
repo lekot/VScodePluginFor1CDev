@@ -68,13 +68,29 @@ export function findParentAndIndex(
   return null;
 }
 
-/** Move node from source to target's childItems at index. Returns true on success. */
+/** Special id for the synthetic form root node in the webview tree. */
+export const FORM_ROOT_ID = '__form_root__';
+
+/** Move node from source to target's childItems at index. Returns true on success.
+ *  When targetId === FORM_ROOT_ID, moves the element directly into model.childItemsRoot. */
 export function moveNodeInModel(
   model: FormModel,
   sourceId: string,
   targetId: string,
   index: number
 ): boolean {
+  // Special case: drop onto the synthetic form root — move element to childItemsRoot
+  if (targetId === FORM_ROOT_ID) {
+    const sourceLoc = findParentAndIndex(model.childItemsRoot, sourceId);
+    if (!sourceLoc) return false;
+    // Reject if source is already a direct child of childItemsRoot (no-op)
+    if (sourceLoc.parent === model.childItemsRoot) return false;
+    const [node] = sourceLoc.parent.splice(sourceLoc.index, 1);
+    if (!node) return false;
+    model.childItemsRoot.splice(Math.min(index, model.childItemsRoot.length), 0, node);
+    return true;
+  }
+
   const sourceLoc = findParentAndIndex(model.childItemsRoot, sourceId);
   const targetEl = findElementById(model.childItemsRoot, targetId);
   if (!sourceLoc || !targetEl || !isContainer(targetEl)) return false;

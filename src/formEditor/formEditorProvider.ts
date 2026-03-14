@@ -22,6 +22,7 @@ import {
   moveNodeInModel,
   removeNodeInModel,
   moveElementSiblingInModel,
+  FORM_ROOT_ID,
 } from './formTreeOperations';
 export { moveNodeInModel } from './formTreeOperations';
 
@@ -329,6 +330,28 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     if (!sourceLoc) {
       Logger.debug('dragDrop: source not found', { sourceId });
       webviewPanel.webview.postMessage({ type: 'error', message: 'Элемент-источник не найден.' });
+      return;
+    }
+    // Special case: drop onto the synthetic form root — move element to childItemsRoot
+    if (targetId === FORM_ROOT_ID) {
+      if (sourceLoc.parent === model.childItemsRoot) {
+        webviewPanel.webview.postMessage({ type: 'error', message: 'Элемент уже находится на верхнем уровне формы.' });
+        return;
+      }
+      if (!moveNodeInModel(model, sourceId, FORM_ROOT_ID, index)) {
+        Logger.debug('dragDrop: moveNodeInModel to root returned false', { sourceId });
+        webviewPanel.webview.postMessage({ type: 'error', message: 'Не удалось переместить элемент в корень формы.' });
+        return;
+      }
+      try {
+        await writeFormXml(document.uri.fsPath, model);
+        this.sendFormData(document, webviewPanel, model);
+        Logger.debug('dragDrop to root completed', { sourceId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        Logger.error('Form editor save after dragDrop to root failed', err);
+        webviewPanel.webview.postMessage({ type: 'error', message });
+      }
       return;
     }
     const targetEl = findElementById(model.childItemsRoot, targetId);
@@ -1432,6 +1455,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
     var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
+    var FORM_ROOT_ID = '__form_root__';
     var expandedIds = new Set();
     var requisiteExpandedPaths = new Set();
     var selectedRequisiteFullPath = null;
@@ -1543,7 +1567,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
             if (expandedIds.has(itemId)) { expandedIds.delete(itemId); } else { expandedIds.add(itemId); }
             var root = document.getElementById('tree-root');
             root.innerHTML = '';
-            renderTree(formModel.childItemsRoot, root);
+            renderTreeWithRoot(root);
             applyTreeSelection();
           });
         } else {
@@ -1645,6 +1669,63 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         if (hasChildren && expanded) renderTree(item.childItems, div, item);
       });
       parentEl.appendChild(ul);
+    }
+
+    /**
+     * Render the full form tree with a synthetic «Форма» root node.
+     * The root node has data-id=FORM_ROOT_ID and accepts drops to move elements to childItemsRoot.
+     */
+    function renderTreeWithRoot(treeRoot) {
+      if (!formModel || !formModel.childItemsRoot) return;
+      // Create synthetic root node «Форма»
+      var rootDiv = document.createElement('div');
+      rootDiv.className = 'tree-node tree-node-container';
+      rootDiv.setAttribute('role', 'treeitem');
+      rootDiv.setAttribute('aria-expanded', 'true');
+      rootDiv.setAttribute('aria-selected', 'false');
+      rootDiv.dataset.id = FORM_ROOT_ID;
+      rootDiv.dataset.tag = 'Form';
+      // Chevron placeholder (always expanded, no toggle)
+      var chevronSpan = document.createElement('span');
+      chevronSpan.className = 'tree-chevron-placeholder';
+      rootDiv.appendChild(chevronSpan);
+      // Icon
+      var iconSpan = document.createElement('span');
+      iconSpan.className = 'tree-icon';
+      iconSpan.textContent = '\u2302';
+      iconSpan.setAttribute('aria-hidden', 'true');
+      rootDiv.appendChild(iconSpan);
+      // Label
+      var labelSpan = document.createElement('span');
+      labelSpan.className = 'tree-node-label';
+      var formLabel = '\u0424\u043e\u0440\u043c\u0430'; // «Форма»
+      labelSpan.textContent = formLabel;
+      labelSpan.title = formLabel;
+      rootDiv.appendChild(labelSpan);
+      // Drag-over handler
+      rootDiv.ondragover = function(e) {
+        e.preventDefault();
+        if (e.dataTransfer.types.indexOf(REQUISITE_DROP_TYPE) >= 0) return;
+        var srcId = e.dataTransfer.getData('text/plain');
+        if (!srcId || srcId === FORM_ROOT_ID) return;
+        e.dataTransfer.dropEffect = 'move';
+        rootDiv.classList.add('drop-target');
+      };
+      rootDiv.ondragleave = function() { rootDiv.classList.remove('drop-target'); };
+      // Drop handler
+      rootDiv.ondrop = function(e) {
+        e.preventDefault();
+        rootDiv.classList.remove('drop-target');
+        var requisiteName = e.dataTransfer.getData(REQUISITE_DROP_TYPE);
+        if (requisiteName) return; // requisite drops not supported on root
+        var srcId = e.dataTransfer.getData('text/plain');
+        if (!srcId || srcId === FORM_ROOT_ID) return;
+        vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: FORM_ROOT_ID, index: 0 });
+      };
+      treeRoot.appendChild(rootDiv);
+      // Render children inside the root node
+      var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: formModel.childItemsRoot };
+      renderTree(formModel.childItemsRoot, rootDiv, syntheticFormItem);
     }
 
     function createPreviewControl(item, tag) {
@@ -2687,7 +2768,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
           expandedIds = new Set();
           if (formModel && formModel.childItemsRoot) collectContainerIds(formModel.childItemsRoot, expandedIds);
           if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
-            renderTree(formModel.childItemsRoot, treeRoot);
+            renderTreeWithRoot(treeRoot);
             applyTreeSelection();
             renderPreview(formModel.childItemsRoot, document.getElementById('preview-form'));
           } else {
