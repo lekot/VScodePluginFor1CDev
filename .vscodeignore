@@ -19,3 +19,5 @@ mcp-*.json
 mcp-*.md
 **/*.map
 **/*.ts
+shcntx_help.db
+releases/

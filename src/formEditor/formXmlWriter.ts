@@ -63,14 +63,27 @@ function buildChildItem(item: FormChildItem): Record<string, unknown[]> {
   return { [item.tag]: content };
 }
 
-function buildFormContent(model: FormModel): unknown[] {
+export function buildFormContent(model: FormModel): unknown[] {
   const formContent: unknown[] = [];
-  formContent.push({
-    ':@': {
-      '@_xmlns': 'http://v8.1c.ru/8.3/xcf/logform',
-      '@_version': '2.20',
-    },
-  });
+  const rootAttrs: Record<string, string> = {};
+  if (model.xmlnsDeclarations && Object.keys(model.xmlnsDeclarations).length) {
+    for (const [key, uri] of Object.entries(model.xmlnsDeclarations)) {
+      rootAttrs[`@_${key}`] = uri;
+    }
+  } else {
+    rootAttrs['@_xmlns'] = 'http://v8.1c.ru/8.3/xcf/logform';
+  }
+  if (model.version) {
+    rootAttrs['@_version'] = model.version;
+  } else {
+    rootAttrs['@_version'] = '2.20';
+  }
+  formContent.push({ ':@': rootAttrs });
+  if (model.topLevelFields && model.topLevelFields.length) {
+    for (const field of model.topLevelFields) {
+      formContent.push({ [field.tag]: field.content });
+    }
+  }
   if (model.autoCommandBarName !== undefined && model.autoCommandBarName !== '') {
     const autoBarAttrs: Record<string, string> = { '@_name': model.autoCommandBarName };
     if (model.autoCommandBarId !== undefined && model.autoCommandBarId !== '') {
@@ -128,6 +141,27 @@ function buildFormContent(model: FormModel): unknown[] {
 }
 
 /**
+ * Inject xmlns declarations into the <Form ...> opening tag.
+ * XMLBuilder with ignoreNameSpace:true strips xmlns:* attributes, so we do it via string post-processing.
+ */
+export function injectXmlnsIntoFormTag(xmlString: string, xmlnsDeclarations: Record<string, string>): string {
+  if (!Object.keys(xmlnsDeclarations).length) return xmlString;
+  // Build xmlns attribute string, sorted for determinism (xmlns first, then xmlns:* alphabetically)
+  const entries = Object.entries(xmlnsDeclarations).sort(([a], [b]) => {
+    if (a === 'xmlns') return -1;
+    if (b === 'xmlns') return 1;
+    return a.localeCompare(b);
+  });
+  const xmlnsStr = entries.map(([k, v]) => `${k}="${v}"`).join(' ');
+  // Replace <Form ...> or <Form> — insert xmlns before version or at end of opening tag
+  return xmlString.replace(/^(<Form)(\s[^>]*>|>)/m, (_match, tag, rest) => {
+    // rest may be ' version="2.20">' or '>'
+    // Insert xmlns declarations right after <Form
+    return `${tag} ${xmlnsStr}${rest}`;
+  });
+}
+
+/**
  * Write FormModel to Ext/Form.xml. Creates backup before write; on write failure restores from backup.
  */
 export async function writeFormXml(formXmlPath: string, model: FormModel): Promise<void> {
@@ -142,6 +176,19 @@ export async function writeFormXml(formXmlPath: string, model: FormModel): Promi
       `Не удалось сформировать Form.xml. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`
     );
   }
+
+  // Inject xmlns declarations (XMLBuilder strips them with ignoreNameSpace:true)
+  if (model.xmlnsDeclarations && Object.keys(model.xmlnsDeclarations).length) {
+    xmlString = injectXmlnsIntoFormTag(xmlString, model.xmlnsDeclarations);
+  }
+
+  // Validate: never write empty Form when model has content
+  if (model.childItemsRoot.length > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
+    throw new Error(
+      'Validation failed: XMLBuilder generated empty <Form> for a non-empty model. Write aborted.'
+    );
+  }
+
   const declaration = '<?xml version="1.0" encoding="UTF-8"?>\n';
   const fullContent = declaration + xmlString;
 

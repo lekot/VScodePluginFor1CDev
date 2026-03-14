@@ -69,13 +69,13 @@ function getAttrsFromContent(content: unknown[]): { name?: string; id?: string }
   for (const item of content) {
     if (!item || typeof item !== 'object') continue;
     const o = item as Record<string, unknown>;
-    if ('@_name' in o && typeof o['@_name'] === 'string') attrs.name = o['@_name'];
-    if ('@_id' in o && typeof o['@_id'] === 'string') attrs.id = o['@_id'];
+    if ('@_name' in o && o['@_name'] != null) attrs.name = String(o['@_name']);
+    if ('@_id' in o && o['@_id'] != null) attrs.id = String(o['@_id']);
     const at = o[':@'];
     if (at && typeof at === 'object' && !Array.isArray(at)) {
       const atObj = at as Record<string, unknown>;
-      if (typeof atObj['@_name'] === 'string') attrs.name = atObj['@_name'];
-      if (typeof atObj['@_id'] === 'string') attrs.id = atObj['@_id'];
+      if (atObj['@_name'] != null) attrs.name = String(atObj['@_name']);
+      if (atObj['@_id'] != null) attrs.id = String(atObj['@_id']);
     }
   }
   return attrs;
@@ -128,10 +128,10 @@ function parseChildItemsArray(content: unknown[] | undefined): FormChildItem[] {
       const at = obj[':@'];
       if (at && typeof at === 'object' && !Array.isArray(at)) {
         const atObj = at as Record<string, unknown>;
-        if (typeof atObj['@_name'] === 'string') attrName = atObj['@_name'];
-        if (typeof atObj['@_id'] === 'string') attrId = atObj['@_id'];
+        if (atObj['@_name'] != null) attrName = String(atObj['@_name']);
+        if (atObj['@_id'] != null) attrId = String(atObj['@_id']);
       }
-      const name = attrName ?? tag;
+      const name = String(attrName ?? tag);
       const childItemsContent = findKeyInArray(arr, 'ChildItems');
       const childItems = parseChildItemsArray(childItemsContent);
       const eventsContent = findKeyInArray(arr, 'Events');
@@ -309,6 +309,19 @@ export async function parseFormXml(
     return { error: 'Файл структуры формы пуст.' } as FormParseError;
   }
 
+  // Extract xmlns declarations from raw XML before parsing (ignoreNameSpace: true loses them)
+  const xmlnsDeclarations: Record<string, string> = {};
+  const xmlnsRegex = /xmlns(?::(\w+))?="([^"]+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = xmlnsRegex.exec(xmlContent)) !== null) {
+    const key = m[1] ? `xmlns:${m[1]}` : 'xmlns';
+    xmlnsDeclarations[key] = m[2];
+  }
+
+  // Extract version attribute from root <Form> element
+  const versionMatch = /<Form[^>]*\sversion="([^"]+)"/.exec(xmlContent);
+  const formVersion = versionMatch ? versionMatch[1] : undefined;
+
   let parsed: unknown;
   try {
     const parser = new XMLParser(FORM_XML_OPTIONS);
@@ -351,6 +364,25 @@ export async function parseFormXml(
     autoCommandBarName: autoCommandBar.name,
     autoCommandBarId: autoCommandBar.id,
   };
+
+  model.xmlnsDeclarations = Object.keys(xmlnsDeclarations).length ? xmlnsDeclarations : undefined;
+  model.version = formVersion;
+
+  // Extract top-level fields (not ChildItems/Attributes/Commands/Events/AutoCommandBar)
+  const SKIP_TAGS = new Set(['ChildItems', 'Attributes', 'Commands', 'Events', 'AutoCommandBar']);
+  const topLevelFields: Array<{ tag: string; content: unknown[] }> = [];
+  for (const item of formContent) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    for (const k of Object.keys(o)) {
+      if (k === ':@' || k.startsWith('@') || k === '#text') continue;
+      const local = k.includes(':') ? k.split(':').pop()! : k;
+      if (SKIP_TAGS.has(local)) continue;
+      const val = o[k];
+      topLevelFields.push({ tag: k, content: Array.isArray(val) ? val : [] });
+    }
+  }
+  model.topLevelFields = topLevelFields.length ? topLevelFields : undefined;
 
   return { model };
 }
