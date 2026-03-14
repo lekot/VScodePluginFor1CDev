@@ -318,7 +318,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     const sourceId = String(rawSource);
     const targetId = String(rawTarget);
     Logger.debug('dragDrop', { sourceId, targetId, index });
-    if (sourceId === targetId || isDescendantOf(model, sourceId, targetId)) {
+    if (sourceId === targetId || isDescendantOf(model, sourceId, targetId) || isDescendantOf(model, targetId, sourceId)) {
       webviewPanel.webview.postMessage({
         type: 'error',
         message: 'Нельзя переместить элемент в себя или в своего потомка.',
@@ -1455,17 +1455,15 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       if (!item || !item.properties) return '';
       var raw = item.properties['DataPath'];
       if (raw != null) {
-        if (typeof raw === 'string') return raw.trim();
-        if (typeof raw === 'object' && raw !== null && raw['#text'] != null) return String(raw['#text']).trim();
+        var val = extractDisplayValue(raw);
+        if (val !== '') return val;
       }
       for (var k in item.properties) {
         if (k === ':@' || k.startsWith('@')) continue;
         var local = k.indexOf(':') >= 0 ? k.split(':').pop() : k;
         if (local === 'DataPath') {
           var v = item.properties[k];
-          if (typeof v === 'string') return v.trim();
-          if (v && typeof v === 'object' && v['#text'] != null) return String(v['#text']).trim();
-          return v != null ? String(v).trim() : '';
+          return extractDisplayValue(v);
         }
       }
       return '';
