@@ -1,0 +1,787 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>
+	<UseForFoldersAndItems>Items</UseForFoldersAndItems>
+	<AutoCommandBar name="ФормаКоманднаяПанель" id="-1">
+		<ChildItems>
+			<Button name="ФормаКтоЯ" id="115">
+				<Type>CommandBarButton</Type>
+				<CommandName>Form.Command.КтоЯ</CommandName>
+				<ExtendedTooltip name="ФормаКтоЯРасширеннаяПодсказка" id="116"/>
+			</Button>
+		</ChildItems>
+	</AutoCommandBar>
+	<Events>
+		<Event name="AfterWriteAtServer">ПослеЗаписиНаСервере</Event>
+		<Event name="OnOpen">ПриОткрытии</Event>
+		<Event name="OnCreateAtServer">ПриСозданииНаСервере</Event>
+		<Event name="BeforeWriteAtServer">ПередЗаписьюНаСервере</Event>
+	</Events>
+	<ChildItems>
+		<Pages name="Страницы" id="1">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Страницы</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Страницы</v8:content>
+				</v8:item>
+			</ToolTip>
+			<PagesRepresentation>TabsOnTop</PagesRepresentation>
+			<ExtendedTooltip name="СтраницыРасширеннаяПодсказка" id="2"/>
+			<ChildItems>
+				<Page name="СтраницаОсновная" id="3">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Основная</v8:content>
+						</v8:item>
+					</Title>
+					<ToolTip>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Страница основная</v8:content>
+						</v8:item>
+					</ToolTip>
+					<ExtendedTooltip name="СтраницаОсновнаяРасширеннаяПодсказка" id="4"/>
+					<ChildItems>
+						<InputField name="Наименование" id="12">
+							<DataPath>Объект.Description</DataPath>
+							<AutoMaxWidth>false</AutoMaxWidth>
+							<ContextMenu name="НаименованиеКонтекстноеМеню" id="13"/>
+							<ExtendedTooltip name="НаименованиеРасширеннаяПодсказка" id="14"/>
+						</InputField>
+						<InputField name="Жетон" id="81">
+							<DataPath>Объект.Жетон</DataPath>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Он же токен</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>Button</ToolTipRepresentation>
+							<AutoMaxWidth>false</AutoMaxWidth>
+							<ContextMenu name="ЖетонКонтекстноеМеню" id="82"/>
+							<ExtendedTooltip name="ЖетонРасширеннаяПодсказка" id="83"/>
+						</InputField>
+						<InputField name="КаталогСохраненияФайлов" id="132">
+							<DataPath>Объект.КаталогСохраненияФайлов</DataPath>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Файловый каталог на сервере 1С-Предприятия для сохранения получаемых файлов</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>Button</ToolTipRepresentation>
+							<AutoMaxWidth>false</AutoMaxWidth>
+							<Height>1</Height>
+							<ContextMenu name="КаталогСохраненияФайловКонтекстноеМеню" id="133"/>
+							<ExtendedTooltip name="КаталогСохраненияФайловРасширеннаяПодсказка" id="134"/>
+						</InputField>
+						<InputField name="Статус" id="15">
+							<DataPath>Объект.Статус</DataPath>
+							<ContextMenu name="СтатусКонтекстноеМеню" id="16"/>
+							<ExtendedTooltip name="СтатусРасширеннаяПодсказка" id="17"/>
+						</InputField>
+						<InputField name="СпособПолученияОбновлений" id="18">
+							<DataPath>Объект.СпособПолученияОбновлений</DataPath>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Два диаметрально противоположных по логике способа получать обновления от вашего бота: getUpdates и вебхуки</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+							<ContextMenu name="СпособПолученияОбновленийКонтекстноеМеню" id="19"/>
+							<ExtendedTooltip name="СпособПолученияОбновленийРасширеннаяПодсказка" id="20"/>
+							<Events>
+								<Event name="OnChange">СпособПолученияОбновленийПриИзменении</Event>
+							</Events>
+						</InputField>
+						<Pages name="СтраницыСтатус" id="68">
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Страницы статус</v8:content>
+								</v8:item>
+							</ToolTip>
+							<PagesRepresentation>None</PagesRepresentation>
+							<ExtendedTooltip name="СтраницыСтатусРасширеннаяПодсказка" id="69"/>
+							<ChildItems>
+								<Page name="СтраницаСтатусВебхука" id="70">
+									<Title>
+										<v8:item>
+											<v8:lang>ru</v8:lang>
+											<v8:content>Состояние вебхука</v8:content>
+										</v8:item>
+									</Title>
+									<ToolTip>
+										<v8:item>
+											<v8:lang>ru</v8:lang>
+											<v8:content>Страница статус вебхука</v8:content>
+										</v8:item>
+									</ToolTip>
+									<ExtendedTooltip name="СтраницаСтатусВебхукаРасширеннаяПодсказка" id="71"/>
+									<ChildItems>
+										<UsualGroup name="ГруппаСтатусВебхука" id="51">
+											<Title>
+												<v8:item>
+													<v8:lang>ru</v8:lang>
+													<v8:content>Состояние вебхука</v8:content>
+												</v8:item>
+											</Title>
+											<ToolTip>
+												<v8:item>
+													<v8:lang>ru</v8:lang>
+													<v8:content>Группа статус вебхука</v8:content>
+												</v8:item>
+											</ToolTip>
+											<Group>Vertical</Group>
+											<Representation>StrongSeparation</Representation>
+											<ExtendedTooltip name="ГруппаСтатусВебхукаРасширеннаяПодсказка" id="52"/>
+											<ChildItems>
+												<Button name="ОбновитьИнформациюОСостоянииВебхука" id="56">
+													<Type>UsualButton</Type>
+													<CommandName>Form.Command.ОбновитьИнформациюОСостоянииВебхука</CommandName>
+													<ExtendedTooltip name="ОбновитьИнформациюОСостоянииВебхукаРасширеннаяПодсказка" id="57"/>
+												</Button>
+												<InputField name="СостояниеВебхука" id="53">
+													<DataPath>СостояниеВебхука</DataPath>
+													<TitleLocation>None</TitleLocation>
+													<ToolTip>
+														<v8:item>
+															<v8:lang>ru</v8:lang>
+															<v8:content>Информация о текущем состоянии вебхука с сервера Telegram</v8:content>
+														</v8:item>
+													</ToolTip>
+													<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+													<AutoMaxWidth>false</AutoMaxWidth>
+													<MultiLine>true</MultiLine>
+													<TextEdit>false</TextEdit>
+													<ChoiceListHeight>1</ChoiceListHeight>
+													<DropListWidth>1</DropListWidth>
+													<ContextMenu name="СостояниеВебхукаКонтекстноеМеню" id="54"/>
+													<ExtendedTooltip name="СостояниеВебхукаРасширеннаяПодсказка" id="55"/>
+												</InputField>
+											</ChildItems>
+										</UsualGroup>
+									</ChildItems>
+								</Page>
+								<Page name="СтраницаСтатусПериодическогоОбновления" id="72">
+									<Title>
+										<v8:item>
+											<v8:lang>ru</v8:lang>
+											<v8:content>Периодическое обновление</v8:content>
+										</v8:item>
+									</Title>
+									<ToolTip>
+										<v8:item>
+											<v8:lang>ru</v8:lang>
+											<v8:content>Страница статус периодического обновления</v8:content>
+										</v8:item>
+									</ToolTip>
+									<ExtendedTooltip name="СтраницаСтатусПериодическогоОбновленияРасширеннаяПодсказка" id="73"/>
+									<ChildItems>
+										<UsualGroup name="ГруппаСтатусПериодическогоОбновления" id="61">
+											<Title>
+												<v8:item>
+													<v8:lang>ru</v8:lang>
+													<v8:content>Выполнение</v8:content>
+												</v8:item>
+											</Title>
+											<ToolTip>
+												<v8:item>
+													<v8:lang>ru</v8:lang>
+													<v8:content>Группа статус периодического обновления</v8:content>
+												</v8:item>
+											</ToolTip>
+											<Group>Vertical</Group>
+											<Representation>StrongSeparation</Representation>
+											<ExtendedTooltip name="ГруппаСтатусПериодическогоОбновленияРасширеннаяПодсказка" id="62"/>
+											<ChildItems>
+												<UsualGroup name="Группа5" id="124">
+													<Group>Horizontal</Group>
+													<Representation>None</Representation>
+													<ShowTitle>false</ShowTitle>
+													<ExtendedTooltip name="Группа5РасширеннаяПодсказка" id="125"/>
+													<ChildItems>
+														<Button name="ОбновитьИнформациюОПоследнемВыполнении" id="122">
+															<Type>UsualButton</Type>
+															<CommandName>Form.Command.ОбновитьИнформациюОПоследнемВыполнении</CommandName>
+															<ExtendedTooltip name="ОбновитьИнформациюОПоследнемВыполненииРасширеннаяПодсказка" id="123"/>
+														</Button>
+														<Button name="ПолучитьСейчас" id="88">
+															<Type>UsualButton</Type>
+															<CommandName>Form.Command.ПолучитьСейчас</CommandName>
+															<ExtendedTooltip name="ПолучитьСейчасРасширеннаяПодсказка" id="89"/>
+														</Button>
+													</ChildItems>
+												</UsualGroup>
+												<InputField name="ПоследнееВыполнение" id="119">
+													<DataPath>ПоследнееВыполнение</DataPath>
+													<TitleLocation>None</TitleLocation>
+													<ToolTip>
+														<v8:item>
+															<v8:lang>ru</v8:lang>
+															<v8:content>Информация о последнем выполненном фоновом задании</v8:content>
+														</v8:item>
+													</ToolTip>
+													<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+													<AutoMaxWidth>false</AutoMaxWidth>
+													<MultiLine>true</MultiLine>
+													<TextEdit>false</TextEdit>
+													<ContextMenu name="ПоследнееВыполнениеКонтекстноеМеню" id="120"/>
+													<ExtendedTooltip name="ПоследнееВыполнениеРасширеннаяПодсказка" id="121"/>
+												</InputField>
+											</ChildItems>
+										</UsualGroup>
+									</ChildItems>
+								</Page>
+							</ChildItems>
+						</Pages>
+					</ChildItems>
+				</Page>
+				<Page name="СтраницаНастройкиПолученияОбновлений" id="117">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Настройки получения обновлений</v8:content>
+						</v8:item>
+					</Title>
+					<ToolTip>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Настройки получения обновлений</v8:content>
+						</v8:item>
+					</ToolTip>
+					<ExtendedTooltip name="СтраницаНастройкиПолученияОбновленийРасширеннаяПодсказка" id="118"/>
+					<ChildItems>
+						<UsualGroup name="Группа4" id="90">
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Расписание</v8:content>
+								</v8:item>
+							</Title>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>При файловом режиме работы базы на расписание регламентного задания могут накладываться неявные ограничения платформы (например, срабатывание регламентного задания не чаще одного раза в минуту)</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+							<Group>Horizontal</Group>
+							<Representation>StrongSeparation</Representation>
+							<ExtendedTooltip name="Группа4РасширеннаяПодсказка" id="91"/>
+							<ChildItems>
+								<Button name="НастроитьРасписание" id="63">
+									<Type>UsualButton</Type>
+									<CommandName>Form.Command.НастроитьРасписание</CommandName>
+									<ExtendedTooltip name="НастроитьРасписаниеРасширеннаяПодсказка" id="64"/>
+								</Button>
+							</ChildItems>
+						</UsualGroup>
+						<InputField name="РасписаниеРегламентногоЗадания" id="65">
+							<DataPath>ТекущееРасписание</DataPath>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Состояние синхронизированного с ботом регламентного задания получения обновлений с сервера Telegram</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+							<AutoMaxWidth>false</AutoMaxWidth>
+							<TextEdit>false</TextEdit>
+							<ContextMenu name="РасписаниеРегламентногоЗаданияКонтекстноеМеню" id="66"/>
+							<ExtendedTooltip name="РасписаниеРегламентногоЗаданияРасширеннаяПодсказка" id="67"/>
+						</InputField>
+						<InputField name="ИмяПользователяРегламентногоЗадания" id="92">
+							<DataPath>Объект.ИмяПользователяРегламентногоЗадания</DataPath>
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Имя пользователя</v8:content>
+								</v8:item>
+							</Title>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Имя пользователя, под которым будет выполняться регламентное задание получения обновления (необязательно)</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+							<ContextMenu name="ИмяПользователяРегламентногоЗаданияКонтекстноеМеню" id="93"/>
+							<ExtendedTooltip name="ИмяПользователяРегламентногоЗаданияРасширеннаяПодсказка" id="94"/>
+						</InputField>
+					</ChildItems>
+				</Page>
+				<Page name="СтраницаНастройкиВебхука" id="7">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Настройки вебхука</v8:content>
+						</v8:item>
+					</Title>
+					<ToolTip>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Страница настройки вебхука</v8:content>
+						</v8:item>
+					</ToolTip>
+					<ExtendedTooltip name="СтраницаНастройкиВебхукаРасширеннаяПодсказка" id="8"/>
+					<ChildItems>
+						<UsualGroup name="ГруппаОтправкаНастроек" id="103">
+							<Title>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Отправка настроек на сервер Telegram</v8:content>
+								</v8:item>
+							</Title>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Группа отправка настроек</v8:content>
+								</v8:item>
+							</ToolTip>
+							<Group>Horizontal</Group>
+							<Representation>StrongSeparation</Representation>
+							<ExtendedTooltip name="ГруппаОтправкаНастроекРасширеннаяПодсказка" id="104"/>
+							<ChildItems>
+								<Button name="НастроитьВебхук" id="74">
+									<Type>UsualButton</Type>
+									<CommandName>Form.Command.НастроитьВебхук</CommandName>
+									<ExtendedTooltip name="НастроитьВебхукРасширеннаяПодсказка" id="75"/>
+								</Button>
+								<Button name="УдалитьВебхук" id="79">
+									<Type>UsualButton</Type>
+									<CommandName>Form.Command.УдалитьВебхук</CommandName>
+									<ExtendedTooltip name="УдалитьВебхукРасширеннаяПодсказка" id="80"/>
+								</Button>
+							</ChildItems>
+						</UsualGroup>
+						<InputField name="ВебхукАдрес" id="21">
+							<DataPath>Объект.ВебхукАдрес</DataPath>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>HTTPS url, на который бот будет отправлять обновления, без секретного ключа</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+							<AutoMaxWidth>false</AutoMaxWidth>
+							<ContextMenu name="ВебхукАдресКонтекстноеМеню" id="22"/>
+							<ExtendedTooltip name="ВебхукАдресРасширеннаяПодсказка" id="23"/>
+							<Events>
+								<Event name="OnChange">ВебхукАдресПриИзменении</Event>
+							</Events>
+						</InputField>
+						<UsualGroup name="Группа1" id="35">
+							<Group>Horizontal</Group>
+							<Representation>None</Representation>
+							<ShowTitle>false</ShowTitle>
+							<ExtendedTooltip name="Группа1РасширеннаяПодсказка" id="36"/>
+							<ChildItems>
+								<InputField name="ВебхукКлюч" id="24">
+									<DataPath>Объект.ВебхукКлюч</DataPath>
+									<ToolTip>
+										<v8:item>
+											<v8:lang>ru</v8:lang>
+											<v8:content>Задайте секретный ключ, по которому будут идентифицироваться сообщения Telegram к этому боту. Ключ должен быть уникальным среди всех Ваших использующих вебхук ботов</v8:content>
+										</v8:item>
+									</ToolTip>
+									<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+									<AutoMaxWidth>false</AutoMaxWidth>
+									<ContextMenu name="ВебхукКлючКонтекстноеМеню" id="25"/>
+									<ExtendedTooltip name="ВебхукКлючРасширеннаяПодсказка" id="26"/>
+									<Events>
+										<Event name="OnChange">ВебхукКлючПриИзменении</Event>
+									</Events>
+								</InputField>
+								<Button name="СформироватьСлучайныйВебхукКлюч" id="33">
+									<Type>UsualButton</Type>
+									<CommandName>Form.Command.СформироватьСлучайныйВебхукКлюч</CommandName>
+									<ExtendedTooltip name="СформироватьСлучайныйВебхукКлючРасширеннаяПодсказка" id="34"/>
+								</Button>
+							</ChildItems>
+						</UsualGroup>
+						<InputField name="ПолныйАдрес" id="76">
+							<DataPath>ПолныйАдрес</DataPath>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>Полный адрес для отправки обновлений сервером Telegram</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+							<AutoMaxWidth>false</AutoMaxWidth>
+							<TextEdit>false</TextEdit>
+							<ContextMenu name="ПолныйАдресКонтекстноеМеню" id="77"/>
+							<ExtendedTooltip name="ПолныйАдресРасширеннаяПодсказка" id="78"/>
+						</InputField>
+						<CheckBoxField name="ИспользуетсяСамозаверенныйСертификат" id="37">
+							<DataPath>Объект.ИспользуетсяСамозаверенныйСертификат</DataPath>
+							<TitleLocation>Right</TitleLocation>
+							<ToolTip>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>При использовании IIS вместо самозаверенного сертификата может оказаться проще настроить переадресацию с https с полноценным сертификатом на http</v8:content>
+								</v8:item>
+							</ToolTip>
+							<ToolTipRepresentation>ShowBottom</ToolTipRepresentation>
+							<CheckBoxType>Auto</CheckBoxType>
+							<ContextMenu name="ИспользуетсяСамозаверенныйСертификатКонтекстноеМеню" id="38"/>
+							<ExtendedTooltip name="ИспользуетсяСамозаверенныйСертификатРасширеннаяПодсказка" id="39"/>
+							<Events>
+								<Event name="OnChange">ИспользуетсяСамозаверенныйСертификатПриИзменении</Event>
+							</Events>
+						</CheckBoxField>
+						<UsualGroup name="Группа2" id="42">
+							<Representation>None</Representation>
+							<ShowTitle>false</ShowTitle>
+							<ExtendedTooltip name="Группа2РасширеннаяПодсказка" id="43"/>
+							<ChildItems>
+								<Button name="ЗагрузитьСертификат" id="40">
+									<Type>UsualButton</Type>
+									<CommandName>Form.Command.ЗагрузитьСертификат</CommandName>
+									<ExtendedTooltip name="ЗагрузитьСертификатРасширеннаяПодсказка" id="41"/>
+								</Button>
+								<InputField name="PEMИмя" id="44">
+									<DataPath>Объект.PEMИмя</DataPath>
+									<Width>50</Width>
+									<TextEdit>false</TextEdit>
+									<ContextMenu name="PEMИмяКонтекстноеМеню" id="45"/>
+									<ExtendedTooltip name="PEMИмяРасширеннаяПодсказка" id="46"/>
+								</InputField>
+							</ChildItems>
+						</UsualGroup>
+					</ChildItems>
+				</Page>
+				<Page name="СтраницаДополнительно" id="5">
+					<Title>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Дополнительно</v8:content>
+						</v8:item>
+					</Title>
+					<ToolTip>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Страница дополнительно</v8:content>
+						</v8:item>
+					</ToolTip>
+					<ExtendedTooltip name="СтраницаДополнительноРасширеннаяПодсказка" id="6"/>
+					<ChildItems>
+						<InputField name="Код" id="9">
+							<DataPath>Объект.Code</DataPath>
+							<ContextMenu name="КодКонтекстноеМеню" id="10"/>
+							<ExtendedTooltip name="КодРасширеннаяПодсказка" id="11"/>
+						</InputField>
+						<InputField name="Описание" id="129">
+							<DataPath>Объект.Описание</DataPath>
+							<AutoMaxWidth>false</AutoMaxWidth>
+							<MultiLine>true</MultiLine>
+							<ContextMenu name="ОписаниеКонтекстноеМеню" id="130"/>
+							<ExtendedTooltip name="ОписаниеРасширеннаяПодсказка" id="131"/>
+						</InputField>
+					</ChildItems>
+				</Page>
+			</ChildItems>
+		</Pages>
+		<InputField name="Комментарий" id="126">
+			<DataPath>Объект.Комментарий</DataPath>
+			<AutoMaxWidth>false</AutoMaxWidth>
+			<ContextMenu name="КомментарийКонтекстноеМеню" id="127"/>
+			<ExtendedTooltip name="КомментарийРасширеннаяПодсказка" id="128"/>
+		</InputField>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="Объект" id="1">
+			<Type>
+				<v8:Type>cfg:CatalogObject.ТелеграмБоты</v8:Type>
+			</Type>
+			<MainAttribute>true</MainAttribute>
+			<SavedData>true</SavedData>
+		</Attribute>
+		<Attribute name="СостояниеВебхука" id="2">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Состояние вебхука</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ТекущееРасписание" id="3">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Расписание</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ПолныйАдрес" id="4">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Полный адрес</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="НовоеРасписание" id="5">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Новое расписание</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="СодержимоеСертификата" id="6">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Содержимое сертификата</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+		<Attribute name="ПоследнееВыполнение" id="7">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Последнее выполнение</v8:content>
+				</v8:item>
+			</Title>
+			<Type>
+				<v8:Type>xs:string</v8:Type>
+				<v8:StringQualifiers>
+					<v8:Length>0</v8:Length>
+					<v8:AllowedLength>Variable</v8:AllowedLength>
+				</v8:StringQualifiers>
+			</Type>
+		</Attribute>
+	</Attributes>
+	<Commands>
+		<Command name="СформироватьСлучайныйВебхукКлюч" id="1">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Случайный</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Сформировать случайный вебхук ключ</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Picture>
+				<xr:Ref>StdPicture.Refresh</xr:Ref>
+				<xr:LoadTransparent>true</xr:LoadTransparent>
+			</Picture>
+			<Action>СформироватьСлучайныйВебхукКлюч</Action>
+			<Representation>TextPicture</Representation>
+			<ModifiesSavedData>true</ModifiesSavedData>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ЗагрузитьСертификат" id="2">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Загрузить сертификат...</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Загрузить сертификат</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Action>ЗагрузитьСертификат</Action>
+			<ModifiesSavedData>true</ModifiesSavedData>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="НастроитьВебхук" id="3">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Отправить настройки...</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Настроить вебхук</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Picture>
+				<xr:Ref>StdPicture.ExternalDataSourceCube</xr:Ref>
+				<xr:LoadTransparent>true</xr:LoadTransparent>
+			</Picture>
+			<Action>НастроитьВебхук</Action>
+			<Representation>TextPicture</Representation>
+			<ModifiesSavedData>true</ModifiesSavedData>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ОбновитьИнформациюОСостоянииВебхука" id="4">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Обновить</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Обновить информацию о состоянии вебхука</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Picture>
+				<xr:Ref>StdPicture.Refresh</xr:Ref>
+				<xr:LoadTransparent>true</xr:LoadTransparent>
+			</Picture>
+			<Action>ОбновитьИнформациюОСостоянииВебхука</Action>
+			<Representation>TextPicture</Representation>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="НастроитьРасписание" id="5">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Настроить расписание...</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Настроить расписание автоматического получения обновлений с сервера Telegram</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Picture>
+				<xr:Ref>StdPicture.ScheduledJob</xr:Ref>
+				<xr:LoadTransparent>true</xr:LoadTransparent>
+			</Picture>
+			<Action>НастроитьРасписание</Action>
+			<Representation>TextPicture</Representation>
+			<ModifiesSavedData>true</ModifiesSavedData>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="УдалитьВебхук" id="6">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Удалить настройки...</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Удалить вебхук</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Picture>
+				<xr:Ref>StdPicture.ExternalDataSourceCube</xr:Ref>
+				<xr:LoadTransparent>true</xr:LoadTransparent>
+			</Picture>
+			<Action>УдалитьВебхук</Action>
+			<Representation>TextPicture</Representation>
+			<ModifiesSavedData>true</ModifiesSavedData>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ПолучитьСейчас" id="7">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Получить сейчас</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Немедленно получить обновления с сервера Telegram</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Picture>
+				<xr:Ref>StdPicture.DataProcessor</xr:Ref>
+				<xr:LoadTransparent>true</xr:LoadTransparent>
+			</Picture>
+			<Action>ПолучитьСейчас</Action>
+			<Representation>TextPicture</Representation>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="КтоЯ" id="8">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Кто я</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Выполнение метода getMe — информация о текущем боте с сервера Telegram</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Action>КтоЯ</Action>
+			<Representation>TextPicture</Representation>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+		<Command name="ОбновитьИнформациюОПоследнемВыполнении" id="9">
+			<Title>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Обновить</v8:content>
+				</v8:item>
+			</Title>
+			<ToolTip>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Обновить информацию о последнем выполнении</v8:content>
+				</v8:item>
+			</ToolTip>
+			<Picture>
+				<xr:Ref>StdPicture.Refresh</xr:Ref>
+				<xr:LoadTransparent>true</xr:LoadTransparent>
+			</Picture>
+			<Action>ОбновитьИнформациюОПоследнемВыполнении</Action>
+			<Representation>TextPicture</Representation>
+			<CurrentRowUse>DontUse</CurrentRowUse>
+		</Command>
+	</Commands>
+</Form>
