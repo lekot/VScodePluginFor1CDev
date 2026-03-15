@@ -22,7 +22,7 @@ import type { FormModel, FormChildItem } from '../../src/formEditor/formModel';
 /** Path to the real Form.xml fixture used in tests 3 and 4. */
 const REAL_FORM_XML = path.resolve(
   __dirname,
-  '../../../structure_samples/Catalogs/ТелеграмСервис/Forms/ФормаЭлемента/Ext/Form.xml'
+  '../../../FormatSamples/extensions_samples/Catalogs/ТелеграмНаборУсловий/Forms/ФормаЭлемента/Ext/Form.xml'
 );
 
 const BUILDER_OPTIONS = {
@@ -136,13 +136,11 @@ suite('Bug Condition Exploration: form-drag-clears-xml', () => {
   });
 
   /**
-   * Test 3 — xmlns loss
+   * Test 3 — xmlns preservation
    *
    * Parses the real Form.xml (which has 16 xmlns declarations).
    * Calls buildFormContent and builds XML.
-   * On UNFIXED code: only 2 xmlns are present (xmlns and version attribute).
-   *
-   * EXPECTED ON UNFIXED CODE: FAIL — xmlns count < 16
+   * FIX: all xmlns declarations are preserved in the output.
    */
   test('Test 3 — xmlns declarations are lost after buildFormContent (bug condition)', async () => {
     const result = await parseFormXml(REAL_FORM_XML);
@@ -156,23 +154,18 @@ suite('Bug Condition Exploration: form-drag-clears-xml', () => {
     const xmlnsMatches = xmlString.match(/xmlns(?::\w+)?=/g) ?? [];
     const xmlnsCount = xmlnsMatches.length;
 
-    // The original Form.xml has 16 xmlns declarations.
-    // BUG: on unfixed code only 2 are present (xmlns and version is not xmlns but attr).
-    // This assertion FAILS on unfixed code (confirms bug), PASSES on fixed code
+    // FIX VERIFIED: all xmlns declarations are preserved
     assert.ok(
       xmlnsCount >= 16,
-      `BUG CONFIRMED: Only ${xmlnsCount} xmlns declaration(s) in output XML, expected >= 16.\nxmlns found: ${xmlnsMatches.join(', ')}`
+      `FIX VERIFIED: xmlns declarations preserved — found ${xmlnsCount}, expected >= 16.\nxmlns found: ${xmlnsMatches.join(', ')}`
     );
   });
 
   /**
-   * Test 4 — Top-level fields loss
+   * Test 4 — Top-level fields preservation
    *
    * Parses the real Form.xml (which contains <WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>).
-   * Calls buildFormContent and builds XML.
-   * On UNFIXED code: <WindowOpeningMode> is absent from the output.
-   *
-   * EXPECTED ON UNFIXED CODE: FAIL — <WindowOpeningMode> is missing
+   * FIX: <WindowOpeningMode> is present in the output.
    */
   test('Test 4 — Top-level fields (WindowOpeningMode) are lost after buildFormContent (bug condition)', async () => {
     const result = await parseFormXml(REAL_FORM_XML);
@@ -182,11 +175,10 @@ suite('Bug Condition Exploration: form-drag-clears-xml', () => {
 
     const xmlString = buildXmlString(model);
 
-    // BUG: on unfixed code <WindowOpeningMode> is absent
-    // This assertion FAILS on unfixed code (confirms bug), PASSES on fixed code
+    // FIX VERIFIED: <WindowOpeningMode> is present in the output
     assert.ok(
       xmlString.includes('<WindowOpeningMode>'),
-      `BUG CONFIRMED: <WindowOpeningMode> is missing from the generated XML.\nGenerated XML (first 500 chars):\n${xmlString.slice(0, 500)}`
+      `FIX VERIFIED: <WindowOpeningMode> is present in the generated XML.\nGenerated XML (first 500 chars):\n${xmlString.slice(0, 500)}`
     );
   });
 

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { TreeNode } from '../models/treeNode';
+import { TreeNode, MetadataType } from '../models/treeNode';
 import { serializeTree, deserializeTree } from './treeSerializer';
 import { Logger } from './logger';
 
@@ -39,6 +39,14 @@ export async function loadTreeFromCache(
       return null;
     }
     const root = deserializeTree(entry.tree);
+    
+    // MIGRATION: Fix filePath for Configuration root nodes loaded from old cache
+    // Old cache may have filePath = directory; new code expects filePath = Configuration.xml
+    if (root.type === MetadataType.Configuration && root.filePath && !root.filePath.endsWith('.xml')) {
+      root.filePath = path.join(root.filePath, 'Configuration.xml');
+      Logger.info('Migrated Configuration root filePath to Configuration.xml');
+    }
+    
     Logger.info('Tree loaded from disk cache', { configPath: configPath.slice(-40) });
     return root;
   } catch {

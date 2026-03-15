@@ -354,13 +354,12 @@ export class DesignerParser {
     let xmlContent: Record<string, unknown> | null = null;
     try {
       await fs.promises.access(xmlPath);
+      // Update filePath to point to XML file regardless of parse success
+      elementNode.filePath = xmlPath;
       try {
         xmlContent = await XmlParser.parseFileAsync(xmlPath);
         const properties = this.extractPropertiesFromElement(xmlContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
-        
-        // Update filePath to point to XML file for property editing
-        elementNode.filePath = xmlPath;
       } catch (error) {
         Logger.warn(`Error parsing element XML ${xmlPath}`, error);
       }

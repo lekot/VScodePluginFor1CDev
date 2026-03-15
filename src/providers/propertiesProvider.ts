@@ -110,7 +110,8 @@ export class PropertiesProvider {
     // Update content with new node
     // For nested elements (Attributes), properties are already loaded from XML during parsing
     // Only reload from file for root elements that have filePath
-    if (node.filePath && !node.parentFilePath) {
+
+    if (node.filePath && !node.parentFilePath && node.filePath.endsWith('.xml')) {
       const { getFormPaths } = await import('../formEditor/formPaths');
       const pathToRead =
         node.type === 'Form'

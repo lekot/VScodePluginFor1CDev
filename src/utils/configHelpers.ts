@@ -17,6 +17,10 @@ export function getConfigRootFromNode(node: TreeNode): string | null {
   if (!rootPath) return null;
   // EDT root has filePath = configPath/src; Designer root has filePath = configPath
   if (current.type === MetadataType.Configuration && current.name === 'Configuration') {
+    // Designer format: filePath points to Configuration.xml — return its directory
+    if (rootPath.endsWith('.xml')) {
+      return path.dirname(rootPath);
+    }
     // Heuristic: if path ends with /src, treat as EDT
     if (rootPath.endsWith(path.sep + 'src') || rootPath.endsWith('/src')) {
       return path.dirname(rootPath);

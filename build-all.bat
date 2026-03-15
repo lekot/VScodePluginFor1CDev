@@ -14,15 +14,12 @@ echo Compiling TypeScript...
 node node_modules/typescript/bin/tsc -p .
 if %errorlevel% neq 0 exit /b %errorlevel%
 
-echo Building VSIX package...
-node node_modules/@vscode/vsce/vsce package
-if %errorlevel% neq 0 exit /b %errorlevel%
-
 if not exist releases mkdir releases
-copy /Y "1c-metadata-tree-vscode-%NEWVERSION%.vsix" "releases\"
+
+echo Building VSIX package...
+node node_modules/@vscode/vsce/vsce package --out "releases\1c-metadata-tree-vscode-%NEWVERSION%.vsix"
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 echo.
-echo Build complete! VSIX: 1c-metadata-tree-vscode-%NEWVERSION%.vsix
-echo Copy: releases\1c-metadata-tree-vscode-%NEWVERSION%.vsix
+echo Build complete! VSIX: releases\1c-metadata-tree-vscode-%NEWVERSION%.vsix
 echo Install via: Extensions: Install from VSIX...
