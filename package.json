@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "1C Metadata Tree",
   "description": "VS Code extension for visualizing 1C configuration metadata tree",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
