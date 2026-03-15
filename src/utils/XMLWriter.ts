@@ -15,7 +15,7 @@ const XML_WRITER_OPTIONS = {
   textNodeName: '#text',
   format: true,
   indentBy: '  ',
-  suppressEmptyNode: true,
+  suppressEmptyNode: false,
   preserveOrder: true,
   commentPropName: '#comment',
   cdataTagName: '__cdata',
