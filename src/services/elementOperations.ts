@@ -354,7 +354,8 @@ export async function renameElement(
       parentFilePath,
       node.type === MetadataType.TabularSection ? 'TabularSection' : 'Attribute',
       oldName,
-      { ...node.properties, Name: name } as Record<string, unknown>
+      { ...node.properties, Name: name } as Record<string, unknown>,
+      ['Name']
     );
     return;
   }
@@ -392,5 +393,6 @@ export async function renameElement(
 
   throw new Error('Переименование для этого типа элемента не поддерживается.');
 }
+
 
 export { findReferencesToElement };
