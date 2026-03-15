@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+    <title>Roles and Rights Editor</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            padding: 16px;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        .header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        input[type="checkbox"] {
+            cursor: pointer;
+        }
+
+        input[type="text"] {
+            background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            padding: 4px 8px;
+            border-radius: 2px;
+            outline: none;
+            min-width: 200px;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--vscode-focusBorder);
+        }
+
+        select {
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+            padding: 4px 8px;
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        select:focus {
+            border-color: var(--vscode-focusBorder);
+        }
+
+        .table-container {
+            flex: 1;
+            overflow: auto;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 2px;
+            position: relative;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        thead {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: var(--vscode-editor-background);
+        }
+
+        th {
+            background: var(--vscode-editorGroupHeader-tabsBackground);
+            color: var(--vscode-foreground);
+            font-weight: 600;
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 2px solid var(--vscode-panel-border);
+            border-right: 1px solid var(--vscode-panel-border);
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+        }
+
+        th:first-child {
+            position: sticky;
+            left: 0;
+            z-index: 11;
+            min-width: 250px;
+            max-width: 400px;
+        }
+
+        th.right-column {
+            text-align: center;
+            min-width: 80px;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        tbody tr:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        td {
+            padding: 8px 12px;
+            border-right: 1px solid var(--vscode-panel-border);
+        }
+
+        td:first-child {
+            position: sticky;
+            left: 0;
+            background: var(--vscode-editor-background);
+            font-weight: 500;
+            z-index: 1;
+            min-width: 250px;
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        tbody tr:hover td:first-child {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        td.checkbox-cell {
+            text-align: center;
+            padding: 4px;
+        }
+
+        td.checkbox-cell input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+
+        .actions {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid var(--vscode-panel-border);
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        button {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 6px 14px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: var(--vscode-font-size);
+            font-family: var(--vscode-font-family);
+        }
+
+        button:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+
+        button:active {
+            opacity: 0.9;
+        }
+
+        button.secondary {
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+
+        button.secondary:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .empty-state p {
+            margin-bottom: 8px;
+        }
+
+        .object-type {
+            color: var(--vscode-descriptionForeground);
+            font-size: 0.9em;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1 id="roleTitle">Rights Editor</h1>
+        <div class="controls">
+            <div class="control-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="showAllToggle">
+                    <span>Show All Objects</span>
+                </label>
+            </div>
+            <div class="control-group">
+                <input type="text" id="searchInput" placeholder="Search objects...">
+            </div>
+            <div class="control-group">
+                <label for="typeFilter">Type:</label>
+                <select id="typeFilter">
+                    <option value="">All Types</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <table id="rightsTable">
+            <thead>
+                <tr id="headerRow">
+                    <th>Object</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+            </tbody>
+        </table>
+        <div id="emptyState" class="empty-state" style="display: none;">
+            <p>No objects match the current filter.</p>
+            <p>Try adjusting your search or enabling "Show All Objects".</p>
+        </div>
+    </div>
+
+    <div class="actions">
+        <button id="cancelButton" class="secondary">Cancel</button>
+        <button id="saveButton">Save</button>
+    </div>
+
+    <script>
+        (function() {
+            const vscode = acquireVsCodeApi();
+            
+            // State management
+            let roleData = null;
+            let allObjects = [];
+            let filterState = {
+                showAll: false,
+                searchQuery: '',
+                typeFilter: ''
+            };
+
+            // Initialize event listeners
+            document.getElementById('showAllToggle').addEventListener('change', handleShowAllToggle);
+            document.getElementById('searchInput').addEventListener('input', handleSearchInput);
+            document.getElementById('typeFilter').addEventListener('change', handleTypeFilter);
+            document.getElementById('saveButton').addEventListener('click', handleSave);
+            document.getElementById('cancelButton').addEventListener('click', handleCancel);
+
+            // Handle messages from extension
+            window.addEventListener('message', event => {
+                const message = event.data;
+                
+                switch (message.command) {
+                    case 'initialize':
+                        roleData = message.roleData;
+                        allObjects = message.objects;
+                        initializeUI();
+                        renderTable();
+                        break;
+                    
+                    case 'updateSuccess':
+                        // Rights updated successfully
+                        break;
+                    
+                    case 'updateError':
+                        alert('Error updating rights: ' + message.error);
+                        break;
+                    
+                    case 'validationError':
+                        alert('Validation error: ' + message.errors.join('\n'));
+                        break;
+                }
+            });
+
+            function initializeUI() {
+                // Set role title
+                if (roleData && roleData.name) {
+                    document.getElementById('roleTitle').textContent = 'Rights: ' + roleData.name;
+                }
+
+                // Populate type filter
+                const types = [...new Set(allObjects.map(obj => obj.type))].sort();
+                const typeFilter = document.getElementById('typeFilter');
+                types.forEach(type => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.textContent = type;
+                    typeFilter.appendChild(option);
+                });
+
+                // Build header row with right types
+                const rightTypes = [
+                    'Read', 'Insert', 'Update', 'Delete',
+                    'View', 'Edit',
+                    'InteractiveInsert', 'InteractiveDelete',
+                    'InteractiveClear', 'InteractiveDeleteMarked',
+                    'InteractiveUndeleteMarked', 'InteractiveDeletePredefinedData',
+                    'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark',
+                    'InteractiveDeleteMarkedPredefinedData'
+                ];
+
+                const headerRow = document.getElementById('headerRow');
+                rightTypes.forEach(rightType => {
+                    const th = document.createElement('th');
+                    th.className = 'right-column';
+                    th.textContent = rightType;
+                    th.title = rightType;
+                    headerRow.appendChild(th);
+                });
+            }
+
+            function renderTable() {
+                const filteredObjects = applyFilters();
+                const tableBody = document.getElementById('tableBody');
+                const emptyState = document.getElementById('emptyState');
+                
+                tableBody.innerHTML = '';
+
+                if (filteredObjects.length === 0) {
+                    emptyState.style.display = 'block';
+                    return;
+                }
+
+                emptyState.style.display = 'none';
+
+                const rightTypes = [
+                    'read', 'insert', 'update', 'delete',
+                    'view', 'edit',
+                    'interactiveInsert', 'interactiveDelete',
+                    'interactiveClear', 'interactiveDeleteMarked',
+                    'interactiveUndeleteMarked', 'interactiveDeletePredefinedData',
+                    'interactiveSetDeletionMark', 'interactiveClearDeletionMark',
+                    'interactiveDeleteMarkedPredefinedData'
+                ];
+
+                filteredObjects.forEach(obj => {
+                    const tr = document.createElement('tr');
+                    
+                    // Object name cell
+                    const tdName = document.createElement('td');
+                    const displayName = escapeHtml(obj.displayName || obj.name);
+                    const type = escapeHtml(obj.type);
+                    tdName.innerHTML = displayName + '<span class="object-type">(' + type + ')</span>';
+                    tdName.title = obj.fullName;
+                    tr.appendChild(tdName);
+
+                    // Rights checkboxes
+                    const objectRights = roleData.rights[obj.fullName] || {};
+                    
+                    rightTypes.forEach(rightType => {
+                        const td = document.createElement('td');
+                        td.className = 'checkbox-cell';
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.checked = objectRights[rightType] || false;
+                        checkbox.dataset.object = obj.fullName;
+                        checkbox.dataset.right = rightType;
+                        checkbox.addEventListener('change', handleCheckboxChange);
+                        
+                        td.appendChild(checkbox);
+                        tr.appendChild(td);
+                    });
+
+                    tableBody.appendChild(tr);
+                });
+            }
+
+            function applyFilters() {
+                let filtered = allObjects;
+
+                // Filter by showAll
+                if (!filterState.showAll) {
+                    filtered = filtered.filter(obj => 
+                        roleData.rights[obj.fullName] && 
+                        Object.values(roleData.rights[obj.fullName]).some(v => v === true)
+                    );
+                }
+
+                // Filter by search query
+                if (filterState.searchQuery) {
+                    const query = filterState.searchQuery.toLowerCase();
+                    filtered = filtered.filter(obj => 
+                        obj.name.toLowerCase().includes(query) ||
+                        (obj.displayName && obj.displayName.toLowerCase().includes(query))
+                    );
+                }
+
+                // Filter by type
+                if (filterState.typeFilter) {
+                    filtered = filtered.filter(obj => obj.type === filterState.typeFilter);
+                }
+
+                return filtered;
+            }
+
+            function handleShowAllToggle(event) {
+                filterState.showAll = event.target.checked;
+                renderTable();
+                
+                vscode.postMessage({
+                    command: 'toggleFilter',
+                    data: { showAll: filterState.showAll }
+                });
+            }
+
+            function handleSearchInput(event) {
+                filterState.searchQuery = event.target.value;
+                renderTable();
+                
+                vscode.postMessage({
+                    command: 'search',
+                    data: { query: filterState.searchQuery }
+                });
+            }
+
+            function handleTypeFilter(event) {
+                filterState.typeFilter = event.target.value;
+                renderTable();
+                
+                vscode.postMessage({
+                    command: 'filterByType',
+                    data: { type: filterState.typeFilter }
+                });
+            }
+
+            function handleCheckboxChange(event) {
+                const objectName = event.target.dataset.object;
+                const rightType = event.target.dataset.right;
+                const value = event.target.checked;
+
+                // Update local state
+                if (!roleData.rights[objectName]) {
+                    roleData.rights[objectName] = {};
+                }
+                roleData.rights[objectName][rightType] = value;
+
+                // Apply dependency rules
+                applyDependencyRules(objectName, rightType, value);
+
+                // Send update to extension
+                vscode.postMessage({
+                    command: 'updateRight',
+                    data: {
+                        objectName: objectName,
+                        rightType: rightType,
+                        value: value
+                    }
+                });
+
+                // Re-render to show dependency updates
+                renderTable();
+            }
+
+            function applyDependencyRules(objectName, rightType, value) {
+                const rights = roleData.rights[objectName];
+
+                if (value) {
+                    // Enabling a right - enable dependencies
+                    if (rightType === 'update' || rightType === 'delete') {
+                        rights.read = true;
+                    }
+                    
+                    if (rightType.startsWith('interactive')) {
+                        // Map interactive rights to base rights
+                        const baseRightMap = {
+                            'interactiveInsert': 'insert',
+                            'interactiveDelete': 'delete',
+                            'interactiveClear': 'delete',
+                            'interactiveDeleteMarked': 'delete',
+                            'interactiveUndeleteMarked': 'delete',
+                            'interactiveDeletePredefinedData': 'delete',
+                            'interactiveSetDeletionMark': 'delete',
+                            'interactiveClearDeletionMark': 'delete',
+                            'interactiveDeleteMarkedPredefinedData': 'delete'
+                        };
+                        
+                        const baseRight = baseRightMap[rightType];
+                        if (baseRight) {
+                            rights[baseRight] = true;
+                            // If base right requires read, enable it too
+                            if (baseRight === 'update' || baseRight === 'delete') {
+                                rights.read = true;
+                            }
+                        }
+                    }
+                } else {
+                    // Disabling a right - disable dependents
+                    if (rightType === 'read') {
+                        rights.update = false;
+                        rights.delete = false;
+                        // Disable all interactive rights that depend on update/delete
+                        rights.interactiveDelete = false;
+                        rights.interactiveClear = false;
+                        rights.interactiveDeleteMarked = false;
+                        rights.interactiveUndeleteMarked = false;
+                        rights.interactiveDeletePredefinedData = false;
+                        rights.interactiveSetDeletionMark = false;
+                        rights.interactiveClearDeletionMark = false;
+                        rights.interactiveDeleteMarkedPredefinedData = false;
+                    }
+                    
+                    if (rightType === 'insert') {
+                        rights.interactiveInsert = false;
+                    }
+                    
+                    if (rightType === 'delete') {
+                        rights.interactiveDelete = false;
+                        rights.interactiveClear = false;
+                        rights.interactiveDeleteMarked = false;
+                        rights.interactiveUndeleteMarked = false;
+                        rights.interactiveDeletePredefinedData = false;
+                        rights.interactiveSetDeletionMark = false;
+                        rights.interactiveClearDeletionMark = false;
+                        rights.interactiveDeleteMarkedPredefinedData = false;
+                    }
+                }
+            }
+
+            function handleSave() {
+                vscode.postMessage({
+                    command: 'save',
+                    data: { roleData: roleData }
+                });
+            }
+
+            function handleCancel() {
+                vscode.postMessage({
+                    command: 'cancel'
+                });
+            }
+
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            // Request initial data
+            vscode.postMessage({ command: 'ready' });
+        })();
+    </script>
+</body>
+</html>

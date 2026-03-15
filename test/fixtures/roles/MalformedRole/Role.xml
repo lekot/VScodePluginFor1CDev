@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Role xmlns="http://v8.1c.ru/8.3/MDClasses">
+	<Rights>
+		<Catalog>
+			<Object>
+				<Name>BrokenObject</Name>
+				<Read>true
+			</Object>
+		</Catalog>
+	</Rights>

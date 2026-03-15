@@ -5,6 +5,7 @@ import { Logger } from './utils/logger';
 import { MetadataTreeDataProvider } from './providers/treeDataProvider';
 import { PropertiesProvider } from './providers/propertiesProvider';
 import { TypeEditorProvider } from './providers/typeEditorProvider';
+import { RolesRightsEditorProvider } from './rolesEditor/rolesRightsEditorProvider';
 import { MetadataParser } from './parsers/metadataParser';
 import { FormatDetector, ConfigFormat } from './parsers/formatDetector';
 import { MetadataWatcherService } from './services/metadataWatcherService';
@@ -35,6 +36,7 @@ let treeDataProvider: MetadataTreeDataProvider | null = null;
 let treeView: vscode.TreeView<TreeNode> | null = null;
 let propertiesProvider: PropertiesProvider | null = null;
 let typeEditorProvider: TypeEditorProvider | null = null;
+let rolesRightsEditorProvider: RolesRightsEditorProvider | null = null;
 let extensionContext: vscode.ExtensionContext | undefined;
 let metadataWatchers: MetadataWatcherService[] = [];
 
@@ -62,6 +64,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Create type editor provider
   typeEditorProvider = new TypeEditorProvider(context);
+
+  // Create roles rights editor provider
+  rolesRightsEditorProvider = new RolesRightsEditorProvider(context);
+  context.subscriptions.push(rolesRightsEditorProvider);
 
   // Create properties provider
   propertiesProvider = new PropertiesProvider(context, treeDataProvider, typeEditorProvider);
@@ -191,6 +197,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch (err) {
         Logger.error('Failed to open form editor', err);
         vscode.window.showErrorMessage(`Не удалось открыть редактор формы: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  );
+
+  // Open rights editor for Role nodes
+  const openRightsEditorCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openRightsEditor',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(node);
+      if (!target) {
+        vscode.window.showWarningMessage('Select a role node in the metadata tree.');
+        return;
+      }
+      if (target.type !== MetadataType.Role || !target.filePath) {
+        vscode.window.showWarningMessage('Rights editor is only available for role nodes.');
+        return;
+      }
+      try {
+        if (rolesRightsEditorProvider) {
+          await rolesRightsEditorProvider.show(target.filePath);
+        }
+      } catch (err) {
+        Logger.error('Failed to open rights editor', err);
+        vscode.window.showErrorMessage(`Failed to open rights editor: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   );
@@ -552,6 +582,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showPropertiesCommand,
     openXMLCommand,
     openFormEditorCommand,
+    openRightsEditorCommand,
     createElementCommand,
     createFormCommand,
     duplicateElementCommand,
@@ -567,12 +598,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     previousMatchCommand
   );
 
-  // Handle tree view selection to show properties
+  // Handle tree view selection to show properties or rights editor
   treeView.onDidChangeSelection(async (e) => {
-    if (e.selection.length > 0 && propertiesProvider) {
+    if (e.selection.length > 0) {
       const selectedNode = e.selection[0];
       Logger.debug(`Tree selection changed: ${selectedNode.name}`);
-      await vscode.commands.executeCommand('1c-metadata-tree.showProperties', selectedNode);
+      
+      // For Role nodes, open rights editor instead of properties panel
+      if (selectedNode.type === MetadataType.Role && selectedNode.filePath) {
+        await vscode.commands.executeCommand('1c-metadata-tree.openRightsEditor', selectedNode);
+      } else if (propertiesProvider) {
+        // For all other nodes, show properties panel
+        await vscode.commands.executeCommand('1c-metadata-tree.showProperties', selectedNode);
+      }
     }
   });
 
