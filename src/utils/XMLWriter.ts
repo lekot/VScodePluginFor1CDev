@@ -465,97 +465,99 @@ ${defaultPropsLines}\t\t</Properties>
    * @throws Error if file cannot be written
    */
   static async writeNestedElementProperties(
-    filePath: string,
-    elementType: string,
-    elementName: string,
-    properties: Record<string, unknown>
-  ): Promise<void> {
-    try {
-      let xmlContent: string;
+      filePath: string,
+      elementType: string,
+      elementName: string,
+      properties: Record<string, unknown>,
+      changedKeys?: string[]
+    ): Promise<void> {
       try {
-        xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-      } catch (readError) {
-        Logger.error(`Failed to read file for writing: ${filePath}`, readError);
-        throw new Error(
-          `Unable to read file for updating. ${readError instanceof Error ? readError.message : String(readError)}`
-        );
-      }
+        let xmlContent: string;
+        try {
+          xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+        } catch (readError) {
+          Logger.error(`Failed to read file for writing: ${filePath}`, readError);
+          throw new Error(
+            `Unable to read file for updating. ${readError instanceof Error ? readError.message : String(readError)}`
+          );
+        }
 
-      let parsed: unknown;
-      try {
-        parsed = this.parser.parse(xmlContent);
-      } catch (parseError) {
-        const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-        Logger.error(`XML parsing failed for ${filePath}`, parseError);
-        throw new Error(
-          `Invalid XML structure in file. Cannot update properties in a corrupted XML file. ${errorMsg}`
-        );
-      }
+        let parsed: unknown;
+        try {
+          parsed = this.parser.parse(xmlContent);
+        } catch (parseError) {
+          const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+          Logger.error(`XML parsing failed for ${filePath}`, parseError);
+          throw new Error(
+            `Invalid XML structure in file. Cannot update properties in a corrupted XML file. ${errorMsg}`
+          );
+        }
 
-      const updated = this.updateNestedElementInStructure(parsed, elementType, elementName, properties);
+        const updated = this.updateNestedElementInStructure(parsed, elementType, elementName, properties, changedKeys);
 
-      let xmlString: string;
-      try {
-        xmlString = this.builder.build(updated);
-      } catch (buildError) {
-        Logger.error(`Failed to build XML for ${filePath}`, buildError);
-        throw new Error(
-          `Failed to generate XML content. ${buildError instanceof Error ? buildError.message : String(buildError)}`
-        );
-      }
+        let xmlString: string;
+        try {
+          xmlString = this.builder.build(updated);
+        } catch (buildError) {
+          Logger.error(`Failed to build XML for ${filePath}`, buildError);
+          throw new Error(
+            `Failed to generate XML content. ${buildError instanceof Error ? buildError.message : String(buildError)}`
+          );
+        }
 
-      const backupPath = `${filePath}.bak`;
-      try {
-        await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-      } catch (backupErr) {
-        Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-      }
+        const backupPath = `${filePath}.bak`;
+        try {
+          await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+        } catch (backupErr) {
+          Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+        }
 
-      try {
-        await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-      } catch (writeError) {
-        Logger.error(`Failed to write file: ${filePath}`, writeError);
+        try {
+          await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+        } catch (writeError) {
+          Logger.error(`Failed to write file: ${filePath}`, writeError);
+          try {
+            if (fs.existsSync(backupPath)) {
+              const restored = await fs.promises.readFile(backupPath, 'utf-8');
+              await fs.promises.writeFile(filePath, restored, 'utf-8');
+              await fs.promises.unlink(backupPath);
+              Logger.info(`Rolled back ${filePath} from backup`);
+            }
+          } catch (rollbackErr) {
+            Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+          }
+          throw new Error(
+            `Unable to write to file. Check file permissions and disk space. ${
+              writeError instanceof Error ? writeError.message : String(writeError)
+            }`
+          );
+        }
+
         try {
           if (fs.existsSync(backupPath)) {
-            const restored = await fs.promises.readFile(backupPath, 'utf-8');
-            await fs.promises.writeFile(filePath, restored, 'utf-8');
             await fs.promises.unlink(backupPath);
-            Logger.info(`Rolled back ${filePath} from backup`);
           }
-        } catch (rollbackErr) {
-          Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+        } catch {
+          Logger.debug(`Could not remove backup ${backupPath}`);
         }
+        Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
+      } catch (error) {
+        Logger.error(`Error writing nested element properties to ${filePath}`, error);
+
+        if (error instanceof Error && 
+            (error.message.includes('Invalid XML structure') || 
+             error.message.includes('Unable to'))) {
+          throw error;
+        }
+
         throw new Error(
-          `Unable to write to file. Check file permissions and disk space. ${
-            writeError instanceof Error ? writeError.message : String(writeError)
+          `Failed to write nested element properties to XML file: ${filePath}. ${
+            error instanceof Error ? error.message : String(error)
           }`
         );
       }
-
-      try {
-        if (fs.existsSync(backupPath)) {
-          await fs.promises.unlink(backupPath);
-        }
-      } catch {
-        Logger.debug(`Could not remove backup ${backupPath}`);
-      }
-      Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
-    } catch (error) {
-      Logger.error(`Error writing nested element properties to ${filePath}`, error);
-      
-      if (error instanceof Error && 
-          (error.message.includes('Invalid XML structure') || 
-           error.message.includes('Unable to'))) {
-        throw error;
-      }
-      
-      throw new Error(
-        `Failed to write nested element properties to XML file: ${filePath}. ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
     }
-  }
+
 
   /**
    * Convert string boolean values to actual boolean primitives
@@ -886,7 +888,8 @@ ${defaultPropsLines}\t\t</Properties>
     parsed: unknown,
     elementType: string,
     elementName: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    changedKeys?: string[]
   ): unknown {
     if (!parsed || typeof parsed !== 'object') {
       return parsed;
@@ -909,9 +912,9 @@ ${defaultPropsLines}\t\t</Properties>
           // Designer format: attributes live under ChildObjects, not Attributes
           const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
           if (key === containerName && Array.isArray(value)) {
-            result[key] = this.updateNestedElementArray(value, elementType, elementName, properties);
+            result[key] = this.updateNestedElementArray(value, elementType, elementName, properties, changedKeys);
           } else if (Array.isArray(value)) {
-            result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties);
+            result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties, changedKeys);
           } else {
             result[key] = value;
           }
@@ -928,7 +931,8 @@ ${defaultPropsLines}\t\t</Properties>
     elementsArray: unknown[],
     elementType: string,
     elementName: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    changedKeys?: string[]
   ): unknown[] {
     return elementsArray.map((item) => {
       if (!item || typeof item !== 'object') {
@@ -946,7 +950,7 @@ ${defaultPropsLines}\t\t</Properties>
         if (key === elementType && Array.isArray(value)) {
           const elementData = this.extractNestedElementData(value);
           if (elementData.name === elementName) {
-            result[key] = this.updateNestedElementProperties(value, properties);
+            result[key] = this.updateNestedElementProperties(value, properties, changedKeys);
           } else {
             result[key] = value;
           }
@@ -1000,7 +1004,8 @@ ${defaultPropsLines}\t\t</Properties>
 
   private static updateNestedElementProperties(
     elementArray: unknown[],
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    changedKeys?: string[]
   ): unknown[] {
     return elementArray.map((item) => {
       if (!item || typeof item !== 'object') {
@@ -1017,11 +1022,11 @@ ${defaultPropsLines}\t\t</Properties>
 
         // Designer format: Attribute props (Type, Name, etc.) live inside Properties
         if (key === 'Properties' && Array.isArray(value)) {
-          result[key] = this.updateNestedElementProperties(value, properties);
+          result[key] = this.updateNestedElementProperties(value, properties, changedKeys);
           continue;
         }
 
-        if (key in properties) {
+        if (key in properties && (!changedKeys || changedKeys.includes(key))) {
           const newValue = properties[key];
 
           // Don't write object values as "[object Object]" — 1C XDTO expects proper XML or primitives

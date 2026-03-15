@@ -1352,11 +1352,19 @@ export class PropertiesProvider {
         this._isSaving = true;
         // For nested elements (Attributes, TabularSections, etc.), use specialized method
         if (node.parentFilePath) {
+          // Track which properties actually changed by comparing with last saved state
+          const changedKeys = node.properties
+            ? Object.keys(properties).filter(
+                key => properties[key] !== node.properties?.[key]
+              )
+            : undefined; // If no previous state, pass undefined (write all properties)
+          
           await XMLWriter.writeNestedElementProperties(
             targetFilePath,
             node.type,
             node.name,
-            properties
+            properties,
+            changedKeys
           );
         } else {
           // For root elements, use standard write method
