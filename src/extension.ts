@@ -42,9 +42,10 @@ let metadataWatchers: MetadataWatcherService[] = [];
  * Activate the extension
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  extensionContext = context;
-  Logger.initialize();
-  Logger.info(MESSAGES.EXTENSION_ACTIVATED);
+  try {
+    extensionContext = context;
+    Logger.initialize();
+    Logger.info(MESSAGES.EXTENSION_ACTIVATED);
 
   // Create tree data provider
   treeDataProvider = new MetadataTreeDataProvider(context);
@@ -587,6 +588,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   Logger.info('Extension activation completed');
+  } catch (error) {
+    // Centralized error handling for activation failures
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    Logger.error('Critical error during extension activation', error);
+    
+    // Show user-friendly error message
+    vscode.window.showErrorMessage(
+      `1C Metadata Tree: Failed to activate extension. ${errorMessage}`,
+      'Show Logs'
+    ).then(selection => {
+      if (selection === 'Show Logs') {
+        Logger.show();
+      }
+    });
+    
+    // Extension should still be registered but in degraded state
+    // Don't re-throw - allow VS Code to continue
+  }
 }
 
 /**

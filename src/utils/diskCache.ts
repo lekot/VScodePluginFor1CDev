@@ -8,7 +8,11 @@ import { Logger } from './logger';
 interface CacheEntry {
   configPath: string;
   tree: string;
+  timestamp?: number; // mtime of Configuration.xml when cache was created
+  version?: string; // Cache format version for future migrations
 }
+
+const CACHE_VERSION = '1.0';
 
 function cacheKey(configPath: string): string {
   return crypto.createHash('sha256').update(configPath).digest('hex').slice(0, 16);
@@ -25,6 +29,7 @@ function getCacheFilePath(globalStoragePath: string, configPath: string): string
 
 /**
  * Load tree from disk cache if present and valid for this configPath.
+ * Validates that Configuration.xml hasn't been modified since cache was created.
  */
 export async function loadTreeFromCache(
   globalStoragePath: string,
@@ -35,9 +40,28 @@ export async function loadTreeFromCache(
     await fs.promises.access(filePath);
     const raw = await fs.promises.readFile(filePath, 'utf-8');
     const entry = JSON.parse(raw) as CacheEntry;
+    
     if (entry.configPath !== configPath || !entry.tree) {
+      Logger.debug('Cache entry invalid: path mismatch or empty tree');
       return null;
     }
+    
+    // Validate cache freshness by checking Configuration.xml mtime
+    const configXmlPath = path.join(configPath, 'Configuration.xml');
+    try {
+      const stats = await fs.promises.stat(configXmlPath);
+      const currentMtime = stats.mtimeMs;
+      
+      if (entry.timestamp && currentMtime > entry.timestamp) {
+        Logger.info('Cache invalidated: Configuration.xml modified since cache creation');
+        return null;
+      }
+    } catch (err) {
+      // Configuration.xml doesn't exist or can't be accessed - invalidate cache
+      Logger.debug('Cache invalidated: Configuration.xml not accessible');
+      return null;
+    }
+    
     const root = deserializeTree(entry.tree);
     
     // MIGRATION: Fix filePath for Configuration root nodes loaded from old cache
@@ -56,6 +80,7 @@ export async function loadTreeFromCache(
 
 /**
  * Save tree to disk cache (structure-only tree is small).
+ * Stores timestamp of Configuration.xml for cache validation.
  */
 export async function saveTreeToCache(
   globalStoragePath: string,
@@ -66,7 +91,24 @@ export async function saveTreeToCache(
     const dir = getCacheDir(globalStoragePath);
     await fs.promises.mkdir(dir, { recursive: true });
     const filePath = getCacheFilePath(globalStoragePath, configPath);
-    const entry: CacheEntry = { configPath, tree: serializeTree(root) };
+    
+    // Get Configuration.xml mtime for cache validation
+    let timestamp: number | undefined;
+    try {
+      const configXmlPath = path.join(configPath, 'Configuration.xml');
+      const stats = await fs.promises.stat(configXmlPath);
+      timestamp = stats.mtimeMs;
+    } catch {
+      // If we can't get timestamp, cache will still work but won't validate freshness
+      Logger.debug('Could not get Configuration.xml timestamp for cache');
+    }
+    
+    const entry: CacheEntry = { 
+      configPath, 
+      tree: serializeTree(root),
+      timestamp,
+      version: CACHE_VERSION
+    };
     await fs.promises.writeFile(filePath, JSON.stringify(entry), 'utf-8');
     Logger.info('Tree saved to disk cache', { configPath: configPath.slice(-40) });
   } catch (error) {

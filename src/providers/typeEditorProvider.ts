@@ -8,10 +8,21 @@ function escapeJsonForScript(json: string): string {
   return json.replace(/<\/script>/gi, '<\\/script>');
 }
 
-interface WebviewMessage {
-  type: 'save' | 'cancel' | 'validate';
-  typeDefinition?: TypeDefinition;
-  validationErrors?: string[];
+type WebviewMessage =
+  | { type: 'save'; typeDefinition: TypeDefinition }
+  | { type: 'cancel' }
+  | { type: 'validate'; typeDefinition: TypeDefinition; validationErrors?: string[] };
+
+/**
+ * Type guard for webview messages
+ */
+function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
+  if (!msg || typeof msg !== 'object') return false;
+  const m = msg as { type?: unknown };
+  if (typeof m.type !== 'string') return false;
+  
+  const validTypes = ['save', 'cancel', 'validate'];
+  return validTypes.includes(m.type);
 }
 
 export class TypeEditorProvider {
@@ -61,7 +72,14 @@ export class TypeEditorProvider {
     );
 
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
-    panel.webview.onDidReceiveMessage(async (message) => await this.handleMessage(message), null, this.disposables);
+    panel.webview.onDidReceiveMessage(async (message: unknown) => {
+      // Runtime validation of incoming messages
+      if (!isValidWebviewMessage(message)) {
+        Logger.warn('Received invalid message from webview', message);
+        return;
+      }
+      await this.handleMessage(message);
+    }, null, this.disposables);
 
     Logger.info('Type editor panel created');
     return panel;
@@ -592,9 +610,12 @@ export class TypeEditorProvider {
   /** Validation and validationResult messaging are reserved for future use (pre-save validation in UI). */
   private async handleValidateMessage(message: WebviewMessage): Promise<void> {
     if (!this.panel) return;
-
-    const errors = this.validateTypeDefinition(message.typeDefinition);
-    this.panel.webview.postMessage({ type: 'validationResult', errors });
+    
+    // Type narrowing - TypeScript needs explicit check
+    if (message.type === 'validate') {
+      const errors = this.validateTypeDefinition(message.typeDefinition);
+      this.panel.webview.postMessage({ type: 'validationResult', errors });
+    }
   }
 
   private validateTypeDefinition(typeDefinition?: TypeDefinition): string[] {
@@ -640,26 +661,29 @@ export class TypeEditorProvider {
   }
 
   private async handleSaveMessage(message: WebviewMessage): Promise<void> {
-    if (!message.typeDefinition || !this.resolvePromise) {
-      Logger.warn('Type editor save ignored: missing typeDefinition or resolvePromise');
-      return;
-    }
-    const def = message.typeDefinition;
-    if (!Array.isArray(def.types) || def.types.length === 0) {
-      Logger.warn('Type editor save ignored: types empty or not array');
-      return;
-    }
-    const typeDefinition: TypeDefinition = {
-      category: def.category === 'reference' || def.category === 'composite' ? def.category : 'primitive',
-      types: def.types,
-    };
-    this.resolvePromise(typeDefinition);
-    this.resolvePromise = undefined;
-    Logger.info('Type editor: save applied, closing panel');
-    if (this.panel) {
-      const p = this.panel;
-      this.panel = undefined;
-      p.dispose();
+    // Type narrowing - TypeScript needs explicit check
+    if (message.type === 'save') {
+      if (!message.typeDefinition || !this.resolvePromise) {
+        Logger.warn('Type editor save ignored: missing typeDefinition or resolvePromise');
+        return;
+      }
+      const def = message.typeDefinition;
+      if (!Array.isArray(def.types) || def.types.length === 0) {
+        Logger.warn('Type editor save ignored: types empty or not array');
+        return;
+      }
+      const typeDefinition: TypeDefinition = {
+        category: def.category === 'reference' || def.category === 'composite' ? def.category : 'primitive',
+        types: def.types,
+      };
+      this.resolvePromise(typeDefinition);
+      this.resolvePromise = undefined;
+      Logger.info('Type editor: save applied, closing panel');
+      if (this.panel) {
+        const p = this.panel;
+        this.panel = undefined;
+        p.dispose();
+      }
     }
   }
 

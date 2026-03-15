@@ -19,26 +19,24 @@ import { validateElementName } from '../utils/elementNameValidator';
 import * as path from 'path';
 
 /**
- * Message types sent from webview to extension
+ * Message types sent from webview to extension (discriminated union for type safety)
  */
-interface WebviewMessage {
-  type: 'save' | 'cancel' | 'validate' | 'propertyChanged' | 'editType';
-  properties?: Record<string, unknown>;
-  propertyName?: string;
-  value?: unknown;
-}
+type WebviewMessage =
+  | { type: 'save'; properties: Record<string, unknown> }
+  | { type: 'cancel' }
+  | { type: 'validate'; properties: Record<string, unknown> }
+  | { type: 'propertyChanged'; propertyName: string; value: unknown }
+  | { type: 'editType'; propertyName: string };
 
 /**
- * Message types sent from extension to webview
+ * Message types sent from extension to webview (discriminated union for type safety)
  */
-interface ExtensionMessage {
-  type: 'update' | 'saved' | 'error' | 'validationError' | 'typeUpdated';
-  node?: TreeNode;
-  message?: string;
-  errors?: Record<string, string>;
-  property?: string;
-  value?: string;
-}
+type ExtensionMessage =
+  | { type: 'update'; node: TreeNode }
+  | { type: 'saved' }
+  | { type: 'error'; message: string }
+  | { type: 'validationError'; errors: Record<string, string> }
+  | { type: 'typeUpdated'; property: string; value: string };
 
 /**
  * Validation result
@@ -46,6 +44,18 @@ interface ExtensionMessage {
 interface ValidationResult {
   valid: boolean;
   errors: Record<string, string>;
+}
+
+/**
+ * Type guard for webview messages
+ */
+function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
+  if (!msg || typeof msg !== 'object') return false;
+  const m = msg as { type?: unknown };
+  if (typeof m.type !== 'string') return false;
+  
+  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType'];
+  return validTypes.includes(m.type);
 }
 
 /**
@@ -219,9 +229,14 @@ export class PropertiesProvider {
       this.disposables
     );
 
-    // Handle messages from webview
+    // Handle messages from webview with runtime validation
     panel.webview.onDidReceiveMessage(
-      async (message) => {
+      async (message: unknown) => {
+        // Runtime validation of incoming messages
+        if (!isValidWebviewMessage(message)) {
+          Logger.warn('Received invalid message from webview', message);
+          return;
+        }
         await this.handleMessage(message);
       },
       null,
@@ -1055,6 +1070,11 @@ export class PropertiesProvider {
    * Handle save message from webview
    */
   private async handleSaveMessage(message: WebviewMessage): Promise<void> {
+    // Type narrowing - TypeScript needs explicit check
+    if (message.type !== 'save') {
+      return;
+    }
+    
     if (!this.currentNode) {
       Logger.warn('Save attempted with no current node');
       this.postMessage({
@@ -1132,16 +1152,19 @@ export class PropertiesProvider {
    * Handle validate message from webview
    */
   private handleValidateMessage(message: WebviewMessage): void {
-    if (!message.properties) {
-      return;
-    }
+    // Type narrowing - TypeScript needs explicit check
+    if (message.type === 'validate') {
+      if (!message.properties) {
+        return;
+      }
 
-    const validationResult = this.validateProperties(message.properties);
-    if (!validationResult.valid) {
-      this.postMessage({
-        type: 'validationError',
-        errors: validationResult.errors
-      });
+      const validationResult = this.validateProperties(message.properties);
+      if (!validationResult.valid) {
+        this.postMessage({
+          type: 'validationError',
+          errors: validationResult.errors
+        });
+      }
     }
   }
 
