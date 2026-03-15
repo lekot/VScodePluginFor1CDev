@@ -1051,7 +1051,11 @@ ${defaultPropsLines}\t\t</Properties>
             }
           } else if (Array.isArray(value) && value.length > 0) {
             const firstChild = value[0];
-            if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
+            
+            // Special handling for xsi:nil values - preserve them as-is
+            if (firstChild && typeof firstChild === 'object' && '@_xsi:nil' in firstChild) {
+              result[key] = value; // Keep original xsi:nil structure
+            } else if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
               const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
                 ? newValue
                 : String(newValue);

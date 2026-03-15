@@ -842,6 +842,11 @@ export class PropertiesProvider {
       // Initialize state from current inputs
       function initializeState() {
         document.querySelectorAll('.property-input').forEach(input => {
+          // Skip disabled inputs (complex objects/arrays rendered as {...} or [N элем.])
+          if (input.disabled) {
+            return;
+          }
+          
           const name = input.dataset.property;
           const value = getInputValue(input);
           state.originalProperties[name] = value;
@@ -863,6 +868,12 @@ export class PropertiesProvider {
       // Handle property change
       function handlePropertyChange(event) {
         const input = event.target;
+        
+        // Skip disabled inputs (complex objects/arrays)
+        if (input.disabled) {
+          return;
+        }
+        
         const name = input.dataset.property;
         const value = getInputValue(input);
 
@@ -1354,10 +1365,66 @@ export class PropertiesProvider {
         if (node.parentFilePath) {
           // Track which properties actually changed by comparing with last saved state
           const changedKeys = node.properties
-            ? Object.keys(properties).filter(
-                key => properties[key] !== node.properties?.[key]
-              )
+            ? Object.keys(properties).filter(key => {
+                const newValue = properties[key];
+                const oldValue = node.properties?.[key];
+                
+                // Debug: log comparison for each property
+                const newType = typeof newValue;
+                const oldType = typeof oldValue;
+                const isEqual = newValue === oldValue;
+                
+                if (!isEqual) {
+                  Logger.info(`  Property "${key}" changed: old=${JSON.stringify(oldValue)} (${oldType}), new=${JSON.stringify(newValue)} (${newType})`);
+                }
+                
+                // Special handling for Type property:
+                // If old value is an object (structured XML) and new value is a string (display representation),
+                // they are considered equal (not changed) - don't include Type in changedKeys
+                if (key === 'Type') {
+                  // If both are strings, compare directly
+                  if (typeof newValue === 'string' && typeof oldValue === 'string') {
+                    return newValue !== oldValue;
+                  }
+                  // If old is object and new is string, consider them equal (Type wasn't actually changed by user)
+                  // The string is just a display representation of the structured XML
+                  if (typeof oldValue === 'object' && oldValue !== null && typeof newValue === 'string') {
+                    Logger.info(`  Type: skipping (old is object, new is display string)`);
+                    return false; // Not changed - don't write Type
+                  }
+                  // If new is XML string (starts with '<'), it was explicitly changed
+                  if (typeof newValue === 'string' && newValue.trim().startsWith('<')) {
+                    return true; // Changed - write new Type XML
+                  }
+                }
+                
+                // Special handling for xsi:nil properties (empty values with xsi:nil="true" attribute)
+                // These should not be considered changed unless explicitly modified
+                if (this.isXsiNilValue(oldValue) && this.isXsiNilValue(newValue)) {
+                  Logger.info(`  Property "${key}": both are xsi:nil, skipping (old=${JSON.stringify(oldValue)}, new=${JSON.stringify(newValue)})`);
+                  return false; // Not changed
+                }
+                
+                // Deep comparison for objects (e.g., other complex structures)
+                if (typeof newValue === 'object' && newValue !== null && 
+                    typeof oldValue === 'object' && oldValue !== null) {
+                  const oldJson = JSON.stringify(oldValue);
+                  const newJson = JSON.stringify(newValue);
+                  const isDifferent = oldJson !== newJson;
+                  if (isDifferent) {
+                    Logger.info(`  Property "${key}": objects differ (old=${oldJson}, new=${newJson})`);
+                  }
+                  return isDifferent;
+                }
+                
+                return newValue !== oldValue;
+              })
             : undefined; // If no previous state, pass undefined (write all properties)
+          
+          // Debug logging
+          Logger.info(`Saving properties for ${node.name}:`);
+          Logger.info(`  Properties keys: ${Object.keys(properties).join(', ')}`);
+          Logger.info(`  Changed keys: ${changedKeys ? changedKeys.join(', ') : 'undefined (all)'}`);
           
           await XMLWriter.writeNestedElementProperties(
             targetFilePath,
@@ -1536,6 +1603,25 @@ export class PropertiesProvider {
       "'": '&#039;',
     };
     return text.replace(/[&<>"']/g, (m) => map[m]);
+  }
+
+  /**
+   * Check if a value represents an xsi:nil="true" empty element
+   * These are parsed as arrays with a single object containing @_xsi:nil attribute
+   */
+  private isXsiNilValue(value: unknown): boolean {
+    if (!Array.isArray(value) || value.length !== 1) {
+      return false;
+    }
+    
+    const item = value[0];
+    if (!item || typeof item !== 'object') {
+      return false;
+    }
+    
+    const obj = item as Record<string, unknown>;
+    // Check if it has xsi:nil="true" attribute and no other meaningful content
+    return '@_xsi:nil' in obj && obj['@_xsi:nil'] === 'true' && !('#text' in obj);
   }
 
   /**
