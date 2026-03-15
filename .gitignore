@@ -13,7 +13,7 @@ structure_backup/
 extensions_samples/
 ut_demo_ForFormat/
 FormatSamples/
-
+BUGS/
 # Specs (tracked only on branch local-specs, not pushed to origin)
 .kiro/
 
