@@ -115,6 +115,11 @@
         "category": "1C Metadata"
       },
       {
+        "command": "1c-metadata-tree.openRightsEditor",
+        "title": "Open Rights Editor",
+        "category": "1C Metadata"
+      },
+      {
         "command": "1c-metadata-tree.createForm",
         "title": "Создать форму",
         "category": "1C Metadata"
@@ -163,6 +168,11 @@
         {
           "command": "1c-metadata-tree.openFormEditor",
           "when": "view == 1c-metadata-tree && viewItem == 'Form'",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.openRightsEditor",
+          "when": "view == 1c-metadata-tree && viewItem == 'Role'",
           "group": "navigation"
         },
         {
