@@ -1,0 +1,6 @@
+# Ignore all files in this directory
+*
+# Except this file
+!.gitignore
+# And the test file for XMLWriter
+!ПользователиБота.xml
