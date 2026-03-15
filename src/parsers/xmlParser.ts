@@ -34,20 +34,23 @@ export class XmlParser {
 
   /**
    * Parse XML file synchronously (can block on large files).
-   * Prefer parseFileAsync in async context.
+   * @deprecated Use parseFileAsync() instead to avoid blocking the event loop
+   * @param filePath Path to XML file
+   * @returns Parsed XML object
    */
   static parseFile(filePath: string): Record<string, unknown> {
-    try {
-      if (!fs.existsSync(filePath)) {
-        throw new Error(`File not found: ${filePath}`);
+      try {
+        if (!fs.existsSync(filePath)) {
+          throw new Error(`File not found: ${filePath}`);
+        }
+        const xmlContent = fs.readFileSync(filePath, 'utf-8');
+        return this.parseString(xmlContent);
+      } catch (error) {
+        Logger.error(`Error parsing XML file: ${filePath}`, error);
+        throw new Error(`Failed to parse XML file: ${filePath}. ${error instanceof Error ? error.message : String(error)}`);
       }
-      const xmlContent = fs.readFileSync(filePath, 'utf-8');
-      return this.parseString(xmlContent);
-    } catch (error) {
-      Logger.error(`Error parsing XML file: ${filePath}`, error);
-      throw new Error(`Failed to parse XML file: ${filePath}. ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
+
 
   /**
    * Parse XML file asynchronously (non-blocking).
@@ -98,13 +101,30 @@ export class XmlParser {
   }
 
   /**
-   * Get root element name from XML file
+   * Get root element name from XML file (synchronous - blocks event loop)
+   * @deprecated Use getRootElementNameAsync() instead to avoid blocking the event loop
    * @param filePath Path to XML file
    * @returns Root element name
    */
   static getRootElementName(filePath: string): string {
     try {
       const parsed = this.parseFile(filePath);
+      const keys = Object.keys(parsed);
+      return keys[0] || 'Unknown';
+    } catch (error) {
+      Logger.error(`Error getting root element name from ${filePath}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get root element name from XML file asynchronously (non-blocking)
+   * @param filePath Path to XML file
+   * @returns Root element name
+   */
+  static async getRootElementNameAsync(filePath: string): Promise<string> {
+    try {
+      const parsed = await this.parseFileAsync(filePath);
       const keys = Object.keys(parsed);
       return keys[0] || 'Unknown';
     } catch (error) {
@@ -156,13 +176,28 @@ export class XmlParser {
   }
 
   /**
-   * Validate XML structure
+   * Validate XML structure (synchronous - blocks event loop)
+   * @deprecated Use isValidXmlAsync() instead to avoid blocking the event loop
    * @param filePath Path to XML file
    * @returns true if valid XML
    */
   static isValidXml(filePath: string): boolean {
     try {
       this.parseFile(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Validate XML structure asynchronously (non-blocking)
+   * @param filePath Path to XML file
+   * @returns true if valid XML
+   */
+  static async isValidXmlAsync(filePath: string): Promise<boolean> {
+    try {
+      await this.parseFileAsync(filePath);
       return true;
     } catch {
       return false;

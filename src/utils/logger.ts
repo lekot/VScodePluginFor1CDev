@@ -9,6 +9,7 @@ try {
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const MAX_BUFFER_LINES = 10000;
+const BUFFER_TRIM_PERCENTAGE = 0.2; // Remove 20% of old entries when limit reached
 
 /**
  * Logger utility for the extension
@@ -17,9 +18,27 @@ export class Logger {
   private static outputChannel: { appendLine: (s: string) => void; show: () => void } | null = null;
   private static minLevel: LogLevel = 'info';
   private static buffer: string[] = [];
+  private static bufferingEnabled = true;
 
   static setMinLevel(level: LogLevel): void {
     this.minLevel = level;
+  }
+
+  /**
+   * Enable or disable log buffering (useful for memory optimization)
+   */
+  static setBufferingEnabled(enabled: boolean): void {
+    this.bufferingEnabled = enabled;
+    if (!enabled) {
+      this.buffer = [];
+    }
+  }
+
+  /**
+   * Clear the log buffer manually
+   */
+  static clearBuffer(): void {
+    this.buffer = [];
   }
 
   static initialize(): void {
@@ -73,10 +92,14 @@ export class Logger {
     if (this.outputChannel) {
       this.outputChannel.appendLine(logMessage);
     }
-    if (this.buffer.length >= 0) {
+    
+    // Buffer management with rotation
+    if (this.bufferingEnabled) {
       this.buffer.push(logMessage);
       if (this.buffer.length > MAX_BUFFER_LINES) {
-        this.buffer.shift();
+        // Remove 20% of oldest entries to prevent frequent trimming
+        const removeCount = Math.floor(MAX_BUFFER_LINES * BUFFER_TRIM_PERCENTAGE);
+        this.buffer.splice(0, removeCount);
       }
     }
 
