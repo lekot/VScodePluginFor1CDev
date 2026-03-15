@@ -1,8 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
-import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { TreeNode } from '../../src/models/treeNode';
 import {
   createElement,
   createForm,
@@ -11,6 +10,17 @@ import {
   renameElement,
 } from '../../src/services/elementOperations';
 import { XMLWriter } from '../../src/utils/XMLWriter';
+import {
+  createTempDir,
+  cleanupTempDir,
+  createConfigNode,
+  createCatalogsTypeNode,
+  createCatalogNode,
+  createFormsNode,
+  fileExists,
+  dirExists,
+  readFileContent,
+} from '../helpers/testHelpers';
 
 suite('elementOperations', () => {
   let tmpDir: string;
@@ -19,41 +29,19 @@ suite('elementOperations', () => {
   let catalogNode: TreeNode;
 
   setup(async () => {
-    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-el-'));
+    tmpDir = await createTempDir('1cviewer-el-');
     const catalogsPath = path.join(tmpDir, 'Catalogs');
     await fs.promises.mkdir(catalogsPath, { recursive: true });
     const catalogPath = path.join(catalogsPath, 'ExistingCatalog.xml');
     await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'ExistingCatalog');
-    configNode = {
-      id: 'config',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-    };
-    catalogsTypeNode = {
-      id: 'catalogs',
-      name: 'Catalogs',
-      type: MetadataType.Catalog,
-      properties: {},
-      filePath: catalogsPath,
-      parent: configNode,
-    };
-    catalogNode = {
-      id: 'cat1',
-      name: 'ExistingCatalog',
-      type: MetadataType.Catalog,
-      properties: {},
-      filePath: catalogPath,
-      parent: catalogsTypeNode,
-    };
+    
+    configNode = createConfigNode();
+    catalogsTypeNode = createCatalogsTypeNode(configNode, catalogsPath);
+    catalogNode = createCatalogNode('ExistingCatalog', catalogsTypeNode, catalogPath);
   });
 
   teardown(async () => {
-    try {
-      await fs.promises.rm(tmpDir, { recursive: true });
-    } catch {
-      // ignore
-    }
+    await cleanupTempDir(tmpDir);
   });
 
   test('createElement throws when parent is Configuration', async () => {
@@ -67,9 +55,9 @@ suite('elementOperations', () => {
     await createElement(catalogsTypeNode, 'NewCatalog');
     const filePath = path.join(tmpDir, 'Catalogs', 'NewCatalog.xml');
     const dirPath = path.join(tmpDir, 'Catalogs', 'NewCatalog');
-    assert.ok(fs.existsSync(filePath));
-    assert.ok(fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory());
-    const content = await fs.promises.readFile(filePath, 'utf-8');
+    assert.ok(fileExists(filePath));
+    assert.ok(dirExists(dirPath));
+    const content = await readFileContent(filePath);
     assert.ok(content.includes('<Name>NewCatalog</Name>'));
   });
 
@@ -90,34 +78,30 @@ suite('elementOperations', () => {
   test('createForm creates form directory and minimal files', async () => {
     const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
     await fs.promises.mkdir(formsPath, { recursive: true });
-    const formsNode: TreeNode = {
-      id: 'Forms',
-      name: 'Forms',
-      type: MetadataType.Form,
-      properties: {},
-      children: [],
-      filePath: formsPath,
-    };
+    const formsNode = createFormsNode(catalogNode, formsPath);
+    
     await createForm(formsNode, 'НоваяФорма');
     const formDir = path.join(formsPath, 'НоваяФорма');
     const formMetaPath = path.join(formDir, 'НоваяФорма.xml');
     const formXmlPath = path.join(formDir, 'Ext', 'Form.xml');
     const modulePath = path.join(formDir, 'Ext', 'Form', 'Module.bsl');
-    assert.ok(fs.existsSync(formDir) && fs.statSync(formDir).isDirectory());
-    assert.ok(fs.existsSync(formMetaPath));
-    assert.ok(fs.existsSync(formXmlPath));
-    assert.ok(fs.existsSync(modulePath));
-    const metaContent = await fs.promises.readFile(formMetaPath, 'utf-8');
+    
+    assert.ok(dirExists(formDir));
+    assert.ok(fileExists(formMetaPath));
+    assert.ok(fileExists(formXmlPath));
+    assert.ok(fileExists(modulePath));
+    
+    const metaContent = await readFileContent(formMetaPath);
     assert.ok(metaContent.includes('<Name>НоваяФорма</Name>'));
-    const extContent = await fs.promises.readFile(formXmlPath, 'utf-8');
+    const extContent = await readFileContent(formXmlPath);
     assert.ok(extContent.includes('http://v8.1c.ru/8.3/xcf/logform') && extContent.includes('<Form'));
   });
 
   test('duplicateElement creates copy of catalog', async () => {
     await duplicateElement(catalogNode, 'CopyCatalog');
     const filePath = path.join(tmpDir, 'Catalogs', 'CopyCatalog.xml');
-    assert.ok(fs.existsSync(filePath));
-    const content = await fs.promises.readFile(filePath, 'utf-8');
+    assert.ok(fileExists(filePath));
+    const content = await readFileContent(filePath);
     assert.ok(content.includes('<Name>CopyCatalog</Name>'));
   });
 
@@ -133,8 +117,8 @@ suite('elementOperations', () => {
     const elementDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
     await fs.promises.mkdir(elementDir, { recursive: true });
     await deleteElement(catalogNode);
-    assert.ok(!fs.existsSync(catalogNode.filePath!));
-    assert.ok(!fs.existsSync(elementDir));
+    assert.ok(!fileExists(catalogNode.filePath!));
+    assert.ok(!dirExists(elementDir));
   });
 
   test('deleteElement throws for Configuration', async () => {

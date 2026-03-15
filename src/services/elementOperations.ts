@@ -45,12 +45,31 @@ const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.Subsystem,
 ]);
 
+/**
+ * Gets the names of all child nodes of a parent node.
+ * @param parent - The parent TreeNode
+ * @returns Array of child node names
+ */
 function getSiblingNames(parent: TreeNode): string[] {
   return (parent.children || []).map((c) => c.name);
 }
 
 /**
- * Create a new metadata element. Parent can be a type node (e.g. Catalogs) or an object (Catalog/Document) for nested Attribute.
+ * Creates a new metadata element in the configuration.
+ * 
+ * Parent can be a type node (e.g. Catalogs) or an object (Catalog/Document) for nested Attribute.
+ * Creates the element XML file and associated directory structure.
+ * 
+ * @param parentNode - The parent node where the element will be created
+ * @param newName - Name for the new element (will be validated)
+ * @param _options - Optional configuration (currently unused)
+ * @throws {Error} If validation fails or parent is invalid
+ * 
+ * @example
+ * ```typescript
+ * // Create a new catalog
+ * await createElement(catalogsTypeNode, 'NewCatalog');
+ * ```
  */
 export async function createElement(
   parentNode: TreeNode,
@@ -112,8 +131,21 @@ const MINIMAL_EXT_FORM_XML = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 
 /**
- * Create a new form under the Forms node (Designer only). Creates form directory,
- * FormName.xml (metadata), Ext/Form.xml (minimal structure), Ext/Form/Module.bsl (empty).
+ * Creates a new form under the Forms node (Designer format only).
+ * 
+ * Creates the complete form structure:
+ * - FormName.xml (metadata file)
+ * - Ext/Form.xml (minimal form structure)
+ * - Ext/Form/Module.bsl (empty module file)
+ * 
+ * @param parentNode - The Forms node where the form will be created
+ * @param formName - Name for the new form (will be validated)
+ * @throws {Error} If parent is not a Forms node or validation fails
+ * 
+ * @example
+ * ```typescript
+ * await createForm(formsNode, 'ItemForm');
+ * ```
  */
 export async function createForm(parentNode: TreeNode, formName: string): Promise<void> {
   const name = formName.trim();
@@ -146,7 +178,19 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
 }
 
 /**
- * Duplicate an element with a new name. Copies structure from XML.
+ * Duplicates an existing metadata element with a new name.
+ * 
+ * Copies the element's XML structure and properties to create a new element.
+ * Handles both top-level elements (Catalogs, Documents) and nested elements (Attributes).
+ * 
+ * @param node - The element to duplicate
+ * @param newName - Name for the duplicated element (will be validated)
+ * @throws {Error} If node is Configuration root, has no parent, or validation fails
+ * 
+ * @example
+ * ```typescript
+ * await duplicateElement(catalogNode, 'CopiedCatalog');
+ * ```
  */
 export async function duplicateElement(node: TreeNode, newName: string): Promise<void> {
   if (node.type === MetadataType.Configuration) {
@@ -214,9 +258,15 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
   throw new Error('Дублирование для этого типа элемента не поддерживается.');
 }
 
+/**
+ * Escapes special regex characters in a string.
+ * @param s - String to escape
+ * @returns Escaped string safe for use in RegExp
+ */
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
 
 /**
  * Delete element from XML or remove file. Optionally pass precomputed references to avoid second scan.
