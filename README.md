@@ -51,7 +51,6 @@ VS Code расширение для визуализации дерева мет
 | Refresh | Обновить дерево |
 | Show Properties | Открыть панель свойств выбранного элемента |
 | Open XML File | Открыть XML файл элемента |
-| Create Element | Создать новый элемент |
 | Duplicate Element | Дублировать элемент |
 | Delete Element | Удалить элемент |
 | Rename Element | Переименовать элемент |
