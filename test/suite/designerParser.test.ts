@@ -107,7 +107,7 @@ suite('DesignerParser', () => {
 
   test('should parse extensions_samples if present (configuration extension with Ext)', async function () {
     const projectRoot = path.resolve(__dirname, '../../..');
-    const extensionsSamplesPath = path.join(projectRoot, 'extensions_samples');
+    const extensionsSamplesPath = path.join(projectRoot, 'FormatSamples', 'extensions_samples');
     if (!fs.existsSync(extensionsSamplesPath)) {
       this.skip();
     }

@@ -652,7 +652,6 @@ async function loadMetadataTree(): Promise<void> {
           rootNode.id = uniqueId;
           rootNode.name =
             relativePath && relativePath !== '.' ? `Configuration (~/${relativePath})` : 'Configuration';
-          rootNode.filePath = configRoot;
           roots.push(rootNode);
           const format = await FormatDetector.detect(configRoot);
           loadContextMap.set(uniqueId, { configPath: configRoot, format });
