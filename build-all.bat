@@ -14,6 +14,13 @@ echo Compiling TypeScript...
 node node_modules/typescript/bin/tsc -p .
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+echo Copying webview HTML...
+if exist "src\rolesEditor\rolesEditorWebview.html" (
+    if not exist "dist\rolesEditor" mkdir "dist\rolesEditor"
+    copy /Y "src\rolesEditor\rolesEditorWebview.html" "dist\rolesEditor\rolesEditorWebview.html"
+)
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 if not exist releases mkdir releases
 
 echo Building VSIX package...

@@ -115,13 +115,8 @@ export class RolesRightsEditorProvider {
       return this.getErrorHtml('No role model loaded');
     }
 
-    // Read the HTML template
-    const htmlPath = path.join(
-      this.context.extensionPath,
-      'src',
-      'rolesEditor',
-      'rolesEditorWebview.html'
-    );
+    // Read the HTML template - use __dirname to get path to compiled output
+    const htmlPath = path.join(__dirname, 'rolesEditorWebview.html');
 
     let html = fs.readFileSync(htmlPath, 'utf8');
 
