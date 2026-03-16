@@ -8,6 +8,12 @@ import { WebviewMessage } from './models/webviewMessage';
 import { RoleXmlParser } from './roleXmlParser';
 import { RoleXmlSerializer } from './roleXmlSerializer';
 import { RightsValidator } from './rightsValidator';
+import {
+  getRightsPath,
+  loadRightsXml,
+  mergeRightsIntoDom,
+  serializeRightsDomToXml,
+} from './rightsXmlEditWriter';
 import { loadMetadataObjects } from './metadataLoader';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
@@ -229,6 +235,8 @@ export class RolesRightsEditorProvider {
 
   /**
    * Handle save message
+   * Case B: filePath is Role.xml → serialize with RoleXmlSerializer, write to filePath.
+   * Case A: otherwise → rights in Ext/Rights.xml; load, merge, serialize, write to rightsPath.
    */
   private async handleSave(): Promise<void> {
     if (!this.currentRoleModel) {
@@ -236,10 +244,9 @@ export class RolesRightsEditorProvider {
     }
 
     try {
-      // Validate the role model
       const validator = new RightsValidator();
       const validationResult = validator.validateRights(this.currentRoleModel);
-      
+
       if (!validationResult.isValid) {
         this.sendMessageToWebview({
           command: 'validationError',
@@ -248,28 +255,32 @@ export class RolesRightsEditorProvider {
         return;
       }
 
-      // Atomic write: write to temp file first, then rename
-      const tempPath = this.currentRoleModel.filePath + '.tmp';
-      
+      const isCaseB = path.basename(this.currentRoleModel.filePath).toLowerCase() === 'role.xml';
+      const targetPath = isCaseB
+        ? this.currentRoleModel.filePath
+        : getRightsPath(this.currentRoleModel.filePath);
+      const tempPath = targetPath + '.tmp';
+
+      let xmlContent: string;
+      if (isCaseB) {
+        xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel);
+      } else {
+        const dom = await loadRightsXml(targetPath);
+        mergeRightsIntoDom(dom, this.currentRoleModel.rights);
+        xmlContent = serializeRightsDomToXml(dom);
+      }
+
       try {
-        // Serialize to XML
-        const xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel);
-
-        // Write to temp file first
         await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
-
-        // Atomic rename (works on Windows with overwrite)
-        await fs.promises.rename(tempPath, this.currentRoleModel.filePath);
+        await fs.promises.rename(tempPath, targetPath);
 
         Logger.info('Rights saved successfully');
         vscode.window.showInformationMessage('Rights saved successfully');
 
-        // Close the panel
         if (this.panel) {
           this.panel.dispose();
         }
       } catch (error) {
-        // Clean up temp file if it exists
         try {
           await fs.promises.unlink(tempPath);
         } catch {
