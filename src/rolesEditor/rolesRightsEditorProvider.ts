@@ -135,7 +135,7 @@ export class RolesRightsEditorProvider {
     // Inject data into the script
     // Replace the "Request initial data" line with actual initialization
     html = html.replace(
-      "// Request initial data\n            vscode.postMessage({ command: 'ready' });",
+      "            // Request initial data\r\n            vscode.postMessage({ command: 'ready' });",
       `// Initialize with data
             roleData = ${roleDataJson};
             allObjects = ${objectsJson};
