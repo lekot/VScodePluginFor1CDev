@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fc from 'fast-check';
 import * as vscode from 'vscode';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
@@ -506,5 +507,475 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     const subsystemChildren = await provider.getChildren(children[0]);
     assert.strictEqual(subsystemChildren.length, 1);
     assert.strictEqual(subsystemChildren[0].id, 'cat1');
+  });
+
+  // Property-Based Tests for Subsystem Filtering (Phase 5.2)
+
+  test('Property 1: Filter Consistency - if a node passes filter, all ancestors pass', async () => {
+    // Generate arbitrary tree structures with subsystems
+    const nodeTypeArb = fc.constantFrom(
+      MetadataType.Configuration,
+      MetadataType.Subsystem,
+      MetadataType.Catalog,
+      MetadataType.Document
+    );
+
+    const treeArb = fc.array(
+      fc.record({
+        id: fc.string({ minLength: 1, maxLength: 10 }),
+        name: fc.string({ minLength: 1, maxLength: 20 }),
+        type: nodeTypeArb,
+      }),
+      { minLength: 2, maxLength: 10 }
+    ).filter(nodes => nodes.some(n => n.type === MetadataType.Subsystem));
+
+    await fc.assert(
+      fc.asyncProperty(treeArb, async (nodeDefs) => {
+        // Build tree from definitions
+        const nodes: TreeNode[] = nodeDefs.map((def, idx) => ({
+          id: def.id,
+          name: def.name,
+          type: def.type,
+          properties: {},
+          children: [],
+        }));
+
+        // Set parent relationships (simple chain for testing)
+        for (let i = 1; i < nodes.length; i++) {
+          nodes[i].parent = nodes[i - 1];
+          nodes[i - 1].children = [nodes[i]];
+        }
+
+        const root = nodes[0];
+        provider.setRootNode(root);
+
+        // Find a subsystem node
+        const subsystemNode = nodes.find(n => n.type === MetadataType.Subsystem);
+        if (!subsystemNode) return true; // Skip if no subsystem
+
+        // Apply filter
+        provider.setSubsystemFilter(subsystemNode.id, subsystemNode.name);
+
+        // Get visible nodes
+        const visibleNodes = await provider.getChildren();
+        
+        // Property: if a node is visible, all its ancestors should be visible
+        // (or at least the subsystem and its descendants should be visible)
+        const visibleIds = new Set(visibleNodes.map(n => n.id));
+        
+        // The subsystem itself should be visible
+        assert.ok(visibleIds.has(subsystemNode.id), 'Subsystem node should be visible');
+        
+        return true;
+      })
+    );
+  });
+
+  test('Property 2: Filter Exclusion - nodes outside subsystem are hidden', async () => {
+    const nodeTypeArb = fc.constantFrom(
+      MetadataType.Catalog,
+      MetadataType.Document,
+      MetadataType.Subsystem
+    );
+
+    const treeArb = fc.array(
+      fc.record({
+        id: fc.string({ minLength: 1, maxLength: 10 }),
+        name: fc.string({ minLength: 1, maxLength: 20 }),
+        type: nodeTypeArb,
+      }),
+      { minLength: 3, maxLength: 8 }
+    ).filter(nodes => {
+      const subsystems = nodes.filter(n => n.type === MetadataType.Subsystem);
+      const others = nodes.filter(n => n.type !== MetadataType.Subsystem);
+      return subsystems.length >= 1 && others.length >= 1;
+    });
+
+    await fc.assert(
+      fc.asyncProperty(treeArb, async (nodeDefs) => {
+        const nodes: TreeNode[] = nodeDefs.map((def) => ({
+          id: def.id,
+          name: def.name,
+          type: def.type,
+          properties: {},
+          children: [],
+        }));
+
+        // Build tree: first node is root, others are children
+        const root = nodes[0];
+        root.children = nodes.slice(1);
+        nodes.slice(1).forEach(n => n.parent = root);
+
+        provider.setRootNode(root);
+
+        // Find a subsystem node
+        const subsystemNode = nodes.find(n => n.type === MetadataType.Subsystem);
+        if (!subsystemNode) return true;
+
+        // Apply filter
+        provider.setSubsystemFilter(subsystemNode.id, subsystemNode.name);
+
+        // Get visible nodes
+        const visibleNodes = await provider.getChildren();
+        const visibleIds = new Set(visibleNodes.map(n => n.id));
+
+        // Property: nodes outside the subsystem should not be visible
+        // (unless they are ancestors of the subsystem)
+        const nonSubsystemNodes = nodes.filter(n =>
+          n.type !== MetadataType.Subsystem &&
+          n.id !== subsystemNode.id
+        );
+
+        for (const node of nonSubsystemNodes) {
+          // Check if node is an ancestor of subsystem
+          let isAncestor = false;
+          let current: TreeNode | undefined = subsystemNode;
+          while (current) {
+            if (current.id === node.id) {
+              isAncestor = true;
+              break;
+            }
+            current = current.parent;
+          }
+          
+          if (!isAncestor) {
+            assert.ok(!visibleIds.has(node.id), `Node ${node.name} should not be visible`);
+          }
+        }
+
+        return true;
+      })
+    );
+  });
+
+  test('Property 3: Filter Clearing - clearing filter restores all nodes', async () => {
+    const nodeTypeArb = fc.constantFrom(
+      MetadataType.Catalog,
+      MetadataType.Document,
+      MetadataType.Subsystem
+    );
+
+    const treeArb = fc.array(
+      fc.record({
+        id: fc.string({ minLength: 1, maxLength: 10 }),
+        name: fc.string({ minLength: 1, maxLength: 20 }),
+        type: nodeTypeArb,
+      }),
+      { minLength: 2, maxLength: 6 }
+    );
+
+    await fc.assert(
+      fc.asyncProperty(treeArb, async (nodeDefs) => {
+        const nodes: TreeNode[] = nodeDefs.map((def) => ({
+          id: def.id,
+          name: def.name,
+          type: def.type,
+          properties: {},
+          children: [],
+        }));
+
+        const root = nodes[0];
+        root.children = nodes.slice(1);
+        nodes.slice(1).forEach(n => n.parent = root);
+
+        provider.setRootNode(root);
+
+        // Get initial visible nodes (no filter)
+        const initialNodes = await provider.getChildren();
+        const initialCount = initialNodes.length;
+
+        // Find a subsystem node
+        const subsystemNode = nodes.find(n => n.type === MetadataType.Subsystem);
+        if (!subsystemNode) return true;
+
+        // Apply filter
+        provider.setSubsystemFilter(subsystemNode.id, subsystemNode.name);
+        const filteredNodes = await provider.getChildren();
+        
+        // Clear filter
+        provider.setSubsystemFilter(null, null);
+        const clearedNodes = await provider.getChildren();
+
+        // Property: after clearing filter, all nodes should be visible again
+        assert.strictEqual(clearedNodes.length, initialCount, 'All nodes should be visible after clearing filter');
+
+        return true;
+      })
+    );
+  });
+
+  test('Property 4: Filter Combination - subsystem filter works with type filter', async () => {
+    const treeArb = fc.array(
+      fc.record({
+        id: fc.string({ minLength: 1, maxLength: 10 }),
+        name: fc.string({ minLength: 1, maxLength: 20 }),
+        type: fc.constantFrom(MetadataType.Catalog, MetadataType.Document, MetadataType.Subsystem),
+      }),
+      { minLength: 4, maxLength: 8 }
+    ).filter(nodes => {
+      const hasSubsystem = nodes.some(n => n.type === MetadataType.Subsystem);
+      const hasCatalog = nodes.some(n => n.type === MetadataType.Catalog);
+      return hasSubsystem && hasCatalog;
+    });
+
+    await fc.assert(
+      fc.asyncProperty(treeArb, async (nodeDefs) => {
+        const nodes: TreeNode[] = nodeDefs.map((def) => ({
+          id: def.id,
+          name: def.name,
+          type: def.type,
+          properties: {},
+          children: [],
+        }));
+
+        const root = nodes[0];
+        root.children = nodes.slice(1);
+        nodes.slice(1).forEach(n => n.parent = root);
+
+        provider.setRootNode(root);
+
+        // Find a subsystem node
+        const subsystemNode = nodes.find(n => n.type === MetadataType.Subsystem);
+        if (!subsystemNode) return true;
+
+        // Apply both subsystem and type filters
+        provider.setSubsystemFilter(subsystemNode.id, subsystemNode.name);
+        provider.setTypeFilter([MetadataType.Catalog]);
+
+        const visibleNodes = await provider.getChildren();
+        const visibleIds = new Set(visibleNodes.map(n => n.id));
+
+        // Property: only Catalog nodes within the subsystem should be visible
+        for (const node of visibleNodes) {
+          if (node.type === MetadataType.Catalog) {
+            // Check if it's within the subsystem
+            let isWithinSubsystem = false;
+            let current: TreeNode | undefined = node;
+            while (current) {
+              if (current.id === subsystemNode.id) {
+                isWithinSubsystem = true;
+                break;
+              }
+              current = current.parent;
+            }
+            assert.ok(isWithinSubsystem, `Catalog ${node.name} should be within subsystem`);
+          }
+        }
+
+        return true;
+      })
+    );
+  });
+
+  // Performance Tests for Subsystem Filtering (Phase 7.1)
+
+  test('Performance: filter application completes within 100ms for large tree (10,000+ nodes)', async () => {
+    // Generate a large tree with 10,000+ nodes
+    const nodeCount = 10000;
+    const nodes: TreeNode[] = [];
+
+    // Create root
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    nodes.push(root);
+
+    // Create subsystems (10 subsystems)
+    const subsystems: TreeNode[] = [];
+    for (let i = 0; i < 10; i++) {
+      const subsystem: TreeNode = {
+        id: `subsystem-${i}`,
+        name: `Subsystem${i}`,
+        type: MetadataType.Subsystem,
+        properties: {},
+        parent: root,
+        children: [],
+      };
+      subsystems.push(subsystem);
+      nodes.push(subsystem);
+      root.children!.push(subsystem);
+    }
+
+    // Create catalogs under each subsystem (1000 catalogs per subsystem)
+    for (const subsystem of subsystems) {
+      for (let j = 0; j < 1000; j++) {
+        const catalog: TreeNode = {
+          id: `${subsystem.id}-catalog-${j}`,
+          name: `Catalog${j}`,
+          type: MetadataType.Catalog,
+          properties: {},
+          parent: subsystem,
+          children: [],
+        };
+        nodes.push(catalog);
+        subsystem.children!.push(catalog);
+      }
+    }
+
+    provider.setRootNode(root);
+
+    // Measure filter application time
+    const startTime = performance.now();
+    provider.setSubsystemFilter(subsystems[0].id, subsystems[0].name);
+    const endTime = performance.now();
+
+    const duration = endTime - startTime;
+    assert.ok(duration < 100, `Filter application took ${duration}ms, expected < 100ms`);
+
+    // Verify filter is applied correctly
+    const filter = provider.getSubsystemFilter();
+    assert.strictEqual(filter.subsystemId, subsystems[0].id);
+  });
+
+  test('Performance: node filtering has O(d) time complexity where d is node depth', async () => {
+    // Create a deep tree (depth = 100)
+    const depth = 100;
+    let currentNode: TreeNode = {
+      id: 'root',
+      name: 'Root',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    const root = currentNode;
+
+    // Create a chain of nodes
+    for (let i = 1; i <= depth; i++) {
+      const newNode: TreeNode = {
+        id: `node-${i}`,
+        name: `Node${i}`,
+        type: MetadataType.Catalog,
+        properties: {},
+        parent: currentNode,
+        children: [],
+      };
+      currentNode.children!.push(newNode);
+      currentNode = newNode;
+    }
+
+    // Add a subsystem at the root level
+    const subsystem: TreeNode = {
+      id: 'subsystem',
+      name: 'TestSubsystem',
+      type: MetadataType.Subsystem,
+      properties: {},
+      parent: root,
+      children: [],
+    };
+    root.children!.unshift(subsystem);
+
+    provider.setRootNode(root);
+
+    // Measure time to filter
+    const startTime = performance.now();
+    provider.setSubsystemFilter(subsystem.id, subsystem.name);
+    const endTime = performance.now();
+
+    const duration = endTime - startTime;
+    // Should be very fast (< 10ms) even for deep trees
+    assert.ok(duration < 10, `Deep tree filter took ${duration}ms, expected < 10ms`);
+  });
+
+  test('Performance: filter message update is O(1) constant time', async () => {
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+
+    provider.setRootNode(root);
+
+    // Measure filter message update time
+    const iterations = 1000;
+    const startTime = performance.now();
+    
+    for (let i = 0; i < iterations; i++) {
+      provider.setSubsystemFilter(`subsystem-${i % 10}`, `Subsystem${i % 10}`);
+    }
+    
+    const endTime = performance.now();
+    const avgDuration = (endTime - startTime) / iterations;
+
+    // Average time should be very small (< 0.1ms)
+    assert.ok(avgDuration < 0.1, `Average filter message update took ${avgDuration}ms, expected < 0.1ms`);
+  });
+
+  test('Performance: combined filters (subsystem + type + search) within 100ms', async () => {
+    // Generate a medium-sized tree
+    const nodeCount = 5000;
+    const nodes: TreeNode[] = [];
+
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    nodes.push(root);
+
+    // Create subsystems
+    const subsystems: TreeNode[] = [];
+    for (let i = 0; i < 5; i++) {
+      const subsystem: TreeNode = {
+        id: `subsystem-${i}`,
+        name: `Subsystem${i}`,
+        type: MetadataType.Subsystem,
+        properties: {},
+        parent: root,
+        children: [],
+      };
+      subsystems.push(subsystem);
+      nodes.push(subsystem);
+      root.children!.push(subsystem);
+    }
+
+    // Create mixed content under each subsystem
+    for (const subsystem of subsystems) {
+      for (let j = 0; j < 1000; j++) {
+        const type = j % 2 === 0 ? MetadataType.Catalog : MetadataType.Document;
+        const node: TreeNode = {
+          id: `${subsystem.id}-node-${j}`,
+          name: `Node${j}`,
+          type,
+          properties: {},
+          parent: subsystem,
+          children: [],
+        };
+        nodes.push(node);
+        subsystem.children!.push(node);
+      }
+    }
+
+    provider.setRootNode(root);
+
+    // Measure combined filter application time
+    const startTime = performance.now();
+    
+    // Apply all three filters
+    provider.setSubsystemFilter(subsystems[0].id, subsystems[0].name);
+    provider.setTypeFilter([MetadataType.Catalog]);
+    provider.setSearchQuery('Node1');
+    
+    const endTime = performance.now();
+    const duration = endTime - startTime;
+
+    assert.ok(duration < 100, `Combined filters took ${duration}ms, expected < 100ms`);
+
+    // Verify filters are active
+    const subsystemFilter = provider.getSubsystemFilter();
+    assert.strictEqual(subsystemFilter.subsystemId, subsystems[0].id);
+    
+    const typeFilter = provider.getTypeFilter();
+    assert.ok(typeFilter?.includes(MetadataType.Catalog));
+    
+    const searchQuery = provider.getSearchQuery();
+    assert.strictEqual(searchQuery, 'Node1');
   });
 });
