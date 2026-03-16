@@ -74,7 +74,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(propertiesProvider);
 
   // Form editor (custom editor for Ext/Form.xml)
-  const formEditorProvider = new FormEditorProvider(context);
+  const formEditorProvider = new FormEditorProvider();
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider('1c-form-editor', formEditorProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -216,7 +216,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       try {
         if (rolesRightsEditorProvider) {
-          await rolesRightsEditorProvider.show(target.filePath);
+          // Get config path from tree data provider - this avoids searching outside workspace
+          const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
+          await rolesRightsEditorProvider.show(target.filePath, configPath);
         }
       } catch (err) {
         Logger.error('Failed to open rights editor', err);

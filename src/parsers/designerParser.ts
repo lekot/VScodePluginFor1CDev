@@ -81,7 +81,8 @@ export class DesignerParser {
         try {
           await fs.promises.access(typePath);
           return await this.parseMetadataType(typePath, metadataType);
-        } catch {
+        } catch (error) {
+          Logger.debug(`Failed to parse type ${metadataType} at ${typePath}`, error);
           return null;
         }
       })
@@ -549,9 +550,21 @@ export class DesignerParser {
 
   /**
    * Recursively find all .bsl files in a directory
+   * @param dirPath Directory to search
+   * @param maxDepth Maximum recursion depth (default: 10)
+   * @param currentDepth Current recursion depth (used internally)
    */
-  private static async findBslFilesRecursive(dirPath: string): Promise<string[]> {
+  private static async findBslFilesRecursive(
+    dirPath: string,
+    maxDepth: number = 10,
+    currentDepth: number = 0
+  ): Promise<string[]> {
     const bslFiles: string[] = [];
+    
+    if (currentDepth >= maxDepth) {
+      Logger.debug(`Max depth ${maxDepth} reached at ${dirPath}`);
+      return bslFiles;
+    }
     
     try {
       const items = await fs.promises.readdir(dirPath);
@@ -563,7 +576,7 @@ export class DesignerParser {
           
           if (stat.isDirectory()) {
             // Recursively search subdirectories
-            const subFiles = await this.findBslFilesRecursive(itemPath);
+            const subFiles = await this.findBslFilesRecursive(itemPath, maxDepth, currentDepth + 1);
             bslFiles.push(...subFiles);
           } else if (stat.isFile() && item.endsWith('.bsl')) {
             bslFiles.push(itemPath);

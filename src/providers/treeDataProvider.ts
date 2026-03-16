@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { getFormPaths } from '../formEditor/formPaths';
@@ -6,54 +7,7 @@ import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
-
-/** MetadataType → reference kind string for type editor. */
-const METADATA_TYPE_TO_REFERENCE_KIND: Record<MetadataType, string | undefined> = {
-  [MetadataType.Catalog]: 'CatalogRef',
-  [MetadataType.Document]: 'DocumentRef',
-  [MetadataType.Enum]: 'EnumRef',
-  [MetadataType.ChartOfCharacteristicTypes]: 'ChartOfCharacteristicTypesRef',
-  [MetadataType.ChartOfAccounts]: 'ChartOfAccountsRef',
-  [MetadataType.ChartOfCalculationTypes]: 'ChartOfCalculationTypesRef',
-  [MetadataType.Configuration]: undefined,
-  [MetadataType.Report]: undefined,
-  [MetadataType.DataProcessor]: undefined,
-  [MetadataType.InformationRegister]: undefined,
-  [MetadataType.AccumulationRegister]: undefined,
-  [MetadataType.AccountingRegister]: undefined,
-  [MetadataType.CalculationRegister]: undefined,
-  [MetadataType.BusinessProcess]: undefined,
-  [MetadataType.Task]: undefined,
-  [MetadataType.ExternalDataSource]: undefined,
-  [MetadataType.Constant]: undefined,
-  [MetadataType.SessionParameter]: undefined,
-  [MetadataType.FilterCriterion]: undefined,
-  [MetadataType.ScheduledJob]: undefined,
-  [MetadataType.FunctionalOption]: undefined,
-  [MetadataType.FunctionalOptionsParameter]: undefined,
-  [MetadataType.SettingsStorage]: undefined,
-  [MetadataType.EventSubscription]: undefined,
-  [MetadataType.CommonModule]: undefined,
-  [MetadataType.CommandGroup]: undefined,
-  [MetadataType.Command]: undefined,
-  [MetadataType.Role]: undefined,
-  [MetadataType.Interface]: undefined,
-  [MetadataType.Style]: undefined,
-  [MetadataType.WebService]: undefined,
-  [MetadataType.HTTPService]: undefined,
-  [MetadataType.IntegrationService]: undefined,
-  [MetadataType.Subsystem]: undefined,
-  [MetadataType.Attribute]: undefined,
-  [MetadataType.TabularSection]: undefined,
-  [MetadataType.Form]: undefined,
-  [MetadataType.Template]: undefined,
-  [MetadataType.CommandSubElement]: undefined,
-  [MetadataType.Recurrence]: undefined,
-  [MetadataType.Method]: undefined,
-  [MetadataType.Parameter]: undefined,
-  [MetadataType.Extension]: undefined,
-  [MetadataType.Unknown]: undefined,
-};
+import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -360,12 +314,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
-   * Get configuration root path for a node (walk up to Configuration node, return its filePath).
+   * Get configuration root path for a node (walk up to Configuration node, return its directory path).
    */
   getConfigPathForNode(node: TreeNode): string | null {
     let n: TreeNode | undefined = node;
     while (n) {
-      if (n.type === MetadataType.Configuration && n.filePath) return n.filePath;
+      if (n.type === MetadataType.Configuration && n.filePath) return path.dirname(n.filePath);
       n = n.parent;
     }
     return null;

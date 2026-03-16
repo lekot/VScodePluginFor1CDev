@@ -19,8 +19,7 @@ class FormEditorDocument implements vscode.CustomDocument {
 export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<FormEditorDocument> {
   private documentModel = new Map<string, FormModel>();
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  constructor(_context: vscode.ExtensionContext) {}
+  constructor() {}
 
   openCustomDocument(uri: vscode.Uri): FormEditorDocument {
     return new FormEditorDocument(uri);

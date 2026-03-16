@@ -73,7 +73,8 @@ export async function loadTreeFromCache(
     
     Logger.info('Tree loaded from disk cache', { configPath: configPath.slice(-40) });
     return root;
-  } catch {
+  } catch (error) {
+    Logger.debug('Failed to load tree from disk cache', error);
     return null;
   }
 }

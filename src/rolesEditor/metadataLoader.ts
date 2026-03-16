@@ -55,25 +55,27 @@ const RIGHTS_ASSIGNABLE_TYPES: MetadataType[] = [
  * Load all metadata objects from configuration
  * @param roleFilePath Path to the Role.xml file
  * @param currentRights Current rights map to determine which objects have rights
+ * @param configPath Optional configuration path - if provided, skips the search for configuration root
  * @returns Array of metadata objects sorted by type then name
  * @throws Error if configuration path cannot be determined or metadata cannot be loaded
  */
 export async function loadMetadataObjects(
   roleFilePath: string,
-  currentRights: RightsMap = {}
+  currentRights: RightsMap = {},
+  configPath?: string | null
 ): Promise<MetadataObject[]> {
   try {
-    // Step 1: Find configuration root from role file path
-    const configPath = await findConfigurationPath(roleFilePath);
+    // Step 1: Use provided configPath or find configuration root from role file path
+    const effectiveConfigPath = configPath ?? await findConfigurationPath(roleFilePath);
     
-    if (!configPath) {
+    if (!effectiveConfigPath) {
       throw new Error('Cannot determine configuration path from role file. Configuration structure not found.');
     }
 
-    Logger.info('Loading metadata objects from configuration', configPath);
+    Logger.info('Loading metadata objects from configuration', effectiveConfigPath);
 
     // Step 2: Parse configuration structure
-    const rootNode = await MetadataParser.parseStructureOnly(configPath);
+    const rootNode = await MetadataParser.parseStructureOnly(effectiveConfigPath);
 
     // Step 3: Extract metadata objects from tree
     const metadataObjects: MetadataObject[] = [];
@@ -86,7 +88,7 @@ export async function loadMetadataObjects(
         }
 
         // Load elements for this type
-        const elements = await MetadataParser.parseTypeContents(configPath, typeNode.name);
+        const elements = await MetadataParser.parseTypeContents(effectiveConfigPath, typeNode.name);
 
         for (const element of elements) {
           const metadataObject = createMetadataObject(element, currentRights);
@@ -129,17 +131,38 @@ async function findConfigurationPath(roleFilePath: string): Promise<string | nul
     
     let currentPath = path.dirname(roleFilePath);
     
+    Logger.debug(`Finding configuration path from role file: ${roleFilePath}`);
+    Logger.debug(`Starting search from: ${currentPath}`);
+    
+    // Normalize the role file path for comparison
+    const normalizedRolePath = path.resolve(roleFilePath).toLowerCase();
+    
     // Walk up the directory tree
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 10; i++) {
+      Logger.debug(`Checking path level ${i}: ${currentPath}`);
+      
       // Check if this is a valid configuration root
       if (await FormatDetector.isValidConfigurationPath(currentPath)) {
-        return currentPath;
+        // Check if the role file is inside this configuration
+        const normalizedConfigPath = path.resolve(currentPath).toLowerCase();
+        // Use path.sep for proper path comparison on Windows/Linux
+        const configPathWithSep = normalizedConfigPath.endsWith(path.sep)
+          ? normalizedConfigPath
+          : normalizedConfigPath + path.sep;
+        
+        if (normalizedRolePath.startsWith(configPathWithSep)) {
+          Logger.info(`Found configuration root at: ${currentPath}`);
+          return currentPath;
+        } else {
+          Logger.debug(`Found configuration at ${currentPath}, but role file is not inside it`);
+        }
       }
       
       // Move up one directory
       const parentPath = path.dirname(currentPath);
       if (parentPath === currentPath) {
         // Reached filesystem root
+        Logger.debug('Reached filesystem root, stopping search');
         break;
       }
       currentPath = parentPath;
@@ -147,8 +170,27 @@ async function findConfigurationPath(roleFilePath: string): Promise<string | nul
 
     // If not found by walking up, try using FormatDetector's workspace search
     // This handles cases where the role file might be in an unusual location
+    Logger.debug('Trying workspace search as fallback');
     const workspacePath = path.dirname(path.dirname(path.dirname(roleFilePath)));
-    return await FormatDetector.findConfigurationRoot(workspacePath);
+    const allConfigs = await FormatDetector.findAllConfigurationRoots([workspacePath]);
+    
+    // Find the first configuration that contains the role file
+    for (const config of allConfigs) {
+      const normalizedConfigPath = path.resolve(config.configPath).toLowerCase();
+      const configPathWithSep = normalizedConfigPath.endsWith(path.sep)
+        ? normalizedConfigPath
+        : normalizedConfigPath + path.sep;
+      
+      if (normalizedRolePath.startsWith(configPathWithSep)) {
+        Logger.info(`Found configuration root via workspace search: ${config.configPath}`);
+        return config.configPath;
+      } else {
+        Logger.debug(`Found configuration at ${config.configPath}, but role file is not inside it`);
+      }
+    }
+    
+    Logger.warn('Could not find configuration root');
+    return null;
 
   } catch (error) {
     Logger.error('Error finding configuration path', error);

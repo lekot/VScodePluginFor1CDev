@@ -56,15 +56,14 @@ function getSiblingNames(parent: TreeNode): string[] {
 
 /**
  * Creates a new metadata element in the configuration.
- * 
+ *
  * Parent can be a type node (e.g. Catalogs) or an object (Catalog/Document) for nested Attribute.
  * Creates the element XML file and associated directory structure.
- * 
+ *
  * @param parentNode - The parent node where the element will be created
  * @param newName - Name for the new element (will be validated)
- * @param _options - Optional configuration (currently unused)
  * @throws {Error} If validation fails or parent is invalid
- * 
+ *
  * @example
  * ```typescript
  * // Create a new catalog
@@ -73,14 +72,18 @@ function getSiblingNames(parent: TreeNode): string[] {
  */
 export async function createElement(
   parentNode: TreeNode,
-  newName: string,
-  _options?: { type?: string }
+  newName: string
 ): Promise<void> {
-  const err = validateElementName(newName.trim(), getSiblingNames(parentNode));
+  const trimmedName = newName.trim();
+  if (!trimmedName) {
+    throw new Error('Имя элемента не может быть пустым');
+  }
+  
+  const err = validateElementName(trimmedName, getSiblingNames(parentNode));
   if (err) {
     throw new Error(err);
   }
-  const name = newName.trim();
+  const name = trimmedName;
 
   if (parentNode.type === MetadataType.Configuration) {
     throw new Error('Выберите узел типа (например Справочники) или объект для создания реквизита.');

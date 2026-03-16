@@ -2,54 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from './logger';
+import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 
-/** Reference kind strings used in XML (e.g. CatalogRef, DocumentRef). */
-const METADATA_TYPE_TO_REF_KIND: Record<MetadataType, string | undefined> = {
-  [MetadataType.Catalog]: 'CatalogRef',
-  [MetadataType.Document]: 'DocumentRef',
-  [MetadataType.Enum]: 'EnumRef',
-  [MetadataType.ChartOfCharacteristicTypes]: 'ChartOfCharacteristicTypesRef',
-  [MetadataType.ChartOfAccounts]: 'ChartOfAccountsRef',
-  [MetadataType.ChartOfCalculationTypes]: 'ChartOfCalculationTypesRef',
-  [MetadataType.Configuration]: undefined,
-  [MetadataType.Report]: undefined,
-  [MetadataType.DataProcessor]: undefined,
-  [MetadataType.InformationRegister]: undefined,
-  [MetadataType.AccumulationRegister]: undefined,
-  [MetadataType.AccountingRegister]: undefined,
-  [MetadataType.CalculationRegister]: undefined,
-  [MetadataType.BusinessProcess]: undefined,
-  [MetadataType.Task]: undefined,
-  [MetadataType.ExternalDataSource]: undefined,
-  [MetadataType.Constant]: undefined,
-  [MetadataType.SessionParameter]: undefined,
-  [MetadataType.FilterCriterion]: undefined,
-  [MetadataType.ScheduledJob]: undefined,
-  [MetadataType.FunctionalOption]: undefined,
-  [MetadataType.FunctionalOptionsParameter]: undefined,
-  [MetadataType.SettingsStorage]: undefined,
-  [MetadataType.EventSubscription]: undefined,
-  [MetadataType.CommonModule]: undefined,
-  [MetadataType.CommandGroup]: undefined,
-  [MetadataType.Command]: undefined,
-  [MetadataType.Role]: undefined,
-  [MetadataType.Interface]: undefined,
-  [MetadataType.Style]: undefined,
-  [MetadataType.WebService]: undefined,
-  [MetadataType.HTTPService]: undefined,
-  [MetadataType.IntegrationService]: undefined,
-  [MetadataType.Subsystem]: undefined,
-  [MetadataType.Attribute]: undefined,
-  [MetadataType.TabularSection]: undefined,
-  [MetadataType.Form]: undefined,
-  [MetadataType.Template]: undefined,
-  [MetadataType.CommandSubElement]: undefined,
-  [MetadataType.Recurrence]: undefined,
-  [MetadataType.Method]: undefined,
-  [MetadataType.Parameter]: undefined,
-  [MetadataType.Extension]: undefined,
-  [MetadataType.Unknown]: undefined,
-};
+// Alias for backward compatibility
+const METADATA_TYPE_TO_REF_KIND = METADATA_TYPE_TO_REFERENCE_KIND;
 
 export interface ReferenceMatch {
   filePath: string;

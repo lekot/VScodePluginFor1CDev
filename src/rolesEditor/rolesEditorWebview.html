@@ -354,6 +354,19 @@
                     th.title = rightType;
                     headerRow.appendChild(th);
                 });
+                
+                // DIAGNOSTIC LOGGING - Check header row structure
+                const headerCells = headerRow.querySelectorAll('th');
+                console.log('[RightsEditor] Header row cells count:', headerCells.length);
+                if (headerCells.length > 0) {
+                    const firstHeaderCell = headerCells[0];
+                    console.log('[RightsEditor] First header cell content:', firstHeaderCell.textContent);
+                    console.log('[RightsEditor] First header cell computed style:', {
+                        width: window.getComputedStyle(firstHeaderCell).width,
+                        display: window.getComputedStyle(firstHeaderCell).display,
+                        visibility: window.getComputedStyle(firstHeaderCell).visibility
+                    });
+                }
             }
 
             function renderTable() {
@@ -361,13 +374,22 @@
                 const tableBody = document.getElementById('tableBody');
                 const emptyState = document.getElementById('emptyState');
                 
+                // DIAGNOSTIC LOGGING
+                console.log('[RightsEditor] renderTable called');
+                console.log('[RightsEditor] allObjects count:', allObjects.length);
+                console.log('[RightsEditor] filteredObjects count:', filteredObjects.length);
+                console.log('[RightsEditor] filterState:', JSON.stringify(filterState));
+                console.log('[RightsEditor] roleData.rights keys:', Object.keys(roleData.rights).length);
+                
                 tableBody.innerHTML = '';
 
                 if (filteredObjects.length === 0) {
+                    console.log('[RightsEditor] No filtered objects, showing empty state');
                     emptyState.style.display = 'block';
                     return;
                 }
 
+                console.log('[RightsEditor] Rendering', filteredObjects.length, 'objects');
                 emptyState.style.display = 'none';
 
                 const rightTypes = [
@@ -380,13 +402,25 @@
                     'interactiveDeleteMarkedPredefinedData'
                 ];
 
-                filteredObjects.forEach(obj => {
+                filteredObjects.forEach((obj, index) => {
                     const tr = document.createElement('tr');
                     
                     // Object name cell
                     const tdName = document.createElement('td');
                     const displayName = escapeHtml(obj.displayName || obj.name);
                     const type = escapeHtml(obj.type);
+                    
+                    // DIAGNOSTIC LOGGING for first few objects
+                    if (index < 3) {
+                        console.log('[RightsEditor] Rendering object', index, ':', {
+                            fullName: obj.fullName,
+                            displayName: obj.displayName,
+                            name: obj.name,
+                            type: obj.type,
+                            hasRights: obj.hasRights
+                        });
+                    }
+                    
                     tdName.innerHTML = displayName + '<span class="object-type">(' + type + ')</span>';
                     tdName.title = obj.fullName;
                     tr.appendChild(tdName);
@@ -411,6 +445,25 @@
 
                     tableBody.appendChild(tr);
                 });
+                
+                // DIAGNOSTIC LOGGING - Check table structure after rendering
+                const rows = tableBody.querySelectorAll('tr');
+                console.log('[RightsEditor] Table body rows count:', rows.length);
+                if (rows.length > 0) {
+                    const firstRow = rows[0];
+                    const cells = firstRow.querySelectorAll('td');
+                    console.log('[RightsEditor] First row cells count:', cells.length);
+                    if (cells.length > 0) {
+                        const firstCell = cells[0];
+                        console.log('[RightsEditor] First cell content:', firstCell.innerHTML);
+                        console.log('[RightsEditor] First cell computed style:', {
+                            width: window.getComputedStyle(firstCell).width,
+                            display: window.getComputedStyle(firstCell).display,
+                            visibility: window.getComputedStyle(firstCell).visibility,
+                            overflow: window.getComputedStyle(firstCell).overflow
+                        });
+                    }
+                }
             }
 
             function applyFilters() {

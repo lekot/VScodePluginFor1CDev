@@ -100,8 +100,15 @@ export class RoleXmlParser {
     // Extract role name from file path
     const roleName = path.basename(path.dirname(filePath));
 
-    // Extract rights from parsed XML
-    const rights = this.extractRights(parsed);
+    // Try to find and parse Rights.xml file (EDT format)
+    const rights = await this.parseRightsXml(filePath);
+    
+    // If Rights.xml not found or has no rights, try parsing Role.xml as fallback (Designer format)
+    if (Object.keys(rights).length === 0) {
+      Logger.debug('No rights found in Rights.xml, trying Role.xml as fallback');
+      const roleRights = this.extractRights(parsed);
+      Object.assign(rights, roleRights);
+    }
 
     // Detect configuration format
     const format = this.detectFormat(filePath);
@@ -124,7 +131,11 @@ export class RoleXmlParser {
       metadata
     };
 
-    Logger.debug(`Parsed Role.xml: ${roleName}, objects: ${Object.keys(rights).length}`);
+    const rightsCount = Object.keys(rights).length;
+    Logger.debug(`Parsed Role.xml: ${roleName}, objects with rights: ${rightsCount}`);
+    if (rightsCount === 0) {
+      Logger.warn('Role.xml produced no rights; check XML structure (Rights/Catalog/Object/Name, or Ext/Rights.xml for EDT)');
+    }
     return roleModel;
   }
 
@@ -183,8 +194,21 @@ export class RoleXmlParser {
 
     const typeObj = value as Record<string, unknown>;
 
-    // Handle both array and single object cases
-    const objects = Array.isArray(typeObj) ? typeObj : [typeObj];
+    // 1C Role.xml structure: <Catalog><Object><Name>...</Name><Read>...</Read></Object>...</Catalog>
+    // typeObj is { Object: [ { Name, Read, ... }, ... ] } or { Object: { Name, Read, ... } }
+    const rawObjects: unknown =
+      typeObj['Object'] ??
+      Object.entries(typeObj).find(
+        ([k]) => !k.startsWith('@_') && k !== '#text' && k.split(':').pop() === 'Object'
+      )?.[1];
+
+    const objects: unknown[] = rawObjects !== undefined
+      ? Array.isArray(rawObjects)
+        ? rawObjects
+        : [rawObjects]
+      : Array.isArray(typeObj)
+        ? typeObj
+        : [typeObj];
 
     for (const obj of objects) {
       if (!obj || typeof obj !== 'object') {
@@ -199,8 +223,9 @@ export class RoleXmlParser {
         continue;
       }
 
-      // Build full object name: MetadataType.ObjectName
-      const fullName = `${metadataType}.${objectName}`;
+      // Use local name for type so "v8:Catalog" -> "Catalog" and matches allObjects (Catalog.Products)
+      const typeLocalName = metadataType.includes(':') ? metadataType.split(':').pop()! : metadataType;
+      const fullName = `${typeLocalName}.${objectName}`;
 
       // Extract rights for this object
       const objectRights = this.extractObjectRights(objectElement);
@@ -226,8 +251,9 @@ export class RoleXmlParser {
         continue; // Skip attributes and text nodes
       }
 
-      // Check if this key maps to a known right
-      const rightKey = XML_TO_RIGHTS_MAP[key];
+      // Use local name so "v8:Read" -> "Read" when XML has namespace
+      const localKey = key.includes(':') ? key.split(':').pop()! : key;
+      const rightKey = XML_TO_RIGHTS_MAP[key] ?? XML_TO_RIGHTS_MAP[localKey];
       if (rightKey) {
         // Parse boolean value
         // In 1C XML, rights are typically represented as 'true'/'false' strings or boolean values
@@ -311,18 +337,31 @@ export class RoleXmlParser {
     }
 
     // Try nested Name element
-    if (objectNode['Name']) {
-      return String(objectNode['Name']);
+    const nameVal = objectNode['Name'];
+    if (nameVal !== undefined && nameVal !== null) {
+      const s = this.nameValueToString(nameVal);
+      if (s) return s;
     }
 
     // Try with namespace prefix
     for (const [key, value] of Object.entries(objectNode)) {
       const localName = key.includes(':') ? key.split(':').pop()! : key;
       if (localName === 'name' || localName === 'Name') {
-        return String(value);
+        const s = this.nameValueToString(value);
+        if (s) return s;
       }
     }
 
+    return null;
+  }
+
+  /** Get string from Name element (may be string or { '#text': '...' }) */
+  private static nameValueToString(value: unknown): string | null {
+    if (typeof value === 'string') return value.trim() || null;
+    if (value && typeof value === 'object' && '#text' in (value as object)) {
+      const t = (value as Record<string, unknown>)['#text'];
+      return t != null ? String(t).trim() || null : null;
+    }
     return null;
   }
 
@@ -380,5 +419,158 @@ export class RoleXmlParser {
     }
 
     return ConfigFormat.Designer;
+  }
+
+  /**
+   * Parse Rights.xml file and extract rights assignments (EDT format)
+   * @param roleXmlPath Path to Role.xml file
+   * @returns RightsMap with all object rights
+   */
+  private static async parseRightsXml(roleXmlPath: string): Promise<RightsMap> {
+    const rights: RightsMap = {};
+    
+    try {
+      const roleDir = path.dirname(roleXmlPath);
+      const baseName = path.basename(roleXmlPath, path.extname(roleXmlPath));
+
+      // EDT: Roles/ИмяРоли.xml → Rights in Roles/ИмяРоли/Ext/Rights.xml
+      // Designer: Roles/ИмяРоли/Role.xml → Rights in Roles/ИмяРоли/Ext/Rights.xml (same roleDir/Ext)
+      const candidates =
+        baseName.toLowerCase() !== 'role'
+          ? [path.join(roleDir, baseName, 'Ext', 'Rights.xml'), path.join(roleDir, 'Ext', 'Rights.xml')]
+          : [path.join(roleDir, 'Ext', 'Rights.xml')];
+
+      let rightsXmlPath: string | null = null;
+      for (const candidate of candidates) {
+        try {
+          await fs.promises.access(candidate);
+          rightsXmlPath = candidate;
+          break;
+        } catch {
+          continue;
+        }
+      }
+      if (!rightsXmlPath) {
+        Logger.debug(`Rights.xml not found (tried: ${candidates.join(', ')})`);
+        return rights;
+      }
+      Logger.debug(`Using Rights.xml at: ${rightsXmlPath}`);
+      
+      // Read Rights.xml content
+      const xmlContent = await fs.promises.readFile(rightsXmlPath, 'utf-8');
+      
+      if (!xmlContent || xmlContent.trim() === '') {
+        Logger.debug('Rights.xml is empty');
+        return rights;
+      }
+      
+      // Parse XML
+      const parsed = this.parser.parse(xmlContent) as Record<string, unknown>;
+      
+      // Rights.xml has a different structure than Role.xml
+      // It contains <object> elements with <name> and <right> children
+      const rightsElement = parsed['Rights'] || parsed['v8:Rights'];
+      
+      if (!rightsElement) {
+        Logger.debug('No Rights element found in Rights.xml');
+        return rights;
+      }
+      
+      const rightsObj = rightsElement as Record<string, unknown>;
+      
+      // Get all object elements
+      const objectElements = rightsObj['object'] || rightsObj['v8:object'];
+      
+      if (!objectElements) {
+        Logger.debug('No object elements found in Rights.xml');
+        return rights;
+      }
+      
+      // Handle both array and single object cases
+      const objects = Array.isArray(objectElements) ? objectElements : [objectElements];
+      
+      for (const obj of objects) {
+        if (!obj || typeof obj !== 'object') {
+          continue;
+        }
+        
+        const objectElement = obj as Record<string, unknown>;
+        
+        // Extract object name from <name> element
+        const nameElement = objectElement['name'] || objectElement['v8:name'];
+        if (!nameElement) {
+          continue;
+        }
+        
+        const objectName = String(nameElement);
+        
+        // Extract rights for this object
+        const objectRights = this.extractRightsFromRightsXml(objectElement);
+        
+        // Only add to map if at least one right is true
+        if (this.hasAnyRights(objectRights)) {
+          rights[objectName] = objectRights;
+        }
+      }
+      
+      Logger.info(`Parsed Rights.xml: ${Object.keys(rights).length} objects with rights`);
+      return rights;
+      
+    } catch (error) {
+      Logger.error('Error parsing Rights.xml', error);
+      return rights;
+    }
+  }
+
+  /**
+   * Extract rights from Rights.xml object element
+   * @param objectElement XML node for an object from Rights.xml
+   * @returns ObjectRights with all rights set
+   */
+  private static extractRightsFromRightsXml(objectElement: Record<string, unknown>): ObjectRights {
+    const rights = createEmptyObjectRights();
+    
+    // Rights.xml has <right> elements with <name> and <value> children
+    const rightElements = objectElement['right'] || objectElement['v8:right'];
+    
+    if (!rightElements) {
+      return rights;
+    }
+    
+    // Handle both array and single object cases
+    const rightArray = Array.isArray(rightElements) ? rightElements : [rightElements];
+    
+    for (const rightElem of rightArray) {
+      if (!rightElem || typeof rightElem !== 'object') {
+        continue;
+      }
+      
+      const rightElement = rightElem as Record<string, unknown>;
+      
+      // Extract right name from <name> element
+      const nameElement = rightElement['name'] || rightElement['v8:name'];
+      if (!nameElement) {
+        continue;
+      }
+      
+      const rightName = String(nameElement);
+      
+      // Extract right value from <value> element
+      const valueElement = rightElement['value'] || rightElement['v8:value'];
+      if (valueElement === undefined) {
+        continue;
+      }
+      
+      // Parse boolean value
+      const rightValue = this.parseBoolean(valueElement);
+      
+      // Map XML right name to ObjectRights property
+      const rightKey = XML_TO_RIGHTS_MAP[rightName];
+      if (rightKey) {
+        rights[rightKey] = rightValue;
+      }
+    }
+    
+    return rights;
   }
 }

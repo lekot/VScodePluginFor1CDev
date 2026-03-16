@@ -32,17 +32,19 @@ export class RolesRightsEditorProvider {
 
   /**
    * Open the rights editor for a specific role file
+   * @param roleFilePath Path to the Role.xml file
+   * @param configPath Optional configuration path - if provided, skips the search for configuration root
    */
-  public async show(roleFilePath: string): Promise<void> {
+  public async show(roleFilePath: string, configPath?: string | null): Promise<void> {
     try {
       // Parse the role XML file
       this.currentRoleModel = await RoleXmlParser.parseRoleXml(roleFilePath);
       Logger.info(`Loaded role: ${this.currentRoleModel.name}`);
 
       // Load metadata objects from configuration
-      const configPath = this.getConfigurationPath(roleFilePath);
+      // ConfigPath should be provided from tree data provider
       if (configPath) {
-        this.allObjects = await loadMetadataObjects(configPath);
+        this.allObjects = await loadMetadataObjects(roleFilePath, this.currentRoleModel.rights, configPath);
         Logger.info(`Loaded ${this.allObjects.length} metadata objects`);
       } else {
         Logger.warn('Configuration path not found, showing read-only mode');
@@ -98,19 +100,19 @@ export class RolesRightsEditorProvider {
   /**
    * Update the webview content
    */
-  private updateWebviewContent(): void {
+  private async updateWebviewContent(): Promise<void> {
     if (!this.panel || !this.currentRoleModel) {
       return;
     }
 
-    this.panel.webview.html = this.getWebviewContent();
+    this.panel.webview.html = await this.getWebviewContent();
     Logger.debug('Rights editor panel updated');
   }
 
   /**
    * Generate the webview HTML content
    */
-  private getWebviewContent(): string {
+  private async getWebviewContent(): Promise<string> {
     if (!this.currentRoleModel) {
       return this.getErrorHtml('No role model loaded');
     }
@@ -118,7 +120,7 @@ export class RolesRightsEditorProvider {
     // Read the HTML template - use __dirname to get path to compiled output
     const htmlPath = path.join(__dirname, 'rolesEditorWebview.html');
 
-    let html = fs.readFileSync(htmlPath, 'utf8');
+    let html = await fs.promises.readFile(htmlPath, 'utf8');
 
     // Prepare data to inject
     const roleDataJson = this.escapeJsonForScript(
@@ -246,19 +248,18 @@ export class RolesRightsEditorProvider {
         return;
       }
 
-      // Create backup
-      const backupPath = this.currentRoleModel.filePath + '.backup';
-      fs.copyFileSync(this.currentRoleModel.filePath, backupPath);
-
+      // Atomic write: write to temp file first, then rename
+      const tempPath = this.currentRoleModel.filePath + '.tmp';
+      
       try {
         // Serialize to XML
         const xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel);
 
-        // Write to file
-        fs.writeFileSync(this.currentRoleModel.filePath, xmlContent, 'utf8');
+        // Write to temp file first
+        await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
 
-        // Delete backup
-        fs.unlinkSync(backupPath);
+        // Atomic rename (works on Windows with overwrite)
+        await fs.promises.rename(tempPath, this.currentRoleModel.filePath);
 
         Logger.info('Rights saved successfully');
         vscode.window.showInformationMessage('Rights saved successfully');
@@ -268,10 +269,11 @@ export class RolesRightsEditorProvider {
           this.panel.dispose();
         }
       } catch (error) {
-        // Restore from backup
-        if (fs.existsSync(backupPath)) {
-          fs.copyFileSync(backupPath, this.currentRoleModel.filePath);
-          fs.unlinkSync(backupPath);
+        // Clean up temp file if it exists
+        try {
+          await fs.promises.unlink(tempPath);
+        } catch {
+          // Ignore if temp file doesn't exist
         }
         throw error;
       }
@@ -342,26 +344,6 @@ export class RolesRightsEditorProvider {
     if (this.panel) {
       this.panel.webview.postMessage(message);
     }
-  }
-
-  /**
-   * Get the configuration path from the role file path
-   */
-  private getConfigurationPath(roleFilePath: string): string | null {
-    // Navigate up from role file to find configuration root
-    // Role files are typically at: <config>/Roles/<RoleName>/Role.xml
-    let dir = path.dirname(roleFilePath);
-    
-    // Go up two levels (from Role.xml -> RoleName -> Roles)
-    dir = path.dirname(dir);
-    dir = path.dirname(dir);
-
-    // Check if this looks like a configuration root
-    if (fs.existsSync(path.join(dir, 'Configuration.xml'))) {
-      return dir;
-    }
-
-    return null;
   }
 
   /**
