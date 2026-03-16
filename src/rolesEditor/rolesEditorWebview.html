@@ -293,9 +293,18 @@
             document.getElementById('saveButton').addEventListener('click', handleSave);
             document.getElementById('cancelButton').addEventListener('click', handleCancel);
 
+            // Ctrl+S to save
+            document.addEventListener('keydown', function(e) {
+                if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                    e.preventDefault();
+                    handleSave();
+                }
+            });
+
             // Handle messages from extension
             window.addEventListener('message', event => {
                 const message = event.data;
+                const data = message.data || {};
                 
                 switch (message.command) {
                     case 'initialize':
@@ -310,11 +319,15 @@
                         break;
                     
                     case 'updateError':
-                        alert('Error updating rights: ' + message.error);
+                        alert('Error updating rights: ' + (Array.isArray(data.errors) ? data.errors.join('\n') : data.message || 'Unknown error'));
                         break;
                     
                     case 'validationError':
-                        alert('Validation error: ' + message.errors.join('\n'));
+                        alert('Validation error: ' + (Array.isArray(data.errors) ? data.errors.join('\n') : JSON.stringify(data)));
+                        break;
+                    
+                    case 'saveError':
+                        alert('Save failed: ' + (data.message || 'Unknown error'));
                         break;
                 }
             });

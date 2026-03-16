@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "1C Metadata Tree",
   "description": "VS Code extension for visualizing 1C configuration metadata tree",
-  "version": "0.15.6",
+  "version": "0.16.7",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -120,6 +120,11 @@
         "category": "1C Metadata"
       },
       {
+        "command": "1c-metadata-tree.saveRightsEditor",
+        "title": "Save Rights (Editor)",
+        "category": "1C Metadata"
+      },
+      {
         "command": "1c-metadata-tree.createForm",
         "title": "Создать форму",
         "category": "1C Metadata"
@@ -216,6 +221,16 @@
         }
       ]
     },
+    "configuration": {
+      "title": "1C Metadata Tree",
+      "properties": {
+        "1cMetadataTree.rightsEditor.compactRightsWrite": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use compact rights write in Rights Editor: only output <right> when true for simple rights; keep and update only <value> for rights with restrictionByCondition."
+        }
+      }
+    },
     "keybindings": [
       {
         "command": "1c-metadata-tree.openPanel",
@@ -255,6 +270,12 @@
         "key": "ctrl+f",
         "mac": "cmd+f",
         "when": "view == 1c-metadata-tree"
+      },
+      {
+        "command": "1c-metadata-tree.saveRightsEditor",
+        "key": "ctrl+s",
+        "mac": "cmd+s",
+        "when": "activeWebviewPanelId == '1c-rights-editor'"
       }
     ]
   },

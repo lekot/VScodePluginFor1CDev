@@ -192,6 +192,46 @@ function getObjectItems(content: unknown[]): Array<{ index: number; content: unk
   return result;
 }
 
+/** Allowed child element local names for a "simple" right (only name + value). */
+const SIMPLE_RIGHT_CHILD_NAMES = new Set(['name', 'value']);
+
+/**
+ * Return true if this right has only <name> and <value> children (no restrictionByCondition etc.).
+ */
+function isSimpleRight(rightContent: unknown[]): boolean {
+  for (const item of rightContent) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    for (const k of Object.keys(o)) {
+      const local = k.includes(':') ? k.split(':').pop()! : k;
+      if (!SIMPLE_RIGHT_CHILD_NAMES.has(local)) return false;
+    }
+  }
+  return true;
+}
+
+/** Remove the <right> entry with given name from object content array (mutates array). */
+function removeRightFromObjectContent(objectContent: unknown[], rightName: string): void {
+  for (let i = 0; i < objectContent.length; i++) {
+    const item = objectContent[i];
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const rightVal = getByLocalName(o, 'right');
+    if (rightVal === undefined) continue;
+    const rightContent = Array.isArray(rightVal) ? rightVal : [rightVal];
+    for (const sub of rightContent) {
+      if (!sub || typeof sub !== 'object') continue;
+      const subObj = sub as Record<string, unknown>;
+      const nameVal = getByLocalName(subObj, 'name');
+      const n = getTextFromNode(nameVal);
+      if (n === rightName) {
+        objectContent.splice(i, 1);
+        return;
+      }
+    }
+  }
+}
+
 /** Find <right> with given name in object content. Each entry is { right: rightContentArray }. Returns that array to mutate. */
 function findRightInObjectContent(objectContent: unknown[], rightName: string): unknown[] | null {
   for (const item of objectContent) {
@@ -254,12 +294,17 @@ function indexOfFirstRestrictionTemplate(content: unknown[]): number {
   return content.length;
 }
 
-/** Build new <object> element content for objectFullName and objectRights. */
-function buildNewObjectContent(objectFullName: string, objectRights: ObjectRights): unknown[] {
+/** Build new <object> element content for objectFullName and objectRights. When compactWrite is true, only rights with value true are added. */
+function buildNewObjectContent(
+  objectFullName: string,
+  objectRights: ObjectRights,
+  compactWrite: boolean
+): unknown[] {
   const content: unknown[] = [{ name: [{ '#text': objectFullName }] }];
   for (const rightType of ALL_RIGHT_TYPES) {
     const xmlName = RIGHTS_TO_XML_NAME[rightType as RightType];
     const value = objectRights[rightType as RightType];
+    if (compactWrite && !value) continue;
     content.push({
       right: [
         { name: [{ '#text': xmlName }] },
@@ -270,11 +315,22 @@ function buildNewObjectContent(objectFullName: string, objectRights: ObjectRight
   return content;
 }
 
+export interface MergeRightsOptions {
+  /** When true (default): write only true for simple rights; remove simple <right> when false; keep and only update <value> for rights with restrictionByCondition etc. */
+  compactWrite?: boolean;
+}
+
 /**
  * Merge RoleModel.rights into the Rights DOM. Mutates dom.
  * For each objectFullName: find or create <object>, update/add only known rights; never remove restrictionByCondition, restrictionTemplate, or unknown rights.
+ * When compactWrite is true: simple <right> only when value true (remove when false); rights with extra children only get <value> updated.
  */
-export function mergeRightsIntoDom(dom: RightsDom, rights: RightsMap): void {
+export function mergeRightsIntoDom(
+  dom: RightsDom,
+  rights: RightsMap,
+  options?: MergeRightsOptions
+): void {
+  const compactWrite = options?.compactWrite !== false;
   const content = getRightsContentArray(dom);
   const objectItems = getObjectItems(content);
   const insertBeforeIndex = indexOfFirstRestrictionTemplate(content);
@@ -290,7 +346,7 @@ export function mergeRightsIntoDom(dom: RightsDom, rights: RightsMap): void {
     }
 
     if (!objectContent) {
-      const newContent = buildNewObjectContent(objectFullName, objectRights);
+      const newContent = buildNewObjectContent(objectFullName, objectRights, compactWrite);
       const newItem: Record<string, unknown> = { object: newContent };
       content.splice(insertBeforeIndex, 0, newItem);
       objectItems.push({ index: insertBeforeIndex, content: newContent });
@@ -303,8 +359,17 @@ export function mergeRightsIntoDom(dom: RightsDom, rights: RightsMap): void {
       const value = objectRights[rightType as RightType];
       const rightContent = findRightInObjectContent(objectContent, xmlName);
       if (rightContent) {
-        setValueInRightContent(rightContent, value);
+        if (!isSimpleRight(rightContent)) {
+          setValueInRightContent(rightContent, value);
+        } else {
+          if (compactWrite && !value) {
+            removeRightFromObjectContent(objectContent, xmlName);
+          } else {
+            setValueInRightContent(rightContent, value);
+          }
+        }
       } else {
+        if (compactWrite && !value) continue;
         appendRightToObjectContent(objectContent, xmlName, value);
       }
     }
@@ -312,7 +377,17 @@ export function mergeRightsIntoDom(dom: RightsDom, rights: RightsMap): void {
 }
 
 /**
+ * Unescape &quot; to " so 1C receives literal quotes in condition text.
+ * Single global replace is O(n) and safe for Rights.xml (no &quot; in attribute values).
+ */
+function unescapeQuotesInConditions(xmlString: string): string {
+  if (typeof xmlString !== 'string') return xmlString;
+  return xmlString.replace(/&quot;/g, '"');
+}
+
+/**
  * Serialize Rights DOM to XML string. Preserves declaration and root attributes.
+ * Unescapes &quot; so 1C compatibility is preserved.
  */
 export function serializeRightsDomToXml(dom: RightsDom): string {
   const builder = new XMLBuilder(RIGHTS_XML_BUILDER_OPTIONS);
@@ -323,6 +398,11 @@ export function serializeRightsDomToXml(dom: RightsDom): string {
     const message = err instanceof Error ? err.message : String(err);
     Logger.error('Failed to serialize Rights.xml', err);
     throw new Error(`Не удалось сформировать Rights.xml: ${message}`);
+  }
+  try {
+    xmlString = unescapeQuotesInConditions(xmlString);
+  } catch (e) {
+    Logger.warn('unescapeQuotesInConditions failed, using builder output as-is', e);
   }
   if (!xmlString.startsWith('<?xml')) {
     xmlString = '<?xml version="1.0" encoding="UTF-8"?>\n' + xmlString;

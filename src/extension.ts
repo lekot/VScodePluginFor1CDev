@@ -227,6 +227,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
+  // Save rights editor (e.g. when webview postMessage does not fire)
+  const saveRightsEditorCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.saveRightsEditor',
+    async () => {
+      if (rolesRightsEditorProvider) {
+        await rolesRightsEditorProvider.triggerSave();
+      } else {
+        vscode.window.showWarningMessage('Rights editor is not open.');
+      }
+    }
+  );
+
   // Create / Duplicate / Delete / Rename — Stage 7 implementation
   const createElementCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.createElement',
@@ -585,6 +597,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     openXMLCommand,
     openFormEditorCommand,
     openRightsEditorCommand,
+    saveRightsEditorCommand,
     createElementCommand,
     createFormCommand,
     duplicateElementCommand,

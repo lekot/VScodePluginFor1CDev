@@ -31,6 +31,7 @@ export class RolesRightsEditorProvider {
     typeFilter: [],
   };
   private disposables: vscode.Disposable[] = [];
+  private saveInProgress = false;
 
   constructor(private context: vscode.ExtensionContext) {
     Logger.info('RolesRightsEditorProvider initialized');
@@ -140,12 +141,10 @@ export class RolesRightsEditorProvider {
       JSON.stringify(this.allObjects)
     );
 
-    // Inject data into the script
-    // Replace the "Request initial data" line with actual initialization
+    // Inject data into the script (match line ending \n or \r\n)
     html = html.replace(
-      "            // Request initial data\r\n            vscode.postMessage({ command: 'ready' });",
-      `// Initialize with data
-            roleData = ${roleDataJson};
+      /\s*\/\/ Request initial data\s*vscode\.postMessage\(\s*\{\s*command:\s*'ready'\s*\}\s*\)\s*;/,
+      ` roleData = ${roleDataJson};
             allObjects = ${objectsJson};
             initializeUI();
             renderTable();`
@@ -164,6 +163,9 @@ export class RolesRightsEditorProvider {
     }
 
     try {
+      if (message.command === 'save') {
+        Logger.info('Received save command from webview');
+      }
       switch (message.command) {
         case 'updateRight':
           await this.handleUpdateRight(message);
@@ -234,68 +236,115 @@ export class RolesRightsEditorProvider {
   }
 
   /**
+   * Trigger save from extension (e.g. command palette or keybinding).
+   * Use when webview postMessage may not reach the provider.
+   */
+  public async triggerSave(): Promise<void> {
+    await this.handleSave();
+  }
+
+  /**
    * Handle save message
    * Case B: filePath is Role.xml → serialize with RoleXmlSerializer, write to filePath.
    * Case A: otherwise → rights in Ext/Rights.xml; load, merge, serialize, write to rightsPath.
    */
   private async handleSave(): Promise<void> {
+    if (this.saveInProgress) {
+      Logger.warn('handleSave skipped: save already in progress');
+      return;
+    }
+    Logger.info('handleSave called');
     if (!this.currentRoleModel) {
+      const msg = 'Role not loaded. Close and reopen the rights editor.';
+      vscode.window.showErrorMessage(msg);
+      this.sendMessageToWebview({ command: 'saveError', data: { message: msg } });
       return;
     }
 
+    this.saveInProgress = true;
+    const statusDone = vscode.window.setStatusBarMessage('Saving rights...');
     try {
+      Logger.info('handleSave: validation starting');
       const validator = new RightsValidator();
       const validationResult = validator.validateRights(this.currentRoleModel);
 
       if (!validationResult.isValid) {
+        Logger.warn(`handleSave: validation failed: ${validationResult.errors.join('; ')}`);
         this.sendMessageToWebview({
           command: 'validationError',
           data: { errors: validationResult.errors },
         });
-        return;
+        const saveAnyway = await vscode.window.showWarningMessage(
+          `Validation failed (${validationResult.errors.length} issue(s)). Save anyway?`,
+          { modal: true },
+          'Save anyway',
+          'Cancel'
+        );
+        if (saveAnyway !== 'Save anyway') {
+          statusDone.dispose();
+          return;
+        }
+        Logger.info('handleSave: user chose Save anyway, skipping validation');
+      } else {
+        Logger.info('handleSave: validation passed, resolving target path');
       }
-
       const isCaseB = path.basename(this.currentRoleModel.filePath).toLowerCase() === 'role.xml';
       const targetPath = isCaseB
         ? this.currentRoleModel.filePath
         : getRightsPath(this.currentRoleModel.filePath);
+      // Temp file for atomic write: <target>.tmp only (e.g. Rights.xml.tmp). "Rights copy.xml" is not used by the extension.
       const tempPath = targetPath + '.tmp';
+      Logger.info(`Save target: ${targetPath}, temp: ${tempPath}`);
 
       let xmlContent: string;
       if (isCaseB) {
         xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel);
+        Logger.info('Serialized (Case B)');
       } else {
+        Logger.info('Loading Rights.xml...');
         const dom = await loadRightsXml(targetPath);
-        mergeRightsIntoDom(dom, this.currentRoleModel.rights);
+        Logger.info('Merging rights into DOM...');
+        const compactWrite = vscode.workspace
+          .getConfiguration('1cMetadataTree')
+          .get<boolean>('rightsEditor.compactRightsWrite', true);
+        mergeRightsIntoDom(dom, this.currentRoleModel.rights, { compactWrite });
+        Logger.info('Serializing DOM to XML...');
         xmlContent = serializeRightsDomToXml(dom);
       }
 
+      Logger.info('Writing to temp file...');
+      await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
+      Logger.info('Renaming temp to target...');
       try {
-        await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
         await fs.promises.rename(tempPath, targetPath);
-
-        Logger.info('Rights saved successfully');
-        vscode.window.showInformationMessage('Rights saved successfully');
-
-        if (this.panel) {
-          this.panel.dispose();
-        }
-      } catch (error) {
+      } catch (renameErr) {
         try {
           await fs.promises.unlink(tempPath);
         } catch {
-          // Ignore if temp file doesn't exist
+          // ignore
         }
-        throw error;
+        throw renameErr;
+      }
+
+      statusDone.dispose();
+      Logger.info('Rights saved successfully');
+      vscode.window.showInformationMessage('Rights saved successfully');
+
+      if (this.panel) {
+        this.panel.dispose();
       }
     } catch (error) {
-      Logger.error('Failed to save rights', error);
+      statusDone.dispose();
       const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      Logger.error(`Failed to save rights: ${message}`, stack ? { stack } : error);
       vscode.window.showErrorMessage(`Failed to save rights: ${message}`);
       this.sendMessageToWebview({
         command: 'saveError',
         data: { message },
       });
+    } finally {
+      this.saveInProgress = false;
     }
   }
 
