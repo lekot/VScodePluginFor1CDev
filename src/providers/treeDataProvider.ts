@@ -61,6 +61,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private searchBySynonymComment = false;
   private searchUseRegex = false;
   private typeFilter: Set<MetadataType> | null = null;
+  private subsystemFilter: { subsystemId: string | null; subsystemName: string | null } = {
+    subsystemId: null,
+    subsystemName: null,
+  };
   private searchHistory: string[] = [];
   private filterAncestorOrVisibleIds: Set<string> | null = null;
   private messageUpdater: ((message: string | undefined) => void) | null = null;
@@ -88,6 +92,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const parts: string[] = [];
     if (this.searchQuery.trim()) parts.push(`Поиск: ${this.getSearchQueryForDisplay()}`);
     if (this.typeFilter && this.typeFilter.size > 0) parts.push(`Типы: ${this.typeFilter.size}`);
+    const subsystemLabel = this.getSubsystemFilterLabel();
+    if (subsystemLabel) parts.push(subsystemLabel);
     this.messageUpdater(parts.length > 0 ? parts.join(' · ') : undefined);
   }
 
@@ -121,9 +127,67 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return this.typeFilter ? Array.from(this.typeFilter) : null;
   }
 
+  /**
+   * Set subsystem filter to show only nodes belonging to the specified subsystem.
+   * @param subsystemId The ID of the subsystem node to filter by, or null to clear filter
+   * @param subsystemName The display name of the subsystem, or null to clear filter
+   */
+  setSubsystemFilter(subsystemId: string | null, subsystemName: string | null): void {
+    this.subsystemFilter.subsystemId = subsystemId;
+    this.subsystemFilter.subsystemName = subsystemName;
+    this.filterAncestorOrVisibleIds = null;
+    this.updateFilterMessage();
+    this.refresh();
+  }
+
+  /**
+   * Get current subsystem filter state.
+   * @returns Object with subsystemId and subsystemName, or null values if no filter is active
+   */
+  getSubsystemFilter(): { subsystemId: string | null; subsystemName: string | null } {
+    return { ...this.subsystemFilter };
+  }
+
+  /**
+   * Check if a node passes the subsystem filter.
+   * A node passes if:
+   * 1. No subsystem filter is active, OR
+   * 2. The node itself is the filtered subsystem, OR
+   * 3. The node is a descendant of the filtered subsystem
+   * @param node The tree node to check
+   * @returns true if the node passes the filter, false otherwise
+   */
+  private nodePassesSubsystemFilter(node: TreeNode): boolean {
+    if (!this.subsystemFilter.subsystemId) {
+      return true;
+    }
+
+    let current: TreeNode | undefined = node;
+    while (current) {
+      if (current.id === this.subsystemFilter.subsystemId) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  }
+
+  /**
+   * Get the subsystem filter label for display in the UI.
+   * @returns The filter label string, or null if no filter is active
+   */
+  getSubsystemFilterLabel(): string | null {
+    if (!this.subsystemFilter.subsystemId || !this.subsystemFilter.subsystemName) {
+      return null;
+    }
+    return `Подсистема: ${this.subsystemFilter.subsystemName}`;
+  }
+
   clearSearch(): void {
     this.searchQuery = '';
     this.typeFilter = null;
+    this.subsystemFilter.subsystemId = null;
+    this.subsystemFilter.subsystemName = null;
     this.filterAncestorOrVisibleIds = null;
     this.updateFilterMessage();
     this.refresh();
@@ -545,7 +609,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private hasActiveFilter(): boolean {
-    return this.searchQuery.trim() !== '' || (this.typeFilter != null && this.typeFilter.size > 0);
+    return (
+      this.searchQuery.trim() !== '' ||
+      (this.typeFilter != null && this.typeFilter.size > 0) ||
+      this.subsystemFilter.subsystemId != null
+    );
   }
 
   /** Path for tooltip: filePath if set, otherwise parent chain (e.g. "Configuration / Catalogs / MyCatalog"). */
@@ -564,7 +632,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (this.filterAncestorOrVisibleIds != null) return;
     const visibleIds = new Set<string>();
     for (const node of this.nodeCache.values()) {
-      if (this.nodeOrDescendantMatchesSearch(node, this.searchQuery) && this.passesTypeFilter(node)) {
+      if (
+        this.nodeOrDescendantMatchesSearch(node, this.searchQuery) &&
+        this.passesTypeFilter(node) &&
+        this.nodePassesSubsystemFilter(node)
+      ) {
         visibleIds.add(node.id);
       }
     }

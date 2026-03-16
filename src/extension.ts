@@ -498,6 +498,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     '1c-metadata-tree.clearSearch',
     () => {
       treeDataProvider?.clearSearch();
+      vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
   );
 
@@ -549,6 +550,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       if (picks === undefined) return;
       treeDataProvider.setTypeFilter(picks.length > 0 ? picks.map((p) => p.type) : null);
+    }
+  );
+
+  const filterBySubsystemCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.filterBySubsystem',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(node);
+      if (!target || target.type !== MetadataType.Subsystem) {
+        vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
+        return;
+      }
+      if (!treeDataProvider) return;
+      treeDataProvider.setSubsystemFilter(target.id, target.name);
+      vscode.commands.executeCommand('setContext', 'subsystemFilterActive', true);
+    }
+  );
+
+  const clearSubsystemFilterCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.clearSubsystemFilter',
+    () => {
+      if (!treeDataProvider) return;
+      treeDataProvider.setSubsystemFilter(null, null);
+      vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
   );
 
@@ -609,6 +633,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     clearCacheCommand,
     exportLogsCommand,
     filterByTypeCommand,
+    filterBySubsystemCommand,
+    clearSubsystemFilterCommand,
     nextMatchCommand,
     previousMatchCommand
   );

@@ -128,6 +128,16 @@
         "command": "1c-metadata-tree.createForm",
         "title": "Создать форму",
         "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.filterBySubsystem",
+        "title": "Filter by Subsystem",
+        "category": "1C Metadata"
+      },
+      {
+        "command": "1c-metadata-tree.clearSubsystemFilter",
+        "title": "Clear Subsystem Filter",
+        "category": "1C Metadata"
       }
     ],
     "customEditors": [
@@ -209,6 +219,16 @@
           "command": "1c-metadata-tree.copyPathOrName",
           "when": "view == 1c-metadata-tree",
           "group": "3_copy"
+        },
+        {
+          "command": "1c-metadata-tree.filterBySubsystem",
+          "when": "view == 1c-metadata-tree && viewItem == 'Subsystem'",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.clearSubsystemFilter",
+          "when": "view == 1c-metadata-tree && subsystemFilterActive",
+          "group": "navigation"
         }
       ]
     },

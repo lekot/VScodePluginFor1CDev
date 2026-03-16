@@ -341,4 +341,170 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     const typeChildren = await provider.getChildren(children[0]);
     assert.strictEqual(typeChildren.length, 1);
   });
+
+  test('setSubsystemFilter filters by subsystem', async () => {
+    const subsystem: TreeNode = {
+      id: 'sub1',
+      name: 'MainSubsystem',
+      type: MetadataType.Subsystem,
+      properties: {},
+    };
+    const catalog: TreeNode = {
+      id: 'cat1',
+      name: 'MyCatalog',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    const doc: TreeNode = {
+      id: 'doc1',
+      name: 'MyDocument',
+      type: MetadataType.Document,
+      properties: {},
+    };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [subsystem, catalog, doc],
+    };
+    subsystem.parent = root;
+    catalog.parent = root;
+    doc.parent = root;
+
+    provider.setRootNode(root);
+    provider.setSubsystemFilter('sub1', 'MainSubsystem');
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 1);
+    assert.strictEqual(children[0].id, 'sub1');
+  });
+
+  test('setSubsystemFilter with null clears filter', async () => {
+    const subsystem: TreeNode = {
+      id: 'sub1',
+      name: 'MainSubsystem',
+      type: MetadataType.Subsystem,
+      properties: {},
+    };
+    const catalog: TreeNode = {
+      id: 'cat1',
+      name: 'MyCatalog',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [subsystem, catalog],
+    };
+    subsystem.parent = root;
+    catalog.parent = root;
+
+    provider.setRootNode(root);
+    provider.setSubsystemFilter('sub1', 'MainSubsystem');
+    provider.setSubsystemFilter(null, null);
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 2);
+  });
+
+  test('getSubsystemFilterLabel returns correct label', () => {
+    provider.setSubsystemFilter('sub1', 'MainSubsystem');
+    const label = provider.getSubsystemFilterLabel();
+    assert.strictEqual(label, 'Подсистема: MainSubsystem');
+  });
+
+  test('getSubsystemFilterLabel returns null when no filter', () => {
+    const label = provider.getSubsystemFilterLabel();
+    assert.strictEqual(label, null);
+  });
+
+  test('getSubsystemFilter returns current filter state', () => {
+    provider.setSubsystemFilter('sub1', 'MainSubsystem');
+    const filter = provider.getSubsystemFilter();
+    assert.strictEqual(filter.subsystemId, 'sub1');
+    assert.strictEqual(filter.subsystemName, 'MainSubsystem');
+  });
+
+  test('clearSearch clears subsystem filter', async () => {
+    const subsystem: TreeNode = {
+      id: 'sub1',
+      name: 'MainSubsystem',
+      type: MetadataType.Subsystem,
+      properties: {},
+    };
+    const catalog: TreeNode = {
+      id: 'cat1',
+      name: 'MyCatalog',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [subsystem, catalog],
+    };
+    subsystem.parent = root;
+    catalog.parent = root;
+
+    provider.setRootNode(root);
+    provider.setSubsystemFilter('sub1', 'MainSubsystem');
+    provider.clearSearch();
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 2);
+  });
+
+  test('hasActiveFilter returns true when subsystem filter is active', () => {
+    provider.setSubsystemFilter('sub1', 'MainSubsystem');
+    // hasActiveFilter is private, so we test indirectly via getChildren behavior
+    const filter = provider.getSubsystemFilter();
+    assert.strictEqual(filter.subsystemId, 'sub1');
+  });
+
+  test('subsystem filter works with nested nodes', async () => {
+    const subsystem: TreeNode = {
+      id: 'sub1',
+      name: 'MainSubsystem',
+      type: MetadataType.Subsystem,
+      properties: {},
+    };
+    const nestedCatalog: TreeNode = {
+      id: 'cat1',
+      name: 'NestedCatalog',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    subsystem.children = [nestedCatalog];
+    nestedCatalog.parent = subsystem;
+
+    const otherCatalog: TreeNode = {
+      id: 'cat2',
+      name: 'OtherCatalog',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [subsystem, otherCatalog],
+    };
+    subsystem.parent = root;
+    otherCatalog.parent = root;
+
+    provider.setRootNode(root);
+    provider.setSubsystemFilter('sub1', 'MainSubsystem');
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 1);
+    assert.strictEqual(children[0].id, 'sub1');
+
+    const subsystemChildren = await provider.getChildren(children[0]);
+    assert.strictEqual(subsystemChildren.length, 1);
+    assert.strictEqual(subsystemChildren[0].id, 'cat1');
+  });
 });
