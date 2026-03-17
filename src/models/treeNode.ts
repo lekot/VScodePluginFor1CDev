@@ -1,5 +1,11 @@
 /**
- * Represents a node in the metadata tree
+ * Represents a node in the metadata tree.
+ *
+ * Subsystem hierarchy (ADR 0001):
+ * - For Subsystem nodes, id is path-based and unique: root = `Subsystems.${name}`,
+ *   child = `${parent.id}.${name}`. The type node "Subsystems" has in children only root subsystems.
+ * - Optional properties.parentSubsystemRef (string or ref) holds the parent reference from source
+ *   (MDO/XML); used when building the tree; absence or empty = root subsystem.
  */
 export interface TreeNode {
   id: string;

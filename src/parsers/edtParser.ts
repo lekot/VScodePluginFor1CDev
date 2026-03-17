@@ -11,6 +11,7 @@ import {
   extractTabularSections,
   flattenAttributeProperties,
 } from './xmlChildObjects';
+import { buildSubsystemTree } from './subsystemTreeBuilder';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -137,13 +138,18 @@ export class EdtParser {
 
   /**
    * Load direct children (Attributes, TabularSections from .mdo; Forms, Ext from filesystem) for a metadata element.
+   * For Subsystems, child subsystems are already in the tree; path is derived from element.filePath when provided.
    */
   static async loadChildrenForElement(
     configPath: string,
     typeName: string,
-    elementName: string
+    elementName: string,
+    element?: TreeNode
   ): Promise<TreeNode[]> {
-    const elementPath = path.join(configPath, 'src', typeName, elementName);
+    const elementPath =
+      typeName === 'Subsystems' && element?.filePath
+        ? path.dirname(element.filePath)
+        : path.join(configPath, 'src', typeName, elementName);
     const children: TreeNode[] = [];
     const mdoFileName = this.getMdoFileName(typeName);
     const mdoPath = path.join(elementPath, mdoFileName);
@@ -288,6 +294,12 @@ export class EdtParser {
       filePath: typePath,
     };
 
+    if (typeName === 'Subsystems') {
+      const flatNodes = await this.parseSubsystemsFlat(typePath, options?.shallow ?? false);
+      buildSubsystemTree(flatNodes, typeNode);
+      return typeNode;
+    }
+
     // Read items in this type directory
     try {
       const items = await fs.promises.readdir(typePath);
@@ -326,6 +338,56 @@ export class EdtParser {
     }
 
     return typeNode;
+  }
+
+  /**
+   * Load all subsystems as flat list with parentSubsystemRef for buildSubsystemTree (EDT: src/Subsystems/Name/Subsystem.mdo).
+   */
+  private static async parseSubsystemsFlat(typePath: string, shallow: boolean): Promise<TreeNode[]> {
+    const flatNodes: TreeNode[] = [];
+    let items: string[];
+    try {
+      items = await fs.promises.readdir(typePath);
+    } catch {
+      return flatNodes;
+    }
+    for (const item of items) {
+      const itemPath = path.join(typePath, item);
+      try {
+        const stat = await fs.promises.stat(itemPath);
+        if (!stat.isDirectory()) continue;
+        const node = await this.parseMetadataElement(itemPath, item, 'Subsystems', shallow);
+        const parentRef = node.properties.ParentSubsystem ?? node.properties.parentSubsystemRef;
+        if (parentRef != null) {
+          node.properties.parentSubsystemRef = this.normalizeParentSubsystemRef(parentRef);
+        }
+        flatNodes.push(node);
+      } catch (error) {
+        Logger.debug(`Error reading subsystem ${itemPath}`, error);
+      }
+    }
+    return flatNodes;
+  }
+
+  /** Normalize EDT ParentSubsystem ref to subsystem name for matching (e.g. "Subsystem.Name" -> "Name"). */
+  private static normalizeParentSubsystemRef(ref: unknown): string | null {
+    if (ref == null) return null;
+    let s: string;
+    if (typeof ref === 'string') {
+      s = ref.trim();
+    } else if (typeof ref === 'object') {
+      const obj = ref as Record<string, unknown>;
+      const item = obj.item;
+      if (typeof item !== 'string') return null;
+      s = item.trim();
+    } else {
+      return null;
+    }
+    if (!s) return null;
+    // Keep the most specific token. EDT refs are often like "Subsystem.<nameOrUuid>".
+    // Prefer the rightmost segment so we don't collapse potentially unique refs to a name prefix.
+    const dot = s.lastIndexOf('.');
+    return dot >= 0 ? s.slice(dot + 1) : s;
   }
 
   /**

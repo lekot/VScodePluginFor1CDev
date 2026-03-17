@@ -376,8 +376,8 @@ suite('RightsValidator Tests', () => {
       assert.ok(errors[0].includes('Delete'));
     });
 
-    test('returns error when interactiveSetDeletionMark without delete', () => {
-      // Arrange
+    test('returns no error when interactiveSetDeletionMark without delete (DeletionMark is narrower than Delete)', () => {
+      // Arrange — SetDeletionMark/ClearDeletionMark do not require base Delete
       const rights: ObjectRights = {
         ...createEmptyObjectRights(),
         interactiveSetDeletionMark: true,
@@ -388,13 +388,11 @@ suite('RightsValidator Tests', () => {
       const errors = validator.validateRightCombination('Document.Order', rights);
 
       // Assert
-      assert.strictEqual(errors.length, 1);
-      assert.ok(errors[0].includes('Interactive Set Deletion Mark'));
-      assert.ok(errors[0].includes('Delete'));
+      assert.strictEqual(errors.length, 0);
     });
 
     test('returns multiple errors for multiple interactive rights without base rights', () => {
-      // Arrange
+      // Arrange — Insert and Delete require base; SetDeletionMark does not
       const rights: ObjectRights = {
         ...createEmptyObjectRights(),
         interactiveInsert: true,
@@ -407,11 +405,10 @@ suite('RightsValidator Tests', () => {
       // Act
       const errors = validator.validateRightCombination('Document.Order', rights);
 
-      // Assert
-      assert.strictEqual(errors.length, 3);
+      // Assert — 2 errors: Interactive Insert, Interactive Delete (SetDeletionMark is narrower, no error)
+      assert.strictEqual(errors.length, 2);
       assert.ok(errors.some(e => e.includes('Interactive Insert')));
       assert.ok(errors.some(e => e.includes('Interactive Delete')));
-      assert.ok(errors.some(e => e.includes('Interactive Set Deletion Mark')));
     });
 
     test('returns no errors when all interactive rights have base rights', () => {
@@ -434,7 +431,8 @@ suite('RightsValidator Tests', () => {
     });
 
     test('validates all delete-related interactive rights', () => {
-      // Arrange - all delete-related interactive rights without delete base right
+      // Arrange — delete-related interactive rights without delete base right
+      // SetDeletionMark/ClearDeletionMark are narrower and do not require Delete
       const rights: ObjectRights = {
         ...createEmptyObjectRights(),
         interactiveDelete: true,
@@ -451,8 +449,8 @@ suite('RightsValidator Tests', () => {
       // Act
       const errors = validator.validateRightCombination('Document.Order', rights);
 
-      // Assert
-      assert.strictEqual(errors.length, 8); // All 8 interactive rights should fail
+      // Assert — 6 errors (those that require base Delete; SetDeletionMark/ClearDeletionMark do not)
+      assert.strictEqual(errors.length, 6);
       assert.ok(errors.every(e => e.includes('Delete')));
     });
   });

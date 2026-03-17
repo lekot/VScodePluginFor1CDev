@@ -57,6 +57,32 @@ export function extractTabularSections(childObjects: unknown): unknown[] {
 }
 
 /**
+ * Extract child subsystem names from ChildObjects (Configurator XML).
+ * Used for building subsystem hierarchy: each subsystem XML lists its children as
+ * <Subsystem>Name</Subsystem> inside ChildObjects.
+ * @param childObjects - The ChildObjects value from findChildObjects(xmlContent)
+ * @returns Array of subsystem names (e.g. ['НСИЗакупок', 'РасчетыСПоставщиками'])
+ */
+export function extractChildSubsystems(childObjects: unknown): string[] {
+  const names: string[] = [];
+  if (!childObjects || typeof childObjects !== 'object') {
+    return names;
+  }
+  const obj = childObjects as Record<string, unknown>;
+  const raw = obj.Subsystem;
+  if (raw === undefined) return names;
+  const items = Array.isArray(raw) ? raw : [raw];
+  for (const item of items) {
+    if (typeof item === 'string') {
+      names.push(item);
+    } else if (item && typeof item === 'object' && typeof (item as Record<string, unknown>)['#text'] === 'string') {
+      names.push((item as Record<string, unknown>)['#text'] as string);
+    }
+  }
+  return names;
+}
+
+/**
  * Flatten attribute properties from XML structure (Attribute.Properties).
  */
 export function flattenAttributeProperties(attr: Record<string, unknown>): Record<string, unknown> {

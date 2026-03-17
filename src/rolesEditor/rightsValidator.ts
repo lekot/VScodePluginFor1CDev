@@ -129,7 +129,8 @@ export class RightsValidator {
    * @returns The corresponding base right, or null if not applicable
    */
   private getBaseRightForInteractive(interactiveRight: RightType): RightType | null {
-    // Map interactive rights to their base rights (no requirement for Set/Clear Deletion Mark → Delete)
+    // Map interactive rights to their base rights.
+    // SetDeletionMark/ClearDeletionMark are narrower than Delete — no base right required.
     const mapping: { [key: string]: RightType } = {
       'interactiveInsert': 'insert',
       'interactiveDelete': 'delete',

@@ -160,13 +160,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
-   * Check if a node passes the subsystem filter.
-   * A node passes if:
-   * 1. No subsystem filter is active, OR
-   * 2. The node itself is the filtered subsystem, OR
-   * 3. The node is a descendant of the filtered subsystem
-   * @param node The tree node to check
-   * @returns true if the node passes the filter, false otherwise
+   * Subsystem filter contract (ADR 0001): a node passes if (1) no filter, or (2) node is the
+   * selected subsystem or its ancestor, or (3) node is in the Content of the selected subsystem
+   * or in the Content of any of its descendant subsystems (recursively). TreeDataProvider uses
+   * path-based id for subsystems and loads Content from subsystemNode.filePath when present.
    */
   private async loadSubsystemContent(subsystemNode: TreeNode): Promise<void> {
     Logger.info('loadSubsystemContent called', {
@@ -196,10 +193,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return;
     }
 
-    // Build file path: configPath/Subsystems/SubsystemName.xml
-    const path = await import('path');
-    const subsystemName = subsystemNode.name;
-    const xmlPath = path.default.join(ctx.configPath, 'Subsystems', `${subsystemName}.xml`);
+    const pathModule = await import('path');
+    const xmlPath = subsystemNode.filePath
+      ? pathModule.default.normalize(subsystemNode.filePath)
+      : pathModule.default.join(ctx.configPath, 'Subsystems', `${subsystemNode.name}.xml`);
     
     Logger.info('Loading subsystem XML', { xmlPath });
 
@@ -222,33 +219,34 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
-   * Eagerly load all type-nodes referenced in subsystem Content into nodeCache.
+   * Eagerly load all type-nodes referenced in subsystem Content (selected + all descendants) into nodeCache.
    * Without this, lazy type-nodes (Documents, Reports, etc.) have no children in cache
    * and ensureFilterSets() cannot match any element nodes.
    */
   private async eagerLoadSubsystemTypes(subsystemNode: TreeNode): Promise<void> {
-    const content = subsystemNode.properties.Content;
-    if (!content || typeof content !== 'object') return;
-
-    const contentObj = content as Record<string, unknown>;
-    const rawItems = contentObj['xr:Item'];
-    const items: unknown[] = Array.isArray(rawItems) ? rawItems : (rawItems != null ? [rawItems] : []);
-
-    // Collect unique folder-type names referenced in Content (e.g. 'Document' → 'Documents')
+    const subsystemsToLoad = this.collectSubsystemAndDescendants(subsystemNode);
+    for (const sub of subsystemsToLoad) {
+      await this.loadSubsystemContent(sub);
+    }
     const refTypeToFolder = this.buildRefTypeToFolderMap();
     const foldersToLoad = new Set<string>();
-
-    for (const item of items) {
-      if (typeof item === 'object' && item !== null) {
-        const refText = (item as Record<string, unknown>)['#text'] as string;
-        if (refText) {
-          const refType = refText.split('.')[0];
-          const folder = refTypeToFolder.get(refType);
-          if (folder) foldersToLoad.add(folder);
+    for (const sub of subsystemsToLoad) {
+      const content = sub.properties.Content;
+      if (!content || typeof content !== 'object') continue;
+      const contentObj = content as Record<string, unknown>;
+      const rawItems = contentObj['xr:Item'];
+      const items: unknown[] = Array.isArray(rawItems) ? rawItems : (rawItems != null ? [rawItems] : []);
+      for (const item of items) {
+        if (typeof item === 'object' && item !== null) {
+          const refText = (item as Record<string, unknown>)['#text'] as string;
+          if (refText) {
+            const refType = refText.split('.')[0];
+            const folder = refTypeToFolder.get(refType);
+            if (folder) foldersToLoad.add(folder);
+          }
         }
       }
     }
-
     if (foldersToLoad.size === 0) return;
 
     // Find config root and load context
@@ -386,6 +384,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return result;
   }
 
+  /** Filter: visible if node is selected subsystem or its ancestor, or in Content of selected or any descendant subsystem (ADR 0001). */
   private nodePassesSubsystemFilter(node: TreeNode): boolean {
       if (!this.subsystemFilter.subsystemId) {
         return true;
@@ -400,40 +399,43 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         current = current.parent;
       }
 
-      // Check if node is part of subsystem content
       const subsystemNode = this.nodeCache.get(this.subsystemFilter.subsystemId);
+      if (!subsystemNode) return false;
 
-      if (subsystemNode && subsystemNode.properties.Content) {
-        const content = subsystemNode.properties.Content;
-
-        // Content is an object with "xr:Item" array
-        if (typeof content === 'object' && content !== null) {
-          const contentObj = content as Record<string, unknown>;
-          const rawItems = contentObj['xr:Item'];
-          // fast-xml-parser returns a single object (not array) when there is only one xr:Item
-          const items: unknown[] = Array.isArray(rawItems) ? rawItems : (rawItems != null ? [rawItems] : []);
-
-          for (const item of items) {
-            if (typeof item === 'object' && item !== null) {
-              const itemObj = item as Record<string, unknown>;
-              const refText = itemObj['#text'] as string;
-
-              if (refText && this.nodeMatchesContentRef(node, refText)) {
-                return true;
-              }
+      const subsystemsToCheck = this.collectSubsystemAndDescendants(subsystemNode);
+      for (const sub of subsystemsToCheck) {
+        const content = sub.properties.Content;
+        if (!content || typeof content !== 'object' || content === null) continue;
+        const contentObj = content as Record<string, unknown>;
+        const rawItems = contentObj['xr:Item'];
+        const items: unknown[] = Array.isArray(rawItems) ? rawItems : (rawItems != null ? [rawItems] : []);
+        for (const item of items) {
+          if (typeof item === 'object' && item !== null) {
+            const refText = (item as Record<string, unknown>)['#text'] as string;
+            if (refText && this.nodeMatchesContentRef(node, refText)) {
+              return true;
             }
           }
         }
-      } else {
-        Logger.debug('No subsystem content found', {
-          subsystemId: this.subsystemFilter.subsystemId,
-          hasNode: !!subsystemNode,
-          hasContent: subsystemNode ? !!subsystemNode.properties.Content : false,
-        });
       }
-
       return false;
     }
+
+  /** Collect subsystem node and all descendant subsystem nodes (by tree children). */
+  private collectSubsystemAndDescendants(subsystemNode: TreeNode): TreeNode[] {
+    const out: TreeNode[] = [subsystemNode];
+    const stack: TreeNode[] = [subsystemNode];
+    while (stack.length > 0) {
+      const n = stack.pop()!;
+      for (const ch of n.children ?? []) {
+        if (ch.type === MetadataType.Subsystem) {
+          out.push(ch);
+          stack.push(ch);
+        }
+      }
+    }
+    return out;
+  }
 
   /**
    * Check if a node matches a subsystem content reference.
@@ -751,12 +753,15 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private isLazyElementNode(element: TreeNode): boolean {
     const configRoot = this.getConfigurationRoot(element);
-    return (
-      configRoot !== null &&
-      this.loadContextByRootId.has(configRoot.id) &&
-      element.properties._lazy === true &&
-      (!element.children || element.children.length === 0)
-    );
+    if (!configRoot || !this.loadContextByRootId.has(configRoot.id) || element.properties._lazy !== true) {
+      return false;
+    }
+    if (!element.children || element.children.length === 0) return true;
+    if (element.type === MetadataType.Subsystem) {
+      const hasNonSubsystem = element.children.some((c) => c.type !== MetadataType.Subsystem);
+      return !hasNonSubsystem;
+    }
+    return false;
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -866,8 +871,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           return Promise.resolve([]);
         }
         return MetadataParser.loadElementChildren(ctx.configPath, format, element).then(
-          (children) => {
-            for (const c of children) {
+          (loaded) => {
+            const existingSubsystems = (element.children ?? []).filter((c) => c.type === MetadataType.Subsystem);
+            const children = existingSubsystems.length > 0 ? [...existingSubsystems, ...loaded] : loaded;
+            for (const c of loaded) {
               c.parent = element;
               this.buildCache(c);
             }

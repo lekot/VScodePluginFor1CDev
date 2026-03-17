@@ -46,7 +46,8 @@ export class MetadataParser {
 
   /**
    * Load direct children (Attributes, Forms, Ext, etc.) for a metadata element.
-   * Used when expanding an element that was loaded in shallow (lazy) mode.
+   * For Subsystems, child subsystems are already in the tree; only non-subsystem children are loaded.
+   * Path for Subsystems is derived from element.filePath when present.
    */
   static async loadElementChildren(
     configPath: string,
@@ -58,10 +59,10 @@ export class MetadataParser {
     const typeName = dot >= 0 ? id.slice(0, dot) : id;
     const elementName = dot >= 0 ? id.slice(dot + 1) : element.name;
     if (format === ConfigFormat.Designer) {
-      return await DesignerParser.loadChildrenForElement(configPath, typeName, elementName);
+      return await DesignerParser.loadChildrenForElement(configPath, typeName, elementName, element);
     }
     if (format === ConfigFormat.EDT) {
-      return await EdtParser.loadChildrenForElement(configPath, typeName, elementName);
+      return await EdtParser.loadChildrenForElement(configPath, typeName, elementName, element);
     }
     return [];
   }

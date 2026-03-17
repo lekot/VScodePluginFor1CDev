@@ -9,8 +9,10 @@ import {
   findChildObjects,
   extractAttributes,
   extractTabularSections,
+  extractChildSubsystems,
   flattenAttributeProperties,
 } from './xmlChildObjects';
+import { buildSubsystemTree } from './subsystemTreeBuilder';
 
 /**
  * Parser for 1C Designer format metadata
@@ -151,15 +153,30 @@ export class DesignerParser {
 
   /**
    * Load direct children (Attributes, Forms, Ext, TabularSections) for a metadata element.
-   * Used when expanding an element that was loaded in shallow mode.
+   * For Subsystems, child subsystems are already in the tree; path is derived from element.filePath when provided.
    */
   static async loadChildrenForElement(
     configPath: string,
     typeName: string,
-    elementName: string
+    elementName: string,
+    element?: TreeNode
   ): Promise<TreeNode[]> {
-    const elementPath = path.join(configPath, typeName, elementName);
-    const xmlPath = path.join(configPath, typeName, `${elementName}.xml`);
+    let elementPath: string;
+    let xmlPath: string;
+    if (typeName === 'Subsystems' && element?.filePath) {
+      const dir = path.dirname(element.filePath);
+      const dirWithName = path.join(dir, element.name);
+      try {
+        await fs.promises.access(dirWithName);
+        elementPath = dirWithName;
+      } catch {
+        elementPath = dir;
+      }
+      xmlPath = element.filePath;
+    } else {
+      elementPath = path.join(configPath, typeName, elementName);
+      xmlPath = path.join(configPath, typeName, `${elementName}.xml`);
+    }
     const children: TreeNode[] = [];
 
     let xmlContent: Record<string, unknown> | null = null;
@@ -181,7 +198,12 @@ export class DesignerParser {
       }
     }
 
+    const typeDir = path.join(configPath, typeName);
+    const isElementPathTypeRoot = path.normalize(elementPath) === path.normalize(typeDir);
     try {
+      if (isElementPathTypeRoot) {
+        return children;
+      }
       const items = await fs.promises.readdir(elementPath);
       for (const item of items) {
         if (item === 'Ext') {
@@ -276,6 +298,12 @@ export class DesignerParser {
       filePath: typePath,
     };
 
+    if (typeName === 'Subsystems') {
+      const flatNodes = await this.collectDesignerSubsystemsFlat(typePath, options?.shallow ?? false);
+      buildSubsystemTree(flatNodes, typeNode);
+      return typeNode;
+    }
+
     // Read items in this type directory
     try {
       const items = await fs.promises.readdir(typePath);
@@ -310,6 +338,102 @@ export class DesignerParser {
     }
 
     return typeNode;
+  }
+
+  /**
+   * Recursively collect all subsystem XML paths: Subsystems/Name.xml and Subsystems/Name/Subsystems/Name.xml.
+   */
+  private static async collectSubsystemXmlPaths(subsystemsDir: string): Promise<string[]> {
+    const result: string[] = [];
+    const items = await fs.promises.readdir(subsystemsDir).catch(() => [] as string[]);
+    for (const item of items) {
+      const full = path.join(subsystemsDir, item);
+      const stat = await fs.promises.stat(full).catch(() => null);
+      if (!stat) continue;
+      if (stat.isFile() && item.toLowerCase().endsWith('.xml')) {
+        result.push(full);
+      } else if (stat.isDirectory()) {
+        const subSubsystems = path.join(full, 'Subsystems');
+        const subStat = await fs.promises.stat(subSubsystems).catch(() => null);
+        if (subStat?.isDirectory()) {
+          const nested = await this.collectSubsystemXmlPaths(subSubsystems);
+          result.push(...nested);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Collect all Designer subsystems as flat list with parentSubsystemRef derived from path.
+   */
+  private static async collectDesignerSubsystemsFlat(
+    typePath: string,
+    shallow: boolean
+  ): Promise<TreeNode[]> {
+    const xmlPaths = await this.collectSubsystemXmlPaths(typePath);
+    const flatNodes: TreeNode[] = [];
+    for (const xmlPath of xmlPaths) {
+      let xmlContent: Record<string, unknown>;
+      try {
+        xmlContent = await XmlParser.parseFileAsync(xmlPath);
+      } catch (error) {
+        Logger.debug(`Error parsing subsystem XML ${xmlPath}`, error);
+        continue;
+      }
+      const properties = this.extractPropertiesFromElement(xmlContent);
+      const name = String(properties?.Name ?? path.basename(xmlPath, '.xml'));
+      const childObjects = findChildObjects(xmlContent);
+      const childSubsystemNames = extractChildSubsystems(childObjects);
+      const node: TreeNode = {
+        id: `${typePath}.${name}`,
+        name,
+        type: MetadataType.Subsystem,
+        properties: { type: 'Subsystems', ...properties, childSubsystemNames },
+        children: [],
+        filePath: xmlPath,
+      };
+      if (shallow) {
+        node.properties._lazy = true;
+      }
+      if (properties?.uuid != null) {
+        node.properties.uuid = properties.uuid;
+      }
+      flatNodes.push(node);
+    }
+    const elementDirByNode = new Map<TreeNode, string>();
+    const containerDirByNode = new Map<TreeNode, string>();
+    const normalizedTypePath = path.normalize(typePath);
+    for (const node of flatNodes) {
+      const elementDir = path.normalize(path.dirname(node.filePath!));
+      elementDirByNode.set(node, elementDir);
+      if (elementDir === normalizedTypePath) {
+        containerDirByNode.set(node, path.join(elementDir, node.name));
+      } else if (elementDir.endsWith(path.sep + 'Subsystems')) {
+        containerDirByNode.set(node, path.dirname(elementDir));
+      } else {
+        containerDirByNode.set(node, path.join(elementDir, node.name));
+      }
+    }
+    const byContainerDir = new Map<string, TreeNode>();
+    for (const node of flatNodes) {
+      const cdir = containerDirByNode.get(node)!;
+      if (!byContainerDir.has(cdir)) byContainerDir.set(cdir, node);
+    }
+    for (const node of flatNodes) {
+      const elementDir = elementDirByNode.get(node)!;
+      if (elementDir === normalizedTypePath) continue;
+      if (elementDir.endsWith(path.sep + 'Subsystems')) {
+        const parentContainerDir = path.normalize(path.dirname(elementDir));
+        const parent = byContainerDir.get(parentContainerDir);
+        if (parent) {
+          // ADR 0001: parent reference must not be ambiguous by name (names can repeat).
+          // We keep a stable unique key for builder: parent subsystem filePath.
+          node.properties.parentSubsystemRef = { filePath: parent.filePath, name: parent.name };
+        }
+      }
+    }
+    return flatNodes;
   }
 
   /**
