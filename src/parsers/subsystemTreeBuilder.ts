@@ -190,6 +190,40 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
     parent.children.push(node);
   }
 
+  // Order each node's subsystem children by ChildObjects order (childSubsystemNames) to match 1C.
+  const orderNames = (node: TreeNode): void => {
+    const names = node.properties?.childSubsystemNames as string[] | undefined;
+    if (!names || !Array.isArray(names) || names.length === 0) return;
+    const list = node.children ?? [];
+    const nonSub = list.filter((c) => !isSubsystemNode(c));
+    const subs = list.filter((c) => isSubsystemNode(c));
+    const byName = new Map<string, TreeNode[]>();
+    for (const s of subs) {
+      const n = s.name;
+      if (!byName.has(n)) byName.set(n, []);
+      byName.get(n)!.push(s);
+    }
+    const ordered: TreeNode[] = [];
+    const used = new Set<TreeNode>();
+    for (const name of names) {
+      const candidates = byName.get(name) ?? [];
+      for (const c of candidates) {
+        if (!used.has(c)) {
+          ordered.push(c);
+          used.add(c);
+          break;
+        }
+      }
+    }
+    for (const s of subs) {
+      if (!used.has(s)) ordered.push(s);
+    }
+    node.children = nonSub.length > 0 || ordered.length > 0 ? [...nonSub, ...ordered] : list;
+  };
+  for (const node of flatNodes) {
+    orderNames(node);
+  }
+
   rootParent.children = rootParent.children ?? [];
   rootParent.children.length = 0;
   for (const r of roots) {

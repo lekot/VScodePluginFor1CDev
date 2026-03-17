@@ -415,10 +415,21 @@ export class DesignerParser {
         containerDirByNode.set(node, path.join(elementDir, node.name));
       }
     }
+    // When two nodes share the same containerDir (e.g. root Администрирование.xml and nested .../Администрирование/Subsystems/Администрирование.xml),
+    // prefer the root-level one (XML in type dir) as the container owner so parent lookup finds the correct parent.
     const byContainerDir = new Map<string, TreeNode>();
     for (const node of flatNodes) {
       const cdir = containerDirByNode.get(node)!;
-      if (!byContainerDir.has(cdir)) byContainerDir.set(cdir, node);
+      const existing = byContainerDir.get(cdir);
+      const nodeIsRootLevel = elementDirByNode.get(node) === normalizedTypePath;
+      if (!existing) {
+        byContainerDir.set(cdir, node);
+      } else {
+        const existingIsRootLevel = elementDirByNode.get(existing) === normalizedTypePath;
+        if (nodeIsRootLevel && !existingIsRootLevel) {
+          byContainerDir.set(cdir, node);
+        }
+      }
     }
     for (const node of flatNodes) {
       const elementDir = elementDirByNode.get(node)!;

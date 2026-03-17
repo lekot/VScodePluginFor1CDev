@@ -177,4 +177,51 @@ suite('subsystemTreeBuilder', () => {
     assert.strictEqual(rootParent.children?.length, 1);
     assert.strictEqual(rootParent.children?.[0], a);
   });
+
+  test('buildSubsystemTree orders subsystem children by childSubsystemNames (ChildObjects order)', () => {
+    const rootParent: TreeNode = {
+      id: 'Subsystems',
+      name: 'Subsystems',
+      type: MetadataType.Subsystem,
+      properties: {},
+      children: [],
+    };
+    const parent: TreeNode = {
+      id: 'p',
+      name: 'Parent',
+      type: MetadataType.Subsystem,
+      properties: {
+        childSubsystemNames: ['Third', 'First', 'Second'],
+      },
+      children: [],
+    };
+    const first: TreeNode = {
+      id: 'f',
+      name: 'First',
+      type: MetadataType.Subsystem,
+      properties: { parentSubsystemRef: 'Parent' },
+      children: [],
+    };
+    const second: TreeNode = {
+      id: 's',
+      name: 'Second',
+      type: MetadataType.Subsystem,
+      properties: { parentSubsystemRef: 'Parent' },
+      children: [],
+    };
+    const third: TreeNode = {
+      id: 't',
+      name: 'Third',
+      type: MetadataType.Subsystem,
+      properties: { parentSubsystemRef: 'Parent' },
+      children: [],
+    };
+    buildSubsystemTree([parent, first, second, third], rootParent);
+
+    const subs = (parent.children ?? []).filter((c) => c.type === MetadataType.Subsystem);
+    assert.strictEqual(subs.length, 3);
+    assert.strictEqual(subs[0].name, 'Third');
+    assert.strictEqual(subs[1].name, 'First');
+    assert.strictEqual(subs[2].name, 'Second');
+  });
 });
