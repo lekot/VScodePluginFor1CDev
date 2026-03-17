@@ -38,7 +38,7 @@ function upsertChildNode(parent: TreeNode, def: PlaceholderDef, ctx: NormalizeCo
     existing.name = def.name;
     existing.type = existing.type ?? def.type;
     existing.properties = existing.properties ?? {};
-    (existing.properties as any).type = (existing.properties as any).type ?? def.id;
+    (existing.properties as Record<string, unknown>).type = (existing.properties as Record<string, unknown>).type ?? def.id;
 
     existing.filePath =
       existing.filePath ?? (def.typeDirName ? getPlaceholderTypeFilePath(ctx, def.typeDirName) : undefined);
@@ -61,12 +61,16 @@ function upsertChildNode(parent: TreeNode, def: PlaceholderDef, ctx: NormalizeCo
 }
 
 function reorderChildrenByIds(node: TreeNode, orderedIds: string[]): void {
-  if (!node.children) return;
+  if (!node.children) {
+    return;
+  }
   const orderIndex = new Map<string, number>(orderedIds.map((id, i) => [id, i]));
   node.children.sort((a, b) => {
     const ai = orderIndex.has(a.id) ? orderIndex.get(a.id)! : Number.POSITIVE_INFINITY;
     const bi = orderIndex.has(b.id) ? orderIndex.get(b.id)! : Number.POSITIVE_INFINITY;
-    if (ai !== bi) return ai - bi;
+    if (ai !== bi) {
+      return ai - bi;
+    }
     // Keep deterministic order for "unknown" children.
     return a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' });
   });
@@ -127,13 +131,23 @@ const R5_COMMON_CHILD_ORDER: ReadonlyArray<PlaceholderDef> = [
   { id: 'Languages', name: 'Языки', type: MetadataType.Unknown },
 ];
 
+const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
+  { id: 'Attributes', name: 'Реквизиты', type: MetadataType.Attribute, typeDirName: 'Attributes' },
+  { id: 'TabularSections', name: 'Табличные части', type: MetadataType.TabularSection, typeDirName: 'TabularSections' },
+  { id: 'Forms', name: 'Формы', type: MetadataType.Form, typeDirName: 'Forms' },
+  { id: 'Commands', name: 'Команды', type: MetadataType.Command, typeDirName: 'Commands' },
+  { id: 'Templates', name: 'Макеты', type: MetadataType.Template, typeDirName: 'Templates' },
+];
+
 /**
  * Ensure configuration root contains placeholder type nodes for Catalogs/Documents.
  * - Stable IDs: `Catalogs` / `Documents`
  * - Inserted nodes are compatible with lazy loading in `MetadataTreeDataProvider`.
  */
 export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: NormalizeContext): TreeNode {
-  if (!rootNode) return rootNode;
+  if (!rootNode) {
+    return rootNode;
+  }
 
   // Insert R4/R5 placeholders directly under Configuration roots.
   ensureChildrenArray(rootNode);
@@ -159,6 +173,32 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
 
   // Deterministic order under Configuration root.
   reorderChildrenByIds(rootNode, R4_TOP_LEVEL_ORDER.map((x) => x.id));
+
+  // Handler D: Ensure object nodes (Catalog, Document, DataProcessor, ChartOfCharacteristicTypes)
+  // have the five standard child placeholders (Attributes, TabularSections, Forms, Commands, Templates).
+  function processObjectNode(node: TreeNode): void {
+    const isObjectNode =
+      node.type === MetadataType.Catalog ||
+      node.type === MetadataType.Document ||
+      node.type === MetadataType.DataProcessor ||
+      node.type === MetadataType.ChartOfCharacteristicTypes;
+
+    if (isObjectNode) {
+      ensureChildrenArray(node);
+      for (const def of R6_OBJECT_CHILDREN) {
+        upsertChildNode(node, def, ctx);
+      }
+    }
+
+    // Recurse into children
+    if (node.children) {
+      for (const child of node.children) {
+        processObjectNode(child);
+      }
+    }
+  }
+
+  processObjectNode(rootNode);
 
   return rootNode;
 }

@@ -221,5 +221,294 @@ suite('treeNormalization Test Suite', () => {
     const children = await provider.getChildren(commonGroup);
     assert.deepStrictEqual(children, []);
   });
+
+  // R6: Object node placeholder containers
+  test('normalizeEmptyPlaceholderTree inserts R6 object placeholders for Catalog node with no children (Designer)', () => {
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+
+    const configPath = path.join('C:', 'reps', 'myconfig');
+    const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
+
+    // Find the Catalogs placeholder (should exist from R4)
+    const catalogsFolder = normalized.children!.find((c) => c.id === 'Catalogs')!;
+    
+    // Create a mock Catalog node under it
+    const catalogNode: TreeNode = {
+      id: 'Catalog1',
+      name: 'Catalog1',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [], // No children initially
+      parent: catalogsFolder
+    };
+    
+    // Add the catalog to the folder
+    if (!catalogsFolder.children) {
+      catalogsFolder.children = [];
+    }
+    catalogsFolder.children.push(catalogNode);
+
+    // Re-normalize to trigger R6 processing
+    const reNormalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
+
+    // Find our catalog node again (should still be there)
+    const updatedCatalogsFolder = reNormalized.children!.find((c) => c.id === 'Catalogs')!;
+    const updatedCatalogNode = updatedCatalogsFolder.children!.find((c) => c.id === 'Catalog1')!;
+
+    // Check that all five R6 placeholders exist
+    const placeholderIds = ['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates'];
+    placeholderIds.forEach(id => {
+      const placeholder = updatedCatalogNode.children!.find((c) => c.id === id);
+      assert.ok(placeholder, `Placeholder ${id} should exist`);
+    });
+
+    // Check types
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Attributes')!.type, MetadataType.Attribute);
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'TabularSections')!.type, MetadataType.TabularSection);
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Forms')!.type, MetadataType.Form);
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Commands')!.type, MetadataType.Command);
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Templates')!.type, MetadataType.Template);
+
+    // Check file paths for Designer format
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Attributes')!.filePath, path.join(configPath, 'Attributes'));
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'TabularSections')!.filePath, path.join(configPath, 'TabularSections'));
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Forms')!.filePath, path.join(configPath, 'Forms'));
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Commands')!.filePath, path.join(configPath, 'Commands'));
+    assert.strictEqual(updatedCatalogNode.children!.find((c) => c.id === 'Templates')!.filePath, path.join(configPath, 'Templates'));
+
+    // Check parent pointers
+    updatedCatalogNode.children!.forEach(child => {
+      assert.strictEqual(child.parent, updatedCatalogNode);
+    });
+
+    // Check properties
+    assert.strictEqual((updatedCatalogNode.children!.find((c) => c.id === 'Attributes')!.properties as any).type, 'Attributes');
+    assert.strictEqual((updatedCatalogNode.children!.find((c) => c.id === 'TabularSections')!.properties as any).type, 'TabularSections');
+    assert.strictEqual((updatedCatalogNode.children!.find((c) => c.id === 'Forms')!.properties as any).type, 'Forms');
+    assert.strictEqual((updatedCatalogNode.children!.find((c) => c.id === 'Commands')!.properties as any).type, 'Commands');
+    assert.strictEqual((updatedCatalogNode.children!.find((c) => c.id === 'Templates')!.properties as any).type, 'Templates');
+  });
+
+  test('normalizeEmptyPlaceholderTree inserts missing R6 object placeholders for Document node with existing children (Designer)', () => {
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+
+    const configPath = path.join('C:', 'reps', 'myconfig');
+    const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
+
+    // Find the Documents placeholder (should exist from R4)
+    const documentsFolder = normalized.children!.find((c) => c.id === 'Documents')!;
+    
+    // Create a mock Document node with one existing Attribute child
+    const existingAttribute: TreeNode = {
+      id: 'ExistingAttr',
+      name: 'Existing Attribute',
+      type: MetadataType.Attribute,
+      properties: {},
+      children: [],
+      parent: undefined // Will be set when added to document
+    };
+    
+    const documentNode: TreeNode = {
+      id: 'Document1',
+      name: 'Document1',
+      type: MetadataType.Document,
+      properties: {},
+      children: [existingAttribute], // One existing child
+      parent: documentsFolder
+    };
+    
+    // Set parent for existing attribute
+    existingAttribute.parent = documentNode;
+    
+    // Add the document to the folder
+    if (!documentsFolder.children) {
+      documentsFolder.children = [];
+    }
+    documentsFolder.children.push(documentNode);
+
+    // Re-normalize to trigger R6 processing
+    const reNormalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
+
+    // Find our document node again
+    const updatedDocumentsFolder = reNormalized.children!.find((c) => c.id === 'Documents')!;
+    const updatedDocumentNode = updatedDocumentsFolder.children!.find((c) => c.id === 'Document1')!;
+
+    // Should have original attribute plus 4 missing placeholders (total 5)
+    assert.strictEqual(updatedDocumentNode.children!.length, 5);
+
+    // Check that original attribute is preserved
+    const originalAttr = updatedDocumentNode.children!.find((c) => c.id === 'ExistingAttr');
+    assert.ok(originalAttr, 'Original attribute should be preserved');
+    assert.strictEqual(originalAttr!.name, 'Existing Attribute');
+    assert.strictEqual(originalAttr!.type, MetadataType.Attribute);
+
+    // Check that all five R6 placeholders exist (including Attribute which may be duplicated but upsert should handle it)
+    const placeholderIds = ['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates'];
+    placeholderIds.forEach(id => {
+      const placeholder = updatedDocumentNode.children!.find((c) => c.id === id);
+      assert.ok(placeholder, `Placeholder ${id} should exist`);
+    });
+
+    // Check types
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Attributes')!.type, MetadataType.Attribute);
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'TabularSections')!.type, MetadataType.TabularSection);
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Forms')!.type, MetadataType.Form);
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Commands')!.type, MetadataType.Command);
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Templates')!.type, MetadataType.Template);
+
+    // Check file paths for Designer format
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Attributes')!.filePath, path.join(configPath, 'Attributes'));
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'TabularSections')!.filePath, path.join(configPath, 'TabularSections'));
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Forms')!.filePath, path.join(configPath, 'Forms'));
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Commands')!.filePath, path.join(configPath, 'Commands'));
+    assert.strictEqual(updatedDocumentNode.children!.find((c) => c.id === 'Templates')!.filePath, path.join(configPath, 'Templates'));
+
+    // Check parent pointers
+    updatedDocumentNode.children!.forEach(child => {
+      assert.strictEqual(child.parent, updatedDocumentNode);
+    });
+  });
+
+  test('normalizeEmptyPlaceholderTree computes correct filePath for EDT format', () => {
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+
+    const configPath = path.join('D:', 'configs', 'edt1c');
+    const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.EDT });
+
+    // Find the DataProcessors placeholder (should exist from R4)
+    const processorsFolder = normalized.children!.find((c) => c.id === 'DataProcessors')!;
+    
+    // Create a mock DataProcessor node
+    const processorNode: TreeNode = {
+      id: 'Processor1',
+      name: 'Processor1',
+      type: MetadataType.DataProcessor,
+      properties: {},
+      children: [],
+      parent: processorsFolder
+    };
+    
+    // Add the processor to the folder
+    if (!processorsFolder.children) {
+      processorsFolder.children = [];
+    }
+    processorsFolder.children.push(processorNode);
+
+    // Re-normalize to trigger R6 processing
+    const reNormalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.EDT });
+
+    // Find our processor node again
+    const updatedProcessorsFolder = reNormalized.children!.find((c) => c.id === 'DataProcessors')!;
+    const updatedProcessorNode = updatedProcessorsFolder.children!.find((c) => c.id === 'Processor1')!;
+
+    // Check file paths for EDT format (should have 'src' prefix)
+    assert.strictEqual(updatedProcessorNode.children!.find((c) => c.id === 'Attributes')!.filePath, path.join(configPath, 'src', 'Attributes'));
+    assert.strictEqual(updatedProcessorNode.children!.find((c) => c.id === 'TabularSections')!.filePath, path.join(configPath, 'src', 'TabularSections'));
+    assert.strictEqual(updatedProcessorNode.children!.find((c) => c.id === 'Forms')!.filePath, path.join(configPath, 'src', 'Forms'));
+    assert.strictEqual(updatedProcessorNode.children!.find((c) => c.id === 'Commands')!.filePath, path.join(configPath, 'src', 'Commands'));
+    assert.strictEqual(updatedProcessorNode.children!.find((c) => c.id === 'Templates')!.filePath, path.join(configPath, 'src', 'Templates'));
+  });
+
+  test('normalizeEmptyPlaceholderTree does not reorder existing children of object nodes', () => {
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+
+    const configPath = path.join('C:', 'reps', 'myconfig');
+    const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
+
+    // Find the ChartOfCharacteristicTypes placeholder (should exist from R4)
+    const chartsFolder = normalized.children!.find((c) => c.id === 'ChartsOfCharacteristicTypes')!;
+    
+    // Create a mock ChartOfCharacteristicTypes node with children in specific order
+    const childZ: TreeNode = {
+      id: 'ChildZ',
+      name: 'Child Z',
+      type: MetadataType.Unknown,
+      properties: {},
+      children: [],
+      parent: undefined
+    };
+    
+    const childA: TreeNode = {
+      id: 'ChildA',
+      name: 'Child A',
+      type: MetadataType.Unknown,
+      properties: {},
+      children: [],
+      parent: undefined
+    };
+    
+    const childM: TreeNode = {
+      id: 'ChildM',
+      name: 'Child M',
+      type: MetadataType.Unknown,
+      properties: {},
+      children: [],
+      parent: undefined
+    };
+    
+    const chartNode: TreeNode = {
+      id: 'Chart1',
+      name: 'Chart1',
+      type: MetadataType.ChartOfCharacteristicTypes,
+      properties: {},
+      children: [childZ, childA, childM], // Order: Z, A, M
+      parent: chartsFolder
+    };
+    
+    // Set parents
+    childZ.parent = chartNode;
+    childA.parent = chartNode;
+    childM.parent = chartNode;
+    
+    // Add the chart to the folder
+    if (!chartsFolder.children) {
+      chartsFolder.children = [];
+    }
+    chartsFolder.children.push(chartNode);
+
+    // Store original order
+    const originalOrder = chartNode.children!.map(child => child.id);
+    
+    // Re-normalize to trigger R6 processing
+    const reNormalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
+
+    // Find our chart node again
+    const updatedChartsFolder = reNormalized.children!.find((c) => c.id === 'ChartsOfCharacteristicTypes')!;
+    const updatedChartNode = updatedChartsFolder.children!.find((c) => c.id === 'Chart1')!;
+
+    // Check that original children are preserved in same order
+    const updatedOrder = updatedChartNode.children!.map(child => child.id);
+    
+    // The first three should be our original children in same order
+    assert.deepStrictEqual(updatedOrder.slice(0, 3), originalOrder);
+    
+    // The last five should be our R6 placeholders
+    const placeholderIds = ['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates'];
+    assert.deepStrictEqual(updatedOrder.slice(3), placeholderIds);
+  });
 });
 
