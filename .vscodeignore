@@ -1,3 +1,4 @@
+# resources/ packaged (designer templates in resources/designerTemplates/)
 .vscode/**
 .vscode-test/**
 .cursor/**

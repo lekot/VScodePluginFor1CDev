@@ -1176,20 +1176,16 @@ export class DesignerParser {
       // Check if XML metadata exists (exported Designer format)
       const hasXmlMetadata = fs.existsSync(configDumpPath) || fs.existsSync(configXmlPath);
 
-      // Designer format if either binary files or XML metadata exists
-      // AND has typical Designer directory structure (Catalogs, Documents, etc.)
+      // Binary format: both binary and XML metadata must exist
+      if (hasBinaryFiles && hasXmlMetadata) {
+        return true;
+      }
+      // XML-only export: Configuration.xml (or ConfigDumpInfo.xml) is sufficient (e.g. empty configuration)
       if (hasXmlMetadata) {
-        // Check for at least one metadata type directory
-        const metadataTypes = ['Catalogs', 'Documents', 'Enums', 'Reports', 'DataProcessors'];
-        for (const type of metadataTypes) {
-          const typePath = path.join(configPath, type);
-          if (fs.existsSync(typePath)) {
-            return true;
-          }
-        }
+        return true;
       }
 
-      return hasBinaryFiles && hasXmlMetadata;
+      return false;
     } catch (error) {
       Logger.debug('Designer format detection failed', error);
       return false;

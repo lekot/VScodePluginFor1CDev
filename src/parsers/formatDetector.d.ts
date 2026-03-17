@@ -31,12 +31,6 @@ export declare class FormatDetector {
      */
     private static searchConfigurationRecursive;
     /**
-     * Check if directory has metadata type directories
-     * @param dirPath Directory to check
-     * @returns true if has at least one metadata directory
-     */
-    private static hasMetadataDirectories;
-    /**
      * Validate configuration path
      * @param configPath Path to validate
      * @returns true if valid configuration path

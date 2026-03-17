@@ -10,6 +10,7 @@ out/
 .env.local
 FormatSamples/
 BUGS/
+docs/
 # Specs (tracked only on branch local-specs, not pushed to origin)
 .kiro/
 

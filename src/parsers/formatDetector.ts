@@ -55,7 +55,7 @@ export class FormatDetector {
   }
 
   /**
-   * Check if the given directory path is a configuration root (has 1cv8.cf/1cv8.cfe/Configuration.xml and metadata dirs).
+   * Check if the given directory path is a configuration root (has 1cv8.cf, 1cv8.cfe, or valid Configuration.xml).
    */
   private static async isConfigurationRoot(dirPath: string): Promise<boolean> {
     const cfPath = path.join(dirPath, '1cv8.cf');
@@ -75,8 +75,7 @@ export class FormatDetector {
     }
     try {
       await fs.promises.access(configXmlPath);
-      const hasMetadata = await this.hasMetadataDirectories(dirPath);
-      return hasMetadata;
+      return true;
     } catch {
       return false;
     }
@@ -216,12 +215,8 @@ export class FormatDetector {
             ]);
 
             if (checks.some(result => result.status === 'fulfilled')) {
-              // Also verify metadata directories exist
-              const hasMetadata = await this.hasMetadataDirectories(itemPath);
-              if (hasMetadata) {
-                Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
-                return itemPath;
-              }
+              Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
+              return itemPath;
             }
 
             // Recursively search in this subdirectory
@@ -240,30 +235,6 @@ export class FormatDetector {
       Logger.debug(`Error reading directory ${dirPath}`, error);
       return null;
     }
-  }
-
-  /**
-   * Check if directory has metadata type directories
-   * @param dirPath Directory to check
-   * @returns true if has at least one metadata directory
-   */
-  private static async hasMetadataDirectories(dirPath: string): Promise<boolean> {
-    const metadataTypes = ['Catalogs', 'Documents', 'Enums', 'Reports', 'DataProcessors', 'CommonModules'];
-    
-    for (const type of metadataTypes) {
-      const typePath = path.join(dirPath, type);
-      try {
-        await fs.promises.access(typePath);
-        const stat = await fs.promises.stat(typePath);
-        if (stat.isDirectory()) {
-          return true;
-        }
-      } catch {
-        // Continue checking
-      }
-    }
-    
-    return false;
   }
 
   /**

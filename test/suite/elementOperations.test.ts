@@ -34,7 +34,20 @@ suite('elementOperations', () => {
     await fs.promises.mkdir(catalogsPath, { recursive: true });
     const catalogPath = path.join(catalogsPath, 'ExistingCatalog.xml');
     await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'ExistingCatalog');
-    
+    // Configuration.xml required for createElement (addRootObjectToConfiguration)
+    const configXmlPath = path.join(tmpDir, 'Configuration.xml');
+    const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
+    <Properties><Name>TestConfig</Name></Properties>
+    <ChildObjects>
+      <Catalog>ExistingCatalog</Catalog>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>
+`;
+    await fs.promises.writeFile(configXmlPath, configXml, 'utf-8');
+
     configNode = createConfigNode();
     catalogsTypeNode = createCatalogsTypeNode(configNode, catalogsPath);
     catalogNode = createCatalogNode('ExistingCatalog', catalogsTypeNode, catalogPath);

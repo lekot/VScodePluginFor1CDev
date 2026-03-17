@@ -8,6 +8,11 @@ import {
   findReferencesToElement,
   replaceReferencesInProject,
 } from '../utils/referenceFinder';
+import { getDesignerTemplateXml } from './designerTemplateRepository';
+import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
+import { addRootObjectToConfiguration } from './configurationXmlUpdater';
+import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
+import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
 
 /** Top-level metadata types that have their own XML file in Designer. */
 const TOP_LEVEL_TYPES = new Set<MetadataType>([
@@ -105,9 +110,29 @@ export async function createElement(
       throw new Error(`Файл уже существует: ${newFilePath}`);
     }
     const rootTag = String(parentNode.type);
-    await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name);
+    const configRootPath = path.dirname(typeFolderPath);
+    const templateXml = await getDesignerTemplateXml(rootTag);
+    if (templateXml !== null) {
+      const uuid = XMLWriter.generateSimpleUuid();
+      let content = substituteDesignerTemplate(templateXml, {
+        uuid,
+        Name: name,
+        Synonym_ru: name,
+      });
+      content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
+      content = normalizeMetaDataObjectRoot(content);
+      await fs.promises.writeFile(newFilePath, content, 'utf-8');
+    } else {
+      await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name);
+    }
     const elementDir = path.join(typeFolderPath, name);
     await fs.promises.mkdir(elementDir, { recursive: true });
+    try {
+      await addRootObjectToConfiguration(configRootPath, rootTag, name);
+    } catch (err) {
+      Logger.error('Failed to update Configuration.xml', err);
+      throw err;
+    }
     return;
   }
 

@@ -24,6 +24,7 @@ import { MESSAGES } from './constants/messages';
 import { FormEditorProvider } from './formEditor/formEditorProvider';
 import { getFormPaths } from './formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from './utils/configHelpers';
+import { initDesignerTemplateRepository } from './services/designerTemplateRepository';
 
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
@@ -47,6 +48,7 @@ let metadataWatchers: MetadataWatcherService[] = [];
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   try {
     extensionContext = context;
+    initDesignerTemplateRepository(context);
     Logger.initialize();
     Logger.info(MESSAGES.EXTENSION_ACTIVATED);
 

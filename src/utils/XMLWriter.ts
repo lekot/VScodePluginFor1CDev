@@ -5,6 +5,8 @@ import {
   getDefaultPropertiesForRootTag,
   getDefaultPropertiesForNestedElement,
 } from '../constants/metadataDefaultValues';
+import { injectInternalInfoIntoMetadataXml } from '../services/internalInfoGenerator';
+import { normalizeMetaDataObjectRoot } from '../services/metaDataObjectRootNormalizer';
 
 /**
  * XML Writer options for preserving formatting and structure
@@ -246,8 +248,8 @@ export class XMLWriter {
     const uuid = this.generateSimpleUuid();
     const defaultProps = getDefaultPropertiesForRootTag(rootTag);
     const defaultPropsLines = this.formatDefaultPropertiesAsXml(defaultProps);
-    const content = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    let content = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 \t<${rootTag} uuid="${uuid}">
 \t\t<Properties>
 \t\t\t<Name>${this.escapeXml(elementName)}</Name>
@@ -263,6 +265,8 @@ ${defaultPropsLines}\t\t</Properties>
 \t</${rootTag}>
 </MetaDataObject>
 `;
+    content = injectInternalInfoIntoMetadataXml(content, rootTag, elementName);
+    content = normalizeMetaDataObjectRoot(content);
     await fs.promises.writeFile(filePath, content, 'utf-8');
     Logger.info(`Created minimal ${rootTag} file ${filePath}`);
   }
@@ -274,7 +278,11 @@ ${defaultPropsLines}\t\t</Properties>
       .join('\n') + '\n';
   }
 
-  private static generateSimpleUuid(): string {
+  /**
+   * Generate a simple UUID v4 for new metadata objects (e.g. in templates).
+   * Public for use by elementOperations when creating from designer templates.
+   */
+  static generateSimpleUuid(): string {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
       const r = (Math.random() * 16) | 0;
       const v = c === 'x' ? r : (r & 0x3) | 0x8;
