@@ -8,6 +8,7 @@ import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
+import { ensureR6PlaceholdersForInstanceNode } from '../utils/treeNormalization';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -853,6 +854,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             this.buildCache(c);
           }
           element.children = children;
+          for (const c of children) {
+            ensureR6PlaceholdersForInstanceNode(c, { configPath: ctx.configPath, format: ctx.format });
+          }
           Logger.info('Tree cache size after lazy load', {
             type: element.id,
             nodeCount: this.nodeCache.size,
@@ -897,6 +901,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             return children.filter((c) => ids.has(c.id));
           }
         );
+      }
+
+      const configRoot = this.getConfigurationRoot(element);
+      const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
+      if (ctx) {
+        ensureR6PlaceholdersForInstanceNode(element, { configPath: ctx.configPath, format: ctx.format });
       }
 
       const raw = element.children || [];

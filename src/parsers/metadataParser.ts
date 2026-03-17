@@ -1,8 +1,16 @@
-import { TreeNode } from '../models/treeNode';
+import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { DesignerParser } from './designerParser';
 import { EdtParser } from './edtParser';
 import { FormatDetector, ConfigFormat } from './formatDetector';
+
+const R6_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
+const R6_OBJECT_TYPES = new Set<MetadataType>([
+  MetadataType.Catalog,
+  MetadataType.Document,
+  MetadataType.DataProcessor,
+  MetadataType.ChartOfCharacteristicTypes,
+]);
 
 /**
  * Main metadata parser that handles both EDT and Designer formats
@@ -55,6 +63,34 @@ export class MetadataParser {
     element: TreeNode
   ): Promise<TreeNode[]> {
     const id = element.id;
+    const parent = element.parent;
+
+    // When expanding an R6 placeholder (Attributes, Forms, etc.) under an object, use parent path:
+    // e.g. Catalogs/ТелеграмСервис.xml (Designer) or src/Catalogs/ТелеграмСервис (EDT), not Attributes/Реквизиты.
+    if (
+      parent &&
+      R6_SECTION_IDS.has(id) &&
+      R6_OBJECT_TYPES.has(parent.type as MetadataType) &&
+      parent.parent
+    ) {
+      const typeFolderId = parent.parent.id;
+      const objectName = parent.name;
+      const siblings =
+        format === ConfigFormat.Designer
+          ? await DesignerParser.loadChildrenForElement(configPath, typeFolderId, objectName, parent)
+          : format === ConfigFormat.EDT
+            ? await EdtParser.loadChildrenForElement(configPath, typeFolderId, objectName, parent)
+            : [];
+      const sectionNode = siblings.find((c) => c.id === id);
+      if (sectionNode?.children) {
+        for (const c of sectionNode.children) {
+          c.parent = element;
+        }
+        return sectionNode.children;
+      }
+      return [];
+    }
+
     const dot = id.indexOf('.');
     const typeName = dot >= 0 ? id.slice(0, dot) : id;
     const elementName = dot >= 0 ? id.slice(dot + 1) : element.name;

@@ -34,7 +34,7 @@ function upsertChildNode(parent: TreeNode, def: PlaceholderDef, ctx: NormalizeCo
 
   const existing = parent.children!.find((c) => c.id === def.id);
   if (existing) {
-    // Never wipe existing children (lazy loading safety).
+    // Never wipe or replace existing children — real content (e.g. loaded Attributes/Forms) must be preserved.
     existing.name = def.name;
     existing.type = existing.type ?? def.type;
     existing.properties = existing.properties ?? {};
@@ -43,7 +43,9 @@ function upsertChildNode(parent: TreeNode, def: PlaceholderDef, ctx: NormalizeCo
     existing.filePath =
       existing.filePath ?? (def.typeDirName ? getPlaceholderTypeFilePath(ctx, def.typeDirName) : undefined);
     existing.parent = parent;
-    existing.children = existing.children ?? [];
+    if (existing.children === undefined) {
+      existing.children = [];
+    }
     return;
   }
 
@@ -139,6 +141,36 @@ const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
   { id: 'Templates', name: 'Макеты', type: MetadataType.Template, typeDirName: 'Templates' },
 ];
 
+const R6_OBJECT_TYPES: ReadonlySet<MetadataType> = new Set([
+  MetadataType.Catalog,
+  MetadataType.Document,
+  MetadataType.DataProcessor,
+  MetadataType.ChartOfCharacteristicTypes,
+]);
+
+/**
+ * Ensures that an object instance node (Catalog, Document, DataProcessor, ChartOfCharacteristicTypes)
+ * has R6 placeholder children (Attributes, TabularSections, Forms, Commands, Templates).
+ * Used when returning children in the tree provider so placeholders appear after lazy-loaded instances.
+ */
+export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: NormalizeContext): void {
+  if (!node || !R6_OBJECT_TYPES.has(node.type)) {
+    return;
+  }
+  ensureChildrenArray(node);
+  for (const def of R6_OBJECT_CHILDREN) {
+    upsertChildNode(node, def, ctx);
+  }
+  reorderChildrenByIds(node, R6_OBJECT_CHILDREN.map((x) => x.id));
+  // Mark R6 placeholders as lazy so the provider calls loadElementChildren on expand.
+  for (const def of R6_OBJECT_CHILDREN) {
+    const child = node.children!.find((c) => c.id === def.id);
+    if (child) {
+      (child.properties as Record<string, unknown>)._lazy = true;
+    }
+  }
+}
+
 /**
  * Ensure configuration root contains placeholder type nodes for Catalogs/Documents.
  * - Stable IDs: `Catalogs` / `Documents`
@@ -174,31 +206,36 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
   // Deterministic order under Configuration root.
   reorderChildrenByIds(rootNode, R4_TOP_LEVEL_ORDER.map((x) => x.id));
 
-  // Handler D: Ensure object nodes (Catalog, Document, DataProcessor, ChartOfCharacteristicTypes)
-  // have the five standard child placeholders (Attributes, TabularSections, Forms, Commands, Templates).
-  function processObjectNode(node: TreeNode): void {
-    const isObjectNode =
-      node.type === MetadataType.Catalog ||
-      node.type === MetadataType.Document ||
-      node.type === MetadataType.DataProcessor ||
-      node.type === MetadataType.ChartOfCharacteristicTypes;
+  // Process only the four R6 object type folders to add placeholders to their instance nodes
+  const r6TypeFolders = R4_TOP_LEVEL_ORDER.filter(def => 
+    def.type === MetadataType.Catalog ||
+    def.type === MetadataType.Document ||
+    def.type === MetadataType.DataProcessor ||
+    def.type === MetadataType.ChartOfCharacteristicTypes
+  );
 
-    if (isObjectNode) {
-      ensureChildrenArray(node);
-      for (const def of R6_OBJECT_CHILDREN) {
-        upsertChildNode(node, def, ctx);
-      }
+  for (const typeDef of r6TypeFolders) {
+    // Find the type folder node under the root
+    const typeFolderNode = rootNode.children?.find((c) => c.id === typeDef.id);
+    if (!typeFolderNode) {
+      // This should not happen because we just created it in the R4 step, but skip if missing.
+      continue;
     }
 
-    // Recurse into children
-    if (node.children) {
-      for (const child of node.children) {
-        processObjectNode(child);
+    // Ensure the type folder node has children array
+    ensureChildrenArray(typeFolderNode);
+
+    // For each child node of the type folder (which are the instance nodes), add R6 placeholders
+    const children = typeFolderNode.children;
+    if (children) {
+      for (const instanceNode of children) {
+        // Add the R6_OBJECT_CHILDREN placeholders to this instance node
+        for (const childDef of R6_OBJECT_CHILDREN) {
+          upsertChildNode(instanceNode, childDef, ctx);
+        }
       }
     }
   }
-
-  processObjectNode(rootNode);
 
   return rootNode;
 }
