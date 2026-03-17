@@ -562,16 +562,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       if (!treeDataProvider) return;
-      treeDataProvider.setSubsystemFilter(target.id, target.name);
+      await treeDataProvider.setSubsystemFilter(target.id, target.name);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', true);
     }
   );
 
   const clearSubsystemFilterCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearSubsystemFilter',
-    () => {
+    async () => {
       if (!treeDataProvider) return;
-      treeDataProvider.setSubsystemFilter(null, null);
+      await treeDataProvider.setSubsystemFilter(null, null);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
   );

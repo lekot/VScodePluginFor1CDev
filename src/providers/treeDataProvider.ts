@@ -132,9 +132,20 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @param subsystemId The ID of the subsystem node to filter by, or null to clear filter
    * @param subsystemName The display name of the subsystem, or null to clear filter
    */
-  setSubsystemFilter(subsystemId: string | null, subsystemName: string | null): void {
+  async setSubsystemFilter(subsystemId: string | null, subsystemName: string | null): Promise<void> {
     this.subsystemFilter.subsystemId = subsystemId;
     this.subsystemFilter.subsystemName = subsystemName;
+    
+    if (subsystemId) {
+      const subsystemNode = this.nodeCache.get(subsystemId);
+      if (subsystemNode) {
+        await this.loadSubsystemContent(subsystemNode);
+        // Eagerly load all type-nodes referenced in subsystem Content so that
+        // ensureFilterSets() can find them in nodeCache (lazy nodes are not yet loaded).
+        await this.eagerLoadSubsystemTypes(subsystemNode);
+      }
+    }
+    
     this.filterAncestorOrVisibleIds = null;
     this.updateFilterMessage();
     this.refresh();
@@ -157,18 +168,301 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @param node The tree node to check
    * @returns true if the node passes the filter, false otherwise
    */
+  private async loadSubsystemContent(subsystemNode: TreeNode): Promise<void> {
+    Logger.info('loadSubsystemContent called', {
+      subsystemId: subsystemNode.id,
+      hasContent: !!subsystemNode.properties.Content,
+      isLazy: !!subsystemNode.properties._lazy,
+      hasFilePath: !!subsystemNode.filePath,
+      filePath: subsystemNode.filePath,
+    });
+    
+    // If already loaded, skip
+    if (subsystemNode.properties.Content) {
+      Logger.info('Skipping load - already loaded');
+      return;
+    }
+
+    // Get config path
+    const configRoot = this.getConfigurationRoot(subsystemNode);
+    if (!configRoot) {
+      Logger.info('No config root found');
+      return;
+    }
+    
+    const ctx = this.loadContextByRootId.get(configRoot.id);
+    if (!ctx) {
+      Logger.info('No load context found');
+      return;
+    }
+
+    // Build file path: configPath/Subsystems/SubsystemName.xml
+    const path = await import('path');
+    const subsystemName = subsystemNode.name;
+    const xmlPath = path.default.join(ctx.configPath, 'Subsystems', `${subsystemName}.xml`);
+    
+    Logger.info('Loading subsystem XML', { xmlPath });
+
+    try {
+      const XmlParser = await import('../parsers/xmlParser');
+      const xmlContent = await XmlParser.XmlParser.parseFileAsync(xmlPath);
+      const properties = this.extractPropertiesFromXml(xmlContent);
+      
+      subsystemNode.properties = { ...subsystemNode.properties, ...properties };
+      delete subsystemNode.properties._lazy;
+      
+      Logger.info('Loaded subsystem properties', {
+        subsystemId: subsystemNode.id,
+        propertyKeys: Object.keys(subsystemNode.properties),
+        hasContent: !!subsystemNode.properties.Content,
+      });
+    } catch (error) {
+      Logger.error('Failed to load subsystem properties', error);
+    }
+  }
+
+  /**
+   * Eagerly load all type-nodes referenced in subsystem Content into nodeCache.
+   * Without this, lazy type-nodes (Documents, Reports, etc.) have no children in cache
+   * and ensureFilterSets() cannot match any element nodes.
+   */
+  private async eagerLoadSubsystemTypes(subsystemNode: TreeNode): Promise<void> {
+    const content = subsystemNode.properties.Content;
+    if (!content || typeof content !== 'object') return;
+
+    const contentObj = content as Record<string, unknown>;
+    const rawItems = contentObj['xr:Item'];
+    const items: unknown[] = Array.isArray(rawItems) ? rawItems : (rawItems != null ? [rawItems] : []);
+
+    // Collect unique folder-type names referenced in Content (e.g. 'Document' → 'Documents')
+    const refTypeToFolder = this.buildRefTypeToFolderMap();
+    const foldersToLoad = new Set<string>();
+
+    for (const item of items) {
+      if (typeof item === 'object' && item !== null) {
+        const refText = (item as Record<string, unknown>)['#text'] as string;
+        if (refText) {
+          const refType = refText.split('.')[0];
+          const folder = refTypeToFolder.get(refType);
+          if (folder) foldersToLoad.add(folder);
+        }
+      }
+    }
+
+    if (foldersToLoad.size === 0) return;
+
+    // Find config root and load context
+    const configRoot = this.getConfigurationRoot(subsystemNode);
+    if (!configRoot) return;
+    const ctx = this.loadContextByRootId.get(configRoot.id);
+    if (!ctx) return;
+
+    // For each folder, find the type-node in the tree and load its children if not yet loaded
+    for (const folder of foldersToLoad) {
+      const typeNode = configRoot.children?.find((c) => c.id === folder);
+      if (!typeNode) continue;
+      // Already loaded
+      if (typeNode.children && typeNode.children.length > 0) continue;
+
+      Logger.info('Eager loading type for subsystem filter', { folder });
+      try {
+        const children = await MetadataParser.parseTypeContents(ctx.configPath, folder);
+        for (const c of children) {
+          c.parent = typeNode;
+          this.buildCache(c);
+        }
+        typeNode.children = children;
+      } catch (error) {
+        Logger.warn('Failed to eager load type for subsystem filter', { folder, error });
+      }
+    }
+  }
+
+  /** Build a map from XML ref type name (singular) to folder name (plural). */
+  private buildRefTypeToFolderMap(): Map<string, string> {
+    // Derived from MetadataTypeMapper: folder → MetadataType, we need refType → folder.
+    // refType in subsystem Content matches the singular XML element name used in 1C,
+    // which equals the MetadataType enum value (e.g. 'Document', 'Report', 'Catalog').
+    // The folder name is the plural form used in the file system.
+    const map = new Map<string, string>([
+      ['Catalog', 'Catalogs'],
+      ['Document', 'Documents'],
+      ['Enum', 'Enums'],
+      ['Report', 'Reports'],
+      ['DataProcessor', 'DataProcessors'],
+      ['ChartOfCharacteristicTypes', 'ChartsOfCharacteristicTypes'],
+      ['ChartOfAccounts', 'ChartsOfAccounts'],
+      ['ChartOfCalculationTypes', 'ChartsOfCalculationTypes'],
+      ['InformationRegister', 'InformationRegisters'],
+      ['AccumulationRegister', 'AccumulationRegisters'],
+      ['AccountingRegister', 'AccountingRegisters'],
+      ['CalculationRegister', 'CalculationRegisters'],
+      ['BusinessProcess', 'BusinessProcesses'],
+      ['Task', 'Tasks'],
+      ['ExternalDataSource', 'ExternalDataSources'],
+      ['Constant', 'Constants'],
+      ['SessionParameter', 'SessionParameters'],
+      ['FilterCriterion', 'FilterCriteria'],
+      ['ScheduledJob', 'ScheduledJobs'],
+      ['FunctionalOption', 'FunctionalOptions'],
+      ['FunctionalOptionsParameter', 'FunctionalOptionsParameters'],
+      ['SettingsStorage', 'SettingsStorages'],
+      ['EventSubscription', 'EventSubscriptions'],
+      ['CommonModule', 'CommonModules'],
+      ['CommandGroup', 'CommandGroups'],
+      ['Role', 'Roles'],
+      ['Interface', 'Interfaces'],
+      ['Style', 'Styles'],
+      ['WebService', 'WebServices'],
+      ['HTTPService', 'HTTPServices'],
+      ['IntegrationService', 'IntegrationServices'],
+      ['Subsystem', 'Subsystems'],
+    ]);
+    return map;
+  }
+
+  private extractPropertiesFromXml(xmlContent: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+
+    // Find Properties object at depth 1 or depth 2.
+    // Subsystem XML has structure: MetaDataObject → Subsystem → Properties
+    // Other XMLs may have: RootElement → Properties
+    const findProperties = (element: Record<string, unknown>): Record<string, unknown> | null => {
+      if (element.Properties && typeof element.Properties === 'object' && !Array.isArray(element.Properties)) {
+        return element.Properties as Record<string, unknown>;
+      }
+      // One level deeper (e.g. MetaDataObject.Subsystem.Properties)
+      for (const val of Object.values(element)) {
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          const nested = val as Record<string, unknown>;
+          if (nested.Properties && typeof nested.Properties === 'object' && !Array.isArray(nested.Properties)) {
+            return nested.Properties as Record<string, unknown>;
+          }
+        }
+      }
+      return null;
+    };
+
+    for (const [key, value] of Object.entries(xmlContent)) {
+      if (key === '@_' || key.startsWith('#')) continue;
+
+      if (typeof value === 'object' && value !== null) {
+        const element = value as Record<string, unknown>;
+        const properties = findProperties(element);
+
+        if (properties) {
+          for (const [propKey, propValue] of Object.entries(properties)) {
+            if (propKey === '@_' || propKey.startsWith('#')) continue;
+
+            if (typeof propValue === 'boolean' || typeof propValue === 'number' || typeof propValue === 'string') {
+              result[propKey] = propValue;
+            } else if (typeof propValue === 'object' && propValue !== null) {
+              const obj = propValue as Record<string, unknown>;
+              if (obj['v8:item']) {
+                const items = obj['v8:item'];
+                if (Array.isArray(items) && items.length > 0) {
+                  const firstItem = items[0];
+                  if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
+                    result[propKey] = (firstItem as Record<string, unknown>)['v8:content'];
+                  }
+                }
+              } else if ('v8:Type' in obj) {
+                result[propKey] = obj;
+              } else if (obj['xr:Item']) {
+                // Handle Content field with xr:Item array
+                result[propKey] = obj;
+              } else if (obj.item) {
+                result[propKey] = obj.item;
+              } else {
+                result[propKey] = propValue;
+              }
+            } else {
+              result[propKey] = propValue;
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   private nodePassesSubsystemFilter(node: TreeNode): boolean {
-    if (!this.subsystemFilter.subsystemId) {
+      if (!this.subsystemFilter.subsystemId) {
+        return true;
+      }
+
+      // Check if node is ancestor of the subsystem (Configuration → Subsystems → SelectedSubsystem)
+      let current: TreeNode | undefined = node;
+      while (current) {
+        if (current.id === this.subsystemFilter.subsystemId) {
+          return true;
+        }
+        current = current.parent;
+      }
+
+      // Check if node is part of subsystem content
+      const subsystemNode = this.nodeCache.get(this.subsystemFilter.subsystemId);
+
+      if (subsystemNode && subsystemNode.properties.Content) {
+        const content = subsystemNode.properties.Content;
+
+        // Content is an object with "xr:Item" array
+        if (typeof content === 'object' && content !== null) {
+          const contentObj = content as Record<string, unknown>;
+          const rawItems = contentObj['xr:Item'];
+          // fast-xml-parser returns a single object (not array) when there is only one xr:Item
+          const items: unknown[] = Array.isArray(rawItems) ? rawItems : (rawItems != null ? [rawItems] : []);
+
+          for (const item of items) {
+            if (typeof item === 'object' && item !== null) {
+              const itemObj = item as Record<string, unknown>;
+              const refText = itemObj['#text'] as string;
+
+              if (refText && this.nodeMatchesContentRef(node, refText)) {
+                return true;
+              }
+            }
+          }
+        }
+      } else {
+        Logger.debug('No subsystem content found', {
+          subsystemId: this.subsystemFilter.subsystemId,
+          hasNode: !!subsystemNode,
+          hasContent: subsystemNode ? !!subsystemNode.properties.Content : false,
+        });
+      }
+
+      return false;
+    }
+
+  /**
+   * Check if a node matches a subsystem content reference.
+   * Content references are in format "Type.Name" (e.g., "CommonModule.ТелеграмСервер")
+   */
+  private nodeMatchesContentRef(node: TreeNode, refText: string): boolean {
+    // Parse reference: "CommonModule.ТелеграмСервер" → type="CommonModule", name="ТелеграмСервер"
+    const parts = refText.split('.');
+    if (parts.length < 2) {
+      return false;
+    }
+
+    const refType = parts[0];
+    const refName = parts.slice(1).join('.'); // Handle names with dots
+
+    // Check if node matches the reference directly
+    if (node.type === refType && node.name === refName) {
       return true;
     }
 
-    let current: TreeNode | undefined = node;
+    // Check if any ancestor matches (to include child elements like Attributes, Forms, etc.)
+    let current: TreeNode | undefined = node.parent;
     while (current) {
-      if (current.id === this.subsystemFilter.subsystemId) {
+      if (current.type === refType && current.name === refName) {
         return true;
       }
       current = current.parent;
     }
+
     return false;
   }
 
