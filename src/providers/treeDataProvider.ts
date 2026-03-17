@@ -806,8 +806,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Remove default file open command - selection will trigger properties panel instead
       // Context menu will provide "Open XML" option for direct file access
 
-      // Set resource URI: for Form open Ext/Form.xml in form editor, else open metadata file
-      if (element.filePath) {
+      // Set resource URI: Configuration → Configuration.xml in configDir; Form → formXmlPath; else filePath
+      if (element.type === MetadataType.Configuration) {
+        const configDir = this.getConfigPathForNode(element);
+        if (configDir != null) {
+          treeItem.resourceUri = vscode.Uri.file(path.join(configDir, 'Configuration.xml'));
+        }
+      } else if (element.filePath) {
         if (element.type === MetadataType.Form) {
           const { formXmlPath } = getFormPaths(element.filePath);
           treeItem.resourceUri = vscode.Uri.file(formXmlPath);

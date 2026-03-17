@@ -177,4 +177,47 @@ suite('Bug Condition Exploration: Configuration Root Properties Not Loaded', () 
       `Loaded properties: ${JSON.stringify(node.properties)}`
     );
   });
+
+  // ADR 0001 / contracts: Configuration with filePath = ConfigDumpInfo.xml → properties from Configuration.xml
+  test('Case 4 (ADR): filePath=ConfigDumpInfo.xml loads properties from Configuration.xml in configDir', async () => {
+    const configDumpInfoPath = path.join(designerConfigDir, 'ConfigDumpInfo.xml');
+    const node: TreeNode = {
+      id: 'config-root-dump',
+      name: 'TestConfiguration',
+      type: MetadataType.Configuration,
+      filePath: configDumpInfoPath,
+      parentFilePath: undefined,
+      properties: {},
+    };
+
+    await provider.showProperties(node);
+
+    assert.ok(
+      Object.keys(node.properties ?? {}).length > 0,
+      `For Configuration with filePath=ConfigDumpInfo.xml, properties must be loaded from Configuration.xml in configDir. ` +
+      `Got empty properties.`
+    );
+    assert.ok(
+      node.properties && node.properties['Name'] !== undefined,
+      `Expected 'Name' from Configuration.xml. Loaded: ${JSON.stringify(node.properties)}`
+    );
+  });
+
+  // ADR 0001 / contracts: Configuration without filePath (getConfigPathForNode → null) — panel does not crash
+  test('Case 5 (ADR): Configuration without filePath — showProperties does not throw, no file read', async () => {
+    const node: TreeNode = {
+      id: 'config-root-no-path',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      // no filePath → getConfigPathForNode returns null → pathToRead is null → no XML read
+    };
+
+    await assert.doesNotReject(
+      provider.showProperties(node),
+      'showProperties must not throw for Configuration without filePath'
+    );
+    // Panel shows node with existing properties (may be empty); no file read
+    assert.ok(Array.isArray(Object.keys(node.properties ?? {})), 'node.properties remains an object');
+  });
 });

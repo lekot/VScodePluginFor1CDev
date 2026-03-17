@@ -31,6 +31,25 @@ export function getConfigRootFromNode(node: TreeNode): string | null {
 }
 
 /**
+ * Get canonical path to Configuration.xml for a Configuration node.
+ * For non-Configuration nodes returns null. For Configuration, uses getConfigDir(node);
+ * if getConfigDir returns null, returns null; otherwise path.join(configDir, 'Configuration.xml').
+ */
+export function getConfigurationXmlPathForNode(
+  node: TreeNode,
+  getConfigDir: (n: TreeNode) => string | null
+): string | null {
+  if (node.type !== MetadataType.Configuration) {
+    return null;
+  }
+  const configDir = getConfigDir(node);
+  if (configDir == null) {
+    return null;
+  }
+  return path.join(configDir, 'Configuration.xml');
+}
+
+/**
  * Detect configuration format from a tree node (uses config root).
  */
 export async function getFormatFromNode(node: TreeNode): Promise<ConfigFormat | null> {

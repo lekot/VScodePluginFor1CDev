@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as fc from 'fast-check';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
@@ -94,6 +95,41 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.strictEqual(treeItem.label, 'TestNode');
     assert.strictEqual(treeItem.contextValue, MetadataType.Catalog);
     assert.strictEqual(treeItem.description, 'Test Synonym');
+  });
+
+  // ADR 0001 / Plan 7.1: Configuration resourceUri → Configuration.xml in configDir
+  test('getTreeItem for Configuration with filePath sets resourceUri to Configuration.xml in configDir', () => {
+    const configDir = path.join('C:', 'reps', 'myconfig');
+    const node: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(configDir, 'ConfigDumpInfo.xml'),
+    };
+    const treeItem = provider.getTreeItem(node);
+    assert.ok(treeItem.resourceUri, 'resourceUri should be set for Configuration with configDir');
+    assert.strictEqual(
+      treeItem.resourceUri!.fsPath,
+      path.join(configDir, 'Configuration.xml'),
+      'resourceUri must point to Configuration.xml in configDir (not ConfigDumpInfo.xml)'
+    );
+  });
+
+  test('getTreeItem for Configuration without filePath does not set resourceUri', () => {
+    const node: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      // no filePath → getConfigPathForNode returns null
+    };
+    const treeItem = provider.getTreeItem(node);
+    assert.strictEqual(
+      treeItem.resourceUri,
+      undefined,
+      'resourceUri must not be set when configDir is null (contracts: do not open wrong path)'
+    );
   });
 
   test('getTreeItem should set collapsible state for nodes with children', () => {

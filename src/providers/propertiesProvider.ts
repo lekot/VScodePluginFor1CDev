@@ -16,6 +16,7 @@ import { getPropertyEnumValues } from '../constants/propertyEnumValues';
 import { MESSAGES } from '../constants/messages';
 import type { TypeDefinition, ReferenceTypeInfo } from '../types/typeDefinitions';
 import { validateElementName } from '../utils/elementNameValidator';
+import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
 import * as path from 'path';
 
 /**
@@ -119,14 +120,15 @@ export class PropertiesProvider {
 
     // Update content with new node
     // For nested elements (Attributes), properties are already loaded from XML during parsing
-    // Only reload from file for root elements that have filePath
+    // Only reload from file for root elements that have a path to read (Configuration → Configuration.xml in configDir; Form → formXmlPath; else filePath).
 
-    if (node.filePath && !node.parentFilePath && node.filePath.endsWith('.xml')) {
-      const { getFormPaths } = await import('../formEditor/formPaths');
-      const pathToRead =
-        node.type === 'Form'
-          ? getFormPaths(node.filePath).formXmlPath
-          : node.filePath;
+    const pathToRead =
+      getConfigurationXmlPathForNode(node, this.treeDataProvider.getConfigPathForNode.bind(this.treeDataProvider)) ??
+      (node.type === 'Form' && node.filePath
+        ? (await import('../formEditor/formPaths')).getFormPaths(node.filePath).formXmlPath
+        : node.filePath);
+
+    if (pathToRead && !node.parentFilePath) {
       try {
         const { XMLWriter } = await import('../utils/XMLWriter');
         const xmlProperties = await XMLWriter.readProperties(pathToRead);

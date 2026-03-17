@@ -23,6 +23,7 @@ import { TreeNode, MetadataType } from './models/treeNode';
 import { MESSAGES } from './constants/messages';
 import { FormEditorProvider } from './formEditor/formEditorProvider';
 import { getFormPaths } from './formEditor/formPaths';
+import { getConfigurationXmlPathForNode } from './utils/configHelpers';
 
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
@@ -156,14 +157,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     async (node?: TreeNode) => {
       const target = getSelectedNode(node);
       if (!target) return;
-      if (!target.filePath) {
+      const pathToOpen =
+        (treeDataProvider && getConfigurationXmlPathForNode(target, treeDataProvider.getConfigPathForNode.bind(treeDataProvider))) ??
+        (target.type === MetadataType.Form && target.filePath
+          ? getFormPaths(target.filePath).formXmlPath
+          : target.filePath);
+      if (!pathToOpen) {
         vscode.window.showWarningMessage('No XML file associated with this element');
         return;
       }
-      const pathToOpen =
-        target.type === MetadataType.Form
-          ? getFormPaths(target.filePath).formXmlPath
-          : target.filePath;
       try {
         Logger.info(`Opening XML file: ${pathToOpen}`);
         const uri = vscode.Uri.file(pathToOpen);

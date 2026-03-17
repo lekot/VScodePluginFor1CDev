@@ -64,11 +64,16 @@ export async function loadTreeFromCache(
     
     const root = deserializeTree(entry.tree);
     
-    // MIGRATION: Fix filePath for Configuration root nodes loaded from old cache
-    // Old cache may have filePath = directory; new code expects filePath = Configuration.xml
-    if (root.type === MetadataType.Configuration && root.filePath && !root.filePath.endsWith('.xml')) {
-      root.filePath = path.join(root.filePath, 'Configuration.xml');
-      Logger.info('Migrated Configuration root filePath to Configuration.xml');
+    // MIGRATION: Normalize filePath for Configuration root nodes loaded from cache
+    // Old cache may have filePath = directory or ConfigDumpInfo.xml; normalize to Configuration.xml in configDir
+    if (root.type === MetadataType.Configuration && root.filePath) {
+      if (!root.filePath.endsWith('.xml')) {
+        root.filePath = path.join(root.filePath, 'Configuration.xml');
+        Logger.info('Migrated Configuration root filePath to Configuration.xml');
+      } else if (path.basename(root.filePath) !== 'Configuration.xml') {
+        root.filePath = path.join(path.dirname(root.filePath), 'Configuration.xml');
+        Logger.info('Normalized Configuration root filePath to Configuration.xml in configDir');
+      }
     }
     
     Logger.info('Tree loaded from disk cache', { configPath: configPath.slice(-40) });
