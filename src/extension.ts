@@ -25,6 +25,7 @@ import { FormEditorProvider } from './formEditor/formEditorProvider';
 import { getFormPaths } from './formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from './utils/configHelpers';
 import { initDesignerTemplateRepository } from './services/designerTemplateRepository';
+import { normalizeEmptyPlaceholderTree } from './utils/treeNormalization';
 
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
@@ -749,13 +750,17 @@ async function loadMetadataTree(): Promise<void> {
               await saveTreeToCache(storagePath, configRoot, rootNode);
             }
           }
+          const format = await FormatDetector.detect(configRoot);
+
+          // Normalize in-memory tree so that lazy loading never breaks
+          // when filesystem folders for Catalogs/Documents are absent.
+          rootNode = normalizeEmptyPlaceholderTree(rootNode, { configPath: configRoot, format });
           const relativePath = getWorkspaceRelativePath(workspaceFolderPath, configRoot);
           const uniqueId = `config:${path.normalize(configRoot).replace(/\\/g, '_')}`;
           rootNode.id = uniqueId;
           rootNode.name =
             relativePath && relativePath !== '.' ? `Configuration (~/${relativePath})` : 'Configuration';
           roots.push(rootNode);
-          const format = await FormatDetector.detect(configRoot);
           loadContextMap.set(uniqueId, { configPath: configRoot, format });
           progress.report({ increment: (100 * (i + 1)) / configs.length });
         }

@@ -1,13 +1,66 @@
 import * as assert from 'assert';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { createElement } from '../../src/services/elementOperations';
 
 suite('Integration', () => {
   const fixturesPath = path.join(__dirname, '../fixtures', 'designer-config');
+
+  test('createElement creates missing type folder (Documents)', async () => {
+    // Arrange: copy fixture to temp dir and remove Documents folder
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-doc-create-'));
+    const tmpConfigPath = path.join(tmpRoot, 'designer-config-copy');
+    await fs.promises.mkdir(tmpConfigPath, { recursive: true });
+
+    // Copy fixture (simple recursive copy using native fs.cp APIs)
+    if ((fs.promises as any).cp) {
+      await (fs.promises as any).cp(fixturesPath, tmpConfigPath, { recursive: true });
+    } else if ((fs as any).cpSync) {
+      (fs as any).cpSync(fixturesPath, tmpConfigPath, { recursive: true });
+    } else {
+      throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
+    }
+
+    const removedDir = path.join(tmpConfigPath, 'Documents');
+    if (fs.existsSync(removedDir)) {
+      await fs.promises.rm(removedDir, { recursive: true, force: true });
+    }
+
+    // Build a placeholder Documents type-node
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(tmpConfigPath, 'Configuration.xml'),
+      children: [],
+    };
+
+    const documentsNode: TreeNode = {
+      id: 'Documents',
+      name: 'Documents',
+      type: MetadataType.Document,
+      properties: { type: 'Documents' },
+      filePath: path.join(tmpConfigPath, 'Documents'), // expected type folder for Designer
+      children: [],
+      parent: rootNode,
+    };
+
+    // Act: create a new document element under placeholder
+    const newName = `TestDocument_${Date.now()}`;
+    await createElement(documentsNode, newName);
+
+    // Assert: type folder and file exist
+    assert.ok(fs.existsSync(path.join(tmpConfigPath, 'Documents')), 'Documents type folder must be created');
+    const expectedXmlPath = path.join(tmpConfigPath, 'Documents', `${newName}.xml`);
+    assert.ok(fs.existsSync(expectedXmlPath), 'New document XML must be written');
+  });
 
   test('load designer config and display in tree', async () => {
     const rootNode = await MetadataParser.parse(fixturesPath);
@@ -56,7 +109,7 @@ suite('Integration', () => {
 
   // Integration Tests for Subsystem Filtering (Phase 5.3)
 
-  test('right-click on subsystem → filter shows only subsystem contents', async () => {
+  test('right-click on subsystem -> filter shows only subsystem contents', async () => {
     const rootNode = await MetadataParser.parse(fixturesPath);
     assert.ok(rootNode);
 

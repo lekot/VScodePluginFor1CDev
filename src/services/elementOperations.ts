@@ -102,8 +102,20 @@ export async function createElement(
   const isTypeFolder = parent.type === MetadataType.Configuration;
   if (isTypeFolder && TOP_LEVEL_TYPES.has(parentNode.type)) {
     const typeFolderPath = parentNode.filePath;
-    if (!typeFolderPath || !fs.existsSync(typeFolderPath)) {
+    if (!typeFolderPath) {
       throw new Error(`Папка типа не найдена: ${typeFolderPath}`);
+    }
+
+    // When using placeholder type-nodes, the type folder may be absent on disk.
+    // Create it on-demand so element creation can proceed.
+    if (!fs.existsSync(typeFolderPath)) {
+      await fs.promises.mkdir(typeFolderPath, { recursive: true });
+    } else {
+      // If the path exists but is not a directory, fail early with a clear message.
+      const stat = fs.statSync(typeFolderPath);
+      if (!stat.isDirectory()) {
+        throw new Error(`Папка типа не является директорией: ${typeFolderPath}`);
+      }
     }
     const newFilePath = path.join(typeFolderPath, `${name}.xml`);
     if (fs.existsSync(newFilePath)) {

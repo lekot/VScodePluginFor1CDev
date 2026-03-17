@@ -1,0 +1,165 @@
+import * as path from 'path';
+import { TreeNode, MetadataType } from '../models/treeNode';
+import { ConfigFormat } from '../parsers/formatDetector';
+
+export type NormalizeContext = {
+  configPath: string;
+  format: ConfigFormat;
+};
+
+type PlaceholderDef = {
+  /** Stable node id (provider-lazy loading depends on folder/name ids when applicable). */
+  id: string;
+  /** Display name (Russian, as in 1C configurator). */
+  name: string;
+  /** Technical type used by provider for icon/context and for lazy routing where possible. */
+  type: MetadataType;
+  /** Folder / type id for EDT/Designer file paths (when file-backed placeholders). */
+  typeDirName?: string;
+};
+
+function getPlaceholderTypeFilePath(ctx: NormalizeContext, typeDirName: string): string {
+  // EDT keeps metadata under `src/<TypeDir>/...`, Designer uses `<configRoot>/<TypeDir>/...`.
+  return ctx.format === ConfigFormat.EDT
+    ? path.join(ctx.configPath, 'src', typeDirName)
+    : path.join(ctx.configPath, typeDirName);
+}
+
+function ensureChildrenArray(node: TreeNode): void {
+  node.children = node.children ?? [];
+}
+
+function upsertChildNode(parent: TreeNode, def: PlaceholderDef, ctx: NormalizeContext): void {
+  ensureChildrenArray(parent);
+
+  const existing = parent.children!.find((c) => c.id === def.id);
+  if (existing) {
+    // Never wipe existing children (lazy loading safety).
+    existing.name = def.name;
+    existing.type = existing.type ?? def.type;
+    existing.properties = existing.properties ?? {};
+    (existing.properties as any).type = (existing.properties as any).type ?? def.id;
+
+    existing.filePath =
+      existing.filePath ?? (def.typeDirName ? getPlaceholderTypeFilePath(ctx, def.typeDirName) : undefined);
+    existing.parent = parent;
+    existing.children = existing.children ?? [];
+    return;
+  }
+
+  const placeholder: TreeNode = {
+    id: def.id,
+    name: def.name,
+    type: def.type,
+    properties: def.typeDirName ? { type: def.id } : { type: def.id },
+    children: [],
+    filePath: def.typeDirName ? getPlaceholderTypeFilePath(ctx, def.typeDirName) : undefined,
+    parent,
+  };
+
+  parent.children!.push(placeholder);
+}
+
+function reorderChildrenByIds(node: TreeNode, orderedIds: string[]): void {
+  if (!node.children) return;
+  const orderIndex = new Map<string, number>(orderedIds.map((id, i) => [id, i]));
+  node.children.sort((a, b) => {
+    const ai = orderIndex.has(a.id) ? orderIndex.get(a.id)! : Number.POSITIVE_INFINITY;
+    const bi = orderIndex.has(b.id) ? orderIndex.get(b.id)! : Number.POSITIVE_INFINITY;
+    if (ai !== bi) return ai - bi;
+    // Keep deterministic order for "unknown" children.
+    return a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' });
+  });
+}
+
+const R4_TOP_LEVEL_ORDER: ReadonlyArray<PlaceholderDef> = [
+  // R5 group "Общие" (UI-only placeholder group).
+  { id: 'Common', name: 'Общие', type: MetadataType.Unknown },
+  // R4 supported (folder-backed) types.
+  { id: 'Constants', name: 'Константы', type: MetadataType.Constant, typeDirName: 'Constants' },
+  { id: 'Catalogs', name: 'Справочники', type: MetadataType.Catalog, typeDirName: 'Catalogs' },
+  { id: 'Documents', name: 'Документы', type: MetadataType.Document, typeDirName: 'Documents' },
+  // No technical mapping in codebase.
+  { id: 'DocumentJournals', name: 'Журналы документов', type: MetadataType.Unknown },
+  { id: 'Enums', name: 'Перечисления', type: MetadataType.Enum, typeDirName: 'Enums' },
+  { id: 'Reports', name: 'Отчеты', type: MetadataType.Report, typeDirName: 'Reports' },
+  { id: 'DataProcessors', name: 'Обработки', type: MetadataType.DataProcessor, typeDirName: 'DataProcessors' },
+  { id: 'ChartsOfCharacteristicTypes', name: 'Планы видов характеристик', type: MetadataType.ChartOfCharacteristicTypes, typeDirName: 'ChartsOfCharacteristicTypes' },
+  { id: 'ChartsOfAccounts', name: 'Планы счетов', type: MetadataType.ChartOfAccounts, typeDirName: 'ChartsOfAccounts' },
+  { id: 'ChartsOfCalculationTypes', name: 'Планы видов расчета', type: MetadataType.ChartOfCalculationTypes, typeDirName: 'ChartsOfCalculationTypes' },
+  { id: 'InformationRegisters', name: 'Регистры сведений', type: MetadataType.InformationRegister, typeDirName: 'InformationRegisters' },
+  { id: 'AccumulationRegisters', name: 'Регистры накопления', type: MetadataType.AccumulationRegister, typeDirName: 'AccumulationRegisters' },
+  { id: 'AccountingRegisters', name: 'Регистры бухгалтерии', type: MetadataType.AccountingRegister, typeDirName: 'AccountingRegisters' },
+  { id: 'CalculationRegisters', name: 'Регистры расчета', type: MetadataType.CalculationRegister, typeDirName: 'CalculationRegisters' },
+  { id: 'BusinessProcesses', name: 'Бизнес-процессы', type: MetadataType.BusinessProcess, typeDirName: 'BusinessProcesses' },
+  { id: 'Tasks', name: 'Задачи', type: MetadataType.Task, typeDirName: 'Tasks' },
+  { id: 'ExternalDataSources', name: 'Внешние источники данных', type: MetadataType.ExternalDataSource, typeDirName: 'ExternalDataSources' },
+];
+
+const R5_COMMON_CHILD_ORDER: ReadonlyArray<PlaceholderDef> = [
+  { id: 'Subsystems', name: 'Подсистемы', type: MetadataType.Subsystem, typeDirName: 'Subsystems' },
+  { id: 'CommonModules', name: 'Общие модули', type: MetadataType.CommonModule, typeDirName: 'CommonModules' },
+  { id: 'SessionParameters', name: 'Параметры сеанса', type: MetadataType.SessionParameter, typeDirName: 'SessionParameters' },
+  { id: 'Roles', name: 'Роли', type: MetadataType.Role, typeDirName: 'Roles' },
+  { id: 'FilterCriteria', name: 'Критерии отбора', type: MetadataType.FilterCriterion, typeDirName: 'FilterCriteria' },
+  { id: 'EventSubscriptions', name: 'Подписки на события', type: MetadataType.EventSubscription, typeDirName: 'EventSubscriptions' },
+  { id: 'ScheduledJobs', name: 'Регламентные задания', type: MetadataType.ScheduledJob, typeDirName: 'ScheduledJobs' },
+
+  // UI-only placeholders without code mapping.
+  { id: 'Bots', name: 'Боты', type: MetadataType.Unknown },
+  { id: 'FunctionalOptions', name: 'Функциональные опции', type: MetadataType.FunctionalOption, typeDirName: 'FunctionalOptions' },
+  { id: 'FunctionalOptionsParameters', name: 'Параметры функциональных опций', type: MetadataType.FunctionalOptionsParameter, typeDirName: 'FunctionalOptionsParameters' },
+  { id: 'DefinableTypes', name: 'Определяемые типы', type: MetadataType.Unknown },
+  { id: 'SettingsStorages', name: 'Хранилища настроек', type: MetadataType.SettingsStorage, typeDirName: 'SettingsStorages' },
+  { id: 'CommonCommands', name: 'Общие команды', type: MetadataType.Unknown },
+  { id: 'CommandGroups', name: 'Группы команд', type: MetadataType.CommandGroup, typeDirName: 'CommandGroups' },
+  { id: 'CommonForms', name: 'Общие формы', type: MetadataType.Unknown },
+  { id: 'CommonLayouts', name: 'Общие макеты', type: MetadataType.Unknown },
+  { id: 'CommonPictures', name: 'Общие картинки', type: MetadataType.Unknown },
+  { id: 'XDTO', name: 'XDTO-пакеты', type: MetadataType.Unknown },
+  { id: 'WebServices', name: 'Web-сервисы', type: MetadataType.WebService, typeDirName: 'WebServices' },
+  { id: 'HTTPServices', name: 'HTTP-сервисы', type: MetadataType.HTTPService, typeDirName: 'HTTPServices' },
+  { id: 'WSLinks', name: 'WS-ссылки', type: MetadataType.Unknown },
+  { id: 'WebSocketClients', name: 'WebSocket-клиенты', type: MetadataType.Unknown },
+  { id: 'IntegrationServices', name: 'Сервисы интеграции', type: MetadataType.IntegrationService, typeDirName: 'IntegrationServices' },
+  { id: 'StyleElements', name: 'Элементы стиля', type: MetadataType.Unknown },
+  { id: 'Styles', name: 'Стили', type: MetadataType.Style, typeDirName: 'Styles' },
+  { id: 'Languages', name: 'Языки', type: MetadataType.Unknown },
+];
+
+/**
+ * Ensure configuration root contains placeholder type nodes for Catalogs/Documents.
+ * - Stable IDs: `Catalogs` / `Documents`
+ * - Inserted nodes are compatible with lazy loading in `MetadataTreeDataProvider`.
+ */
+export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: NormalizeContext): TreeNode {
+  if (!rootNode) return rootNode;
+
+  // Insert R4/R5 placeholders directly under Configuration roots.
+  ensureChildrenArray(rootNode);
+
+  // Ensure all required R4 nodes exist under this configuration root.
+  for (const def of R4_TOP_LEVEL_ORDER) {
+    upsertChildNode(rootNode, def, ctx);
+
+    // Special: if "Общие" group exists, normalize its children too.
+    if (def.id === 'Common') {
+      const commonGroup = rootNode.children!.find((c) => c.id === def.id);
+      if (commonGroup) {
+        ensureChildrenArray(commonGroup);
+        for (const childDef of R5_COMMON_CHILD_ORDER) {
+          upsertChildNode(commonGroup, childDef, ctx);
+        }
+        reorderChildrenByIds(commonGroup, R5_COMMON_CHILD_ORDER.map((x) => x.id));
+        commonGroup.name = 'Общие';
+        commonGroup.type = MetadataType.Unknown;
+      }
+    }
+  }
+
+  // Deterministic order under Configuration root.
+  reorderChildrenByIds(rootNode, R4_TOP_LEVEL_ORDER.map((x) => x.id));
+
+  return rootNode;
+}
+
