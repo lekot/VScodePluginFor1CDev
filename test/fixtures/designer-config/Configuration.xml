@@ -23,13 +23,14 @@
 			<Vendor>Test Vendor</Vendor>
 			<Version>1.0.0</Version>
 		</Properties>
-		<ChildObjects>
-			<Catalog>TestCatalog1</Catalog>
-			<Catalog>TestCatalog2</Catalog>
-			<Document>TestDocument1</Document>
-			<Enum>TestEnum1</Enum>
-			<CommonModule>TestModule1</CommonModule>
-			<Role>TestRole1</Role>
-		</ChildObjects>
+<ChildObjects>
+		<Catalog>TestCatalog1</Catalog>
+		<Catalog>TestCatalog2</Catalog>
+		<Document>TestDocument1</Document>
+		<Document>TestDocumentWithTwoAttributes</Document>
+		<Enum>TestEnum1</Enum>
+		<CommonModule>TestModule1</CommonModule>
+		<Role>TestRole1</Role>
+	</ChildObjects>
 	</Configuration>
 </MetaDataObject>
