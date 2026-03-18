@@ -643,8 +643,10 @@ ${defaultPropsLines}\t\t</Properties>
     propertiesObject.Synonym = [
       {
         'v8:item': [
-          { 'v8:lang': [{ '#text': 'ru' }] },
-          { 'v8:content': [{ '#text': elementName }] },
+          {
+            'v8:lang': [{ '#text': 'ru' }],
+            'v8:content': [{ '#text': elementName }],
+          },
         ],
       },
     ];
@@ -655,8 +657,10 @@ ${defaultPropsLines}\t\t</Properties>
         {
           'v8:Type': [{ '#text': 'xs:string' }],
           'v8:StringQualifiers': [
-            { Length: [{ '#text': '50' }] },
-            { AllowedLength: [{ '#text': 'Variable' }] },
+            {
+              'v8:Length': [{ '#text': '50' }],
+              'v8:AllowedLength': [{ '#text': 'Variable' }],
+            },
           ],
         },
       ];
@@ -672,8 +676,10 @@ ${defaultPropsLines}\t\t</Properties>
         propertiesObject[key] = [
           {
             'v8:item': [
-              { 'v8:lang': [{ '#text': 'ru' }] },
-              { 'v8:content': [{ '#text': tooltipContent }] },
+              {
+                'v8:lang': [{ '#text': 'ru' }],
+                'v8:content': [{ '#text': tooltipContent }],
+              },
             ],
           },
         ];

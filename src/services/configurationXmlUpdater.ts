@@ -121,3 +121,82 @@ export async function addRootObjectToConfiguration(
   }
   await fs.promises.writeFile(configPath, outXml, 'utf-8');
 }
+
+/**
+ * Remove a root metadata object reference from Configuration.xml's ChildObjects.
+ * Reads Configuration.xml, finds and removes the <rootTag>objectName</rootTag> entry.
+ * @param configRootPath - Directory containing Configuration.xml.
+ * @param rootTag - E.g. Catalog, Document, Enum.
+ * @param objectName - Display name of the object to remove.
+ */
+export async function removeRootObjectFromConfiguration(
+  configRootPath: string,
+  rootTag: string,
+  objectName: string
+): Promise<void> {
+  const configPath = path.join(configRootPath, 'Configuration.xml');
+  let xmlContent: string;
+  try {
+    xmlContent = await fs.promises.readFile(configPath, 'utf-8');
+  } catch (err) {
+    throw new Error(
+      `Configuration.xml not found or unreadable at ${configPath}. ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (!xmlContent || !xmlContent.trim()) {
+    throw new Error('Configuration.xml is empty or invalid.');
+  }
+  let parsed: unknown;
+  try {
+    parsed = parser.parse(xmlContent);
+  } catch (parseErr) {
+    throw new Error(
+      `Configuration.xml parse failed. ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`
+    );
+  }
+  const configChildren = findConfigurationChildren(parsed);
+  if (!configChildren) {
+    throw new Error('Configuration.xml: MetaDataObject/Configuration structure not found.');
+  }
+  const childObjectsArray = findChildObjectsArray(configChildren);
+  if (!childObjectsArray) {
+    return; // nothing to remove
+  }
+  const idx = childObjectsArray.findIndex((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const obj = item as Record<string, unknown>;
+    if (!(rootTag in obj)) return false;
+    const tagVal = obj[rootTag];
+    if (Array.isArray(tagVal) && tagVal.length > 0) {
+      const first = tagVal[0];
+      return typeof first === 'object' && first !== null && (first as Record<string, unknown>)['#text'] === objectName;
+    }
+    return false;
+  });
+  if (idx === -1) {
+    return; // entry not found — nothing to remove
+  }
+  childObjectsArray.splice(idx, 1);
+
+  // If ChildObjects is now empty, remove the ChildObjects node entirely
+  if (childObjectsArray.length === 0) {
+    const coIdx = configChildren.findIndex((item) => {
+      if (!item || typeof item !== 'object') return false;
+      const obj = item as Record<string, unknown>;
+      return 'ChildObjects' in obj;
+    });
+    if (coIdx !== -1) {
+      configChildren.splice(coIdx, 1);
+    }
+  }
+
+  let outXml: string;
+  try {
+    outXml = builder.build(parsed);
+  } catch (buildErr) {
+    throw new Error(
+      `Configuration.xml build failed. ${buildErr instanceof Error ? buildErr.message : String(buildErr)}`
+    );
+  }
+  await fs.promises.writeFile(configPath, outXml, 'utf-8');
+}

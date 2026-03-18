@@ -10,7 +10,7 @@ import {
 } from '../utils/referenceFinder';
 import { getDesignerTemplateXml } from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
-import { addRootObjectToConfiguration } from './configurationXmlUpdater';
+import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from './configurationXmlUpdater';
 import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
 
@@ -374,6 +374,14 @@ export async function deleteElement(node: TreeNode): Promise<void> {
     const elementDir = path.join(dirPath, node.name);
     if (fs.existsSync(elementDir) && fs.statSync(elementDir).isDirectory()) {
       await fs.promises.rm(elementDir, { recursive: true });
+    }
+    const rootTag = String(node.type);
+    const configRootPath = dirPath;
+    try {
+      await removeRootObjectFromConfiguration(configRootPath, rootTag, node.name);
+    } catch (err) {
+      Logger.error('Failed to update Configuration.xml on delete', err);
+      throw err;
     }
     Logger.info(`Deleted element file ${filePath}`);
     return;

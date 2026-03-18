@@ -1313,21 +1313,20 @@ export class PropertiesProvider {
       Logger.info('handleEditTypeMessage: calling typeEditorProvider.show()');
       const result = await this.typeEditorProvider.show(typeXMLForEditor, referenceableObjects);
 
-      // If result not null, serialize TypeDefinition back to XML string
-      if (result !== null) {
-        const { TypeSerializer } = await import('../serializers/typeSerializer');
-        const updatedTypeXML = TypeSerializer.serialize(result);
+        // If result not null, serialize TypeDefinition back to XML string
+        if (result !== null) {
+          const { TypeSerializer } = await import('../serializers/typeSerializer');
+          const updatedTypeXML = TypeSerializer.serialize(result);
 
-        // Keep node in sync so next render and next edit use the new type
-        if (this.currentNode) {
-          this.currentNode.properties['Type'] = updatedTypeXML;
-        }
+          // Do NOT update node.properties['Type'] here — that would make
+          // saveProperties' changedKeys comparison see old == new and skip Type.
+          // node.properties is updated after successful save in saveProperties.
 
-        this.postMessage({
-          type: 'typeUpdated',
-          property: 'Type',
-          value: updatedTypeXML
-        });
+          this.postMessage({
+            type: 'typeUpdated',
+            property: 'Type',
+            value: updatedTypeXML
+          });
 
         Logger.info('Type updated successfully');
       } else {
@@ -1384,19 +1383,18 @@ export class PropertiesProvider {
                 // If old value is an object (structured XML) and new value is a string (display representation),
                 // they are considered equal (not changed) - don't include Type in changedKeys
                 if (key === 'Type') {
+                  // If new is XML string (starts with '<'), it was explicitly changed via type editor
+                  if (typeof newValue === 'string' && newValue.trim().startsWith('<')) {
+                    return true;
+                  }
                   // If both are strings, compare directly
                   if (typeof newValue === 'string' && typeof oldValue === 'string') {
                     return newValue !== oldValue;
                   }
-                  // If old is object and new is string, consider them equal (Type wasn't actually changed by user)
-                  // The string is just a display representation of the structured XML
+                  // If old is object and new is a plain string (not XML), it's a display representation
                   if (typeof oldValue === 'object' && oldValue !== null && typeof newValue === 'string') {
                     Logger.info(`  Type: skipping (old is object, new is display string)`);
-                    return false; // Not changed - don't write Type
-                  }
-                  // If new is XML string (starts with '<'), it was explicitly changed
-                  if (typeof newValue === 'string' && newValue.trim().startsWith('<')) {
-                    return true; // Changed - write new Type XML
+                    return false;
                   }
                 }
                 
