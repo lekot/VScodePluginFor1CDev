@@ -52,6 +52,34 @@ const ROOT_TAG_DEFAULTS: Record<string, DefaultProperties> = {
 /** Defaults for nested Attribute (Type = String 50 is applied in XMLWriter; here only extra scalars if needed). */
 const ATTRIBUTE_DEFAULTS: DefaultProperties = {
   // Name, Synonym, Type are set in buildMinimalNestedElement; Comment can be empty
+  Comment: '',
+  PasswordMode: false,
+  Format: '',
+  EditFormat: '',
+  ToolTip: {
+    // Empty ToolTip with proper structure - will be handled by XML writer
+  },
+  MarkNegatives: false,
+  Mask: '',
+  MultiLine: false,
+  ExtendedEdit: false,
+  MinValue: null, // Will be rendered as xsi:nil="true"
+  MaxValue: null, // Will be rendered as xsi:nil="true"
+  FillFromFillingValue: true,
+  // FillValue will be set based on type in the UI, for now empty
+  FillValue: null,
+  FillChecking: 'ShowError',
+  ChoiceFoldersAndItems: 'Items',
+  ChoiceParameterLinks: '',
+  ChoiceParameters: '',
+  QuickChoice: 'Auto',
+  CreateOnInput: 'Auto',
+  ChoiceForm: '',
+  LinkByType: '',
+  ChoiceHistoryOnInput: 'Auto',
+  Indexing: 'DontIndex',
+  FullTextSearch: 'Use',
+  DataHistory: 'Use',
 };
 
 /** Defaults for TabularSection (no Type at tabular level in 1C). */

@@ -17,14 +17,15 @@ const XML_WRITER_OPTIONS = {
   textNodeName: '#text',
   format: true,
   indentBy: '  ',
-  suppressEmptyNode: false,
-  preserveOrder: true,
+  suppressEmptyNode: true,
+  preserveOrder: false,
   commentPropName: '#comment',
   cdataTagName: '__cdata',
   processEntities: true,
   suppressBooleanAttributes: false,
   suppressUnpairedNode: false,
   unpairedTags: [],
+  enableToString: true,
 };
 
 /**
@@ -365,43 +366,74 @@ ${defaultPropsLines}\t\t</Properties>
         : {};
     const merged = { ...defaults, ...minimalProperties, Name: elementName };
 
-    const properties: unknown[] = [
-      { Name: [{ '#text': elementName }] },
+    // Build the Properties object (representation of the Properties element)
+    const propertiesObject: Record<string, unknown> = {};
+
+    // Add Name property
+    propertiesObject.Name = [{ '#text': elementName }];
+
+    // Add Synonym property
+    propertiesObject.Synonym = [
       {
-        Synonym: [
-          {
-            'v8:item': [
-              { 'v8:lang': [{ '#text': 'ru' }] },
-              { 'v8:content': [{ '#text': elementName }] },
-            ],
-          },
+        'v8:item': [
+          { 'v8:lang': [{ '#text': 'ru' }] },
+          { 'v8:content': [{ '#text': elementName }] },
         ],
       },
     ];
 
+    // Add Type property if elementType is Attribute
     if (elementType === 'Attribute') {
-      properties.push({
-        Type: [
-          {
-            'v8:Type': [{ '#text': 'xs:string' }],
-            'v8:StringQualifiers': [
-              { Length: [{ '#text': '50' }] },
-              { AllowedLength: [{ '#text': 'Variable' }] },
-            ],
-          },
-        ],
-      });
+      propertiesObject.Type = [
+        {
+          'v8:Type': [{ '#text': 'xs:string' }],
+          'v8:StringQualifiers': [
+            { Length: [{ '#text': '50' }] },
+            { AllowedLength: [{ '#text': 'Variable' }] },
+          ],
+        },
+      ];
     }
 
+    // Add other properties
     for (const [key, value] of Object.entries(merged)) {
       if (key === 'Name' || key === 'Synonym' || key === 'Type') continue;
-      if (value !== undefined && value !== null) {
-        properties.push({ [key]: [{ '#text': String(value) }] });
+      // Handle special case for ToolTip object
+      if (key === 'ToolTip' && typeof value === 'object' && value !== null) {
+        // Build ToolTip with empty content if not provided
+        const tooltipContent = value['#text'] || '';
+        propertiesObject[key] = [
+          {
+            'v8:item': [
+              { 'v8:lang': [{ '#text': 'ru' }] },
+              { 'v8:content': [{ '#text': tooltipContent }] },
+            ],
+          },
+        ];
+      } else {
+        // Handle null values for properties that should be xsi:nil="true"
+        if (value === null) {
+          const xsiNilProperties = ['MinValue', 'MaxValue', 'FillValue'];
+          if (xsiNilProperties.includes(key)) {
+            // For xsi:nil=true, represent as an object with the attribute
+            // This will produce <key xsi:nil="true"/>
+            propertiesObject[key] = { '@_xsi:nil': 'true' };
+          }
+          // For other null values, we skip them (don't add to properties)
+        } else if (value !== undefined) {
+          // For all other properties, include them even if they are empty strings
+          // Represent as an element with text content
+          propertiesObject[key] = [{ '#text': String(value) }];
+        }
       }
     }
 
+    // Return the element representation: element with uuid attribute and Properties child
     return {
-      [elementType]: [{ '@_uuid': uuid }, { Properties: properties }],
+      [elementType]: {
+        '@_uuid': uuid,
+        Properties: propertiesObject,
+      },
     };
   }
 
@@ -413,26 +445,85 @@ ${defaultPropsLines}\t\t</Properties>
   ): unknown {
     if (!parsed || typeof parsed !== 'object') return parsed;
     if (Array.isArray(parsed)) {
-      return parsed.map((item) => {
-        if (!item || typeof item !== 'object') return item;
-        const obj = item as Record<string, unknown>;
-        for (const [key, value] of Object.entries(obj)) {
-          if (key === containerName && Array.isArray(value)) {
-            mutate(value);
-            return obj;
+      return parsed.map(item => this.mutateChildObjectsArray(item, containerName, _elementType, mutate));
+    }
+    // Handle object (non-array)
+    const obj = parsed as Record<string, unknown>;
+    const result = { ...obj }; // Shallow copy
+    // Check if containerName property exists
+    if (containerName in obj) {
+      const value = obj[containerName];
+      if (Array.isArray(value)) {
+        // It's an array, mutate it
+        mutate(value);
+        result[containerName] = value;
+      } else if (value === '' || value === null || value === undefined) {
+        // Convert empty string/null/undefined to empty array and mutate
+        const arr: unknown[] = [];
+        mutate(arr);
+        result[containerName] = arr;
+      } else if (typeof value === 'object') {
+        // With preserveOrder:false, parser gives ChildObjects as { Attribute: [...] } or { Attribute: {...} }.
+        // Get or create the element array and mutate it instead of recursing (recursion would look for
+        // containerName inside this object and wipe existing elements).
+        const inner = value as Record<string, unknown>;
+        const key = _elementType;
+        let arr: unknown[];
+        if (key in inner) {
+          const existing = inner[key];
+          if (Array.isArray(existing)) {
+            arr = existing;
+          } else if (existing !== null && existing !== undefined && typeof existing === 'object') {
+            arr = [existing];
+            inner[key] = arr;
+          } else {
+            arr = [];
+            inner[key] = arr;
           }
-          if (Array.isArray(value)) {
-            const updated = this.mutateChildObjectsArray(value, containerName, _elementType, mutate);
-            if (updated !== value) {
-              const result = { ...obj, [key]: updated };
-              return result;
-            }
+        } else {
+          arr = [];
+          inner[key] = arr;
+        }
+        // Normalize: parser may give unwrapped items (no elementType key). Ensure same shape so mutate pushes consistent form.
+        if (arr.length > 0) {
+          const first = arr[0];
+          const isWrapped =
+            first &&
+            typeof first === 'object' &&
+            _elementType in (first as Record<string, unknown>);
+          if (!isWrapped) {
+            inner[key] = arr.map((item) =>
+              item && typeof item === 'object' && !(_elementType in (item as Record<string, unknown>))
+                ? { [_elementType]: item }
+                : item
+            );
+            arr = inner[key] as unknown[];
           }
         }
-        return obj;
-      });
+        mutate(arr);
+        result[containerName] = value;
+      }
+      // For other values (string, number, boolean, etc.), leave as-is
+    } else {
+      // Property doesn't exist, create it as an empty array and mutate
+      const arr: unknown[] = [];
+      mutate(arr);
+      result[containerName] = arr;
     }
-    return parsed;
+    // Now recurse into all other properties (excluding containerName since we've handled it)
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === containerName) {
+        // Skip containerName as we've already handled it
+        continue;
+      }
+      if (Array.isArray(value)) {
+        result[key] = this.mutateChildObjectsArray(value, containerName, _elementType, mutate) as unknown[];
+      } else if (value && typeof value === 'object') {
+        result[key] = this.mutateChildObjectsArray(value, containerName, _elementType, mutate);
+      }
+      // For primitive values, copy as-is (already done by the spread above)
+    }
+    return result;
   }
 
   /**
@@ -464,6 +555,26 @@ ${defaultPropsLines}\t\t</Properties>
   }
 
   /**
+   * Parse XML string, update nested element properties in structure, and build back to XML.
+   * Used by tests and by writeNestedElementProperties.
+   */
+  static buildUpdatedNestedXml(
+    xmlContent: string,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>,
+    changedKeys?: string[]
+  ): string {
+    const parsed = this.parser.parse(xmlContent);
+    let updated = this.updateNestedElementInStructure(parsed, elementType, elementName, properties, changedKeys);
+    // Parser may return root as array of one element; builder expects single object
+    if (Array.isArray(updated) && updated.length === 1) {
+      updated = updated[0];
+    }
+    return this.builder.build(updated);
+  }
+
+  /**
    * Write properties for a nested element (Attribute, TabularSection, etc.)
    * Updates only the specific nested element, not the entire file
    * @param filePath Path to XML file
@@ -490,22 +601,10 @@ ${defaultPropsLines}\t\t</Properties>
           );
         }
 
-        let parsed: unknown;
-        try {
-          parsed = this.parser.parse(xmlContent);
-        } catch (parseError) {
-          const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-          Logger.error(`XML parsing failed for ${filePath}`, parseError);
-          throw new Error(
-            `Invalid XML structure in file. Cannot update properties in a corrupted XML file. ${errorMsg}`
-          );
-        }
-
-        const updated = this.updateNestedElementInStructure(parsed, elementType, elementName, properties, changedKeys);
 
         let xmlString: string;
         try {
-          xmlString = this.builder.build(updated);
+          xmlString = this.buildUpdatedNestedXml(xmlContent, elementType, elementName, properties, changedKeys);
         } catch (buildError) {
           Logger.error(`Failed to build XML for ${filePath}`, buildError);
           throw new Error(
@@ -830,7 +929,11 @@ ${defaultPropsLines}\t\t</Properties>
 
           if (key === 'Properties' && Array.isArray(value)) {
             result[key] = this.updatePropertiesArray(value, properties);
+          } else if (key === 'Properties' && value && typeof value === 'object') {
+            result[key] = this.updatePropertiesObject(value as Record<string, unknown>, properties);
           } else if (Array.isArray(value)) {
+            result[key] = this.updatePropertiesInStructure(value, properties);
+          } else if (value !== null && value !== undefined && typeof value === 'object') {
             result[key] = this.updatePropertiesInStructure(value, properties);
           } else {
             result[key] = value;
@@ -841,7 +944,61 @@ ${defaultPropsLines}\t\t</Properties>
       });
     }
 
-    return parsed;
+    // Root or nested object (e.g. MetaDataObject → Catalog → Properties): recurse into values
+    const obj = parsed as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === ':@' || (typeof key === 'string' && key.startsWith('?'))) {
+        result[key] = value;
+        continue;
+      }
+      if (key === 'Properties') {
+        if (Array.isArray(value)) {
+          result[key] = this.updatePropertiesArray(value, properties);
+        } else if (value && typeof value === 'object') {
+          result[key] = this.updatePropertiesObject(value as Record<string, unknown>, properties);
+        } else {
+          result[key] = value;
+        }
+      } else if (value !== null && value !== undefined && typeof value === 'object') {
+        result[key] = this.updatePropertiesInStructure(value, properties);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  /** Updates Properties when parsed as object (key -> array or single value per property). */
+  private static updatePropertiesObject(
+    propertiesObj: Record<string, unknown>,
+    newProperties: Record<string, unknown>
+  ): Record<string, unknown> {
+    const result = { ...propertiesObj };
+    for (const [key, newVal] of Object.entries(newProperties)) {
+      const textVal = typeof newVal === 'boolean' || typeof newVal === 'number'
+        ? newVal
+        : String(newVal);
+      const existing = result[key];
+      if (Array.isArray(existing) && existing.length > 0) {
+        const first = existing[0];
+        if (first && typeof first === 'object' && '#text' in (first as object)) {
+          result[key] = [{ ...(first as Record<string, unknown>), '#text': textVal }];
+        } else {
+          result[key] = [{ '#text': textVal }];
+        }
+      } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+        const rec = existing as Record<string, unknown>;
+        if ('#text' in rec) {
+          result[key] = { ...rec, '#text': textVal };
+        } else {
+          result[key] = existing;
+        }
+      } else {
+        result[key] = [{ '#text': textVal }];
+      }
+    }
+    return result;
   }
 
   private static updatePropertiesArray(
@@ -903,6 +1060,11 @@ ${defaultPropsLines}\t\t</Properties>
       return parsed;
     }
 
+    const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
+    const matchesContainer = (k: string) => k === containerName || k.endsWith(':' + containerName);
+    const innerHasElementType = (v: Record<string, unknown>) =>
+      elementType in v || Object.keys(v).some((k) => k === elementType || k.endsWith(':' + elementType));
+
     if (Array.isArray(parsed)) {
       return parsed.map((item) => {
         if (!item || typeof item !== 'object') {
@@ -917,11 +1079,23 @@ ${defaultPropsLines}\t\t</Properties>
             continue;
           }
 
-          // Designer format: attributes live under ChildObjects, not Attributes
-          const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
-          if (key === containerName && Array.isArray(value)) {
-            result[key] = this.updateNestedElementArray(value, elementType, elementName, properties, changedKeys);
+          if (matchesContainer(key)) {
+            if (Array.isArray(value)) {
+              result[key] = this.updateNestedElementArray(value, elementType, elementName, properties, changedKeys);
+            } else if (value && typeof value === 'object' && innerHasElementType(value as Record<string, unknown>)) {
+              const inner = value as Record<string, unknown>;
+              const elementKey = elementType in inner ? elementType : Object.keys(inner).find((k) => k === elementType || k.endsWith(':' + elementType))!;
+              const raw = inner[elementKey];
+              const innerArr = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
+              const elementsArray = innerArr.map((x: unknown) => ({ [elementKey]: [x] }));
+              const updated = this.updateNestedElementArray(elementsArray, elementType, elementName, properties, changedKeys);
+              result[key] = { [elementKey]: updated.flatMap((it) => ((it as Record<string, unknown>)[elementKey] as unknown[]) || []) };
+            } else {
+              result[key] = value;
+            }
           } else if (Array.isArray(value)) {
+            result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties, changedKeys);
+          } else if (value !== null && value !== undefined && typeof value === 'object') {
             result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties, changedKeys);
           } else {
             result[key] = value;
@@ -932,7 +1106,36 @@ ${defaultPropsLines}\t\t</Properties>
       });
     }
 
-    return parsed;
+    // Root or nested object: recurse into values to find containerName
+    const obj = parsed as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === ':@' || (typeof key === 'string' && key.startsWith('?'))) {
+        result[key] = value;
+        continue;
+      }
+      if (matchesContainer(key)) {
+        if (Array.isArray(value)) {
+          result[key] = this.updateNestedElementArray(value, elementType, elementName, properties, changedKeys);
+        } else if (value && typeof value === 'object' && innerHasElementType(value as Record<string, unknown>)) {
+          const inner = value as Record<string, unknown>;
+          const elementKey = elementType in inner ? elementType : Object.keys(inner).find((k) => k === elementType || k.endsWith(':' + elementType))!;
+          const raw = inner[elementKey];
+          const innerArr = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
+          const elementsArray = innerArr.map((x: unknown) => ({ [elementKey]: [x] }));
+          // Apply selective write: recursively pass changedKeys to nested updater
+          const updated = this.updateNestedElementArray(elementsArray, elementType, elementName, properties, changedKeys);
+          result[key] = { [elementKey]: updated.flatMap((it) => ((it as Record<string, unknown>)[elementKey] as unknown[]) || []) };
+        } else {
+          result[key] = value;
+        }
+      } else if (value !== null && value !== undefined && typeof value === 'object') {
+        result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties, changedKeys);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
   }
 
   private static updateNestedElementArray(
@@ -942,6 +1145,7 @@ ${defaultPropsLines}\t\t</Properties>
     properties: Record<string, unknown>,
     changedKeys?: string[]
   ): unknown[] {
+    const matchesElementType = (k: string) => k === elementType || k.endsWith(':' + elementType);
     return elementsArray.map((item) => {
       if (!item || typeof item !== 'object') {
         return item;
@@ -955,7 +1159,7 @@ ${defaultPropsLines}\t\t</Properties>
           continue;
         }
 
-        if (key === elementType && Array.isArray(value)) {
+        if (matchesElementType(key) && Array.isArray(value)) {
           const elementData = this.extractNestedElementData(value);
           if (elementData.name === elementName) {
             result[key] = this.updateNestedElementProperties(value, properties, changedKeys);
@@ -972,7 +1176,30 @@ ${defaultPropsLines}\t\t</Properties>
   }
 
   private static extractNestedElementData(elementArray: unknown[]): { name: string } {
-    const extractNameFrom = (arr: unknown[]): string => {
+    const textFrom = (val: unknown): string => {
+      if (Array.isArray(val) && val.length > 0 && val[0] && typeof val[0] === 'object' && '#text' in (val[0] as object)) {
+        return String((val[0] as Record<string, unknown>)['#text']);
+      }
+      if (val && typeof val === 'object' && '#text' in (val as object)) {
+        return String((val as Record<string, unknown>)['#text']);
+      }
+      return '';
+    };
+    const extractNameFrom = (arr: unknown): string => {
+      if (arr && typeof arr === 'object' && !Array.isArray(arr)) {
+        const obj = arr as Record<string, unknown>;
+        const nameKey = 'Name' in obj ? 'Name' : Object.keys(obj).find((k) => k === 'Name' || k.endsWith(':Name'));
+        if (nameKey) {
+          const n = textFrom(obj[nameKey]);
+          if (n) return n;
+        }
+        if ('Properties' in obj) {
+          const inner = extractNameFrom(obj.Properties);
+          if (inner) return inner;
+        }
+        return '';
+      }
+      if (!Array.isArray(arr)) return '';
       for (const it of arr) {
         if (!it || typeof it !== 'object') continue;
         const o = it as Record<string, unknown>;
@@ -983,8 +1210,8 @@ ${defaultPropsLines}\t\t</Properties>
             if ('#text' in nameObj) return String(nameObj['#text']);
           }
         }
-        if ('Properties' in o && Array.isArray(o.Properties)) {
-          const inner = extractNameFrom(o.Properties as unknown[]);
+        if ('Properties' in o) {
+          const inner = extractNameFrom(o.Properties);
           if (inner) return inner;
         }
       }
@@ -1010,11 +1237,85 @@ ${defaultPropsLines}\t\t</Properties>
     return 'Type' in obj ? obj.Type ?? null : null;
   }
 
+  /** Updates Properties when in object form (key -> array or value per property). */
+  private static updateNestedElementPropertiesObject(
+    propertiesObj: Record<string, unknown>,
+    newProperties: Record<string, unknown>,
+    changedKeys?: string[]
+  ): Record<string, unknown> {
+    const result = { ...propertiesObj };
+    for (const [key, newVal] of Object.entries(newProperties)) {
+      // Apply selective write if changedKeys provided and key not in changedKeys
+      if (changedKeys && !changedKeys.includes(key)) {
+        // Keep existing property as-is; do not write derived/tool properties
+        if (!key.startsWith('_')) {
+          result[key] = propertiesObj[key];
+        }
+        continue;
+      }
+
+      const existing = result[key];
+
+      // Do not write raw objects; preserve existing structured content for non-user keys
+      if (typeof newVal === 'object' && newVal !== null && !Array.isArray(newVal)) {
+        // Only overwrite if we have a structured Type object parse from XML
+        if (key === 'Type' && !Array.isArray(existing) && existing && typeof existing === 'object') {
+          // Keep existing Type object (structured v8:Type/v8:Qualifiers), do not flatten
+          result[key] = existing; // already set by spread
+        } else {
+          result[key] = existing; // keep existing for other object props
+        }
+        continue;
+      }
+
+      // Compute text value for simple props
+      const textVal = typeof newVal === 'boolean' || typeof newVal === 'number' ? newVal : String(newVal);
+
+      // Handle Type as structured XML (from type editor)
+      if (key === 'Type' && typeof newVal === 'string' && newVal.trim().includes('<')) {
+        try {
+          const typeParsed = this.parser.parse(newVal.trim());
+          const inner = this.extractTypeContentFromParsed(typeParsed);
+          result[key] = inner != null ? (Array.isArray(inner) ? inner : [inner]) : [{ '#text': newVal }];
+        } catch {
+          // On parse error, write as text node only if not already structured
+          if (!Array.isArray(existing)) {
+            result[key] = [{ '#text': newVal }];
+          } else {
+            result[key] = existing;
+          }
+        }
+      } else if (Array.isArray(existing) && existing.length > 0) {
+        // Update existing array-form props
+        const first = existing[0];
+        if (first && typeof first === 'object' && '#text' in first) {
+          result[key] = [{ ...first, '#text': textVal }];
+        } else {
+          const arr: any = Array.isArray(existing) ? [...existing] : [];
+          if (arr.length === 0) arr.push({});
+          result[key] = [{ ...arr[0], '#text': textVal }];
+        }
+      } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+        const rec = existing as Record<string, unknown>;
+        if ('#text' in rec) {
+          result[key] = { ...rec, '#text': textVal };
+        } else {
+          result[key] = [{ '#text': textVal }];
+        }
+      } else {
+        result[key] = [{ '#text': textVal }];
+      }
+    }
+    return result;
+  }
+
   private static updateNestedElementProperties(
     elementArray: unknown[],
     properties: Record<string, unknown>,
     changedKeys?: string[]
   ): unknown[] {
+    // если changedKeys не передан, по умолчанию обновлять все пропсы из properties
+    const targets = changedKeys && changedKeys.length ? changedKeys : Object.keys(properties || {});
     return elementArray.map((item) => {
       if (!item || typeof item !== 'object') {
         return item;
@@ -1029,17 +1330,36 @@ ${defaultPropsLines}\t\t</Properties>
         }
 
         // Designer format: Attribute props (Type, Name, etc.) live inside Properties
-        if (key === 'Properties' && Array.isArray(value)) {
-          result[key] = this.updateNestedElementProperties(value, properties, changedKeys);
+        if (key === 'Properties') {
+          const val = value;
+          if (Array.isArray(val)) {
+            result[key] = this.updateNestedElementProperties(val, properties, changedKeys);
+          } else if (val && typeof val === 'object') {
+            result[key] = this.updateNestedElementPropertiesObject(val as Record<string, unknown>, properties, changedKeys);
+          } else {
+            result[key] = val;
+          }
           continue;
         }
 
-        if (key in properties && (!changedKeys || changedKeys.includes(key))) {
-          const newValue = properties[key];
+        // Обновляем только если ключ в списке целевых ключей для selective write
+        const shouldUpdateThisKey = targets.includes(key);
 
-          // Don't write object values as "[object Object]" — 1C XDTO expects proper XML or primitives
+        if (shouldUpdateThisKey) {
+          const newValue = properties[key];
+          const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
+            ? newValue
+            : String(newValue ?? '');
+
+          // Keep raw object references as-is (except for Type structured handling below)
           if (typeof newValue === 'object' && newValue !== null && !Array.isArray(newValue)) {
-            result[key] = value;
+            if (key === 'Type' && value && typeof value === 'object') {
+              // preserve existing structured Type element (v8:Type and qualifiers)
+              result[key] = value; // keeps existing child object structure
+            } else {
+              // skip corruption for other raw object props
+              result[key] = value;
+            }
             continue;
           }
 
@@ -1048,39 +1368,28 @@ ${defaultPropsLines}\t\t</Properties>
             try {
               const typeParsed = this.parser.parse(newValue.trim());
               const inner = this.extractTypeContentFromParsed(typeParsed);
-              if (inner != null) {
-                result[key] = Array.isArray(inner) ? inner : [inner];
-              } else {
-                result[key] = [{ '#text': newValue }];
-              }
+              result[key] = inner != null ? (Array.isArray(inner) ? inner : [inner]) : [{ '#text': textValue }];
             } catch (parseErr) {
               Logger.error('Failed to parse Type XML in updateNestedElementProperties', parseErr);
-              result[key] = [{ '#text': newValue }];
-            }
-          } else if (Array.isArray(value) && value.length > 0) {
-            const firstChild = value[0];
-            
-            // Special handling for xsi:nil values - preserve them as-is
-            if (firstChild && typeof firstChild === 'object' && '@_xsi:nil' in firstChild) {
-              result[key] = value; // Keep original xsi:nil structure
-            } else if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
-              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
-                ? newValue
-                : String(newValue);
-              result[key] = [{ ...firstChild, '#text': textValue }];
-            } else {
-              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
-                ? newValue
-                : String(newValue);
               result[key] = [{ '#text': textValue }];
             }
           } else {
-            const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
-              ? newValue
-              : String(newValue);
-            result[key] = [{ '#text': textValue }];
+            // Handle flat property updates
+            if (Array.isArray(value) && value.length > 0) {
+              const firstChild = value[0];
+              if (firstChild && typeof firstChild === 'object' && '@_xsi:nil' in firstChild) {
+                result[key] = value; // Keep original xsi:nil
+              } else if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
+                result[key] = [{ ...firstChild, '#text': textValue }];
+              } else {
+                result[key] = [{ '#text': textValue }];
+              }
+            } else {
+              result[key] = [{ '#text': textValue }];
+            }
           }
         } else {
+          // preserve existing property when not updating
           result[key] = value;
         }
       }

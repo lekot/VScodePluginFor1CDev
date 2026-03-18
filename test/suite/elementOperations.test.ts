@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { TreeNode } from '../../src/models/treeNode';
+import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import {
   createElement,
   createForm,
@@ -155,5 +155,61 @@ suite('elementOperations', () => {
   test('renameElement to same name does nothing', async () => {
     await renameElement(catalogNode, 'ExistingCatalog', tmpDir);
     assert.ok(fs.existsSync(catalogNode.filePath!));
+  });
+
+  test('createElement creates attribute with proper structure', async () => {
+    await createElement(catalogNode, 'NewAttribute');
+    const content = await readFileContent(catalogNode.filePath!);
+    
+    // Check that the attribute was added with proper structure
+    assert.ok(content.includes('<Attribute'));
+    assert.ok(content.includes('uuid="'));
+    assert.ok(content.includes('<Name>NewAttribute</Name>'));
+    assert.ok(content.includes('<Synonym>'));
+    assert.ok(content.includes('<v8:lang>ru</v8:lang>'));
+    assert.ok(content.includes('<v8:content>NewAttribute</v8:content>'));
+    assert.ok(content.includes('<Comment/>') || content.includes('<Comment></Comment>'));
+    assert.ok(content.includes('<PasswordMode>false</PasswordMode>'));
+    assert.ok(content.includes('<Format/>') || content.includes('<Format></Format>'));
+    assert.ok(content.includes('<EditFormat/>') || content.includes('<EditFormat></EditFormat>'));
+    assert.ok(content.includes('<ToolTip>'));
+    assert.ok(content.includes('<MarkNegatives>false</MarkNegatives>'));
+    assert.ok(content.includes('<Mask/>') || content.includes('<Mask></Mask>'));
+    assert.ok(content.includes('<MultiLine>false</MultiLine>'));
+    assert.ok(content.includes('<ExtendedEdit>false</ExtendedEdit>'));
+    assert.ok(content.includes('<MinValue xsi:nil="true"/>'));
+    assert.ok(content.includes('<MaxValue xsi:nil="true"/>'));
+    assert.ok(content.includes('<FillFromFillingValue>true</FillFromFillingValue>'));
+    assert.ok(content.includes('<FillChecking>ShowError</FillChecking>'));
+    assert.ok(content.includes('<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>'));
+    assert.ok(content.includes('<ChoiceParameterLinks/>') || content.includes('<ChoiceParameterLinks></ChoiceParameterLinks>'));
+    assert.ok(content.includes('<ChoiceParameters/>') || content.includes('<ChoiceParameters></ChoiceParameters>'));
+    assert.ok(content.includes('<QuickChoice>Auto</QuickChoice>'));
+    assert.ok(content.includes('<CreateOnInput>Auto</CreateOnInput>'));
+    assert.ok(content.includes('<Indexing>DontIndex</Indexing>'));
+    assert.ok(content.includes('<FullTextSearch>Use</FullTextSearch>'));
+    assert.ok(content.includes('<DataHistory>Use</DataHistory>'));
+  });
+
+  test('createElement creates attribute in Attributes folder', async () => {
+    const attributesPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Attributes');
+    await fs.promises.mkdir(attributesPath, { recursive: true });
+    const attributesNode = {
+      id: 'Attributes',
+      name: 'Attributes',
+      type: MetadataType.Attribute,
+      parent: catalogNode,
+      filePath: attributesPath,
+      properties: {},
+      children: undefined
+    };
+    
+    await createElement(attributesNode, 'NewAttribute');
+    const content = await readFileContent(catalogNode.filePath!);
+    
+    // Check that the attribute was added to the object's XML
+    assert.ok(content.includes('<Attribute'));
+    assert.ok(content.includes('uuid="'));
+    assert.ok(content.includes('<Name>NewAttribute</Name>'));
   });
 });

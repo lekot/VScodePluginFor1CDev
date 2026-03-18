@@ -62,7 +62,8 @@ function getSiblingNames(parent: TreeNode): string[] {
 /**
  * Creates a new metadata element in the configuration.
  *
- * Parent can be a type node (e.g. Catalogs) or an object (Catalog/Document) for nested Attribute.
+ * Parent can be a type node (e.g. Catalogs), an object (Catalog/Document) for nested Attribute,
+ * or a container folder (Attributes/TabularSections) under an object.
  * Creates the element XML file and associated directory structure.
  *
  * @param parentNode - The parent node where the element will be created
@@ -73,6 +74,10 @@ function getSiblingNames(parent: TreeNode): string[] {
  * ```typescript
  * // Create a new catalog
  * await createElement(catalogsTypeNode, 'NewCatalog');
+ * // Create a new attribute under a catalog object
+ * await createElement(catalogObjectNode, 'NewAttribute');
+ * // Create a new attribute by selecting the Attributes folder
+ * await createElement(attributesFolderNode, 'NewAttribute');
  * ```
  */
 export async function createElement(
@@ -105,7 +110,7 @@ export async function createElement(
     if (!typeFolderPath) {
       throw new Error(`Папка типа не найдена: ${typeFolderPath}`);
     }
-
+    
     // When using placeholder type-nodes, the type folder may be absent on disk.
     // Create it on-demand so element creation can proceed.
     if (!fs.existsSync(typeFolderPath)) {
@@ -148,6 +153,7 @@ export async function createElement(
     return;
   }
 
+  // Handle nested elements: when parentNode is a top-level type (Catalog, Document, etc.)
   if (TOP_LEVEL_TYPES.has(parentNode.type)) {
     const filePath = parentNode.filePath;
     if (!filePath || !fs.existsSync(filePath)) {
@@ -157,7 +163,28 @@ export async function createElement(
     return;
   }
 
-  throw new Error('Создание элемента: выберите узел типа (Справочники, Документы и т.д.) или объект метаданных.');
+  // Handle container folders (Attributes, TabularSections) under objects
+  const containerTypes = new Set([
+    MetadataType.Attribute, // Attributes folder has type Attribute
+    MetadataType.TabularSection // TabularSections folder has type TabularSection
+  ]);
+
+  if (containerTypes.has(parentNode.type) && parent) {
+    // Check if the parent of the container is a top-level type object
+    if (TOP_LEVEL_TYPES.has(parent.type)) {
+      const filePath = parent.filePath;
+      if (!filePath || !fs.existsSync(filePath)) {
+        throw new Error('Файл объекта не найден.');
+      }
+      
+      // Determine the element type based on container type
+      const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
+      await XMLWriter.addNestedElement(filePath, elementType, name, {});
+      return;
+    }
+  }
+
+  throw new Error('Создание элемента: выберите узел типа (Справочники, Документы и т.д.), объект метаданных или контейнер folder (Атрибуты, Табличные части).');
 }
 
 /** Minimal Ext/Form.xml content for a new form (Designer). */

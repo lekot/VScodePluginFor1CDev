@@ -394,16 +394,10 @@ suite('XMLWriter', () => {
 
     // Requirement 3.1: Type XML parsing when Type is explicitly changed
     test('Type XML parsing produces structured XML when Type is in changed properties', async () => {
-      // Copy fixture to temp location
-      fs.copyFileSync(passwordAttrFixturePath, tempPasswordAttrPath);
-
-      // Read original XML to verify Type structure
-      const originalXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
+      const originalXml = fs.readFileSync(passwordAttrFixturePath, 'utf-8');
       assert.ok(originalXml.includes('<v8:Type>xs:string</v8:Type>'));
       assert.ok(originalXml.includes('<v8:StringQualifiers>'));
 
-      // Simulate changing Type to a different type with structured XML
-      // This is the XML string that would be generated when user changes Type
       const newTypeXml = `<Type>
 						<v8:Type>xs:decimal</v8:Type>
 						<v8:NumberQualifiers>
@@ -413,21 +407,17 @@ suite('XMLWriter', () => {
 						</v8:NumberQualifiers>
 					</Type>`;
 
-      // When Type is explicitly changed, it's passed as XML string
       const properties = {
         Name: 'Password',
         Type: newTypeXml,
       };
 
-      await XMLWriter.writeNestedElementProperties(
-        tempPasswordAttrPath,
+      const modifiedXml = XMLWriter.buildUpdatedNestedXml(
+        originalXml,
         'Attribute',
         'Password',
         properties
       );
-
-      // Verify Type was parsed and written as structured XML
-      const modifiedXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
       assert.ok(
         modifiedXml.includes('<v8:Type>xs:decimal</v8:Type>'),
         'Type should be parsed and written as structured XML'
@@ -444,16 +434,9 @@ suite('XMLWriter', () => {
 
     // Requirement 3.5: Backup files are created and rollback works on failure
     test('backup files are created and rollback works on failure', async () => {
-      // Copy fixture to temp location
       fs.copyFileSync(passwordAttrFixturePath, tempPasswordAttrPath);
-
       const originalContent = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
 
-      // Make the file read-only to simulate write failure
-      // Note: This test verifies backup creation; actual rollback is harder to test
-      // without mocking fs operations, but we can verify backup is created
-
-      // First, do a successful write to verify backup is created
       const properties = {
         Name: 'Password',
         PasswordMode: true,
@@ -466,12 +449,12 @@ suite('XMLWriter', () => {
         properties
       );
 
-      // Backup should be created during write and then deleted on success
-      // We can't easily verify the transient backup, but we can verify the write succeeded
       const modifiedContent = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
       assert.notStrictEqual(originalContent, modifiedContent, 'File should be modified');
-
-      // Verify no backup file remains after successful write
+      assert.ok(
+        modifiedContent.includes('<PasswordMode>true</PasswordMode>'),
+        'PasswordMode should be updated to true'
+      );
       assert.ok(
         !fs.existsSync(`${tempPasswordAttrPath}.bak`),
         'Backup should be cleaned up after successful write'
@@ -480,30 +463,22 @@ suite('XMLWriter', () => {
 
     // Requirement 3.4: Multiple changed properties are all written correctly
     test('multiple changed properties are all written correctly', async () => {
-      // Copy fixture to temp location
-      fs.copyFileSync(passwordAttrFixturePath, tempPasswordAttrPath);
-
-      // Read original XML
-      const originalXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
+      const originalXml = fs.readFileSync(passwordAttrFixturePath, 'utf-8');
       assert.ok(originalXml.includes('<PasswordMode>false</PasswordMode>'));
       assert.ok(originalXml.includes('Password Field'));
 
-      // Change multiple properties at once (simulating user changing multiple fields)
       const properties = {
         Name: 'Password',
         Synonym: 'New Password Label',
         PasswordMode: true,
       };
 
-      await XMLWriter.writeNestedElementProperties(
-        tempPasswordAttrPath,
+      const modifiedXml = XMLWriter.buildUpdatedNestedXml(
+        originalXml,
         'Attribute',
         'Password',
         properties
       );
-
-      // Verify all changed properties were written
-      const modifiedXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
       assert.ok(
         modifiedXml.includes('New Password Label'),
         'Synonym should be updated'
@@ -512,8 +487,6 @@ suite('XMLWriter', () => {
         modifiedXml.includes('<PasswordMode>true</PasswordMode>'),
         'PasswordMode should be updated'
       );
-
-      // Verify Type structure is preserved (this is the current behavior we want to preserve)
       assert.ok(
         modifiedXml.includes('<v8:Type>xs:string</v8:Type>'),
         'Type structure should be preserved'
@@ -553,36 +526,25 @@ suite('XMLWriter', () => {
     });
 
     test('EXPECTED FAILURE: changing only PasswordMode should not corrupt Type property', async () => {
-      // Copy fixture to temp location
-      fs.copyFileSync(passwordAttrFixturePath, tempPasswordAttrPath);
-
-      // Read original XML to verify Type structure before modification
-      const originalXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
+      const originalXml = fs.readFileSync(passwordAttrFixturePath, 'utf-8');
       assert.ok(originalXml.includes('<v8:Type>xs:string</v8:Type>'), 'Original should have structured Type');
       assert.ok(originalXml.includes('<v8:StringQualifiers>'), 'Original should have StringQualifiers');
       assert.ok(originalXml.includes('<v8:Length>10</v8:Length>'), 'Original should have Length qualifier');
 
-      // Simulate what PropertiesProvider does: pass all properties including Type as display string
-      // This is the bug condition - Type is passed as "string(10)" display string, not structured XML
       const properties = {
         Name: 'Password',
         Synonym: 'Password Field',
-        Type: 'string(10)',  // Display string representation, not structured XML
-        PasswordMode: true   // This is the ONLY property the user changed
+        Type: 'string(10)',
+        PasswordMode: true,
       };
 
-      // Call writeNestedElementProperties with changedKeys to indicate only PasswordMode changed
-      // This is the FIXED behavior - only write the changed property
-      await XMLWriter.writeNestedElementProperties(
-        tempPasswordAttrPath,
+      const modifiedXml = XMLWriter.buildUpdatedNestedXml(
+        originalXml,
         'Attribute',
         'Password',
         properties,
-        ['PasswordMode']  // Only PasswordMode was changed by the user
+        ['PasswordMode']
       );
-
-      // Read modified XML
-      const modifiedXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
 
       // EXPECTED BEHAVIOR (what should happen after fix):
       // - Only PasswordMode should be written to XML
@@ -622,31 +584,23 @@ suite('XMLWriter', () => {
     });
 
     test('EXPECTED FAILURE: changing Synonym should not write unchanged properties', async () => {
-      // Copy fixture to temp location
-      fs.copyFileSync(passwordAttrFixturePath, tempPasswordAttrPath);
+      const originalXml = fs.readFileSync(passwordAttrFixturePath, 'utf-8');
+      assert.ok(originalXml.includes('<PasswordMode>false</PasswordMode>'), 'Original should have PasswordMode=false');
 
-      // Read original XML
-      const originalXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
-      const originalPasswordMode = originalXml.includes('<PasswordMode>false</PasswordMode>');
-      assert.ok(originalPasswordMode, 'Original should have PasswordMode=false');
-
-      // Simulate changing only Synonym
       const properties = {
         Name: 'Password',
-        Synonym: 'New Password Synonym',  // This is the ONLY property the user changed
+        Synonym: 'New Password Synonym',
         Type: 'string(10)',
-        PasswordMode: false
+        PasswordMode: false,
       };
 
-      await XMLWriter.writeNestedElementProperties(
-        tempPasswordAttrPath,
+      const modifiedXml = XMLWriter.buildUpdatedNestedXml(
+        originalXml,
         'Attribute',
         'Password',
         properties,
-        ['Synonym']  // Only Synonym was changed by the user
+        ['Synonym']
       );
-
-      const modifiedXml = fs.readFileSync(tempPasswordAttrPath, 'utf-8');
 
       // EXPECTED: Only Synonym should be modified
       // ACTUAL (bug): All properties are written, Type is corrupted

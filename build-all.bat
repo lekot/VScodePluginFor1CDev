@@ -30,3 +30,4 @@ if %errorlevel% neq 0 exit /b %errorlevel%
 echo.
 echo Build complete! VSIX: releases\1c-metadata-tree-vscode-%NEWVERSION%.vsix
 echo Install via: Extensions: Install from VSIX...
+pause

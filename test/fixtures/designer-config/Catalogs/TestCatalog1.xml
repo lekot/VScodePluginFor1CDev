@@ -1,20 +1,75 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-	<Catalog uuid="e0f24999-7c1d-4190-b654-f02a9bedcd09">
-		<Properties>
-			<Name>TestCatalog1</Name>
-			<Synonym>
-				<v8:item>
-					<v8:lang>ru</v8:lang>
-					<v8:content>Test Catalog 1</v8:content>
-				</v8:item>
-			</Synonym>
-			<Comment/>
-			<Hierarchical>false</Hierarchical>
-			<CodeLength>9</CodeLength>
-			<DescriptionLength>25</DescriptionLength>
-			<CodeType>String</CodeType>
-		</Properties>
-		<ChildObjects/>
-	</Catalog>
+  <Catalog uuid="e0f24999-7c1d-4190-b654-f02a9bedcd09">
+    <Properties>
+      <Name>TestCatalog1</Name>
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>Test Catalog 1</v8:content>
+        </v8:item>
+      </Synonym>
+      <Comment/>
+      <Hierarchical>false</Hierarchical>
+      <CodeLength>9</CodeLength>
+      <DescriptionLength>25</DescriptionLength>
+      <CodeType>String</CodeType>
+    </Properties>
+    <ChildObjects>
+      <Attribute uuid="377e2419-0f37-4ccf-9488-d323032fb48f">
+        <Properties>
+          <Name>NewAttribute</Name>
+          <Synonym>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+            </v8:item>
+            <v8:item>
+              <v8:content>NewAttribute</v8:content>
+            </v8:item>
+          </Synonym>
+          <Type>
+            <v8:Type>xs:string</v8:Type>
+            <v8:StringQualifiers>
+              <Length>50</Length>
+            </v8:StringQualifiers>
+            <v8:StringQualifiers>
+              <AllowedLength>Variable</AllowedLength>
+            </v8:StringQualifiers>
+          </Type>
+          <Comment/>
+          <PasswordMode>false</PasswordMode>
+          <Format/>
+          <EditFormat/>
+          <ToolTip>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+            </v8:item>
+            <v8:item>
+              <v8:content/>
+            </v8:item>
+          </ToolTip>
+          <MarkNegatives>false</MarkNegatives>
+          <Mask/>
+          <MultiLine>false</MultiLine>
+          <ExtendedEdit>false</ExtendedEdit>
+          <MinValue xsi:nil="true"/>
+          <MaxValue xsi:nil="true"/>
+          <FillFromFillingValue>true</FillFromFillingValue>
+          <FillValue xsi:nil="true"/>
+          <FillChecking>ShowError</FillChecking>
+          <ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>
+          <ChoiceParameterLinks/>
+          <ChoiceParameters/>
+          <QuickChoice>Auto</QuickChoice>
+          <CreateOnInput>Auto</CreateOnInput>
+          <ChoiceForm/>
+          <LinkByType/>
+          <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+          <Indexing>DontIndex</Indexing>
+          <FullTextSearch>Use</FullTextSearch>
+          <DataHistory>Use</DataHistory>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
 </MetaDataObject>
