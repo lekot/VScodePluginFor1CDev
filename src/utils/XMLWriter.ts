@@ -5,8 +5,29 @@ import {
   getDefaultPropertiesForRootTag,
   getDefaultPropertiesForNestedElement,
 } from '../constants/metadataDefaultValues';
+import { MetadataType } from '../models/treeNode';
 import { injectInternalInfoIntoMetadataXml } from '../services/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../services/metaDataObjectRootNormalizer';
+
+/** Top-level metadata types that have their own XML file in Designer. */
+const TOP_LEVEL_TYPES = new Set<MetadataType>([
+  MetadataType.Catalog,
+  MetadataType.Document,
+  MetadataType.Enum,
+  MetadataType.Report,
+  MetadataType.DataProcessor,
+  MetadataType.ChartOfCharacteristicTypes,
+  MetadataType.ChartOfAccounts,
+  MetadataType.ChartOfCalculationTypes,
+  MetadataType.InformationRegister,
+  MetadataType.AccumulationRegister,
+  MetadataType.AccountingRegister,
+  MetadataType.CalculationRegister,
+  MetadataType.BusinessProcess,
+  MetadataType.Task,
+  MetadataType.ExternalDataSource,
+  MetadataType.Constant,
+]);
 
 /**
  * XML Writer options for preserving formatting and structure
@@ -210,7 +231,42 @@ export class XMLWriter {
     const parsed = this.parser.parse(xmlContent);
     const updated = this.addNestedElementInStructure(parsed, elementType, elementName, minimalProperties ?? {});
     const xmlString = this.builder.build(updated);
-    await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+
+    const backupPath = `${filePath}.bak`;
+    try {
+      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+    } catch (backupErr) {
+      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+    }
+
+    try {
+      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    } catch (writeError) {
+      Logger.error(`Failed to write file: ${filePath}`, writeError);
+      try {
+        if (fs.existsSync(backupPath)) {
+          const restored = await fs.promises.readFile(backupPath, 'utf-8');
+          await fs.promises.writeFile(filePath, restored, 'utf-8');
+          await fs.promises.unlink(backupPath);
+          Logger.info(`Rolled back ${filePath} from backup`);
+        }
+      } catch (rollbackErr) {
+        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+      }
+      throw new Error(
+        `Unable to write to file. Check file permissions and disk space. ${
+          writeError instanceof Error ? writeError.message : String(writeError)
+        }`
+      );
+    }
+
+    try {
+      if (fs.existsSync(backupPath)) {
+        await fs.promises.unlink(backupPath);
+      }
+    } catch {
+      Logger.debug(`Could not remove backup ${backupPath}`);
+    }
     Logger.info(`Added ${elementType} '${elementName}' to ${filePath}`);
   }
 
@@ -230,7 +286,42 @@ export class XMLWriter {
     const parsed = this.parser.parse(xmlContent);
     const updated = this.removeNestedElementInStructure(parsed, elementType, elementName);
     const xmlString = this.builder.build(updated);
-    await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+
+    const backupPath = `${filePath}.bak`;
+    try {
+      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+    } catch (backupErr) {
+      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+    }
+
+    try {
+      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    } catch (writeError) {
+      Logger.error(`Failed to write file: ${filePath}`, writeError);
+      try {
+        if (fs.existsSync(backupPath)) {
+          const restored = await fs.promises.readFile(backupPath, 'utf-8');
+          await fs.promises.writeFile(filePath, restored, 'utf-8');
+          await fs.promises.unlink(backupPath);
+          Logger.info(`Rolled back ${filePath} from backup`);
+        }
+      } catch (rollbackErr) {
+        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+      }
+      throw new Error(
+        `Unable to write to file. Check file permissions and disk space. ${
+          writeError instanceof Error ? writeError.message : String(writeError)
+        }`
+      );
+    }
+
+    try {
+      if (fs.existsSync(backupPath)) {
+        await fs.promises.unlink(backupPath);
+      }
+    } catch {
+      Logger.debug(`Could not remove backup ${backupPath}`);
+    }
     Logger.info(`Removed ${elementType} '${elementName}' from ${filePath}`);
   }
 
@@ -308,6 +399,20 @@ ${defaultPropsLines}\t\t</Properties>
   ): unknown {
     const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
     const newBlock = this.buildMinimalNestedElement(elementType, elementName, minimalProperties);
+
+    // Special handling for TOP_LEVEL_TYPES metadata metadata: only add to main Root-level ChildObjects,
+    // not nested ChildObjects. Prevents adding attributes to InternalInfo/GeneratedType/ChildObjects.
+    if (elementType === 'Attribute') {
+      return this.addNestedElementInRootStructure(
+        parsed,
+        containerName,
+        elementType,
+        (arr) => {
+          arr.push(newBlock);
+        }
+      );
+    }
+
     return this.mutateChildObjectsArray(parsed, containerName, elementType, (arr) => {
       arr.push(newBlock);
     });
@@ -319,6 +424,9 @@ ${defaultPropsLines}\t\t</Properties>
     elementName: string
   ): unknown {
     const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
+    if (elementType === 'Attribute') {
+      return this.removeNestedElementInRootStructure(parsed, containerName, elementType, elementName);
+    }
     return this.mutateChildObjectsArray(parsed, containerName, elementType, (arr) => {
       for (let i = arr.length - 1; i >= 0; i--) {
         const item = arr[i];
@@ -334,6 +442,114 @@ ${defaultPropsLines}\t\t</Properties>
         }
       }
     });
+  }
+
+  /**
+   * Add nested element only to Root-level structure (Catalog/Document/etc), avoiding nested structures
+   * Prevents adding attributes to wrong ChildObjects (inside InternalInfo/GeneratedType and other nested structures)
+   */
+  private static addNestedElementInRootStructure(
+    parsed: unknown,
+    containerName: string,
+    elementType: string,
+    mutate: (arr: unknown[]) => void
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') return parsed;
+    
+    if (Array.isArray(parsed)) {
+      return parsed.map(item => this.addNestedElementInRootStructure(item, containerName, elementType, mutate));
+    }
+    
+    const obj = parsed as Record<string, unknown>;
+    const result: Record<string, unknown> = { ...obj };
+    
+    // Find and add to ChildObjects of any TOP_LEVEL_TYPES element (Catalog, Document, etc)
+    for (const typeName of TOP_LEVEL_TYPES) {
+      if (typeName in obj) {
+        const elementContent = obj[typeName as string];
+        if (elementContent && typeof elementContent === 'object' && !Array.isArray(elementContent)) {
+          const elemObj = elementContent as Record<string, unknown>;
+          if ('ChildObjects' in elemObj) {
+            const childObjects = elemObj.ChildObjects;
+            if (Array.isArray(childObjects)) {
+              mutate(childObjects);
+              result[typeName as string] = { ...elemObj, ChildObjects: childObjects };
+              return result; // Found and processed
+            } else {
+              const emptyArr: unknown[] = [];
+              mutate(emptyArr);
+              result[typeName as string] = { ...elemObj, ChildObjects: emptyArr };
+              return result;
+            }
+          }
+        }
+      }
+    }
+    
+    // Recurse into other properties
+    for (const [key, value] of Object.entries(obj)) {
+      if (Array.isArray(value)) {
+        result[key] = this.addNestedElementInRootStructure(value, containerName, elementType, mutate) as unknown[];
+      } else if (value && typeof value === 'object') {
+        result[key] = this.addNestedElementInRootStructure(value, containerName, elementType, mutate);
+      }
+    }
+    
+    return result;
+  }
+
+  private static removeNestedElementInRootStructure(
+    parsed: unknown,
+    containerName: string,
+    elementType: string,
+    elementName: string
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') return parsed;
+    
+    if (Array.isArray(parsed)) {
+      return parsed.map(item => this.removeNestedElementInRootStructure(item, containerName, elementType, elementName));
+    }
+    
+    const obj = parsed as Record<string, unknown>;
+    const result: Record<string, unknown> = { ...obj };
+    
+    // Remove from ChildObjects of any TOP_LEVEL_TYPES element
+    for (const typeName of TOP_LEVEL_TYPES) {
+      if (typeName in obj) {
+        const elementContent = obj[typeName as string];
+        if (elementContent && typeof elementContent === 'object' && !Array.isArray(elementContent)) {
+          const elemObj = elementContent as Record<string, unknown>;
+          if ('ChildObjects' in elemObj) {
+            const childObjects = elemObj.ChildObjects;
+            if (Array.isArray(childObjects)) {
+              for (let i = childObjects.length - 1; i >= 0; i--) {
+                const item = childObjects[i];
+                if (item && typeof item === 'object' && elementType in (item as object)) {
+                  const inner = (item as Record<string, unknown>)[elementType];
+                  if (Array.isArray(inner)) {
+                    const name = this.extractNameFromElementArray(inner);
+                    if (name === elementName) {
+                      childObjects.splice(i, 1);
+                      return result; // Return early after removal
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        break; // Only process once
+      }
+    }
+    
+    // Recurse
+    for (const [key, value] of Object.entries(obj)) {
+      if (value && typeof value === 'object') {
+        result[key] = this.removeNestedElementInRootStructure(value, containerName, elementType, elementName);
+      }
+    }
+    
+    return result;
   }
 
   private static extractNameFromElementArray(elementArray: unknown[]): string {
@@ -1177,6 +1393,7 @@ ${defaultPropsLines}\t\t</Properties>
 
   private static extractNestedElementData(elementArray: unknown[]): { name: string } {
     const textFrom = (val: unknown): string => {
+      if (typeof val === 'string') return val;
       if (Array.isArray(val) && val.length > 0 && val[0] && typeof val[0] === 'object' && '#text' in (val[0] as object)) {
         return String((val[0] as Record<string, unknown>)['#text']);
       }

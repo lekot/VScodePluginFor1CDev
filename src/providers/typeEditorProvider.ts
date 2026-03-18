@@ -708,7 +708,7 @@ export class TypeEditorProvider {
   public dispose(): void {
     Logger.info('Disposing TypeEditorProvider');
     if (this.rejectPromise) { this.rejectPromise(new Error('Type editor closed')); this.rejectPromise = undefined; }
-    if (this.resolvePromise) { this.resolvePromise(null); this.resolvePromise = undefined; }
+    else if (this.resolvePromise) { this.resolvePromise(null); this.resolvePromise = undefined; }
     if (this.panel) { this.panel.dispose(); this.panel = undefined; }
     while (this.disposables.length) { const d = this.disposables.pop(); if (d) d.dispose(); }
   }

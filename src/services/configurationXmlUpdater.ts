@@ -20,15 +20,6 @@ const CONFIGURATION_XML_OPTIONS = {
 const parser = new XMLParser(CONFIGURATION_XML_OPTIONS);
 const builder = new XMLBuilder(CONFIGURATION_XML_OPTIONS);
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
 /**
  * Find the Configuration node's content array in the parsed tree (preserveOrder: root is array).
  * Returns the array of Configuration children, or null if not found.
@@ -109,9 +100,8 @@ export async function addRootObjectToConfiguration(
   if (!configChildren) {
     throw new Error('Configuration.xml: MetaDataObject/Configuration structure not found.');
   }
-  const escapedName = escapeXml(objectName);
   const newEntry: Record<string, unknown> = {
-    [rootTag]: [{ '#text': escapedName }],
+    [rootTag]: [{ '#text': objectName }],
   };
   let childObjectsArray = findChildObjectsArray(configChildren);
   if (childObjectsArray) {

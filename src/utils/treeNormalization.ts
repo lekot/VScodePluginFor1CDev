@@ -214,26 +214,38 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
     def.type === MetadataType.ChartOfCharacteristicTypes
   );
 
+  // Process instance nodes under R6 type folders and add R6 placeholders to each instance.
+  // This ensures placeholders like 'Реквизиты', 'Табличные части' etc. appear only under
+  // concrete object instances (e.g., Document11, Документ12), not in the type folders themselves.
   for (const typeDef of r6TypeFolders) {
-    // Find the type folder node under the root
     const typeFolderNode = rootNode.children?.find((c) => c.id === typeDef.id);
     if (!typeFolderNode) {
-      // This should not happen because we just created it in the R4 step, but skip if missing.
       continue;
     }
 
-    // Ensure the type folder node has children array
+    // Process only the instance nodes (children of the type folder), not the folder itself
     ensureChildrenArray(typeFolderNode);
-
-    // For each child node of the type folder (which are the instance nodes), add R6 placeholders
-    const children = typeFolderNode.children;
-    if (children) {
-      for (const instanceNode of children) {
-        // Add the R6_OBJECT_CHILDREN placeholders to this instance node
-        for (const childDef of R6_OBJECT_CHILDREN) {
-          upsertChildNode(instanceNode, childDef, ctx);
-        }
+    
+    for (const instanceNode of typeFolderNode.children ?? []) {
+      // Skip if this is not a real R6 object instance (has wrong type)
+      if (!R6_OBJECT_TYPES.has(instanceNode.type)) {
+        continue;
       }
+      ensureChildrenArray(instanceNode);
+      
+      // Add all R6 placeholders to this instance node
+      for (const childDef of R6_OBJECT_CHILDREN) {
+        upsertChildNode(instanceNode, childDef, ctx);
+      }
+      
+      // Mark R6 placeholders as lazy for proper loading behavior
+      const existingPlaceholders = instanceNode.children?.filter(c => R6_OBJECT_CHILDREN.some(def => def.id === c.id)) ?? [];
+      for (const placeholder of existingPlaceholders) {
+        (placeholder.properties as Record<string, unknown>)._lazy = true;
+      }
+      
+      // Reorder the R6 children for consistent display
+      reorderChildrenByIds(instanceNode, R6_OBJECT_CHILDREN.map((x) => x.id));
     }
   }
 

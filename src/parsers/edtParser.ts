@@ -581,8 +581,16 @@ export class EdtParser {
   /**
    * Recursively find all .bsl files in a directory (parity with DesignerParser for Ext).
    */
-  private static async findBslFilesRecursive(dirPath: string): Promise<string[]> {
+  private static async findBslFilesRecursive(
+    dirPath: string,
+    maxDepth: number = 10,
+    currentDepth: number = 0
+  ): Promise<string[]> {
     const bslFiles: string[] = [];
+    if (currentDepth >= maxDepth) {
+      Logger.debug(`Max depth ${maxDepth} reached at ${dirPath}`);
+      return bslFiles;
+    }
     try {
       const items = await fs.promises.readdir(dirPath);
       for (const item of items) {
@@ -590,7 +598,7 @@ export class EdtParser {
         try {
           const stat = await fs.promises.stat(itemPath);
           if (stat.isDirectory()) {
-            const subFiles = await this.findBslFilesRecursive(itemPath);
+            const subFiles = await this.findBslFilesRecursive(itemPath, maxDepth, currentDepth + 1);
             bslFiles.push(...subFiles);
           } else if (stat.isFile() && item.endsWith('.bsl')) {
             bslFiles.push(itemPath);

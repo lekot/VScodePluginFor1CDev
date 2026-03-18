@@ -1053,7 +1053,7 @@ export class DesignerParser {
     for (const section of sectionList) {
       const ts = section as Record<string, unknown>;
       const props = this.extractPropertiesFromElement({ TabularSection: ts });
-      const sectionName = String(props.Name ?? ts.Properties && (ts.Properties as Record<string, unknown>).Name ?? 'Unknown');
+      const sectionName = String(props.Name ?? ((ts.Properties && (ts.Properties as Record<string, unknown>).Name) ?? 'Unknown'));
       const tsChildObjects = ts.ChildObjects;
       const attrList = tsChildObjects && typeof tsChildObjects === 'object'
         ? extractAttributes(tsChildObjects as Record<string, unknown>)

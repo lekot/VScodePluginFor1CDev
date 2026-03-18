@@ -158,6 +158,7 @@ suite('Rights Update Utils Test Suite', () => {
       testRoleModel.rights['Catalog.Products'].interactiveDelete = true;
       testRoleModel.rights['Catalog.Products'].interactiveDeleteMarked = true;
       testRoleModel.rights['Catalog.Products'].interactiveSetDeletionMark = true;
+      testRoleModel.rights['Catalog.Products'].interactiveClearDeletionMark = true;
       testRoleModel.rights['Catalog.Products'].read = true; // Keep another right to prevent removal
       
       const result = updateRight(testRoleModel, 'Catalog.Products', 'delete', false);
@@ -167,7 +168,9 @@ suite('Rights Update Utils Test Suite', () => {
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].delete, false);
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveDelete, false, 'interactiveDelete should be disabled');
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveDeleteMarked, false, 'interactiveDeleteMarked should be disabled');
-      assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveSetDeletionMark, false, 'interactiveSetDeletionMark should be disabled');
+      // DeletionMark rights are narrower than Delete — they survive disabling delete
+      assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveSetDeletionMark, true, 'interactiveSetDeletionMark should remain enabled');
+      assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveClearDeletionMark, true, 'interactiveClearDeletionMark should remain enabled');
     });
 
     test('should disable all delete-related interactive rights when disabling Read', () => {
@@ -270,6 +273,9 @@ suite('Rights Update Utils Test Suite', () => {
       assert.ok(deleteInteractive.includes('interactiveDelete'));
       assert.ok(deleteInteractive.includes('interactiveDeleteMarked'));
       assert.ok(deleteInteractive.includes('interactiveClear'));
+      // DeletionMark rights are narrower — not dependent on delete base right
+      assert.ok(!deleteInteractive.includes('interactiveSetDeletionMark'));
+      assert.ok(!deleteInteractive.includes('interactiveClearDeletionMark'));
     });
 
     test('getInteractiveRights() should return empty array for rights without interactive variants', () => {

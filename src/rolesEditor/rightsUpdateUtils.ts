@@ -22,7 +22,8 @@ export interface UpdateRightResult {
 }
 
 /**
- * Mapping of interactive rights to their base rights
+ * Mapping of interactive rights to their base rights.
+ * DeletionMark rights (set/clear) are narrower than Delete and do not require it.
  */
 const INTERACTIVE_TO_BASE_RIGHT: Record<string, RightType> = {
   interactiveInsert: 'insert',
@@ -31,10 +32,17 @@ const INTERACTIVE_TO_BASE_RIGHT: Record<string, RightType> = {
   interactiveDeleteMarked: 'delete',
   interactiveUndeleteMarked: 'delete',
   interactiveDeletePredefinedData: 'delete',
-  interactiveSetDeletionMark: 'delete',
-  interactiveClearDeletionMark: 'delete',
   interactiveDeleteMarkedPredefinedData: 'delete'
 };
+
+/**
+ * Interactive rights that do NOT auto-enable any base right.
+ * These are narrower permissions that can work independently.
+ */
+const DELETION_MARK_RIGHTS = new Set<RightType>([
+  'interactiveSetDeletionMark',
+  'interactiveClearDeletionMark'
+]);
 
 /**
  * Mapping of base rights to their dependent interactive rights
@@ -47,8 +55,6 @@ const BASE_TO_INTERACTIVE_RIGHTS: Record<string, RightType[]> = {
     'interactiveDeleteMarked',
     'interactiveUndeleteMarked',
     'interactiveDeletePredefinedData',
-    'interactiveSetDeletionMark',
-    'interactiveClearDeletionMark',
     'interactiveDeleteMarkedPredefinedData'
   ]
 };
@@ -123,7 +129,7 @@ export function updateRight(
     }
 
     // Rule: Interactive rights require their base rights
-    if (INTERACTIVE_RIGHTS.includes(rightType)) {
+    if (INTERACTIVE_RIGHTS.includes(rightType) && !DELETION_MARK_RIGHTS.has(rightType)) {
       const baseRight = INTERACTIVE_TO_BASE_RIGHT[rightType];
       if (baseRight) {
         objectRights[baseRight] = true;

@@ -56,6 +56,10 @@ async function scanDir(
   }
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function grepInFile(filePath: string, pattern: string): Promise<string[]> {
   let content: string;
   try {
@@ -66,10 +70,12 @@ async function grepInFile(filePath: string, pattern: string): Promise<string[]> 
   }
   const lines = content.split(/\r?\n/);
   const snippets: string[] = [];
+  const re = new RegExp(escapeRegex(pattern) + '(?=[<"\'.\\s]|$)', 'g');
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(pattern)) {
+    if (re.test(lines[i])) {
       const line = lines[i].trim();
       snippets.push(line.length > 80 ? line.slice(0, 77) + '...' : line);
+      re.lastIndex = 0;
     }
   }
   return snippets;
@@ -132,10 +138,10 @@ async function replaceInFile(
   } catch {
     return 0;
   }
-  const parts = content.split(oldPattern);
-  const count = parts.length - 1;
-  if (count === 0) return 0;
-  const newContent = parts.join(newPattern);
+  const re = new RegExp(escapeRegex(oldPattern) + '(?=[<"\'.\\s]|$)', 'g');
+  const matches = content.match(re);
+  if (!matches) return 0;
+  const newContent = content.replace(re, newPattern);
   await fs.promises.writeFile(filePath, newContent, 'utf-8');
-  return count;
+  return matches.length;
 }
