@@ -407,9 +407,7 @@ ${defaultPropsLines}\t\t</Properties>
         parsed,
         containerName,
         elementType,
-        (arr) => {
-          arr.push(newBlock);
-        }
+        newBlock
       );
     }
 
@@ -452,12 +450,12 @@ ${defaultPropsLines}\t\t</Properties>
     parsed: unknown,
     containerName: string,
     elementType: string,
-    mutate: (arr: unknown[]) => void
+    newBlock: Record<string, unknown>
   ): unknown {
     if (!parsed || typeof parsed !== 'object') return parsed;
     
     if (Array.isArray(parsed)) {
-      return parsed.map(item => this.addNestedElementInRootStructure(item, containerName, elementType, mutate));
+      return parsed.map(item => this.addNestedElementInRootStructure(item, containerName, elementType, newBlock));
     }
     
     const obj = parsed as Record<string, unknown>;
@@ -471,34 +469,47 @@ ${defaultPropsLines}\t\t</Properties>
           const elemObj = elementContent as Record<string, unknown>;
           if ('ChildObjects' in elemObj) {
             const childObjects = elemObj.ChildObjects;
-            if (Array.isArray(childObjects)) {
-              mutate(childObjects);
-              result[typeName as string] = { ...elemObj, ChildObjects: childObjects };
-              return result; // Found and processed
-            } else if (childObjects && typeof childObjects === 'object') {
-              // preserveOrder:false with a single child produces { Attribute: { @_uuid: ..., Properties: {...} } }.
-              // We must keep ChildObjects as an object (not array), and push into the inner elementType array.
-              const innerObj = childObjects as Record<string, unknown>;
-              const existing = innerObj[elementType];
-              let arr: unknown[];
-              if (Array.isArray(existing)) {
-                arr = existing;
-              } else if (existing !== null && existing !== undefined) {
-                arr = [existing];
-              } else {
-                arr = [];
+            let innerObj: Record<string, unknown>;
+            let arr: unknown[];
+
+            if (childObjects && typeof childObjects === 'object' && !Array.isArray(childObjects)) {
+              // preserveOrder:false normal form: { Attribute: { @_uuid, Properties } } or
+              // { Attribute: [ { @_uuid, Properties }, ... ] }
+              innerObj = childObjects as Record<string, unknown>;
+            } else if (Array.isArray(childObjects)) {
+              // Broken array form (from previous bug): [ { Attribute: {...} }, ... ]
+              // Reconstruct to object form: { Attribute: [ { @_uuid, Properties }, ... ] }
+              innerObj = {};
+              for (const item of childObjects) {
+                if (item && typeof item === 'object') {
+                  for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+                    if (!innerObj[k]) {
+                      innerObj[k] = [];
+                    }
+                    (innerObj[k] as unknown[]).push(v);
+                  }
+                }
               }
-              mutate(arr);
-              innerObj[elementType] = arr;
-              result[typeName as string] = { ...elemObj, ChildObjects: { ...innerObj } };
-              return result;
             } else {
-              // Empty string, null, undefined → fresh array
-              const emptyArr: unknown[] = [];
-              mutate(emptyArr);
-              result[typeName as string] = { ...elemObj, ChildObjects: emptyArr };
-              return result;
+              // Empty string, null, undefined
+              innerObj = {};
             }
+
+            const existing = innerObj[elementType];
+            if (Array.isArray(existing)) {
+              arr = existing;
+            } else if (existing !== null && existing !== undefined) {
+              arr = [existing];
+            } else {
+              arr = [];
+            }
+
+            // newBlock is { Attribute: { @_uuid, Properties } } — extract inner content
+            const unwrapped = (newBlock as Record<string, unknown>)[elementType];
+            arr.push(unwrapped);
+            innerObj[elementType] = arr;
+            result[typeName as string] = { ...elemObj, ChildObjects: { ...innerObj } };
+            return result;
           }
         }
       }
@@ -507,9 +518,9 @@ ${defaultPropsLines}\t\t</Properties>
     // Recurse into other properties
     for (const [key, value] of Object.entries(obj)) {
       if (Array.isArray(value)) {
-        result[key] = this.addNestedElementInRootStructure(value, containerName, elementType, mutate) as unknown[];
+        result[key] = this.addNestedElementInRootStructure(value, containerName, elementType, newBlock) as unknown[];
       } else if (value && typeof value === 'object') {
-        result[key] = this.addNestedElementInRootStructure(value, containerName, elementType, mutate);
+        result[key] = this.addNestedElementInRootStructure(value, containerName, elementType, newBlock);
       }
     }
     

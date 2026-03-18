@@ -1,5 +1,6 @@
 # resources/ packaged (designer templates in resources/designerTemplates/)
 .vscode/**
+./roo/**
 .vscode-test/**
 .cursor/**
 .git/**
@@ -12,12 +13,8 @@ build/**
 BUGS/**
 docs/**
 mcp/**
-structure_samples/**
-structure_backup/**
-extensions_samples/**
 FormatSamples/**
 releases/
-ut_demo_ForFormat/
 .gitignore
 .prettierrc.json
 .eslintrc.json
