@@ -22,7 +22,7 @@ import type { FormModel, FormChildItem } from '../../src/formEditor/formModel';
 /** Path to the real Form.xml fixture used in tests 3 and 4. */
 const REAL_FORM_XML = path.resolve(
   __dirname,
-  '../../../FormatSamples/extensions_samples/Catalogs/ТелеграмНаборУсловий/Forms/ФормаЭлемента/Ext/Form.xml'
+  '../fixtures/form-drag-bug-condition/RealForm.xml'
 );
 
 const BUILDER_OPTIONS = {
