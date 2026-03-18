@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='utf-8'?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Report uuid="{uuid}">
+    <Properties>
+      <AuxiliaryForm />
+      <AuxiliarySettingsForm />
+      <Comment />
+      <DefaultForm />
+      <DefaultSettingsForm />
+      <DefaultVariantForm />
+      <Explanation />
+      <ExtendedPresentation />
+      <IncludeHelpInContents>false</IncludeHelpInContents>
+      <MainDataCompositionSchema />
+      <Name>{Name}</Name>
+      <SettingsStorage />
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>{Synonym_ru}</v8:content>
+        </v8:item>
+      </Synonym>
+      <UseStandardCommands>true</UseStandardCommands>
+      <VariantsStorage />
+    </Properties>
+    <ChildObjects />
+  </Report>
+</MetaDataObject>
