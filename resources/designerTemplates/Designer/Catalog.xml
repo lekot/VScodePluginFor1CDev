@@ -264,7 +264,7 @@
           <xr:ToolTip>
             <v8:item>
               <v8:lang>ru</v8:lang>
-              <v8:content>Используется для быстрой визуальное идентификации этапа работы с долгами в процессе работы с программой.</v8:content>
+              <v8:content></v8:content>
             </v8:item>
           </xr:ToolTip>
           <xr:ExtendedEdit>false</xr:ExtendedEdit>
