@@ -1,0 +1,313 @@
+<?xml version='1.0' encoding='utf-8'?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Task uuid="{uuid}">
+    <Properties>
+      <Addressing />
+      <Autonumbering>true</Autonumbering>
+      <AuxiliaryChoiceForm />
+      <AuxiliaryListForm />
+      <AuxiliaryObjectForm />
+      <BasedOn />
+      <Characteristics />
+      <CheckUnique>true</CheckUnique>
+      <ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>
+      <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+      <Comment />
+      <CreateOnInput>DontUse</CreateOnInput>
+      <CurrentPerformer />
+      <DataHistory>DontUse</DataHistory>
+      <DataLockControlMode>Managed</DataLockControlMode>
+      <DataLockFields>
+        <xr:Field>Task.{Name}.StandardAttribute.BusinessProcess</xr:Field>
+      </DataLockFields>
+      <DefaultChoiceForm />
+      <DefaultListForm />
+      <DefaultObjectForm />
+      <DefaultPresentation>AsDescription</DefaultPresentation>
+      <DescriptionLength>150</DescriptionLength>
+      <EditType>InDialog</EditType>
+      <ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>
+      <Explanation />
+      <ExtendedListPresentation />
+      <ExtendedObjectPresentation />
+      <FullTextSearch>Use</FullTextSearch>
+      <FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
+      <IncludeHelpInContents>true</IncludeHelpInContents>
+      <InputByString>
+        <xr:Field>Task.{Name}.StandardAttribute.Description</xr:Field>
+        <xr:Field>Task.{Name}.StandardAttribute.Number</xr:Field>
+      </InputByString>
+      <ListPresentation>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>{Synonym_ru}</v8:content>
+        </v8:item>
+      </ListPresentation>
+      <MainAddressingAttribute />
+      <Name>{Name}</Name>
+      <NumberAllowedLength>Fixed</NumberAllowedLength>
+      <NumberLength>14</NumberLength>
+      <NumberType>String</NumberType>
+      <ObjectPresentation />
+      <SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>
+      <StandardAttributes>
+        <xr:StandardAttribute name="Executed">
+          <xr:LinkByType />
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Задача выполнена</v8:content>
+            </v8:item>
+          </xr:ToolTip>
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Выполнена</v8:content>
+            </v8:item>
+          </xr:Synonym>
+          <xr:Comment>Задача выполнена</xr:Comment>
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:type="xs:boolean">false</xr:FillValue>
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="Description">
+          <xr:LinkByType />
+          <xr:FillChecking>ShowError</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Краткое описание задачи</v8:content>
+            </v8:item>
+          </xr:ToolTip>
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Задача</v8:content>
+            </v8:item>
+          </xr:Synonym>
+          <xr:Comment>Краткое описание задачи</xr:Comment>
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:type="xs:string" />
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="RoutePoint">
+          <xr:LinkByType />
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip />
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym />
+          <xr:Comment />
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:type="xr:DesignTimeRef" />
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="BusinessProcess">
+          <xr:LinkByType />
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip />
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym />
+          <xr:Comment />
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:type="xr:DesignTimeRef" />
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="Ref">
+          <xr:LinkByType />
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip />
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym />
+          <xr:Comment />
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:nil="true" />
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="DeletionMark">
+          <xr:LinkByType />
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip />
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym />
+          <xr:Comment />
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:type="xs:boolean">false</xr:FillValue>
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="Date">
+          <xr:LinkByType />
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Дата регистрации задачи</v8:content>
+            </v8:item>
+          </xr:ToolTip>
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Записана</v8:content>
+            </v8:item>
+          </xr:Synonym>
+          <xr:Comment />
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:type="xs:dateTime">0001-01-01T00:00:00</xr:FillValue>
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+        <xr:StandardAttribute name="Number">
+          <xr:LinkByType />
+          <xr:FillChecking>DontCheck</xr:FillChecking>
+          <xr:MultiLine>false</xr:MultiLine>
+          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+          <xr:CreateOnInput>Auto</xr:CreateOnInput>
+          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+          <xr:MaxValue xsi:nil="true" />
+          <xr:ToolTip />
+          <xr:ExtendedEdit>false</xr:ExtendedEdit>
+          <xr:Format />
+          <xr:ChoiceForm />
+          <xr:QuickChoice>Auto</xr:QuickChoice>
+          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+          <xr:EditFormat />
+          <xr:PasswordMode>false</xr:PasswordMode>
+          <xr:DataHistory>Use</xr:DataHistory>
+          <xr:MarkNegatives>false</xr:MarkNegatives>
+          <xr:MinValue xsi:nil="true" />
+          <xr:Synonym />
+          <xr:Comment />
+          <xr:FullTextSearch>Use</xr:FullTextSearch>
+          <xr:ChoiceParameterLinks />
+          <xr:FillValue xsi:type="xs:string">              </xr:FillValue>
+          <xr:Mask />
+          <xr:ChoiceParameters />
+        </xr:StandardAttribute>
+      </StandardAttributes>
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>{Synonym_ru}</v8:content>
+        </v8:item>
+      </Synonym>
+      <TaskNumberAutoPrefix>BusinessProcessNumber</TaskNumberAutoPrefix>
+      <UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>
+      <UseStandardCommands>false</UseStandardCommands>
+    </Properties>
+    <ChildObjects />
+  </Task>
+</MetaDataObject>
