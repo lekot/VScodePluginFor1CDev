@@ -9,7 +9,7 @@ import { RolesRightsEditorProvider } from './rolesEditor/rolesRightsEditorProvid
 import { MetadataParser } from './parsers/metadataParser';
 import { FormatDetector, ConfigFormat } from './parsers/formatDetector';
 import { MetadataWatcherService } from './services/metadataWatcherService';
-import { loadTreeFromCache, saveTreeToCache, clearTreeCache } from './utils/diskCache';
+import { loadTreeFromCache, saveTreeToCache, clearTreeCache, invalidateTreeCache } from './utils/diskCache';
 import {
   createElement as doCreateElement,
   createForm as doCreateForm,
@@ -275,7 +275,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         await doCreateElement(target, name);
         vscode.window.showInformationMessage(`Создан элемент: ${name.trim()}`);
-        await loadMetadataTree();
+        await invalidateCacheAndReload(configPath);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);
@@ -351,7 +351,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         await doDuplicateElement(target, newName.trim());
         vscode.window.showInformationMessage(`Дублирован элемент: ${newName.trim()}`);
-        await loadMetadataTree();
+        await invalidateCacheAndReload(configPath);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);
@@ -401,7 +401,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         await doDeleteElement(target);
         vscode.window.showInformationMessage(`Удалён элемент: ${target.name}`);
-        await loadMetadataTree();
+        await invalidateCacheAndReload(configPath);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);
@@ -437,7 +437,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         await doRenameElement(target, newName.trim(), configPath);
         vscode.window.showInformationMessage(`Переименован в: ${newName.trim()}`);
-        await loadMetadataTree();
+        await invalidateCacheAndReload(configPath);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);
@@ -699,6 +699,17 @@ function getWorkspaceRelativePath(workspaceFolderPath: string, configRootPath: s
   const rel = path.relative(workspaceFolderPath, configRootPath);
   const normalized = rel ? path.normalize(rel).replace(/\\/g, '/') : '.';
   return normalized;
+}
+
+/**
+ * Invalidate tree cache for a specific config and reload the metadata tree.
+ * Used after create/delete/rename/duplicate operations to ensure fresh state.
+ */
+async function invalidateCacheAndReload(configPath: string): Promise<void> {
+  if (extensionContext?.globalStoragePath) {
+    await invalidateTreeCache(extensionContext.globalStoragePath, configPath);
+  }
+  await loadMetadataTree();
 }
 
 /**

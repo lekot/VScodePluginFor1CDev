@@ -475,7 +475,25 @@ ${defaultPropsLines}\t\t</Properties>
               mutate(childObjects);
               result[typeName as string] = { ...elemObj, ChildObjects: childObjects };
               return result; // Found and processed
+            } else if (childObjects && typeof childObjects === 'object') {
+              // preserveOrder:false with a single child produces { Attribute: { @_uuid: ..., Properties: {...} } }.
+              // We must keep ChildObjects as an object (not array), and push into the inner elementType array.
+              const innerObj = childObjects as Record<string, unknown>;
+              const existing = innerObj[elementType];
+              let arr: unknown[];
+              if (Array.isArray(existing)) {
+                arr = existing;
+              } else if (existing !== null && existing !== undefined) {
+                arr = [existing];
+              } else {
+                arr = [];
+              }
+              mutate(arr);
+              innerObj[elementType] = arr;
+              result[typeName as string] = { ...elemObj, ChildObjects: { ...innerObj } };
+              return result;
             } else {
+              // Empty string, null, undefined → fresh array
               const emptyArr: unknown[] = [];
               mutate(emptyArr);
               result[typeName as string] = { ...elemObj, ChildObjects: emptyArr };
@@ -530,7 +548,29 @@ ${defaultPropsLines}\t\t</Properties>
                     const name = this.extractNameFromElementArray(inner);
                     if (name === elementName) {
                       childObjects.splice(i, 1);
+                      result[typeName as string] = { ...elemObj, ChildObjects: childObjects };
                       return result; // Return early after removal
+                    }
+                  }
+                }
+              }
+            } else if (childObjects && typeof childObjects === 'object') {
+              // preserveOrder:false with a single child: { Attribute: { ... } }
+              const childObj = childObjects as Record<string, unknown>;
+              if (elementType in childObj) {
+                const inner = childObj[elementType];
+                // inner is the Attribute content object (with @_uuid, Properties, etc.)
+                // Need to extract Name from it — wrap as array for extractNameFromElementArray
+                if (inner && typeof inner === 'object') {
+                  const innerObj = inner as Record<string, unknown>;
+                  if ('Properties' in innerObj) {
+                    const props = innerObj.Properties;
+                    const name = typeof props === 'object' && props !== null
+                      ? this.extractNameFromElementArray(Array.isArray(props) ? props as unknown[] : [props])
+                      : '';
+                    if (name === elementName) {
+                      result[typeName as string] = { ...elemObj, ChildObjects: [] };
+                      return result;
                     }
                   }
                 }

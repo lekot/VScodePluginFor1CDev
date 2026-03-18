@@ -157,6 +157,12 @@ export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: Normali
   if (!node || !R6_OBJECT_TYPES.has(node.type)) {
     return;
   }
+  // Guard: do not add R6 placeholders to type-folder nodes (e.g. "Документы" / "Справочники").
+  // Type folders share the same MetadataType enum value as their instances (both are Document, Catalog, etc.)
+  // but are direct children of a Configuration root, not grandchildren.
+  if (node.parent && node.parent.type === MetadataType.Configuration) {
+    return;
+  }
   ensureChildrenArray(node);
   for (const def of R6_OBJECT_CHILDREN) {
     upsertChildNode(node, def, ctx);

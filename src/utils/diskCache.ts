@@ -123,6 +123,19 @@ export async function saveTreeToCache(
 }
 
 /**
+ * Clear cache for a specific configuration path.
+ */
+export async function invalidateTreeCache(globalStoragePath: string, configPath: string): Promise<void> {
+  try {
+    const filePath = getCacheFilePath(globalStoragePath, configPath);
+    await fs.promises.unlink(filePath).catch(() => {});
+    Logger.info('Tree cache invalidated', { configPath: configPath.slice(-40) });
+  } catch (error) {
+    Logger.warn('Failed to invalidate tree cache', error);
+  }
+}
+
+/**
  * Clear all tree cache files for this extension.
  */
 export async function clearTreeCache(globalStoragePath: string): Promise<void> {
