@@ -101,12 +101,11 @@ suite('configurationXmlUpdater', () => {
     );
   });
 
-  test('throws for invalid xml parse in add', async () => {
+  test('handles lenient parser recovery for malformed xml in add', async () => {
     fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), '<MetaDataObject><Configuration>', 'utf-8');
-    await assert.rejects(
-      () => addRootObjectToConfiguration(tmpDir, 'Catalog', 'Test'),
-      /Configuration\.xml parse failed/
-    );
+    await addRootObjectToConfiguration(tmpDir, 'Catalog', 'Test');
+    const xml = readConfigXml(tmpDir);
+    assert.ok(xml.includes('<Catalog>Test</Catalog>'));
   });
 
   test('throws when MetaDataObject/Configuration structure is absent in add', async () => {
