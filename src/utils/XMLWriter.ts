@@ -8,6 +8,8 @@ import {
 import { MetadataType } from '../models/treeNode';
 import { injectInternalInfoIntoMetadataXml } from '../services/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../services/metaDataObjectRootNormalizer';
+import { TypeParser } from '../parsers/typeParser';
+import { TypeFormatter } from './typeFormatter';
 
 /** Top-level metadata types that have their own XML file in Designer. */
 const TOP_LEVEL_TYPES = new Set<MetadataType>([
@@ -371,7 +373,7 @@ ${defaultPropsLines}\t\t</Properties>
   }
 
   private static formatDefaultPropertiesAsXml(props: Record<string, unknown>): string {
-    if (Object.keys(props).length === 0) return '';
+    if (Object.keys(props).length === 0) {return '';}
     return Object.entries(props)
       .map(([key, value]) => `\t\t\t<${key}>${this.escapeXml(String(value))}</${key}>`)
       .join('\n') + '\n';
@@ -460,7 +462,7 @@ ${defaultPropsLines}\t\t</Properties>
     elementType: string,
     newBlock: Record<string, unknown>
   ): unknown {
-    if (!parsed || typeof parsed !== 'object') return parsed;
+    if (!parsed || typeof parsed !== 'object') {return parsed;}
     
     if (Array.isArray(parsed)) {
       return parsed.map(item => this.addNestedElementInRootStructure(item, containerName, elementType, newBlock));
@@ -541,7 +543,7 @@ ${defaultPropsLines}\t\t</Properties>
     elementType: string,
     elementName: string
   ): unknown {
-    if (!parsed || typeof parsed !== 'object') return parsed;
+    if (!parsed || typeof parsed !== 'object') {return parsed;}
     
     if (Array.isArray(parsed)) {
       return parsed.map(item => this.removeNestedElementInRootStructure(item, containerName, elementType, elementName));
@@ -613,7 +615,7 @@ ${defaultPropsLines}\t\t</Properties>
 
   private static extractNameFromElementArray(elementArray: unknown[]): string {
     for (const it of elementArray) {
-      if (!it || typeof it !== 'object') continue;
+      if (!it || typeof it !== 'object') {continue;}
       const o = it as Record<string, unknown>;
       if ('Name' in o && Array.isArray(o.Name) && o.Name.length > 0) {
         const first = o.Name[0];
@@ -623,7 +625,7 @@ ${defaultPropsLines}\t\t</Properties>
       }
       if ('Properties' in o && Array.isArray(o.Properties)) {
         const inner = this.extractNameFromElementArray(o.Properties as unknown[]);
-        if (inner) return inner;
+        if (inner) {return inner;}
       }
     }
     return '';
@@ -680,7 +682,7 @@ ${defaultPropsLines}\t\t</Properties>
 
     // Add other properties
     for (const [key, value] of Object.entries(merged)) {
-      if (key === 'Name' || key === 'Synonym' || key === 'Type') continue;
+      if (key === 'Name' || key === 'Synonym' || key === 'Type') {continue;}
       // Handle special case for ToolTip object
       if (key === 'ToolTip' && typeof value === 'object' && value !== null) {
         // Build ToolTip with empty content if not provided
@@ -728,7 +730,7 @@ ${defaultPropsLines}\t\t</Properties>
     _elementType: string,
     mutate: (arr: unknown[]) => void
   ): unknown {
-    if (!parsed || typeof parsed !== 'object') return parsed;
+    if (!parsed || typeof parsed !== 'object') {return parsed;}
     if (Array.isArray(parsed)) {
       return parsed.map(item => this.mutateChildObjectsArray(item, containerName, _elementType, mutate));
     }
@@ -1012,8 +1014,8 @@ ${defaultPropsLines}\t\t</Properties>
 
     // Recurse into nested structure (e.g. MetaDataObject → Configuration → Properties)
     for (const [k, value] of Object.entries(obj)) {
-      if (value === null || value === undefined) continue;
-      if (k === ':@' || (typeof k === 'string' && k.startsWith('?'))) continue;
+      if (value === null || value === undefined) {continue;}
+      if (k === ':@' || (typeof k === 'string' && k.startsWith('?'))) {continue;}
       const nested = this.extractProperties(value);
       if (Object.keys(nested).length > 0) {
         return nested;
@@ -1030,9 +1032,6 @@ ${defaultPropsLines}\t\t</Properties>
     // Check if Type property is an array that needs formatting
     if (properties.Type && Array.isArray(properties.Type)) {
       try {
-        const { TypeParser } = require('../parsers/typeParser');
-        const { TypeFormatter } = require('./typeFormatter');
-        
         // Merge all type-related elements into a single object
         const typeObject: Record<string, unknown> = {};
         const v8Types: unknown[] = [];
@@ -1087,9 +1086,6 @@ ${defaultPropsLines}\t\t</Properties>
         if (key === 'Type' && Array.isArray(value) && value.length > 0) {
           // Handle Type element - collect all v8:Type, qualifiers, etc. from array
           try {
-            const { TypeParser } = require('../parsers/typeParser');
-            const { TypeFormatter } = require('../utils/typeFormatter');
-            
             // Merge all type-related elements into a single object
             const typeObject: Record<string, unknown> = {};
             const v8Types: unknown[] = [];
@@ -1135,8 +1131,6 @@ ${defaultPropsLines}\t\t</Properties>
         } else if (key === 'Type' && value && typeof value === 'object' && 'v8:Type' in value) {
           // Handle Type element when it's a single object (not array)
           try {
-            const { TypeParser } = require('../parsers/typeParser');
-            const { TypeFormatter } = require('../utils/typeFormatter');
             const typeDef = TypeParser.parseFromObject(value as Record<string, unknown>);
             flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
           } catch (error) {
@@ -1170,8 +1164,6 @@ ${defaultPropsLines}\t\t</Properties>
           // Handle Type element with v8:Type child
           // Parse and format the type for display
           try {
-            const { TypeParser } = require('../parsers/typeParser');
-            const { TypeFormatter } = require('../utils/typeFormatter');
             const typeDef = TypeParser.parseFromObject(obj);
             flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
           } catch (error) {
@@ -1462,7 +1454,7 @@ ${defaultPropsLines}\t\t</Properties>
 
   private static extractNestedElementData(elementArray: unknown[]): { name: string } {
     const textFrom = (val: unknown): string => {
-      if (typeof val === 'string') return val;
+      if (typeof val === 'string') {return val;}
       if (Array.isArray(val) && val.length > 0 && val[0] && typeof val[0] === 'object' && '#text' in (val[0] as object)) {
         return String((val[0] as Record<string, unknown>)['#text']);
       }
@@ -1477,28 +1469,28 @@ ${defaultPropsLines}\t\t</Properties>
         const nameKey = 'Name' in obj ? 'Name' : Object.keys(obj).find((k) => k === 'Name' || k.endsWith(':Name'));
         if (nameKey) {
           const n = textFrom(obj[nameKey]);
-          if (n) return n;
+          if (n) {return n;}
         }
         if ('Properties' in obj) {
           const inner = extractNameFrom(obj.Properties);
-          if (inner) return inner;
+          if (inner) {return inner;}
         }
         return '';
       }
-      if (!Array.isArray(arr)) return '';
+      if (!Array.isArray(arr)) {return '';}
       for (const it of arr) {
-        if (!it || typeof it !== 'object') continue;
+        if (!it || typeof it !== 'object') {continue;}
         const o = it as Record<string, unknown>;
         if ('Name' in o && Array.isArray(o.Name)) {
           const nameArr = o.Name as unknown[];
           if (nameArr.length > 0 && nameArr[0] && typeof nameArr[0] === 'object') {
             const nameObj = nameArr[0] as Record<string, unknown>;
-            if ('#text' in nameObj) return String(nameObj['#text']);
+            if ('#text' in nameObj) {return String(nameObj['#text']);}
           }
         }
         if ('Properties' in o) {
           const inner = extractNameFrom(o.Properties);
-          if (inner) return inner;
+          if (inner) {return inner;}
         }
       }
       return '';
@@ -1509,7 +1501,7 @@ ${defaultPropsLines}\t\t</Properties>
 
   /** Extract Type element content from parser output (handles preserveOrder root array) */
   private static extractTypeContentFromParsed(parsed: unknown): unknown[] | unknown | null {
-    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed || typeof parsed !== 'object') {return null;}
     if (Array.isArray(parsed)) {
       for (const item of parsed) {
         if (item && typeof item === 'object' && 'Type' in (item as Record<string, unknown>)) {
@@ -1577,9 +1569,10 @@ ${defaultPropsLines}\t\t</Properties>
         if (first && typeof first === 'object' && '#text' in first) {
           result[key] = [{ ...first, '#text': textVal }];
         } else {
-          const arr: any = Array.isArray(existing) ? [...existing] : [];
-          if (arr.length === 0) arr.push({});
-          result[key] = [{ ...arr[0], '#text': textVal }];
+          const arr: unknown[] = Array.isArray(existing) ? [...existing] : [];
+          if (arr.length === 0) {arr.push({});}
+          const base = arr[0] && typeof arr[0] === 'object' ? (arr[0] as Record<string, unknown>) : {};
+          result[key] = [{ ...base, '#text': textVal }];
         }
       } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
         const rec = existing as Record<string, unknown>;

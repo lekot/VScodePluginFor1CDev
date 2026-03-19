@@ -5,10 +5,12 @@
 /**
  * Configuration format type
  */
+/* eslint-disable @typescript-eslint/naming-convention -- values mirror 1C toolchain format names */
 export enum ConfigFormat {
   Designer = 'Designer',
   EDT = 'EDT'
 }
+/* eslint-enable @typescript-eslint/naming-convention */
 
 /**
  * Represents all possible rights for a metadata object

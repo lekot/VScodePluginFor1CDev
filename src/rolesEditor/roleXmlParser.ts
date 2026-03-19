@@ -340,7 +340,7 @@ export class RoleXmlParser {
     const nameVal = objectNode['Name'];
     if (nameVal !== undefined && nameVal !== null) {
       const s = this.nameValueToString(nameVal);
-      if (s) return s;
+      if (s) {return s;}
     }
 
     // Try with namespace prefix
@@ -348,7 +348,7 @@ export class RoleXmlParser {
       const localName = key.includes(':') ? key.split(':').pop()! : key;
       if (localName === 'name' || localName === 'Name') {
         const s = this.nameValueToString(value);
-        if (s) return s;
+        if (s) {return s;}
       }
     }
 
@@ -357,7 +357,7 @@ export class RoleXmlParser {
 
   /** Get string from Name element (may be string or { '#text': '...' }) */
   private static nameValueToString(value: unknown): string | null {
-    if (typeof value === 'string') return value.trim() || null;
+    if (typeof value === 'string') {return value.trim() || null;}
     if (value && typeof value === 'object' && '#text' in (value as object)) {
       const t = (value as Record<string, unknown>)['#text'];
       return t != null ? String(t).trim() || null : null;

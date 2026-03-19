@@ -6,7 +6,7 @@ const CANONICAL_METADATAOBJECT_OPEN_TAG =
  * (matching `FormatSamples/empty_conf/Configuration.xml`), preserving the rest of the XML.
  */
 export function normalizeMetaDataObjectRoot(xml: string): string {
-  if (!xml.includes('<MetaDataObject')) return xml;
+  if (!xml.includes('<MetaDataObject')) {return xml;}
   return xml.replace(/<MetaDataObject\b[^>]*>/, CANONICAL_METADATAOBJECT_OPEN_TAG);
 }
 

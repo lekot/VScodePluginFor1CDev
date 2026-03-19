@@ -127,7 +127,7 @@ export async function loadRightsXml(rightsPath: string): Promise<RightsDom> {
 
 function getRightsContentArray(dom: RightsDom): unknown[] {
   for (const item of dom) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     for (const key of Object.keys(item)) {
       if (key === 'Rights' || (key.includes(':') && key.split(':').pop() === 'Rights')) {
         const val = (item as Record<string, unknown>)[key];
@@ -139,7 +139,7 @@ function getRightsContentArray(dom: RightsDom): unknown[] {
 }
 
 function getTextFromNode(value: unknown): string {
-  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'string') {return value.trim();}
   if (value && typeof value === 'object' && Array.isArray(value)) {
     for (const item of value) {
       if (item && typeof item === 'object' && '#text' in (item as object)) {
@@ -158,14 +158,14 @@ function getTextFromNode(value: unknown): string {
 function getByLocalName(obj: Record<string, unknown>, localName: string): unknown {
   for (const k of Object.keys(obj)) {
     const local = k.includes(':') ? k.split(':').pop()! : k;
-    if (local === localName) return obj[k];
+    if (local === localName) {return obj[k];}
   }
   return undefined;
 }
 
 function getObjectNameFromContent(content: unknown[]): string | null {
   for (const item of content) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const nameVal = getByLocalName(o, 'name');
     if (nameVal !== undefined) {
@@ -181,7 +181,7 @@ function getObjectItems(content: unknown[]): Array<{ index: number; content: unk
   const result: Array<{ index: number; content: unknown[] }> = [];
   for (let i = 0; i < content.length; i++) {
     const item = content[i];
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const objVal = getByLocalName(o, 'object');
     if (objVal !== undefined) {
@@ -200,11 +200,11 @@ const SIMPLE_RIGHT_CHILD_NAMES = new Set(['name', 'value']);
  */
 function isSimpleRight(rightContent: unknown[]): boolean {
   for (const item of rightContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     for (const k of Object.keys(o)) {
       const local = k.includes(':') ? k.split(':').pop()! : k;
-      if (!SIMPLE_RIGHT_CHILD_NAMES.has(local)) return false;
+      if (!SIMPLE_RIGHT_CHILD_NAMES.has(local)) {return false;}
     }
   }
   return true;
@@ -214,13 +214,13 @@ function isSimpleRight(rightContent: unknown[]): boolean {
 function removeRightFromObjectContent(objectContent: unknown[], rightName: string): void {
   for (let i = 0; i < objectContent.length; i++) {
     const item = objectContent[i];
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const rightVal = getByLocalName(o, 'right');
-    if (rightVal === undefined) continue;
+    if (rightVal === undefined) {continue;}
     const rightContent = Array.isArray(rightVal) ? rightVal : [rightVal];
     for (const sub of rightContent) {
-      if (!sub || typeof sub !== 'object') continue;
+      if (!sub || typeof sub !== 'object') {continue;}
       const subObj = sub as Record<string, unknown>;
       const nameVal = getByLocalName(subObj, 'name');
       const n = getTextFromNode(nameVal);
@@ -235,17 +235,17 @@ function removeRightFromObjectContent(objectContent: unknown[], rightName: strin
 /** Find <right> with given name in object content. Each entry is { right: rightContentArray }. Returns that array to mutate. */
 function findRightInObjectContent(objectContent: unknown[], rightName: string): unknown[] | null {
   for (const item of objectContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const rightVal = getByLocalName(o, 'right');
-    if (rightVal === undefined) continue;
+    if (rightVal === undefined) {continue;}
     const rightContent = Array.isArray(rightVal) ? rightVal : [rightVal];
     for (const sub of rightContent) {
-      if (!sub || typeof sub !== 'object') continue;
+      if (!sub || typeof sub !== 'object') {continue;}
       const subObj = sub as Record<string, unknown>;
       const nameVal = getByLocalName(subObj, 'name');
       const n = getTextFromNode(nameVal);
-      if (n === rightName) return rightContent;
+      if (n === rightName) {return rightContent;}
     }
   }
   return null;
@@ -255,7 +255,7 @@ function findRightInObjectContent(objectContent: unknown[], rightName: string): 
 function setValueInRightContent(rightContent: unknown[], value: boolean): void {
   const valueStr = value ? 'true' : 'false';
   for (const item of rightContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     for (const k of Object.keys(o)) {
       const local = k.includes(':') ? k.split(':').pop()! : k;
@@ -284,11 +284,11 @@ function appendRightToObjectContent(objectContent: unknown[], rightName: string,
 function indexOfFirstRestrictionTemplate(content: unknown[]): number {
   for (let i = 0; i < content.length; i++) {
     const item = content[i];
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     for (const k of Object.keys(o)) {
       const local = k.includes(':') ? k.split(':').pop()! : k;
-      if (local === 'restrictionTemplate') return i;
+      if (local === 'restrictionTemplate') {return i;}
     }
   }
   return content.length;
@@ -304,7 +304,7 @@ function buildNewObjectContent(
   for (const rightType of ALL_RIGHT_TYPES) {
     const xmlName = RIGHTS_TO_XML_NAME[rightType as RightType];
     const value = objectRights[rightType as RightType];
-    if (compactWrite && !value) continue;
+    if (compactWrite && !value) {continue;}
     content.push({
       right: [
         { name: [{ '#text': xmlName }] },
@@ -350,7 +350,7 @@ export function mergeRightsIntoDom(
       const newItem: Record<string, unknown> = { object: newContent };
       content.splice(insertBeforeIndex, 0, newItem);
       objectItems.push({ index: insertBeforeIndex, content: newContent });
-      for (let j = insertBeforeIndex + 1; j < objectItems.length; j++) objectItems[j].index++;
+      for (let j = insertBeforeIndex + 1; j < objectItems.length; j++) {objectItems[j].index++;}
       continue;
     }
 
@@ -369,7 +369,7 @@ export function mergeRightsIntoDom(
           }
         }
       } else {
-        if (compactWrite && !value) continue;
+        if (compactWrite && !value) {continue;}
         appendRightToObjectContent(objectContent, xmlName, value);
       }
     }
@@ -381,7 +381,7 @@ export function mergeRightsIntoDom(
  * Single global replace is O(n) and safe for Rights.xml (no &quot; in attribute values).
  */
 function unescapeQuotesInConditions(xmlString: string): string {
-  if (typeof xmlString !== 'string') return xmlString;
+  if (typeof xmlString !== 'string') {return xmlString;}
   return xmlString.replace(/&quot;/g, '"');
 }
 

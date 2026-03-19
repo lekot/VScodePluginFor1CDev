@@ -3,7 +3,7 @@
  * Properties listed here will render as <select> dropdowns in the Properties panel.
  */
 
-export const PropertyEnumValues: Record<string, string[]> = {
+export const propertyEnumValues: Record<string, string[]> = {
   // Catalog
   HierarchyType: ['HierarchyFoldersAndItems', 'HierarchyItems'],
   SubordinationUse: ['ToItems', 'ToFoldersAndItems', 'DontUse'],
@@ -57,5 +57,5 @@ export const PropertyEnumValues: Record<string, string[]> = {
  * Returns enum values for a property, or undefined if it's a free-form field.
  */
 export function getPropertyEnumValues(propertyName: string): string[] | undefined {
-  return PropertyEnumValues[propertyName];
+  return propertyEnumValues[propertyName];
 }

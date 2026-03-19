@@ -140,7 +140,7 @@ async function replaceInFile(
   }
   const re = new RegExp(escapeRegex(oldPattern) + '(?=[<"\'.\\s]|$)', 'g');
   const matches = content.match(re);
-  if (!matches) return 0;
+  if (!matches) {return 0;}
   const newContent = content.replace(re, newPattern);
   await fs.promises.writeFile(filePath, newContent, 'utf-8');
   return matches.length;

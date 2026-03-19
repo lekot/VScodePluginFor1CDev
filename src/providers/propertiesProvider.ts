@@ -51,9 +51,9 @@ interface ValidationResult {
  * Type guard for webview messages
  */
 function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
-  if (!msg || typeof msg !== 'object') return false;
+  if (!msg || typeof msg !== 'object') {return false;}
   const m = msg as { type?: unknown };
-  if (typeof m.type !== 'string') return false;
+  if (typeof m.type !== 'string') {return false;}
   
   const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType'];
   return validTypes.includes(m.type);
@@ -130,8 +130,8 @@ export class PropertiesProvider {
 
     if (pathToRead && !node.parentFilePath) {
       try {
-        const { XMLWriter } = await import('../utils/XMLWriter');
-        const xmlProperties = await XMLWriter.readProperties(pathToRead);
+        const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
+        const xmlProperties = await xmlWriter.readProperties(pathToRead);
         
         // Update node properties with fresh data from XML
         node.properties = { ...xmlProperties };
@@ -1187,7 +1187,7 @@ export class PropertiesProvider {
    */
   private parseDisplayTypeString(display: string): TypeDefinition | null {
     const s = display.trim();
-    if (!s || s === 'Not set') return null;
+    if (!s || s === 'Not set') {return null;}
     const numMatch = s.match(/^Number\((\d+),(\d+)\)$/);
     if (numMatch) {
       return {
@@ -1234,6 +1234,7 @@ export class PropertiesProvider {
    * Handle editType message from webview
    */
   private async handleEditTypeMessage(_message: WebviewMessage): Promise<void> {
+    void _message;
     if (!this.currentNode) {
       Logger.warn('Edit type attempted with no current node');
       this.postMessage({
@@ -1264,8 +1265,8 @@ export class PropertiesProvider {
     if (typeof rawType === 'object' && rawType !== null && !Array.isArray(rawType)) {
       try {
         const typeDef = TypeParser.parseFromObject(rawType as Record<string, unknown>);
-        const { TypeSerializer } = await import('../serializers/typeSerializer');
-        typeXMLForEditor = TypeSerializer.serialize(typeDef);
+        const { TypeSerializer: typeSerializer } = await import('../serializers/typeSerializer');
+        typeXMLForEditor = typeSerializer.serialize(typeDef);
         Logger.info('handleEditTypeMessage: serialized Type from object');
       } catch (e) {
         Logger.error('Failed to serialize Type object for editor', e);
@@ -1280,8 +1281,8 @@ export class PropertiesProvider {
       const typeDef = this.parseDisplayTypeString(rawType as string);
       if (typeDef) {
         try {
-          const { TypeSerializer } = await import('../serializers/typeSerializer');
-          typeXMLForEditor = TypeSerializer.serialize(typeDef);
+          const { TypeSerializer: typeSerializer } = await import('../serializers/typeSerializer');
+          typeXMLForEditor = typeSerializer.serialize(typeDef);
           Logger.info('handleEditTypeMessage: parsed display string to XML');
         } catch (e) {
           Logger.error('Failed to serialize parsed display type', e);
@@ -1315,8 +1316,8 @@ export class PropertiesProvider {
 
         // If result not null, serialize TypeDefinition back to XML string
         if (result !== null) {
-          const { TypeSerializer } = await import('../serializers/typeSerializer');
-          const updatedTypeXML = TypeSerializer.serialize(result);
+          const { TypeSerializer: typeSerializer } = await import('../serializers/typeSerializer');
+          const updatedTypeXML = typeSerializer.serialize(result);
 
           // Do NOT update node.properties['Type'] here — that would make
           // saveProperties' changedKeys comparison see old == new and skip Type.
@@ -1357,7 +1358,7 @@ export class PropertiesProvider {
 
     try {
       // Import XMLWriter dynamically to avoid circular dependencies
-      const { XMLWriter } = await import('../utils/XMLWriter');
+      const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
       
       // Write properties to XML file with error handling
       try {
@@ -1426,7 +1427,7 @@ export class PropertiesProvider {
           Logger.info(`  Properties keys: ${Object.keys(properties).join(', ')}`);
           Logger.info(`  Changed keys: ${changedKeys ? changedKeys.join(', ') : 'undefined (all)'}`);
           
-          await XMLWriter.writeNestedElementProperties(
+          await xmlWriter.writeNestedElementProperties(
             targetFilePath,
             node.type,
             node.name,
@@ -1435,7 +1436,7 @@ export class PropertiesProvider {
           );
         } else {
           // For root elements, use standard write method
-          await XMLWriter.writeProperties(targetFilePath, properties);
+          await xmlWriter.writeProperties(targetFilePath, properties);
         }
       } catch (writeError) {
         this._isSaving = false;

@@ -349,7 +349,7 @@ export class DesignerParser {
     for (const item of items) {
       const full = path.join(subsystemsDir, item);
       const stat = await fs.promises.stat(full).catch(() => null);
-      if (!stat) continue;
+      if (!stat) {continue;}
       if (stat.isFile() && item.toLowerCase().endsWith('.xml')) {
         result.push(full);
       } else if (stat.isDirectory()) {
@@ -433,7 +433,7 @@ export class DesignerParser {
     }
     for (const node of flatNodes) {
       const elementDir = elementDirByNode.get(node)!;
-      if (elementDir === normalizedTypePath) continue;
+      if (elementDir === normalizedTypePath) {continue;}
       if (elementDir.endsWith(path.sep + 'Subsystems')) {
         const parentContainerDir = path.normalize(path.dirname(elementDir));
         const parent = byContainerDir.get(parentContainerDir);
@@ -1035,11 +1035,12 @@ export class DesignerParser {
     xmlFilePath: string,
     _elementName: string
   ): Promise<TreeNode | null> {
+    void _elementName;
     const childObjects = findChildObjects(xmlContent);
-    if (childObjects == null) return null;
+    if (childObjects == null) {return null;}
 
     const sectionList = extractTabularSections(childObjects);
-    if (sectionList.length === 0) return null;
+    if (sectionList.length === 0) {return null;}
 
     const tabularNode: TreeNode = {
       id: 'TabularSections',

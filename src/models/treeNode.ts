@@ -22,6 +22,7 @@ export interface TreeNode {
 /**
  * Types of 1C metadata elements
  */
+/* eslint-disable @typescript-eslint/naming-convention -- 1C metadata names must match platform object names */
 export enum MetadataType {
   // Root
   Configuration = 'Configuration',
@@ -77,6 +78,7 @@ export enum MetadataType {
   // Unknown
   Unknown = 'Unknown',
 }
+/* eslint-enable @typescript-eslint/naming-convention */
 
 /**
  * Metadata element properties

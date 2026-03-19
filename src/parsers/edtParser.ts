@@ -355,7 +355,7 @@ export class EdtParser {
       const itemPath = path.join(typePath, item);
       try {
         const stat = await fs.promises.stat(itemPath);
-        if (!stat.isDirectory()) continue;
+        if (!stat.isDirectory()) {continue;}
         const node = await this.parseMetadataElement(itemPath, item, 'Subsystems', shallow);
         const parentRef = node.properties.ParentSubsystem ?? node.properties.parentSubsystemRef;
         if (parentRef != null) {
@@ -371,19 +371,19 @@ export class EdtParser {
 
   /** Normalize EDT ParentSubsystem ref to subsystem name for matching (e.g. "Subsystem.Name" -> "Name"). */
   private static normalizeParentSubsystemRef(ref: unknown): string | null {
-    if (ref == null) return null;
+    if (ref == null) {return null;}
     let s: string;
     if (typeof ref === 'string') {
       s = ref.trim();
     } else if (typeof ref === 'object') {
       const obj = ref as Record<string, unknown>;
       const item = obj.item;
-      if (typeof item !== 'string') return null;
+      if (typeof item !== 'string') {return null;}
       s = item.trim();
     } else {
       return null;
     }
-    if (!s) return null;
+    if (!s) {return null;}
     // Keep the most specific token. EDT refs are often like "Subsystem.<nameOrUuid>".
     // Prefer the rightmost segment so we don't collapse potentially unique refs to a name prefix.
     const dot = s.lastIndexOf('.');

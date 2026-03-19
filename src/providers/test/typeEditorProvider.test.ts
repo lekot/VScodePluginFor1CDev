@@ -30,7 +30,7 @@ const mockContext: vscode.ExtensionContext = {
     store: async () => {},
     delete: async () => {},
   },
-  environmentVariableCollection: {} as any,
+  environmentVariableCollection: {} as vscode.EnvironmentVariableCollection,
   extension: {
     id: 'test-extension',
     extensionUri: mockExtensionUri,
@@ -45,7 +45,7 @@ const mockContext: vscode.ExtensionContext = {
   workspaceStoragePath: '',
   logPath: '',
   logUri: undefined,
-} as any;
+} as unknown as vscode.ExtensionContext;
 
 describe('TypeEditorProvider', () => {
   let provider: TypeEditorProvider;

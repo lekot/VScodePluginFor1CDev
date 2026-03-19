@@ -11,6 +11,21 @@
     "@typescript-eslint/naming-convention": [
       "warn",
       {
+        "selector": "property",
+        "modifiers": ["requiresQuotes"],
+        "format": null
+      },
+      {
+        "selector": "objectLiteralProperty",
+        "format": null
+      },
+      {
+        "selector": "classProperty",
+        "format": ["camelCase", "PascalCase", "UPPER_CASE"],
+        "leadingUnderscore": "allow",
+        "trailingUnderscore": "allow"
+      },
+      {
         "selector": "default",
         "format": ["camelCase"],
         "leadingUnderscore": "allow",
@@ -29,7 +44,7 @@
     ],
     "@typescript-eslint/semi": "warn",
     "curly": "warn",
-    "eqeqeq": "warn",
+    "eqeqeq": ["warn", "always", { "null": "ignore" }],
     "no-throw-literal": "warn"
   },
   "ignorePatterns": ["dist", "node_modules", "out", "build"]

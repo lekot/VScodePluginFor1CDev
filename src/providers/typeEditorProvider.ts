@@ -17,9 +17,9 @@ type WebviewMessage =
  * Type guard for webview messages
  */
 function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
-  if (!msg || typeof msg !== 'object') return false;
+  if (!msg || typeof msg !== 'object') {return false;}
   const m = msg as { type?: unknown };
-  if (typeof m.type !== 'string') return false;
+  if (typeof m.type !== 'string') {return false;}
   
   const validTypes = ['save', 'cancel', 'validate'];
   return validTypes.includes(m.type);
@@ -86,7 +86,7 @@ export class TypeEditorProvider {
   }
 
   private updateWebviewContent(typeDefinition: TypeDefinition, referenceableObjects: ReferenceableGroup[]): void {
-    if (!this.panel) return;
+    if (!this.panel) {return;}
     this.panel.webview.html = this.getWebviewContent(typeDefinition, referenceableObjects);
     Logger.debug('Type editor panel updated');
   }
@@ -138,11 +138,11 @@ export class TypeEditorProvider {
     for (const entry of refEntries) {
       const kind = entry.referenceType.referenceKind;
       const name = entry.referenceType.objectName;
-      if (!name) continue;
+      if (!name) {continue;}
       const group = referenceableObjects.find((g) => g.referenceKind === kind);
       const inList = group && group.objectNames.includes(name);
       if (!inList) {
-        if (!virtualRefs.has(kind)) virtualRefs.set(kind, new Set());
+        if (!virtualRefs.has(kind)) {virtualRefs.set(kind, new Set());}
         virtualRefs.get(kind)!.add(name);
       }
     }
@@ -574,7 +574,7 @@ export class TypeEditorProvider {
   }
 
   private formatTypeDisplay(typeDefinition: TypeDefinition): string {
-    if (typeDefinition.types.length === 0) return 'Not set';
+    if (typeDefinition.types.length === 0) {return 'Not set';}
     return typeDefinition.types.map(entry => {
       switch (entry.kind) {
         case 'string': return entry.qualifiers ? `String(${(entry.qualifiers as StringQualifiers).length})` : 'String';
@@ -609,7 +609,7 @@ export class TypeEditorProvider {
 
   /** Validation and validationResult messaging are reserved for future use (pre-save validation in UI). */
   private async handleValidateMessage(message: WebviewMessage): Promise<void> {
-    if (!this.panel) return;
+    if (!this.panel) {return;}
     
     // Type narrowing - TypeScript needs explicit check
     if (message.type === 'validate') {
@@ -710,6 +710,6 @@ export class TypeEditorProvider {
     if (this.rejectPromise) { this.rejectPromise(new Error('Type editor closed')); this.rejectPromise = undefined; }
     else if (this.resolvePromise) { this.resolvePromise(null); this.resolvePromise = undefined; }
     if (this.panel) { this.panel.dispose(); this.panel = undefined; }
-    while (this.disposables.length) { const d = this.disposables.pop(); if (d) d.dispose(); }
+    while (this.disposables.length) { const d = this.disposables.pop(); if (d) {d.dispose();} }
   }
 }

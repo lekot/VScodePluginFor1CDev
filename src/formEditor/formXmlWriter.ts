@@ -25,27 +25,27 @@ function buildEventsArray(events: FormEventItem[]): unknown[] {
 
 /** Normalize property value for XMLBuilder: skip undefined; primitives as text node; return array for preserveOrder. */
 function normalizePropertyValue(v: unknown): unknown[] | undefined {
-  if (v === undefined) return undefined;
-  if (v === null) return [{ '#text': '' }];
+  if (v === undefined) {return undefined;}
+  if (v === null) {return [{ '#text': '' }];}
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
     return [{ '#text': String(v) }];
   }
-  if (Array.isArray(v)) return v;
-  if (typeof v === 'object' && v !== null) return [v];
+  if (Array.isArray(v)) {return v;}
+  if (typeof v === 'object' && v !== null) {return [v];}
   return [{ '#text': String(v) }];
 }
 
 function buildChildItem(item: FormChildItem): Record<string, unknown[]> {
   const content: unknown[] = [];
   const at: Record<string, string> = {};
-  if (item.name != null && String(item.name) !== '') at['@_name'] = String(item.name);
-  if (item.id != null && String(item.id) !== '') at['@_id'] = String(item.id);
-  if (Object.keys(at).length) content.push({ ':@': at });
+  if (item.name != null && String(item.name) !== '') {at['@_name'] = String(item.name);}
+  if (item.id != null && String(item.id) !== '') {at['@_id'] = String(item.id);}
+  if (Object.keys(at).length) {content.push({ ':@': at });}
   const props = item.properties ?? {};
   for (const [k, v] of Object.entries(props)) {
-    if (k === ':@' || k.startsWith('@')) continue;
+    if (k === ':@' || k.startsWith('@')) {continue;}
     const value = normalizePropertyValue(v);
-    if (value === undefined) continue;
+    if (value === undefined) {continue;}
     content.push({ [k]: value });
   }
   if (item.childItems && item.childItems.length) {
@@ -104,14 +104,14 @@ export function buildFormContent(model: FormModel): unknown[] {
       Attributes: model.attributes.map((attr) => {
         const arr: unknown[] = [];
         const at: Record<string, string> = {};
-        if (attr.name != null && String(attr.name) !== '') at['@_name'] = String(attr.name);
-        if (attr.id != null && String(attr.id) !== '') at['@_id'] = String(attr.id);
-        if (Object.keys(at).length) arr.push({ ':@': at });
+        if (attr.name != null && String(attr.name) !== '') {at['@_name'] = String(attr.name);}
+        if (attr.id != null && String(attr.id) !== '') {at['@_id'] = String(attr.id);}
+        if (Object.keys(at).length) {arr.push({ ':@': at });}
         const props = attr.properties ?? {};
         for (const [k, v] of Object.entries(props)) {
-          if (k === ':@' || k.startsWith('@')) continue;
+          if (k === ':@' || k.startsWith('@')) {continue;}
           const value = normalizePropertyValue(v);
-          if (value === undefined) continue;
+          if (value === undefined) {continue;}
           arr.push({ [k]: value });
         }
         return { Attribute: arr };
@@ -123,14 +123,14 @@ export function buildFormContent(model: FormModel): unknown[] {
       Commands: model.commands.map((cmd) => {
         const arr: unknown[] = [];
         const at: Record<string, string> = {};
-        if (cmd.name != null && String(cmd.name) !== '') at['@_name'] = String(cmd.name);
-        if (cmd.id != null && String(cmd.id) !== '') at['@_id'] = String(cmd.id);
-        if (Object.keys(at).length) arr.push({ ':@': at });
+        if (cmd.name != null && String(cmd.name) !== '') {at['@_name'] = String(cmd.name);}
+        if (cmd.id != null && String(cmd.id) !== '') {at['@_id'] = String(cmd.id);}
+        if (Object.keys(at).length) {arr.push({ ':@': at });}
         const props = cmd.properties ?? {};
         for (const [k, v] of Object.entries(props)) {
-          if (k === ':@' || k.startsWith('@')) continue;
+          if (k === ':@' || k.startsWith('@')) {continue;}
           const value = normalizePropertyValue(v);
-          if (value === undefined) continue;
+          if (value === undefined) {continue;}
           arr.push({ [k]: value });
         }
         return { Command: arr };
@@ -145,11 +145,11 @@ export function buildFormContent(model: FormModel): unknown[] {
  * XMLBuilder with ignoreNameSpace:true strips xmlns:* attributes, so we do it via string post-processing.
  */
 export function injectXmlnsIntoFormTag(xmlString: string, xmlnsDeclarations: Record<string, string>): string {
-  if (!Object.keys(xmlnsDeclarations).length) return xmlString;
+  if (!Object.keys(xmlnsDeclarations).length) {return xmlString;}
   // Build xmlns attribute string, sorted for determinism (xmlns first, then xmlns:* alphabetically)
   const entries = Object.entries(xmlnsDeclarations).sort(([a], [b]) => {
-    if (a === 'xmlns') return -1;
-    if (b === 'xmlns') return 1;
+    if (a === 'xmlns') {return -1;}
+    if (b === 'xmlns') {return 1;}
     return a.localeCompare(b);
   });
   const xmlnsStr = entries.map(([k, v]) => `${k}="${v}"`).join(' ');
@@ -223,7 +223,7 @@ export async function writeFormXml(formXmlPath: string, model: FormModel): Promi
     );
   }
   try {
-    if (fs.existsSync(backupPath)) await fs.promises.unlink(backupPath);
+    if (fs.existsSync(backupPath)) {await fs.promises.unlink(backupPath);}
   } catch {
     Logger.debug(`Could not remove backup ${backupPath}`);
   }

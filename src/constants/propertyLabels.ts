@@ -1,7 +1,7 @@
 /**
  * Russian labels for metadata properties
  */
-export const PropertyLabels: Record<string, string> = {
+export const propertyLabels: Record<string, string> = {
   // CommonModule properties
   'Global': 'Глобальный',
   'ClientManagedApplication': 'Клиент (управляемое приложение)',
@@ -76,5 +76,5 @@ export const PropertyLabels: Record<string, string> = {
  * Get Russian label for property name, fallback to original name
  */
 export function getPropertyLabel(propertyName: string): string {
-  return PropertyLabels[propertyName] || propertyName;
+  return propertyLabels[propertyName] || propertyName;
 }

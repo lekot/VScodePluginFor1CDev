@@ -70,7 +70,7 @@ export function extractChildSubsystems(childObjects: unknown): string[] {
   }
   const obj = childObjects as Record<string, unknown>;
   const raw = obj.Subsystem;
-  if (raw === undefined) return names;
+  if (raw === undefined) {return names;}
   const items = Array.isArray(raw) ? raw : [raw];
   for (const item of items) {
     if (typeof item === 'string') {

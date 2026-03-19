@@ -25,10 +25,10 @@ export function isContainer(item: FormChildItem): boolean {
 export function findElementById(root: FormChildItem[], elementId: string): FormChildItem | undefined {
   const id = String(elementId);
   for (const item of root) {
-    if ((item.id != null && String(item.id) === id) || (item.name != null && String(item.name) === id)) return item;
+    if ((item.id != null && String(item.id) === id) || (item.name != null && String(item.name) === id)) {return item;}
     if (item.childItems?.length) {
       const found = findElementById(item.childItems, id);
-      if (found) return found;
+      if (found) {return found;}
     }
   }
   return undefined;
@@ -36,14 +36,14 @@ export function findElementById(root: FormChildItem[], elementId: string): FormC
 
 /** Check if sourceId is the same as targetId or is a descendant of target. */
 export function isDescendantOf(model: FormModel, sourceId: string, targetId: string): boolean {
-  if (sourceId === targetId) return true;
+  if (sourceId === targetId) {return true;}
   const target = findElementById(model.childItemsRoot, targetId);
-  if (!target?.childItems?.length) return false;
+  if (!target?.childItems?.length) {return false;}
   const walk = (items: FormChildItem[]): boolean => {
     for (const item of items) {
       const id = item.id != null ? String(item.id) : (item.name != null ? String(item.name) : '');
-      if (id && id === sourceId) return true;
-      if (item.childItems?.length && walk(item.childItems)) return true;
+      if (id && id === sourceId) {return true;}
+      if (item.childItems?.length && walk(item.childItems)) {return true;}
     }
     return false;
   };
@@ -62,7 +62,7 @@ export function findParentAndIndex(
     }
     if (root[i].childItems?.length) {
       const found = findParentAndIndex(root[i].childItems!, id);
-      if (found) return found;
+      if (found) {return found;}
     }
   }
   return null;
@@ -82,22 +82,22 @@ export function moveNodeInModel(
   // Special case: drop onto the synthetic form root — move element to childItemsRoot
   if (targetId === FORM_ROOT_ID) {
     const sourceLoc = findParentAndIndex(model.childItemsRoot, sourceId);
-    if (!sourceLoc) return false;
+    if (!sourceLoc) {return false;}
     // Reject if source is already a direct child of childItemsRoot (no-op)
-    if (sourceLoc.parent === model.childItemsRoot) return false;
+    if (sourceLoc.parent === model.childItemsRoot) {return false;}
     const [node] = sourceLoc.parent.splice(sourceLoc.index, 1);
-    if (!node) return false;
+    if (!node) {return false;}
     model.childItemsRoot.splice(Math.min(index, model.childItemsRoot.length), 0, node);
     return true;
   }
 
   const sourceLoc = findParentAndIndex(model.childItemsRoot, sourceId);
   const targetEl = findElementById(model.childItemsRoot, targetId);
-  if (!sourceLoc || !targetEl || !isContainer(targetEl)) return false;
+  if (!sourceLoc || !targetEl || !isContainer(targetEl)) {return false;}
   // Guard: cannot move element into its own descendant
-  if (isDescendantOf(model, targetId, sourceId)) return false;
+  if (isDescendantOf(model, targetId, sourceId)) {return false;}
   const [node] = sourceLoc.parent.splice(sourceLoc.index, 1);
-  if (!node) return false;
+  if (!node) {return false;}
   // Guard: if the root was emptied by this splice, roll back and reject
   if (model.childItemsRoot.length === 0) {
     sourceLoc.parent.splice(sourceLoc.index, 0, node);
@@ -111,7 +111,7 @@ export function moveNodeInModel(
 /** Remove node from model by elementId. Root (childItemsRoot) is not removed. */
 export function removeNodeInModel(model: FormModel, elementId: string): boolean {
   const loc = findParentAndIndex(model.childItemsRoot, elementId);
-  if (!loc) return false;
+  if (!loc) {return false;}
   loc.parent.splice(loc.index, 1);
   return true;
 }
@@ -123,13 +123,13 @@ export function moveElementSiblingInModel(
   direction: 'up' | 'down'
 ): boolean {
   const loc = findParentAndIndex(model.childItemsRoot, elementId);
-  if (!loc) return false;
+  if (!loc) {return false;}
   const idx = loc.index;
-  if (direction === 'up' && idx <= 0) return false;
-  if (direction === 'down' && idx >= loc.parent.length - 1) return false;
+  if (direction === 'up' && idx <= 0) {return false;}
+  if (direction === 'down' && idx >= loc.parent.length - 1) {return false;}
   const newIdx = direction === 'up' ? idx - 1 : idx + 1;
   const [node] = loc.parent.splice(idx, 1);
-  if (!node) return false;
+  if (!node) {return false;}
   loc.parent.splice(newIdx, 0, node);
   return true;
 }
@@ -139,7 +139,7 @@ export function countAll(items: FormChildItem[]): number {
   let n = 0;
   for (const item of items) {
     n++;
-    if (item.childItems?.length) n += countAll(item.childItems);
+    if (item.childItems?.length) {n += countAll(item.childItems);}
   }
   return n;
 }

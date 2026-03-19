@@ -121,7 +121,7 @@ export function injectInternalInfoIntoMetadataXml(
     'm'
   );
   const m = xml.match(re);
-  if (!m) return xml;
+  if (!m) {return xml;}
   const indent = m[2] ?? '';
   const internalInfo = buildInternalInfoXml(rootTag, objectName, indent);
   return xml.replace(re, `$1${internalInfo}${indent}<Properties>`);

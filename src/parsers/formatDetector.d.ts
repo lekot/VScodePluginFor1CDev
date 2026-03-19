@@ -1,11 +1,13 @@
 /**
  * Configuration format types
  */
+/* eslint-disable @typescript-eslint/naming-convention -- values mirror 1C toolchain format names */
 export declare enum ConfigFormat {
     Designer = "Designer",
     EDT = "EDT",
     Unknown = "Unknown"
 }
+/* eslint-enable @typescript-eslint/naming-convention */
 /**
  * Detector for 1C configuration format
  */

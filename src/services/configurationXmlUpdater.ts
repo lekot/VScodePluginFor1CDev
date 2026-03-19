@@ -25,16 +25,16 @@ const builder = new XMLBuilder(CONFIGURATION_XML_OPTIONS);
  * Returns the array of Configuration children, or null if not found.
  */
 function findConfigurationChildren(parsed: unknown): unknown[] | null {
-  if (!parsed || typeof parsed !== 'object') return null;
+  if (!parsed || typeof parsed !== 'object') {return null;}
   const rootArray = Array.isArray(parsed) ? parsed : [parsed];
   for (const item of rootArray) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const obj = item as Record<string, unknown>;
     if ('MetaDataObject' in obj) {
       const metaContent = obj.MetaDataObject;
-      if (!Array.isArray(metaContent)) continue;
+      if (!Array.isArray(metaContent)) {continue;}
       for (const metaChild of metaContent) {
-        if (!metaChild || typeof metaChild !== 'object') continue;
+        if (!metaChild || typeof metaChild !== 'object') {continue;}
         const metaObj = metaChild as Record<string, unknown>;
         if ('Configuration' in metaObj) {
           const configContent = metaObj.Configuration;
@@ -52,11 +52,11 @@ function findConfigurationChildren(parsed: unknown): unknown[] | null {
  */
 function findChildObjectsArray(configChildren: unknown[]): unknown[] | null {
   for (const item of configChildren) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const obj = item as Record<string, unknown>;
     if (obj['ChildObjects'] !== undefined) {
       const val = obj['ChildObjects'];
-      if (Array.isArray(val)) return val;
+      if (Array.isArray(val)) {return val;}
       return null;
     }
   }
@@ -103,7 +103,7 @@ export async function addRootObjectToConfiguration(
   const newEntry: Record<string, unknown> = {
     [rootTag]: [{ '#text': objectName }],
   };
-  let childObjectsArray = findChildObjectsArray(configChildren);
+  const childObjectsArray = findChildObjectsArray(configChildren);
   if (childObjectsArray) {
     childObjectsArray.push(newEntry);
   } else {
@@ -170,9 +170,9 @@ export async function removeRootObjectFromConfiguration(
   // (массив/объект) и в Configuration.xml могут быть дубликаты.
   for (let i = childObjectsArray.length - 1; i >= 0; i--) {
     const item = childObjectsArray[i];
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const obj = item as Record<string, unknown>;
-    if (!(rootTag in obj)) continue;
+    if (!(rootTag in obj)) {continue;}
 
     const tagVal = obj[rootTag];
     const candidates: string[] = [];
@@ -207,7 +207,7 @@ export async function removeRootObjectFromConfiguration(
   // If ChildObjects is now empty, remove the ChildObjects node entirely
   if (childObjectsArray.length === 0) {
     const coIdx = configChildren.findIndex((item) => {
-      if (!item || typeof item !== 'object') return false;
+      if (!item || typeof item !== 'object') {return false;}
       const obj = item as Record<string, unknown>;
       return 'ChildObjects' in obj;
     });

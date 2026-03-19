@@ -62,7 +62,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showCollapseAll: true,
   });
   treeDataProvider.setMessageUpdater((msg) => {
-    if (treeView) treeView.message = msg ?? '';
+    if (treeView) {treeView.message = msg ?? '';}
   });
   context.subscriptions.push(treeView);
 
@@ -95,20 +95,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   /** Find first Form node by traversing tree (expands path when revealing). */
-  async function findFirstFormNode(element: TreeNode): Promise<TreeNode | null> {
-    if (element.type === MetadataType.Form) return element;
+  const findFirstFormNode = async (element: TreeNode): Promise<TreeNode | null> => {
+    if (element.type === MetadataType.Form) {return element;}
     const children = await treeDataProvider!.getChildren(element);
     for (const child of children) {
       const found = await findFirstFormNode(child);
-      if (found) return found;
+      if (found) {return found;}
     }
     return null;
-  }
+  };
 
   const focusTreeCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.focus',
     async () => {
-      if (!treeView || !treeDataProvider) return;
+      if (!treeView || !treeDataProvider) {return;}
       let root = treeDataProvider.getRootNode();
       if (!root) {
         await new Promise((r) => setTimeout(r, 200));
@@ -118,7 +118,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await new Promise((r) => setTimeout(r, 400));
         root = treeDataProvider.getRootNode();
       }
-      if (!root) return;
+      if (!root) {return;}
       const formNode = await findFirstFormNode(root);
       const nodeToReveal = formNode ?? root;
       await treeView.reveal(nodeToReveal, { focus: true });
@@ -159,7 +159,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     '1c-metadata-tree.openXML',
     async (node?: TreeNode) => {
       const target = getSelectedNode(node);
-      if (!target) return;
+      if (!target) {return;}
       const pathToOpen =
         (treeDataProvider && getConfigurationXmlPathForNode(target, treeDataProvider.getConfigPathForNode.bind(treeDataProvider))) ??
         (target.type === MetadataType.Form && target.filePath
@@ -271,7 +271,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           return validateElementName(value.trim(), siblingNames) ?? undefined;
         },
       });
-      if (name === undefined || name.trim() === '') return;
+      if (name === undefined || name.trim() === '') {return;}
       try {
         await doCreateElement(target, name);
         vscode.window.showInformationMessage(`Создан элемент: ${name.trim()}`);
@@ -311,7 +311,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         placeHolder: 'Введите имя формы (латиница, кириллица, цифры, _)',
         validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
       });
-      if (name === undefined || name.trim() === '') return;
+      if (name === undefined || name.trim() === '') {return;}
       try {
         await doCreateForm(target, name.trim());
         vscode.window.showInformationMessage(`Создана форма: ${name.trim()}`);
@@ -347,7 +347,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         prompt: 'Имя дубликата',
         validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
       });
-      if (newName === undefined || newName.trim() === '') return;
+      if (newName === undefined || newName.trim() === '') {return;}
       try {
         await doDuplicateElement(target, newName.trim());
         vscode.window.showInformationMessage(`Дублирован элемент: ${newName.trim()}`);
@@ -397,7 +397,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         'Удалить',
         'Отмена'
       );
-      if (choice !== 'Удалить') return;
+      if (choice !== 'Удалить') {return;}
       try {
         await doDeleteElement(target);
         vscode.window.showInformationMessage(`Удалён элемент: ${target.name}`);
@@ -433,7 +433,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         prompt: 'Новое имя',
         validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
       });
-      if (newName === undefined || newName.trim() === '' || newName.trim() === target.name) return;
+      if (newName === undefined || newName.trim() === '' || newName.trim() === target.name) {return;}
       try {
         await doRenameElement(target, newName.trim(), configPath);
         vscode.window.showInformationMessage(`Переименован в: ${newName.trim()}`);
@@ -462,7 +462,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const focusSearchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.focusSearch',
     async () => {
-      if (!treeDataProvider) return;
+      if (!treeDataProvider) {return;}
       const history = treeDataProvider.getSearchHistory();
       const current = treeDataProvider.getSearchQuery();
       let query = current;
@@ -474,7 +474,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           ],
           { placeHolder: 'Поиск по названиям (и синониму)', matchOnDescription: false }
         );
-        if (pick === undefined) return;
+        if (pick === undefined) {return;}
         query = pick.value;
         if (query === '') {
           const input = await vscode.window.showInputBox({
@@ -482,7 +482,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             prompt: 'Поиск по названиям (и синониму)',
             placeHolder: 'Введите строку или выберите из истории',
           });
-          if (input === undefined) return;
+          if (input === undefined) {return;}
           query = input;
         }
       } else {
@@ -491,11 +491,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           prompt: 'Поиск по названиям (и синониму)',
           placeHolder: 'Введите строку',
         });
-        if (input === undefined) return;
+        if (input === undefined) {return;}
         query = input;
       }
       treeDataProvider.setSearchQuery(query);
-      if (query.trim()) treeDataProvider.addSearchToHistory(query);
+      if (query.trim()) {treeDataProvider.addSearchToHistory(query);}
     }
   );
 
@@ -525,7 +525,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         defaultUri: vscode.Uri.file('1c-metadata-tree-logs.txt'),
         filters: { 'Log files': ['log'], 'Text': ['txt'] },
       });
-      if (!uri) return;
+      if (!uri) {return;}
       try {
         await fs.promises.writeFile(uri.fsPath, content, 'utf-8');
         vscode.window.showInformationMessage(`${MESSAGES.LOGS_EXPORTED}: ${uri.fsPath}`);
@@ -540,7 +540,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const filterByTypeCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.filterByType',
     async () => {
-      if (!treeDataProvider) return;
+      if (!treeDataProvider) {return;}
       const items = MetadataTreeDataProvider.getFilterableTypeLabels().map(({ type, label }) => ({
         label,
         type,
@@ -553,7 +553,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         canPickMany: true,
         placeHolder: 'Выберите типы метаданных для отображения',
       });
-      if (picks === undefined) return;
+      if (picks === undefined) {return;}
       treeDataProvider.setTypeFilter(picks.length > 0 ? picks.map((p) => p.type) : null);
     }
   );
@@ -566,7 +566,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
         return;
       }
-      if (!treeDataProvider) return;
+      if (!treeDataProvider) {return;}
       await treeDataProvider.setSubsystemFilter(target.id, target.name);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', true);
     }
@@ -575,7 +575,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const clearSubsystemFilterCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearSubsystemFilter',
     async () => {
-      if (!treeDataProvider) return;
+      if (!treeDataProvider) {return;}
       await treeDataProvider.setSubsystemFilter(null, null);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
@@ -584,9 +584,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const nextMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.nextMatch',
     () => {
-      if (!treeDataProvider || !treeView) return;
+      if (!treeDataProvider || !treeView) {return;}
       const ids = treeDataProvider.getVisibleOrderedNodeIds();
-      if (ids.length === 0) return;
+      if (ids.length === 0) {return;}
       const sel = treeView.selection[0];
       const currentId = sel?.id;
       const idx = currentId ? ids.indexOf(currentId) : -1;
@@ -602,9 +602,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const previousMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.previousMatch',
     () => {
-      if (!treeDataProvider || !treeView) return;
+      if (!treeDataProvider || !treeView) {return;}
       const ids = treeDataProvider.getVisibleOrderedNodeIds();
-      if (ids.length === 0) return;
+      if (ids.length === 0) {return;}
       const sel = treeView.selection[0];
       const currentId = sel?.id;
       const idx = currentId ? ids.indexOf(currentId) : -1;

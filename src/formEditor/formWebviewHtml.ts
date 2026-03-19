@@ -10,7 +10,8 @@ import * as vscode from 'vscode';
  * including all CSS and client-side JavaScript.
  * CSP: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'
  */
-export function getWebviewHtml(_webview: vscode.Webview): string {
+export function getWebviewHtml(webview: vscode.Webview): string {
+  void webview;
   return `<!DOCTYPE html>
 <html lang="ru">
 <head>

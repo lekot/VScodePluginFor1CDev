@@ -12,9 +12,9 @@ export function getConfigRootFromNode(node: TreeNode): string | null {
   while (current?.parent) {
     current = current.parent;
   }
-  if (!current) return null;
+  if (!current) {return null;}
   const rootPath = current.filePath;
-  if (!rootPath) return null;
+  if (!rootPath) {return null;}
   // EDT root has filePath = configPath/src; Designer root has filePath = configPath
   if (current.type === MetadataType.Configuration && current.name === 'Configuration') {
     // Designer format: filePath points to Configuration.xml — return its directory
@@ -54,6 +54,6 @@ export function getConfigurationXmlPathForNode(
  */
 export async function getFormatFromNode(node: TreeNode): Promise<ConfigFormat | null> {
   const configRoot = getConfigRootFromNode(node);
-  if (!configRoot) return null;
+  if (!configRoot) {return null;}
   return await FormatDetector.detect(configRoot);
 }

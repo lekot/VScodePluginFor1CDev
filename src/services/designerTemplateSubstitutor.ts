@@ -20,6 +20,7 @@ function escapeXml(s: string): string {
  */
 export function substituteDesignerTemplate(
   templateXml: string,
+  // eslint-disable-next-line @typescript-eslint/naming-convention -- 1C template placeholders use platform naming
   params: { uuid: string; Name: string; Synonym_ru: string }
 ): string {
   const uuid = escapeXml(params.uuid);

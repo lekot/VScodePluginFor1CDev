@@ -7,11 +7,13 @@ import { EdtParser } from './edtParser';
 /**
  * Configuration format types
  */
+/* eslint-disable @typescript-eslint/naming-convention -- values mirror 1C toolchain format names */
 export enum ConfigFormat {
   Designer = 'Designer',
   EDT = 'EDT',
   Unknown = 'Unknown',
 }
+/* eslint-enable @typescript-eslint/naming-convention */
 
 /**
  * Detector for 1C configuration format
@@ -144,7 +146,7 @@ export class FormatDetector {
     currentDepth: number,
     maxDepth: number
   ): Promise<string[]> {
-    if (currentDepth >= maxDepth) return [];
+    if (currentDepth >= maxDepth) {return [];}
     const found: string[] = [];
     try {
       const items = await fs.promises.readdir(dirPath);
@@ -155,7 +157,7 @@ export class FormatDetector {
         const itemPath = path.join(dirPath, item);
         try {
           const stat = await fs.promises.stat(itemPath);
-          if (!stat.isDirectory()) continue;
+          if (!stat.isDirectory()) {continue;}
           if (await this.isConfigurationRoot(itemPath)) {
             found.push(itemPath);
             Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);

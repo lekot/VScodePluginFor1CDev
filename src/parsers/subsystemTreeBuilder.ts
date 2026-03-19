@@ -26,11 +26,11 @@ type ParentRefKey =
  * Resolves parentSubsystemRef (string or ref object) to a key for matching.
  */
 function resolveParentRef(ref: unknown): ParentRefKey | null {
-  if (ref == null) return null;
+  if (ref == null) {return null;}
   if (typeof ref === 'string') {
     const s = ref.trim();
-    if (!s) return null;
-    if (UUID_RE.test(s)) return { kind: 'uuid', uuid: s };
+    if (!s) {return null;}
+    if (UUID_RE.test(s)) {return { kind: 'uuid', uuid: s };}
     return { kind: 'name', name: s };
   }
   if (typeof ref === 'object') {
@@ -42,8 +42,8 @@ function resolveParentRef(ref: unknown): ParentRefKey | null {
     const name = typeof obj.Name === 'string' ? (obj.Name as string).trim() : '';
     const text = typeof obj['#text'] === 'string' ? (obj['#text'] as string).trim() : '';
     const s = item || name || text;
-    if (!s) return null;
-    if (UUID_RE.test(s)) return { kind: 'uuid', uuid: s };
+    if (!s) {return null;}
+    if (UUID_RE.test(s)) {return { kind: 'uuid', uuid: s };}
     return { kind: 'name', name: s };
   }
   return null;
@@ -67,7 +67,7 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
   const byUuid = new Map<string, TreeNode>();
   for (const n of flatNodes) {
     const name = n.name;
-    if (!byName.has(name)) byName.set(name, []);
+    if (!byName.has(name)) {byName.set(name, []);}
     byName.get(name)!.push(n);
     if (n.filePath) {
       byFilePath.set(normPath(n.filePath), n);
@@ -95,7 +95,7 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
   const resolvedParent = new Map<TreeNode, TreeNode | null>();
   const resolveParentNode = (node: TreeNode): TreeNode | null => {
     const key = parentRefs.get(node) ?? null;
-    if (!key) return null;
+    if (!key) {return null;}
     if (key.kind === 'filePath') {
       const p = byFilePath.get(normPath(key.filePath));
       return p ?? null;
@@ -106,22 +106,22 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
     }
     // name fallback: can be ambiguous; we keep stable behavior but try to disambiguate by filePath context when possible.
     const candidates = byName.get(key.name) ?? [];
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
+    if (candidates.length === 0) {return null;}
+    if (candidates.length === 1) {return candidates[0];}
     if (node.filePath) {
       const childPath = normPath(node.filePath);
       // Prefer a candidate whose container directory is a prefix of the child path (Designer nested subsystems).
       let best: TreeNode | null = null;
       let bestLen = -1;
       for (const cand of candidates) {
-        if (!cand.filePath) continue;
+        if (!cand.filePath) {continue;}
         const candDir = normPath(cand.filePath);
         if (childPath.startsWith(candDir) && candDir.length > bestLen) {
           best = cand;
           bestLen = candDir.length;
         }
       }
-      if (best) return best;
+      if (best) {return best;}
     }
     return candidates[0];
   };
@@ -132,7 +132,7 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
   const visited = new Set<TreeNode>();
 
   const dfsResolve = (node: TreeNode): TreeNode | null => {
-    if (resolvedParent.has(node)) return resolvedParent.get(node)!;
+    if (resolvedParent.has(node)) {return resolvedParent.get(node)!;}
     if (visiting.has(node)) {
       Logger.warn('Subsystem cycle detected, breaking', { subsystemName: node.name, subsystemId: node.id });
       resolvedParent.set(node, null);
@@ -166,7 +166,7 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
   for (const node of flatNodes) {
     // Trigger resolution; warnings emitted inside.
     const p = dfsResolve(node);
-    if (!p) roots.push(node);
+    if (!p) {roots.push(node);}
   }
 
   // Ensure non-empty roots even if everything participates in a cycle and got detached oddly.
@@ -184,7 +184,7 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
 
   for (const node of flatNodes) {
     const parent = resolvedParent.get(node) ?? null;
-    if (!parent) continue;
+    if (!parent) {continue;}
     node.parent = parent;
     parent.children = parent.children ?? [];
     parent.children.push(node);
@@ -193,14 +193,14 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
   // Order each node's subsystem children by ChildObjects order (childSubsystemNames) to match 1C.
   const orderNames = (node: TreeNode): void => {
     const names = node.properties?.childSubsystemNames as string[] | undefined;
-    if (!names || !Array.isArray(names) || names.length === 0) return;
+    if (!names || !Array.isArray(names) || names.length === 0) {return;}
     const list = node.children ?? [];
     const nonSub = list.filter((c) => !isSubsystemNode(c));
     const subs = list.filter((c) => isSubsystemNode(c));
     const byName = new Map<string, TreeNode[]>();
     for (const s of subs) {
       const n = s.name;
-      if (!byName.has(n)) byName.set(n, []);
+      if (!byName.has(n)) {byName.set(n, []);}
       byName.get(n)!.push(s);
     }
     const ordered: TreeNode[] = [];
@@ -216,7 +216,7 @@ export function buildSubsystemTree(flatNodes: TreeNode[], rootParent: TreeNode):
       }
     }
     for (const s of subs) {
-      if (!used.has(s)) ordered.push(s);
+      if (!used.has(s)) {ordered.push(s);}
     }
     node.children = nonSub.length > 0 || ordered.length > 0 ? [...nonSub, ...ordered] : list;
   };

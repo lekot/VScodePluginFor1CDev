@@ -40,9 +40,9 @@ export function applyPropertyChange(
       (a) => a.name === payload.elementId || a.id === payload.elementId
     );
     if (attr) {
-      if (payload.key === 'name') attr.name = String(payload.value ?? '');
-      else if (payload.key === 'id') attr.id = String(payload.value ?? '');
-      else attr.properties[payload.key] = payload.value;
+      if (payload.key === 'name') {attr.name = String(payload.value ?? '');}
+      else if (payload.key === 'id') {attr.id = String(payload.value ?? '');}
+      else {attr.properties[payload.key] = payload.value;}
     }
     return;
   }
@@ -51,16 +51,16 @@ export function applyPropertyChange(
       (c) => c.name === payload.elementId || c.id === payload.elementId
     );
     if (cmd) {
-      if (payload.key === 'name') cmd.name = String(payload.value ?? '');
-      else if (payload.key === 'id') cmd.id = String(payload.value ?? '');
-      else cmd.properties[payload.key] = payload.value;
+      if (payload.key === 'name') {cmd.name = String(payload.value ?? '');}
+      else if (payload.key === 'id') {cmd.id = String(payload.value ?? '');}
+      else {cmd.properties[payload.key] = payload.value;}
     }
     return;
   }
   if (payload.section === 'events' && payload.elementId) {
     const el = findElementById(model.childItemsRoot, payload.elementId);
     if (el && payload.key) {
-      if (!el.events) el.events = {};
+      if (!el.events) {el.events = {};}
       el.events[payload.key] = String(payload.value ?? '');
     }
     return;
@@ -68,9 +68,9 @@ export function applyPropertyChange(
   if (payload.elementId) {
     const el = findElementById(model.childItemsRoot, payload.elementId);
     if (el) {
-      if (payload.key === 'name') el.name = String(payload.value ?? '');
-      else if (payload.key === 'id') el.id = String(payload.value ?? '');
-      else el.properties[payload.key] = payload.value;
+      if (payload.key === 'name') {el.name = String(payload.value ?? '');}
+      else if (payload.key === 'id') {el.id = String(payload.value ?? '');}
+      else {el.properties[payload.key] = payload.value;}
     }
   }
 }
@@ -123,7 +123,7 @@ export function applyAddElement(
   const parentList = parentId
     ? (() => {
         const parentEl = findElementById(model.childItemsRoot, parentId);
-        if (!parentEl || !isContainer(parentEl)) return null;
+        if (!parentEl || !isContainer(parentEl)) {return null;}
         return parentEl.childItems ?? (parentEl.childItems = []);
       })()
     : model.childItemsRoot;
@@ -162,7 +162,7 @@ export function applyDeleteElements(
   const toDeleteFiltered = toDelete.filter((id) => !rootIds.has(id));
   let anyRemoved = false;
   for (const id of toDeleteFiltered) {
-    if (removeNodeInModel(model, id)) anyRemoved = true;
+    if (removeNodeInModel(model, id)) {anyRemoved = true;}
   }
   if (!anyRemoved) {
     const rootOnly = toDeleteFiltered.length < toDelete.length && ids.some((id) => rootIds.has(id));

@@ -1,6 +1,7 @@
 /**
  * Types of parsing errors
  */
+/* eslint-disable @typescript-eslint/naming-convention -- keep error code names stable for external consumers */
 export declare enum ParsingErrorType {
     InvalidPath = "InvalidPath",
     FileNotFound = "FileNotFound",
@@ -11,6 +12,7 @@ export declare enum ParsingErrorType {
     UnknownFormat = "UnknownFormat",
     ParseError = "ParseError"
 }
+/* eslint-enable @typescript-eslint/naming-convention */
 /**
  * Parsing error with detailed information
  */

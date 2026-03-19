@@ -37,9 +37,9 @@ function localName(key: string): string {
  * Get the first object in array that has the given key (by local name).
  */
 function findKeyInArray(arr: unknown[] | undefined, key: string): unknown[] | undefined {
-  if (!Array.isArray(arr)) return undefined;
+  if (!Array.isArray(arr)) {return undefined;}
   for (const item of arr) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     for (const k of Object.keys(item as object)) {
       if (localName(k) === key) {
         const val = (item as Record<string, unknown>)[k];
@@ -55,7 +55,7 @@ function findKeyInArray(arr: unknown[] | undefined, key: string): unknown[] | un
  */
 function getByLocalName(obj: Record<string, unknown>, key: string): unknown {
   for (const k of Object.keys(obj)) {
-    if (localName(k) === key) return obj[k];
+    if (localName(k) === key) {return obj[k];}
   }
   return undefined;
 }
@@ -67,15 +67,15 @@ function getByLocalName(obj: Record<string, unknown>, key: string): unknown {
 function getAttrsFromContent(content: unknown[]): { name?: string; id?: string } {
   const attrs: { name?: string; id?: string } = {};
   for (const item of content) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
-    if ('@_name' in o && o['@_name'] != null) attrs.name = String(o['@_name']);
-    if ('@_id' in o && o['@_id'] != null) attrs.id = String(o['@_id']);
+    if ('@_name' in o && o['@_name'] != null) {attrs.name = String(o['@_name']);}
+    if ('@_id' in o && o['@_id'] != null) {attrs.id = String(o['@_id']);}
     const at = o[':@'];
     if (at && typeof at === 'object' && !Array.isArray(at)) {
       const atObj = at as Record<string, unknown>;
-      if (atObj['@_name'] != null) attrs.name = String(atObj['@_name']);
-      if (atObj['@_id'] != null) attrs.id = String(atObj['@_id']);
+      if (atObj['@_name'] != null) {attrs.name = String(atObj['@_name']);}
+      if (atObj['@_id'] != null) {attrs.id = String(atObj['@_id']);}
     }
   }
   return attrs;
@@ -86,26 +86,26 @@ function getAttrsFromContent(content: unknown[]): { name?: string; id?: string }
  */
 function parseEventsContent(content: unknown[] | undefined): FormEventItem[] {
   const out: FormEventItem[] = [];
-  if (!Array.isArray(content)) return out;
+  if (!Array.isArray(content)) {return out;}
   for (const item of content) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const evContentRaw = getByLocalName(o, 'Event');
-    if (evContentRaw === undefined) continue;
+    if (evContentRaw === undefined) {continue;}
     const evContent = Array.isArray(evContentRaw) ? evContentRaw : [evContentRaw];
     let name: string | undefined;
     let method = '';
     for (const ev of evContent) {
-      if (!ev || typeof ev !== 'object') continue;
+      if (!ev || typeof ev !== 'object') {continue;}
       const e = ev as Record<string, unknown>;
       const at = e[':@'];
       if (at && typeof at === 'object' && !Array.isArray(at)) {
         const atObj = at as Record<string, unknown>;
-        if (typeof atObj['@_name'] === 'string') name = atObj['@_name'];
+        if (typeof atObj['@_name'] === 'string') {name = atObj['@_name'];}
       }
-      if ('#text' in e && e['#text'] != null) method = String(e['#text']).trim();
+      if ('#text' in e && e['#text'] != null) {method = String(e['#text']).trim();}
     }
-    if (name) out.push({ name, method });
+    if (name) {out.push({ name, method });}
   }
   return out;
 }
@@ -115,21 +115,21 @@ function parseEventsContent(content: unknown[] | undefined): FormEventItem[] {
  */
 function parseChildItemsArray(content: unknown[] | undefined): FormChildItem[] {
   const result: FormChildItem[] = [];
-  if (!Array.isArray(content)) return result;
+  if (!Array.isArray(content)) {return result;}
   const skipTags = new Set(['ChildItems', 'Events']);
   for (const item of content) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const obj = item as Record<string, unknown>;
     for (const tag of Object.keys(obj)) {
-      if (tag.startsWith('@') || tag === '#text' || tag === ':@' || skipTags.has(localName(tag))) continue;
+      if (tag.startsWith('@') || tag === '#text' || tag === ':@' || skipTags.has(localName(tag))) {continue;}
       const childContent = obj[tag];
       const arr = Array.isArray(childContent) ? childContent : [];
       let { name: attrName, id: attrId } = getAttrsFromContent(arr);
       const at = obj[':@'];
       if (at && typeof at === 'object' && !Array.isArray(at)) {
         const atObj = at as Record<string, unknown>;
-        if (atObj['@_name'] != null) attrName = String(atObj['@_name']);
-        if (atObj['@_id'] != null) attrId = String(atObj['@_id']);
+        if (atObj['@_name'] != null) {attrName = String(atObj['@_name']);}
+        if (atObj['@_id'] != null) {attrId = String(atObj['@_id']);}
       }
       const name = String(attrName ?? tag);
       const childItemsContent = findKeyInArray(arr, 'ChildItems');
@@ -137,13 +137,13 @@ function parseChildItemsArray(content: unknown[] | undefined): FormChildItem[] {
       const eventsContent = findKeyInArray(arr, 'Events');
       const eventList = parseEventsContent(eventsContent as unknown[]);
       const eventsMap: Record<string, string> = {};
-      for (const e of eventList) eventsMap[e.name] = e.method;
+      for (const e of eventList) {eventsMap[e.name] = e.method;}
       const properties: Record<string, unknown> = {};
       for (const prop of arr) {
-        if (!prop || typeof prop !== 'object') continue;
+        if (!prop || typeof prop !== 'object') {continue;}
         const p = prop as Record<string, unknown>;
         const k = Object.keys(p)[0];
-        if (!k || k.startsWith('@') || k === '#text' || k === 'ChildItems' || k === 'Events') continue;
+        if (!k || k.startsWith('@') || k === '#text' || k === 'ChildItems' || k === 'Events') {continue;}
         properties[k] = p[k];
       }
       result.push({
@@ -164,23 +164,23 @@ function parseChildItemsArray(content: unknown[] | undefined): FormChildItem[] {
  */
 function parseAttributesContent(content: unknown[] | undefined): FormAttribute[] {
   const result: FormAttribute[] = [];
-  if (!Array.isArray(content)) return result;
+  if (!Array.isArray(content)) {return result;}
   for (const item of content) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const attrContent = getByLocalName(o, 'Attribute');
-    if (attrContent === undefined) continue;
+    if (attrContent === undefined) {continue;}
     const c = Array.isArray(attrContent) ? attrContent : [attrContent];
     const { name: n, id } = getAttrsFromContent(c);
     const properties: Record<string, unknown> = {};
     for (const prop of c) {
-      if (!prop || typeof prop !== 'object') continue;
+      if (!prop || typeof prop !== 'object') {continue;}
       const p = prop as Record<string, unknown>;
       const k = Object.keys(p)[0];
-      if (!k || k.startsWith('@') || k === '#text') continue;
+      if (!k || k.startsWith('@') || k === '#text') {continue;}
       properties[k] = p[k];
     }
-    if (n) result.push({ name: n, id, properties });
+    if (n) {result.push({ name: n, id, properties });}
   }
   return result;
 }
@@ -190,23 +190,23 @@ function parseAttributesContent(content: unknown[] | undefined): FormAttribute[]
  */
 function parseCommandsContent(content: unknown[] | undefined): FormCommand[] {
   const result: FormCommand[] = [];
-  if (!Array.isArray(content)) return result;
+  if (!Array.isArray(content)) {return result;}
   for (const item of content) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const cmdContent = getByLocalName(o, 'Command');
-    if (cmdContent === undefined) continue;
+    if (cmdContent === undefined) {continue;}
     const c = Array.isArray(cmdContent) ? cmdContent : [cmdContent];
     const { name: n, id } = getAttrsFromContent(c);
     const properties: Record<string, unknown> = {};
     for (const prop of c) {
-      if (!prop || typeof prop !== 'object') continue;
+      if (!prop || typeof prop !== 'object') {continue;}
       const p = prop as Record<string, unknown>;
       const k = Object.keys(p)[0];
-      if (!k || k.startsWith('@') || k === '#text') continue;
+      if (!k || k.startsWith('@') || k === '#text') {continue;}
       properties[k] = p[k];
     }
-    if (n) result.push({ name: n, id, properties });
+    if (n) {result.push({ name: n, id, properties });}
   }
   return result;
 }
@@ -216,10 +216,10 @@ function parseCommandsContent(content: unknown[] | undefined): FormCommand[] {
  */
 function parseAttributesSection(formContent: unknown[]): FormAttribute[] {
   for (const item of formContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const attrs = getByLocalName(o, 'Attributes');
-    if (Array.isArray(attrs)) return parseAttributesContent(attrs as unknown[]);
+    if (Array.isArray(attrs)) {return parseAttributesContent(attrs as unknown[]);}
   }
   return [];
 }
@@ -229,10 +229,10 @@ function parseAttributesSection(formContent: unknown[]): FormAttribute[] {
  */
 function parseCommandsSection(formContent: unknown[]): FormCommand[] {
   for (const item of formContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const cmds = getByLocalName(o, 'Commands');
-    if (Array.isArray(cmds)) return parseCommandsContent(cmds as unknown[]);
+    if (Array.isArray(cmds)) {return parseCommandsContent(cmds as unknown[]);}
   }
   return [];
 }
@@ -242,10 +242,10 @@ function parseCommandsSection(formContent: unknown[]): FormCommand[] {
  */
 function parseFormEventsSection(formContent: unknown[]): FormEventItem[] {
   for (const item of formContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const evs = getByLocalName(o, 'Events');
-    if (Array.isArray(evs)) return parseEventsContent(evs as unknown[]);
+    if (Array.isArray(evs)) {return parseEventsContent(evs as unknown[]);}
   }
   return [];
 }
@@ -255,10 +255,10 @@ function parseFormEventsSection(formContent: unknown[]): FormEventItem[] {
  */
 function parseRootChildItems(formContent: unknown[]): FormChildItem[] {
   for (const item of formContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const children = getByLocalName(o, 'ChildItems');
-    if (Array.isArray(children)) return parseChildItemsArray(children as unknown[]);
+    if (Array.isArray(children)) {return parseChildItemsArray(children as unknown[]);}
   }
   return [];
 }
@@ -269,10 +269,10 @@ function parseRootChildItems(formContent: unknown[]): FormChildItem[] {
  */
 function parseAutoCommandBar(formContent: unknown[]): { name?: string; id?: string } {
   for (const item of formContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     const autoBar = getByLocalName(o, 'AutoCommandBar');
-    if (autoBar === undefined) continue;
+    if (autoBar === undefined) {continue;}
     const arr = Array.isArray(autoBar) ? autoBar : [autoBar];
     const { name, id } = getAttrsFromContent(arr);
     return { name, id };
@@ -338,10 +338,10 @@ export async function parseFormXml(
 
   let formContent: unknown[] | undefined;
   for (const item of parsed) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const obj = item as Record<string, unknown>;
     for (const tag of Object.keys(obj)) {
-      if (tag.startsWith('?') || tag === ':@') continue;
+      if (tag.startsWith('?') || tag === ':@') {continue;}
       const local = tag.includes(':') ? tag.split(':').pop()! : tag;
       if (local === 'Form') {
         const val = obj[tag];
@@ -349,7 +349,7 @@ export async function parseFormXml(
         break;
       }
     }
-    if (formContent !== undefined) break;
+    if (formContent !== undefined) {break;}
   }
   if (!formContent) {
     return { error: 'В Form.xml не найден корневой элемент Form.' } as FormParseError;
@@ -372,12 +372,12 @@ export async function parseFormXml(
   const SKIP_TAGS = new Set(['ChildItems', 'Attributes', 'Commands', 'Events', 'AutoCommandBar']);
   const topLevelFields: Array<{ tag: string; content: unknown[] }> = [];
   for (const item of formContent) {
-    if (!item || typeof item !== 'object') continue;
+    if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
     for (const k of Object.keys(o)) {
-      if (k === ':@' || k.startsWith('@') || k === '#text') continue;
+      if (k === ':@' || k.startsWith('@') || k === '#text') {continue;}
       const local = k.includes(':') ? k.split(':').pop()! : k;
-      if (SKIP_TAGS.has(local)) continue;
+      if (SKIP_TAGS.has(local)) {continue;}
       const val = o[k];
       topLevelFields.push({ tag: k, content: Array.isArray(val) ? val : [] });
     }
