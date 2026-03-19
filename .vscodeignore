@@ -1,6 +1,6 @@
 # resources/ packaged (designer templates in resources/designerTemplates/)
 .vscode/**
-./roo/**
+.roo/**
 .vscode-test/**
 .cursor/**
 .git/**

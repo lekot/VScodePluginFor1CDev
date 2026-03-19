@@ -4,6 +4,8 @@
  * Does not duplicate propertySections (UI grouping); only "required/default" values for XML.
  */
 
+import { MetadataType } from '../models/treeNode';
+
 export type DefaultProperties = Record<string, unknown>;
 
 const ROOT_TAG_DEFAULTS: Record<string, DefaultProperties> = {
@@ -82,6 +84,23 @@ const ATTRIBUTE_DEFAULTS: DefaultProperties = {
   DataHistory: 'Use',
 };
 
+/**
+ * Defaults for nested Attribute when Attribute belongs to a DataProcessor (Обработка).
+ *
+ * In some 1C versions/configs, requisites (Attributes) inside DataProcessor don't support
+ * the same set of properties as requisites inside catalogs/documents. Generating XML with
+ * unsupported property names leads to "Неверное свойство объекта метаданных..."
+ */
+const ATTRIBUTE_DEFAULTS_FOR_DATAPROCESSOR: DefaultProperties = {
+  ...ATTRIBUTE_DEFAULTS,
+  // These properties are reported by 1C as invalid for DataProcessor requisites.
+  Indexing: undefined as unknown as string,
+  FullTextSearch: undefined as unknown as string,
+  DataHistory: undefined as unknown as string,
+  FillValue: undefined as unknown as null,
+  FillFromFillingValue: undefined as unknown as boolean,
+};
+
 /** Defaults for TabularSection (no Type at tabular level in 1C). */
 const TABULAR_SECTION_DEFAULTS: DefaultProperties = {
   // Name, Synonym only; no Type
@@ -104,9 +123,14 @@ export function getDefaultPropertiesForRootTag(rootTag: string): DefaultProperti
  * Name and Synonym are always set by caller; Type for Attribute is applied in XMLWriter.
  */
 export function getDefaultPropertiesForNestedElement(
-  elementType: 'Attribute' | 'TabularSection'
+  elementType: 'Attribute' | 'TabularSection',
+  parentRootType?: MetadataType
 ): DefaultProperties {
   const defaults =
-    elementType === 'Attribute' ? ATTRIBUTE_DEFAULTS : TABULAR_SECTION_DEFAULTS;
+    elementType === 'Attribute'
+      ? parentRootType === MetadataType.DataProcessor
+        ? ATTRIBUTE_DEFAULTS_FOR_DATAPROCESSOR
+        : ATTRIBUTE_DEFAULTS
+      : TABULAR_SECTION_DEFAULTS;
   return { ...defaults };
 }

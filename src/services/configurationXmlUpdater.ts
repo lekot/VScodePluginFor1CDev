@@ -162,21 +162,47 @@ export async function removeRootObjectFromConfiguration(
   if (!childObjectsArray) {
     return; // nothing to remove
   }
-  const idx = childObjectsArray.findIndex((item) => {
-    if (!item || typeof item !== 'object') return false;
+
+  const targetName = objectName.trim();
+  let removedAny = false;
+
+  // Удаляем ВСЕ совпадения, т.к. fast-xml-parser может представлять узлы по-разному
+  // (массив/объект) и в Configuration.xml могут быть дубликаты.
+  for (let i = childObjectsArray.length - 1; i >= 0; i--) {
+    const item = childObjectsArray[i];
+    if (!item || typeof item !== 'object') continue;
     const obj = item as Record<string, unknown>;
-    if (!(rootTag in obj)) return false;
+    if (!(rootTag in obj)) continue;
+
     const tagVal = obj[rootTag];
-    if (Array.isArray(tagVal) && tagVal.length > 0) {
-      const first = tagVal[0];
-      return typeof first === 'object' && first !== null && (first as Record<string, unknown>)['#text'] === objectName;
+    const candidates: string[] = [];
+
+    if (Array.isArray(tagVal)) {
+      for (const entry of tagVal) {
+        if (entry && typeof entry === 'object' && '#text' in (entry as Record<string, unknown>)) {
+          candidates.push(String((entry as Record<string, unknown>)['#text']).trim());
+        } else if (typeof entry === 'string') {
+          candidates.push(entry.trim());
+        }
+      }
+    } else if (tagVal && typeof tagVal === 'object') {
+      const rec = tagVal as Record<string, unknown>;
+      if ('#text' in rec) {
+        candidates.push(String(rec['#text']).trim());
+      }
+    } else if (typeof tagVal === 'string') {
+      candidates.push(tagVal.trim());
     }
-    return false;
-  });
-  if (idx === -1) {
+
+    if (candidates.some((c) => c === targetName)) {
+      childObjectsArray.splice(i, 1);
+      removedAny = true;
+    }
+  }
+
+  if (!removedAny) {
     return; // entry not found — nothing to remove
   }
-  childObjectsArray.splice(idx, 1);
 
   // If ChildObjects is now empty, remove the ChildObjects node entirely
   if (childObjectsArray.length === 0) {

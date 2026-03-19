@@ -225,11 +225,18 @@ export class XMLWriter {
     filePath: string,
     elementType: string,
     elementName: string,
-    minimalProperties?: Record<string, unknown>
+    minimalProperties?: Record<string, unknown>,
+    parentRootType?: MetadataType
   ): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     const parsed = this.parser.parse(xmlContent);
-    const updated = this.addNestedElementInStructure(parsed, elementType, elementName, minimalProperties ?? {});
+    const updated = this.addNestedElementInStructure(
+      parsed,
+      elementType,
+      elementName,
+      minimalProperties ?? {},
+      parentRootType
+    );
     const xmlString = this.builder.build(updated);
 
     const backupPath = `${filePath}.bak`;
@@ -395,10 +402,11 @@ ${defaultPropsLines}\t\t</Properties>
     parsed: unknown,
     elementType: string,
     elementName: string,
-    minimalProperties: Record<string, unknown>
+    minimalProperties: Record<string, unknown>,
+    parentRootType?: MetadataType
   ): unknown {
     const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
-    const newBlock = this.buildMinimalNestedElement(elementType, elementName, minimalProperties);
+    const newBlock = this.buildMinimalNestedElement(elementType, elementName, minimalProperties, parentRootType);
 
     // Special handling for TOP_LEVEL_TYPES metadata metadata: only add to main Root-level ChildObjects,
     // not nested ChildObjects. Prevents adding attributes to InternalInfo/GeneratedType/ChildObjects.
@@ -624,12 +632,16 @@ ${defaultPropsLines}\t\t</Properties>
   private static buildMinimalNestedElement(
     elementType: string,
     elementName: string,
-    minimalProperties: Record<string, unknown>
+    minimalProperties: Record<string, unknown>,
+    parentRootType?: MetadataType
   ): Record<string, unknown> {
     const uuid = this.generateSimpleUuid();
     const defaults =
       elementType === 'Attribute' || elementType === 'TabularSection'
-        ? getDefaultPropertiesForNestedElement(elementType as 'Attribute' | 'TabularSection')
+        ? getDefaultPropertiesForNestedElement(
+            elementType as 'Attribute' | 'TabularSection',
+            parentRootType
+          )
         : {};
     const merged = { ...defaults, ...minimalProperties, Name: elementName };
 
