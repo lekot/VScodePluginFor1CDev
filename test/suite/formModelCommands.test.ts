@@ -499,6 +499,19 @@ suite('formModelCommands — unit tests', () => {
       const result = applyDeleteAttribute(model, 'ghost');
       assert.strictEqual(result.ok, false);
     });
+
+    test('prefers stable id when duplicate names exist', () => {
+      const model = makeModel({
+        attributes: [
+          { name: 'SameName', id: 'attr-1', properties: { Title: 'first' } },
+          { name: 'SameName', id: 'attr-2', properties: { Title: 'second' } },
+        ],
+      });
+      const result = applyDeleteAttribute(model, 'attr-2');
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(model.attributes.length, 1);
+      assert.strictEqual(model.attributes[0].id, 'attr-1');
+    });
   });
 
   // applyAddCommand
@@ -538,6 +551,19 @@ suite('formModelCommands — unit tests', () => {
       const model = makeModel();
       const result = applyDeleteCommand(model, 'ghost');
       assert.strictEqual(result.ok, false);
+    });
+
+    test('prefers stable id when duplicate names exist', () => {
+      const model = makeModel({
+        commands: [
+          { name: 'SameName', id: 'cmd-1', properties: { Title: 'first' } },
+          { name: 'SameName', id: 'cmd-2', properties: { Title: 'second' } },
+        ],
+      });
+      const result = applyDeleteCommand(model, 'cmd-2');
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(model.commands.length, 1);
+      assert.strictEqual(model.commands[0].id, 'cmd-1');
     });
   });
 

@@ -6,7 +6,7 @@
 
 import * as vscode from 'vscode';
 import type { FormModel } from './formModel';
-import { handleMessage, type MessageHandlerContext } from './formMessageHandler';
+import { createSerializedMessageHandler, type MessageHandlerContext } from './formMessageHandler';
 import { getWebviewHtml } from './formWebviewHtml';
 export { moveNodeInModel } from './formTreeOperations'; // backward compat
 
@@ -36,6 +36,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       webviewPanel,
       documentModel: this.documentModel,
     };
-    webviewPanel.webview.onDidReceiveMessage(async (msg) => handleMessage(ctx, msg));
+    const onMessage = createSerializedMessageHandler(ctx);
+    webviewPanel.webview.onDidReceiveMessage(onMessage);
   }
 }

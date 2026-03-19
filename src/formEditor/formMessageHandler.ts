@@ -42,13 +42,28 @@ export interface MessageHandlerContext {
   documentModel: Map<string, FormModel>;
 }
 
+export type FormMessage = { type: string; [key: string]: unknown };
+
+export function createSerializedExecutor<T>(
+  executor: (payload: T) => Promise<void>
+): (payload: T) => Promise<void> {
+  let queue: Promise<void> = Promise.resolve();
+  return (payload: T) => {
+    queue = queue.then(
+      () => executor(payload),
+      () => executor(payload)
+    );
+    return queue;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
 export async function handleMessage(
   ctx: MessageHandlerContext,
-  msg: { type: string; [key: string]: unknown }
+  msg: FormMessage
 ): Promise<void> {
   switch (msg.type) {
     case 'load':
@@ -100,6 +115,16 @@ export async function handleMessage(
       await handleOpenModule(ctx, msg);
       break;
   }
+}
+
+/**
+ * Serializes async message handling to prevent interleaved saves from
+ * writing stale model snapshots after newer operations.
+ */
+export function createSerializedMessageHandler(
+  ctx: MessageHandlerContext
+): (msg: FormMessage) => Promise<void> {
+  return createSerializedExecutor((msg: FormMessage) => handleMessage(ctx, msg));
 }
 
 // ---------------------------------------------------------------------------

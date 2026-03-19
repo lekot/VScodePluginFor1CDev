@@ -1386,7 +1386,7 @@ export function getWebviewHtml(_webview: vscode.Webview): string {
         tr.appendChild(usageCell);
         tr.appendChild(typeCell);
         tr.addEventListener('click', function() {
-          selectedAttributeId = attr.name || attr.id;
+          selectedAttributeId = attr.id || attr.name;
           selectedCommandId = null;
           document.querySelectorAll('#attributes-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
           tr.classList.add('selected');
@@ -1498,7 +1498,7 @@ export function getWebviewHtml(_webview: vscode.Webview): string {
         tr.appendChild(nameCell);
         tr.appendChild(titleCell);
         tr.addEventListener('click', function() {
-          selectedCommandId = cmd.name || cmd.id;
+          selectedCommandId = cmd.id || cmd.name;
           selectedAttributeId = null;
           document.querySelectorAll('#commands-tbody tr.selected').forEach(function(r) { r.classList.remove('selected'); });
           tr.classList.add('selected');
@@ -1685,10 +1685,8 @@ export function getWebviewHtml(_webview: vscode.Webview): string {
             vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'events', key: inp.dataset.event, value: inp.value });
             return;
           }
-          const key = inp.dataset.key || inp.id ? inp.id.replace('prop-', '') : null;
-          if (key) vscode.postMessage({ type: 'propertyChange', elementId: elementId, key, value: inp.value });
-          if (inp.id === 'prop-name') vscode.postMessage({ type: 'propertyChange', elementId: elementId, key: 'name', value: inp.value });
-          if (inp.id === 'prop-id') vscode.postMessage({ type: 'propertyChange', elementId: elementId, key: 'id', value: inp.value });
+          const key = inp.dataset.key ? inp.dataset.key : (inp.id ? inp.id.replace('prop-', '') : null);
+          if (key) vscode.postMessage({ type: 'propertyChange', elementId: elementId, key: key, value: inp.value });
         });
       });
       content.querySelectorAll('.btn-goto-proc').forEach(btn => {
