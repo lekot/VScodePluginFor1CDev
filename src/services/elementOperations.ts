@@ -376,7 +376,7 @@ export async function deleteElement(node: TreeNode): Promise<void> {
       await fs.promises.rm(elementDir, { recursive: true });
     }
     const rootTag = String(node.type);
-    const configRootPath = dirPath;
+    const configRootPath = path.dirname(dirPath);
     try {
       await removeRootObjectFromConfiguration(configRootPath, rootTag, node.name);
     } catch (err) {
