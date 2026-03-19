@@ -1,4 +1,4 @@
-name: Lint
+name: CI
 
 on:
   pull_request:
@@ -14,9 +14,13 @@ permissions:
   contents: read
 
 jobs:
-  eslint:
-    name: ESLint
+  lint:
+    name: Lint (strict)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
@@ -31,5 +35,73 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run linter
-        run: npm run lint
+      - name: Run strict linter
+        run: npm run lint:ci
+
+      - name: PR lint annotations
+        if: github.event_name == 'pull_request'
+        uses: reviewdog/action-eslint@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          eslint_flags: "src --ext ts --max-warnings 0"
+          reporter: github-pr-check
+          filter_mode: nofilter
+          fail_level: warning
+
+      - name: CI summary
+        if: always()
+        run: |
+          echo "## Lint" >> $GITHUB_STEP_SUMMARY
+          echo "- Strict mode: enabled (\`--max-warnings 0\`)" >> $GITHUB_STEP_SUMMARY
+          echo "- PR annotations: reviewdog (\`github-pr-check\`)" >> $GITHUB_STEP_SUMMARY
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  coverage:
+    name: Coverage (delta)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run coverage
+        run: npm run test:coverage
+
+      - name: Check coverage delta
+        run: npm run coverage:check
+
+      - name: Upload coverage summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-summary
+          path: coverage/coverage-summary.json
