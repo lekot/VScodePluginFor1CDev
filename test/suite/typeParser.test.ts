@@ -360,12 +360,10 @@ suite('TypeParser', () => {
       });
     });
 
-    test('should throw error when wrapping fails', () => {
+    test('returns empty definition for non-XML text wrapped as Type node', () => {
       const xml = `not valid xml at all`;
-
-      assert.throws(() => {
-        TypeParser.parse(xml);
-      });
+      const result = TypeParser.parse(xml);
+      assert.strictEqual(result.types.length, 0);
     });
   });
 

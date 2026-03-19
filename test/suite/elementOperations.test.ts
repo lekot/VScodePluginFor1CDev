@@ -212,4 +212,23 @@ suite('elementOperations', () => {
     assert.ok(content.includes('uuid="'));
     assert.ok(content.includes('<Name>NewAttribute</Name>'));
   });
+
+  test('createElement creates tabular section in TabularSections folder', async () => {
+    const tabularSectionsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'TabularSections');
+    await fs.promises.mkdir(tabularSectionsPath, { recursive: true });
+    const tabularSectionsNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catalogNode,
+      filePath: tabularSectionsPath,
+      properties: {},
+      children: undefined
+    };
+
+    await createElement(tabularSectionsNode, 'Items');
+    const content = await readFileContent(catalogNode.filePath!);
+    assert.ok(content.includes('<TabularSection'));
+    assert.ok(content.includes('<Name>Items</Name>'));
+  });
 });

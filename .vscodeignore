@@ -44,3 +44,4 @@ node_modules/glob/**
 node_modules/mocha/**
 node_modules/prettier/**
 node_modules/typescript/**
+coverage/tmp/**
