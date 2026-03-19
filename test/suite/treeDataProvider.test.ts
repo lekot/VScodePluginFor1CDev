@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { MetadataParser } from '../../src/parsers/metadataParser';
 
 suite('MetadataTreeDataProvider Test Suite', () => {
   let provider: MetadataTreeDataProvider;
@@ -301,6 +302,195 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.ok(catalogRef.objectNames.includes('Products'));
     assert.ok(catalogRef.objectNames.includes('Users'));
     assert.strictEqual(result.filter((g) => g.referenceKind.endsWith('Ref')).length, 6);
+  });
+
+  test('getReferenceableObjectsForTypeEditor loads empty type children', async () => {
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    const calls: Array<{ configPath: string; typeName: string }> = [];
+
+    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+      calls.push({ configPath, typeName });
+      if (typeName === 'Documents') {
+        const node: TreeNode = {
+          id: `${typeName}.Orders`,
+          name: 'Orders',
+          type: MetadataType.Document,
+          properties: {},
+          children: [],
+        };
+        return [node];
+      }
+      if (typeName === 'Catalogs') {
+        const node: TreeNode = {
+          id: `${typeName}.Products`,
+          name: 'Products',
+          type: MetadataType.Catalog,
+          properties: {},
+          children: [],
+        };
+        return [node];
+      }
+      return [];
+    };
+
+    try {
+      const catalogNode: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [],
+      };
+      const documentsNode: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: {},
+        children: [],
+      };
+
+      const rootNode: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'reps', 'myconfig', 'Configuration.xml'),
+        children: [catalogNode, documentsNode],
+      };
+
+      provider.setRootNode(rootNode);
+      const result = await provider.getReferenceableObjectsForTypeEditor();
+
+      const docRef = result.find((g) => g.referenceKind === 'DocumentRef');
+      assert.ok(docRef, 'DocumentRef group must exist');
+      assert.deepStrictEqual(docRef!.objectNames, ['Orders']);
+
+      assert.ok(
+        calls.some((c) => c.typeName === 'Documents'),
+        'parseTypeContents should be called for Documents when type node children are empty'
+      );
+    } finally {
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
+  });
+
+  test('getReferenceableObjectsForTypeEditor restricts to current config root', async () => {
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    const calls: Array<{ configPath: string; typeName: string }> = [];
+
+    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+      calls.push({ configPath, typeName });
+      if (typeName === 'Documents') {
+        return [
+          {
+            id: `${typeName}.Orders`,
+            name: 'Orders',
+            type: MetadataType.Document,
+            properties: {},
+            children: [],
+          },
+        ];
+      }
+      return [];
+    };
+
+    try {
+      const catalogsA: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [
+          {
+            id: 'Catalogs.Products',
+            name: 'Products',
+            type: MetadataType.Catalog,
+            properties: {},
+            children: [],
+          },
+        ],
+      };
+
+      const documentsA: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: {},
+        children: [],
+      };
+
+      const rootA: TreeNode = {
+        id: 'config:A',
+        name: 'Configuration A',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'reps', 'configA', 'Configuration.xml'),
+        children: [catalogsA, documentsA],
+      };
+
+      catalogsA.parent = rootA;
+      documentsA.parent = rootA;
+
+      const catalogsB: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [
+          {
+            id: 'Catalogs.Other',
+            name: 'Other',
+            type: MetadataType.Catalog,
+            properties: {},
+            children: [],
+          },
+        ],
+      };
+
+      const documentsB: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: {},
+        children: [
+          {
+            id: 'Documents.OrdersB',
+            name: 'OrdersB',
+            type: MetadataType.Document,
+            properties: {},
+            children: [],
+          },
+        ],
+      };
+
+      const rootB: TreeNode = {
+        id: 'config:B',
+        name: 'Configuration B',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'reps', 'configB', 'Configuration.xml'),
+        children: [catalogsB, documentsB],
+      };
+
+      catalogsB.parent = rootB;
+      documentsB.parent = rootB;
+
+      provider.setRootNodes([rootA, rootB], undefined);
+
+      const result = await provider.getReferenceableObjectsForTypeEditor(documentsA);
+      const docRef = result.find((g) => g.referenceKind === 'DocumentRef');
+      assert.ok(docRef, 'DocumentRef group must exist');
+      assert.deepStrictEqual(docRef!.objectNames, ['Orders'], 'Only Orders from config A should be included');
+
+      // parseTypeContents should be called only for config A's missing Documents.
+      assert.deepStrictEqual(
+        calls.map((c) => c.typeName),
+        ['Documents'],
+        'parseTypeContents should be called only once for Documents in the current config root'
+      );
+    } finally {
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
   });
 
   test('searchByName returns nodes matching substring', () => {

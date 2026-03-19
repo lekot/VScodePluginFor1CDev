@@ -1131,4 +1131,91 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       objectNames: Array.from(byKind.get(refKind) ?? []),
     }));
   }
+
+  /**
+   * Returns referenceable objects for the type editor, ensuring that the underlying
+   * metadata type nodes (Catalogs/Documents/Enums/...) are loaded.
+   *
+   * Problem: parseStructureOnly() creates type nodes with empty `children` (lazy loading).
+   * If type editor gets an empty list, it can't offer "DocumentRef.<...>" selection.
+   */
+  public async getReferenceableObjectsForTypeEditor(node?: TreeNode): Promise<ReferenceableGroup[]> {
+    // Determine which configuration root we should use.
+    // If `node` is provided, we restrict loading/aggregation to that configuration only.
+    const configRoot = (() => {
+      if (!node) return null;
+      let cur: TreeNode | undefined = node;
+      while (cur) {
+        const curNode: TreeNode = cur;
+        if (curNode.type === MetadataType.Configuration && this.rootNodes.some((r) => r.id === curNode.id)) {
+          return curNode;
+        }
+        cur = curNode.parent;
+      }
+      return null;
+    })();
+
+    const rootsToUse = configRoot ? [configRoot] : this.rootNodes;
+
+    // Load missing type contents (if `children` are empty) so that objectNames are available.
+    for (const root of rootsToUse) {
+      if (!root.children || root.children.length === 0) continue;
+
+      const configPath =
+        this.loadContextByRootId.get(root.id)?.configPath ??
+        (root.filePath ? path.dirname(root.filePath) : null);
+
+      if (!configPath) continue;
+
+      for (const typeNode of root.children) {
+        if (!REFERENCEABLE_METADATA_TYPES.has(typeNode.type)) continue;
+        if (typeNode.children && typeNode.children.length > 0) continue;
+
+        try {
+          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id);
+          for (const c of children) c.parent = typeNode;
+          typeNode.children = children;
+
+          // Update in-memory caches so other features can use the newly loaded nodes.
+          for (const c of children) this.buildCache(c);
+        } catch (e) {
+          Logger.warn('Failed to eager load referenceable type contents for type editor', {
+            configPath,
+            typeNodeId: typeNode.id,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+    }
+
+    // Aggregate only for selected roots.
+    if (!rootsToUse.length) return [];
+
+    const refKindOrder = [
+      'CatalogRef',
+      'DocumentRef',
+      'EnumRef',
+      'ChartOfCharacteristicTypesRef',
+      'ChartOfAccountsRef',
+      'ChartOfCalculationTypesRef',
+    ];
+    const byKind = new Map<string, Set<string>>();
+    for (const root of rootsToUse) {
+      if (!root.children) continue;
+      for (const child of root.children) {
+        if (!REFERENCEABLE_METADATA_TYPES.has(child.type)) continue;
+        const referenceKind = METADATA_TYPE_TO_REFERENCE_KIND[child.type];
+        if (!referenceKind) continue;
+        const names = (child.children || []).map((c: TreeNode) => c.name);
+        const set = byKind.get(referenceKind) ?? new Set<string>();
+        names.forEach((n: string) => set.add(n));
+        byKind.set(referenceKind, set);
+      }
+    }
+
+    return refKindOrder.map((refKind) => ({
+      referenceKind: refKind,
+      objectNames: Array.from(byKind.get(refKind) ?? []),
+    }));
+  }
 }

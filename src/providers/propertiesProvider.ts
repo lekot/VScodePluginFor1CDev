@@ -1309,7 +1309,7 @@ export class PropertiesProvider {
     }
 
     try {
-      const referenceableObjects = this.treeDataProvider.getReferenceableObjects();
+      const referenceableObjects = await this.treeDataProvider.getReferenceableObjectsForTypeEditor(this.currentNode);
       Logger.info('handleEditTypeMessage: calling typeEditorProvider.show()');
       const result = await this.typeEditorProvider.show(typeXMLForEditor, referenceableObjects);
 
