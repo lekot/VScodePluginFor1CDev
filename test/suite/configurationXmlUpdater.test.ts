@@ -93,6 +93,30 @@ suite('configurationXmlUpdater', () => {
     );
   });
 
+  test('throws for empty Configuration.xml in add', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), '   ', 'utf-8');
+    await assert.rejects(
+      () => addRootObjectToConfiguration(tmpDir, 'Catalog', 'Test'),
+      /Configuration\.xml is empty or invalid/
+    );
+  });
+
+  test('throws for invalid xml parse in add', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), '<MetaDataObject><Configuration>', 'utf-8');
+    await assert.rejects(
+      () => addRootObjectToConfiguration(tmpDir, 'Catalog', 'Test'),
+      /Configuration\.xml parse failed/
+    );
+  });
+
+  test('throws when MetaDataObject/Configuration structure is absent in add', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), '<Root><Other/></Root>', 'utf-8');
+    await assert.rejects(
+      () => addRootObjectToConfiguration(tmpDir, 'Catalog', 'Test'),
+      /MetaDataObject\/Configuration structure not found/
+    );
+  });
+
   // --- removeRootObjectFromConfiguration ---
 
   test('removes a Catalog entry from ChildObjects', async () => {
@@ -151,5 +175,26 @@ suite('configurationXmlUpdater', () => {
       () => removeRootObjectFromConfiguration(tmpDir, 'Catalog', 'Test'),
       /Configuration\.xml not found or unreadable/
     );
+  });
+
+  test('returns without changes when ChildObjects is absent in remove', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), CONFIG_NO_CHILDOBJECTS, 'utf-8');
+    await removeRootObjectFromConfiguration(tmpDir, 'Catalog', 'Any');
+    const xml = readConfigXml(tmpDir);
+    assert.ok(xml.includes('<Configuration'), 'Configuration should remain valid');
+  });
+
+  test('removes all duplicate matching entries in remove', async () => {
+    const duplicated = MINIMAL_CONFIG_XML.replace(
+      '</ChildObjects>',
+      '<Catalog>Dup</Catalog><Catalog>Dup</Catalog><Catalog>Keep</Catalog></ChildObjects>'
+    );
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), duplicated, 'utf-8');
+
+    await removeRootObjectFromConfiguration(tmpDir, 'Catalog', 'Dup');
+
+    const xml = readConfigXml(tmpDir);
+    assert.ok(!xml.includes('<Catalog>Dup</Catalog>'), 'All duplicate entries should be removed');
+    assert.ok(xml.includes('<Catalog>Keep</Catalog>'), 'Unrelated entry should remain');
   });
 });
