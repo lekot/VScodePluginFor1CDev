@@ -177,8 +177,20 @@ suite('Preservation Property Tests: Non-Configuration Nodes Unaffected', () => {
    */
   test('3.2b: Any node with parentFilePath preserves pre-loaded properties (Property-Based)', async () => {
     // Arbitrary property records (string keys, string values)
+    // Avoid prototype/constructor keys: the PropertiesProvider uses property names as lookup keys
+    // and must not receive values derived from Object.prototype (e.g. "constructor").
+    const bannedKeys = new Set<string>([
+      'constructor',
+      'prototype',
+      '__proto__',
+      // Any Object.prototype key could cause unexpected behavior when iterating.
+      ...Object.getOwnPropertyNames(Object.prototype),
+    ]);
+
     const propertyRecordArb = fc.dictionary(
-      fc.string({ minLength: 1, maxLength: 20 }).filter(s => /^[A-Za-z][A-Za-z0-9]*$/.test(s)),
+      fc.string({ minLength: 1, maxLength: 20 })
+        .filter(s => /^[A-Za-z][A-Za-z0-9]*$/.test(s))
+        .filter(s => !bannedKeys.has(s)),
       fc.string({ minLength: 0, maxLength: 50 }),
       { minKeys: 1, maxKeys: 5 }
     );

@@ -61,32 +61,9 @@ suite('Form Tree Preservation Property Tests', () => {
    * Helper function to get FormEditorProvider HTML
    */
   function getFormEditorHTML(): string {
-    const FormEditorProviderModule = require('../../src/formEditor/formEditorProvider');
-    const FormEditorProvider = FormEditorProviderModule.FormEditorProvider;
-
-    const mockContext = {
-      subscriptions: [],
-      extensionPath: '',
-      extensionUri: { fsPath: '' } as any,
-      globalState: {} as any,
-      workspaceState: {} as any,
-      secrets: {} as any,
-      storageUri: undefined,
-      globalStorageUri: {} as any,
-      logUri: {} as any,
-      extensionMode: 3,
-      storagePath: undefined,
-      globalStoragePath: '',
-      logPath: '',
-      asAbsolutePath: (relativePath: string) => relativePath,
-      environmentVariableCollection: {} as any,
-      extension: {} as any
-    };
-
-    const provider = new FormEditorProvider(mockContext);
-    const getWebviewHtml = (provider as any).getWebviewHtml.bind(provider);
+    // Tests only need HTML/CSS template. Avoid relying on provider private API.
+    const { getWebviewHtml } = require('../../src/formEditor/formWebviewHtml');
     const mockWebview = {} as any;
-    
     return getWebviewHtml(mockWebview);
   }
 

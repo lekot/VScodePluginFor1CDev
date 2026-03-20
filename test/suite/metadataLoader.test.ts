@@ -26,12 +26,12 @@ suite('MetadataLoader', () => {
     });
 
     test('should handle Windows paths', () => {
-      const roleFilePath = 'C:\\workspace\\MyConfig\\Roles\\Administrator\\Role.xml';
+      const roleFilePath = 'C:/workspace/MyConfig/Roles/Administrator/Role.xml';
       const configPath = getConfigurationPathSync(roleFilePath);
 
       assert.strictEqual(
         configPath,
-        'C:\\workspace\\MyConfig',
+        'C:/workspace/MyConfig',
         'Should handle Windows paths correctly'
       );
     });

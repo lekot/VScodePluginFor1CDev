@@ -10,6 +10,16 @@ suite('MetadataTreeDataProvider Test Suite', () => {
   let provider: MetadataTreeDataProvider;
   let mockContext: vscode.ExtensionContext;
 
+  function normalizeFsPathForCompare(fsPath: string): string {
+    // Cross-platform: replace Windows separators and normalize drive-letter casing.
+    const p = fsPath.replace(/\\/g, '/');
+    const m = p.match(/^([A-Za-z]):\/(.*)$/);
+    if (m) {
+      return `${m[1].toLowerCase()}:/${m[2]}`;
+    }
+    return p;
+  }
+
   setup(() => {
     // Create mock context
     mockContext = {
@@ -111,8 +121,8 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     const treeItem = provider.getTreeItem(node);
     assert.ok(treeItem.resourceUri, 'resourceUri should be set for Configuration with configDir');
     assert.strictEqual(
-      treeItem.resourceUri!.fsPath,
-      path.join(configDir, 'Configuration.xml'),
+      normalizeFsPathForCompare(treeItem.resourceUri!.fsPath),
+      normalizeFsPathForCompare(path.join(configDir, 'Configuration.xml')),
       'resourceUri must point to Configuration.xml in configDir (not ConfigDumpInfo.xml)'
     );
   });
