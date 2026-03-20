@@ -53,6 +53,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private rootNodes: TreeNode[] = [];
   private nodeCache = new Map<string, TreeNode>();
+  /** ID → all nodes with that ID (for collision-safe lookup). */
+  private nodeCandidatesById = new Map<string, TreeNode[]>();
   /** Normalized name (lowercase) → node ids, for fast search (Stage 8.3). */
   private nameIndex = new Map<string, string[]>();
   /** Per-root load context for lazy loading (key = root node id). */
@@ -625,6 +627,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.loadContextByRootId.clear();
     if (loadContext) {this.loadContextByRootId.set(node.id, loadContext);}
     this.nodeCache.clear();
+    this.nodeCandidatesById.clear();
     this.nameIndex.clear();
     this.buildCache(node);
     Logger.info('Tree cache size', { nodeCount: this.nodeCache.size });
@@ -645,6 +648,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.rootNodes = nodes;
     this.loadContextByRootId = new Map(loadContextMap ?? []);
     this.nodeCache.clear();
+    this.nodeCandidatesById.clear();
     this.nameIndex.clear();
     for (const node of nodes) {this.buildCache(node);}
     Logger.info('Tree cache size', { nodeCount: this.nodeCache.size, roots: nodes.length });
@@ -711,6 +715,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   private buildCache(node: TreeNode): void {
     this.nodeCache.set(node.id, node);
+    const candidates = this.nodeCandidatesById.get(node.id) ?? [];
+    candidates.push(node);
+    this.nodeCandidatesById.set(node.id, candidates);
     const key = (node.name || '').toLowerCase();
     if (key) {
       const list = this.nameIndex.get(key) ?? [];
@@ -739,6 +746,143 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       n = n.parent;
     }
     return null;
+  }
+
+  private getNodeLineage(node: TreeNode): TreeNode[] {
+    const lineage: TreeNode[] = [];
+    let current: TreeNode | undefined = node;
+    while (current) {
+      lineage.push(current);
+      current = current.parent;
+    }
+    return lineage.reverse();
+  }
+
+  private normalizeIdentityPath(value: string | undefined): string {
+    return (value ?? '').replace(/\\/g, '/').toLowerCase();
+  }
+
+  private getConfigRootIdentity(root: TreeNode | null): string {
+    if (!root) {return '';}
+    const fromLoadContext = this.loadContextByRootId.get(root.id)?.configPath;
+    if (fromLoadContext) {return this.normalizeIdentityPath(fromLoadContext);}
+    if (root.filePath) {return this.normalizeIdentityPath(path.dirname(root.filePath));}
+    return this.normalizeIdentityPath(root.id);
+  }
+
+  private getNodeRootIdentity(node: TreeNode): string {
+    return this.getConfigRootIdentity(this.getConfigurationRoot(node));
+  }
+
+  private getLineageSignature(node: TreeNode): string {
+    const lineage = this.getNodeLineage(node);
+    return lineage.map((part) => `${part.type}:${part.name}:${part.id}`).join(' > ');
+  }
+
+  private preferCandidateOnTie(target: TreeNode, currentBest: TreeNode, candidate: TreeNode): TreeNode {
+    const targetRootIdentity = this.getNodeRootIdentity(target);
+    if (targetRootIdentity) {
+      const bestMatchesRoot = this.getNodeRootIdentity(currentBest) === targetRootIdentity;
+      const candidateMatchesRoot = this.getNodeRootIdentity(candidate) === targetRootIdentity;
+      if (candidateMatchesRoot !== bestMatchesRoot) {
+        return candidateMatchesRoot ? candidate : currentBest;
+      }
+    }
+
+    const bestHasParent = currentBest.parent != null;
+    const candidateHasParent = candidate.parent != null;
+    if (candidateHasParent !== bestHasParent) {
+      return candidateHasParent ? candidate : currentBest;
+    }
+
+    const bestLineage = this.getLineageSignature(currentBest);
+    const candidateLineage = this.getLineageSignature(candidate);
+    if (candidateLineage !== bestLineage) {
+      return candidateLineage < bestLineage ? candidate : currentBest;
+    }
+
+    return candidate.id < currentBest.id ? candidate : currentBest;
+  }
+
+  private scoreNodeCandidate(target: TreeNode, candidate: TreeNode): number {
+    let score = 0;
+    if (candidate.type === target.type) {score += 8;}
+    if (candidate.name === target.name) {score += 8;}
+    if (candidate.id === target.id) {score += 4;}
+    if (target.filePath && candidate.filePath && target.filePath === candidate.filePath) {score += 6;}
+    if (
+      target.parentFilePath &&
+      candidate.parentFilePath &&
+      target.parentFilePath === candidate.parentFilePath
+    ) {
+      score += 4;
+    }
+    if (target.parent && candidate.parent && target.parent.id === candidate.parent.id) {score += 3;}
+    return score;
+  }
+
+  private pickBestCandidate(target: TreeNode, candidates: TreeNode[]): TreeNode | null {
+    if (candidates.length === 0) {return null;}
+    let best: TreeNode | null = null;
+    let bestScore = -1;
+    for (const candidate of candidates) {
+      const score = this.scoreNodeCandidate(target, candidate);
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      } else if (score === bestScore && best) {
+        best = this.preferCandidateOnTie(target, best, candidate);
+      }
+    }
+    return best;
+  }
+
+  private findNodeByIdWithContext(node: TreeNode): TreeNode | null {
+    const candidates = this.nodeCandidatesById.get(node.id) ?? [];
+    if (candidates.length === 0) {return null;}
+    return this.pickBestCandidate(node, candidates);
+  }
+
+  /**
+   * Resolve stale TreeNode instance to active node from the current in-memory tree.
+   * This keeps getChildren stable after tree reloads when VS Code passes old references.
+   */
+  private resolveActiveNode(node: TreeNode): TreeNode {
+    const lineage = this.getNodeLineage(node);
+    if (lineage.length === 0) {return node;}
+
+    const rootSegment = lineage[0];
+    const rootCandidates = this.rootNodes.filter(
+      (root) => root.type === rootSegment.type && root.name === rootSegment.name
+    );
+    let current = this.pickBestCandidate(rootSegment, rootCandidates);
+    if (!current) {
+      current = this.findNodeByIdWithContext(rootSegment);
+    }
+    if (!current) {
+      return this.findNodeByIdWithContext(node) ?? this.nodeCache.get(node.id) ?? node;
+    }
+
+    for (let i = 1; i < lineage.length; i++) {
+      const segment = lineage[i];
+      const children = current.children ?? [];
+      if (children.length === 0) {
+        return this.findNodeByIdWithContext(node) ?? this.nodeCache.get(node.id) ?? current;
+      }
+      const childCandidates = children.filter(
+        (child) =>
+          child.type === segment.type &&
+          child.name === segment.name &&
+          (!segment.filePath || !child.filePath || child.filePath === segment.filePath)
+      );
+      const next = this.pickBestCandidate(segment, childCandidates);
+      if (!next) {
+        return this.findNodeByIdWithContext(node) ?? this.nodeCache.get(node.id) ?? current;
+      }
+      current = next;
+    }
+
+    return current;
   }
 
   /**
@@ -844,26 +988,27 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         const ids = this.filterAncestorOrVisibleIds!;
         return Promise.resolve(this.rootNodes.filter((r) => ids.has(r.id)));
       }
+      const activeElement = this.resolveActiveNode(element);
 
       // Lazy load: type node with no children yet
-      if (this.isLazyTypeNode(element) && element.parent) {
-        const ctx = this.loadContextByRootId.get(element.parent.id);
+      if (this.isLazyTypeNode(activeElement) && activeElement.parent) {
+        const ctx = this.loadContextByRootId.get(activeElement.parent.id);
         if (!ctx) {return Promise.resolve([]);}
-        return MetadataParser.parseTypeContents(ctx.configPath, element.id).then((children) => {
+        return MetadataParser.parseTypeContents(ctx.configPath, activeElement.id).then((children) => {
           for (const c of children) {
-            c.parent = element;
+            c.parent = activeElement;
             this.buildCache(c);
           }
-          element.children = children;
+          activeElement.children = children;
           for (const c of children) {
             ensureR6PlaceholdersForInstanceNode(c, { configPath: ctx.configPath, format: ctx.format });
           }
           Logger.info('Tree cache size after lazy load', {
-            type: element.id,
+            type: activeElement.id,
             nodeCount: this.nodeCache.size,
           });
           this.filterAncestorOrVisibleIds = null;
-          this.refresh(element);
+          this.refresh(activeElement);
           if (!this.hasActiveFilter()) {return children;}
           this.ensureFilterSets();
           const ids = this.filterAncestorOrVisibleIds!;
@@ -872,30 +1017,32 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       }
 
       // Lazy load: element node with _lazy and no children yet (Attributes, Forms, Ext, etc.)
-      if (this.isLazyElementNode(element)) {
-        const configRoot = this.getConfigurationRoot(element);
+      if (this.isLazyElementNode(activeElement)) {
+        const configRoot = this.getConfigurationRoot(activeElement);
         const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         const format = ctx.format;
         if (format == null) {
           return Promise.resolve([]);
         }
-        return MetadataParser.loadElementChildren(ctx.configPath, format, element).then(
+        return MetadataParser.loadElementChildren(ctx.configPath, format, activeElement).then(
           (loaded) => {
-            const existingSubsystems = (element.children ?? []).filter((c) => c.type === MetadataType.Subsystem);
+            const existingSubsystems = (activeElement.children ?? []).filter(
+              (c) => c.type === MetadataType.Subsystem
+            );
             const children = existingSubsystems.length > 0 ? [...existingSubsystems, ...loaded] : loaded;
             for (const c of loaded) {
-              c.parent = element;
+              c.parent = activeElement;
               this.buildCache(c);
             }
-            element.children = children;
-            delete element.properties._lazy;
+            activeElement.children = children;
+            delete activeElement.properties._lazy;
             Logger.info('Tree cache size after lazy element load', {
-              element: element.id,
+              element: activeElement.id,
               nodeCount: this.nodeCache.size,
             });
             this.filterAncestorOrVisibleIds = null;
-            this.refresh(element);
+            this.refresh(activeElement);
             if (!this.hasActiveFilter()) {return children;}
             this.ensureFilterSets();
             const ids = this.filterAncestorOrVisibleIds!;
@@ -904,13 +1051,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         );
       }
 
-      const configRoot = this.getConfigurationRoot(element);
+      const configRoot = this.getConfigurationRoot(activeElement);
       const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
       if (ctx) {
-        ensureR6PlaceholdersForInstanceNode(element, { configPath: ctx.configPath, format: ctx.format });
+        ensureR6PlaceholdersForInstanceNode(activeElement, { configPath: ctx.configPath, format: ctx.format });
       }
 
-      const raw = element.children || [];
+      const raw = activeElement.children || [];
       if (!this.hasActiveFilter()) {
         return Promise.resolve(raw);
       }
@@ -1065,6 +1212,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   findNodeById(id: string): TreeNode | null {
     return this.nodeCache.get(id) || null;
+  }
+
+  /** Resolve possibly stale node reference to active in-memory node. */
+  resolveNodeForUi(node: TreeNode): TreeNode {
+    return this.resolveActiveNode(node);
   }
 
   /**

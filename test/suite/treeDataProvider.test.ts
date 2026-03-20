@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
 
 suite('MetadataTreeDataProvider Test Suite', () => {
   let provider: MetadataTreeDataProvider;
@@ -91,6 +92,358 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     assert.strictEqual(children.length, 1);
     assert.strictEqual(children[0].name, 'Catalog1');
+  });
+
+  test('getChildren rebinds stale node instance after root reload', async () => {
+    const oldTypeNode: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [
+        {
+          id: 'Catalogs.Old',
+          name: 'OldCatalog',
+          type: MetadataType.Catalog,
+          properties: {},
+        },
+      ],
+    };
+    const oldRoot: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [oldTypeNode],
+    };
+    oldTypeNode.parent = oldRoot;
+    oldTypeNode.children![0].parent = oldTypeNode;
+    provider.setRootNode(oldRoot);
+
+    const staleRef = oldTypeNode;
+
+    const newTypeNode: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [
+        {
+          id: 'Catalogs.New',
+          name: 'NewCatalog',
+          type: MetadataType.Catalog,
+          properties: {},
+        },
+      ],
+    };
+    const newRoot: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [newTypeNode],
+    };
+    newTypeNode.parent = newRoot;
+    newTypeNode.children![0].parent = newTypeNode;
+    provider.setRootNode(newRoot);
+
+    const reboundChildren = await provider.getChildren(staleRef);
+    assert.strictEqual(reboundChildren.length, 1);
+    assert.strictEqual(reboundChildren[0].name, 'NewCatalog');
+    assert.ok(!reboundChildren.some((n) => n.name === 'OldCatalog'));
+  });
+
+  test('getChildren resolves colliding container ids using parent lineage', async () => {
+    const formsAOld: TreeNode = {
+      id: 'Forms',
+      name: 'Forms',
+      type: MetadataType.Form,
+      properties: {},
+      children: [
+        {
+          id: 'Catalogs.CatalogA.Forms.FormAOld',
+          name: 'FormAOld',
+          type: MetadataType.Form,
+          properties: {},
+        },
+      ],
+    };
+    const formsBOld: TreeNode = {
+      id: 'Forms',
+      name: 'Forms',
+      type: MetadataType.Form,
+      properties: {},
+      children: [
+        {
+          id: 'Catalogs.CatalogB.Forms.FormBOld',
+          name: 'FormBOld',
+          type: MetadataType.Form,
+          properties: {},
+        },
+      ],
+    };
+    const catalogAOld: TreeNode = {
+      id: 'Catalogs.CatalogA',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [formsAOld],
+    };
+    const catalogBOld: TreeNode = {
+      id: 'Catalogs.CatalogB',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [formsBOld],
+    };
+    const catalogsTypeOld: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [catalogAOld, catalogBOld],
+    };
+    const oldRoot: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [catalogsTypeOld],
+    };
+    catalogsTypeOld.parent = oldRoot;
+    catalogAOld.parent = catalogsTypeOld;
+    catalogBOld.parent = catalogsTypeOld;
+    formsAOld.parent = catalogAOld;
+    formsBOld.parent = catalogBOld;
+    formsAOld.children![0].parent = formsAOld;
+    formsBOld.children![0].parent = formsBOld;
+    provider.setRootNode(oldRoot);
+
+    const staleFormsARef = formsAOld;
+
+    const formsANew: TreeNode = {
+      id: 'Forms',
+      name: 'Forms',
+      type: MetadataType.Form,
+      properties: {},
+      children: [
+        {
+          id: 'Catalogs.CatalogA.Forms.FormANew',
+          name: 'FormANew',
+          type: MetadataType.Form,
+          properties: {},
+        },
+      ],
+    };
+    const formsBNew: TreeNode = {
+      id: 'Forms',
+      name: 'Forms',
+      type: MetadataType.Form,
+      properties: {},
+      children: [
+        {
+          id: 'Catalogs.CatalogB.Forms.FormBNew',
+          name: 'FormBNew',
+          type: MetadataType.Form,
+          properties: {},
+        },
+      ],
+    };
+    const catalogANew: TreeNode = {
+      id: 'Catalogs.CatalogA',
+      name: 'CatalogA',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [formsANew],
+    };
+    const catalogBNew: TreeNode = {
+      id: 'Catalogs.CatalogB',
+      name: 'CatalogB',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [formsBNew],
+    };
+    const catalogsTypeNew: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [catalogANew, catalogBNew],
+    };
+    const newRoot: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [catalogsTypeNew],
+    };
+    catalogsTypeNew.parent = newRoot;
+    catalogANew.parent = catalogsTypeNew;
+    catalogBNew.parent = catalogsTypeNew;
+    formsANew.parent = catalogANew;
+    formsBNew.parent = catalogBNew;
+    formsANew.children![0].parent = formsANew;
+    formsBNew.children![0].parent = formsBNew;
+    provider.setRootNode(newRoot);
+
+    const children = await provider.getChildren(staleFormsARef);
+    assert.deepStrictEqual(children.map((c) => c.name), ['FormANew']);
+    assert.ok(!children.some((c) => c.name.includes('FormB')));
+  });
+
+  test('getChildren resolves stale ref after reload with active search/type filters', async () => {
+    const oldTypeNode: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [
+        { id: 'Catalogs.OldCatalog', name: 'OldCatalog', type: MetadataType.Catalog, properties: {} },
+      ],
+    };
+    const oldRoot: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [oldTypeNode],
+    };
+    oldTypeNode.parent = oldRoot;
+    oldTypeNode.children![0].parent = oldTypeNode;
+    provider.setRootNode(oldRoot);
+
+    const staleRef = oldTypeNode;
+
+    const newTypeNode: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [
+        { id: 'Catalogs.NewCatalog', name: 'NewCatalog', type: MetadataType.Catalog, properties: {} },
+        { id: 'Catalogs.OtherDocumentLikeName', name: 'Other', type: MetadataType.Catalog, properties: {} },
+      ],
+    };
+    const newRoot: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [newTypeNode],
+    };
+    newTypeNode.parent = newRoot;
+    newTypeNode.children![0].parent = newTypeNode;
+    newTypeNode.children![1].parent = newTypeNode;
+    provider.setRootNode(newRoot);
+
+    provider.setTypeFilter([MetadataType.Catalog]);
+    provider.setSearchQuery('NewCatalog');
+
+    const reboundChildren = await provider.getChildren(staleRef);
+    assert.deepStrictEqual(reboundChildren.map((n) => n.name), ['NewCatalog']);
+    assert.ok(!reboundChildren.some((n) => n.name === 'OldCatalog'));
+  });
+
+  test('getChildren resolves stale lazy type node against reloaded root context', async () => {
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    const parseCalls: Array<{ configPath: string; typeName: string }> = [];
+    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+      parseCalls.push({ configPath, typeName });
+      return [
+        { id: `${typeName}.Reloaded`, name: 'ReloadedCatalog', type: MetadataType.Catalog, properties: {} },
+      ];
+    };
+
+    try {
+      const oldRoot: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'cfgA', 'Configuration.xml'),
+        children: [
+          { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+        ],
+      };
+      oldRoot.children![0].parent = oldRoot;
+      provider.setRootNode(oldRoot, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+
+      const staleCatalogsRef = oldRoot.children![0];
+
+      const newRoot: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'cfgA', 'Configuration.xml'),
+        children: [
+          { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+        ],
+      };
+      newRoot.children![0].parent = newRoot;
+      provider.setRootNode(newRoot, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+
+      const children = await provider.getChildren(staleCatalogsRef);
+      assert.deepStrictEqual(children.map((n) => n.name), ['ReloadedCatalog']);
+      assert.strictEqual(parseCalls.length, 1, 'parseTypeContents should be called exactly once');
+      assert.strictEqual(parseCalls[0].typeName, 'Catalogs');
+      assert.strictEqual(parseCalls[0].configPath, path.join('C:', 'cfgA'));
+    } finally {
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
+  });
+
+  test('setRootNodes resolves stale ref in correct root when multi-root branches are identical', async () => {
+    const makeFormsBranch = (formName: string): { root: TreeNode; forms: TreeNode } => {
+      const forms: TreeNode = {
+        id: 'Forms',
+        name: 'Forms',
+        type: MetadataType.Form,
+        properties: {},
+        children: [{ id: `Catalogs.CatalogA.Forms.${formName}`, name: formName, type: MetadataType.Form, properties: {} }],
+      };
+      const catalog: TreeNode = {
+        id: 'Catalogs.CatalogA',
+        name: 'CatalogA',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [forms],
+      };
+      const catalogs: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [catalog],
+      };
+      const root: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        children: [catalogs],
+      };
+      catalogs.parent = root;
+      catalog.parent = catalogs;
+      forms.parent = catalog;
+      forms.children![0].parent = forms;
+      return { root, forms };
+    };
+
+    const oldA = makeFormsBranch('A_Old');
+    oldA.root.filePath = path.join('C:', 'cfgA', 'Configuration.xml');
+    provider.setRootNodes([oldA.root]);
+    const staleFormsRef = oldA.forms;
+
+    const newA = makeFormsBranch('A_New');
+    newA.root.filePath = path.join('C:', 'cfgA', 'Configuration.xml');
+    const newB = makeFormsBranch('B_New');
+    newB.root.filePath = path.join('C:', 'cfgB', 'Configuration.xml');
+    provider.setRootNodes([newB.root, newA.root]);
+
+    const children = await provider.getChildren(staleFormsRef);
+    assert.deepStrictEqual(children.map((n) => n.name), ['A_New']);
+    assert.ok(!children.some((n) => n.name === 'B_New'));
   });
 
   test('getTreeItem should return correct tree item', () => {
