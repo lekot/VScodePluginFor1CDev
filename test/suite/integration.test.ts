@@ -107,6 +107,138 @@ suite('Integration', () => {
     assert.strictEqual(firstCatalog.type, MetadataType.Catalog);
   });
 
+  test('create -> reload -> visible via stale reference without manual refresh', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-create-reload-visible-'));
+    const tmpConfigPath = path.join(tmpRoot, 'designer-config-copy');
+    try {
+      await fs.promises.mkdir(tmpConfigPath, { recursive: true });
+
+      if ((fs.promises as any).cp) {
+        await (fs.promises as any).cp(fixturesPath, tmpConfigPath, { recursive: true });
+      } else if ((fs as any).cpSync) {
+        (fs as any).cpSync(fixturesPath, tmpConfigPath, { recursive: true });
+      } else {
+        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
+      }
+
+      const mockContext = {
+        subscriptions: [] as vscode.Disposable[],
+        extensionPath: '',
+        extensionUri: vscode.Uri.file(''),
+        globalState: {} as vscode.Memento,
+        workspaceState: {} as vscode.Memento,
+        secrets: {} as vscode.SecretStorage,
+        storageUri: undefined,
+        storagePath: undefined,
+        globalStorageUri: vscode.Uri.file(''),
+        globalStoragePath: '',
+        logUri: vscode.Uri.file(''),
+        logPath: '',
+        extensionMode: vscode.ExtensionMode.Test,
+        extension: {} as vscode.Extension<unknown>,
+        environmentVariableCollection: {} as vscode.EnvironmentVariableCollection,
+        languageModelAccessInformation: {} as vscode.LanguageModelAccessInformation,
+        asAbsolutePath: (p: string) => p,
+      };
+
+      const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+      const format = await MetadataParser.getFormat(tmpConfigPath);
+
+      const rootBefore = await MetadataParser.parse(tmpConfigPath);
+      provider.setRootNode(rootBefore, { configPath: tmpConfigPath, format });
+
+      const rootVisible = (await provider.getChildren())[0];
+      const topTypes = await provider.getChildren(rootVisible);
+      const catalogsTypeBefore = topTypes.find((n) => n.id === 'Catalogs' || n.name === 'Catalogs');
+      assert.ok(catalogsTypeBefore, 'Catalogs type node must exist');
+
+      const staleCatalogsRef = catalogsTypeBefore!;
+      const createdName = `AutoVisibleCatalog_${Date.now()}`;
+      await createElement(staleCatalogsRef, createdName);
+
+      const rootAfter = await MetadataParser.parse(tmpConfigPath);
+      provider.setRootNode(rootAfter, { configPath: tmpConfigPath, format });
+
+      const documentsChildren = await provider.getChildren(staleCatalogsRef);
+      assert.ok(
+        documentsChildren.some((n) => n.name === createdName),
+        'Created element should be visible via stale type-node reference right after reload'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('multi-root stale ref does not mix foreign branches after reload', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-multiroot-stale-'));
+    const cfgA = path.join(tmpRoot, 'configA');
+    const cfgB = path.join(tmpRoot, 'configB');
+    try {
+      await fs.promises.mkdir(cfgA, { recursive: true });
+      await fs.promises.mkdir(cfgB, { recursive: true });
+
+      if ((fs.promises as any).cp) {
+        await (fs.promises as any).cp(fixturesPath, cfgA, { recursive: true });
+        await (fs.promises as any).cp(fixturesPath, cfgB, { recursive: true });
+      } else if ((fs as any).cpSync) {
+        (fs as any).cpSync(fixturesPath, cfgA, { recursive: true });
+        (fs as any).cpSync(fixturesPath, cfgB, { recursive: true });
+      } else {
+        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
+      }
+
+      const mockContext = {
+        subscriptions: [] as vscode.Disposable[],
+        extensionPath: '',
+        extensionUri: vscode.Uri.file(''),
+        globalState: {} as vscode.Memento,
+        workspaceState: {} as vscode.Memento,
+        secrets: {} as vscode.SecretStorage,
+        storageUri: undefined,
+        storagePath: undefined,
+        globalStorageUri: vscode.Uri.file(''),
+        globalStoragePath: '',
+        logUri: vscode.Uri.file(''),
+        logPath: '',
+        extensionMode: vscode.ExtensionMode.Test,
+        extension: {} as vscode.Extension<unknown>,
+        environmentVariableCollection: {} as vscode.EnvironmentVariableCollection,
+        languageModelAccessInformation: {} as vscode.LanguageModelAccessInformation,
+        asAbsolutePath: (p: string) => p,
+      };
+
+      const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+
+      const rootA1 = await MetadataParser.parse(cfgA);
+      const rootB1 = await MetadataParser.parse(cfgB);
+      provider.setRootNodes([rootB1, rootA1]);
+
+      const findCatalogsNode = (root: TreeNode): TreeNode => {
+        const node = (root.children ?? []).find((n) => n.id === 'Catalogs' || n.name === 'Catalogs');
+        assert.ok(node, 'Catalogs type node must exist');
+        return node!;
+      };
+
+      const staleCatalogsA = findCatalogsNode(rootA1);
+      const catalogsB = findCatalogsNode(rootB1);
+
+      const createdInA = `OnlyInA_${Date.now()}`;
+      const createdInB = `OnlyInB_${Date.now()}`;
+      await createElement(staleCatalogsA, createdInA);
+      await createElement(catalogsB, createdInB);
+
+      const rootA2 = await MetadataParser.parse(cfgA);
+      const rootB2 = await MetadataParser.parse(cfgB);
+      provider.setRootNodes([rootB2, rootA2]);
+
+      const resolvedChildren = await provider.getChildren(staleCatalogsA);
+      assert.ok(resolvedChildren.some((n) => n.name === createdInA), 'Expected child from stale-ref root');
+      assert.ok(!resolvedChildren.some((n) => n.name === createdInB), 'Foreign branch child must not be mixed in');
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   // Integration Tests for Subsystem Filtering (Phase 5.3)
 
   test('right-click on subsystem -> filter shows only subsystem contents', async () => {
