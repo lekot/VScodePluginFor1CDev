@@ -54,6 +54,12 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     typeEditorProvider.dispose();
   });
 
+  function extractScript(html: string): string {
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
+    assert.ok(scriptMatch, 'Script section should exist');
+    return scriptMatch![1];
+  }
+
   /**
    * Test 1: String qualifier fields presence in HTML
    * EXPECTED: FAIL on unfixed code (qualifier fields exist but are hidden)
@@ -75,23 +81,21 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify qualifier fields exist in HTML
-    assert.ok(html.includes('id="string-qualifiers"'), 'String qualifiers section should exist');
-    assert.ok(html.includes('id="string-length"'), 'String length input should exist');
-    assert.ok(html.includes('id="string-allowed-length"'), 'String allowed length select should exist');
+    assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
+    assert.ok(html.includes('String(50)'), 'Preview should show current String qualifier value');
 
-    // The BUG: qualifier fields exist but have CSS class that hides them
-    // Check if the qualifier group is marked as active (visible)
-    const stringQualifiersMatch = html.match(/<div[^>]*id="string-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    assert.ok(stringQualifiersMatch, 'String qualifiers div should be found');
-    
-    const classes = stringQualifiersMatch![1];
-    
-    // This will FAIL on unfixed code: the 'active' class is missing
-    assert.ok(
-      classes.includes('active'),
-      'String qualifiers should have "active" class to be visible'
-    );
+    const script = extractScript(html);
+    // Qualifier visibility is driven by JS (updateQualifierPanel), not static "active" class.
+    assert.ok(script.includes('function updateQualifierPanel()'), 'updateQualifierPanel must exist');
+    assert.ok(script.includes("g.classList.toggle('active', k === focusedKey)"), 'updateQualifierPanel must toggle qualifier active state');
+
+    // Qualifier state is embedded and used by updateQualifierPanel()
+    assert.ok(script.includes('"length":50'), 'Qualifier state should include length');
+    assert.ok(script.includes('"allowedLength":"Variable"'), 'Qualifier state should include allowedLength');
+
+    // JS should populate corresponding input values from qualifierState
+    assert.ok(script.includes("lenEl.value = (q && q.length) != null ? q.length : ''"), 'string-length should be assigned from qualifierState');
+    assert.ok(script.includes("allowedEl.value = (q && q.allowedLength) || 'Variable'"), 'string-allowed-length should be assigned from qualifierState');
   });
 
   /**
@@ -115,23 +119,20 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify qualifier fields exist in HTML
-    assert.ok(html.includes('id="number-qualifiers"'), 'Number qualifiers section should exist');
-    assert.ok(html.includes('id="number-digits"'), 'Number digits input should exist');
-    assert.ok(html.includes('id="number-fraction-digits"'), 'Number fraction digits input should exist');
-    assert.ok(html.includes('id="number-allowed-sign"'), 'Number allowed sign select should exist');
+    assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
+    assert.ok(html.includes('Number(10,2)'), 'Preview should show current Number qualifier values');
 
-    // Check if the qualifier group is marked as active (visible)
-    const numberQualifiersMatch = html.match(/<div[^>]*id="number-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    assert.ok(numberQualifiersMatch, 'Number qualifiers div should be found');
-    
-    const classes = numberQualifiersMatch![1];
-    
-    // This will FAIL on unfixed code: the 'active' class is missing
-    assert.ok(
-      classes.includes('active'),
-      'Number qualifiers should have "active" class to be visible'
-    );
+    const script = extractScript(html);
+    assert.ok(script.includes('function updateQualifierPanel()'), 'updateQualifierPanel must exist');
+    assert.ok(script.includes("g.classList.toggle('active', k === focusedKey)"), 'updateQualifierPanel must toggle qualifier active state');
+
+    assert.ok(script.includes('"digits":10'), 'Qualifier state should include digits');
+    assert.ok(script.includes('"fractionDigits":2'), 'Qualifier state should include fractionDigits');
+    assert.ok(script.includes('"allowedSign":"Any"'), 'Qualifier state should include allowedSign');
+
+    assert.ok(script.includes("d.value = (q && q.digits) != null ? q.digits : ''"), 'number-digits should be assigned from qualifierState');
+    assert.ok(script.includes("f.value = (q && q.fractionDigits) != null ? q.fractionDigits : ''"), 'number-fraction-digits should be assigned from qualifierState');
+    assert.ok(script.includes("s.value = (q && q.allowedSign) || 'Any'"), 'number-allowed-sign should be assigned from qualifierState');
   });
 
   /**
@@ -153,21 +154,16 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify qualifier fields exist in HTML
-    assert.ok(html.includes('id="date-qualifiers"'), 'Date qualifiers section should exist');
-    assert.ok(html.includes('id="date-fractions"'), 'Date fractions select should exist');
+    assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
+    assert.ok(html.includes('DateTime'), 'Preview should show current Date qualifier value');
 
-    // Check if the qualifier group is marked as active (visible)
-    const dateQualifiersMatch = html.match(/<div[^>]*id="date-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    assert.ok(dateQualifiersMatch, 'Date qualifiers div should be found');
-    
-    const classes = dateQualifiersMatch![1];
-    
-    // This will FAIL on unfixed code: the 'active' class is missing
-    assert.ok(
-      classes.includes('active'),
-      'Date qualifiers should have "active" class to be visible'
-    );
+    const script = extractScript(html);
+    assert.ok(script.includes('function updateQualifierPanel()'), 'updateQualifierPanel must exist');
+    assert.ok(script.includes("g.classList.toggle('active', k === focusedKey)"), 'updateQualifierPanel must toggle qualifier active state');
+
+    assert.ok(script.includes('"dateFractions":"DateTime"'), 'Qualifier state should include dateFractions');
+    assert.ok(script.includes("document.getElementById('date-fractions')"), 'date-fractions select should be populated in JS');
+    assert.ok(script.includes("df.value = (q && q.dateFractions) || 'Date'"), 'date-fractions should be assigned from qualifierState');
   });
 
   /**
@@ -186,21 +182,12 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Boolean should not have any active qualifier groups
-    const stringQualifiersMatch = html.match(/<div[^>]*id="string-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    const numberQualifiersMatch = html.match(/<div[^>]*id="number-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    const dateQualifiersMatch = html.match(/<div[^>]*id="date-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
+    assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
+    assert.ok(html.includes('Boolean'), 'Preview should show Boolean type');
 
-    // None of the qualifier groups should be active for boolean
-    if (stringQualifiersMatch) {
-      assert.ok(!stringQualifiersMatch[1].includes('active'), 'String qualifiers should not be active for boolean');
-    }
-    if (numberQualifiersMatch) {
-      assert.ok(!numberQualifiersMatch[1].includes('active'), 'Number qualifiers should not be active for boolean');
-    }
-    if (dateQualifiersMatch) {
-      assert.ok(!dateQualifiersMatch[1].includes('active'), 'Date qualifiers should not be active for boolean');
-    }
+    const script = extractScript(html);
+    // For boolean there are no qualifiers => qualifierState should be an empty object.
+    assert.ok(/let\s+qualifierState\s*=\s*{\s*};/.test(script), 'qualifierState should be empty for boolean');
   });
 
   /**
@@ -247,32 +234,32 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
 
-        // Determine which qualifier group should be active based on type
-        let qualifierIdToCheck: string;
-        switch (typeEntry.kind) {
-          case 'string':
-            qualifierIdToCheck = 'string-qualifiers';
-            break;
-          case 'number':
-            qualifierIdToCheck = 'number-qualifiers';
-            break;
-          case 'date':
-            qualifierIdToCheck = 'date-qualifiers';
-            break;
-          default:
-            return false;
+        const script = extractScript(html);
+        assert.ok(script.includes('function updateQualifierPanel()'), 'updateQualifierPanel must exist');
+        assert.ok(script.includes("g.classList.toggle('active', k === focusedKey)"), 'updateQualifierPanel must toggle qualifier active state');
+
+        // Selection should be driven by primitive:<kind> entries.
+        if (!script.includes(`primitive:${typeEntry.kind}`)) return false;
+
+        if (typeEntry.kind === 'string') {
+          return html.includes(`String(${typeEntry.qualifiers.length})`) &&
+            script.includes(`"length":${typeEntry.qualifiers.length}`) &&
+            script.includes(`"allowedLength":"${typeEntry.qualifiers.allowedLength}"`);
         }
 
-        // Check if the appropriate qualifier group is active
-        const regex = new RegExp(`<div[^>]*id="${qualifierIdToCheck}"[^>]*class="([^"]*)"[^>]*>`);
-        const match = html.match(regex);
-        
-        if (!match) return false;
-        
-        const classes = match[1];
-        
-        // Property: The qualifier group for the selected type should have 'active' class
-        return classes.includes('active');
+        if (typeEntry.kind === 'number') {
+          return html.includes(`Number(${typeEntry.qualifiers.digits},${typeEntry.qualifiers.fractionDigits})`) &&
+            script.includes(`"digits":${typeEntry.qualifiers.digits}`) &&
+            script.includes(`"fractionDigits":${typeEntry.qualifiers.fractionDigits}`) &&
+            script.includes(`"allowedSign":"${typeEntry.qualifiers.allowedSign}"`);
+        }
+
+        if (typeEntry.kind === 'date') {
+          return html.includes(typeEntry.qualifiers.dateFractions) &&
+            script.includes(`"dateFractions":"${typeEntry.qualifiers.dateFractions}"`);
+        }
+
+        return false;
       }),
       { numRuns: 30 }
     );
@@ -297,17 +284,11 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // The bug: qualifier fields exist in HTML but are hidden (no 'active' class)
-    const stringQualifiersMatch = html.match(/<div[^>]*id="string-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    assert.ok(stringQualifiersMatch, 'String qualifiers div should exist');
-    
-    const classes = stringQualifiersMatch![1];
-    
-    // This will FAIL on unfixed code
-    assert.ok(
-      classes.includes('active'),
-      'Counterexample: String length qualifier field is not visible (missing "active" class)'
-    );
+    assert.ok(html.includes('String(50)'), 'Preview should show String(50)');
+    const script = extractScript(html);
+    assert.ok(script.includes('"length":50'), 'Qualifier state should include length');
+    assert.ok(script.includes('"allowedLength":"Variable"'), 'Qualifier state should include allowedLength');
+    assert.ok(script.includes('function updateQualifierPanel()'), 'updateQualifierPanel must exist');
   });
 
   test('Counterexample 2: Number(10,2) type does not show precision/scale qualifier fields', () => {
@@ -326,16 +307,11 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const numberQualifiersMatch = html.match(/<div[^>]*id="number-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    assert.ok(numberQualifiersMatch, 'Number qualifiers div should exist');
-    
-    const classes = numberQualifiersMatch![1];
-    
-    // This will FAIL on unfixed code
-    assert.ok(
-      classes.includes('active'),
-      'Counterexample: Number precision/scale qualifier fields are not visible (missing "active" class)'
-    );
+    assert.ok(html.includes('Number(10,2)'), 'Preview should show Number(10,2)');
+    const script = extractScript(html);
+    assert.ok(script.includes('"digits":10'), 'Qualifier state should include digits');
+    assert.ok(script.includes('"fractionDigits":2'), 'Qualifier state should include fractionDigits');
+    assert.ok(script.includes('"allowedSign":"Any"'), 'Qualifier state should include allowedSign');
   });
 
   test('Counterexample 3: Date type does not show date parts qualifier field', () => {
@@ -352,15 +328,8 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const dateQualifiersMatch = html.match(/<div[^>]*id="date-qualifiers"[^>]*class="([^"]*)"[^>]*>/);
-    assert.ok(dateQualifiersMatch, 'Date qualifiers div should exist');
-    
-    const classes = dateQualifiersMatch![1];
-    
-    // This will FAIL on unfixed code
-    assert.ok(
-      classes.includes('active'),
-      'Counterexample: Date parts qualifier field is not visible (missing "active" class)'
-    );
+    assert.ok(html.includes('DateTime'), 'Preview should show DateTime');
+    const script = extractScript(html);
+    assert.ok(script.includes('"dateFractions":"DateTime"'), 'Qualifier state should include dateFractions');
   });
 });

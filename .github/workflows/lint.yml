@@ -95,7 +95,10 @@ jobs:
         run: npm ci
 
       - name: Run coverage
-        run: npm run test:coverage
+        # Ensure we don't compare against stale/committed coverage artifacts.
+        run: |
+          rm -rf coverage
+          npm run test:coverage
 
       - name: Check coverage delta
         run: npm run coverage:check
@@ -126,4 +129,18 @@ jobs:
         run: npm ci
 
       - name: Run VSCode integration tests (headless)
-        run: npm run test:vscode:ci
+        run: |
+          set -o pipefail
+          npm run test:vscode:ci > vscode-tests.log 2>&1
+          status=$?
+          echo "---- VSCode integration test errors ----"
+          # Keep console output small; show only lines that look like failures/errors.
+          rg -n -i "(error|referenceerror|typeerror|assertionerror|enoent|failed|failed to|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" vscode-tests.log | tail -n 80 || true
+          exit $status
+
+      - name: Upload VSCode test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-tests.log
+          path: vscode-tests.log

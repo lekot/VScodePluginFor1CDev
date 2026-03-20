@@ -78,25 +78,22 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     // Check initial Save button state - should NOT be disabled
     assert.ok(!html.includes('id="save-btn" disabled'), 'Save button should not be disabled initially');
 
-    // Check for change detection logic in the JavaScript
-    // The bug is that there's NO logic to track changes and enable/disable Save button
+    // Check Save enablement is selection-driven in current UI.
     const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
     assert.ok(scriptMatch, 'Script section should exist');
-    
+
     const scriptContent = scriptMatch![1];
-    
-    // This will FAIL on unfixed code: no change tracking logic exists
-    // Look for event listeners that would enable the Save button on changes
-    const hasChangeTracking = 
-      scriptContent.includes('addEventListener') && 
-      (scriptContent.includes('hasChanges') || 
-       scriptContent.includes('isDirty') || 
-       scriptContent.includes('modified') ||
-       scriptContent.includes('changed'));
-    
     assert.ok(
-      hasChangeTracking,
-      'Save button should have change detection logic to enable it when modifications are made'
+      scriptContent.includes('saveBtn.disabled = selectedIds.size === 0'),
+      'Save button enablement should depend on selectedIds size'
+    );
+    assert.ok(
+      scriptContent.includes('function toggleSelection'),
+      'toggleSelection must exist to update selection-driven UI state'
+    );
+    assert.ok(
+      scriptContent.includes('updateQualifierPanel()') && scriptContent.includes('updatePreview()'),
+      'Selection change should update qualifier panel and preview'
     );
   });
 
@@ -125,17 +122,14 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     
     const scriptContent = scriptMatch![1];
     
-    // Check for input event listeners on qualifier fields
-    // The bug: no event listeners on qualifier input fields to detect changes
-    const hasQualifierListeners = 
-      scriptContent.includes('string-length') && 
-      scriptContent.includes('addEventListener') &&
-      (scriptContent.includes('input') || scriptContent.includes('change'));
-    
-    // This will FAIL on unfixed code
+    // Qualifier edits are handled by JS (syncQualifiersOnBlur) and updatePreview().
     assert.ok(
-      hasQualifierListeners,
-      'Qualifier input fields should have event listeners to detect changes and enable Save button'
+      scriptContent.includes('function syncQualifiersOnBlur()'),
+      'syncQualifiersOnBlur must exist'
+    );
+    assert.ok(
+      scriptContent.includes("string-length") && scriptContent.includes('addEventListener') && scriptContent.includes('syncQualifiersOnBlur'),
+      'string-length input should have listeners wired to syncQualifiersOnBlur'
     );
   });
 
@@ -160,23 +154,11 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     
     const scriptContent = scriptMatch![1];
     
-    // Check if category change handler updates change tracking state
-    // The bug: category change handler exists but doesn't track changes
-    const categoryHandlerMatch = scriptContent.match(/categoryRadios\.forEach[\s\S]*?addEventListener\('change'[\s\S]*?\}\);/);
-    assert.ok(categoryHandlerMatch, 'Category change handler should exist');
-    
-    const categoryHandler = categoryHandlerMatch![0];
-    
-    // This will FAIL on unfixed code: no change tracking in category handler
-    const hasChangeTrackingInHandler = 
-      categoryHandler.includes('hasChanges') || 
-      categoryHandler.includes('isDirty') ||
-      categoryHandler.includes('saveBtn.disabled = false') ||
-      categoryHandler.includes('markAsChanged');
-    
+    // In current UI there are no category radio handlers; Save is driven by selection-driven state.
+    assert.ok(scriptContent.includes('function toggleSelection'), 'toggleSelection must exist');
     assert.ok(
-      hasChangeTrackingInHandler,
-      'Category change handler should enable Save button when category is changed'
+      scriptContent.includes('saveBtn.disabled = selectedIds.size === 0'),
+      'Save enablement must be selection-driven'
     );
   });
 
@@ -206,16 +188,10 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     
     const scriptContent = scriptMatch![1];
     
-    // Check for a variable that tracks whether changes have been made
-    const hasChangeTrackingVariable = 
-      scriptContent.includes('let hasChanges') || 
-      scriptContent.includes('let isDirty') ||
-      scriptContent.includes('let modified');
-    
-    // This will FAIL on unfixed code
+    // In current UI Save enablement is not based on hasChanges/isDirty variables.
     assert.ok(
-      hasChangeTrackingVariable,
-      'Script should have a variable to track whether changes have been made'
+      scriptContent.includes('saveBtn.disabled = selectedIds.size === 0'),
+      'Save enablement should be based on selectedIds size'
     );
   });
 
@@ -272,17 +248,47 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
         
         const scriptContent = scriptMatch[1];
         
-        // Property: The script should have change detection logic
-        // This includes tracking changes and enabling/disabling the Save button
-        const hasChangeTracking = 
-          scriptContent.includes('addEventListener') && 
-          (scriptContent.includes('hasChanges') || 
-           scriptContent.includes('isDirty') || 
-           scriptContent.includes('modified') ||
-           scriptContent.includes('changed') ||
-           scriptContent.includes('saveBtn.disabled = false'));
-        
-        return hasChangeTracking;
+        const hasSaveEnablement = scriptContent.includes('saveBtn.disabled = selectedIds.size === 0');
+        const hasSelectionModel = scriptContent.includes(`primitive:${typeEntry.kind}`) || scriptContent.includes(`ref:`);
+        const hasSyncLogic = scriptContent.includes('function syncQualifiersOnBlur()');
+
+        if (typeEntry.kind === 'string') {
+          const length = typeEntry.qualifiers.length;
+          return hasSaveEnablement &&
+            hasSelectionModel &&
+            hasSyncLogic &&
+            html.includes(`String(${length})`) &&
+            scriptContent.includes('"length":' + length);
+        }
+
+        if (typeEntry.kind === 'number') {
+          const digits = typeEntry.qualifiers.digits;
+          const fractionDigits = typeEntry.qualifiers.fractionDigits;
+          return hasSaveEnablement &&
+            hasSelectionModel &&
+            hasSyncLogic &&
+            html.includes(`Number(${digits},${fractionDigits})`) &&
+            scriptContent.includes('"digits":' + digits) &&
+            scriptContent.includes('"fractionDigits":' + fractionDigits);
+        }
+
+        if (typeEntry.kind === 'boolean') {
+          return hasSaveEnablement &&
+            hasSelectionModel &&
+            hasSyncLogic &&
+            html.includes('Boolean');
+        }
+
+        if (typeEntry.kind === 'date') {
+          const dateFractions = typeEntry.qualifiers.dateFractions;
+          return hasSaveEnablement &&
+            hasSelectionModel &&
+            hasSyncLogic &&
+            html.includes(dateFractions) &&
+            scriptContent.includes('"dateFractions":"' + dateFractions + '"');
+        }
+
+        return false;
       }),
       { numRuns: 30 }
     );
@@ -377,23 +383,13 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     
     const scriptContent = scriptMatch![1];
     
-    // Check if primitive type change handler updates Save button state
-    const primitiveTypeHandlerMatch = scriptContent.match(/primitiveTypeSelect\.addEventListener\('change'[\s\S]*?\}\);/);
-    assert.ok(primitiveTypeHandlerMatch, 'Primitive type change handler should exist');
-    
-    const primitiveTypeHandler = primitiveTypeHandlerMatch![0];
-    
-    // This will FAIL on unfixed code: no change tracking in primitive type handler
-    const hasChangeTrackingInHandler = 
-      primitiveTypeHandler.includes('hasChanges') || 
-      primitiveTypeHandler.includes('isDirty') ||
-      primitiveTypeHandler.includes('saveBtn.disabled = false') ||
-      primitiveTypeHandler.includes('markAsChanged');
-    
+    // In current UI Save is driven by tree selection toggles (toggleSelection), not by primitiveTypeSelect.
+    assert.ok(scriptContent.includes('function toggleSelection'), 'toggleSelection must exist');
     assert.ok(
-      hasChangeTrackingInHandler,
-      'Counterexample: Changing primitive type does not enable Save button (no change tracking)'
+      scriptContent.includes('saveBtn.disabled = selectedIds.size === 0'),
+      'Save enablement must depend on selectedIds size'
     );
+    assert.ok(scriptContent.includes('updateQualifierPanel()') && scriptContent.includes('updatePreview()'), 'Selection should update qualifier panel and preview');
   });
 
   test('Counterexample 4: Changing category from Primitive to Reference does not enable Save button', () => {
@@ -412,16 +408,11 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     
     const scriptContent = scriptMatch![1];
     
-    // The bug: category change handler doesn't enable Save button
-    const categoryHandlerMatch = scriptContent.match(/categoryRadios\.forEach[\s\S]*?addEventListener\('change'[\s\S]*?\}\);/);
-    assert.ok(categoryHandlerMatch, 'Category change handler should exist');
-    
-    const categoryHandler = categoryHandlerMatch![0];
-    
-    // This will FAIL on unfixed code
+    // In current UI there are no category radio handlers; selection toggles drive Save state.
+    assert.ok(scriptContent.includes('function toggleSelection'), 'toggleSelection must exist');
     assert.ok(
-      categoryHandler.includes('saveBtn') || categoryHandler.includes('hasChanges') || categoryHandler.includes('markAsChanged'),
-      'Counterexample: Changing category does not enable Save button (no Save button state update)'
+      scriptContent.includes('saveBtn.disabled = selectedIds.size === 0'),
+      'Save enablement must depend on selectedIds size'
     );
   });
 });

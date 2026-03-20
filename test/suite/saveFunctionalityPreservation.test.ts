@@ -566,7 +566,7 @@ suite('Preservation Property Tests: Existing Save Behavior', () => {
     
     // Verify Save button has proper structure
     assert.ok(html.includes('<button'), 'Save button should be a button element');
-    assert.ok(html.includes('Save'), 'Save button should have "Save" text');
+    assert.ok(html.includes('Сохранить'), 'Save button should have "Сохранить" text');
   });
 
   /**

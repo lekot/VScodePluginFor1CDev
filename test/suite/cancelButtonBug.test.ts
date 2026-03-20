@@ -73,7 +73,7 @@ suite('Bug Condition Exploration: Cancel Button Doesn\'t Close Editor', () => {
 
     // Verify Cancel button exists
     assert.ok(html.includes('id="cancel-btn"'), 'Cancel button should exist in webview');
-    assert.ok(html.includes('Cancel'), 'Cancel button should have "Cancel" text');
+    assert.ok(html.includes('Отмена'), 'Cancel button should have "Отмена" text');
   });
 
   /**

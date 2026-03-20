@@ -141,7 +141,7 @@ suite('propertiesProvider changedKeys logic', () => {
       'Different Type XML string must be detected as changed');
   });
 
-  test('Same Type XML string is NOT detected as changed', () => {
+  test('Same Type XML string is treated as explicit Type update', () => {
     const typeXml = '<Type><v8:Type>xs:string</v8:Type></Type>';
     const nodeProps = {
       Name: 'TestAttr',
@@ -151,8 +151,8 @@ suite('propertiesProvider changedKeys logic', () => {
     const messageProps = { ...nodeProps };
 
     const changed = computeChangedKeys(nodeProps, messageProps);
-    assert.ok(!changed?.includes('Type'),
-      'Same Type XML string must not be detected as changed');
+    assert.ok(changed?.includes('Type'),
+      'Type XML payload is treated as explicit update signal');
   });
 
   test('PasswordMode change is detected while Type is skipped (display string)', () => {

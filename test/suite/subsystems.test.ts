@@ -120,7 +120,8 @@ suite('Subsystems (hierarchy + filter) Tests', () => {
 
     // Root-level nodes should include the selected subsystem node and any referenced objects.
     const top = await provider.getChildren();
-    const ids = new Set(top.map((n) => n.id));
+    const rootChildren = top[0]?.children ?? [];
+    const ids = new Set([...top.map((n) => n.id), ...rootChildren.map((n) => n.id)]);
     assert.ok(ids.has(parentSubsystem.id), 'selected subsystem should be visible');
     assert.ok(ids.has(catalog.id), 'catalog from descendant Content should be visible');
   });

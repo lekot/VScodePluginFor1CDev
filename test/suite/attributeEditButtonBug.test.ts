@@ -141,6 +141,10 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
 
     (provider as any).currentNode = node;
 
+    // Stabilize: avoid opening the real webview panel during this unit-level test.
+    // handleEditTypeMessage awaits typeEditorProvider.show(), so it must resolve quickly.
+    (typeEditorProvider as any).show = async () => null;
+
     // Try to handle editType message
     const handleMessage = (provider as any).handleMessage.bind(provider);
     

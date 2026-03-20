@@ -51,6 +51,12 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     typeEditorProvider.dispose();
   });
 
+  function extractScript(html: string): string {
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
+    assert.ok(scriptMatch, 'Script section should exist');
+    return scriptMatch![1];
+  }
+
   /**
    * Test 2.1: Editor opens and displays type configuration correctly
    * EXPECTED: PASS on unfixed code
@@ -71,19 +77,14 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify editor renders correctly
-    assert.ok(
-      html.includes('value="primitive" checked'),
-      'Primitive category should be selected'
-    );
-    assert.ok(
-      html.includes('id="config-primitive"'),
-      'Primitive config section should exist'
-    );
-    assert.ok(
-      html.includes('id="preview-value"'),
-      'Preview section should exist'
-    );
+    // Verify editor renders correctly (current UI is tree-based, no radio category controls).
+    assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
+    assert.ok(html.includes('String(100)'), 'Preview should include the current primitive qualifier formatting');
+
+    const script = extractScript(html);
+    assert.ok(script.includes('primitive:string'), 'SelectedIds should include primitive:string');
+    assert.ok(script.includes('"length":100'), 'Qualifier state should include string length');
+    assert.ok(script.includes('"allowedLength":"Variable"'), 'Qualifier state should include allowedLength');
   });
 
   /**
@@ -102,23 +103,14 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify all category options exist
-    assert.ok(
-      html.includes('value="primitive"'),
-      'Primitive category option should exist'
-    );
-    assert.ok(
-      html.includes('value="reference"'),
-      'Reference category option should exist'
-    );
-    assert.ok(
-      html.includes('value="composite"'),
-      'Composite category option should exist'
-    );
-    assert.ok(
-      html.includes('type="radio" name="category"'),
-      'Category options should be radio buttons'
-    );
+    // Current UI represents categories as:
+    // - primitives inside the type tree
+    // - reference kinds as tree groups (even when referenceableObjects is empty)
+    // - composite via the composite checkbox
+    assert.ok(html.includes('primitive:string'), 'Type tree must include primitive nodes');
+    assert.ok(html.includes('group:CatalogRef'), 'Type tree must include reference groups');
+    assert.ok(html.includes('group:DocumentRef'), 'Type tree must include reference groups');
+    assert.ok(html.includes('id="composite-cb"'), 'Composite checkbox must exist');
   });
 
   /**
@@ -141,15 +133,11 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify all primitive type options are available
-    const primitiveTypeMatch = html.match(/<select id="primitive-type">([\s\S]*?)<\/select>/);
-    assert.ok(primitiveTypeMatch, 'Primitive type selector should exist');
-
-    const selectContent = primitiveTypeMatch![1];
-    assert.ok(selectContent.includes('value="string"'), 'String option should be available');
-    assert.ok(selectContent.includes('value="number"'), 'Number option should be available');
-    assert.ok(selectContent.includes('value="boolean"'), 'Boolean option should be available');
-    assert.ok(selectContent.includes('value="date"'), 'Date option should be available');
+    assert.ok(html.includes('id="type-tree"'), 'Type tree should exist');
+    assert.ok(html.includes('primitive:string'), 'Tree data must include primitive:string');
+    assert.ok(html.includes('primitive:number'), 'Tree data must include primitive:number');
+    assert.ok(html.includes('primitive:boolean'), 'Tree data must include primitive:boolean');
+    assert.ok(html.includes('primitive:date'), 'Tree data must include primitive:date');
   });
 
   /**
@@ -196,7 +184,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
 
     // Verify Save button exists
     assert.ok(html.includes('id="save-btn"'), 'Save button should exist');
-    assert.ok(html.includes('Save'), 'Save button should have "Save" text');
+    assert.ok(html.includes('Сохранить'), 'Save button should have "Сохранить" text');
   });
 
   /**
@@ -219,27 +207,12 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify reference configuration is displayed
-    assert.ok(
-      html.includes('value="reference" checked'),
-      'Reference category should be selected'
-    );
-    assert.ok(
-      html.includes('id="config-reference"'),
-      'Reference config section should exist'
-    );
-    assert.ok(
-      html.includes('id="reference-kind"'),
-      'Reference kind selector should exist'
-    );
-    assert.ok(
-      html.includes('id="reference-object"'),
-      'Reference object input should exist'
-    );
-    assert.ok(
-      html.includes('value="Products"'),
-      'Object name should be populated'
-    );
+    // Verify reference configuration is displayed (current UI uses JS selection state)
+    assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
+    assert.ok(html.includes('CatalogRef.Products'), 'Preview should show current reference type');
+
+    const script = extractScript(html);
+    assert.ok(script.includes('ref:CatalogRef:Products'), 'SelectedIds should include ref:CatalogRef:Products');
   });
 
   /**
@@ -272,18 +245,10 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify composite configuration is displayed
+    // Verify composite configuration is displayed (current UI uses composite checkbox)
     assert.ok(
-      html.includes('value="composite" checked'),
-      'Composite category should be selected'
-    );
-    assert.ok(
-      html.includes('id="config-composite"'),
-      'Composite config section should exist'
-    );
-    assert.ok(
-      html.includes('id="composite-list"'),
-      'Composite list should exist'
+      html.includes('id="composite-cb" checked'),
+      'Composite checkbox should be checked for multi-type definitions'
     );
 
     // Verify preview shows all types
@@ -364,16 +329,18 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     
     // Test primitive type state
     const primitiveHtml = getWebviewContent(primitiveType);
+    const primitiveScript = extractScript(primitiveHtml);
     assert.ok(
-      primitiveHtml.includes('value="primitive" checked'),
-      'Primitive state should be tracked'
+      primitiveScript.includes('primitive:string'),
+      'Primitive state should be tracked via selectedIds'
     );
 
     // Test reference type state
     const referenceHtml = getWebviewContent(referenceType);
+    const referenceScript = extractScript(referenceHtml);
     assert.ok(
-      referenceHtml.includes('value="reference" checked'),
-      'Reference state should be tracked'
+      referenceScript.includes('ref:CatalogRef:Items'),
+      'Reference state should be tracked via selectedIds'
     );
   });
 
@@ -447,16 +414,30 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
 
-        // Property: The editor should display correctly
-        const hasPrimitiveChecked = html.includes('value="primitive" checked');
-        const hasPrimitiveActive = html.includes('id="config-primitive"');
-        const hasTypeSelector = html.includes('id="primitive-type"');
+        const script = extractScript(html);
         const hasPreview = html.includes('id="preview-value"');
+        const hasSelected = script.includes(`primitive:${typeEntry.kind}`);
         const hasSaveButton = html.includes('id="save-btn"');
         const hasCancelButton = html.includes('id="cancel-btn"');
 
-        return hasPrimitiveChecked && hasPrimitiveActive && hasTypeSelector && 
-               hasPreview && hasSaveButton && hasCancelButton;
+        if (typeEntry.kind === 'string') {
+          const length = (typeEntry.qualifiers as any).length;
+          return hasPreview && hasSelected && hasSaveButton && hasCancelButton && html.includes(`String(${length})`);
+        }
+        if (typeEntry.kind === 'number') {
+          const digits = (typeEntry.qualifiers as any).digits;
+          const fractionDigits = (typeEntry.qualifiers as any).fractionDigits;
+          return hasPreview && hasSelected && hasSaveButton && hasCancelButton && html.includes(`Number(${digits},${fractionDigits})`);
+        }
+        if (typeEntry.kind === 'boolean') {
+          return hasPreview && hasSelected && hasSaveButton && hasCancelButton && html.includes('Boolean');
+        }
+        if (typeEntry.kind === 'date') {
+          const dateFractions = (typeEntry.qualifiers as any).dateFractions;
+          return hasPreview && hasSelected && hasSaveButton && hasCancelButton && html.includes(dateFractions);
+        }
+
+        return false;
       }),
       { numRuns: 50 }
     );
@@ -477,7 +458,16 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         'ChartOfAccountsRef' as const,
         'ChartOfCalculationTypesRef' as const
       ),
-      objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.includes('"') && !s.includes('<'))
+      objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(
+        (s) =>
+          !s.includes('"') &&
+          !s.includes("'") &&
+          !s.includes('<') &&
+          !s.includes('&') &&
+          !s.includes('>') &&
+          !s.includes('\\') &&
+          s.trim().length > 0
+      )
     });
 
     fc.assert(
@@ -493,17 +483,13 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
 
-        // Property: The editor should display reference type correctly
-        const hasReferenceChecked = html.includes('value="reference" checked');
-        const hasReferenceConfig = html.includes('id="config-reference"');
-        const hasReferenceKind = html.includes('id="reference-kind"');
-        const hasObjectName = html.includes('id="reference-object"') && 
-                              html.includes(`value="${refType.objectName}"`);
+        const script = extractScript(html);
         const hasSaveButton = html.includes('id="save-btn"');
         const hasCancelButton = html.includes('id="cancel-btn"');
+        const hasPreview = html.includes('id="preview-value"') && html.includes(`${refType.referenceKind}.${refType.objectName}`);
+        const hasSelected = script.includes(`ref:${refType.referenceKind}:${refType.objectName}`);
 
-        return hasReferenceChecked && hasReferenceConfig && hasReferenceKind && 
-               hasObjectName && hasSaveButton && hasCancelButton;
+        return hasPreview && hasSelected && hasSaveButton && hasCancelButton;
       }),
       { numRuns: 30 }
     );
@@ -555,16 +541,13 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
 
-        // Property: The editor should display composite type correctly
-        const hasCompositeChecked = html.includes('value="composite" checked');
-        const hasCompositeActive = html.includes('id="config-composite"');
+        const hasCompositeChecked = html.includes('id="composite-cb" checked');
         const hasPreview = html.includes('id="preview-value"');
         const hasPipeSeparator = html.includes('|'); // Multiple types separated by |
         const hasSaveButton = html.includes('id="save-btn"');
         const hasCancelButton = html.includes('id="cancel-btn"');
 
-        return hasCompositeChecked && hasCompositeActive && hasPreview && 
-               hasPipeSeparator && hasSaveButton && hasCancelButton;
+        return hasCompositeChecked && hasPreview && hasPipeSeparator && hasSaveButton && hasCancelButton;
       }),
       { numRuns: 30 }
     );
@@ -605,7 +588,9 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
             kind: fc.constant('reference' as const),
             referenceType: fc.record({
               referenceKind: fc.constantFrom('CatalogRef' as const, 'DocumentRef' as const),
-              objectName: fc.string({ minLength: 1, maxLength: 20 }).filter(s => !s.includes('"'))
+              objectName: fc.string({ minLength: 1, maxLength: 20 }).filter(
+                (s) => !s.includes('"') && !s.includes('<') && !s.includes('&') && !s.includes('>') && !s.includes('\\')
+              )
             })
           }),
           { minLength: 1, maxLength: 1 }

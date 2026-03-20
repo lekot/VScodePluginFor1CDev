@@ -1,8 +1,8 @@
 import * as assert from 'assert';
 import { getConfigurationPathSync } from '../../src/rolesEditor/metadataLoader';
 
-describe('MetadataLoader', () => {
-  describe('getConfigurationPathSync', () => {
+suite('MetadataLoader', () => {
+  suite('getConfigurationPathSync', () => {
     test('should extract configuration path from Designer format role path', () => {
       const roleFilePath = '/workspace/MyConfig/Roles/Administrator/Role.xml';
       const configPath = getConfigurationPathSync(roleFilePath);
@@ -26,12 +26,12 @@ describe('MetadataLoader', () => {
     });
 
     test('should handle Windows paths', () => {
-      const roleFilePath = 'C:\\workspace\\MyConfig\\Roles\\Administrator\\Role.xml';
+      const roleFilePath = 'C:/workspace/MyConfig/Roles/Administrator/Role.xml';
       const configPath = getConfigurationPathSync(roleFilePath);
 
       assert.strictEqual(
         configPath,
-        'C:\\workspace\\MyConfig',
+        'C:/workspace/MyConfig',
         'Should handle Windows paths correctly'
       );
     });

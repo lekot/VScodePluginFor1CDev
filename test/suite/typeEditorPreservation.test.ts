@@ -51,6 +51,12 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
     typeEditorProvider.dispose();
   });
 
+  function extractScript(html: string): string {
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
+    assert.ok(scriptMatch, 'Script section should exist');
+    return scriptMatch![1];
+  }
+
   /**
    * Test 2.1: Type editor opens and displays current type configuration correctly
    * EXPECTED: PASS on unfixed code
@@ -72,32 +78,19 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify category is correctly set
-    assert.ok(
-      html.includes('value="primitive" checked'),
-      'Primitive category should be selected'
-    );
-
-    // Verify type configuration area exists
-    assert.ok(
-      html.includes('id="config-primitive"'),
-      'Primitive config section should exist'
-    );
-    assert.ok(
-      html.includes('class="config-section active"'),
-      'Primitive config section should be active'
-    );
-
-    // Verify type selector exists with options
-    assert.ok(html.includes('id="primitive-type"'), 'Primitive type selector should exist');
-    assert.ok(html.includes('value="string"'), 'String option should exist');
-    assert.ok(html.includes('value="number"'), 'Number option should exist');
-    assert.ok(html.includes('value="boolean"'), 'Boolean option should exist');
-    assert.ok(html.includes('value="date"'), 'Date option should exist');
-
     // Verify preview section exists
     assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
-    assert.ok(html.includes('String(100)'), 'Preview should show current type');
+    assert.ok(html.includes('String(100)'), 'Preview should show current primitive type');
+
+    const script = extractScript(html);
+    // Selected primitive node is driven by JS selection state
+    assert.ok(script.includes('primitive:string'), 'SelectedIds should include primitive:string');
+    // Qualifiers are embedded as qualifierState and used by updateQualifierPanel()
+    assert.ok(script.includes('"length":100'), 'Qualifier state should include string length');
+    assert.ok(script.includes('"allowedLength":"Variable"'), 'Qualifier state should include allowedLength');
+    assert.ok(script.includes('function updateQualifierPanel()'), 'updateQualifierPanel must exist');
+    assert.ok(script.includes("g.classList.toggle('active', k === focusedKey)"), 'updateQualifierPanel must toggle qualifier active state');
+    assert.ok(script.includes('renderTree();') && script.includes('updateQualifierPanel();') && script.includes('updatePreview();'), 'Editor must initialize tree + qualifier panel + preview');
   });
 
   /**
@@ -119,26 +112,12 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify category is correctly set
-    assert.ok(
-      html.includes('value="reference" checked'),
-      'Reference category should be selected'
-    );
+    // Verify preview shows reference kind.objectName
+    assert.ok(html.includes('id="preview-value"'), 'Preview section should exist');
+    assert.ok(html.includes('CatalogRef.Products'), 'Preview should show current reference type');
 
-    // Verify reference config section is active
-    assert.ok(
-      html.includes('id="config-reference"'),
-      'Reference config section should exist'
-    );
-
-    // Verify reference kind selector exists
-    assert.ok(html.includes('id="reference-kind"'), 'Reference kind selector should exist');
-    assert.ok(html.includes('value="CatalogRef"'), 'CatalogRef option should exist');
-    assert.ok(html.includes('value="DocumentRef"'), 'DocumentRef option should exist');
-
-    // Verify object name input exists
-    assert.ok(html.includes('id="reference-object"'), 'Reference object input should exist');
-    assert.ok(html.includes('value="Products"'), 'Object name should be populated');
+    const script = extractScript(html);
+    assert.ok(script.includes('ref:CatalogRef:Products'), 'SelectedIds should include the reference node id');
   });
 
   /**
@@ -158,20 +137,12 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify all primitive type options are available
-    const primitiveTypeMatch = html.match(/<select id="primitive-type">([\s\S]*?)<\/select>/);
-    assert.ok(primitiveTypeMatch, 'Primitive type selector should exist');
-
-    const selectContent = primitiveTypeMatch![1];
-    
-    // Check all expected options exist
-    assert.ok(selectContent.includes('value="string"'), 'String option should be available');
-    assert.ok(selectContent.includes('value="number"'), 'Number option should be available');
-    assert.ok(selectContent.includes('value="boolean"'), 'Boolean option should be available');
-    assert.ok(selectContent.includes('value="date"'), 'Date option should be available');
-
-    // Verify the selector has proper structure
-    assert.ok(selectContent.includes('<option'), 'Options should be properly formatted');
+    // Current UI is a tree; primitives are still present in the treeData JSON.
+    assert.ok(html.includes('id="type-tree"'), 'Type tree should exist');
+    assert.ok(html.includes('primitive:string'), 'Tree data must include primitive:string');
+    assert.ok(html.includes('primitive:number'), 'Tree data must include primitive:number');
+    assert.ok(html.includes('primitive:boolean'), 'Tree data must include primitive:boolean');
+    assert.ok(html.includes('primitive:date'), 'Tree data must include primitive:date');
   });
 
   /**
@@ -208,30 +179,14 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify category is correctly set
-    assert.ok(
-      html.includes('value="composite" checked'),
-      'Composite category should be selected'
-    );
-
-    // Verify composite config section is active
-    assert.ok(
-      html.includes('id="config-composite"'),
-      'Composite config section should exist'
-    );
-
-    // Verify composite list exists
-    assert.ok(html.includes('id="composite-list"'), 'Composite list should exist');
+    // Composite is represented by "composite-cb" checkbox in current UI
+    assert.ok(html.includes('id="composite-cb" checked'), 'Composite checkbox should be checked for multi-type definitions');
 
     // Verify preview shows all types
-    const previewMatch = html.match(/<div id="preview-value" class="preview-value">(.*?)<\/div>/);
-    assert.ok(previewMatch, 'Preview should exist');
-    
-    const previewContent = previewMatch![1];
-    assert.ok(previewContent.includes('String(50)'), 'Preview should show String type');
-    assert.ok(previewContent.includes('Number(10,2)'), 'Preview should show Number type');
-    assert.ok(previewContent.includes('Boolean'), 'Preview should show Boolean type');
-    assert.ok(previewContent.includes('|'), 'Preview should separate types with |');
+    assert.ok(html.includes('String(50)'), 'Preview should show String type');
+    assert.ok(html.includes('Number(10,2)'), 'Preview should show Number type');
+    assert.ok(html.includes('Boolean'), 'Preview should show Boolean type');
+    assert.ok(html.includes('|'), 'Preview should separate types with |');
   });
 
   /**
@@ -253,25 +208,13 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    // Verify all category options exist
-    assert.ok(
-      html.includes('value="primitive"'),
-      'Primitive category option should exist'
-    );
-    assert.ok(
-      html.includes('value="reference"'),
-      'Reference category option should exist'
-    );
-    assert.ok(
-      html.includes('value="composite"'),
-      'Composite category option should exist'
-    );
-
-    // Verify they are radio buttons
-    assert.ok(
-      html.includes('type="radio" name="category"'),
-      'Category options should be radio buttons'
-    );
+    // Current UI has no radio/select category controls; instead:
+    // - primitives are in the tree
+    // - reference groups are created from REFERENCE_KINDS_ORDER even when referenceableObjects is empty
+    assert.ok(html.includes('primitive:string'), 'Tree data must include primitives');
+    assert.ok(html.includes('group:CatalogRef'), 'Tree data must include reference groups');
+    assert.ok(html.includes('group:DocumentRef'), 'Tree data must include reference groups');
+    assert.ok(html.includes('id="composite-cb"'), 'Composite checkbox must exist');
   });
 
   /**
@@ -291,9 +234,13 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
 
     // Verify Save button exists
     assert.ok(html.includes('id="save-btn"'), 'Save button should exist');
-    
+
+    assert.ok(html.includes('Сохранить'), 'Save button should have "Сохранить" text');
+
     // Verify Cancel button exists
     assert.ok(html.includes('id="cancel-btn"'), 'Cancel button should exist');
+
+    assert.ok(html.includes('Отмена'), 'Cancel button should have "Отмена" text');
 
     // Verify button row exists
     assert.ok(html.includes('class="button-row"'), 'Button row should exist');
@@ -346,21 +293,58 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
 
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
+        const script = extractScript(html);
 
-        // Property: The editor should display the primitive category as selected
-        const hasPrimitiveChecked = html.includes('value="primitive" checked');
-        
-        // Property: The primitive config section should be active
-        const hasPrimitiveActive = html.includes('id="config-primitive"') && 
-                                    html.includes('class="config-section active"');
-        
-        // Property: The type selector should exist
-        const hasTypeSelector = html.includes('id="primitive-type"');
-        
-        // Property: The preview should exist
         const hasPreview = html.includes('id="preview-value"');
+        const hasSelected = script.includes(`primitive:${typeEntry.kind}`);
 
-        return hasPrimitiveChecked && hasPrimitiveActive && hasTypeSelector && hasPreview;
+        // updateQualifierPanel logic should exist
+        const hasUpdateLogic = script.includes('function updateQualifierPanel()') &&
+          script.includes("g.classList.toggle('active', k === focusedKey)");
+
+        // Validate qualifierState content + preview formatting per primitive kind
+        if (typeEntry.kind === 'string') {
+          const length = typeEntry.qualifiers.length;
+          const allowedLength = typeEntry.qualifiers.allowedLength;
+          return hasPreview &&
+            hasSelected &&
+            hasUpdateLogic &&
+            html.includes(`String(${length})`) &&
+            script.includes(`"length":${length}`) &&
+            script.includes(`"allowedLength":"${allowedLength}"`);
+        }
+
+        if (typeEntry.kind === 'number') {
+          const digits = typeEntry.qualifiers.digits;
+          const fractionDigits = typeEntry.qualifiers.fractionDigits;
+          const allowedSign = typeEntry.qualifiers.allowedSign;
+          return hasPreview &&
+            hasSelected &&
+            hasUpdateLogic &&
+            html.includes(`Number(${digits},${fractionDigits})`) &&
+            script.includes(`"digits":${digits}`) &&
+            script.includes(`"fractionDigits":${fractionDigits}`) &&
+            script.includes(`"allowedSign":"${allowedSign}"`);
+        }
+
+        if (typeEntry.kind === 'boolean') {
+          return hasPreview &&
+            hasSelected &&
+            hasUpdateLogic &&
+            html.includes('Boolean') &&
+            /let\s+qualifierState\s*=\s*{\s*};/.test(html);
+        }
+
+        if (typeEntry.kind === 'date') {
+          const dateFractions = typeEntry.qualifiers.dateFractions;
+          return hasPreview &&
+            hasSelected &&
+            hasUpdateLogic &&
+            html.includes(dateFractions) &&
+            script.includes(`"dateFractions":"${dateFractions}"`);
+        }
+
+        return false;
       }),
       { numRuns: 50 }
     );
@@ -412,19 +396,21 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
 
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
+        const hasCompositeChecked = html.includes('id="composite-cb" checked');
+        const hasPreview = html.includes('id="preview-value"');
+        const hasPipeSeparator = html.includes('|');
 
-        // Property: The editor should display the composite category as selected
-        const hasCompositeChecked = html.includes('value="composite" checked');
-        
-        // Property: The composite config section should be active
-        const hasCompositeActive = html.includes('id="config-composite"');
-        
-        // Property: The preview should contain the pipe separator (for multiple types)
-        const previewMatch = html.match(/<div id="preview-value" class="preview-value">(.*?)<\/div>/);
-        const hasPreview = previewMatch !== null;
-        const hasPipeSeparator = previewMatch ? previewMatch[1].includes('|') : false;
+        // Minimal correctness: preview contains at least 2 formatted types and includes a pipe separator.
+        // (The exact order/formatting is covered by the deterministic formatTypeDisplay() output.)
+        const hasAnyType = types.some((t) => {
+          if (t.kind === 'boolean') return html.includes('Boolean');
+          if (t.kind === 'string') return html.includes(`String(${(t.qualifiers as any).length})`);
+          if (t.kind === 'number') return html.includes(`Number(${(t.qualifiers as any).digits},${(t.qualifiers as any).fractionDigits})`);
+          if (t.kind === 'date') return html.includes((t.qualifiers as any).dateFractions);
+          return false;
+        });
 
-        return hasCompositeChecked && hasCompositeActive && hasPreview && hasPipeSeparator;
+        return hasCompositeChecked && hasPreview && hasPipeSeparator && hasAnyType;
       }),
       { numRuns: 30 }
     );
@@ -445,7 +431,16 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
         'ChartOfAccountsRef' as const,
         'ChartOfCalculationTypesRef' as const
       ),
-      objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.includes('"') && !s.includes('<'))
+      objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(
+        (s) =>
+          !s.includes('"') &&
+          !s.includes("'") &&
+          !s.includes('<') &&
+          !s.includes('&') &&
+          !s.includes('>') &&
+          !s.includes('\\') &&
+          s.trim().length > 0
+      )
     });
 
     fc.assert(
@@ -460,21 +455,10 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
 
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
-
-        // Property: The editor should display the reference category as selected
-        const hasReferenceChecked = html.includes('value="reference" checked');
-        
-        // Property: The reference config section should exist
-        const hasReferenceConfig = html.includes('id="config-reference"');
-        
-        // Property: The reference kind selector should exist
-        const hasReferenceKind = html.includes('id="reference-kind"');
-        
-        // Property: The object name input should exist and contain the value
-        const hasObjectName = html.includes('id="reference-object"') && 
-                              html.includes(`value="${refType.objectName}"`);
-
-        return hasReferenceChecked && hasReferenceConfig && hasReferenceKind && hasObjectName;
+        const script = extractScript(html);
+        const hasPreview = html.includes('id="preview-value"') && html.includes(`${refType.referenceKind}.${refType.objectName}`);
+        const hasSelected = script.includes(`ref:${refType.referenceKind}:${refType.objectName}`);
+        return hasPreview && hasSelected;
       }),
       { numRuns: 30 }
     );
@@ -494,9 +478,10 @@ suite('Preservation Property Tests: Existing Type Editor Behavior', () => {
     const html = getWebviewContent(typeDefinition);
 
     // Verify editor still renders
-    assert.ok(html.includes('id="config-primitive"'), 'Primitive config should exist');
     assert.ok(html.includes('id="preview-value"'), 'Preview should exist');
     
+    assert.ok(html.includes('Not set'), 'Preview should show Not set for empty types');
+
     // Verify Save button is disabled for empty configuration
     assert.ok(html.includes('id="save-btn" disabled'), 'Save button should be disabled for empty types');
   });

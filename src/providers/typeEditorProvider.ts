@@ -171,7 +171,10 @@ export class TypeEditorProvider {
     return [{ id: 'primitives', label: '', children: primitives }, ...refGroups];
   }
 
-  private getWebviewContent(typeDefinition: TypeDefinition, referenceableObjects: ReferenceableGroup[]): string {
+  private getWebviewContent(
+    typeDefinition: TypeDefinition,
+    referenceableObjects: ReferenceableGroup[] = []
+  ): string {
     const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
     const refGroupsJson = escapeJsonForScript(JSON.stringify(referenceableObjects));
     const initialComposite = typeDefinition.types.length > 1;
@@ -678,6 +681,8 @@ export class TypeEditorProvider {
       };
       this.resolvePromise(typeDefinition);
       this.resolvePromise = undefined;
+      // Ensure panel disposal doesn't attempt to resolve/reject a settled promise.
+      this.rejectPromise = undefined;
       Logger.info('Type editor: save applied, closing panel');
       if (this.panel) {
         const p = this.panel;
@@ -689,7 +694,12 @@ export class TypeEditorProvider {
 
   private async handleCancelMessage(): Promise<void> {
     Logger.info('Type editor: cancel applied, closing panel');
-    if (this.resolvePromise) {
+    // Cancellation should close the editor without treating it as a successful save.
+    if (this.rejectPromise) {
+      this.rejectPromise(new Error('Type editor cancelled'));
+      this.rejectPromise = undefined;
+      this.resolvePromise = undefined;
+    } else if (this.resolvePromise) {
       this.resolvePromise(null);
       this.resolvePromise = undefined;
     }

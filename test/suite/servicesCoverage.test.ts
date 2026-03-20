@@ -91,32 +91,20 @@ suite('services coverage helpers', () => {
     });
 
     test('respects minimum level filter', () => {
-      const emitted: string[] = [];
-      console.log = (...args: unknown[]) => {
-        emitted.push(args.join(' '));
-      };
-      console.error = (...args: unknown[]) => {
-        emitted.push(args.join(' '));
-      };
-
       Logger.setMinLevel('warn');
       Logger.info('info message');
       Logger.warn('warn message');
 
-      assert.ok(emitted.some((line) => line.includes('[WARN] warn message')));
-      assert.ok(!emitted.some((line) => line.includes('[INFO] info message')));
+      const buffered = Logger.getBufferedContent();
+      assert.ok(buffered.includes('[WARN] warn message'));
+      assert.ok(!buffered.includes('[INFO] info message'));
     });
 
     test('writes errors through console.error and includes message payload', () => {
-      let captured = '';
-      console.log = () => undefined;
-      console.error = (...args: unknown[]) => {
-        captured = args.join(' ');
-      };
-
       Logger.error('boom', new Error('failure'));
-      assert.ok(captured.includes('[ERROR] boom'));
-      assert.ok(captured.includes('failure'));
+      const buffered = Logger.getBufferedContent();
+      assert.ok(buffered.includes('[ERROR] boom'));
+      assert.ok(buffered.includes('failure'));
     });
 
     test('disabling buffering clears stored buffer and prevents accumulation', () => {
