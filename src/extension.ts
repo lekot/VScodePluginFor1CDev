@@ -25,7 +25,7 @@ import { FormEditorProvider } from './formEditor/formEditorProvider';
 import { getFormPaths } from './formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from './utils/configHelpers';
 import { initDesignerTemplateRepository } from './services/designerTemplateRepository';
-import { normalizeEmptyPlaceholderTree } from './utils/treeNormalization';
+import { ensureR6PlaceholdersForInstanceNode, normalizeEmptyPlaceholderTree } from './utils/treeNormalization';
 
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
@@ -33,6 +33,109 @@ function getSelectedNode(node?: TreeNode): TreeNode | undefined {
     return node;
   }
   return treeView?.selection?.[0];
+}
+
+/** Build a lightweight node so create operations can appear in the tree immediately. */
+function buildOptimisticCreatedNode(
+  target: TreeNode,
+  name: string,
+  ctx: { configPath: string; format: ConfigFormat }
+): TreeNode {
+  const trimmed = name.trim();
+  const parent = target.parent;
+  const isTypeFolder = parent?.type === MetadataType.Configuration;
+  if (isTypeFolder) {
+    const targetDir =
+      target.filePath ??
+      (ctx.format === ConfigFormat.Designer
+        ? path.join(ctx.configPath, target.id)
+        : path.join(ctx.configPath, 'src', target.id));
+    return {
+      id: `${target.id}.${trimmed}`,
+      name: trimmed,
+      type: target.type,
+      parent: target,
+      properties: {},
+      children: [],
+      filePath: path.join(targetDir, `${trimmed}.xml`),
+    };
+  }
+
+  if (target.type === MetadataType.Attribute) {
+    return {
+      id: `${target.id}.Attribute.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.Attribute,
+      parent: target,
+      properties: {
+        Name: trimmed,
+        Comment: '',
+        Type: 'String(50)',
+      },
+      children: [],
+      parentFilePath: target.parent?.filePath ?? target.parent?.parentFilePath,
+    };
+  }
+
+  if (target.type === MetadataType.TabularSection) {
+    return {
+      id: `${target.id}.TabularSection.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.TabularSection,
+      parent: target,
+      properties: {
+        Name: trimmed,
+        Comment: '',
+      },
+      children: [],
+      parentFilePath: target.parent?.filePath ?? target.parent?.parentFilePath,
+    };
+  }
+
+  if (target.type !== MetadataType.Configuration) {
+    // Object-level create defaults to Attribute in elementOperations.
+    return {
+      id: `${target.id}.Attribute.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.Attribute,
+      parent: target,
+      properties: {
+        Name: trimmed,
+        Comment: '',
+        Type: 'String(50)',
+      },
+      children: [],
+      parentFilePath: target.filePath ?? target.parentFilePath,
+    };
+  }
+
+  return {
+    id: `${target.id}.${trimmed}`,
+    name: trimmed,
+    type: MetadataType.Unknown,
+    parent: target,
+    properties: {},
+    children: [],
+  };
+}
+
+async function optimisticAppendCreatedNode(
+  target: TreeNode,
+  name: string,
+  ctx: { configPath: string; format: ConfigFormat }
+): Promise<void> {
+  const provider = treeDataProvider;
+  if (!provider) {return;}
+  const activeTarget = provider.resolveNodeForUi(target);
+  const trimmed = name.trim();
+  const existing = (activeTarget.children || []).some((c) => c.name === trimmed);
+  if (existing) {return;}
+
+  if (!activeTarget.children) {activeTarget.children = [];}
+  const created = buildOptimisticCreatedNode(activeTarget, trimmed, ctx);
+  ensureR6PlaceholdersForInstanceNode(created, ctx);
+  activeTarget.children.push(created);
+  provider.refresh(activeTarget);
 }
 
 let treeDataProvider: MetadataTreeDataProvider | null = null;
@@ -273,9 +376,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
       if (name === undefined || name.trim() === '') {return;}
       try {
-        await doCreateElement(target, name);
-        vscode.window.showInformationMessage(`Создан элемент: ${name.trim()}`);
-        await invalidateCacheAndReload(configPath);
+        const trimmedName = name.trim();
+        await doCreateElement(target, trimmedName);
+        await optimisticAppendCreatedNode(target, trimmedName, { configPath, format });
+        vscode.window.showInformationMessage(`Создан элемент: ${trimmedName}`);
+        void invalidateCacheAndReload(configPath).catch((err) => {
+          Logger.error('Background reload after create failed', err);
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);

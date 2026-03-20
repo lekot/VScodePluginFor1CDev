@@ -1214,6 +1214,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return this.nodeCache.get(id) || null;
   }
 
+  /** Resolve possibly stale node reference to active in-memory node. */
+  resolveNodeForUi(node: TreeNode): TreeNode {
+    return this.resolveActiveNode(node);
+  }
+
   /**
    * Find nodes by name (uses name index for fast lookup). For Stage 6 search.
    * @param query Normalized (e.g. lowercase) or exact name to match
