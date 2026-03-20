@@ -55,7 +55,7 @@ suite('Bug Condition Exploration: Primitive Type Qualifiers Not Displayed', () =
   });
 
   function extractScript(html: string): string {
-    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     return scriptMatch![1];
   }
