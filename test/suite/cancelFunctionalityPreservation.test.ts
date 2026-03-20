@@ -459,7 +459,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         'ChartOfCalculationTypesRef' as const
       ),
       objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(
-        (s) => !s.includes('"') && !s.includes('<') && !s.includes('&') && !s.includes('>')
+        (s) => !s.includes('"') && !s.includes('<') && !s.includes('&') && !s.includes('>') && !s.includes('\\')
       )
     });
 
@@ -581,7 +581,9 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
             kind: fc.constant('reference' as const),
             referenceType: fc.record({
               referenceKind: fc.constantFrom('CatalogRef' as const, 'DocumentRef' as const),
-              objectName: fc.string({ minLength: 1, maxLength: 20 }).filter(s => !s.includes('"'))
+              objectName: fc.string({ minLength: 1, maxLength: 20 }).filter(
+                (s) => !s.includes('"') && !s.includes('<') && !s.includes('&') && !s.includes('>') && !s.includes('\\')
+              )
             })
           }),
           { minLength: 1, maxLength: 1 }

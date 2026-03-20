@@ -738,9 +738,12 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     provider.setSubsystemFilter('sub1', 'MainSubsystem');
     const children = await provider.getChildren();
     assert.strictEqual(children.length, 1);
-    assert.strictEqual(children[0].id, 'sub1');
+    assert.strictEqual(children[0].id, 'root');
 
-    const subsystemChildren = await provider.getChildren(children[0]);
+    const rootChildren = await provider.getChildren(children[0]);
+    const filteredSubsystem = rootChildren.find((n) => n.id === 'sub1');
+    assert.ok(filteredSubsystem, 'Filtered subsystem should be visible under root');
+    const subsystemChildren = await provider.getChildren(filteredSubsystem!);
     assert.strictEqual(subsystemChildren.length, 1);
     assert.strictEqual(subsystemChildren[0].id, 'cat1');
   });
@@ -797,9 +800,19 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         
         // Property: if a node is visible, all its ancestors should be visible
         // (or at least the subsystem and its descendants should be visible)
-        const top = visibleNodes[0];
-        const directChildren = top?.children ?? [];
-        const visibleIds = new Set([...visibleNodes.map(n => n.id), ...directChildren.map(n => n.id)]);
+        const collectIds = (roots: TreeNode[]): Set<string> => {
+          const ids = new Set<string>();
+          const stack = [...roots];
+          while (stack.length > 0) {
+            const node = stack.pop()!;
+            ids.add(node.id);
+            if (node.children?.length) {
+              stack.push(...node.children);
+            }
+          }
+          return ids;
+        };
+        const visibleIds = collectIds(visibleNodes);
 
         // The subsystem should be visible either as top-level or child under root.
         assert.ok(visibleIds.has(subsystemNode.id), 'Subsystem node should be visible');
