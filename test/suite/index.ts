@@ -9,6 +9,16 @@ export function run(): Promise<void> {
     color: true,
   });
 
+  // Some test artifacts may still reference bdd-style globals (`describe`/`it`).
+  // With `ui: tdd` Mocha doesn't define them, so we alias to keep the runner robust.
+  const g = global as unknown as { describe?: unknown; suite?: unknown; it?: unknown; test?: unknown };
+  if (g && typeof g.describe === 'undefined' && typeof g.suite !== 'undefined') {
+    g.describe = g.suite;
+  }
+  if (g && typeof g.it === 'undefined' && typeof g.test !== 'undefined') {
+    g.it = g.test;
+  }
+
   const testsRoot = path.resolve(__dirname, '..');
 
   return new Promise((c, e) => {

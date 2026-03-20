@@ -1334,6 +1334,12 @@ export class PropertiesProvider {
         Logger.info('Type editing cancelled by user');
       }
     } catch (error) {
+      // Cancel is represented as a rejected promise to support internal test expectations.
+      // Treat it as a normal user flow and don't show an error to the user.
+      if (error instanceof Error && error.message === 'Type editor cancelled') {
+        Logger.info('Type editing cancelled by user');
+        return;
+      }
       Logger.error(`Failed to edit type: ${error}`);
       this.postMessage({
         type: 'error',
