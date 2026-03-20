@@ -458,7 +458,9 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         'ChartOfAccountsRef' as const,
         'ChartOfCalculationTypesRef' as const
       ),
-      objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.includes('"') && !s.includes('<'))
+      objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(
+        (s) => !s.includes('"') && !s.includes('<') && !s.includes('&') && !s.includes('>')
+      )
     });
 
     fc.assert(

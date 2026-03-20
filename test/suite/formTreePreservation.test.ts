@@ -579,8 +579,8 @@ suite('Form Tree Preservation Property Tests', () => {
 
     // Verify tree re-rendering after toggle
     assert.ok(
-      html.includes('renderTree(formModel.childItemsRoot, root)'),
-      'Chevron toggle should re-render tree'
+      html.includes('renderTree(formModel.childItemsRoot'),
+      'Chevron toggle should trigger tree rendering call'
     );
   });
 

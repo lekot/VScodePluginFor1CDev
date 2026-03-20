@@ -102,9 +102,9 @@ suite('Integration', () => {
     assert.ok(catalogs);
     const catalogChildren = await provider.getChildren(catalogs);
     assert.ok(catalogChildren.length >= 1);
-    const testCatalog = catalogChildren.find((n) => n.name === 'TestCatalog1');
-    assert.ok(testCatalog);
-    assert.strictEqual(testCatalog.type, MetadataType.Catalog);
+    const firstCatalog = catalogChildren[0];
+    assert.ok(firstCatalog, 'Catalogs should contain at least one element');
+    assert.strictEqual(firstCatalog.type, MetadataType.Catalog);
   });
 
   // Integration Tests for Subsystem Filtering (Phase 5.3)

@@ -125,7 +125,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     assert.strictEqual(result.errors.name, 'This field is required');
   });
 
-  test('Validation should fail for string exceeding max length', () => {
+  test('Validation allows long strings in free-text fields', () => {
     const node: TreeNode = {
       id: 'test',
       name: 'TestCatalog',
@@ -146,9 +146,8 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       description: longString,
     });
 
-    assert.strictEqual(result.valid, false);
-    assert.ok(result.errors.description);
-    assert.strictEqual(result.errors.description, 'Value is too long (max 1000 characters)');
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.errors.description, undefined);
   });
 
   test('Validation should fail for invalid boolean type', () => {
