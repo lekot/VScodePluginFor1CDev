@@ -126,4 +126,11 @@ jobs:
         run: npm ci
 
       - name: Run VSCode integration tests (headless)
-        run: npm run test:vscode:ci
+        run: |
+          set -o pipefail
+          npm run test:vscode:ci > vscode-tests.log 2>&1
+          status=$?
+          echo "---- VSCode integration test errors ----"
+          # Keep console output small; show only lines that look like failures/errors.
+          rg -n -i "(error|referenceerror|failed|coverage check failed|process completed with exit code)" vscode-tests.log || true
+          exit $status
