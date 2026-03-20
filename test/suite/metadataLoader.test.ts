@@ -1,8 +1,8 @@
 import * as assert from 'assert';
 import { getConfigurationPathSync } from '../../src/rolesEditor/metadataLoader';
 
-describe('MetadataLoader', () => {
-  describe('getConfigurationPathSync', () => {
+suite('MetadataLoader', () => {
+  suite('getConfigurationPathSync', () => {
     test('should extract configuration path from Designer format role path', () => {
       const roleFilePath = '/workspace/MyConfig/Roles/Administrator/Role.xml';
       const configPath = getConfigurationPathSync(roleFilePath);
