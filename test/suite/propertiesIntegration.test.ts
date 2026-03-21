@@ -1,5 +1,8 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { PropertiesProvider } from '../../src/providers/propertiesProvider';
+import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 
 suite('Properties Integration Test Suite', () => {
@@ -12,74 +15,53 @@ suite('Properties Integration Test Suite', () => {
     }
   });
 
-  test('Task 2: Tree view selection should trigger properties command', async function () {
-    this.timeout(5000);
+  function createMockContext(): vscode.ExtensionContext {
+    return {
+      subscriptions: [],
+      extensionPath: '',
+      extensionUri: vscode.Uri.file(''),
+      globalState: {} as any,
+      workspaceState: {} as any,
+      secrets: {} as any,
+      storageUri: undefined,
+      storagePath: undefined,
+      globalStorageUri: vscode.Uri.file(''),
+      globalStoragePath: '',
+      logUri: vscode.Uri.file(''),
+      logPath: '',
+      extensionMode: vscode.ExtensionMode.Test,
+      extension: {} as any,
+      environmentVariableCollection: {} as any,
+      languageModelAccessInformation: {} as any,
+      asAbsolutePath: (p: string) => p,
+    };
+  }
 
-    // Verify extension is active
-    assert.ok(extension);
-    assert.ok(extension!.isActive, 'Extension should be active');
+  function createNode(id: string, name: string, type: MetadataType): TreeNode {
+    return {
+      id,
+      name,
+      type,
+      properties: { Name: name },
+      children: [],
+      isExpanded: false,
+    };
+  }
 
-    // Verify showProperties command is registered
+  test('showProperties command is registered and executable with real node payload', async function () {
+    this.timeout(8000);
+    assert.ok(extension?.isActive, 'Extension should be active');
     const commands = await vscode.commands.getCommands(true);
     assert.ok(
       commands.includes('1c-metadata-tree.showProperties'),
       'showProperties command should be registered'
     );
-
-    // Create a test node
-    const testNode: TreeNode = {
-      id: 'test-catalog-1',
-      name: 'TestCatalog',
-      type: MetadataType.Catalog,
-      properties: {
-        name: 'TestCatalog',
-        synonym: 'Test Catalog',
-        hierarchical: false,
-      },
-      children: [],
-      isExpanded: false,
-    };
-
-    // Execute the showProperties command with the test node
-    // This simulates what happens when a tree item is selected
+    const testNode = createNode('test-catalog-1', 'TestCatalog', MetadataType.Catalog);
     await vscode.commands.executeCommand('1c-metadata-tree.showProperties', testNode);
-
-    // Wait a bit for the webview to be created
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // Verify that a webview panel was created
-    // Note: We can't directly access the panel, but we can verify the command executed without error
-    // In a real scenario, the panel would be visible in VS Code
-    assert.ok(true, 'Command executed successfully');
+    assert.ok(true, 'Command executed with concrete node payload');
   });
 
-  test('Task 2: Tree data provider should not have default file open command', async function () {
-    this.timeout(5000);
-
-    // Get the tree view
-    const treeView = vscode.window.createTreeView('1c-metadata-tree', {
-      treeDataProvider: {
-        getTreeItem: (element: TreeNode) => {
-          const treeItem = new vscode.TreeItem(element.name);
-          // Verify that no command is set for opening files
-          assert.strictEqual(
-            treeItem.command,
-            undefined,
-            'TreeItem should not have a default command'
-          );
-          return treeItem;
-        },
-        getChildren: () => Promise.resolve([]),
-      },
-    });
-
-    treeView.dispose();
-  });
-
-  test('Task 2: openXML command should be registered for context menu', async function () {
-    this.timeout(5000);
-
-    // Verify openXML command is registered
+  test('openXML command remains registered for explicit context action', async () => {
     const commands = await vscode.commands.getCommands(true);
     assert.ok(
       commands.includes('1c-metadata-tree.openXML'),
@@ -87,68 +69,40 @@ suite('Properties Integration Test Suite', () => {
     );
   });
 
-  test('Task 2: Properties panel should display node information', async function () {
-    this.timeout(5000);
+  test('provider reuses single panel and updates payload for next selected node', async function () {
+    this.timeout(8000);
+    const mockContext = createMockContext();
+    const treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    const typeEditorProvider = new TypeEditorProvider(mockContext);
+    const provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
 
-    // Create a test node with various property types
-    const testNode: TreeNode = {
-      id: 'test-document-1',
-      name: 'TestDocument',
-      type: MetadataType.Document,
-      properties: {
-        name: 'TestDocument',
-        synonym: 'Test Document',
-        numberLength: 9,
-        numberPeriodicity: 'Year',
-        checkUnique: true,
+    let panelCreateCount = 0;
+    const fakePanel = {
+      reveal: () => undefined,
+      onDidDispose: () => ({ dispose: () => undefined }),
+      webview: {
+        html: '',
+        onDidReceiveMessage: () => ({ dispose: () => undefined }),
+        postMessage: async () => true,
       },
-      children: [],
-      isExpanded: false,
+      dispose: () => undefined,
+    } as unknown as vscode.WebviewPanel;
+
+    (provider as any).createPanel = () => {
+      panelCreateCount += 1;
+      return fakePanel;
     };
 
-    // Execute the showProperties command
-    await vscode.commands.executeCommand('1c-metadata-tree.showProperties', testNode);
+    const node1 = createNode('test-catalog-1', 'Catalog1', MetadataType.Catalog);
+    const node2 = createNode('test-catalog-2', 'Catalog2', MetadataType.Catalog);
+    await provider.showProperties(node1);
+    await provider.showProperties(node2);
 
-    // Wait for the webview to be created
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // The properties panel should be created and display the node's properties
-    // We can't directly inspect the webview content in tests, but we verify the command succeeds
-    assert.ok(true, 'Properties panel command executed successfully');
-  });
-
-  test('Task 2: Multiple selections should reuse the same panel (singleton pattern)', async function () {
-    this.timeout(5000);
-
-    // Create multiple test nodes
-    const node1: TreeNode = {
-      id: 'test-catalog-1',
-      name: 'Catalog1',
-      type: MetadataType.Catalog,
-      properties: { name: 'Catalog1' },
-      children: [],
-      isExpanded: false,
-    };
-
-    const node2: TreeNode = {
-      id: 'test-catalog-2',
-      name: 'Catalog2',
-      type: MetadataType.Catalog,
-      properties: { name: 'Catalog2' },
-      children: [],
-      isExpanded: false,
-    };
-
-    // Show properties for first node
-    await vscode.commands.executeCommand('1c-metadata-tree.showProperties', node1);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    // Show properties for second node (should reuse the same panel)
-    await vscode.commands.executeCommand('1c-metadata-tree.showProperties', node2);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    // Both commands should execute successfully
-    // The singleton pattern ensures only one panel exists
-    assert.ok(true, 'Multiple selections handled correctly');
+    assert.strictEqual(panelCreateCount, 1, 'Properties panel should be singleton and reused');
+    assert.ok(
+      fakePanel.webview.html.includes('Catalog2'),
+      'Reused panel should be refreshed with the currently selected node payload'
+    );
+    provider.dispose();
   });
 });

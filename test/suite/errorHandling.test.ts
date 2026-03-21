@@ -131,6 +131,58 @@ suite('Error Handling Test Suite', () => {
     }
   });
 
+  test('XMLWriter writeProperties keeps source intact and removes backup on failed write', async () => {
+    const testPath = path.join(fixturesPath, 'temp-atomic-write-failure.xml');
+    const originalXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject>
+  <Properties>
+    <Name>AtomicTest</Name>
+    <Comment>Original Comment</Comment>
+  </Properties>
+</MetaDataObject>`;
+    await fs.promises.writeFile(testPath, originalXml, 'utf-8');
+
+    const originalWriteFile = fs.promises.writeFile;
+    const calls: string[] = [];
+    const targetBackup = `${testPath}.bak`;
+
+    try {
+      (fs.promises as any).writeFile = async (
+        filePath: fs.PathLike,
+        data: string | NodeJS.ArrayBufferView,
+        options?: any
+      ) => {
+        const normalized = String(filePath);
+        calls.push(normalized);
+        if (normalized === testPath && calls.filter((p) => p === testPath).length === 1) {
+          throw new Error('Simulated disk full condition');
+        }
+        return originalWriteFile.call(fs.promises, filePath, data, options);
+      };
+
+      await assert.rejects(
+        async () => {
+          await XMLWriter.writeProperties(testPath, { Name: 'ChangedName' });
+        },
+        (error: Error) =>
+          /Unable to write to file\. Check file permissions and disk space\./.test(error.message),
+        'Expected actionable write failure message'
+      );
+
+      const afterContent = await fs.promises.readFile(testPath, 'utf-8');
+      assert.strictEqual(afterContent, originalXml, 'Original XML content must be restored after failed write');
+      assert.strictEqual(fs.existsSync(targetBackup), false, 'Temporary backup artifact must be cleaned up');
+    } finally {
+      (fs.promises as any).writeFile = originalWriteFile;
+      if (fs.existsSync(testPath)) {
+        await fs.promises.unlink(testPath);
+      }
+      if (fs.existsSync(targetBackup)) {
+        await fs.promises.unlink(targetBackup);
+      }
+    }
+  });
+
   test('XMLWriter should include file path in write error messages', async () => {
     const invalidPath = '/invalid/path/that/does/not/exist/file.xml';
 

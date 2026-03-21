@@ -9,12 +9,13 @@ async function main() {
   try {
     const extensionDevelopmentPath = path.resolve(__dirname, '../../');
     const extensionTestsPath = path.resolve(__dirname, './suite/smoke/index');
-    const workspaceFolder = path.resolve(extensionDevelopmentPath, 'structure_backup');
+    const workspaceFolder = path.resolve(extensionDevelopmentPath, 'test/fixtures/designer-config');
+    const workspaceUri = `file:///${workspaceFolder.replace(/\\/g, '/')}`;
 
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
-      launchArgs: [workspaceFolder],
+      launchArgs: ['--folder-uri', workspaceUri],
     });
   } catch (err) {
     console.error('Smoke tests failed');
