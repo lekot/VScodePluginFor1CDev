@@ -43,6 +43,31 @@ export class RolesRightsEditorProvider {
   }
 
   /**
+   * HTML is not emitted by tsc; integration tests compile to `out/src/rolesEditor/*.js` without copying the template.
+   * Production VSIX places it next to the JS under `dist/rolesEditor/`. Try common locations.
+   */
+  private resolveRolesEditorWebviewHtmlPath(): string {
+    const nextToCompiled = path.join(__dirname, 'rolesEditorWebview.html');
+    const candidates: string[] = [nextToCompiled];
+    if (this.context.extensionPath) {
+      candidates.push(
+        path.join(this.context.extensionPath, 'dist', 'rolesEditor', 'rolesEditorWebview.html'),
+        path.join(this.context.extensionPath, 'src', 'rolesEditor', 'rolesEditorWebview.html')
+      );
+    }
+    candidates.push(
+      path.join(__dirname, '..', '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html'),
+      path.join(__dirname, '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html')
+    );
+    for (const p of candidates) {
+      if (p && fs.existsSync(p)) {
+        return p;
+      }
+    }
+    return nextToCompiled;
+  }
+
+  /**
    * Open the rights editor for a specific role file
    * @param roleFilePath Path to the Role.xml file
    * @param configPath Optional configuration path - if provided, skips the search for configuration root
@@ -167,9 +192,7 @@ export class RolesRightsEditorProvider {
       return this.getErrorHtml('No role model loaded');
     }
 
-    // Read the HTML template - use __dirname to get path to compiled output
-    const htmlPath = path.join(__dirname, 'rolesEditorWebview.html');
-
+    const htmlPath = this.resolveRolesEditorWebviewHtmlPath();
     let html = await fs.promises.readFile(htmlPath, 'utf8');
 
     // Prepare data to inject
