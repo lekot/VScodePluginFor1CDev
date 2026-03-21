@@ -1,8 +1,6 @@
 Вся фича написана роботами. Багрепорты принимаю с благодарностью 
 
-# 1C Metadata Tree for VS Code
-aka
-# CDT (Community Development Tools)
+# CDT 41 (Community Development Tools for 1C)
 
 VS Code расширение для визуализации и редактирования дерева метаданных конфигураций 1С:Предприятие.
 
@@ -44,14 +42,14 @@ VS Code расширение для визуализации и редактир
 ### Открытие панели метаданных
 
 1. Откройте папку с конфигурацией 1С в VS Code
-2. Панель "1C Metadata" появится автоматически в Explorer
-3. Или: **Ctrl+Alt+1** (Windows/Linux) / **Cmd+Alt+1** (macOS), либо Command Palette (**Ctrl+Shift+P**) → «1C: Open Metadata Tree»
+2. Панель **CDT 41** появится автоматически в Explorer
+3. Или: **Ctrl+Alt+1** (Windows/Linux) / **Cmd+Alt+1** (macOS), либо Command Palette (**Ctrl+Shift+P**) → «CDT 41: Open Metadata Tree»
 
-### Команды (1C Metadata)
+### Команды (CDT 41)
 
 | Команда | Описание |
 |--------|----------|
-| 1C: Open Metadata Tree | Открыть панель дерева метаданных |
+| CDT 41: Open Metadata Tree | Открыть панель дерева метаданных |
 | Refresh | Обновить дерево |
 | Show Properties | Открыть панель свойств выбранного элемента |
 | Open XML File | Открыть XML файл элемента |
@@ -69,7 +67,7 @@ VS Code расширение для визуализации и редактир
 | Previous search result | Предыдущий результат поиска |
 | Clear tree cache | Очистить кэш дерева |
 
-### Горячие клавиши (в панели 1C Metadata)
+### Горячие клавиши (в панели CDT 41)
 
 - **Ctrl+Alt+1** / **Cmd+Alt+1** — открыть панель метаданных  
 - **Ctrl+Shift+M** / **Cmd+Shift+M** — открыть/закрыть панель  
@@ -142,7 +140,7 @@ VS Code расширение для визуализации и редактир
 ## Структура проекта
 
 ```
-1c-metadata-tree-vscode/
+VScodePluginFor1CDev/
 ├── src/
 │   ├── extension.ts              # Точка входа расширения
 │   ├── models/
@@ -281,6 +279,6 @@ Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree 
 ## Поддержка
 
 Если у вас возникли проблемы или вопросы:
-1. Проверьте [Issues](../../issues)
+1. Проверьте [Issues](https://github.com/lekot/VScodePluginFor1CDev/issues)
 2. Создайте новый Issue с описанием проблемы
-3. Приложите логи из Output канала "1C Metadata Tree"
+3. Приложите логи из Output канала **CDT 41**

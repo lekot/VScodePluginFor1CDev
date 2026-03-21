@@ -213,7 +213,7 @@ export class PropertiesProvider {
   private createPanel(): vscode.WebviewPanel {
     const panel = vscode.window.createWebviewPanel(
       '1c-metadata-properties',
-      '1C Metadata Properties',
+      'CDT 41: Properties',
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,

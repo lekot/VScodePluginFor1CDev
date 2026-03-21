@@ -39,8 +39,8 @@ export const MESSAGES = {
   LOGS_EXPORT_FAILED: 'Не удалось экспортировать логи',
 
   // Log messages
-  EXTENSION_ACTIVATED: '1C Metadata Tree extension activated',
-  EXTENSION_DEACTIVATED: '1C Metadata Tree extension deactivated',
+  EXTENSION_ACTIVATED: 'CDT 41 extension activated',
+  EXTENSION_DEACTIVATED: 'CDT 41 extension deactivated',
   OPENING_PANEL: 'Opening metadata tree panel',
   REFRESHING: 'Refreshing metadata tree',
   TREE_LOADED: 'Metadata tree loaded successfully',

@@ -651,7 +651,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     async () => {
       if (extensionContext?.globalStoragePath) {
         await clearTreeCache(extensionContext.globalStoragePath);
-        vscode.window.showInformationMessage('1C Metadata Tree: cache cleared.');
+        vscode.window.showInformationMessage('CDT 41: cache cleared.');
       }
     }
   );
@@ -818,7 +818,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     
     // Show user-friendly error message
     vscode.window.showErrorMessage(
-      `1C Metadata Tree: Failed to activate extension. ${errorMessage}`,
+      `CDT 41: Failed to activate extension. ${errorMessage}`,
       'Show Logs'
     ).then(selection => {
       if (selection === 'Show Logs') {

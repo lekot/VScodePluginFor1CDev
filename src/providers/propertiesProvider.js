@@ -69,7 +69,7 @@ class PropertiesProvider {
      * Create webview panel with proper configuration
      */
     createPanel() {
-        const panel = vscode.window.createWebviewPanel('1c-metadata-properties', '1C Metadata Properties', vscode.ViewColumn.Beside, {
+        const panel = vscode.window.createWebviewPanel('1c-metadata-properties', 'CDT 41: Properties', vscode.ViewColumn.Beside, {
             enableScripts: true,
             retainContextWhenHidden: true,
             localResourceRoots: [this.context.extensionUri],

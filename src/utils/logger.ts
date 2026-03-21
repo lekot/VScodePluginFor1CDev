@@ -44,7 +44,7 @@ export class Logger {
   static initialize(): void {
     try {
       if (vscode && vscode.window) {
-        this.outputChannel = vscode.window.createOutputChannel('1C Metadata Tree');
+        this.outputChannel = vscode.window.createOutputChannel('CDT 41');
       }
       this.buffer = [];
     } catch {
