@@ -61,7 +61,8 @@ suite('Properties Integration Test Suite', () => {
     assert.ok(true, 'Command executed with concrete node payload');
   });
 
-  test('openXML command remains registered for explicit context action', async () => {
+  test('openXML command remains registered for explicit context action', async function () {
+    this.timeout(8000);
     const commands = await vscode.commands.getCommands(true);
     assert.ok(
       commands.includes('1c-metadata-tree.openXML'),

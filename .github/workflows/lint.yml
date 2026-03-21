@@ -135,7 +135,7 @@ jobs:
           status=$?
           echo "---- VSCode integration test errors ----"
           # Keep console output small; show only lines that look like failures/errors.
-          rg -n -i "(error|referenceerror|typeerror|assertionerror|enoent|failed|failed to|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" vscode-tests.log | tail -n 80 || true
+          grep -nEi "(error|referenceerror|typeerror|assertionerror|enoent|failed|failed to|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" vscode-tests.log | tail -n 80 || true
           exit $status
 
       - name: Upload VSCode test log
@@ -170,7 +170,7 @@ jobs:
           xvfb-run -a npm run test:smoke > smoke-tests.log 2>&1
           status=$?
           echo "---- Smoke test errors ----"
-          rg -n -i "(error|referenceerror|typeerror|assertionerror|enoent|failed|precondition|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" smoke-tests.log | tail -n 80 || true
+          grep -nEi "(error|referenceerror|typeerror|assertionerror|enoent|failed|precondition|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" smoke-tests.log | tail -n 80 || true
           exit $status
 
       - name: Upload smoke test log
