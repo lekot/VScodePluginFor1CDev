@@ -14,7 +14,8 @@ export type WebviewCommand =
   | 'cancel'
   | 'toggleFilter'
   | 'search'
-  | 'filterByType';
+  | 'filterByType'
+  | 'tableRenderProgress';
 
 /**
  * Message sent from webview to extension
@@ -65,6 +66,22 @@ export interface WebviewMessageData {
    * Array of metadata types to filter by (for filterByType command)
    */
   types?: MetadataType[];
+
+  /**
+   * Single metadata type from the webview type filter (for filterByType command)
+   */
+  type?: string;
+
+  /**
+   * User-edited restrictionTemplate XML block(s) (for save command)
+   */
+  restrictionTemplatesText?: string;
+
+  /**
+   * Table render progress (for tableRenderProgress command)
+   */
+  busy?: boolean;
+  rowCount?: number;
 }
 
 /**

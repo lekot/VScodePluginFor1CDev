@@ -14,6 +14,14 @@ import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from 
 import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
 
+/** Whether `parent` may hold a root-level type folder (e.g. Catalogs, Roles under «Общие»). */
+function isAllowedTypeFolderParent(parent: TreeNode): boolean {
+  if (parent.type === MetadataType.Configuration) {
+    return true;
+  }
+  return parent.type === MetadataType.Unknown && parent.id === 'Common';
+}
+
 /** Top-level metadata types that have their own XML file in Designer. */
 const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.Catalog,
@@ -51,12 +59,41 @@ const TOP_LEVEL_TYPES = new Set<MetadataType>([
 ]);
 
 /**
+ * True when `createElement` would create a new root metadata XML under a type folder
+ * (direct child of Configuration or under «Общие»), not a nested Attribute/TabularSection.
+ */
+export function isRootObjectCreateInTypeFolder(parentNode: TreeNode): boolean {
+  const parent = parentNode.parent;
+  if (!parent) {
+    return false;
+  }
+  return isAllowedTypeFolderParent(parent) && TOP_LEVEL_TYPES.has(parentNode.type);
+}
+
+/**
  * Gets the names of all child nodes of a parent node.
  * @param parent - The parent TreeNode
  * @returns Array of child node names
  */
 function getSiblingNames(parent: TreeNode): string[] {
   return (parent.children || []).map((c) => c.name);
+}
+
+/** Directory that contains Configuration.xml (Designer root or EDT project root). */
+function findConfigurationRootDir(typeFolderPath: string): string {
+  let dir = typeFolderPath;
+  for (let depth = 0; depth < 16; depth++) {
+    const candidate = path.join(dir, 'Configuration.xml');
+    if (fs.existsSync(candidate)) {
+      return dir;
+    }
+    const parentDir = path.dirname(dir);
+    if (parentDir === dir) {
+      break;
+    }
+    dir = parentDir;
+  }
+  return path.dirname(typeFolderPath);
 }
 
 /**
@@ -104,8 +141,7 @@ export async function createElement(
     throw new Error('Нет родительского узла.');
   }
 
-  const isTypeFolder = parent.type === MetadataType.Configuration;
-  if (isTypeFolder && TOP_LEVEL_TYPES.has(parentNode.type)) {
+  if (isRootObjectCreateInTypeFolder(parentNode)) {
     const typeFolderPath = parentNode.filePath;
     if (!typeFolderPath) {
       throw new Error(`Папка типа не найдена: ${typeFolderPath}`);
@@ -127,7 +163,7 @@ export async function createElement(
       throw new Error(`Файл уже существует: ${newFilePath}`);
     }
     const rootTag = String(parentNode.type);
-    const configRootPath = path.dirname(typeFolderPath);
+    const configRootPath = findConfigurationRootDir(typeFolderPath);
     const templateXml = await getDesignerTemplateXml(rootTag);
     if (templateXml !== null) {
       const uuid = XMLWriter.generateSimpleUuid();
@@ -184,7 +220,10 @@ export async function createElement(
     }
   }
 
-  throw new Error('Создание элемента: выберите узел типа (Справочники, Документы и т.д.), объект метаданных или контейнер folder (Атрибуты, Табличные части).');
+  throw new Error(
+    'Создание элемента: выберите узел типа (в т.ч. под «Общие»), объект метаданных или контейнер (Атрибуты, Табличные части). ' +
+      'Если выбран типовой узел, его родитель должен быть корень конфигурации или группа «Общие».'
+  );
 }
 
 /** Minimal Ext/Form.xml content for a new form (Designer). */

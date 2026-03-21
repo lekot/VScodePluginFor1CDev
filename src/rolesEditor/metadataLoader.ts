@@ -4,12 +4,14 @@
  */
 
 import * as path from 'path';
+import * as fs from 'fs';
 import { MetadataParser } from '../parsers/metadataParser';
-import { FormatDetector } from '../parsers/formatDetector';
+import { FormatDetector, ConfigFormat } from '../parsers/formatDetector';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { MetadataObject } from './models/metadataObject';
 import { RightsMap } from './models/roleModel';
 import { Logger } from '../utils/logger';
+import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 
 /**
  * Metadata types that can have rights assigned
@@ -51,6 +53,114 @@ const RIGHTS_ASSIGNABLE_TYPES: MetadataType[] = [
   MetadataType.Subsystem
 ];
 
+/** Types for which we load attribute-level rights rows (same scope as R6 lazy Attributes in the tree). */
+const OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS: MetadataType[] = [
+  MetadataType.Catalog,
+  MetadataType.Document,
+  MetadataType.DataProcessor,
+  MetadataType.ChartOfCharacteristicTypes,
+];
+
+const CONFIGURATION_RIGHTS_FULL_NAME = 'Configuration';
+
+function folderNameForMetadataType(t: MetadataType): string | null {
+  for (const folder of MetadataTypeMapper.getMetadataTypes()) {
+    if (MetadataTypeMapper.map(folder) === t) {
+      return folder;
+    }
+  }
+  return null;
+}
+
+/**
+ * Best-effort synonym or name from Configuration.xml for the configuration root rights row.
+ */
+async function readConfigurationRootDisplayName(configRootPath: string): Promise<string> {
+  const configXmlPath = path.join(configRootPath, 'Configuration.xml');
+  try {
+    const text = await fs.promises.readFile(configXmlPath, 'utf-8');
+    const syn = text.match(/<Synonym>[\s\S]*?<v8:content>([^<]+)<\/v8:content>/i);
+    if (syn?.[1]?.trim()) {
+      return syn[1].trim();
+    }
+    const nameM = text.match(/<Properties>[\s\S]*?<Name>([^<]+)<\/Name>/i);
+    if (nameM?.[1]?.trim()) {
+      return nameM[1].trim();
+    }
+  } catch (err) {
+    Logger.debug(`Could not read configuration label from ${configXmlPath}`, err);
+  }
+  return 'Configuration';
+}
+
+/**
+ * Load attribute metadata rows for one object (reuses MetadataParser.loadElementChildren).
+ */
+async function loadAttributeRowsForElement(
+  configPath: string,
+  format: ConfigFormat,
+  element: MetadataObject,
+  currentRights: RightsMap
+): Promise<MetadataObject[]> {
+  const folder = folderNameForMetadataType(element.type);
+  if (!folder) {
+    return [];
+  }
+
+  const rootStub: TreeNode = {
+    id: 'root',
+    name: 'root',
+    type: MetadataType.Configuration,
+    properties: {},
+  };
+
+  const typeFolderNode: TreeNode = {
+    id: folder,
+    name: folder,
+    type: element.type,
+    properties: { type: folder },
+    parent: rootStub,
+  };
+
+  const objectNode: TreeNode = {
+    id: `${folder}.${element.name}`,
+    name: element.name,
+    type: element.type,
+    properties: { type: folder },
+    parent: typeFolderNode,
+  };
+
+  const attributesSection: TreeNode = {
+    id: 'Attributes',
+    name: 'Attributes',
+    type: MetadataType.Attribute,
+    properties: {},
+    parent: objectNode,
+  };
+
+  try {
+    const attrNodes = await MetadataParser.loadElementChildren(configPath, format, attributesSection);
+    const parentLabel = `${element.displayName || element.name} (${element.type})`;
+    const rows: MetadataObject[] = [];
+    for (const attr of attrNodes) {
+      const fullName = `${element.type}.${element.name}.Attribute.${attr.name}`;
+      rows.push({
+        fullName,
+        type: MetadataType.Attribute,
+        name: attr.name,
+        displayName: attr.name,
+        hasRights: fullName in currentRights,
+        rowKind: 'attribute',
+        parentLabel,
+      });
+    }
+    return rows;
+  } catch (err) {
+    Logger.debug(`Attribute rights rows skipped for ${element.fullName}`, err);
+    return [];
+  }
+}
+
 /**
  * Load all metadata objects from configuration
  * @param roleFilePath Path to the Role.xml file
@@ -74,11 +184,13 @@ export async function loadMetadataObjects(
 
     Logger.info('Loading metadata objects from configuration', effectiveConfigPath);
 
+    const format = await FormatDetector.detect(effectiveConfigPath);
+
     // Step 2: Parse configuration structure
     const rootNode = await MetadataParser.parseStructureOnly(effectiveConfigPath);
 
     // Step 3: Extract metadata objects from tree
-    const metadataObjects: MetadataObject[] = [];
+    const baseObjects: MetadataObject[] = [];
 
     if (rootNode.children) {
       for (const typeNode of rootNode.children) {
@@ -92,19 +204,48 @@ export async function loadMetadataObjects(
 
         for (const element of elements) {
           const metadataObject = createMetadataObject(element, currentRights);
-          metadataObjects.push(metadataObject);
+          metadataObject.rowKind = 'object';
+          baseObjects.push(metadataObject);
         }
       }
     }
 
-    // Step 4: Sort by type then name
+    const attributeRows = (
+      await Promise.all(
+        baseObjects
+          .filter((o) => OBJECT_TYPES_FOR_ATTRIBUTE_RIGHTS.includes(o.type))
+          .map((el) => loadAttributeRowsForElement(effectiveConfigPath, format, el, currentRights))
+      )
+    ).flat();
+
+    const configDisplayName = await readConfigurationRootDisplayName(effectiveConfigPath);
+    const configurationRow: MetadataObject = {
+      fullName: CONFIGURATION_RIGHTS_FULL_NAME,
+      type: MetadataType.Configuration,
+      name: 'Configuration',
+      displayName: `${configDisplayName} (root)`,
+      hasRights: CONFIGURATION_RIGHTS_FULL_NAME in currentRights,
+      rowKind: 'configurationRoot',
+    };
+
+    const metadataObjects: MetadataObject[] = [configurationRow, ...baseObjects, ...attributeRows];
+
+    // Step 4: Sort — configuration first, then main objects, then attributes; then type/name
     metadataObjects.sort((a, b) => {
-      // First sort by type
+      const rank = (o: MetadataObject): number => {
+        if (o.rowKind === 'configurationRoot') {return 0;}
+        if (o.rowKind === 'attribute') {return 2;}
+        return 1;
+      };
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) {
+        return ra - rb;
+      }
       const typeComparison = a.type.localeCompare(b.type);
       if (typeComparison !== 0) {
         return typeComparison;
       }
-      // Then sort by name
       return a.name.localeCompare(b.name);
     });
 

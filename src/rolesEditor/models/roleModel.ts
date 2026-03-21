@@ -58,6 +58,11 @@ export interface RoleModel {
   filePath: string;
   rights: RightsMap;
   metadata: RoleMetadata;
+  /**
+   * Raw XML fragments of <restrictionTemplate> from Ext/Rights.xml (RLS templates), for display in the editor.
+   * Not written by RoleXmlSerializer; preserved in Rights.xml on EDT save via DOM merge.
+   */
+  restrictionTemplatesText?: string;
 }
 
 /**

@@ -389,6 +389,35 @@ function unescapeQuotesInConditions(xmlString: string): string {
  * Serialize Rights DOM to XML string. Preserves declaration and root attributes.
  * Unescapes &quot; so 1C compatibility is preserved.
  */
+/** Same pattern as RoleXmlParser.extractRestrictionTemplatesBlocks — strip template blocks from serialized Rights.xml. */
+const RESTRICTION_TEMPLATE_BLOCK_RE =
+  /<(?:[a-zA-Z0-9_.]+:)?restrictionTemplate\b[^>]*>[\s\S]*?<\/(?:[a-zA-Z0-9_.]+:)?restrictionTemplate>/gi;
+
+/**
+ * Remove all restrictionTemplate blocks from a Rights.xml string (before re-inserting user-edited templates).
+ */
+export function stripRestrictionTemplateBlocksFromRightsXml(xml: string): string {
+  return xml.replace(RESTRICTION_TEMPLATE_BLOCK_RE, '');
+}
+
+/**
+ * After merge/serialize, replace template section with user text (raw XML), inserted before closing </Rights>.
+ */
+export function insertRestrictionTemplatesBeforeClosingRights(
+  xml: string,
+  templatesBlock: string
+): string {
+  const trimmed = templatesBlock.trim();
+  const withoutOld = stripRestrictionTemplateBlocksFromRightsXml(xml);
+  if (!trimmed) {
+    return withoutOld;
+  }
+  return withoutOld.replace(
+    /<\/(?:[a-zA-Z0-9_.]+:)?Rights\s*>/i,
+    (closeTag) => `\n${trimmed}\n${closeTag}`
+  );
+}
+
 export function serializeRightsDomToXml(dom: RightsDom): string {
   const builder = new XMLBuilder(RIGHTS_XML_BUILDER_OPTIONS);
   let xmlString: string;

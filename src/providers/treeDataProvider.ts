@@ -8,7 +8,10 @@ import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
-import { ensureR6PlaceholdersForInstanceNode } from '../utils/treeNormalization';
+import {
+  ensureR6PlaceholdersForInstanceNode,
+  R5_COMMON_DISK_BACKED_FOLDER_IDS,
+} from '../utils/treeNormalization';
 import { OptimisticDeleteToken } from '../types/reloadContracts';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
@@ -262,7 +265,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
     // For each folder, find the type-node in the tree and load its children if not yet loaded
     for (const folder of foldersToLoad) {
-      const typeNode = configRoot.children?.find((c) => c.id === folder);
+      const typeNode = this.findTypeFolderNode(configRoot, folder);
       if (!typeNode) {continue;}
       // Already loaded
       if (typeNode.children && typeNode.children.length > 0) {continue;}
@@ -749,6 +752,16 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return null;
   }
 
+  /** Type folder under `Configuration` or under «Общие» (`Common`) after tree normalization. */
+  private findTypeFolderNode(configRoot: TreeNode, folderId: string): TreeNode | undefined {
+    const direct = configRoot.children?.find((c) => c.id === folderId);
+    if (direct) {
+      return direct;
+    }
+    const commonGroup = configRoot.children?.find((c) => c.id === 'Common');
+    return commonGroup?.children?.find((c) => c.id === folderId);
+  }
+
   private getNodeLineage(node: TreeNode): TreeNode[] {
     const lineage: TreeNode[] = [];
     let current: TreeNode | undefined = node;
@@ -890,12 +903,24 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Get tree item for a node
    */
   private isLazyTypeNode(element: TreeNode): boolean {
-    const root = element.parent && this.rootNodes.includes(element.parent) ? element.parent : null;
-    return (
-      root !== null &&
-      this.loadContextByRootId.has(root.id) &&
-      (!element.children || element.children.length === 0)
-    );
+    if (element.children && element.children.length > 0) {
+      return false;
+    }
+    const configRoot = this.getConfigurationRoot(element);
+    if (!configRoot || !this.loadContextByRootId.has(configRoot.id)) {
+      return false;
+    }
+    const p = element.parent;
+    if (!p) {
+      return false;
+    }
+    if (p === configRoot) {
+      return true;
+    }
+    if (p.type === MetadataType.Unknown && p.id === 'Common') {
+      return R5_COMMON_DISK_BACKED_FOLDER_IDS.has(element.id);
+    }
+    return false;
   }
 
   private isLazyElementNode(element: TreeNode): boolean {
@@ -992,8 +1017,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       const activeElement = this.resolveActiveNode(element);
 
       // Lazy load: type node with no children yet
-      if (this.isLazyTypeNode(activeElement) && activeElement.parent) {
-        const ctx = this.loadContextByRootId.get(activeElement.parent.id);
+      if (this.isLazyTypeNode(activeElement)) {
+        const configRoot = this.getConfigurationRoot(activeElement);
+        const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         return MetadataParser.parseTypeContents(ctx.configPath, activeElement.id).then((children) => {
           for (const c of children) {

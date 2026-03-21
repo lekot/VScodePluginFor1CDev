@@ -71,6 +71,30 @@ suite('RoleXmlParser Tests', () => {
     assert.strictEqual(rights['Catalog.Items'].delete, false);
   });
 
+  test('decodeBasicXmlEntities decodes common entities', () => {
+    const s = RoleXmlParser.decodeBasicXmlEntities('&lt;a&gt; &quot;b&quot; &amp; c');
+    assert.strictEqual(s, '<a> "b" & c');
+  });
+
+  test('extractRestrictionTemplatesBlocks finds restrictionTemplate elements', () => {
+    const xml = [
+      '<?xml version="1.0"?>',
+      '<Rights>',
+      '  <object><name>X</name></object>',
+      '  <restrictionTemplate>',
+      '    <name>T1</name>',
+      '    <condition>true</condition>',
+      '  </restrictionTemplate>',
+      '  <v8:restrictionTemplate><v8:name>T2</v8:name></v8:restrictionTemplate>',
+      '</Rights>'
+    ].join('\n');
+    const blocks = RoleXmlParser.extractRestrictionTemplatesBlocks(xml);
+    assert.ok(blocks.includes('<restrictionTemplate>'));
+    assert.ok(blocks.includes('T1'));
+    assert.ok(blocks.includes('v8:restrictionTemplate'));
+    assert.ok(blocks.includes('T2'));
+  });
+
   test('parseRoleXml prefers EDT Rights.xml when present', async () => {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-role-'));
     const roleFilePath = path.join(tempRoot, 'src', 'Roles', 'TestRole.xml');

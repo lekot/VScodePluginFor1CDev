@@ -58,6 +58,83 @@ export class RoleXmlParser {
   private static parser = new XMLParser(ROLE_XML_OPTIONS);
 
   /**
+   * Resolve first existing Ext/Rights.xml path for a role (same rules as parseRightsXml).
+   */
+  static async resolveRightsXmlPath(roleXmlPath: string): Promise<string | null> {
+    const roleDir = path.dirname(roleXmlPath);
+    const baseName = path.basename(roleXmlPath, path.extname(roleXmlPath));
+    const candidates =
+      baseName.toLowerCase() !== 'role'
+        ? [path.join(roleDir, baseName, 'Ext', 'Rights.xml'), path.join(roleDir, 'Ext', 'Rights.xml')]
+        : [path.join(roleDir, 'Ext', 'Rights.xml')];
+    for (const candidate of candidates) {
+      try {
+        await fs.promises.access(candidate);
+        return candidate;
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Extract concatenated <restrictionTemplate>...</restrictionTemplate> blocks from Rights.xml or Role.xml text.
+   */
+  static extractRestrictionTemplatesBlocks(xml: string): string {
+    if (!xml || !xml.trim()) {
+      return '';
+    }
+    const re = /<(?:[a-zA-Z0-9_.]+:)?restrictionTemplate\b[^>]*>[\s\S]*?<\/(?:[a-zA-Z0-9_.]+:)?restrictionTemplate>/gi;
+    const parts: string[] = [];
+    let m: RegExpExecArray | null;
+    const r = new RegExp(re.source, re.flags);
+    while ((m = r.exec(xml)) !== null) {
+      parts.push(this.decodeBasicXmlEntities(m[0].trim()));
+    }
+    return parts.join('\n\n');
+  }
+
+  /**
+   * Decode common XML entities in restriction/condition text for editor display (file may contain &quot; etc.).
+   */
+  static decodeBasicXmlEntities(s: string): string {
+    if (!s) {
+      return s;
+    }
+    return s
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&');
+  }
+
+  /**
+   * Load restriction template XML fragments for the role (EDT Rights.xml preferred, else Role.xml).
+   */
+  static async loadRestrictionTemplatesText(roleXmlPath: string): Promise<string> {
+    const rightsPath = await this.resolveRightsXmlPath(roleXmlPath);
+    if (rightsPath) {
+      try {
+        const content = await fs.promises.readFile(rightsPath, 'utf-8');
+        const fromRights = this.extractRestrictionTemplatesBlocks(content);
+        if (fromRights) {
+          return fromRights;
+        }
+      } catch (err) {
+        Logger.debug(`Could not read Rights.xml for restriction templates: ${rightsPath}`, err);
+      }
+    }
+    try {
+      const roleContent = await fs.promises.readFile(roleXmlPath, 'utf-8');
+      return this.extractRestrictionTemplatesBlocks(roleContent);
+    } catch {
+      return '';
+    }
+  }
+
+  /**
    * Parse Role.xml file and extract rights assignments
    * @param filePath Path to Role.xml file
    * @returns RoleModel with all rights assignments
@@ -124,11 +201,14 @@ export class RoleXmlParser {
     };
 
     // Build and return role model
+    const restrictionTemplatesText = await this.loadRestrictionTemplatesText(filePath);
+
     const roleModel: RoleModel = {
       name: roleName,
       filePath,
       rights,
-      metadata
+      metadata,
+      restrictionTemplatesText: restrictionTemplatesText || undefined
     };
 
     const rightsCount = Object.keys(rights).length;

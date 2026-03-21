@@ -4,7 +4,10 @@ import * as path from 'path';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
-import { normalizeEmptyPlaceholderTree } from '../../src/utils/treeNormalization';
+import {
+  mergeR5TypeFoldersUnderCommon,
+  normalizeEmptyPlaceholderTree,
+} from '../../src/utils/treeNormalization';
 
 suite('treeNormalization Test Suite', () => {
   function createMockContext(): vscode.ExtensionContext {
@@ -511,6 +514,221 @@ suite('treeNormalization Test Suite', () => {
     placeholderIds.forEach((id) => {
       assert.ok(updatedOrder.includes(id), `Placeholder ${id} should be present`);
     });
+  });
+
+  test('mergeR5TypeFoldersUnderCommon moves parser Roles from Configuration under Общие (Designer)', () => {
+    const configPath = path.join('C:', 'reps', 'merge-test');
+    const rolesDir = path.join(configPath, 'Roles');
+    const roleChild: TreeNode = {
+      id: 'Roles.Admin',
+      name: 'Admin',
+      type: MetadataType.Role,
+      properties: {},
+      children: [],
+    };
+    const parserRoles: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: rolesDir,
+      children: [roleChild],
+    };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [parserRoles],
+    };
+    parserRoles.parent = root;
+    roleChild.parent = parserRoles;
+
+    const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
+
+    assert.strictEqual(
+      normalized.children!.some((c) => c.id === 'Roles'),
+      false,
+      'Roles must not stay a direct child of Configuration'
+    );
+    const common = normalized.children!.find((c) => c.id === 'Common')!;
+    const rolesUnderCommon = common.children!.find((c) => c.id === 'Roles')!;
+    assert.ok(rolesUnderCommon, 'Roles should exist under Common');
+    assert.strictEqual(rolesUnderCommon.filePath, rolesDir);
+    assert.strictEqual(rolesUnderCommon.children!.length, 1);
+    assert.strictEqual(rolesUnderCommon.children![0].name, 'Admin');
+    assert.strictEqual(rolesUnderCommon.children![0].parent, rolesUnderCommon);
+  });
+
+  test('mergeR5TypeFoldersUnderCommon moves parser CommonModules under Общие (EDT)', () => {
+    const configPath = path.join('D:', 'edt', 'proj');
+    const cmDir = path.join(configPath, 'src', 'CommonModules');
+    const modChild: TreeNode = {
+      id: 'CommonModules.MyModule',
+      name: 'MyModule',
+      type: MetadataType.CommonModule,
+      properties: {},
+      children: [],
+    };
+    const parserCm: TreeNode = {
+      id: 'CommonModules',
+      name: 'Общие модули',
+      type: MetadataType.CommonModule,
+      properties: {},
+      filePath: cmDir,
+      children: [modChild],
+    };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [parserCm],
+    };
+    parserCm.parent = root;
+    modChild.parent = parserCm;
+
+    const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.EDT });
+
+    assert.strictEqual(normalized.children!.some((c) => c.id === 'CommonModules'), false);
+    const common = normalized.children!.find((c) => c.id === 'Common')!;
+    const cm = common.children!.find((c) => c.id === 'CommonModules')!;
+    assert.strictEqual(cm.filePath, cmDir);
+    assert.strictEqual(cm.children!.length, 1);
+    assert.strictEqual(cm.children![0].name, 'MyModule');
+  });
+
+  test('mergeR5TypeFoldersUnderCommon throws on conflicting filePath between parser and placeholder', () => {
+    const configPath = path.join('C:', 'cfg');
+    const parserRoles: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: path.join(configPath, 'Roles'),
+      children: [],
+    };
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [parserRoles],
+    };
+    parserRoles.parent = root;
+
+    assert.throws(
+      () =>
+        normalizeEmptyPlaceholderTree(root, {
+          configPath: path.join('C:', 'other-root'),
+          format: ConfigFormat.Designer,
+        }),
+      /Конфликт путей при слиянии узла «Roles»/
+    );
+  });
+
+  test('mergeR5TypeFoldersUnderCommon throws on conflicting parentFilePath', () => {
+    const configPath = path.join('C:', 'cfg', 'pp');
+    const rolesDir = path.join(configPath, 'Roles');
+    const placeholderRoles: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: rolesDir,
+      parentFilePath: path.join(configPath, 'branch-a', 'Roles'),
+      children: [],
+    };
+    const parserRoles: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: rolesDir,
+      parentFilePath: path.join(configPath, 'branch-b', 'Roles'),
+      children: [],
+    };
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      children: [placeholderRoles],
+    };
+    placeholderRoles.parent = common;
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [common, parserRoles],
+    };
+    common.parent = root;
+    parserRoles.parent = root;
+
+    assert.throws(
+      () => mergeR5TypeFoldersUnderCommon(root, { configPath, format: ConfigFormat.Designer }),
+      /Конфликт parentFilePath при слиянии узла «Roles»/
+    );
+  });
+
+  test('mergeR5TypeFoldersUnderCommon throws on duplicate child id', () => {
+    const configPath = path.join('C:', 'cfg', 'dup');
+    const rolesDir = path.join(configPath, 'Roles');
+    const shared: TreeNode = {
+      id: 'Roles.DupRole',
+      name: 'DupRole',
+      type: MetadataType.Role,
+      properties: {},
+      children: [],
+    };
+    const placeholderRoles: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: rolesDir,
+      children: [shared],
+    };
+    shared.parent = placeholderRoles;
+    const parserChild: TreeNode = {
+      id: 'Roles.DupRole',
+      name: 'DupRole',
+      type: MetadataType.Role,
+      properties: {},
+      children: [],
+    };
+    const parserRoles: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: rolesDir,
+      children: [parserChild],
+    };
+    parserChild.parent = parserRoles;
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      children: [placeholderRoles],
+    };
+    placeholderRoles.parent = common;
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [common, parserRoles],
+    };
+    common.parent = root;
+    parserRoles.parent = root;
+
+    assert.throws(
+      () => mergeR5TypeFoldersUnderCommon(root, { configPath, format: ConfigFormat.Designer }),
+      /Дубликат дочернего узла «Roles.DupRole»/
+    );
   });
 });
 

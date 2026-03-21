@@ -17,6 +17,7 @@ import {
   deleteElement as doDeleteElement,
   renameElement as doRenameElement,
   findReferencesToElement,
+  isRootObjectCreateInTypeFolder,
 } from './services/elementOperations';
 import { validateElementName } from './utils/elementNameValidator';
 import { TreeNode, MetadataType } from './models/treeNode';
@@ -50,9 +51,7 @@ function buildOptimisticCreatedNode(
   ctx: { configPath: string; format: ConfigFormat }
 ): TreeNode {
   const trimmed = name.trim();
-  const parent = target.parent;
-  const isTypeFolder = parent?.type === MetadataType.Configuration;
-  if (isTypeFolder) {
+  if (isRootObjectCreateInTypeFolder(target)) {
     const targetDir =
       target.filePath ??
       (ctx.format === ConfigFormat.Designer

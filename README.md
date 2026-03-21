@@ -270,11 +270,9 @@ Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree 
 
 ## Лицензия
 
-[MIT](LICENSE)
+[MIT](LICENSE) - делайте с этим кодом все, что захотите, Open Source, but AS IS. 
+Донаты приветствуются в виде опен-роутер/антропик токенов
 
-## Публикация в Marketplace
-
-Полное описание для вставки в карточку расширения при публикации: [MARKETPLACE.md](MARKETPLACE.md).
 
 ## Поддержка
 
