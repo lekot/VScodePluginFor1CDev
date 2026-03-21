@@ -135,7 +135,7 @@ jobs:
           status=$?
           echo "---- VSCode integration test errors ----"
           # Keep console output small; show only lines that look like failures/errors.
-          rg -n -i "(error|referenceerror|typeerror|assertionerror|enoent|failed|failed to|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" vscode-tests.log | tail -n 80 || true
+          grep -nEi "(error|referenceerror|typeerror|assertionerror|enoent|failed|failed to|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" vscode-tests.log | tail -n 80 || true
           exit $status
 
       - name: Upload VSCode test log
@@ -144,3 +144,46 @@ jobs:
         with:
           name: vscode-tests.log
           path: vscode-tests.log
+
+  smoke-tests:
+    name: Smoke tests (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run smoke tests (blocking)
+        run: |
+          set -o pipefail
+          xvfb-run -a npm run test:smoke > smoke-tests.log 2>&1
+          status=$?
+          echo "---- Smoke test errors ----"
+          grep -nEi "(error|referenceerror|typeerror|assertionerror|enoent|failed|precondition|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" smoke-tests.log | tail -n 80 || true
+          exit $status
+
+      - name: Upload smoke test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-tests.log
+          path: smoke-tests.log
+
+      - name: Upload smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts
+          path: smoke-artifacts/**
+          if-no-files-found: ignore

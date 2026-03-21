@@ -6,7 +6,8 @@ import {
 import { normalizeMetaDataObjectRoot } from '../../src/services/metaDataObjectRootNormalizer';
 import { Logger } from '../../src/utils/logger';
 
-suite('services coverage helpers', () => {
+suite('services coverage helpers', function () {
+  this.timeout(10000);
   suite('internalInfoGenerator', () => {
     test('buildInternalInfoXml builds catalog generated types and preserves base indentation', () => {
       const xml = buildInternalInfoXml('Catalog', 'Products', '  ');

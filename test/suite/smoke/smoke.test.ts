@@ -27,6 +27,7 @@ async function ensureMetadataTreeFocused(): Promise<void> {
 
 suite('Smoke: 1C metadata tree, forms, commands', () => {
   let configPath: string | null = null;
+  let workspacePath: string | null = null;
   let allNodes: TreeNode[] = [];
   let formNodes: TreeNode[] = [];
 
@@ -51,10 +52,11 @@ suite('Smoke: 1C metadata tree, forms, commands', () => {
 
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
+      workspacePath = null;
       configPath = null;
       return;
     }
-    const workspacePath = folders[0].uri.fsPath;
+    workspacePath = folders[0].uri.fsPath;
     configPath = await FormatDetector.findConfigurationRoot(workspacePath);
     if (!configPath) {
       configPath = null;
@@ -80,18 +82,40 @@ suite('Smoke: 1C metadata tree, forms, commands', () => {
     }
   });
 
-  test('smoke: tree parsed and has nodes', function () {
-    if (!configPath) {
-      this.skip();
-      return;
+  function assertSmokePreconditions(step: string): void {
+    if (!workspacePath) {
+      const error = new Error(
+        'Smoke precondition failed: workspace folder is required. Launch smoke with a workspace argument.'
+      );
+      recordFailure({ step, error });
+      throw error;
     }
+    if (!configPath) {
+      const error = new Error(
+        `Smoke precondition failed: configuration root was not found in workspace "${workspacePath}".`
+      );
+      recordFailure({ step, error });
+      throw error;
+    }
+  }
+
+  test('smoke: precondition requires valid workspace/config root', function () {
+    assertSmokePreconditions('precondition:workspace-config-root');
+  });
+
+  test('smoke: tree parsed and has nodes', function () {
+    assertSmokePreconditions('precondition:tree-parsed');
     assert.ok(allNodes.length >= 1, 'At least root node');
     assert.strictEqual(allNodes[0].name, 'Configuration');
   });
 
   test('smoke: open all Form.xml via metadata tree (openFormEditor)', async function () {
-    if (!configPath || formNodes.length === 0) {
-      this.skip();
+    assertSmokePreconditions('precondition:open-form-editor');
+    if (formNodes.length === 0) {
+      assert.ok(
+        allNodes.length > 0,
+        'Metadata tree must be parsed before deciding that dataset has no Form nodes.'
+      );
       return;
     }
     this.timeout(Math.max(60000, formNodes.length * 3000));
