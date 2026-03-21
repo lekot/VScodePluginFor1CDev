@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { ConfigFormat } from '../parsers/formatDetector';
+import { Logger } from './logger';
 
 export type NormalizeContext = {
   configPath: string;
@@ -133,6 +134,96 @@ const R5_COMMON_CHILD_ORDER: ReadonlyArray<PlaceholderDef> = [
   { id: 'Languages', name: 'Языки', type: MetadataType.Unknown },
 ];
 
+/**
+ * R5 ids under «Общие» that map to a real on-disk type directory (`typeDirName`).
+ * Used for lazy `parseTypeContents` — UI-only placeholders (e.g. `Bots`) are excluded.
+ */
+export const R5_COMMON_DISK_BACKED_FOLDER_IDS: ReadonlySet<string> = new Set(
+  R5_COMMON_CHILD_ORDER.filter((x) => x.typeDirName != null).map((x) => x.id)
+);
+
+function normalizedDiskPathKey(value: string | undefined): string {
+  if (value == null || String(value).trim() === '') {
+    return '';
+  }
+  return path.normalize(value).replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * Moves parser-built R5 type-folder nodes from direct `Configuration` children under the
+ * canonical `Common` placeholder (same stable `id`), then removes the duplicate from the root.
+ */
+export function mergeR5TypeFoldersUnderCommon(rootNode: TreeNode, ctx: NormalizeContext): void {
+  const commonGroup = rootNode.children?.find((c) => c.id === 'Common');
+  if (!commonGroup) {
+    return;
+  }
+  ensureChildrenArray(commonGroup);
+  ensureChildrenArray(rootNode);
+
+  for (const folderId of R5_COMMON_CHILD_ORDER.map((x) => x.id)) {
+    const parserIdx = rootNode.children!.findIndex((c) => c.id === folderId);
+    if (parserIdx < 0) {
+      continue;
+    }
+    const parserNode = rootNode.children![parserIdx];
+    let placeholderNode = commonGroup.children!.find((c) => c.id === folderId);
+    if (!placeholderNode) {
+      const def = R5_COMMON_CHILD_ORDER.find((d) => d.id === folderId);
+      if (def) {
+        upsertChildNode(commonGroup, def, ctx);
+        placeholderNode = commonGroup.children!.find((c) => c.id === folderId);
+      }
+    }
+    if (!placeholderNode) {
+      const msg = `Не удалось найти плейсхолдер «${folderId}» под «Общие» при слиянии с узлом парсера.`;
+      Logger.error(msg);
+      throw new Error(msg);
+    }
+
+    const phPath = normalizedDiskPathKey(placeholderNode.filePath);
+    const prPath = normalizedDiskPathKey(parserNode.filePath);
+    if (phPath && prPath && phPath !== prPath) {
+      const msg = `Конфликт путей при слиянии узла «${folderId}» под «Общие»: плейсхолдер «${placeholderNode.filePath}», парсер «${parserNode.filePath}».`;
+      Logger.error(msg);
+      throw new Error(msg);
+    }
+    const phParentPath = normalizedDiskPathKey(placeholderNode.parentFilePath);
+    const prParentPath = normalizedDiskPathKey(parserNode.parentFilePath);
+    if (phParentPath && prParentPath && phParentPath !== prParentPath) {
+      const msg = `Конфликт parentFilePath при слиянии узла «${folderId}» под «Общие».`;
+      Logger.error(msg);
+      throw new Error(msg);
+    }
+
+    if (prPath) {
+      placeholderNode.filePath = parserNode.filePath;
+    }
+    if (prParentPath) {
+      placeholderNode.parentFilePath = parserNode.parentFilePath;
+    }
+    placeholderNode.properties = { ...placeholderNode.properties, ...parserNode.properties };
+
+    ensureChildrenArray(placeholderNode);
+    const seenChildIds = new Set((placeholderNode.children ?? []).map((c) => c.id));
+    for (const child of [...(parserNode.children ?? [])]) {
+      if (seenChildIds.has(child.id)) {
+        const msg = `Дубликат дочернего узла «${child.id}» при слиянии «${folderId}» под «Общие».`;
+        Logger.error(msg);
+        throw new Error(msg);
+      }
+      seenChildIds.add(child.id);
+      child.parent = placeholderNode;
+      placeholderNode.children!.push(child);
+    }
+    parserNode.children = [];
+
+    rootNode.children!.splice(parserIdx, 1);
+  }
+
+  reorderChildrenByIds(commonGroup, R5_COMMON_CHILD_ORDER.map((x) => x.id));
+}
+
 const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
   { id: 'Attributes', name: 'Реквизиты', type: MetadataType.Attribute, typeDirName: 'Attributes' },
   { id: 'TabularSections', name: 'Табличные части', type: MetadataType.TabularSection, typeDirName: 'TabularSections' },
@@ -157,9 +248,9 @@ export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: Normali
   if (!node || !R6_OBJECT_TYPES.has(node.type)) {
     return;
   }
-  // Guard: do not add R6 placeholders to type-folder nodes (e.g. "Документы" / "Справочники").
-  // Type folders share the same MetadataType enum value as their instances (both are Document, Catalog, etc.)
-  // but are direct children of a Configuration root, not grandchildren.
+  // Guard: do not add R6 to type-folder layer nodes (e.g. top-level «Справочники» / «Документы» under Configuration).
+  // Those nodes use the same MetadataType as instances (Catalog, Document, …) but sit directly under the config root.
+  // After R5 merge, other type folders may live under «Общие»; R6 still applies only to instance nodes below them.
   if (node.parent && node.parent.type === MetadataType.Configuration) {
     return;
   }
@@ -208,6 +299,8 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
       }
     }
   }
+
+  mergeR5TypeFoldersUnderCommon(rootNode, ctx);
 
   // Deterministic order under Configuration root.
   reorderChildrenByIds(rootNode, R4_TOP_LEVEL_ORDER.map((x) => x.id));

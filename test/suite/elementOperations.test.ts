@@ -8,6 +8,7 @@ import {
   duplicateElement,
   deleteElement,
   renameElement,
+  isRootObjectCreateInTypeFolder,
 } from '../../src/services/elementOperations';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import {
@@ -57,6 +58,41 @@ suite('elementOperations', () => {
     await cleanupTempDir(tmpDir);
   });
 
+  test('isRootObjectCreateInTypeFolder true for Roles under Общие, false for Role instance', () => {
+    const cfg = createConfigNode();
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      parent: cfg,
+      children: [],
+    };
+    const rolesFolder: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: '/cfg/Roles',
+      parent: common,
+      children: [],
+    };
+    cfg.children = [common];
+    common.children = [rolesFolder];
+    assert.strictEqual(isRootObjectCreateInTypeFolder(rolesFolder), true);
+
+    const roleInstance: TreeNode = {
+      id: 'Roles.SomeRole',
+      name: 'SomeRole',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: '/cfg/Roles/SomeRole.xml',
+      parent: rolesFolder,
+      children: [],
+    };
+    assert.strictEqual(isRootObjectCreateInTypeFolder(roleInstance), false);
+  });
+
   test('createElement throws when parent is Configuration', async () => {
     await assert.rejects(
       async () => createElement(configNode, 'NewCat'),
@@ -72,6 +108,151 @@ suite('elementOperations', () => {
     assert.ok(dirExists(dirPath));
     const content = await readFileContent(filePath);
     assert.ok(content.includes('<Name>NewCatalog</Name>'));
+  });
+
+  test('createElement creates Role when type folder is under Общие (not Файл объекта не найден)', async () => {
+    const dir = await createTempDir('1cviewer-role-common-');
+    try {
+      const rolesPath = path.join(dir, 'Roles');
+      await fs.promises.mkdir(rolesPath, { recursive: true });
+      const configXmlPath = path.join(dir, 'Configuration.xml');
+      const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
+    <Properties><Name>TestConfig</Name></Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>
+`;
+      await fs.promises.writeFile(configXmlPath, configXml, 'utf-8');
+
+      const cfgNode = createConfigNode({ filePath: configXmlPath });
+      const commonNode: TreeNode = {
+        id: 'Common',
+        name: 'Общие',
+        type: MetadataType.Unknown,
+        properties: {},
+        parent: cfgNode,
+        children: [],
+      };
+      const rolesTypeNode: TreeNode = {
+        id: 'Roles',
+        name: 'Роли',
+        type: MetadataType.Role,
+        properties: {},
+        filePath: rolesPath,
+        parent: commonNode,
+        children: [],
+      };
+      cfgNode.children = [commonNode];
+      commonNode.children = [rolesTypeNode];
+
+      await createElement(rolesTypeNode, 'NewRole');
+      const roleXml = path.join(rolesPath, 'NewRole.xml');
+      assert.ok(fileExists(roleXml), 'NewRole.xml must exist');
+      const updatedCfg = await readFileContent(configXmlPath);
+      assert.ok(updatedCfg.includes('NewRole'), 'Configuration.xml must list new role');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement creates CommonModule when type folder is under Общие', async () => {
+    const dir = await createTempDir('1cviewer-cm-common-');
+    try {
+      const cmPath = path.join(dir, 'CommonModules');
+      await fs.promises.mkdir(cmPath, { recursive: true });
+      const configXmlPath = path.join(dir, 'Configuration.xml');
+      const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
+    <Properties><Name>TestConfig</Name></Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>
+`;
+      await fs.promises.writeFile(configXmlPath, configXml, 'utf-8');
+
+      const cfgNode = createConfigNode({ filePath: configXmlPath });
+      const commonNode: TreeNode = {
+        id: 'Common',
+        name: 'Общие',
+        type: MetadataType.Unknown,
+        properties: {},
+        parent: cfgNode,
+        children: [],
+      };
+      const cmTypeNode: TreeNode = {
+        id: 'CommonModules',
+        name: 'Общие модули',
+        type: MetadataType.CommonModule,
+        properties: {},
+        filePath: cmPath,
+        parent: commonNode,
+        children: [],
+      };
+      cfgNode.children = [commonNode];
+      commonNode.children = [cmTypeNode];
+
+      await createElement(cmTypeNode, 'NewCommonModule');
+      const xmlPath = path.join(cmPath, 'NewCommonModule.xml');
+      assert.ok(fileExists(xmlPath));
+      const moduleXml = await readFileContent(xmlPath);
+      assert.ok(
+        !moduleXml.includes('<ChildObjects'),
+        'Configurator expects CommonModule without ChildObjects (see ut_demo_ForFormat)'
+      );
+      const updatedCfg = await readFileContent(configXmlPath);
+      assert.ok(updatedCfg.includes('NewCommonModule'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement Role under Общие finds Configuration.xml in EDT layout (src/Roles)', async () => {
+    const dir = await createTempDir('1cviewer-role-edt-');
+    try {
+      const srcRoles = path.join(dir, 'src', 'Roles');
+      await fs.promises.mkdir(srcRoles, { recursive: true });
+      const configXmlPath = path.join(dir, 'Configuration.xml');
+      const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
+    <Properties><Name>EdtCfg</Name></Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>
+`;
+      await fs.promises.writeFile(configXmlPath, configXml, 'utf-8');
+
+      const cfgNode = createConfigNode({ filePath: configXmlPath });
+      const commonNode: TreeNode = {
+        id: 'Common',
+        name: 'Общие',
+        type: MetadataType.Unknown,
+        properties: {},
+        parent: cfgNode,
+        children: [],
+      };
+      const rolesTypeNode: TreeNode = {
+        id: 'Roles',
+        name: 'Роли',
+        type: MetadataType.Role,
+        properties: {},
+        filePath: srcRoles,
+        parent: commonNode,
+        children: [],
+      };
+      cfgNode.children = [commonNode];
+      commonNode.children = [rolesTypeNode];
+
+      await createElement(rolesTypeNode, 'EdtRole');
+      assert.ok(fileExists(path.join(srcRoles, 'EdtRole.xml')));
+      const updatedCfg = await readFileContent(configXmlPath);
+      assert.ok(updatedCfg.includes('EdtRole'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
   });
 
   test('createElement throws for duplicate sibling name', async () => {

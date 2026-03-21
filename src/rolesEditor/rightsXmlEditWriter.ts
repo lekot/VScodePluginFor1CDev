@@ -54,6 +54,88 @@ const RIGHTS_XML_BUILDER_OPTIONS = {
 export type RightsDom = Array<Record<string, unknown>>;
 
 /**
+ * Root attributes required on the Rights element so 1C XDTO maps children to typed properties.
+ * A bare Rights root (no xmlns / xsi:type) makes the platform treat content as xs:anyType and fail on setForNewObjects.
+ */
+const RIGHTS_ROOT_ATTRS_1C: Record<string, string> = {
+  '@_xmlns': 'http://v8.1c.ru/8.2/roles',
+  '@_xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
+  '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+  '@_xsi:type': 'Rights',
+  '@_version': '2.20'
+};
+
+/**
+ * fast-xml-parser XMLBuilder (preserveOrder) does not emit the leading `:@` attribute bag as root tag
+ * attributes — output becomes a bare `<Rights>`. 1C then treats children as xs:anyType.
+ */
+const RIGHTS_ROOT_OPEN_TAG_1C =
+  '<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">';
+
+function applyRightsRootOpenTagFor1CXdto(xml: string): string {
+  return xml.replace(/<(?:[a-zA-Z0-9_.]+:)?Rights\b[^>]*>/, (openTag) => {
+    if (
+      openTag.includes('http://v8.1c.ru/8.2/roles') &&
+      openTag.includes('xsi:type') &&
+      openTag.includes('version=')
+    ) {
+      return openTag;
+    }
+    return RIGHTS_ROOT_OPEN_TAG_1C;
+  });
+}
+
+function findRightsKey(root: Record<string, unknown>): string | undefined {
+  for (const k of Object.keys(root)) {
+    if (k === 'Rights' || (k.includes(':') && k.split(':').pop() === 'Rights')) {
+      return k;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Ensure preserveOrder DOM has a leading attribute bag on the Rights root for 1C Configurator / EDT.
+ * Mutates dom in place.
+ */
+export function ensureRightsRootAttrsFor1CXdto(dom: RightsDom): void {
+  if (!dom.length || typeof dom[0] !== 'object' || dom[0] === null) {
+    return;
+  }
+  const root = dom[0] as Record<string, unknown>;
+  const rightsKey = findRightsKey(root);
+  if (!rightsKey) {
+    return;
+  }
+  const val = root[rightsKey];
+  if (!Array.isArray(val)) {
+    return;
+  }
+  const content = val as unknown[];
+  const first = content[0];
+  const isAttrBag =
+    first !== null &&
+    typeof first === 'object' &&
+    !Array.isArray(first) &&
+    ':@' in first &&
+    typeof (first as Record<string, unknown>)[':@'] === 'object' &&
+    (first as Record<string, unknown>)[':@'] !== null;
+
+  if (isAttrBag) {
+    const bag = (first as Record<string, unknown>)[':@'] as Record<string, string>;
+    for (const [attrName, defaultVal] of Object.entries(RIGHTS_ROOT_ATTRS_1C)) {
+      const cur = bag[attrName];
+      if (cur === undefined || cur === '') {
+        bag[attrName] = defaultVal;
+      }
+    }
+    return;
+  }
+
+  content.unshift({ ':@': { ...RIGHTS_ROOT_ATTRS_1C } });
+}
+
+/**
  * Compute path to Ext/Rights.xml from the role file path (same as roleXmlParser.parseRightsXml).
  * When opened file is Roles/ИмяРоли.xml → Roles/ИмяРоли/Ext/Rights.xml.
  */
@@ -71,11 +153,7 @@ export function createMinimalRightsDom(): RightsDom {
   const content: unknown[] = [
     {
       ':@': {
-        '@_xmlns': 'http://v8.1c.ru/8.2/roles',
-        '@_xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
-        '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-        '@_xsi:type': 'Rights',
-        '@_version': '2.20'
+        ...RIGHTS_ROOT_ATTRS_1C
       }
     },
     { setForNewObjects: [{ '#text': 'false' }] },
@@ -122,7 +200,9 @@ export async function loadRightsXml(rightsPath: string): Promise<RightsDom> {
     throw new Error('Не удалось разобрать Rights.xml: неверная структура документа.');
   }
 
-  return parsed as RightsDom;
+  const dom = parsed as RightsDom;
+  ensureRightsRootAttrsFor1CXdto(dom);
+  return dom;
 }
 
 function getRightsContentArray(dom: RightsDom): unknown[] {
@@ -389,7 +469,37 @@ function unescapeQuotesInConditions(xmlString: string): string {
  * Serialize Rights DOM to XML string. Preserves declaration and root attributes.
  * Unescapes &quot; so 1C compatibility is preserved.
  */
+/** Same pattern as RoleXmlParser.extractRestrictionTemplatesBlocks — strip template blocks from serialized Rights.xml. */
+const RESTRICTION_TEMPLATE_BLOCK_RE =
+  /<(?:[a-zA-Z0-9_.]+:)?restrictionTemplate\b[^>]*>[\s\S]*?<\/(?:[a-zA-Z0-9_.]+:)?restrictionTemplate>/gi;
+
+/**
+ * Remove all restrictionTemplate blocks from a Rights.xml string (before re-inserting user-edited templates).
+ */
+export function stripRestrictionTemplateBlocksFromRightsXml(xml: string): string {
+  return xml.replace(RESTRICTION_TEMPLATE_BLOCK_RE, '');
+}
+
+/**
+ * After merge/serialize, replace template section with user text (raw XML), inserted before closing </Rights>.
+ */
+export function insertRestrictionTemplatesBeforeClosingRights(
+  xml: string,
+  templatesBlock: string
+): string {
+  const trimmed = templatesBlock.trim();
+  const withoutOld = stripRestrictionTemplateBlocksFromRightsXml(xml);
+  if (!trimmed) {
+    return withoutOld;
+  }
+  return withoutOld.replace(
+    /<\/(?:[a-zA-Z0-9_.]+:)?Rights\s*>/i,
+    (closeTag) => `\n${trimmed}\n${closeTag}`
+  );
+}
+
 export function serializeRightsDomToXml(dom: RightsDom): string {
+  ensureRightsRootAttrsFor1CXdto(dom);
   const builder = new XMLBuilder(RIGHTS_XML_BUILDER_OPTIONS);
   let xmlString: string;
   try {
@@ -399,6 +509,7 @@ export function serializeRightsDomToXml(dom: RightsDom): string {
     Logger.error('Failed to serialize Rights.xml', err);
     throw new Error(`Не удалось сформировать Rights.xml: ${message}`);
   }
+  xmlString = applyRightsRootOpenTagFor1CXdto(xmlString);
   try {
     xmlString = unescapeQuotesInConditions(xmlString);
   } catch (e) {

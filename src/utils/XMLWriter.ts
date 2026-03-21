@@ -365,8 +365,7 @@ export class XMLWriter {
 \t\t\t</Synonym>
 \t\t\t<Comment/>
 ${defaultPropsLines}\t\t</Properties>
-\t\t<ChildObjects/>
-\t</${rootTag}>
+${rootTag === 'CommonModule' || rootTag === 'Role' ? '' : '\t\t<ChildObjects/>\n'}\t</${rootTag}>
 </MetaDataObject>
 `;
     content = injectInternalInfoIntoMetadataXml(content, rootTag, elementName);

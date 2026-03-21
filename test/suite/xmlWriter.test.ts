@@ -342,6 +342,26 @@ suite('XMLWriter', () => {
       assert.strictEqual(properties.NumberType, 'String');
       assert.strictEqual(Number(properties.NumberLength), 9);
     });
+
+    test('creates CommonModule without ChildObjects (1C Configurator leaf shape)', async () => {
+      const cmPath = path.join(tmpDir, 'TestCommonModule.xml');
+      await XMLWriter.createMinimalElementFile(cmPath, 'CommonModule', 'TestCommonModule');
+      assert.ok(fs.existsSync(cmPath));
+      const raw = await fs.promises.readFile(cmPath, 'utf-8');
+      assert.ok(!raw.includes('<ChildObjects'), 'CommonModule must not emit ChildObjects');
+      const properties = await XMLWriter.readProperties(cmPath);
+      assert.strictEqual(properties.Name, 'TestCommonModule');
+    });
+
+    test('creates Role without ChildObjects (EDT / Configurator readable shape)', async () => {
+      const rolePath = path.join(tmpDir, 'TestRole.xml');
+      await XMLWriter.createMinimalElementFile(rolePath, 'Role', 'TestRole');
+      assert.ok(fs.existsSync(rolePath));
+      const raw = await fs.promises.readFile(rolePath, 'utf-8');
+      assert.ok(!raw.includes('<ChildObjects'), 'Role must not emit ChildObjects');
+      const properties = await XMLWriter.readProperties(rolePath);
+      assert.strictEqual(properties.Name, 'TestRole');
+    });
   });
 
   // **Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5**

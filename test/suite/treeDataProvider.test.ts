@@ -393,6 +393,59 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
   });
 
+  test('getChildren lazy-loads Roles under Общие using Configuration root load context', async () => {
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    const parseCalls: Array<{ configPath: string; typeName: string }> = [];
+    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+      parseCalls.push({ configPath, typeName });
+      return [{ id: 'Roles.R1', name: 'R1', type: MetadataType.Role, properties: {} }];
+    };
+
+    try {
+      const cfgPath = path.join('C:', 'proj', 'cfg');
+      const root: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join(cfgPath, 'Configuration.xml'),
+        children: [],
+      };
+      const common: TreeNode = {
+        id: 'Common',
+        name: 'Общие',
+        type: MetadataType.Unknown,
+        properties: {},
+        parent: root,
+        children: [
+          {
+            id: 'Roles',
+            name: 'Роли',
+            type: MetadataType.Role,
+            properties: {},
+            filePath: path.join(cfgPath, 'Roles'),
+            parent: undefined,
+            children: [],
+          },
+        ],
+      };
+      common.children![0].parent = common;
+      root.children = [common];
+
+      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+
+      const rolesNode = common.children![0];
+      const children = await provider.getChildren(rolesNode);
+      assert.strictEqual(children.length, 1);
+      assert.strictEqual(children[0].name, 'R1');
+      assert.strictEqual(parseCalls.length, 1);
+      assert.strictEqual(parseCalls[0].configPath, cfgPath);
+      assert.strictEqual(parseCalls[0].typeName, 'Roles');
+    } finally {
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
+  });
+
   test('setRootNodes resolves stale ref in correct root when multi-root branches are identical', async () => {
     const makeFormsBranch = (formName: string): { root: TreeNode; forms: TreeNode } => {
       const forms: TreeNode = {

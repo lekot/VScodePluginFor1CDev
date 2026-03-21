@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { RoleModel } from './models/roleModel';
-import { MetadataObject } from './models/metadataObject';
+import type { MetadataObject } from './models/metadataObject';
 import { FilterState } from './models/filterState';
 import { WebviewMessage } from './models/webviewMessage';
 import { RoleXmlParser } from './roleXmlParser';
@@ -13,10 +13,12 @@ import {
   loadRightsXml,
   mergeRightsIntoDom,
   serializeRightsDomToXml,
+  insertRestrictionTemplatesBeforeClosingRights,
 } from './rightsXmlEditWriter';
 import { loadMetadataObjects } from './metadataLoader';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
+import { MetadataType } from '../models/treeNode';
 
 /**
  * Provider for the roles and rights editor webview
@@ -32,9 +34,37 @@ export class RolesRightsEditorProvider {
   };
   private disposables: vscode.Disposable[] = [];
   private saveInProgress = false;
+  /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
+  private objectsLoadGeneration = 0;
+  private tableRenderStatusDisposable: vscode.Disposable | undefined;
 
   constructor(private context: vscode.ExtensionContext) {
     Logger.info('RolesRightsEditorProvider initialized');
+  }
+
+  /**
+   * HTML is not emitted by tsc; integration tests compile to `out/src/rolesEditor/*.js` without copying the template.
+   * Production VSIX places it next to the JS under `dist/rolesEditor/`. Try common locations.
+   */
+  private resolveRolesEditorWebviewHtmlPath(): string {
+    const nextToCompiled = path.join(__dirname, 'rolesEditorWebview.html');
+    const candidates: string[] = [nextToCompiled];
+    if (this.context.extensionPath) {
+      candidates.push(
+        path.join(this.context.extensionPath, 'dist', 'rolesEditor', 'rolesEditorWebview.html'),
+        path.join(this.context.extensionPath, 'src', 'rolesEditor', 'rolesEditorWebview.html')
+      );
+    }
+    candidates.push(
+      path.join(__dirname, '..', '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html'),
+      path.join(__dirname, '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html')
+    );
+    for (const p of candidates) {
+      if (p && fs.existsSync(p)) {
+        return p;
+      }
+    }
+    return nextToCompiled;
   }
 
   /**
@@ -43,30 +73,68 @@ export class RolesRightsEditorProvider {
    * @param configPath Optional configuration path - if provided, skips the search for configuration root
    */
   public async show(roleFilePath: string, configPath?: string | null): Promise<void> {
+    const loadGeneration = ++this.objectsLoadGeneration;
     try {
       // Parse the role XML file
       this.currentRoleModel = await RoleXmlParser.parseRoleXml(roleFilePath);
+      if (loadGeneration !== this.objectsLoadGeneration) {
+        return;
+      }
       Logger.info(`Loaded role: ${this.currentRoleModel.name}`);
 
-      // Load metadata objects from configuration
-      // ConfigPath should be provided from tree data provider
-      if (configPath) {
-        this.allObjects = await loadMetadataObjects(roleFilePath, this.currentRoleModel.rights, configPath);
-        Logger.info(`Loaded ${this.allObjects.length} metadata objects`);
-      } else {
-        Logger.warn('Configuration path not found, showing read-only mode');
-        this.allObjects = [];
-      }
-
-      // Create or reveal webview panel
+      // Create or reveal webview panel immediately; load metadata in the background
       if (!this.panel) {
         this.panel = this.createPanel();
       } else {
         this.panel.reveal(vscode.ViewColumn.Beside);
       }
+      this.panel.title = `Rights: ${this.currentRoleModel.name}`;
 
-      // Update webview content
-      this.updateWebviewContent();
+      this.allObjects = [];
+      await this.updateWebviewContent({ initialTableLoading: true });
+
+      if (!configPath) {
+        Logger.warn('Configuration path not found, showing read-only mode');
+        if (loadGeneration !== this.objectsLoadGeneration) {
+          return;
+        }
+        this.sendMessageToWebview({
+          command: 'objectsLoaded',
+          data: {
+            objects: [] as MetadataObject[],
+            error: 'Configuration path not found; metadata table is empty.',
+          },
+        });
+        return;
+      }
+
+      try {
+        const objects = await loadMetadataObjects(
+          roleFilePath,
+          this.currentRoleModel.rights,
+          configPath
+        );
+        if (loadGeneration !== this.objectsLoadGeneration) {
+          return;
+        }
+        this.allObjects = objects;
+        Logger.info(`Loaded ${this.allObjects.length} metadata objects`);
+        this.sendMessageToWebview({
+          command: 'objectsLoaded',
+          data: { objects: this.allObjects },
+        });
+      } catch (loadErr) {
+        if (loadGeneration !== this.objectsLoadGeneration) {
+          return;
+        }
+        Logger.error('Failed to load metadata objects for rights editor', loadErr);
+        this.allObjects = [];
+        const message = loadErr instanceof Error ? loadErr.message : String(loadErr);
+        this.sendMessageToWebview({
+          command: 'objectsLoaded',
+          data: { objects: [] as MetadataObject[], error: message },
+        });
+      }
     } catch (error) {
       Logger.error('Failed to open rights editor', error);
       const message = error instanceof Error ? error.message : String(error);
@@ -107,26 +175,24 @@ export class RolesRightsEditorProvider {
   /**
    * Update the webview content
    */
-  private async updateWebviewContent(): Promise<void> {
+  private async updateWebviewContent(options?: { initialTableLoading?: boolean }): Promise<void> {
     if (!this.panel || !this.currentRoleModel) {
       return;
     }
 
-    this.panel.webview.html = await this.getWebviewContent();
+    this.panel.webview.html = await this.getWebviewContent(options?.initialTableLoading === true);
     Logger.debug('Rights editor panel updated');
   }
 
   /**
    * Generate the webview HTML content
    */
-  private async getWebviewContent(): Promise<string> {
+  private async getWebviewContent(initialTableLoading = false): Promise<string> {
     if (!this.currentRoleModel) {
       return this.getErrorHtml('No role model loaded');
     }
 
-    // Read the HTML template - use __dirname to get path to compiled output
-    const htmlPath = path.join(__dirname, 'rolesEditorWebview.html');
-
+    const htmlPath = this.resolveRolesEditorWebviewHtmlPath();
     let html = await fs.promises.readFile(htmlPath, 'utf8');
 
     // Prepare data to inject
@@ -134,20 +200,20 @@ export class RolesRightsEditorProvider {
       JSON.stringify({
         name: this.currentRoleModel.name,
         rights: this.currentRoleModel.rights,
+        restrictionTemplatesText: this.currentRoleModel.restrictionTemplatesText ?? '',
       })
     );
 
-    const objectsJson = this.escapeJsonForScript(
-      JSON.stringify(this.allObjects)
-    );
+    const objectsJson = this.escapeJsonForScript(JSON.stringify(this.allObjects));
+    const loadingFlag = initialTableLoading ? 'true' : 'false';
 
     // Inject data into the script (match line ending \n or \r\n)
     html = html.replace(
       /\s*\/\/ Request initial data\s*vscode\.postMessage\(\s*\{\s*command:\s*'ready'\s*\}\s*\)\s*;/,
       ` roleData = ${roleDataJson};
             allObjects = ${objectsJson};
-            initializeUI();
-            renderTable();`
+            tableInitialLoading = ${loadingFlag};
+            beginRightsEditorSession();`
     );
 
     return html;
@@ -171,7 +237,7 @@ export class RolesRightsEditorProvider {
           await this.handleUpdateRight(message);
           break;
         case 'save':
-          await this.handleSave();
+          await this.handleSave(message);
           break;
         case 'cancel':
           await this.handleCancel();
@@ -184,6 +250,9 @@ export class RolesRightsEditorProvider {
           break;
         case 'filterByType':
           await this.handleFilterByType(message);
+          break;
+        case 'tableRenderProgress':
+          this.handleTableRenderProgress(message);
           break;
         default:
           Logger.warn(`Unknown command: ${message.command}`);
@@ -221,8 +290,7 @@ export class RolesRightsEditorProvider {
     );
 
     if (result.success) {
-      // Refresh the table
-      this.updateWebviewContent();
+      // Webview already re-rendered; avoid full HTML rebuild (freezes UI on large configs).
       this.sendMessageToWebview({
         command: 'updateSuccess',
         data: {},
@@ -248,7 +316,7 @@ export class RolesRightsEditorProvider {
    * Case B: filePath is Role.xml → serialize with RoleXmlSerializer, write to filePath.
    * Case A: otherwise → rights in Ext/Rights.xml; load, merge, serialize, write to rightsPath.
    */
-  private async handleSave(): Promise<void> {
+  private async handleSave(message?: WebviewMessage): Promise<void> {
     if (this.saveInProgress) {
       Logger.warn('handleSave skipped: save already in progress');
       return;
@@ -259,6 +327,11 @@ export class RolesRightsEditorProvider {
       vscode.window.showErrorMessage(msg);
       this.sendMessageToWebview({ command: 'saveError', data: { message: msg } });
       return;
+    }
+
+    const rls = message?.data?.restrictionTemplatesText;
+    if (typeof rls === 'string') {
+      this.currentRoleModel.restrictionTemplatesText = rls;
     }
 
     this.saveInProgress = true;
@@ -310,9 +383,14 @@ export class RolesRightsEditorProvider {
         mergeRightsIntoDom(dom, this.currentRoleModel.rights, { compactWrite });
         Logger.info('Serializing DOM to XML...');
         xmlContent = serializeRightsDomToXml(dom);
+        xmlContent = insertRestrictionTemplatesBeforeClosingRights(
+          xmlContent,
+          this.currentRoleModel.restrictionTemplatesText ?? ''
+        );
       }
 
       Logger.info('Writing to temp file...');
+      await fs.promises.mkdir(path.dirname(tempPath), { recursive: true });
       await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
       Logger.info('Renaming temp to target...');
       try {
@@ -369,8 +447,6 @@ export class RolesRightsEditorProvider {
     if (message.data.showAll !== undefined) {
       this.filterState.showAll = message.data.showAll;
     }
-
-    this.updateWebviewContent();
   }
 
   /**
@@ -382,19 +458,41 @@ export class RolesRightsEditorProvider {
     }
 
     this.filterState.searchQuery = message.data.query;
-    this.updateWebviewContent();
   }
 
   /**
    * Handle filterByType message
    */
   private async handleFilterByType(message: WebviewMessage): Promise<void> {
-    if (!message.data || !message.data.types) {
+    if (!message.data) {
       return;
     }
+    if (message.data.types !== undefined) {
+      this.filterState.typeFilter = message.data.types;
+    } else if (message.data.type !== undefined) {
+      const t = message.data.type.trim();
+      this.filterState.typeFilter = t ? [t as MetadataType] : [];
+    }
+  }
 
-    this.filterState.typeFilter = message.data.types;
-    this.updateWebviewContent();
+  /**
+   * Large table renders run in the webview; reflect activity in the status bar so the window does not look hung.
+   */
+  private handleTableRenderProgress(message: WebviewMessage): void {
+    if (!message.data) {
+      return;
+    }
+    if (message.data.busy) {
+      this.tableRenderStatusDisposable?.dispose();
+      const n = message.data.rowCount;
+      const suffix = typeof n === 'number' ? ` (${n} rows)` : '';
+      this.tableRenderStatusDisposable = vscode.window.setStatusBarMessage(
+        `Rights editor: rendering table${suffix}…`
+      );
+    } else {
+      this.tableRenderStatusDisposable?.dispose();
+      this.tableRenderStatusDisposable = undefined;
+    }
   }
 
   /**
@@ -426,6 +524,7 @@ export class RolesRightsEditorProvider {
       'toggleFilter',
       'search',
       'filterByType',
+      'tableRenderProgress',
     ];
     return validCommands.includes(m.command);
   }
@@ -491,7 +590,9 @@ export class RolesRightsEditorProvider {
    */
   public dispose(): void {
     Logger.info('Disposing RolesRightsEditorProvider');
-    
+    this.tableRenderStatusDisposable?.dispose();
+    this.tableRenderStatusDisposable = undefined;
+
     if (this.panel) {
       this.panel.dispose();
       this.panel = undefined;
