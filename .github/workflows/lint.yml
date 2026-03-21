@@ -165,4 +165,25 @@ jobs:
         run: npm ci
 
       - name: Run smoke tests (blocking)
-        run: xvfb-run -a npm run test:smoke
+        run: |
+          set -o pipefail
+          xvfb-run -a npm run test:smoke > smoke-tests.log 2>&1
+          status=$?
+          echo "---- Smoke test errors ----"
+          rg -n -i "(error|referenceerror|typeerror|assertionerror|enoent|failed|precondition|extension host test runner error|process completed with exit code|exit code [1-9][0-9]*)" smoke-tests.log | tail -n 80 || true
+          exit $status
+
+      - name: Upload smoke test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-tests.log
+          path: smoke-tests.log
+
+      - name: Upload smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts
+          path: smoke-artifacts/**
+          if-no-files-found: ignore

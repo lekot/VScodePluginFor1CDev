@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { runTests } from '@vscode/test-electron';
 
 async function main() {
@@ -10,7 +11,7 @@ async function main() {
     const extensionDevelopmentPath = path.resolve(__dirname, '../../');
     const extensionTestsPath = path.resolve(__dirname, './suite/smoke/index');
     const workspaceFolder = path.resolve(extensionDevelopmentPath, 'test/fixtures/designer-config');
-    const workspaceUri = `file:///${workspaceFolder.replace(/\\/g, '/')}`;
+    const workspaceUri = pathToFileURL(workspaceFolder).toString();
 
     await runTests({
       extensionDevelopmentPath,

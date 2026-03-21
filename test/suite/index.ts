@@ -35,7 +35,10 @@ export function run(): Promise<void> {
   const testsRoot = path.resolve(__dirname, '..');
 
   return new Promise((c, e) => {
-    const testFiles = glob.sync('**/**.test.js', { cwd: testsRoot });
+    const testFiles = glob.sync('**/**.test.js', {
+      cwd: testsRoot,
+      ignore: ['suite/smoke/**', '**/smoke/**'],
+    });
 
     testFiles.forEach((file) => mocha.addFile(path.resolve(testsRoot, file)));
 

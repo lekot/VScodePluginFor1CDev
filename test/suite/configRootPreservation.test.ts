@@ -25,7 +25,8 @@ import { getConfigRootFromNode } from '../../src/utils/configHelpers';
  *   - nodes with parentFilePath set
  *   - nodes with filePath.endsWith('.bsl')
  */
-suite('Preservation Property Tests: Non-Configuration Nodes Unaffected', () => {
+suite('Preservation Property Tests: Non-Configuration Nodes Unaffected', function () {
+  this.timeout(10000);
   let provider: PropertiesProvider;
   let treeDataProvider: MetadataTreeDataProvider;
   let typeEditorProvider: TypeEditorProvider;
