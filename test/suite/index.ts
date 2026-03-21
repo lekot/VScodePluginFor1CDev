@@ -1,6 +1,10 @@
 import * as path from 'path';
 import Mocha from 'mocha';
 import * as glob from 'glob';
+import {
+  resolveMissingMandatorySuites,
+  writeSuiteExecutionReport,
+} from './suiteExecutionReport';
 
 /**
  * In Electron's extension host, `global` (Node CJS) and `globalThis` can differ.
@@ -41,13 +45,52 @@ export function run(): Promise<void> {
     });
 
     testFiles.forEach((file) => mocha.addFile(path.resolve(testsRoot, file)));
+    const discoveredSuites = testFiles.map((file) => file.replace(/\\/g, '/')).sort();
+    const executedSuitesSet = new Set<string>();
+    const mandatoryRaw = process.env.MANDATORY_SUITES_VSCODE;
 
     try {
-      mocha.run((failures: number) => {
+      const runner = mocha.run((failures: number) => {
+        const executedSuites = Array.from(executedSuitesSet).sort();
+        const missingMandatorySuites = resolveMissingMandatorySuites(executedSuites, mandatoryRaw);
+
+        writeSuiteExecutionReport(process.env.SUITE_REPORT_PATH_VSCODE, {
+          job: 'vscode',
+          discoveredSuites,
+          executedSuites,
+          mandatorySuites: mandatoryRaw ? mandatoryRaw.split(',').map((entry) => entry.trim()).filter(Boolean) : [],
+          missingMandatorySuites,
+          testStats: {
+            passes: runner.stats?.passes ?? 0,
+            failures: runner.stats?.failures ?? failures,
+            pending: runner.stats?.pending ?? 0,
+            total: runner.stats?.tests ?? 0,
+          },
+        });
+
+        if (missingMandatorySuites.length > 0) {
+          e(new Error(`Mandatory VSCode suite(s) did not execute: ${missingMandatorySuites.join(', ')}`));
+          return;
+        }
         if (failures > 0) {
           e(new Error(`${failures} tests failed.`));
         } else {
           c();
+        }
+      });
+      runner.on('pass', (test) => {
+        if (test.file) {
+          executedSuitesSet.add(path.relative(testsRoot, test.file).replace(/\\/g, '/'));
+        }
+      });
+      runner.on('fail', (test) => {
+        if (test.file) {
+          executedSuitesSet.add(path.relative(testsRoot, test.file).replace(/\\/g, '/'));
+        }
+      });
+      runner.on('pending', (test) => {
+        if (test.file) {
+          executedSuitesSet.add(path.relative(testsRoot, test.file).replace(/\\/g, '/'));
         }
       });
     } catch (err) {

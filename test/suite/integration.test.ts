@@ -8,6 +8,7 @@ import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { createElement } from '../../src/services/elementOperations';
+import { renameElement } from '../../src/services/elementOperations';
 
 suite('Integration', () => {
   const fixturesPath = path.join(__dirname, '../fixtures', 'designer-config');
@@ -234,6 +235,54 @@ suite('Integration', () => {
       const resolvedChildren = await provider.getChildren(staleCatalogsA);
       assert.ok(resolvedChildren.some((n) => n.name === createdInA), 'Expected child from stale-ref root');
       assert.ok(!resolvedChildren.some((n) => n.name === createdInB), 'Foreign branch child must not be mixed in');
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('multi-root rename command updates only target root on disk', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-multiroot-rename-'));
+    const cfgA = path.join(tmpRoot, 'configA');
+    const cfgB = path.join(tmpRoot, 'configB');
+    try {
+      if ((fs.promises as any).cp) {
+        await (fs.promises as any).cp(fixturesPath, cfgA, { recursive: true });
+        await (fs.promises as any).cp(fixturesPath, cfgB, { recursive: true });
+      } else if ((fs as any).cpSync) {
+        (fs as any).cpSync(fixturesPath, cfgA, { recursive: true });
+        (fs as any).cpSync(fixturesPath, cfgB, { recursive: true });
+      } else {
+        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
+      }
+
+      const rootA = await MetadataParser.parse(cfgA);
+      const rootB = await MetadataParser.parse(cfgB);
+      const catalogsA = (rootA.children ?? []).find((n) => n.id === 'Catalogs' || n.name === 'Catalogs');
+      const catalogsB = (rootB.children ?? []).find((n) => n.id === 'Catalogs' || n.name === 'Catalogs');
+      assert.ok(catalogsA && catalogsA.children && catalogsA.children.length > 0, 'Catalogs in root A are required');
+      assert.ok(catalogsB && catalogsB.children && catalogsB.children.length > 0, 'Catalogs in root B are required');
+
+      const catalogInA = catalogsA!.children![0];
+      const oldNameA = catalogInA.name;
+      const renamedA = `${oldNameA}_Renamed_${Date.now()}`;
+      await renameElement(catalogInA, renamedA, cfgA);
+
+      assert.ok(
+        fs.existsSync(path.join(cfgA, 'Catalogs', `${renamedA}.xml`)),
+        'Target root should contain renamed XML file'
+      );
+      assert.ok(
+        !fs.existsSync(path.join(cfgA, 'Catalogs', `${oldNameA}.xml`)),
+        'Target root should no longer contain old XML file'
+      );
+      assert.ok(
+        fs.existsSync(path.join(cfgB, 'Catalogs', `${oldNameA}.xml`)),
+        'Foreign root should keep original XML file'
+      );
+      assert.ok(
+        !fs.existsSync(path.join(cfgB, 'Catalogs', `${renamedA}.xml`)),
+        'Foreign root should not receive renamed XML file'
+      );
     } finally {
       await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }

@@ -38,6 +38,9 @@ jobs:
       - name: Run strict linter
         run: npm run lint:ci
 
+      - name: Run promise discipline lint for test entrypoints
+        run: npm run lint:test-promises
+
       - name: PR lint annotations
         if: github.event_name == 'pull_request'
         uses: reviewdog/action-eslint@v1
@@ -53,6 +56,7 @@ jobs:
         run: |
           echo "## Lint" >> $GITHUB_STEP_SUMMARY
           echo "- Strict mode: enabled (\`--max-warnings 0\`)" >> $GITHUB_STEP_SUMMARY
+          echo "- Test async discipline: enabled for critical test entrypoints (\`@typescript-eslint/no-floating-promises\`)" >> $GITHUB_STEP_SUMMARY
           echo "- PR annotations: reviewdog (\`github-pr-check\`)" >> $GITHUB_STEP_SUMMARY
 
   tests:
@@ -60,6 +64,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      SUITE_REPORT_PATH_CORE: suite-reports/core.json
+      MANDATORY_SUITES_CORE: suite/xmlWriter.test.js,suite/configurationXmlUpdater.test.js,suite/servicesCoverage.test.js,suite/fixtureMatrix.test.js
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -75,6 +82,19 @@ jobs:
 
       - name: Run tests
         run: npm run test:ci
+
+      - name: Upload core suite report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-suite-report
+          path: suite-reports/core.json
+
+      - name: Append core suite summary
+        if: always()
+        run: |
+          node scripts/render-suite-report-summary.js suite-reports/core-summary.md suite-reports/core.json
+          cat suite-reports/core-summary.md >> $GITHUB_STEP_SUMMARY
 
   coverage:
     name: Coverage (delta)
@@ -115,6 +135,9 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+    env:
+      SUITE_REPORT_PATH_VSCODE: suite-reports/vscode.json
+      MANDATORY_SUITES_VSCODE: suite/integration.test.js,suite/metadataWatcherService.test.js,suite/propertiesIntegration.test.js,suite/rightsEditor.integration.test.js,suite/formLifecycle.integration.test.js
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -145,12 +168,28 @@ jobs:
           name: vscode-tests.log
           path: vscode-tests.log
 
+      - name: Upload VSCode suite report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-suite-report
+          path: suite-reports/vscode.json
+
+      - name: Append VSCode suite summary
+        if: always()
+        run: |
+          node scripts/render-suite-report-summary.js suite-reports/vscode-summary.md suite-reports/vscode.json
+          cat suite-reports/vscode-summary.md >> $GITHUB_STEP_SUMMARY
+
   smoke-tests:
     name: Smoke tests (required)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      SUITE_REPORT_PATH_SMOKE: suite-reports/smoke.json
+      MANDATORY_SUITES_SMOKE: suite/smoke/smoke.test.js
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -187,3 +226,16 @@ jobs:
           name: smoke-artifacts
           path: smoke-artifacts/**
           if-no-files-found: ignore
+
+      - name: Upload smoke suite report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-suite-report
+          path: suite-reports/smoke.json
+
+      - name: Append smoke suite summary
+        if: always()
+        run: |
+          node scripts/render-suite-report-summary.js suite-reports/smoke-summary.md suite-reports/smoke.json
+          cat suite-reports/smoke-summary.md >> $GITHUB_STEP_SUMMARY

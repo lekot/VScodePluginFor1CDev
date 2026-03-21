@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration>
+    <Properties>
+      <Name>MatrixLarge</Name>
+    </Properties>
+    <ChildObjects>
+      <Catalog>CatalogA</Catalog>
+      <Catalog>CatalogB</Catalog>
+      <Catalog>CatalogC</Catalog>
+      <Catalog>CatalogD</Catalog>
+      <Catalog>CatalogE</Catalog>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>
