@@ -199,9 +199,9 @@ ${childObjects}
     assert.ok(configXml.includes('<Catalog>CatWithAttr</Catalog>'),
       'Configuration.xml must not be modified when deleting nested element');
 
-    // Nested delete path currently keeps parent XML structure untouched.
+    // Nested delete should remove only nested attribute from parent XML.
     const catalogXml = fs.readFileSync(catalogPath, 'utf-8');
-    assert.ok(catalogXml.includes('<Name>TestAttr</Name>'),
-      'Parent XML should remain unchanged for nested delete operation');
+    assert.ok(!catalogXml.includes('<Name>TestAttr</Name>'),
+      'Parent XML should remove nested attribute on delete operation');
   });
 });
