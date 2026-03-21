@@ -10,6 +10,7 @@ import { injectInternalInfoIntoMetadataXml } from '../services/internalInfoGener
 import { normalizeMetaDataObjectRoot } from '../services/metaDataObjectRootNormalizer';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeFormatter } from './typeFormatter';
+import { buildTabularSectionInternalInfoObject } from '../services/internalInfoGenerator';
 
 /** Top-level metadata types that have their own XML file in Designer. */
 const TOP_LEVEL_TYPES = new Set<MetadataType>([
@@ -228,7 +229,8 @@ export class XMLWriter {
     elementType: string,
     elementName: string,
     minimalProperties?: Record<string, unknown>,
-    parentRootType?: MetadataType
+    parentRootType?: MetadataType,
+    parentObjectName?: string
   ): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     const parsed = this.parser.parse(xmlContent);
@@ -237,7 +239,8 @@ export class XMLWriter {
       elementType,
       elementName,
       minimalProperties ?? {},
-      parentRootType
+      parentRootType,
+      parentObjectName
     );
     const xmlString = this.builder.build(updated);
 
@@ -405,14 +408,22 @@ ${defaultPropsLines}\t\t</Properties>
     elementType: string,
     elementName: string,
     minimalProperties: Record<string, unknown>,
-    parentRootType?: MetadataType
+    parentRootType?: MetadataType,
+    parentObjectName?: string
   ): unknown {
-    const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
-    const newBlock = this.buildMinimalNestedElement(elementType, elementName, minimalProperties, parentRootType);
+    const isChildObjectElement = elementType === 'Attribute' || elementType === 'TabularSection';
+    const containerName = isChildObjectElement ? 'ChildObjects' : elementType + 's';
+    const newBlock = this.buildMinimalNestedElement(
+      elementType,
+      elementName,
+      minimalProperties,
+      parentRootType,
+      parentObjectName
+    );
 
-    // Special handling for TOP_LEVEL_TYPES metadata metadata: only add to main Root-level ChildObjects,
-    // not nested ChildObjects. Prevents adding attributes to InternalInfo/GeneratedType/ChildObjects.
-    if (elementType === 'Attribute') {
+    // Special handling for ChildObjects elements: only add to the root metadata object's ChildObjects,
+    // not nested ChildObjects. This avoids writing into InternalInfo/GeneratedType branches.
+    if (isChildObjectElement) {
       return this.addNestedElementInRootStructure(
         parsed,
         containerName,
@@ -431,8 +442,9 @@ ${defaultPropsLines}\t\t</Properties>
     elementType: string,
     elementName: string
   ): unknown {
-    const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
-    if (elementType === 'Attribute') {
+    const isChildObjectElement = elementType === 'Attribute' || elementType === 'TabularSection';
+    const containerName = isChildObjectElement ? 'ChildObjects' : elementType + 's';
+    if (isChildObjectElement) {
       return this.removeNestedElementInRootStructure(parsed, containerName, elementType, elementName);
     }
     return this.mutateChildObjectsArray(parsed, containerName, elementType, (arr) => {
@@ -576,24 +588,21 @@ ${defaultPropsLines}\t\t</Properties>
                 }
               }
             } else if (childObjects && typeof childObjects === 'object') {
-              // preserveOrder:false with a single child: { Attribute: { ... } }
+              // preserveOrder:false object form: { Attribute: {...} | [...], TabularSection: {...} | [...] }
               const childObj = childObjects as Record<string, unknown>;
               if (elementType in childObj) {
                 const inner = childObj[elementType];
-                // inner is the Attribute content object (with @_uuid, Properties, etc.)
-                // Need to extract Name from it — wrap as array for extractNameFromElementArray
-                if (inner && typeof inner === 'object') {
-                  const innerObj = inner as Record<string, unknown>;
-                  if ('Properties' in innerObj) {
-                    const props = innerObj.Properties;
-                    const name = typeof props === 'object' && props !== null
-                      ? this.extractNameFromElementArray(Array.isArray(props) ? props as unknown[] : [props])
-                      : '';
-                    if (name === elementName) {
-                      result[typeName as string] = { ...elemObj, ChildObjects: [] };
-                      return result;
-                    }
+                const items = Array.isArray(inner) ? inner : inner != null ? [inner] : [];
+                const filtered = items.filter((item) => this.extractNameFromNestedElement(item) !== elementName);
+                if (filtered.length !== items.length) {
+                  const nextChildObj = { ...childObj };
+                  if (filtered.length === 0) {
+                    delete nextChildObj[elementType];
+                  } else {
+                    nextChildObj[elementType] = filtered;
                   }
+                  result[typeName as string] = { ...elemObj, ChildObjects: nextChildObj };
+                  return result;
                 }
               }
             }
@@ -631,11 +640,40 @@ ${defaultPropsLines}\t\t</Properties>
     return '';
   }
 
+  private static extractNameFromNestedElement(element: unknown): string {
+    if (!element || typeof element !== 'object') {
+      return '';
+    }
+    const elementObj = element as Record<string, unknown>;
+    const props = elementObj.Properties;
+    if (!props) {
+      return '';
+    }
+    if (Array.isArray(props)) {
+      return this.extractNameFromElementArray(props);
+    }
+    if (typeof props === 'object' && props !== null) {
+      const propsObj = props as Record<string, unknown>;
+      const rawName = propsObj.Name;
+      if (typeof rawName === 'string') {
+        return rawName;
+      }
+      if (Array.isArray(rawName) && rawName.length > 0) {
+        const first = rawName[0];
+        if (first && typeof first === 'object' && '#text' in (first as object)) {
+          return String((first as Record<string, unknown>)['#text']);
+        }
+      }
+    }
+    return '';
+  }
+
   private static buildMinimalNestedElement(
     elementType: string,
     elementName: string,
     minimalProperties: Record<string, unknown>,
-    parentRootType?: MetadataType
+    parentRootType?: MetadataType,
+    parentObjectName?: string
   ): Record<string, unknown> {
     const uuid = this.generateSimpleUuid();
     const defaults =
@@ -716,6 +754,25 @@ ${defaultPropsLines}\t\t</Properties>
     }
 
     // Return the element representation: element with uuid attribute and Properties child
+    if (elementType === 'TabularSection') {
+      return {
+        [elementType]: {
+          '@_uuid': uuid,
+          ...(parentRootType && parentObjectName
+            ? {
+                InternalInfo: buildTabularSectionInternalInfoObject(
+                  String(parentRootType),
+                  parentObjectName,
+                  elementName
+                ),
+              }
+            : {}),
+          Properties: propertiesObject,
+          ChildObjects: {},
+        },
+      };
+    }
+
     return {
       [elementType]: {
         '@_uuid': uuid,
@@ -1337,7 +1394,10 @@ ${defaultPropsLines}\t\t</Properties>
       return parsed;
     }
 
-    const containerName = elementType === 'Attribute' ? 'ChildObjects' : elementType + 's';
+    const containerName =
+      elementType === 'Attribute' || elementType === 'TabularSection'
+        ? 'ChildObjects'
+        : elementType + 's';
     const matchesContainer = (k: string) => k === containerName || k.endsWith(':' + containerName);
     const innerHasElementType = (v: Record<string, unknown>) =>
       elementType in v || Object.keys(v).some((k) => k === elementType || k.endsWith(':' + elementType));

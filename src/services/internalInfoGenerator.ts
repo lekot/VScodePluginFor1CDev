@@ -127,3 +127,27 @@ export function injectInternalInfoIntoMetadataXml(
   return xml.replace(re, `$1${internalInfo}${indent}<Properties>`);
 }
 
+export function buildTabularSectionInternalInfoObject(
+  rootTag: string,
+  parentObjectName: string,
+  sectionName: string
+): Record<string, unknown> {
+  const sectionTypePrefix = `${rootTag}TabularSection`;
+  const rowTypePrefix = `${rootTag}TabularSectionRow`;
+  const generatedBase = `${parentObjectName}.${sectionName}`;
+
+  const makeType = (namePrefix: string, category: string): Record<string, unknown> => ({
+    '@_name': `${namePrefix}.${generatedBase}`,
+    '@_category': category,
+    'xr:TypeId': [{ '#text': XMLWriter.generateSimpleUuid() }],
+    'xr:ValueId': [{ '#text': XMLWriter.generateSimpleUuid() }],
+  });
+
+  return {
+    'xr:GeneratedType': [
+      makeType(sectionTypePrefix, 'TabularSection'),
+      makeType(rowTypePrefix, 'TabularSectionRow'),
+    ],
+  };
+}
+

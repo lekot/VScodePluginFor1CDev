@@ -26,6 +26,14 @@ import { getFormPaths } from './formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from './utils/configHelpers';
 import { initDesignerTemplateRepository } from './services/designerTemplateRepository';
 import { ensureR6PlaceholdersForInstanceNode, normalizeEmptyPlaceholderTree } from './utils/treeNormalization';
+import { ReloadCoordinatorService } from './services/reloadCoordinatorService';
+import {
+  DELETE_RECONCILE_ATTEMPTS,
+  DELETE_RECONCILE_POLL_MS,
+  DELETE_RECONCILE_TIMEOUT_MS,
+  recoverDeleteUiStateAfterReconcileIssue,
+} from './services/deleteReconcileRecovery';
+import { ReloadReason } from './types/reloadContracts';
 
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
@@ -145,6 +153,7 @@ let typeEditorProvider: TypeEditorProvider | null = null;
 let rolesRightsEditorProvider: RolesRightsEditorProvider | null = null;
 let extensionContext: vscode.ExtensionContext | undefined;
 let metadataWatchers: MetadataWatcherService[] = [];
+let reloadCoordinator: ReloadCoordinatorService | null = null;
 
 /**
  * Activate the extension
@@ -179,6 +188,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Create properties provider
   propertiesProvider = new PropertiesProvider(context, treeDataProvider, typeEditorProvider);
   context.subscriptions.push(propertiesProvider);
+  reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
+    Logger.info('reload.run.started', { configPath, reason, operationId });
+    await invalidateTreeCacheOnly(configPath);
+    await loadMetadataTree();
+    Logger.info('reload.run.completed', { configPath, reason, operationId, success: true });
+  });
+  context.subscriptions.push({
+    dispose: () => {
+      reloadCoordinator?.dispose();
+      reloadCoordinator = null;
+    },
+  });
 
   // Form editor (custom editor for Ext/Form.xml)
   const formEditorProvider = new FormEditorProvider();
@@ -506,9 +527,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       );
       if (choice !== 'Удалить') {return;}
       try {
+        const operationId = `delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         await doDeleteElement(target);
-        vscode.window.showInformationMessage(`Удалён элемент: ${target.name}`);
-        await invalidateCacheAndReload(configPath);
+        try {
+          treeDataProvider?.applyOptimisticDelete(target, operationId);
+        } catch (optimisticError) {
+          Logger.error('delete.optimistic.apply.failed', optimisticError);
+          await invalidateCacheAndReload(configPath);
+          vscode.window.showWarningMessage(
+            `Удалён элемент: ${target.name}. Быстрое обновление дерева не удалось; выполнена полная перезагрузка.`
+          );
+          return;
+        }
+
+        scheduleDeleteReconcile(configPath, operationId, target.id, target.name);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(msg);
@@ -813,10 +845,141 @@ function getWorkspaceRelativePath(workspaceFolderPath: string, configRootPath: s
  * Used after create/delete/rename/duplicate operations to ensure fresh state.
  */
 async function invalidateCacheAndReload(configPath: string): Promise<void> {
+  await invalidateTreeCacheOnly(configPath);
+  await loadMetadataTree();
+}
+
+async function invalidateTreeCacheOnly(configPath: string): Promise<void> {
   if (extensionContext?.globalStoragePath) {
     await invalidateTreeCache(extensionContext.globalStoragePath, configPath);
   }
-  await loadMetadataTree();
+}
+
+async function recoverDeleteUiState(
+  configPath: string,
+  elementName: string,
+  deletedNodeId: string,
+  reason: 'timeout' | 'failed'
+): Promise<void> {
+  const recovery = await recoverDeleteUiStateAfterReconcileIssue({
+    elementName,
+    reason,
+    forceRefresh: async () => {
+      await invalidateCacheAndReload(configPath);
+    },
+    verifyDeletionConverged: async () => verifyNodeDeletedInTree(configPath, deletedNodeId),
+  });
+
+  const logPayload = {
+    configPath,
+    elementName,
+    deletedNodeId,
+    reason,
+    rollbackApplied: recovery.rollbackApplied,
+    refreshAttempted: recovery.refreshAttempted,
+    refreshSucceeded: recovery.refreshSucceeded,
+    converged: recovery.converged,
+    shouldNotifyUser: recovery.shouldNotifyUser,
+  };
+  if (recovery.shouldNotifyUser) {
+    Logger.warn('delete.reconcile.recovery', logPayload);
+    if (recovery.message) {
+      vscode.window.showWarningMessage(recovery.message);
+    }
+  } else {
+    Logger.info('delete.reconcile.recovery.silent', logPayload);
+  }
+}
+
+function scheduleCoordinatedReload(
+  configPath: string,
+  reason: ReloadReason,
+  options?: { debounceMs?: number; operationId?: string }
+): void {
+  if (!reloadCoordinator) {
+    void invalidateCacheAndReload(configPath).catch((error) => Logger.error('Fallback reload failed', error));
+    return;
+  }
+  reloadCoordinator.scheduleReload(configPath, reason, options);
+  Logger.info('reload.schedule', {
+    configPath,
+    reason,
+    operationId: options?.operationId,
+    state: reloadCoordinator.getState(configPath),
+  });
+}
+
+function scheduleDeleteReconcile(
+  configPath: string,
+  operationId: string,
+  deletedNodeId: string,
+  elementName: string
+): void {
+  const coordinator = reloadCoordinator;
+  if (!coordinator) {
+    void invalidateCacheAndReload(configPath).catch((error) => Logger.error('Fallback delete reconcile failed', error));
+    return;
+  }
+
+  coordinator.markMutationWindow(configPath, operationId);
+  const initialState = coordinator.getState(configPath);
+  const baselineExecuted = initialState.executedCount;
+  scheduleCoordinatedReload(configPath, 'delete-command', { operationId, debounceMs: 0 });
+
+  const finalize = async (): Promise<void> => {
+    for (let i = 0; i < DELETE_RECONCILE_ATTEMPTS; i++) {
+      await new Promise((resolve) => setTimeout(resolve, DELETE_RECONCILE_POLL_MS));
+      const result = coordinator.getOperationResult(configPath, operationId);
+      if (result) {
+        if (!result.succeeded) {
+          Logger.warn('delete.reconcile.failed', {
+            operationId,
+            elementName,
+            reason: result.reason,
+            error: result.error,
+          });
+          await recoverDeleteUiState(configPath, elementName, deletedNodeId, 'failed');
+          return;
+        }
+
+        const state = coordinator.getState(configPath);
+        Logger.info('delete.reconcile.completed', {
+          operationId,
+          success: true,
+          baselineExecuted,
+          scheduled: state.scheduledCount,
+          executed: state.executedCount,
+          coalesced: state.coalescedCount,
+          suppressedWatcher: state.suppressedWatcherCount,
+        });
+        vscode.window.showInformationMessage(`Удалён элемент: ${elementName}`);
+        return;
+      }
+    }
+
+    Logger.warn('delete.reconcile.timeout', { operationId, elementName, timeoutMs: DELETE_RECONCILE_TIMEOUT_MS });
+    await recoverDeleteUiState(configPath, elementName, deletedNodeId, 'timeout');
+  };
+
+  void finalize().catch((error) => {
+    Logger.error('delete.reconcile.monitor.failed', error);
+  });
+}
+
+async function verifyNodeDeletedInTree(configPath: string, deletedNodeId: string): Promise<boolean | null> {
+  const provider = treeDataProvider;
+  if (!provider) {
+    return null;
+  }
+  const existing = provider.findNodeById(deletedNodeId);
+  if (!existing) {
+    return true;
+  }
+  const existingConfigPath = provider.getConfigPathForNode(existing);
+  if (!existingConfigPath) {
+    return null;
+  }
+  return path.normalize(existingConfigPath) !== path.normalize(configPath);
 }
 
 /**
@@ -895,14 +1058,20 @@ async function loadMetadataTree(): Promise<void> {
         }
         metadataWatchers = [];
         const onReload = () => {
-          loadMetadataTree().catch((err) => Logger.error('Error during watcher-triggered reload', err));
+          // Backward-compatible callback path: watcher still invokes this shape.
         };
         const onFileChanged = (changedPath: string) => {
           propertiesProvider?.notifyFileChangedExternally(changedPath);
         };
         for (const { configPath: configRoot } of configs) {
           const watcher = new MetadataWatcherService();
-          watcher.start(configRoot, { onTreeReload: onReload, onFileChanged });
+          watcher.start(configRoot, {
+            onTreeReload: onReload,
+            onFsMutationBatch: (meta) => {
+              scheduleCoordinatedReload(meta.configPath, 'watcher');
+            },
+            onFileChanged,
+          });
           metadataWatchers.push(watcher);
           extensionContext?.subscriptions.push(watcher);
         }
@@ -933,5 +1102,7 @@ export function deactivate(): void {
     w.dispose();
   }
   metadataWatchers = [];
+  reloadCoordinator?.dispose();
+  reloadCoordinator = null;
   Logger.info(MESSAGES.EXTENSION_DEACTIVATED);
 }

@@ -9,6 +9,7 @@ import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 import { ensureR6PlaceholdersForInstanceNode } from '../utils/treeNormalization';
+import { OptimisticDeleteToken } from '../types/reloadContracts';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -1219,6 +1220,83 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return this.resolveActiveNode(node);
   }
 
+  applyOptimisticDelete(node: TreeNode, operationId: string): OptimisticDeleteToken | null {
+    const activeNode = this.resolveActiveNode(node);
+    const parent = activeNode.parent;
+    if (!parent || !parent.children || parent.children.length === 0) {
+      return null;
+    }
+
+    const removedIndex = parent.children.findIndex((candidate) =>
+      candidate === activeNode ||
+      (
+        candidate.id === activeNode.id &&
+        candidate.name === activeNode.name &&
+        candidate.type === activeNode.type
+      )
+    );
+    if (removedIndex < 0) {
+      return null;
+    }
+
+    const [removedNode] = parent.children.splice(removedIndex, 1);
+    if (!removedNode) {
+      return null;
+    }
+
+    const configPath = this.getConfigPathForNode(parent) ?? '';
+    const token: OptimisticDeleteToken = {
+      configRootId: this.getNodeRootIdentity(parent),
+      parentId: parent.id,
+      removedNodeId: removedNode.id,
+      removedNodeSnapshot: this.cloneNodeForRollback(removedNode),
+      removedIndex,
+      operationId,
+    };
+    this.filterAncestorOrVisibleIds = null;
+    this.refresh(parent);
+    Logger.info('Applied optimistic delete', { operationId, configPath, parentId: parent.id, removedNodeId: removedNode.id });
+    return token;
+  }
+
+  rollbackOptimisticDelete(token: OptimisticDeleteToken): boolean {
+    const parent = this.findRollbackParentNode(token);
+    if (!parent) {
+      Logger.warn('Rollback skipped: parent not found', { operationId: token.operationId, parentId: token.parentId });
+      return false;
+    }
+    if (!parent.children) {
+      parent.children = [];
+    }
+
+    const alreadyPresent = parent.children.some((child) => child.id === token.removedNodeId);
+    if (alreadyPresent) {
+      Logger.debug('Rollback skipped: node already present', { operationId: token.operationId, nodeId: token.removedNodeId });
+      return false;
+    }
+
+    const restoredNode = this.rehydrateRollbackNode(token.removedNodeSnapshot, parent);
+    const insertionIndex = Math.max(0, Math.min(token.removedIndex, parent.children.length));
+    parent.children.splice(insertionIndex, 0, restoredNode);
+    this.buildCache(restoredNode);
+    this.filterAncestorOrVisibleIds = null;
+    this.refresh(parent);
+    Logger.warn('Optimistic delete rolled back', { operationId: token.operationId, parentId: token.parentId, nodeId: token.removedNodeId });
+    return true;
+  }
+
+  private findRollbackParentNode(token: OptimisticDeleteToken): TreeNode | null {
+    const candidates = this.nodeCandidatesById.get(token.parentId) ?? [];
+    if (candidates.length === 0) {
+      return null;
+    }
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+    const scoped = candidates.find((candidate) => this.getNodeRootIdentity(candidate) === token.configRootId);
+    return scoped ?? candidates[0];
+  }
+
   /**
    * Find nodes by name (uses name index for fast lookup). For Stage 6 search.
    * @param query Normalized (e.g. lowercase) or exact name to match
@@ -1370,5 +1448,34 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       referenceKind: refKind,
       objectNames: Array.from(byKind.get(refKind) ?? []),
     }));
+  }
+
+  private cloneNodeForRollback(node: TreeNode): TreeNode {
+    return {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      properties: { ...node.properties },
+      filePath: node.filePath,
+      parentFilePath: node.parentFilePath,
+      isExpanded: node.isExpanded,
+      children: (node.children ?? []).map((child) => this.cloneNodeForRollback(child)),
+    };
+  }
+
+  private rehydrateRollbackNode(node: TreeNode, parent?: TreeNode): TreeNode {
+    const restored: TreeNode = {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      parent,
+      properties: { ...node.properties },
+      filePath: node.filePath,
+      parentFilePath: node.parentFilePath,
+      isExpanded: node.isExpanded,
+      children: [],
+    };
+    restored.children = (node.children ?? []).map((child) => this.rehydrateRollbackNode(child, restored));
+    return restored;
   }
 }
