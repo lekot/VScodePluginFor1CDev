@@ -1582,4 +1582,117 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     const searchQuery = provider.getSearchQuery();
     assert.strictEqual(searchQuery, 'Node1');
   });
+
+  test('applyOptimisticDelete removes node and rollback restores exact index', () => {
+    const parent: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [],
+    };
+    const first: TreeNode = { id: 'Catalogs.A', name: 'A', type: MetadataType.Catalog, properties: {}, parent };
+    const second: TreeNode = { id: 'Catalogs.B', name: 'B', type: MetadataType.Catalog, properties: {}, parent };
+    const third: TreeNode = { id: 'Catalogs.C', name: 'C', type: MetadataType.Catalog, properties: {}, parent };
+    parent.children = [first, second, third];
+    const root: TreeNode = {
+      id: 'config:A',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join('C:', 'cfgA', 'Configuration.xml'),
+      children: [parent],
+    };
+    parent.parent = root;
+    provider.setRootNode(root, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+
+    const token = provider.applyOptimisticDelete(second, 'op-1');
+    assert.ok(token, 'Optimistic token should be created');
+    assert.deepStrictEqual((parent.children ?? []).map((node) => node.name), ['A', 'C']);
+
+    const rolledBack = provider.rollbackOptimisticDelete(token!);
+    assert.strictEqual(rolledBack, true);
+    assert.deepStrictEqual((parent.children ?? []).map((node) => node.name), ['A', 'B', 'C']);
+  });
+
+  test('rollbackOptimisticDelete returns false for stale token when node already restored', () => {
+    const parent: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [],
+    };
+    const first: TreeNode = { id: 'Catalogs.A', name: 'A', type: MetadataType.Catalog, properties: {}, parent };
+    const second: TreeNode = { id: 'Catalogs.B', name: 'B', type: MetadataType.Catalog, properties: {}, parent };
+    parent.children = [first, second];
+    const root: TreeNode = {
+      id: 'config:A',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join('C:', 'cfgA', 'Configuration.xml'),
+      children: [parent],
+    };
+    parent.parent = root;
+    provider.setRootNode(root, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer });
+
+    const token = provider.applyOptimisticDelete(second, 'op-stale');
+    assert.ok(token);
+    const firstRollback = provider.rollbackOptimisticDelete(token!);
+    const staleRollback = provider.rollbackOptimisticDelete(token!);
+
+    assert.strictEqual(firstRollback, true);
+    assert.strictEqual(staleRollback, false, 'Second rollback with stale token should be a no-op');
+  });
+
+  test('rollbackOptimisticDelete is isolated by configRootId across multi-root collisions', () => {
+    const makeRoot = (cfgId: string, cfgPath: string, childName: string): { root: TreeNode; parent: TreeNode; child: TreeNode } => {
+      const parent: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [],
+      };
+      const child: TreeNode = {
+        id: 'Catalogs.Shared',
+        name: childName,
+        type: MetadataType.Catalog,
+        properties: {},
+        parent,
+      };
+      parent.children = [child];
+      const root: TreeNode = {
+        id: cfgId,
+        name: cfgId,
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join(cfgPath, 'Configuration.xml'),
+        children: [parent],
+      };
+      parent.parent = root;
+      return { root, parent, child };
+    };
+
+    const a = makeRoot('config:A', path.join('C:', 'cfgA'), 'OnlyA');
+    const b = makeRoot('config:B', path.join('C:', 'cfgB'), 'OnlyB');
+    provider.setRootNodes(
+      [a.root, b.root],
+      new Map([
+        [a.root.id, { configPath: path.join('C:', 'cfgA'), format: ConfigFormat.Designer }],
+        [b.root.id, { configPath: path.join('C:', 'cfgB'), format: ConfigFormat.Designer }],
+      ])
+    );
+
+    const tokenA = provider.applyOptimisticDelete(a.child, 'op-a');
+    assert.ok(tokenA);
+    assert.deepStrictEqual((a.parent.children ?? []).map((node) => node.name), []);
+    assert.deepStrictEqual((b.parent.children ?? []).map((node) => node.name), ['OnlyB']);
+
+    const rolledBack = provider.rollbackOptimisticDelete(tokenA!);
+    assert.strictEqual(rolledBack, true);
+    assert.deepStrictEqual((a.parent.children ?? []).map((node) => node.name), ['OnlyA']);
+    assert.deepStrictEqual((b.parent.children ?? []).map((node) => node.name), ['OnlyB']);
+  });
 });

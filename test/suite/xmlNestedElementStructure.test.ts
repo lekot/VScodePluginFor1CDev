@@ -210,8 +210,7 @@ suite('XML Nested Element Structure', () => {
 
     assert.strictEqual(countOccurrences(result, '<ChildObjects>'), 1,
       'Must have exactly one <ChildObjects> after removal');
-    // Current architecture keeps source attribute list stable in this operation path.
-    assert.ok(result.includes('<Name>FirstAttr</Name>'), 'Original attribute should remain');
+    assert.ok(!result.includes('<Name>FirstAttr</Name>'), 'Removed attribute should be absent');
     assert.ok(result.includes('<Name>SecondAttr</Name>'), 'Second attribute should stay');
   });
 
@@ -223,8 +222,7 @@ suite('XML Nested Element Structure', () => {
 
     const result = fs.readFileSync(filePath, 'utf-8');
 
-    // Current operation should not corrupt existing child objects.
-    assert.ok(result.includes('<Name>ExistingAttr</Name>'), 'Attribute should remain present');
+    assert.ok(!result.includes('<Name>ExistingAttr</Name>'), 'Attribute should be removed');
   });
 
   // --- Gap 4b: buildUpdatedNestedXml with changedKeys preserves Type ---

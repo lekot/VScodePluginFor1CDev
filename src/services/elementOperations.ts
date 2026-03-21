@@ -159,7 +159,7 @@ export async function createElement(
     if (!filePath || !fs.existsSync(filePath)) {
       throw new Error('Файл объекта не найден.');
     }
-    await XMLWriter.addNestedElement(filePath, 'Attribute', name, {}, parentNode.type);
+    await XMLWriter.addNestedElement(filePath, 'Attribute', name, {}, parentNode.type, parentNode.name);
     return;
   }
 
@@ -179,7 +179,7 @@ export async function createElement(
       
       // Determine the element type based on container type
       const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
-      await XMLWriter.addNestedElement(filePath, elementType, name, {}, parent.type);
+      await XMLWriter.addNestedElement(filePath, elementType, name, {}, parent.type, parent.name);
       return;
     }
   }
@@ -290,7 +290,8 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
       node.type === MetadataType.TabularSection ? 'TabularSection' : 'Attribute',
       name,
       minimalProps,
-      parent.type
+      parent.type,
+      parent.name
     );
     return;
   }

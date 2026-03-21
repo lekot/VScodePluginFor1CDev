@@ -230,5 +230,46 @@ suite('elementOperations', () => {
     const content = await readFileContent(catalogNode.filePath!);
     assert.ok(content.includes('<TabularSection'));
     assert.ok(content.includes('<Name>Items</Name>'));
+    assert.ok(content.includes('<ChildObjects>'));
+    assert.ok(content.includes('<ChildObjects>\n      <TabularSection') || content.includes('<ChildObjects>\r\n      <TabularSection'));
+    assert.ok(content.includes('<TabularSection') && content.includes('<ChildObjects/>'));
+    assert.ok(content.includes('<InternalInfo>'));
+    assert.ok(content.includes('category="TabularSection"'));
+    assert.ok(content.includes('category="TabularSectionRow"'));
+    assert.ok(!content.trimStart().startsWith('<TabularSections>'));
+    const tsStart = content.indexOf('<TabularSection');
+    const tsInternal = content.indexOf('<InternalInfo>', tsStart);
+    const tsProps = content.indexOf('<Properties>', tsStart);
+    const tsChildren = content.indexOf('<ChildObjects', tsStart);
+    assert.ok(tsStart >= 0 && tsInternal > tsStart && tsProps > tsInternal && tsChildren > tsProps);
+  });
+
+  test('deleteElement removes tabular section from object ChildObjects', async () => {
+    const tabularSectionsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'TabularSections');
+    await fs.promises.mkdir(tabularSectionsPath, { recursive: true });
+    const tabularSectionsNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catalogNode,
+      filePath: tabularSectionsPath,
+      properties: {},
+      children: undefined
+    };
+    await createElement(tabularSectionsNode, 'ToDelete');
+
+    const tabularNode: TreeNode = {
+      id: 'TabularSections.ToDelete',
+      name: 'ToDelete',
+      type: MetadataType.TabularSection,
+      parent: catalogNode,
+      parentFilePath: catalogNode.filePath,
+      properties: {},
+      children: undefined
+    };
+    await deleteElement(tabularNode);
+
+    const content = await readFileContent(catalogNode.filePath!);
+    assert.ok(!content.includes('<Name>ToDelete</Name>'));
   });
 });

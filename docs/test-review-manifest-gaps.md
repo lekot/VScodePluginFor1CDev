@@ -14,6 +14,28 @@
 
 Это значит, что при зеленом быстром прогоне можно пропустить регрессии, которые проявятся у пользователя после передачи файлов в платформу.
 
+## Актуальный статус закрытия (на сейчас)
+
+Статус после выполнения `docs/plans/test-review-remediation-plan.md`:
+
+- **Закрыто (`done`)**
+  - Обязательный runtime gate: `tests` + `vscode-tests` + `smoke-tests`.
+  - Fail-fast preconditions в smoke (нет "тихого" skip по отсутствию workspace/config root).
+  - Усиление properties integration (часть сценариев переведена на observable checks).
+  - Watcher suite (burst/debounce/conflict) в детерминированном тестовом контуре.
+  - Rights/form/multi-root integration сценарии существенно расширены.
+  - Fixture matrix и CI-report реально выполненных suite.
+
+- **Частично закрыто (`partial`)**
+  - Async discipline (`no-floating-promises`) внедрен не на весь `test/suite/**/*.test.ts`, а на ограниченный набор критичных entrypoints/сценариев.
+  - Часть integration-тестов все еще содержит pass-through/условные ветки, где проверка результата может быть недостаточно строгой.
+  - Smoke как gate стал строже, но путь form-editor зависит от наличия форм в текущей smoke-фикстуре.
+
+- **Остается gap (`open`)**
+  - Симметричное prod-like покрытие **EDT vs Designer** не доведено до целевого уровня (Designer-путь покрыт заметно лучше).
+
+Вывод по состоянию: **not fully closed** — риск значительно снижен, но не обнулен.
+
 ## Findings (по приоритету)
 
 ### Critical

@@ -6,6 +6,7 @@ const DEBOUNCE_MS = 500; // Increased from 400ms for better batching during git 
 
 export interface MetadataWatcherCallbacks {
   onTreeReload: () => void;
+  onFsMutationBatch?: (meta: { configPath: string; changedFiles: number; lastPath?: string }) => void;
   onFileChanged?: (changedFilePath: string) => void;
 }
 
@@ -21,6 +22,7 @@ export class MetadataWatcherService implements vscode.Disposable {
   private lastChangedPath: string | undefined;
   private changedPaths: Set<string> = new Set();
   private callbacks: MetadataWatcherCallbacks | undefined;
+  private configRoot: string | undefined;
 
   /**
    * Start watching XML files under configRoot (pattern: all .xml in subdirs).
@@ -29,6 +31,7 @@ export class MetadataWatcherService implements vscode.Disposable {
   start(configRoot: string, callbacks: MetadataWatcherCallbacks): void {
     this.stop();
     this.callbacks = callbacks;
+    this.configRoot = path.normalize(configRoot);
 
     const pattern = new vscode.RelativePattern(vscode.Uri.file(configRoot), '**/*.xml');
     this.watcher = vscode.workspace.createFileSystemWatcher(pattern);
@@ -57,6 +60,7 @@ export class MetadataWatcherService implements vscode.Disposable {
     const callbacks = this.callbacks;
     const lastPath = this.lastChangedPath;
     const changeCount = this.changedPaths.size;
+    const configPath = this.configRoot;
     
     this.lastChangedPath = undefined;
     this.changedPaths.clear();
@@ -67,6 +71,9 @@ export class MetadataWatcherService implements vscode.Disposable {
 
     try {
       Logger.info('Reloading tree after file changes', { changedFiles: changeCount });
+      if (configPath && callbacks.onFsMutationBatch) {
+        callbacks.onFsMutationBatch({ configPath, changedFiles: changeCount, lastPath });
+      }
       callbacks.onTreeReload();
       if (lastPath && callbacks.onFileChanged) {
         callbacks.onFileChanged(lastPath);
@@ -85,6 +92,7 @@ export class MetadataWatcherService implements vscode.Disposable {
       this.debounceTimer = undefined;
     }
     this.lastChangedPath = undefined;
+    this.configRoot = undefined;
     this.changedPaths.clear();
     this.callbacks = undefined;
     if (this.watcher) {
