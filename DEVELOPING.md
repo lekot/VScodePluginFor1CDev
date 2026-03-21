@@ -1,4 +1,4 @@
-# Разработка расширения 1C Metadata Tree
+# Разработка расширения CDT 41 (Community Development Tools for 1C)
 
 ## Сборка и тесты
 
@@ -47,7 +47,7 @@ npm run format
 
 1. Откройте проект в VS Code.
 2. F5 или Run → Start Debugging — запустится Extension Development Host с установленным расширением.
-3. В новом окне откройте папку с конфигурацией 1С (EDT или Designer) и проверьте панель «1C Metadata».
+3. В новом окне откройте папку с конфигурацией 1С (EDT или Designer) и проверьте панель «CDT 41».
 
 ## Структура тестов
 

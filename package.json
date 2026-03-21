@@ -1,13 +1,13 @@
 {
   "name": "1c-metadata-tree-vscode",
-  "displayName": "1C Metadata Tree",
-  "description": "VS Code extension for visualizing 1C configuration metadata tree",
-  "version": "0.24.2",
+  "displayName": "CDT 41 (Community Development Tools for 1C)",
+  "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
+  "version": "0.24.3",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/1c-dev/1c-metadata-tree-vscode"
+    "url": "https://github.com/lekot/VScodePluginFor1CDev"
   },
   "engines": {
     "vscode": "^1.80.0"
@@ -23,121 +23,121 @@
     "commands": [
       {
         "command": "1c-metadata-tree.openPanel",
-        "title": "1C: Open Metadata Tree",
-        "category": "1C Metadata"
+        "title": "CDT 41: Open Metadata Tree",
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.focus",
-        "title": "Focus 1C Metadata Tree",
-        "category": "1C Metadata"
+        "title": "Focus CDT 41",
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.refresh",
         "title": "Refresh",
-        "category": "1C Metadata",
+        "category": "CDT 41",
         "icon": "$(refresh)"
       },
       {
         "command": "1c-metadata-tree.showProperties",
         "title": "Show Properties",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.openXML",
         "title": "Open XML File",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.createElement",
         "title": "Create Element",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.duplicateElement",
         "title": "Duplicate Element",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.deleteElement",
         "title": "Delete Element",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.renameElement",
         "title": "Rename Element",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.copyPathOrName",
         "title": "Copy Path / Name",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.focusSearch",
         "title": "Search in tree",
-        "category": "1C Metadata",
+        "category": "CDT 41",
         "icon": "$(search)"
       },
       {
         "command": "1c-metadata-tree.clearSearch",
         "title": "Clear search and filters",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.filterByType",
         "title": "Filter by metadata type",
-        "category": "1C Metadata",
+        "category": "CDT 41",
         "icon": "$(filter)"
       },
       {
         "command": "1c-metadata-tree.nextMatch",
         "title": "Next search result",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.previousMatch",
         "title": "Previous search result",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.clearCache",
         "title": "Clear tree cache",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.exportLogs",
         "title": "Export logs",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.openFormEditor",
         "title": "Открыть в редакторе форм",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.openRightsEditor",
         "title": "Open Rights Editor",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.saveRightsEditor",
         "title": "Save Rights (Editor)",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.createForm",
         "title": "Создать форму",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.filterBySubsystem",
         "title": "Filter by Subsystem",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.clearSubsystemFilter",
         "title": "Clear Subsystem Filter",
-        "category": "1C Metadata"
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -236,13 +236,13 @@
       "explorer": [
         {
           "id": "1c-metadata-tree",
-          "name": "1C Metadata",
+          "name": "CDT 41",
           "when": "1c-metadata-tree:enabled"
         }
       ]
     },
     "configuration": {
-      "title": "1C Metadata Tree",
+      "title": "CDT 41",
       "properties": {
         "1cMetadataTree.rightsEditor.compactRightsWrite": {
           "type": "boolean",

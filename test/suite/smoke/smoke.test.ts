@@ -7,7 +7,7 @@ import { TreeNode, MetadataType } from '../../../src/models/treeNode';
 import { formXmlExists } from '../../../src/formEditor/formPaths';
 import { recordFailure } from './smokeArtifacts';
 
-/** Focus 1C Metadata tree view so smoke UI stays in metadata tree, not Explorer. */
+/** Focus CDT 41 tree view so smoke UI stays in metadata tree, not Explorer. */
 async function focusMetadataTree(): Promise<void> {
   await vscode.commands.executeCommand('workbench.view.explorer');
   await new Promise((r) => setTimeout(r, 200));
@@ -15,7 +15,7 @@ async function focusMetadataTree(): Promise<void> {
   await new Promise((r) => setTimeout(r, 200));
 }
 
-/** Ensure 1C Metadata view is focused and tree expanded; retry until root is loaded. */
+/** Ensure CDT 41 view is focused and tree expanded; retry until root is loaded. */
 async function ensureMetadataTreeFocused(): Promise<void> {
   await vscode.commands.executeCommand('1c-metadata-tree.openPanel');
   await new Promise((r) => setTimeout(r, 2000));
