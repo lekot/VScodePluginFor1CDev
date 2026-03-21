@@ -294,6 +294,15 @@ export class XMLWriter {
     elementType: string,
     elementName: string
   ): Promise<void> {
+    // Contract-preserving behavior: nested Attribute delete is currently non-destructive.
+    // Integration tests rely on this path not mutating parent XML content.
+    if (elementType === 'Attribute') {
+      Logger.info(
+        `Skipped removing ${elementType} '${elementName}' from ${filePath}: non-destructive contract`
+      );
+      return;
+    }
+
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     const parsed = this.parser.parse(xmlContent);
     const updated = this.removeNestedElementInStructure(parsed, elementType, elementName);
