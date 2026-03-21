@@ -147,4 +147,86 @@ suite('rightsEditor integration', () => {
       await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  test('triggerSave creates Ext directory and Rights.xml when only role file exists (EDT layout)', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-mkdir-ext-'));
+    const roleDir = path.join(tmpRoot, 'Roles');
+    const rolePath = path.join(roleDir, 'NewRole.xml');
+    const rightsPath = path.join(roleDir, 'NewRole', 'Ext', 'Rights.xml');
+    try {
+      await fs.promises.mkdir(roleDir, { recursive: true });
+      await fs.promises.writeFile(
+        rolePath,
+        [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<Role xmlns="http://v8.1c.ru/8.3/MDClasses">',
+          '  <Rights/>',
+          '</Role>',
+          '',
+        ].join('\n'),
+        'utf-8'
+      );
+      await assert.rejects(() => fs.promises.access(rightsPath));
+
+      const mockContext = {
+        subscriptions: [] as vscode.Disposable[],
+        extensionPath: '',
+        extensionUri: vscode.Uri.file(''),
+        globalState: {} as vscode.Memento,
+        workspaceState: {} as vscode.Memento,
+        secrets: {} as vscode.SecretStorage,
+        storageUri: undefined,
+        storagePath: undefined,
+        globalStorageUri: vscode.Uri.file(''),
+        globalStoragePath: '',
+        logUri: vscode.Uri.file(''),
+        logPath: '',
+        extensionMode: vscode.ExtensionMode.Test,
+        extension: {} as vscode.Extension<unknown>,
+        environmentVariableCollection: {} as vscode.EnvironmentVariableCollection,
+        languageModelAccessInformation: {} as vscode.LanguageModelAccessInformation,
+        asAbsolutePath: (p: string) => p,
+      } as vscode.ExtensionContext;
+
+      const originalCreatePanel = vscode.window.createWebviewPanel;
+      let onMessageHandler: ((message: unknown) => Promise<void>) | undefined;
+      const fakePanel = {
+        reveal: () => undefined,
+        onDidDispose: () => ({ dispose: () => undefined }),
+        webview: {
+          html: '',
+          onDidReceiveMessage: (cb: (message: unknown) => Promise<void>) => {
+            onMessageHandler = cb;
+            return { dispose: () => undefined };
+          },
+          postMessage: async () => true,
+        },
+        dispose: () => undefined,
+      } as unknown as vscode.WebviewPanel;
+
+      const provider = new RolesRightsEditorProvider(mockContext);
+      (vscode.window as unknown as { createWebviewPanel: typeof vscode.window.createWebviewPanel }).createWebviewPanel =
+        (() => fakePanel) as typeof vscode.window.createWebviewPanel;
+
+      try {
+        await provider.show(rolePath, null);
+        assert.ok(onMessageHandler, 'Webview message handler should be wired by show()');
+        await onMessageHandler!({
+          command: 'updateRight',
+          data: { objectName: 'Catalog.X', rightType: 'read', value: true },
+        });
+        await provider.triggerSave();
+        await fs.promises.access(rightsPath);
+        const xml = await fs.promises.readFile(rightsPath, 'utf-8');
+        assert.ok(xml.includes('<Rights'), 'Rights.xml should be written');
+        assert.ok(xml.includes('<name>Catalog.X</name>'), 'Saved rights should contain object');
+      } finally {
+        (vscode.window as unknown as { createWebviewPanel: typeof vscode.window.createWebviewPanel }).createWebviewPanel =
+          originalCreatePanel;
+        provider.dispose();
+      }
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });

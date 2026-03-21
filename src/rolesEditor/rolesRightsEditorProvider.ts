@@ -367,6 +367,7 @@ export class RolesRightsEditorProvider {
       }
 
       Logger.info('Writing to temp file...');
+      await fs.promises.mkdir(path.dirname(tempPath), { recursive: true });
       await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
       Logger.info('Renaming temp to target...');
       try {

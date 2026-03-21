@@ -52,6 +52,36 @@ suite('services coverage helpers', function () {
       const result = injectInternalInfoIntoMetadataXml(source, 'Catalog', 'NoProperties');
       assert.strictEqual(result, source);
     });
+
+    test('injectInternalInfoIntoMetadataXml does not inject InternalInfo for Role (Configurator/EDT shape)', () => {
+      const source = [
+        '<MetaDataObject>',
+        '\t<Role uuid="00000000-0000-0000-0000-000000000001">',
+        '\t\t<Properties>',
+        '\t\t\t<Name>TestRole</Name>',
+        '\t\t</Properties>',
+        '\t</Role>',
+        '</MetaDataObject>',
+      ].join('\n');
+      const result = injectInternalInfoIntoMetadataXml(source, 'Role', 'TestRole');
+      assert.strictEqual(result, source);
+      assert.ok(!result.includes('<InternalInfo>'));
+    });
+
+    test('injectInternalInfoIntoMetadataXml does not inject InternalInfo for CommonModule', () => {
+      const source = [
+        '<MetaDataObject>',
+        '\t<CommonModule uuid="00000000-0000-0000-0000-000000000002">',
+        '\t\t<Properties>',
+        '\t\t\t<Name>TestModule</Name>',
+        '\t\t</Properties>',
+        '\t</CommonModule>',
+        '</MetaDataObject>',
+      ].join('\n');
+      const result = injectInternalInfoIntoMetadataXml(source, 'CommonModule', 'TestModule');
+      assert.strictEqual(result, source);
+      assert.ok(!result.includes('<InternalInfo>'));
+    });
   });
 
   suite('metaDataObjectRootNormalizer', () => {

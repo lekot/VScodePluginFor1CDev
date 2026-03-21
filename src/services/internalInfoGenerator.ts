@@ -111,6 +111,10 @@ export function injectInternalInfoIntoMetadataXml(
   rootTag: string,
   objectName: string
 ): string {
+  // Designer / EDT role files omit InternalInfo; injecting RoleManager.* breaks Configurator (readable vs Role).
+  if (rootTag === 'Role') {
+    return xml;
+  }
   if (xml.includes('<InternalInfo>')) {
     return xml;
   }

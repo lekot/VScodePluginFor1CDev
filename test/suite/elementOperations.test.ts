@@ -197,6 +197,11 @@ suite('elementOperations', () => {
       await createElement(cmTypeNode, 'NewCommonModule');
       const xmlPath = path.join(cmPath, 'NewCommonModule.xml');
       assert.ok(fileExists(xmlPath));
+      const moduleXml = await readFileContent(xmlPath);
+      assert.ok(
+        !moduleXml.includes('<ChildObjects'),
+        'Configurator expects CommonModule without ChildObjects (see ut_demo_ForFormat)'
+      );
       const updatedCfg = await readFileContent(configXmlPath);
       assert.ok(updatedCfg.includes('NewCommonModule'));
     } finally {
