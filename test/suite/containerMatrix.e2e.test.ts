@@ -217,6 +217,52 @@ suite('Container matrix e2e', () => {
     assert.strictEqual(isMatrixTarget(externalDataSourcesFolder), false);
   });
 
+  test('isMatrixTarget: ChartsOfAccounts type folder false (ibcmd needs full CoA model)', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const chartsOfAccountsFolder: TreeNode = {
+      id: 'ChartsOfAccounts',
+      name: 'Планы счетов',
+      type: MetadataType.ChartOfAccounts,
+      properties: {},
+      parent: configuration,
+    };
+    assert.strictEqual(isMatrixTarget(chartsOfAccountsFolder), false);
+  });
+
+  test('isMatrixTarget: ibcmd-fragile type folders false (web service, subscriptions, registers, FO, …)', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const cases: { id: string; type: MetadataType }[] = [
+      { id: 'WebServices', type: MetadataType.WebService },
+      { id: 'EventSubscriptions', type: MetadataType.EventSubscription },
+      { id: 'ScheduledJobs', type: MetadataType.ScheduledJob },
+      { id: 'FunctionalOptions', type: MetadataType.FunctionalOption },
+      { id: 'FunctionalOptionsParameters', type: MetadataType.FunctionalOptionsParameter },
+      { id: 'CommonCommands', type: MetadataType.CommonCommand },
+      { id: 'AccountingRegisters', type: MetadataType.AccountingRegister },
+      { id: 'CalculationRegisters', type: MetadataType.CalculationRegister },
+    ];
+    for (const { id, type } of cases) {
+      const folder: TreeNode = {
+        id,
+        name: id,
+        type,
+        properties: {},
+        parent: configuration,
+      };
+      assert.strictEqual(isMatrixTarget(folder), false, id);
+    }
+  });
+
   test('isMatrixTarget: Roles type folder true, Role instance false', () => {
     const configuration: TreeNode = {
       id: 'cfg',

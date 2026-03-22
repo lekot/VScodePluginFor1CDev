@@ -8,8 +8,13 @@ import {
   findReferencesToElement,
   replaceReferencesInProject,
 } from '../utils/referenceFinder';
+import { getRecorderDocumentRefForTemplates } from '../constants/ibcmdFixtureRefs';
 import { getDesignerTemplateXml } from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
+import {
+  appendRegisterReferenceToRecorderDocument,
+  removeRegisterReferenceFromRecorderDocument,
+} from './registerRecorderDocumentLinker';
 import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from './configurationXmlUpdater';
 import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
@@ -110,6 +115,40 @@ function findConfigurationRootDir(typeFolderPath: string): string {
 }
 
 /**
+ * BusinessProcess.Properties.Task must reference an existing Task metadata object.
+ * Template uses `Task.{Name}` with the same name as the business process; create the task first if missing.
+ */
+async function ensureCompanionTaskForBusinessProcess(
+  configRootPath: string,
+  businessProcessesFolderPath: string,
+  taskName: string
+): Promise<void> {
+  const tasksDir = path.join(path.dirname(businessProcessesFolderPath), 'Tasks');
+  await fs.promises.mkdir(tasksDir, { recursive: true });
+  const taskFilePath = path.join(tasksDir, `${taskName}.xml`);
+  if (fs.existsSync(taskFilePath)) {
+    return;
+  }
+  const templateXml = await getDesignerTemplateXml('Task');
+  if (templateXml !== null) {
+    const uuid = XMLWriter.generateSimpleUuid();
+    let content = substituteDesignerTemplate(templateXml, {
+      uuid,
+      Name: taskName,
+      Synonym_ru: taskName,
+    });
+    content = injectInternalInfoIntoMetadataXml(content, 'Task', taskName);
+    content = normalizeMetaDataObjectRoot(content);
+    await fs.promises.writeFile(taskFilePath, content, 'utf-8');
+  } else {
+    await XMLWriter.createMinimalElementFile(taskFilePath, 'Task', taskName);
+  }
+  const taskElementDir = path.join(tasksDir, taskName);
+  await fs.promises.mkdir(taskElementDir, { recursive: true });
+  await addRootObjectToConfiguration(configRootPath, 'Task', taskName);
+}
+
+/**
  * Creates a new metadata element in the configuration.
  *
  * Parent can be a type node (e.g. Catalogs), an object (Catalog/Document) for nested Attribute,
@@ -177,13 +216,24 @@ export async function createElement(
     }
     const rootTag = String(parentNode.type);
     const configRootPath = findConfigurationRootDir(typeFolderPath);
+    if (rootTag === 'BusinessProcess') {
+      await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
+    }
     const templateXml = await getDesignerTemplateXml(rootTag);
     if (templateXml !== null) {
       const uuid = XMLWriter.generateSimpleUuid();
+      const uuidDim = XMLWriter.generateSimpleUuid();
+      const uuidResource = XMLWriter.generateSimpleUuid();
       let content = substituteDesignerTemplate(templateXml, {
         uuid,
         Name: name,
         Synonym_ru: name,
+        ...(rootTag === 'InformationRegister' || rootTag === 'AccumulationRegister'
+          ? { uuidDim, uuidResource }
+          : {}),
+        ...(rootTag === 'DocumentJournal'
+          ? { RecorderDocumentRef: getRecorderDocumentRefForTemplates() }
+          : {}),
       });
       content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
       content = normalizeMetaDataObjectRoot(content);
@@ -198,6 +248,13 @@ export async function createElement(
     } catch (err) {
       Logger.error('Failed to update Configuration.xml', err);
       throw err;
+    }
+    if (rootTag === 'AccumulationRegister') {
+      try {
+        await appendRegisterReferenceToRecorderDocument(configRootPath, 'AccumulationRegister', name);
+      } catch (e) {
+        Logger.warn('Could not link AccumulationRegister to recorder document', e);
+      }
     }
     return;
   }
@@ -460,6 +517,17 @@ export async function deleteElement(node: TreeNode): Promise<void> {
     } catch (err) {
       Logger.error('Failed to update Configuration.xml on delete', err);
       throw err;
+    }
+    if (rootTag === 'AccumulationRegister') {
+      try {
+        await removeRegisterReferenceFromRecorderDocument(
+          configRootPath,
+          'AccumulationRegister',
+          node.name
+        );
+      } catch (e) {
+        Logger.warn('Could not remove AccumulationRegister ref from recorder document', e);
+      }
     }
     Logger.info(`Deleted element file ${filePath}`);
     return;

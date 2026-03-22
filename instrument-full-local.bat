@@ -11,8 +11,13 @@ set "IBCMD_INFOBASE_CONFIG=C:\Users\Максим\Documents\1cviewer-ibcmd-infoba
 REM Импорт ibcmd может ругаться на часть XML матрицы — не обрывать полный прогон:
 set "INSTRUMENT_IBCMD_NONFATAL=1"
 
+REM Полный первый проход матрицы (все типовые узлы):
 set "MATRIX_FULL=1"
+REM Сброс среза из родительского shell (иначе реквизиты под Matrix_* не гоняются):
 set "MATRIX_SLICE_LIMIT="
+REM Второй проход: реквизиты и табличные части под объектами Matrix_* (см. shouldRunNestedMatrixPass):
+set "MATRIX_NESTED=1"
+
 set "SKIP_VSCODE_SMOKE="
 
 call instrument-smoke.bat

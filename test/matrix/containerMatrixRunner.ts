@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createElement, createForm, deleteElement } from '../../src/services/elementOperations';
+import type { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
@@ -12,9 +13,9 @@ import {
   getRepoRootFromCompiledTestFile,
 } from '../helpers/matrixTreeWalker';
 import { runIbcmdOnWorkDir } from './ibcmdAdapter';
-import { isMatrixTarget } from './matrixTargetPredicate';
+import { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject } from './matrixTargetPredicate';
 
-export { isMatrixTarget };
+export { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject };
 
 /**
  * One recorded matrix operation: create (attempt 1 or 2) or delete (attempt 1) for a target.
@@ -45,7 +46,8 @@ export interface ContainerMatrixIbcmdBlock {
 }
 
 /**
- * Full JSON report (§6.2). `stepSummary` counts only create/delete matrix steps (create×2 + delete×1 per target).
+ * Full JSON report (§6.2). `stepSummary` counts only create/delete matrix steps (create×2 + delete×1 per target;
+ * при полном обходе добавляется второй проход по вложенным целям под `Matrix_*`).
  * `ibcmd` is an optional separate validation gate; its outcome is not folded into `stepSummary`.
  */
 export interface ContainerMatrixReport {
@@ -143,6 +145,133 @@ function appendStep(
   }
 }
 
+async function runMatrixTargetCycle(
+  target: TreeNode,
+  provider: MetadataTreeDataProvider,
+  workDir: string,
+  steps: ContainerMatrixStep[],
+  stepSummary: ContainerMatrixSummary,
+  verboseStack: boolean
+): Promise<void> {
+  const { containerId, path: pathLabel } = containerLabel(target);
+  const name1 = generateMatrixName(target.id, 1);
+  const name2 = generateMatrixName(target.id, 2);
+  const useCreateForm = target.id === 'Forms';
+
+  try {
+    if (useCreateForm) {
+      await createForm(target, name1);
+    } else {
+      await createElement(target, name1);
+    }
+    appendStep(steps, stepSummary, {
+      targetId: target.id,
+      containerId,
+      path: pathLabel,
+      operation: 'create',
+      attempt: 1,
+      success: true,
+      message: '',
+    });
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    appendStep(steps, stepSummary, {
+      targetId: target.id,
+      containerId,
+      path: pathLabel,
+      operation: 'create',
+      attempt: 1,
+      success: false,
+      message: err.message,
+      ...(verboseStack && err.stack ? { stack: err.stack } : {}),
+    });
+  }
+
+  try {
+    if (useCreateForm) {
+      await createForm(target, name2);
+    } else {
+      await createElement(target, name2);
+    }
+    appendStep(steps, stepSummary, {
+      targetId: target.id,
+      containerId,
+      path: pathLabel,
+      operation: 'create',
+      attempt: 2,
+      success: true,
+      message: '',
+    });
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    appendStep(steps, stepSummary, {
+      targetId: target.id,
+      containerId,
+      path: pathLabel,
+      operation: 'create',
+      attempt: 2,
+      success: false,
+      message: err.message,
+      ...(verboseStack && err.stack ? { stack: err.stack } : {}),
+    });
+  }
+
+  provider.invalidateLoadedChildren(target);
+  let victim: TreeNode | undefined;
+  try {
+    const children = await provider.getChildren(target);
+    victim = pickVictimNodeFromList(children, target, name2);
+  } catch {
+    victim = undefined;
+  }
+  if (!victim) {
+    try {
+      const fresh = await MetadataParser.loadElementChildren(workDir, ConfigFormat.Designer, target);
+      victim = pickVictimNodeFromList(fresh, target, name2);
+    } catch {
+      victim = undefined;
+    }
+  }
+
+  if (!victim) {
+    appendStep(steps, stepSummary, {
+      targetId: target.id,
+      containerId,
+      path: pathLabel,
+      operation: 'delete',
+      attempt: 1,
+      success: false,
+      message: `Child node not found for second create name: ${name2}`,
+    });
+    return;
+  }
+
+  try {
+    await deleteElement(victim);
+    appendStep(steps, stepSummary, {
+      targetId: target.id,
+      containerId,
+      path: pathLabel,
+      operation: 'delete',
+      attempt: 1,
+      success: true,
+      message: '',
+    });
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    appendStep(steps, stepSummary, {
+      targetId: target.id,
+      containerId,
+      path: pathLabel,
+      operation: 'delete',
+      attempt: 1,
+      success: false,
+      message: err.message,
+      ...(verboseStack && err.stack ? { stack: err.stack } : {}),
+    });
+  }
+}
+
 function resolveMaxTargets(options: { matrixFull?: boolean; matrixSlice?: boolean }): number {
   const full = options.matrixFull === true || process.env.MATRIX_FULL === '1';
   if (full) {
@@ -159,6 +288,14 @@ function resolveMaxTargets(options: { matrixFull?: boolean; matrixSlice?: boolea
     }
   }
   return 5;
+}
+
+/** Второй проход (реквизиты/ТЧ/формы под `Matrix_*`): полный обход или явно `MATRIX_NESTED=1`. */
+function shouldRunNestedMatrixPass(maxTargets: number): boolean {
+  if (!Number.isFinite(maxTargets)) {
+    return true;
+  }
+  return process.env.MATRIX_NESTED === '1';
 }
 
 function resolveReportFile(optionsReportPath?: string): string {
@@ -215,122 +352,19 @@ export async function runContainerMatrix(
   const verboseStack = process.env.MATRIX_VERBOSE === '1';
 
   for (const target of selected) {
-    const { containerId, path: pathLabel } = containerLabel(target);
-    const name1 = generateMatrixName(target.id, 1);
-    const name2 = generateMatrixName(target.id, 2);
-    const useCreateForm = target.id === 'Forms';
+    await runMatrixTargetCycle(target, provider, workDir, steps, stepSummary, verboseStack);
+  }
 
-    try {
-      if (useCreateForm) {
-        await createForm(target, name1);
-      } else {
-        await createElement(target, name1);
+  if (shouldRunNestedMatrixPass(maxTargets)) {
+    const { provider: providerNested } = await buildDesignerMatrixContext(workDir);
+    const nestedTargets: TreeNode[] = [];
+    await dfsPreorderNodes(providerNested, async (n) => {
+      if (isNestedMatrixTargetUnderMatrixObject(n)) {
+        nestedTargets.push(n);
       }
-      appendStep(steps, stepSummary, {
-        targetId: target.id,
-        containerId,
-        path: pathLabel,
-        operation: 'create',
-        attempt: 1,
-        success: true,
-        message: '',
-      });
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      appendStep(steps, stepSummary, {
-        targetId: target.id,
-        containerId,
-        path: pathLabel,
-        operation: 'create',
-        attempt: 1,
-        success: false,
-        message: err.message,
-        ...(verboseStack && err.stack ? { stack: err.stack } : {}),
-      });
-    }
-
-    try {
-      if (useCreateForm) {
-        await createForm(target, name2);
-      } else {
-        await createElement(target, name2);
-      }
-      appendStep(steps, stepSummary, {
-        targetId: target.id,
-        containerId,
-        path: pathLabel,
-        operation: 'create',
-        attempt: 2,
-        success: true,
-        message: '',
-      });
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      appendStep(steps, stepSummary, {
-        targetId: target.id,
-        containerId,
-        path: pathLabel,
-        operation: 'create',
-        attempt: 2,
-        success: false,
-        message: err.message,
-        ...(verboseStack && err.stack ? { stack: err.stack } : {}),
-      });
-    }
-
-    provider.invalidateLoadedChildren(target);
-    let victim: TreeNode | undefined;
-    try {
-      const children = await provider.getChildren(target);
-      victim = pickVictimNodeFromList(children, target, name2);
-    } catch {
-      victim = undefined;
-    }
-    if (!victim) {
-      try {
-        const fresh = await MetadataParser.loadElementChildren(workDir, ConfigFormat.Designer, target);
-        victim = pickVictimNodeFromList(fresh, target, name2);
-      } catch {
-        victim = undefined;
-      }
-    }
-
-    if (!victim) {
-      appendStep(steps, stepSummary, {
-        targetId: target.id,
-        containerId,
-        path: pathLabel,
-        operation: 'delete',
-        attempt: 1,
-        success: false,
-        message: `Child node not found for second create name: ${name2}`,
-      });
-      continue;
-    }
-
-    try {
-      await deleteElement(victim);
-      appendStep(steps, stepSummary, {
-        targetId: target.id,
-        containerId,
-        path: pathLabel,
-        operation: 'delete',
-        attempt: 1,
-        success: true,
-        message: '',
-      });
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      appendStep(steps, stepSummary, {
-        targetId: target.id,
-        containerId,
-        path: pathLabel,
-        operation: 'delete',
-        attempt: 1,
-        success: false,
-        message: err.message,
-        ...(verboseStack && err.stack ? { stack: err.stack } : {}),
-      });
+    });
+    for (const target of nestedTargets) {
+      await runMatrixTargetCycle(target, providerNested, workDir, steps, stepSummary, verboseStack);
     }
   }
 

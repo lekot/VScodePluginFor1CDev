@@ -4,15 +4,13 @@
     <Properties>
       <Comment />
       <Name>{Name}</Name>
-      <ReuseSessions>AutoUse</ReuseSessions>
-      <RootURL>integration</RootURL>
-      <SessionMaxAge>20</SessionMaxAge>
       <Synonym>
         <v8:item>
           <v8:lang>ru</v8:lang>
           <v8:content>{Synonym_ru}</v8:content>
         </v8:item>
       </Synonym>
+      <ExternalIntegrationServiceAddress>http://localhost</ExternalIntegrationServiceAddress>
     </Properties>
     <ChildObjects />
   </IntegrationService>

@@ -10,7 +10,7 @@
           <v8:content>{Synonym_ru}</v8:content>
         </v8:item>
       </Synonym>
-      <Type>Boolean</Type>
+      <Type>Color</Type>
     </Properties>
   </StyleItem>
 </MetaDataObject>

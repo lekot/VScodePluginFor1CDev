@@ -2,7 +2,7 @@
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Language uuid="{uuid}">
     <Properties>
-      <Code>ru</Code>
+      <LanguageCode>ru</LanguageCode>
       <Comment />
       <Name>{Name}</Name>
       <Synonym>

@@ -120,6 +120,21 @@ suite('services coverage helpers', function () {
       assert.strictEqual(result, source);
       assert.ok(!result.includes('<InternalInfo>'));
     });
+
+    test('injectInternalInfoIntoMetadataXml does not inject InternalInfo for CommonForm (ibcmd)', () => {
+      const source = [
+        '<MetaDataObject>',
+        '\t<CommonForm uuid="00000000-0000-0000-0000-000000000003">',
+        '\t\t<Properties>',
+        '\t\t\t<Name>F</Name>',
+        '\t\t</Properties>',
+        '\t</CommonForm>',
+        '</MetaDataObject>',
+      ].join('\n');
+      const result = injectInternalInfoIntoMetadataXml(source, 'CommonForm', 'F');
+      assert.strictEqual(result, source);
+      assert.ok(!result.includes('<InternalInfo>'));
+    });
   });
 
   suite('metaDataObjectRootNormalizer', () => {

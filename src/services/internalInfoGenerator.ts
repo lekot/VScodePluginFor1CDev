@@ -1,5 +1,34 @@
 import { XMLWriter } from '../utils/XMLWriter';
 
+/**
+ * Корневые теги метаданных, для которых в иерархической выгрузке Designer **не** должно быть
+ * вставлено блока InternalInfo при создании объекта — иначе ibcmd: «не может иметь внутренней информации».
+ * См. также Role/CommonModule (исторически исключены вручную).
+ */
+export const ROOT_TAGS_WITHOUT_INTERNALINFO = new Set<string>([
+  'Role',
+  'CommonModule',
+  'ScheduledJob',
+  'CommandGroup',
+  'CommonPicture',
+  'SessionParameter',
+  'CommonTemplate',
+  'HTTPService',
+  'Style',
+  'EventSubscription',
+  'CommonForm',
+  'XDTOPackage',
+  'DocumentNumerator',
+  'CommonAttribute',
+  'Subsystem',
+  'CommonCommand',
+  'FunctionalOptionsParameter',
+  'Language',
+  'FunctionalOption',
+  'WebService',
+  'StyleItem',
+]);
+
 type GeneratedTypeSpec = {
   /** e.g. "CatalogObject", "InformationRegisterRecord" */
   namePrefix: string;
@@ -187,8 +216,7 @@ export function injectInternalInfoIntoMetadataXml(
   rootTag: string,
   objectName: string
 ): string {
-  // Role and CommonModule must not have InternalInfo (Configurator / EDT shape).
-  if (rootTag === 'Role' || rootTag === 'CommonModule') {
+  if (ROOT_TAGS_WITHOUT_INTERNALINFO.has(rootTag)) {
     return xml;
   }
   if (xml.includes('<InternalInfo>')) {

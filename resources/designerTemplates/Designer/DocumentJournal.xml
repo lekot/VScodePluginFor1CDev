@@ -9,7 +9,9 @@
       <ExtendedListPresentation />
       <ListPresentation />
       <Name>{Name}</Name>
-      <RegisteredDocuments />
+      <RegisteredDocuments>
+        <xr:Item xsi:type="xr:MDObjectRef">{RecorderDocumentRef}</xr:Item>
+      </RegisteredDocuments>
       <Synonym>
         <v8:item>
           <v8:lang>ru</v8:lang>

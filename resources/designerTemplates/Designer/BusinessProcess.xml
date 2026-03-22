@@ -243,7 +243,7 @@
           <v8:content>{Synonym_ru}</v8:content>
         </v8:item>
       </Synonym>
-      <Task>Task.ЗадачаИсполнителя</Task>
+      <Task>Task.{Name}</Task>
       <UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>
       <UseStandardCommands>true</UseStandardCommands>
     </Properties>

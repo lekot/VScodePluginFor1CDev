@@ -22,6 +22,7 @@ REM
 REM  Матрица (по умолчанию — полный обход; быстрый срез: задайте MATRIX_SLICE_LIMIT или MATRIX_FULL=0):
 REM    set MATRIX_FULL=0
 REM    set MATRIX_SLICE_LIMIT=10
+REM  Второй проход (реквизиты/ТЧ под Matrix_*): при полном обходе включается сам; иначе set MATRIX_NESTED=1
 REM
 REM  Пропустить окно VS Code:
 REM    set SKIP_VSCODE_SMOKE=1

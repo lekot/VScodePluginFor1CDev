@@ -9,6 +9,8 @@ export const coreSuiteFiles: string[] = [
   'suite/elementNameValidator.test.js',
   'suite/referenceFinder.test.js',
   'suite/elementOperations.test.js',
+  'suite/registerRecorderDocumentLinker.test.js',
+  'suite/matrixTargetPredicate.test.js',
   'suite/dataProcessorOperations.test.js',
   'suite/configHelpers.test.js',
   'suite/formDragBugCondition.test.js',

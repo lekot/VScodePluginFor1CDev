@@ -13,27 +13,15 @@
       <UseStandardCommands>true</UseStandardCommands>
       <IncludeHelpInContents>false</IncludeHelpInContents>
 
-      <ActionPeriodUse>true</ActionPeriodUse>
+      <ActionPeriodUse>false</ActionPeriodUse>
       <BaseCalculationTypes />
-      <DependenceOnCalculationTypes>OnActionPeriod</DependenceOnCalculationTypes>
+      <DependenceOnCalculationTypes>DontUse</DependenceOnCalculationTypes>
 
-      <CharacteristicExtValues />
-      <Type>
-        <v8:Type>xs:string</v8:Type>
-        <v8:StringQualifiers>
-          <v8:Length>10</v8:Length>
-          <v8:AllowedLength>Variable</v8:AllowedLength>
-        </v8:StringQualifiers>
-      </Type>
-
-      <Hierarchical>false</Hierarchical>
-      <FoldersOnTop>true</FoldersOnTop>
       <CodeLength>9</CodeLength>
       <CodeAllowedLength>Variable</CodeAllowedLength>
       <DescriptionLength>25</DescriptionLength>
-      <CodeSeries>WholeCharacteristicKind</CodeSeries>
-      <CheckUnique>true</CheckUnique>
-      <Autonumbering>true</Autonumbering>
+      <CodeType>String</CodeType>
+
       <DefaultPresentation>AsDescription</DefaultPresentation>
       <Characteristics />
       <PredefinedDataUpdate>Auto</PredefinedDataUpdate>
@@ -51,15 +39,11 @@
       <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
 
       <DefaultObjectForm />
-      <DefaultFolderForm />
       <DefaultListForm />
       <DefaultChoiceForm />
-      <DefaultFolderChoiceForm />
       <AuxiliaryObjectForm />
-      <AuxiliaryFolderForm />
       <AuxiliaryListForm />
       <AuxiliaryChoiceForm />
-      <AuxiliaryFolderChoiceForm />
       <BasedOn />
       <DataLockFields />
       <DataLockControlMode>Managed</DataLockControlMode>

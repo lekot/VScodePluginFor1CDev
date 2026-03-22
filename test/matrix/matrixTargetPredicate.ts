@@ -15,7 +15,22 @@ function isFormsFolderTarget(node: TreeNode): boolean {
  * Папки типов, для которых корректный XML нельзя собрать из шаблона без привязки к конфигурации
  * (Type/Content/таблицы), ibcmd падает на импорте.
  */
-const IBMATRIX_SKIP_TYPE_FOLDER_IDS = new Set(['FilterCriteria', 'ExternalDataSources']);
+const IBMATRIX_SKIP_TYPE_FOLDER_IDS = new Set([
+  'FilterCriteria',
+  'ExternalDataSources',
+  // ibcmd: «отсутствует один или более типов объекта ChartOfAccounts» — нужен полный состав счетов/субконто, не шаблон.
+  'ChartsOfAccounts',
+  // Ниже — объекты, для которых минимальный Designer-шаблон без перекрёстных ссылок на конфигурацию даёт критичные ошибки ibcmd
+  // (Регистры сведений/накопления и журналы документов — валидные шаблоны + документ ДокументТестРаботает в empty_conf.)
+  'WebServices',
+  'EventSubscriptions',
+  'ScheduledJobs',
+  'FunctionalOptions',
+  'FunctionalOptionsParameters',
+  'CommonCommands',
+  'AccountingRegisters',
+  'CalculationRegisters',
+]);
 
 function isIbcmdFragileTypeFolder(node: TreeNode): boolean {
   return IBMATRIX_SKIP_TYPE_FOLDER_IDS.has(node.id);
@@ -42,6 +57,37 @@ function isAttributeOrTabularContainerUnderObject(node: TreeNode): boolean {
   if (node.id === 'TabularSections' && node.type === MetadataType.TabularSection) {
     return true;
   }
+  return false;
+}
+
+/**
+ * Второй проход матрицы: «Реквизиты» / «Табличные части» / «Формы» под объектами, созданными в первом проходе
+ * (имя родителя `Matrix_*`). В первом DFS цели собираются до create — узлов под новыми `Matrix_*` объектами ещё нет.
+ */
+export function isNestedMatrixTargetUnderMatrixObject(node: TreeNode): boolean {
+  const p = node.parent;
+  if (!p || !p.name.startsWith('Matrix_')) {
+    return false;
+  }
+  if (node.type === MetadataType.Configuration) {
+    return false;
+  }
+  if (!TOP_LEVEL_TYPES.has(p.type)) {
+    return false;
+  }
+  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(p.type))) {
+    return false;
+  }
+  if (p.type === MetadataType.Subsystem) {
+    return false;
+  }
+  if (node.id === 'Attributes' && node.type === MetadataType.Attribute) {
+    return true;
+  }
+  if (node.id === 'TabularSections' && node.type === MetadataType.TabularSection) {
+    return true;
+  }
+  // Не включаем «Формы»: ibcmd ожидает другой layout путей, чем createForm (см. лог «Файл объекта не существует …/Forms/….xml»).
   return false;
 }
 
