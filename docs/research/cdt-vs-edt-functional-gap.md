@@ -1,6 +1,6 @@
 # Функциональный разрыв CDT 41 и EDT: что мешает считать CDT полноценной заменой
 
-Дата: 2026-03-22 (редакция: §0 — преимущества CDT; §2–§8 + Issues; §11 — сводная таблица).  
+Дата: 2026-03-22 (редакция: §0 — преимущества CDT; §2–§8 + Issues; §11 — сводная таблица; §11.3 — матрица боль/стоимость).  
 Продукт: **CDT 41** (Community Development Tools for 1C) — расширение VS Code/Cursor для дерева метаданных и точечного редактирования XML (форматы выгрузки **EDT** и **Конфигуратора**).  
 База сравнения: **1C:Enterprise Development Tools (EDT)** как типовая среда разработки конфигураций 1С:Предприятие на платформе 8.x.
 
@@ -169,6 +169,7 @@
 - `docs/research/foundation-write-surfaces-research.md` — где CDT **пишет** на диск (границы реализованной записи).  
 - `docs/rights-editor-issue.md` — состояние редактора прав и RLS для EDT (может быть только локально из-за `docs/` в `.gitignore`).
 - `docs/plans/cdt-gap-issues-research-handoff.md` — **декомпозиция issues #4–#31 на подзадачи** (результат ресерча по репозиторию; при необходимости `git add -f`).
+- `docs/research/cdt-competitive-features-brainstorm.md` — идеи дифференциаторов CDT **без** дублирования напарника/схем EDT (Git-сводка, монорепо, CI и т.д.; при необходимости `git add -f`).
 
 При изменении продукта этот документ стоит **версионировать по дате** и при необходимости ссылаться на конкретный `version` из `package.json`.
 
@@ -201,5 +202,37 @@
 | §5 баг | [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) | Сохранение RLS без webview |
 | §4 / §7 | [#19](https://github.com/lekot/VScodePluginFor1CDev/issues/19) | Плейсхолдер в пустой ТЧ |
 | §2 / дерево | [#21](https://github.com/lekot/VScodePluginFor1CDev/issues/21) | Общий модуль — BSL в дереве |
+
+### 11.3. Матрица «боль / дёшево» для приоритизации (оценка на 2026-03-22)
+
+Субъективные баллы для планирования, не для KPI. Шкалы:
+
+| Шкала | 1 | 10 |
+|-------|---|-----|
+| **Боль** | разрыв почти не ощущается | острая боль по типовым сценариям |
+| **Дёшево** | очень дорого / долго / рискованно | узкий объём / быстрый выигрыш |
+
+**Формула приоритета:** `Приоритет = 2 × Боль + Дёшево` (максимум **30**). Боль учитывается **вдвое сильнее**, чем «дёшевизна», чтобы не выходили наверх узкие мастера при низкой боли относительно паритета прав, merge и платформы.
+
+Строки отсортированы по убыванию `Приоритет`.
+
+| Issue / тема | § | Боль | Дёшево | Приоритет |
+|--------------|---|------|--------|------------|
+| [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) | §5 баг | 8 | 9 | **25** |
+| [#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30) | §7 проверка | 8 | 6 | **22** |
+| [#12](https://github.com/lekot/VScodePluginFor1CDev/issues/12) | §7 merge | 10 | 2 | **22** |
+| [#27](https://github.com/lekot/VScodePluginFor1CDev/issues/27) | §4 UI | 9 | 3 | **21** |
+| [#21](https://github.com/lekot/VScodePluginFor1CDev/issues/21) | §2 / дерево | 6 | 8 | **20** |
+| [#26](https://github.com/lekot/VScodePluginFor1CDev/issues/26) | §3 отчёты | 9 | 2 | **20** |
+| [#29](https://github.com/lekot/VScodePluginFor1CDev/issues/29) | §6 ИБ / отладка | 9 | 2 | **20** |
+| [#4](https://github.com/lekot/VScodePluginFor1CDev/issues/4) | §8 расширения | 7 | 5 | **19** |
+| [#19](https://github.com/lekot/VScodePluginFor1CDev/issues/19) | §4 / §7 | 5 | 8 | **18** |
+| [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28) | §5 паритет прав | 7 | 4 | **18** |
+| [#22](https://github.com/lekot/VScodePluginFor1CDev/issues/22), [#23](https://github.com/lekot/VScodePluginFor1CDev/issues/23) | §8 мастера | 5 | 6 | **16** |
+| [#7](https://github.com/lekot/VScodePluginFor1CDev/issues/7) | фундамент | 6 | 3 | **15** |
+| [#25](https://github.com/lekot/VScodePluginFor1CDev/issues/25) | §2 BSL / рефакторинг | 7 | 1 | **15** |
+| [#31](https://github.com/lekot/VScodePluginFor1CDev/issues/31) | §8 хвост | 6 | 2 | **14** |
+
+**Заметки:** [#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30) и [#12](https://github.com/lekot/VScodePluginFor1CDev/issues/12) совпадают по баллу (22): высокая боль при апдейтах у merge компенсирует низкую «дёшевизну»; проверка конфигурации дешевле по объёму, но боль ниже, чем у полного 3-way merge. [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28) (18) выше [#22](https://github.com/lekot/VScodePluginFor1CDev/issues/22)/[#23](https://github.com/lekot/VScodePluginFor1CDev/issues/23) (16) — с весом ×2 на боль паритет прав не уступает нишевым мастерам. Крупные блоки (**#27**, **#26**, **#29**) остаются дорогими по реализации при высокой боли; дробление на подзадачи даст отдельные строки матрицы.
 
 Трекер живёт быстрее статичного markdown: при планировании **сверяйтесь с актуальным списком issues**.
