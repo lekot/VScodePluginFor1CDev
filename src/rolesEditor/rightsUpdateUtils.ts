@@ -153,6 +153,10 @@ export function updateRight(
       deleteInteractiveRights.forEach(interactiveRight => {
         objectRights[interactiveRight] = false;
       });
+
+      // Match webview applyDependencyRules: these are not in BASE_TO_INTERACTIVE_RIGHTS['delete']
+      objectRights.interactiveSetDeletionMark = false;
+      objectRights.interactiveClearDeletionMark = false;
     }
 
     // Rule: Disabling base rights disables their interactive rights

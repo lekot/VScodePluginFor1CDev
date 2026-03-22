@@ -190,6 +190,22 @@ suite('Rights Update Utils Test Suite', () => {
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].interactiveClear, false);
       assert.strictEqual(testRoleModel.rights['Catalog.Products'].insert, true, 'Insert should be preserved');
     });
+
+    test('should clear interactive deletion-mark rights when disabling Read (webview dependency parity)', () => {
+      testRoleModel.rights['Catalog.X'] = createEmptyObjectRights();
+      testRoleModel.rights['Catalog.X'].read = true;
+      testRoleModel.rights['Catalog.X'].interactiveSetDeletionMark = true;
+      testRoleModel.rights['Catalog.X'].interactiveClearDeletionMark = true;
+      testRoleModel.rights['Catalog.X'].insert = true;
+
+      const result = updateRight(testRoleModel, 'Catalog.X', 'read', false);
+
+      assert.strictEqual(result.success, true);
+      assert.ok(testRoleModel.rights['Catalog.X']);
+      assert.strictEqual(testRoleModel.rights['Catalog.X'].interactiveSetDeletionMark, false);
+      assert.strictEqual(testRoleModel.rights['Catalog.X'].interactiveClearDeletionMark, false);
+      assert.strictEqual(testRoleModel.rights['Catalog.X'].insert, true);
+    });
   });
 
   suite('updateRight() - Object Removal', () => {

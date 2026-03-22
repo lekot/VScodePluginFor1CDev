@@ -179,6 +179,37 @@ suite('RoleXmlSerializer Tests', () => {
     assert.ok(xml.includes('<InteractiveSetDeletionMark>true</InteractiveSetDeletionMark>'));
   });
 
+  test('serializeToXml inserts restrictionTemplatesText before closing Rights', () => {
+    const marker = 'RLS_ROLE_XML_SERIALIZER_MARKER_2026';
+    const rights: RightsMap = {
+      'Catalog.Products': {
+        ...createEmptyObjectRights(),
+        read: true
+      }
+    };
+
+    const roleModel: RoleModel = {
+      name: 'TestRole',
+      filePath: '/test/TestRole/Role.xml',
+      rights,
+      metadata: {
+        format: ConfigFormat.Designer,
+        version: '1.0',
+        lastModified: new Date()
+      },
+      restrictionTemplatesText: `<restrictionTemplate><name>T</name><condition>${marker}</condition></restrictionTemplate>`
+    };
+
+    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+
+    const rightsOpen = xml.indexOf('<Rights>');
+    const rightsClose = xml.indexOf('</Rights>');
+    const markerIndex = xml.indexOf(marker);
+    assert.ok(rightsOpen !== -1 && rightsClose !== -1);
+    assert.ok(markerIndex !== -1, 'serialized XML should contain restriction template marker');
+    assert.ok(markerIndex > rightsOpen && markerIndex < rightsClose, 'marker should appear inside Rights section');
+  });
+
   test('formatXml ensures proper line endings', () => {
     // Arrange
     const xmlWithCRLF = '<?xml version="1.0"?>\r\n<Role>\r\n</Role>';

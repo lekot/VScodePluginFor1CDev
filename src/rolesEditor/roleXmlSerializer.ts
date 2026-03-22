@@ -5,6 +5,7 @@
 
 import { XMLBuilder } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
+import { insertRestrictionTemplatesBeforeClosingRights } from './rightsXmlEditWriter';
 import {
   RoleModel,
   ObjectRights,
@@ -97,6 +98,11 @@ export class RoleXmlSerializer {
 
       // Format XML to match 1C conventions
       xmlString = this.formatXml(xmlString);
+
+      xmlString = insertRestrictionTemplatesBeforeClosingRights(
+        xmlString,
+        roleModel.restrictionTemplatesText ?? ''
+      );
 
       Logger.debug(`Serialized Role.xml: ${roleModel.name}, objects: ${Object.keys(roleModel.rights).length}`);
       return xmlString;
