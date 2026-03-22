@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <FunctionalOptionsParameter uuid="{uuid}">
+    <Properties>
+      <Comment />
+      <KeyDataPath />
+      <Name>{Name}</Name>
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>{Synonym_ru}</v8:content>
+        </v8:item>
+      </Synonym>
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+        <v8:StringQualifiers>
+          <v8:Length>500</v8:Length>
+          <v8:AllowedLength>Variable</v8:AllowedLength>
+        </v8:StringQualifiers>
+      </Type>
+    </Properties>
+  </FunctionalOptionsParameter>
+</MetaDataObject>

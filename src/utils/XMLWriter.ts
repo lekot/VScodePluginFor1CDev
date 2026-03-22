@@ -49,6 +49,39 @@ const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.HTTPService,
   MetadataType.IntegrationService,
   MetadataType.Subsystem,
+  MetadataType.ExchangePlan,
+  MetadataType.DocumentJournal,
+  MetadataType.DefinedType,
+  MetadataType.CommonAttribute,
+  MetadataType.CommonCommand,
+  MetadataType.CommonForm,
+  MetadataType.CommonPicture,
+  MetadataType.CommonTemplate,
+  MetadataType.DocumentNumerator,
+  MetadataType.Language,
+  MetadataType.WSReference,
+  MetadataType.XDTOPackage,
+  MetadataType.StyleItem,
+]);
+
+/**
+ * Root metadata tags that omit ChildObjects in Designer XML (docs/1c-config-objects-spec.md).
+ */
+const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
+  'CommonModule',
+  'Role',
+  'SessionParameter',
+  'FunctionalOption',
+  'FunctionalOptionsParameter',
+  'CommandGroup',
+  'Interface',
+  'EventSubscription',
+  'DefinedType',
+  'Language',
+  'CommonPicture',
+  'CommonAttribute',
+  'WSReference',
+  'StyleItem',
 ]);
 
 /** Properties that may store a reference like `Catalog.MyCat.Form.MyForm`. */
@@ -702,7 +735,7 @@ export class XMLWriter {
 \t\t\t</Synonym>
 \t\t\t<Comment/>
 ${defaultPropsLines}\t\t</Properties>
-${rootTag === 'CommonModule' || rootTag === 'Role' ? '' : '\t\t<ChildObjects/>\n'}\t</${rootTag}>
+${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t</${rootTag}>
 </MetaDataObject>
 `;
     content = injectInternalInfoIntoMetadataXml(content, rootTag, elementName);

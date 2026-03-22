@@ -56,6 +56,19 @@ export const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.HTTPService,
   MetadataType.IntegrationService,
   MetadataType.Subsystem,
+  MetadataType.ExchangePlan,
+  MetadataType.DocumentJournal,
+  MetadataType.DefinedType,
+  MetadataType.CommonAttribute,
+  MetadataType.CommonCommand,
+  MetadataType.CommonForm,
+  MetadataType.CommonPicture,
+  MetadataType.CommonTemplate,
+  MetadataType.DocumentNumerator,
+  MetadataType.Language,
+  MetadataType.WSReference,
+  MetadataType.XDTOPackage,
+  MetadataType.StyleItem,
 ]);
 
 /**

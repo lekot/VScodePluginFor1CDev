@@ -1,0 +1,78 @@
+<?xml version='1.0' encoding='utf-8'?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ChartOfCalculationTypes uuid="{uuid}">
+    <Properties>
+      <Name>{Name}</Name>
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>{Synonym_ru}</v8:content>
+        </v8:item>
+      </Synonym>
+      <Comment />
+      <UseStandardCommands>true</UseStandardCommands>
+      <IncludeHelpInContents>false</IncludeHelpInContents>
+
+      <ActionPeriodUse>true</ActionPeriodUse>
+      <BaseCalculationTypes />
+      <DependenceOnCalculationTypes>OnActionPeriod</DependenceOnCalculationTypes>
+
+      <CharacteristicExtValues />
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+        <v8:StringQualifiers>
+          <v8:Length>10</v8:Length>
+          <v8:AllowedLength>Variable</v8:AllowedLength>
+        </v8:StringQualifiers>
+      </Type>
+
+      <Hierarchical>false</Hierarchical>
+      <FoldersOnTop>true</FoldersOnTop>
+      <CodeLength>9</CodeLength>
+      <CodeAllowedLength>Variable</CodeAllowedLength>
+      <DescriptionLength>25</DescriptionLength>
+      <CodeSeries>WholeCharacteristicKind</CodeSeries>
+      <CheckUnique>true</CheckUnique>
+      <Autonumbering>true</Autonumbering>
+      <DefaultPresentation>AsDescription</DefaultPresentation>
+      <Characteristics />
+      <PredefinedDataUpdate>Auto</PredefinedDataUpdate>
+      <EditType>InDialog</EditType>
+      <QuickChoice>false</QuickChoice>
+      <ChoiceMode>BothWays</ChoiceMode>
+      <InputByString>
+        <xr:Field>ChartOfCalculationTypes.{Name}.StandardAttribute.Description</xr:Field>
+        <xr:Field>ChartOfCalculationTypes.{Name}.StandardAttribute.Code</xr:Field>
+      </InputByString>
+      <CreateOnInput>DontUse</CreateOnInput>
+      <SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>
+      <ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>
+      <FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
+      <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+
+      <DefaultObjectForm />
+      <DefaultFolderForm />
+      <DefaultListForm />
+      <DefaultChoiceForm />
+      <DefaultFolderChoiceForm />
+      <AuxiliaryObjectForm />
+      <AuxiliaryFolderForm />
+      <AuxiliaryListForm />
+      <AuxiliaryChoiceForm />
+      <AuxiliaryFolderChoiceForm />
+      <BasedOn />
+      <DataLockFields />
+      <DataLockControlMode>Managed</DataLockControlMode>
+      <FullTextSearch>Use</FullTextSearch>
+      <ObjectPresentation />
+      <ExtendedObjectPresentation />
+      <ListPresentation />
+      <ExtendedListPresentation />
+      <Explanation />
+      <DataHistory>DontUse</DataHistory>
+      <UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>
+      <ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>
+    </Properties>
+    <ChildObjects />
+  </ChartOfCalculationTypes>
+</MetaDataObject>

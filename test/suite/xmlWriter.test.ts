@@ -362,6 +362,13 @@ suite('XMLWriter', () => {
       const properties = await XMLWriter.readProperties(rolePath);
       assert.strictEqual(properties.Name, 'TestRole');
     });
+
+    test('creates SessionParameter without ChildObjects (docs/1c-config-objects-spec.md)', async () => {
+      const p = path.join(tmpDir, 'TestSessionParameter.xml');
+      await XMLWriter.createMinimalElementFile(p, 'SessionParameter', 'Параметр1');
+      const raw = await fs.promises.readFile(p, 'utf-8');
+      assert.ok(!raw.includes('<ChildObjects'), 'SessionParameter must not emit ChildObjects');
+    });
   });
 
   // **Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5**

@@ -79,15 +79,81 @@ function getSpecsForRootTag(rootTag: string): GeneratedTypeSpec[] {
         { namePrefix: 'InformationRegisterRecordManager', category: 'RecordManager' },
       ];
     case 'AccumulationRegister':
+      return [
+        { namePrefix: 'AccumulationRegisterRecord', category: 'Record' },
+        { namePrefix: 'AccumulationRegisterManager', category: 'Manager' },
+        { namePrefix: 'AccumulationRegisterSelection', category: 'Selection' },
+        { namePrefix: 'AccumulationRegisterList', category: 'List' },
+        { namePrefix: 'AccumulationRegisterRecordSet', category: 'RecordSet' },
+        { namePrefix: 'AccumulationRegisterRecordKey', category: 'RecordKey' },
+      ];
     case 'AccountingRegister':
+      // docs/1c-config-objects-spec.md §29
+      return [
+        { namePrefix: 'AccountingRegisterRecord', category: 'Record' },
+        { namePrefix: 'AccountingRegisterExtDimensions', category: 'ExtDimensions' },
+        { namePrefix: 'AccountingRegisterRecordSet', category: 'RecordSet' },
+        { namePrefix: 'AccountingRegisterRecordKey', category: 'RecordKey' },
+        { namePrefix: 'AccountingRegisterSelection', category: 'Selection' },
+        { namePrefix: 'AccountingRegisterList', category: 'List' },
+        { namePrefix: 'AccountingRegisterManager', category: 'Manager' },
+      ];
     case 'CalculationRegister':
       return [
-        { namePrefix: `${rootTag}Record`, category: 'Record' },
-        { namePrefix: `${rootTag}Manager`, category: 'Manager' },
-        { namePrefix: `${rootTag}Selection`, category: 'Selection' },
-        { namePrefix: `${rootTag}List`, category: 'List' },
-        { namePrefix: `${rootTag}RecordSet`, category: 'RecordSet' },
-        { namePrefix: `${rootTag}RecordKey`, category: 'RecordKey' },
+        { namePrefix: 'CalculationRegisterRecord', category: 'Record' },
+        { namePrefix: 'CalculationRegisterManager', category: 'Manager' },
+        { namePrefix: 'CalculationRegisterSelection', category: 'Selection' },
+        { namePrefix: 'CalculationRegisterList', category: 'List' },
+        { namePrefix: 'CalculationRegisterRecordSet', category: 'RecordSet' },
+        { namePrefix: 'CalculationRegisterRecordKey', category: 'RecordKey' },
+        { namePrefix: 'CalculationRegisterRecalcs', category: 'Recalcs' },
+      ];
+    case 'ChartOfAccounts':
+      return [
+        { namePrefix: 'ChartOfAccountsObject', category: 'Object' },
+        { namePrefix: 'ChartOfAccountsRef', category: 'Ref' },
+        { namePrefix: 'ChartOfAccountsSelection', category: 'Selection' },
+        { namePrefix: 'ChartOfAccountsList', category: 'List' },
+        { namePrefix: 'ChartOfAccountsManager', category: 'Manager' },
+      ];
+    case 'ChartOfCharacteristicTypes':
+      return [
+        { namePrefix: 'ChartOfCharacteristicTypesObject', category: 'Object' },
+        { namePrefix: 'ChartOfCharacteristicTypesRef', category: 'Ref' },
+        { namePrefix: 'ChartOfCharacteristicTypesSelection', category: 'Selection' },
+        { namePrefix: 'ChartOfCharacteristicTypesList', category: 'List' },
+        { namePrefix: 'ChartOfCharacteristicTypesCharacteristic', category: 'Characteristic' },
+        { namePrefix: 'ChartOfCharacteristicTypesManager', category: 'Manager' },
+      ];
+    case 'ChartOfCalculationTypes':
+      return [
+        { namePrefix: 'ChartOfCalculationTypesObject', category: 'Object' },
+        { namePrefix: 'ChartOfCalculationTypesRef', category: 'Ref' },
+        { namePrefix: 'ChartOfCalculationTypesSelection', category: 'Selection' },
+        { namePrefix: 'ChartOfCalculationTypesList', category: 'List' },
+        { namePrefix: 'ChartOfCalculationTypesManager', category: 'Manager' },
+        { namePrefix: 'ChartOfCalculationTypesDisplacingCalculationTypes', category: 'DisplacingCalculationTypes' },
+        { namePrefix: 'ChartOfCalculationTypesDisplacingCalculationTypesRow', category: 'DisplacingCalculationTypesRow' },
+        { namePrefix: 'ChartOfCalculationTypesBaseCalculationTypes', category: 'BaseCalculationTypes' },
+        { namePrefix: 'ChartOfCalculationTypesBaseCalculationTypesRow', category: 'BaseCalculationTypesRow' },
+        { namePrefix: 'ChartOfCalculationTypesLeadingCalculationTypes', category: 'LeadingCalculationTypes' },
+        { namePrefix: 'ChartOfCalculationTypesLeadingCalculationTypesRow', category: 'LeadingCalculationTypesRow' },
+      ];
+    case 'DefinedType':
+      return [{ namePrefix: 'DefinedType', category: 'DefinedType' }];
+    case 'ExchangePlan':
+      return [
+        { namePrefix: 'ExchangePlanObject', category: 'Object' },
+        { namePrefix: 'ExchangePlanRef', category: 'Ref' },
+        { namePrefix: 'ExchangePlanSelection', category: 'Selection' },
+        { namePrefix: 'ExchangePlanList', category: 'List' },
+        { namePrefix: 'ExchangePlanManager', category: 'Manager' },
+      ];
+    case 'DocumentJournal':
+      return [
+        { namePrefix: 'DocumentJournalSelection', category: 'Selection' },
+        { namePrefix: 'DocumentJournalList', category: 'List' },
+        { namePrefix: 'DocumentJournalManager', category: 'Manager' },
       ];
     default:
       // Best-effort fallback: at least provide a Manager, which is commonly present.
@@ -99,6 +165,9 @@ export function buildInternalInfoXml(rootTag: string, objectName: string, baseIn
   const { lineIndent, childIndent } = indentOf(baseIndent);
   const specs = getSpecsForRootTag(rootTag);
   let xml = `${lineIndent}<InternalInfo>\n`;
+  if (rootTag === 'ExchangePlan') {
+    xml += `${childIndent}<xr:ThisNode>${XMLWriter.generateSimpleUuid()}</xr:ThisNode>\n`;
+  }
   for (const spec of specs) {
     xml += makeGeneratedType(spec, objectName, childIndent);
   }

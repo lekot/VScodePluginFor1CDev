@@ -50,7 +50,20 @@ const RIGHTS_ASSIGNABLE_TYPES: MetadataType[] = [
   MetadataType.WebService,
   MetadataType.HTTPService,
   MetadataType.IntegrationService,
-  MetadataType.Subsystem
+  MetadataType.Subsystem,
+  MetadataType.ExchangePlan,
+  MetadataType.DocumentJournal,
+  MetadataType.DefinedType,
+  MetadataType.CommonAttribute,
+  MetadataType.CommonCommand,
+  MetadataType.CommonForm,
+  MetadataType.CommonPicture,
+  MetadataType.CommonTemplate,
+  MetadataType.DocumentNumerator,
+  MetadataType.Language,
+  MetadataType.WSReference,
+  MetadataType.XDTOPackage,
+  MetadataType.StyleItem,
 ];
 
 /** Types for which we load attribute-level rights rows (same scope as R6 lazy Attributes in the tree). */

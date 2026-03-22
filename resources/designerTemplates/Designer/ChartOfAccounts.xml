@@ -1,0 +1,70 @@
+<?xml version='1.0' encoding='utf-8'?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ChartOfAccounts uuid="{uuid}">
+    <Properties>
+      <Name>{Name}</Name>
+      <Synonym>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>{Synonym_ru}</v8:content>
+        </v8:item>
+      </Synonym>
+      <Comment />
+      <UseStandardCommands>true</UseStandardCommands>
+      <IncludeHelpInContents>false</IncludeHelpInContents>
+
+      <AutoOrderByCode>true</AutoOrderByCode>
+      <CodeLength>8</CodeLength>
+      <CodeMask>@@@.@@.@</CodeMask>
+      <CodeSeries>WholeChartOfAccounts</CodeSeries>
+      <DescriptionLength>120</DescriptionLength>
+      <ExtDimensionTypes />
+      <MaxExtDimensionCount>3</MaxExtDimensionCount>
+      <OrderLength>5</OrderLength>
+
+      <Hierarchical>false</Hierarchical>
+      <FoldersOnTop>true</FoldersOnTop>
+      <CodeAllowedLength>Variable</CodeAllowedLength>
+      <CheckUnique>true</CheckUnique>
+      <Autonumbering>true</Autonumbering>
+      <DefaultPresentation>AsDescription</DefaultPresentation>
+      <PredefinedDataUpdate>Auto</PredefinedDataUpdate>
+      <EditType>InDialog</EditType>
+      <QuickChoice>false</QuickChoice>
+      <ChoiceMode>BothWays</ChoiceMode>
+      <InputByString>
+        <xr:Field>ChartOfAccounts.{Name}.StandardAttribute.Description</xr:Field>
+        <xr:Field>ChartOfAccounts.{Name}.StandardAttribute.Code</xr:Field>
+      </InputByString>
+      <CreateOnInput>DontUse</CreateOnInput>
+      <SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>
+      <ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>
+      <FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
+      <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+
+      <DefaultObjectForm />
+      <DefaultFolderForm />
+      <DefaultListForm />
+      <DefaultChoiceForm />
+      <DefaultFolderChoiceForm />
+      <AuxiliaryObjectForm />
+      <AuxiliaryFolderForm />
+      <AuxiliaryListForm />
+      <AuxiliaryChoiceForm />
+      <AuxiliaryFolderChoiceForm />
+      <BasedOn />
+      <DataLockFields />
+      <DataLockControlMode>Managed</DataLockControlMode>
+      <FullTextSearch>Use</FullTextSearch>
+      <ObjectPresentation />
+      <ExtendedObjectPresentation />
+      <ListPresentation />
+      <ExtendedListPresentation />
+      <Explanation />
+      <DataHistory>DontUse</DataHistory>
+      <UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>
+      <ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>
+    </Properties>
+    <ChildObjects />
+  </ChartOfAccounts>
+</MetaDataObject>

@@ -62,6 +62,21 @@ export enum MetadataType {
   IntegrationService = 'IntegrationService',
   Subsystem = 'Subsystem',
 
+  /** Планы обмена, журналы, определяемые типы и общие объекты (корневые каталоги §1.1 спеки). */
+  ExchangePlan = 'ExchangePlan',
+  DocumentJournal = 'DocumentJournal',
+  DefinedType = 'DefinedType',
+  CommonAttribute = 'CommonAttribute',
+  CommonCommand = 'CommonCommand',
+  CommonForm = 'CommonForm',
+  CommonPicture = 'CommonPicture',
+  CommonTemplate = 'CommonTemplate',
+  DocumentNumerator = 'DocumentNumerator',
+  Language = 'Language',
+  WSReference = 'WSReference',
+  XDTOPackage = 'XDTOPackage',
+  StyleItem = 'StyleItem',
+
   // Sub-elements
   Attribute = 'Attribute',
   TabularSection = 'TabularSection',
