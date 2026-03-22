@@ -53,7 +53,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h, 'handler');
           await h({
@@ -116,7 +116,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h);
           await h({
@@ -211,7 +211,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h, 'Webview message handler should be wired by show()');
 
@@ -271,7 +271,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h, 'Webview message handler should be wired by show()');
           await h({
@@ -322,7 +322,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h, 'Webview message handler should be wired by show()');
           await h({
@@ -394,7 +394,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h);
           await h({
@@ -446,7 +446,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h);
           await h({
@@ -509,7 +509,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h);
           await h({
@@ -576,7 +576,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h);
           await h({
@@ -594,6 +594,53 @@ suite('rightsEditor integration', () => {
           assert.ok(unblock);
           unblock!();
           await p1;
+        } finally {
+          restorePanel();
+          provider.dispose();
+        }
+      } finally {
+        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+      }
+    });
+
+    test('open without config path blocks save and does not write Rights.xml', async () => {
+      const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-nocfg-'));
+      const roleDir = path.join(tmpRoot, 'Roles');
+      const rolePath = path.join(roleDir, 'NoCfg.xml');
+      const rightsPath = path.join(roleDir, 'NoCfg', 'Ext', 'Rights.xml');
+      try {
+        await fs.promises.mkdir(roleDir, { recursive: true });
+        await fs.promises.writeFile(
+          rolePath,
+          [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<Role xmlns="http://v8.1c.ru/8.3/MDClasses">',
+            '  <Rights/>',
+            '</Role>',
+            '',
+          ].join('\n'),
+          'utf-8'
+        );
+        await assert.rejects(() => fs.promises.access(rightsPath));
+
+        const mockContext = createFakeExtensionContext();
+        const { panel, getPostedMessages, getOnMessageHandler } = createFakeWebviewPanel();
+        const restorePanel = patchCreateWebviewPanel(panel);
+        const provider = new RolesRightsEditorProvider(mockContext);
+        try {
+          await provider.show(rolePath, null);
+          const h = getOnMessageHandler();
+          assert.ok(h);
+          await h({
+            command: 'save',
+            data: { restrictionTemplatesText: '' },
+          });
+          await assert.rejects(() => fs.promises.access(rightsPath));
+          const posted = getPostedMessages();
+          assert.ok(
+            posted.some((m) => m.command === 'saveError'),
+            'save without config should surface saveError to webview'
+          );
         } finally {
           restorePanel();
           provider.dispose();
@@ -630,7 +677,7 @@ suite('rightsEditor integration', () => {
         const restorePanel = patchCreateWebviewPanel(panel);
         const provider = new RolesRightsEditorProvider(mockContext);
         try {
-          await provider.show(rolePath, null);
+          await provider.show(rolePath, tmpRoot);
           const h = getOnMessageHandler();
           assert.ok(h);
           await h({

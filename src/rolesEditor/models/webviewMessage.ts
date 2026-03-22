@@ -4,11 +4,12 @@
 
 import { MetadataType } from '../../models/treeNode';
 import { RightType } from './roleModel';
+import type { MetadataObject } from './metadataObject';
 
 /**
  * Command types for webview messages
  */
-export type WebviewCommand = 
+export type WebviewCommand =
   | 'updateRight'
   | 'save'
   | 'savePayload'
@@ -74,7 +75,10 @@ export interface WebviewMessageData {
   type?: string;
 
   /**
-   * User-edited restrictionTemplate XML block(s) (for save command)
+   * For command **`save`**: textarea RLS snapshot from the webview (usual Save / Ctrl+S from the panel).
+   * For command **`savePayload`**: same field, but sent only in reply to extension
+   * **`requestSavePayload`** (correlated by `requestId`) when the host runs an external save
+   * (e.g. command palette) and must flush RLS without rebuilding HTML.
    */
   restrictionTemplatesText?: string;
 
@@ -91,29 +95,41 @@ export interface WebviewMessageData {
 }
 
 /**
- * Response message sent from extension to webview
+ * Commands the extension posts to the rights editor webview (`postMessage`).
  */
-export interface WebviewResponse {
-  /**
-   * Type of response
-   */
-  type: 'updateSuccess' | 'updateError' | 'validationSuccess' | 'validationError' | 'saveSuccess' | 'saveError';
+export type ExtensionToWebviewCommand =
+  | 'objectsLoaded'
+  | 'requestSavePayload'
+  | 'updateSuccess'
+  | 'updateError'
+  | 'validationError'
+  | 'validationCancelled'
+  | 'saveError'
+  | 'error';
 
-  /**
-   * Optional error messages
-   */
-  errors?: string[];
-
-  /**
-   * Optional success message
-   */
-  message?: string;
-
-  /**
-   * Optional data payload
-   */
-  data?: unknown;
-}
+/**
+ * Typed messages from extension host → webview (matches `rolesRightsEditorProvider` `postMessage` usage).
+ */
+export type ExtensionToWebviewMessage =
+  | {
+      command: 'objectsLoaded';
+      data: {
+        objects: MetadataObject[];
+        error?: string;
+        /** When true, metadata/config is unavailable — Save must not write (see provider). */
+        saveDisabled?: boolean;
+      };
+    }
+  | { command: 'requestSavePayload'; data: { requestId: string } }
+  | { command: 'updateSuccess'; data?: Record<string, never> }
+  | {
+      command: 'updateError';
+      data: { errors?: string[]; message?: string };
+    }
+  | { command: 'validationError'; data: { errors: string[] } }
+  | { command: 'validationCancelled'; data?: { message?: string } }
+  | { command: 'saveError'; data: { message: string } }
+  | { command: 'error'; data: { message: string } };
 
 /**
  * Validation result for rights updates

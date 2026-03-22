@@ -4,8 +4,7 @@ import * as fs from 'fs';
 import { randomUUID } from 'crypto';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
-import { FilterState } from './models/filterState';
-import { WebviewMessage } from './models/webviewMessage';
+import { WebviewMessage, type ExtensionToWebviewMessage } from './models/webviewMessage';
 import { RoleXmlParser } from './roleXmlParser';
 import { RoleXmlSerializer } from './roleXmlSerializer';
 import { RightsValidator } from './rightsValidator';
@@ -19,7 +18,6 @@ import {
 import { loadMetadataObjects } from './metadataLoader';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
-import { MetadataType } from '../models/treeNode';
 
 /**
  * Provider for the roles and rights editor webview
@@ -28,11 +26,8 @@ export class RolesRightsEditorProvider {
   private panel: vscode.WebviewPanel | undefined;
   private currentRoleModel: RoleModel | undefined;
   private allObjects: MetadataObject[] = [];
-  private filterState: FilterState = {
-    showAll: false,
-    searchQuery: '',
-    typeFilter: [],
-  };
+  /** When true, opening had no `configPath` — Save must not write (metadata-only limitation). */
+  private saveDisabledNoConfig = false;
   private disposables: vscode.Disposable[] = [];
   private saveInProgress = false;
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
@@ -104,6 +99,7 @@ export class RolesRightsEditorProvider {
       await this.updateWebviewContent({ initialTableLoading: true });
 
       if (!configPath) {
+        this.saveDisabledNoConfig = true;
         Logger.warn('Configuration path not found, showing read-only mode');
         if (loadGeneration !== this.objectsLoadGeneration) {
           return;
@@ -112,11 +108,15 @@ export class RolesRightsEditorProvider {
           command: 'objectsLoaded',
           data: {
             objects: [] as MetadataObject[],
-            error: 'Configuration path not found; metadata table is empty.',
+            error:
+              'No configuration path is available. The metadata table is empty and saving rights to disk is disabled.',
+            saveDisabled: true,
           },
         });
         return;
       }
+
+      this.saveDisabledNoConfig = false;
 
       try {
         const objects = await loadMetadataObjects(
@@ -240,7 +240,7 @@ export class RolesRightsEditorProvider {
 
     try {
       if (message.command === 'save') {
-        Logger.info('Received save command from webview');
+        Logger.debug('Received save command from webview');
       }
       switch (message.command) {
         case 'updateRight':
@@ -341,7 +341,7 @@ export class RolesRightsEditorProvider {
         }
       }, 10000);
       this.pendingSavePayloadRequests.set(requestId, { resolve, reject, timeout });
-      void this.panel!.webview.postMessage({
+      this.sendMessageToWebview({
         command: 'requestSavePayload',
         data: { requestId },
       });
@@ -371,9 +371,17 @@ export class RolesRightsEditorProvider {
   private async handleSave(message?: WebviewMessage): Promise<void> {
     if (this.saveInProgress) {
       Logger.warn('handleSave skipped: save already in progress');
+      void vscode.window.showInformationMessage('Save already in progress.');
       return;
     }
-    Logger.info('handleSave called');
+    if (this.saveDisabledNoConfig) {
+      const msg =
+        'Save is disabled: no configuration path was set when this editor was opened.';
+      vscode.window.showWarningMessage(msg);
+      this.sendMessageToWebview({ command: 'saveError', data: { message: msg } });
+      return;
+    }
+    Logger.debug('handleSave called');
     if (!this.currentRoleModel) {
       const msg = 'Role not loaded. Close and reopen the rights editor.';
       vscode.window.showErrorMessage(msg);
@@ -392,7 +400,9 @@ export class RolesRightsEditorProvider {
         } catch (e) {
           const errMsg = e instanceof Error ? e.message : String(e);
           Logger.error('Failed to read RLS from webview', e);
-          vscode.window.showErrorMessage(`Could not read RLS from editor: ${errMsg}`);
+          const full = `Could not read RLS from editor: ${errMsg}`;
+          vscode.window.showErrorMessage(full);
+          this.sendMessageToWebview({ command: 'saveError', data: { message: full } });
           return;
         }
       }
@@ -403,7 +413,7 @@ export class RolesRightsEditorProvider {
       }
 
       statusDone = vscode.window.setStatusBarMessage('Saving rights...');
-      Logger.info('handleSave: validation starting');
+      Logger.debug('handleSave: validation starting');
       const validator = new RightsValidator();
       const validationResult = validator.validateRights(this.currentRoleModel);
 
@@ -420,11 +430,15 @@ export class RolesRightsEditorProvider {
           'Cancel'
         );
         if (saveAnyway !== 'Save anyway') {
+          this.sendMessageToWebview({
+            command: 'validationCancelled',
+            data: { message: 'Save cancelled after validation.' },
+          });
           return;
         }
-        Logger.info('handleSave: user chose Save anyway, skipping validation');
+        Logger.debug('handleSave: user chose Save anyway, skipping validation');
       } else {
-        Logger.info('handleSave: validation passed, resolving target path');
+        Logger.debug('handleSave: validation passed, resolving target path');
       }
       const isCaseB = path.basename(this.currentRoleModel.filePath).toLowerCase() === 'role.xml';
       const targetPath = isCaseB
@@ -432,21 +446,21 @@ export class RolesRightsEditorProvider {
         : getRightsPath(this.currentRoleModel.filePath);
       // Temp file for atomic write: <target>.tmp only (e.g. Rights.xml.tmp). "Rights copy.xml" is not used by the extension.
       const tempPath = targetPath + '.tmp';
-      Logger.info(`Save target: ${targetPath}, temp: ${tempPath}`);
+      Logger.debug(`Save target: ${targetPath}, temp: ${tempPath}`);
 
       let xmlContent: string;
       if (isCaseB) {
         xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel);
-        Logger.info('Serialized (Case B)');
+        Logger.debug('Serialized (Case B)');
       } else {
-        Logger.info('Loading Rights.xml...');
+        Logger.debug('Loading Rights.xml...');
         const dom = await loadRightsXml(targetPath);
-        Logger.info('Merging rights into DOM...');
+        Logger.debug('Merging rights into DOM...');
         const compactWrite = vscode.workspace
           .getConfiguration('1cMetadataTree')
           .get<boolean>('rightsEditor.compactRightsWrite', true);
         mergeRightsIntoDom(dom, this.currentRoleModel.rights, { compactWrite });
-        Logger.info('Serializing DOM to XML...');
+        Logger.debug('Serializing DOM to XML...');
         xmlContent = serializeRightsDomToXml(dom);
         xmlContent = insertRestrictionTemplatesBeforeClosingRights(
           xmlContent,
@@ -454,10 +468,10 @@ export class RolesRightsEditorProvider {
         );
       }
 
-      Logger.info('Writing to temp file...');
+      Logger.debug('Writing to temp file...');
       await fs.promises.mkdir(path.dirname(tempPath), { recursive: true });
       await fs.promises.writeFile(tempPath, xmlContent, 'utf8');
-      Logger.info('Renaming temp to target...');
+      Logger.debug('Renaming temp to target...');
       try {
         await fs.promises.rename(tempPath, targetPath);
       } catch (renameErr) {
@@ -469,7 +483,7 @@ export class RolesRightsEditorProvider {
         throw renameErr;
       }
 
-      Logger.info('Rights saved successfully');
+      Logger.debug('Rights saved successfully');
       vscode.window.showInformationMessage('Rights saved successfully');
 
       if (this.panel) {
@@ -503,41 +517,18 @@ export class RolesRightsEditorProvider {
   /**
    * Handle toggleFilter message
    */
-  private async handleToggleFilter(message: WebviewMessage): Promise<void> {
-    if (!message.data) {
-      return;
-    }
-
-    if (message.data.showAll !== undefined) {
-      this.filterState.showAll = message.data.showAll;
-    }
-  }
+  /** Filter state lives in the webview; host accepts messages for protocol compatibility only. */
+  private async handleToggleFilter(_message: WebviewMessage): Promise<void> {}
 
   /**
    * Handle search message
    */
-  private async handleSearch(message: WebviewMessage): Promise<void> {
-    if (!message.data || message.data.query === undefined) {
-      return;
-    }
-
-    this.filterState.searchQuery = message.data.query;
-  }
+  private async handleSearch(_message: WebviewMessage): Promise<void> {}
 
   /**
    * Handle filterByType message
    */
-  private async handleFilterByType(message: WebviewMessage): Promise<void> {
-    if (!message.data) {
-      return;
-    }
-    if (message.data.types !== undefined) {
-      this.filterState.typeFilter = message.data.types;
-    } else if (message.data.type !== undefined) {
-      const t = message.data.type.trim();
-      this.filterState.typeFilter = t ? [t as MetadataType] : [];
-    }
-  }
+  private async handleFilterByType(_message: WebviewMessage): Promise<void> {}
 
   /**
    * Large table renders run in the webview; reflect activity in the status bar so the window does not look hung.
@@ -562,9 +553,9 @@ export class RolesRightsEditorProvider {
   /**
    * Send a message to the webview
    */
-  private sendMessageToWebview(message: unknown): void {
+  private sendMessageToWebview(message: ExtensionToWebviewMessage): void {
     if (this.panel) {
-      this.panel.webview.postMessage(message);
+      void this.panel.webview.postMessage(message);
     }
   }
 
@@ -598,7 +589,10 @@ export class RolesRightsEditorProvider {
    * Escape JSON for safe embedding in script tags
    */
   private escapeJsonForScript(json: string): string {
-    return json.replace(/<\/script>/gi, '<\\/script>');
+    return json
+      .replace(/<\/script>/gi, '<\\/script>')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
   }
 
   /**
@@ -678,5 +672,6 @@ export class RolesRightsEditorProvider {
 
     this.currentRoleModel = undefined;
     this.allObjects = [];
+    this.saveDisabledNoConfig = false;
   }
 }

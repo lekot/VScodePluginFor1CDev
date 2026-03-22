@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
+import { listRightsXmlCandidatePaths } from './rightsXmlEditWriter';
 import {
   RoleModel,
   RightsMap,
@@ -522,15 +523,7 @@ export class RoleXmlParser {
     const rights: RightsMap = {};
     
     try {
-      const roleDir = path.dirname(roleXmlPath);
-      const baseName = path.basename(roleXmlPath, path.extname(roleXmlPath));
-
-      // EDT: Roles/ИмяРоли.xml → Rights in Roles/ИмяРоли/Ext/Rights.xml
-      // Designer: Roles/ИмяРоли/Role.xml → Rights in Roles/ИмяРоли/Ext/Rights.xml (same roleDir/Ext)
-      const candidates =
-        baseName.toLowerCase() !== 'role'
-          ? [path.join(roleDir, baseName, 'Ext', 'Rights.xml'), path.join(roleDir, 'Ext', 'Rights.xml')]
-          : [path.join(roleDir, 'Ext', 'Rights.xml')];
+      const candidates = listRightsXmlCandidatePaths(roleXmlPath);
 
       let rightsXmlPath: string | null = null;
       for (const candidate of candidates) {

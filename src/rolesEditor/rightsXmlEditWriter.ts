@@ -136,13 +136,30 @@ export function ensureRightsRootAttrsFor1CXdto(dom: RightsDom): void {
 }
 
 /**
- * Compute path to Ext/Rights.xml from the role file path (same as roleXmlParser.parseRightsXml).
- * When opened file is Roles/ИмяРоли.xml → Roles/ИмяРоли/Ext/Rights.xml.
+ * Candidate paths for `Ext/Rights.xml` next to a role XML file, **same probe order** as
+ * `RoleXmlParser.parseRightsXml` (first existing file wins for reads).
+ *
+ * - EDT: `Roles/ИмяРоли.xml` → `[Roles/ИмяРоли/Ext/Rights.xml, Roles/Ext/Rights.xml]`
+ * - Designer: `Roles/ИмяРоли/Role.xml` → `[Roles/ИмяРоли/Ext/Rights.xml]`
+ */
+export function listRightsXmlCandidatePaths(roleXmlPath: string): string[] {
+  const roleDir = path.dirname(roleXmlPath);
+  const baseName = path.basename(roleXmlPath, path.extname(roleXmlPath));
+  if (baseName.toLowerCase() !== 'role') {
+    return [
+      path.join(roleDir, baseName, 'Ext', 'Rights.xml'),
+      path.join(roleDir, 'Ext', 'Rights.xml'),
+    ];
+  }
+  return [path.join(roleDir, 'Ext', 'Rights.xml')];
+}
+
+/**
+ * Primary EDT `Ext/Rights.xml` path for **writes** (Case A). Always {@link listRightsXmlCandidatePaths}[0].
+ * Not used when the open file is `Role.xml` (Case B — serializer writes the role file).
  */
 export function getRightsPath(roleFilePath: string): string {
-  const roleDir = path.dirname(roleFilePath);
-  const baseName = path.basename(roleFilePath, path.extname(roleFilePath));
-  return path.join(roleDir, baseName, 'Ext', 'Rights.xml');
+  return listRightsXmlCandidatePaths(roleFilePath)[0];
 }
 
 /**
