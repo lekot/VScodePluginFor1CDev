@@ -12,6 +12,7 @@ function escapeXml(s: string): string {
 }
 
 /** Parameters for Designer XML templates; extra keys are optional placeholders ({uuidDim}, …). */
+/* eslint-disable @typescript-eslint/naming-convention -- Designer template placeholders use platform XML names */
 export type DesignerTemplateParams = {
   uuid: string;
   Name: string;
@@ -21,6 +22,7 @@ export type DesignerTemplateParams = {
   /** e.g. Document.ИмяДокумента — для регистраторов, журналов документов */
   RecorderDocumentRef?: string;
 };
+/* eslint-enable @typescript-eslint/naming-convention */
 
 /**
  * Substitute placeholders in a Designer template XML with the given parameters.
@@ -28,7 +30,6 @@ export type DesignerTemplateParams = {
  */
 export function substituteDesignerTemplate(
   templateXml: string,
-  // eslint-disable-next-line @typescript-eslint/naming-convention -- 1C template placeholders use platform naming
   params: DesignerTemplateParams
 ): string {
   const uuid = escapeXml(params.uuid);
