@@ -105,6 +105,19 @@ suite('DesignerParser', () => {
     }
   });
 
+  test('parseTypeContents loads flat Catalogs/*.xml when there are no per-object subfolders', async function () {
+    const projectRoot = path.resolve(__dirname, '../../..');
+    const emptyConf = path.join(projectRoot, 'FormatSamples', 'empty_conf');
+    if (!fs.existsSync(emptyConf)) {
+      this.skip();
+    }
+    const children = await DesignerParser.parseTypeContents(emptyConf, 'Catalogs');
+    const names = children.map((c) => c.name);
+    assert.ok(names.includes('Справочник55'), 'flat xml Справочник55.xml');
+    assert.ok(names.includes('СтарееСтарых'), 'flat xml СтарееСтарых.xml');
+    assert.ok(names.includes('табатаба'), 'flat xml табатаба.xml');
+  });
+
   test('should parse extensions_samples if present (configuration extension with Ext)', async function () {
     const projectRoot = path.resolve(__dirname, '../../..');
     const extensionsSamplesPath = path.join(projectRoot, 'FormatSamples', 'extensions_samples');

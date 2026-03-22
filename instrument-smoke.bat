@@ -55,6 +55,9 @@ set SKIP_CONTAINER_MATRIX_E2E=
 if not defined MATRIX_REPORT_PATH set MATRIX_REPORT_PATH=%CD%\suite-reports\instrument-matrix.json
 if exist "%MATRIX_REPORT_PATH%" del /f /q "%MATRIX_REPORT_PATH%"
 
+REM Документ-регистратор из empty_conf (см. test/helpers/smokeIbcmdConstants.ts). Переопределите IBCMD_RECORDER_DOCUMENT для своей копии конфигурации.
+if not defined IBCMD_RECORDER_DOCUMENT set "IBCMD_RECORDER_DOCUMENT=ДокументТестРаботает"
+
 REM Полный обход целей матрицы, если не заданы ни срез, ни явный MATRIX_FULL (0 = только срез по умолчанию 5).
 if not defined MATRIX_SLICE_LIMIT if not defined MATRIX_FULL set MATRIX_FULL=1
 

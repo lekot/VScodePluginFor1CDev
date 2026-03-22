@@ -398,8 +398,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       try {
         const trimmedName = name.trim();
         await doCreateElement(target, trimmedName);
-        await optimisticAppendCreatedNode(target, trimmedName, { configPath, format });
-        vscode.window.showInformationMessage(`Создан элемент: ${trimmedName}`);
+        if (target.id === 'Forms') {
+          vscode.window.showInformationMessage(`Создана форма: ${trimmedName}`);
+        } else {
+          await optimisticAppendCreatedNode(target, trimmedName, { configPath, format });
+          vscode.window.showInformationMessage(`Создан элемент: ${trimmedName}`);
+        }
         void invalidateCacheAndReload(configPath).catch((err) => {
           Logger.error('Background reload after create failed', err);
         });

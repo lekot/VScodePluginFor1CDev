@@ -1,22 +1,35 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { getRecorderDocumentNameForTemplates } from '../constants/ibcmdFixtureRefs';
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Имя документа-регистратора: явный аргумент или `process.env.IBCMD_RECORDER_DOCUMENT`. */
+function resolveRecorderDocumentName(explicit?: string): string {
+  const x = explicit?.trim();
+  if (x) {
+    return x;
+  }
+  return process.env.IBCMD_RECORDER_DOCUMENT?.trim() || '';
+}
+
 /**
  * Дописывает в документ-регистратор ссылку на регистр накопления / сведений в &lt;RegisterRecords&gt;,
  * чтобы ibcmd видел регистратора для регистра с проведением.
+ * Без имени документа (env `IBCMD_RECORDER_DOCUMENT` не задан) — no-op.
  */
 export async function appendRegisterReferenceToRecorderDocument(
   configRootPath: string,
   registerKind: 'AccumulationRegister' | 'InformationRegister',
   registerName: string,
-  recorderDocumentName: string = getRecorderDocumentNameForTemplates()
+  recorderDocumentName?: string
 ): Promise<void> {
-  const docPath = path.join(configRootPath, 'Documents', `${recorderDocumentName}.xml`);
+  const docName = resolveRecorderDocumentName(recorderDocumentName);
+  if (!docName) {
+    return;
+  }
+  const docPath = path.join(configRootPath, 'Documents', `${docName}.xml`);
   if (!fs.existsSync(docPath)) {
     return;
   }
@@ -47,9 +60,13 @@ export async function removeRegisterReferenceFromRecorderDocument(
   configRootPath: string,
   registerKind: 'AccumulationRegister' | 'InformationRegister',
   registerName: string,
-  recorderDocumentName: string = getRecorderDocumentNameForTemplates()
+  recorderDocumentName?: string
 ): Promise<void> {
-  const docPath = path.join(configRootPath, 'Documents', `${recorderDocumentName}.xml`);
+  const docName = resolveRecorderDocumentName(recorderDocumentName);
+  if (!docName) {
+    return;
+  }
+  const docPath = path.join(configRootPath, 'Documents', `${docName}.xml`);
   if (!fs.existsSync(docPath)) {
     return;
   }

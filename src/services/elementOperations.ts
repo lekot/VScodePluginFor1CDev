@@ -8,7 +8,6 @@ import {
   findReferencesToElement,
   replaceReferencesInProject,
 } from '../utils/referenceFinder';
-import { getRecorderDocumentRefForTemplates } from '../constants/ibcmdFixtureRefs';
 import { getDesignerTemplateXml } from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
 import {
@@ -188,6 +187,10 @@ export async function createElement(
     throw new Error('Выберите узел типа (например Справочники) или объект для создания реквизита.');
   }
 
+  if (parentNode.id === 'Forms') {
+    return await createForm(parentNode, name);
+  }
+
   const parent = parentNode.parent;
   if (!parent) {
     throw new Error('Нет родительского узла.');
@@ -232,7 +235,10 @@ export async function createElement(
           ? { uuidDim, uuidResource }
           : {}),
         ...(rootTag === 'DocumentJournal'
-          ? { RecorderDocumentRef: getRecorderDocumentRefForTemplates() }
+          ? (() => {
+              const doc = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
+              return doc ? { RecorderDocumentRef: `Document.${doc}` } : {};
+            })()
           : {}),
       });
       content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
@@ -321,10 +327,9 @@ const MINIMAL_EXT_FORM_XML = `<?xml version="1.0" encoding="UTF-8"?>
 /**
  * Creates a new form under the Forms node (Designer format only).
  * 
- * Creates the complete form structure:
- * - FormName.xml (metadata file)
- * - Ext/Form.xml (minimal form structure)
- * - Ext/Form/Module.bsl (empty module file)
+ * Creates the complete form structure (выгрузка Designer / ibcmd):
+ * - Forms/FormName.xml (метаданные формы)
+ * - Forms/FormName/Ext/Form.xml и Forms/FormName/Ext/Form/Module.bsl
  * 
  * @param parentNode - The Forms node where the form will be created
  * @param formName - Name for the new form (will be validated)
@@ -354,14 +359,13 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   if (!fs.statSync(formsPath).isDirectory()) {
     throw new Error(`Папка форм не найдена: ${formsPath}`);
   }
-  const formDir = path.join(formsPath, name);
-  const formMetaPath = path.join(formDir, `${name}.xml`);
-  if (fs.existsSync(formDir)) {
+  const formMetaPath = path.join(formsPath, `${name}.xml`);
+  const extRoot = path.join(formsPath, name);
+  if (fs.existsSync(formMetaPath) || fs.existsSync(extRoot)) {
     throw new Error(`Форма с именем «${name}» уже существует.`);
   }
-  await fs.promises.mkdir(formDir, { recursive: true });
   await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name);
-  const extDir = path.join(formDir, 'Ext');
+  const extDir = path.join(extRoot, 'Ext');
   const formXmlPath = path.join(extDir, 'Form.xml');
   const formModuleDir = path.join(extDir, 'Form');
   const modulePath = path.join(formModuleDir, 'Module.bsl');
@@ -542,16 +546,29 @@ export async function deleteElement(node: TreeNode): Promise<void> {
     if (ownerXmlPath && fs.existsSync(ownerXmlPath) && ownerXmlPath.toLowerCase().endsWith('.xml')) {
       await XMLWriter.removeDesignerFormFromOwnerMetadata(ownerXmlPath, node.name);
     }
-    const formDir = node.filePath;
-    if (!formDir || !fs.existsSync(formDir)) {
+    const fp = node.filePath;
+    if (!fp || !fs.existsSync(fp)) {
       throw new Error('Файл элемента не найден.');
     }
-    const stat = fs.statSync(formDir);
+    const lower = fp.toLowerCase();
+    if (lower.endsWith('.xml')) {
+      const extRoot = path.join(path.dirname(fp), path.basename(fp, path.extname(fp)));
+      await fs.promises.unlink(fp);
+      if (fs.existsSync(extRoot)) {
+        const st = fs.statSync(extRoot);
+        if (st.isDirectory()) {
+          await fs.promises.rm(extRoot, { recursive: true, force: true });
+        }
+      }
+      Logger.info(`Deleted form metadata ${fp} and ext dir if present`);
+      return;
+    }
+    const stat = fs.statSync(fp);
     if (!stat.isDirectory()) {
       throw new Error('Ожидалась папка формы.');
     }
-    await fs.promises.rm(formDir, { recursive: true, force: true });
-    Logger.info(`Deleted form directory ${formDir}`);
+    await fs.promises.rm(fp, { recursive: true, force: true });
+    Logger.info(`Deleted form directory ${fp}`);
     return;
   }
 

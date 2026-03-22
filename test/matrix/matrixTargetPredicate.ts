@@ -87,7 +87,9 @@ export function isNestedMatrixTargetUnderMatrixObject(node: TreeNode): boolean {
   if (node.id === 'TabularSections' && node.type === MetadataType.TabularSection) {
     return true;
   }
-  // Не включаем «Формы»: ibcmd ожидает другой layout путей, чем createForm (см. лог «Файл объекта не существует …/Forms/….xml»).
+  if (isFormsFolderTarget(node)) {
+    return true;
+  }
   return false;
 }
 

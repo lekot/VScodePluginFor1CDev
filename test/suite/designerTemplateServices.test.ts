@@ -33,6 +33,19 @@ suite('Designer template services', () => {
     assert.strictEqual(out, 'Object-Object-id-Синоним-id');
   });
 
+  test('substituteDesignerTemplate clears RegisteredDocuments when RecorderDocumentRef omitted', () => {
+    const template = `<RegisteredDocuments>
+        <xr:Item xsi:type="xr:MDObjectRef">{RecorderDocumentRef}</xr:Item>
+      </RegisteredDocuments>`;
+    const out = substituteDesignerTemplate(template, {
+      uuid: 'u',
+      Name: 'J',
+      Synonym_ru: 's',
+    });
+    assert.ok(out.includes('<RegisteredDocuments/>'));
+    assert.ok(!out.includes('{RecorderDocumentRef}'));
+  });
+
   test('getDesignerTemplateXml returns null when repository is not initialized', async () => {
     const content = await getDesignerTemplateXml('Catalog');
     assert.strictEqual(content, null);

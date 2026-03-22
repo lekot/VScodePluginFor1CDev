@@ -276,13 +276,13 @@ suite('elementOperations', () => {
     const formsNode = createFormsNode(catalogNode, formsPath);
     
     await createForm(formsNode, 'НоваяФорма');
+    const formMetaPath = path.join(formsPath, 'НоваяФорма.xml');
     const formDir = path.join(formsPath, 'НоваяФорма');
-    const formMetaPath = path.join(formDir, 'НоваяФорма.xml');
     const formXmlPath = path.join(formDir, 'Ext', 'Form.xml');
     const modulePath = path.join(formDir, 'Ext', 'Form', 'Module.bsl');
-    
-    assert.ok(dirExists(formDir));
+
     assert.ok(fileExists(formMetaPath));
+    assert.ok(dirExists(formDir));
     assert.ok(fileExists(formXmlPath));
     assert.ok(fileExists(modulePath));
     
@@ -298,11 +298,21 @@ suite('elementOperations', () => {
     );
   });
 
+  test('createElement on Forms folder creates form (same as createForm)', async () => {
+    const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
+    await fs.promises.mkdir(formsPath, { recursive: true });
+    const formsNode = createFormsNode(catalogNode, formsPath);
+    await createElement(formsNode, 'ЧерезСоздатьЭлемент');
+    const formMetaPath = path.join(formsPath, 'ЧерезСоздатьЭлемент.xml');
+    assert.ok(fileExists(formMetaPath));
+  });
+
   test('deleteElement removes form directory created by createForm', async () => {
     const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
     await fs.promises.mkdir(formsPath, { recursive: true });
     const formsNode = createFormsNode(catalogNode, formsPath);
     await createForm(formsNode, 'FormToDelete');
+    const formMetaPath = path.join(formsPath, 'FormToDelete.xml');
     const formDir = path.join(formsPath, 'FormToDelete');
     const formNode: TreeNode = {
       id: 'Forms.FormToDelete',
@@ -310,10 +320,11 @@ suite('elementOperations', () => {
       type: MetadataType.Form,
       properties: {},
       children: [],
-      filePath: formDir,
+      filePath: formMetaPath,
       parent: formsNode,
     };
     await deleteElement(formNode);
+    assert.ok(!fileExists(formMetaPath));
     assert.ok(!dirExists(formDir));
     const ownerXmlAfter = await readFileContent(catalogPath);
     assert.ok(
@@ -334,6 +345,7 @@ suite('elementOperations', () => {
     );
     await fs.promises.writeFile(catalogPath, ownerXml, 'utf-8');
 
+    const formMetaPath = path.join(formsPath, 'ListFormRef.xml');
     const formDir = path.join(formsPath, 'ListFormRef');
     const formNode: TreeNode = {
       id: 'Forms.ListFormRef',
@@ -341,7 +353,7 @@ suite('elementOperations', () => {
       type: MetadataType.Form,
       properties: {},
       children: [],
-      filePath: formDir,
+      filePath: formMetaPath,
       parent: formsNode,
     };
     await deleteElement(formNode);

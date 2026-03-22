@@ -5,6 +5,7 @@ import {
   appendRegisterReferenceToRecorderDocument,
   removeRegisterReferenceFromRecorderDocument,
 } from '../../src/services/registerRecorderDocumentLinker';
+import { SMOKE_EMPTY_CONF_RECORDER_DOCUMENT } from '../helpers/smokeIbcmdConstants';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 
 suite('registerRecorderDocumentLinker', () => {
@@ -38,7 +39,8 @@ suite('registerRecorderDocumentLinker', () => {
     await appendRegisterReferenceToRecorderDocument(
       tmpDir,
       'AccumulationRegister',
-      'Matrix_TestReg'
+      'Matrix_TestReg',
+      SMOKE_EMPTY_CONF_RECORDER_DOCUMENT
     );
     let xml = await fs.promises.readFile(
       path.join(tmpDir, 'Documents', 'ДокументТестРаботает.xml'),
@@ -48,7 +50,8 @@ suite('registerRecorderDocumentLinker', () => {
     await removeRegisterReferenceFromRecorderDocument(
       tmpDir,
       'AccumulationRegister',
-      'Matrix_TestReg'
+      'Matrix_TestReg',
+      SMOKE_EMPTY_CONF_RECORDER_DOCUMENT
     );
     xml = await fs.promises.readFile(
       path.join(tmpDir, 'Documents', 'ДокументТестРаботает.xml'),

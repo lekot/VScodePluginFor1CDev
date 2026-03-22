@@ -44,8 +44,14 @@ export function substituteDesignerTemplate(
   if (params.uuidResource !== undefined) {
     out = out.replace(/\{uuidResource\}/g, escapeXml(params.uuidResource));
   }
-  if (params.RecorderDocumentRef !== undefined) {
-    out = out.replace(/\{RecorderDocumentRef\}/g, escapeXml(params.RecorderDocumentRef));
+  const recorderRef = params.RecorderDocumentRef?.trim();
+  if (recorderRef) {
+    out = out.replace(/\{RecorderDocumentRef\}/g, escapeXml(recorderRef));
+  } else if (out.includes('{RecorderDocumentRef}')) {
+    out = out.replace(
+      /<RegisteredDocuments>\s*<xr:Item[^>]*>\{RecorderDocumentRef\}<\/xr:Item>\s*<\/RegisteredDocuments>/,
+      '<RegisteredDocuments/>'
+    );
   }
   return out;
 }
