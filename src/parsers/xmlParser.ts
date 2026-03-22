@@ -25,6 +25,17 @@ const XML_PARSER_OPTIONS = {
   removeNSPrefix: false,
 };
 
+/** Segments that must not be used in dot-path navigation (prototype pollution). */
+const UNSAFE_XML_PATH_SEGMENT = new Set(['__proto__', 'constructor', 'prototype']);
+
+function assertSafeXmlPathSegments(parts: readonly string[]): void {
+  for (const p of parts) {
+    if (UNSAFE_XML_PATH_SEGMENT.has(p)) {
+      throw new Error(`Invalid path segment: ${p}`);
+    }
+  }
+}
+
 /**
  * XML Parser for 1C metadata files
  */
@@ -141,6 +152,7 @@ export class XmlParser {
    */
   static getElementByPath(obj: Record<string, unknown>, elementPath: string): unknown {
     const parts = elementPath.split('.');
+    assertSafeXmlPathSegments(parts);
     let current: unknown = obj;
 
     for (const part of parts) {
@@ -162,6 +174,7 @@ export class XmlParser {
    */
   static setElementByPath(obj: Record<string, unknown>, elementPath: string, value: unknown): void {
     const parts = elementPath.split('.');
+    assertSafeXmlPathSegments(parts);
     let current: Record<string, unknown> = obj;
 
     for (let i = 0; i < parts.length - 1; i++) {

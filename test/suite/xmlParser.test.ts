@@ -95,6 +95,21 @@ suite('XmlParser', () => {
     assert.strictEqual(result, 'test');
   });
 
+  test('should reject prototype-pollution segments in setElementByPath', () => {
+    const obj: Record<string, unknown> = {};
+    assert.throws(() => {
+      XmlParser.setElementByPath(obj, 'a.__proto__.polluted', true);
+    }, /Invalid path segment/);
+    assert.strictEqual(({} as Record<string, unknown>)['polluted'], undefined);
+  });
+
+  test('should reject prototype-pollution segments in getElementByPath', () => {
+    const obj: Record<string, unknown> = { a: { b: 1 } };
+    assert.throws(() => {
+      XmlParser.getElementByPath(obj, 'a.constructor.prototype');
+    }, /Invalid path segment/);
+  });
+
   test('should convert object to XML', () => {
     const obj = {
       root: {
