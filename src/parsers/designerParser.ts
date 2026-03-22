@@ -304,34 +304,53 @@ export class DesignerParser {
       return typeNode;
     }
 
-    // Read items in this type directory
+    // Read items: каталог объекта ИЛИ плоский «Имя.xml» в папке типа (частая выгрузка без подкаталога на объект).
     try {
       const items = await fs.promises.readdir(typePath);
+      const shallow = options?.shallow ?? false;
+      const elementNodes: TreeNode[] = [];
+      const dirNames = new Set<string>();
 
-      // Process all items in parallel
-      const elementNodes = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = path.join(typePath, item);
-          try {
-            const stat = await fs.promises.stat(itemPath);
-
-            if (stat.isDirectory()) {
-              // This is a metadata element directory
-              return await this.parseMetadataElement(itemPath, item, typeName, options?.shallow ?? false);
-            }
-          } catch (error) {
-            Logger.debug(`Error processing item ${itemPath}`, error);
+      for (const item of items) {
+        const itemPath = path.join(typePath, item);
+        try {
+          const stat = await fs.promises.stat(itemPath);
+          if (stat.isDirectory()) {
+            dirNames.add(item);
+            const node = await this.parseMetadataElement(itemPath, item, typeName, shallow);
+            elementNodes.push(node);
           }
-          return null;
-        })
-      );
-
-      // Add non-null element nodes and set parent
-      for (const elementNode of elementNodes) {
-        if (elementNode) {
-          elementNode.parent = typeNode;
-          typeNode.children?.push(elementNode);
+        } catch (error) {
+          Logger.debug(`Error processing item ${itemPath}`, error);
         }
+      }
+
+      for (const item of items) {
+        if (!item.toLowerCase().endsWith('.xml')) {
+          continue;
+        }
+        const elementName = path.basename(item, path.extname(item));
+        if (dirNames.has(elementName)) {
+          continue;
+        }
+        const itemPath = path.join(typePath, item);
+        try {
+          const stat = await fs.promises.stat(itemPath);
+          if (!stat.isFile()) {
+            continue;
+          }
+          const virtualElementPath = path.join(typePath, elementName);
+          const node = await this.parseMetadataElement(virtualElementPath, elementName, typeName, shallow);
+          elementNodes.push(node);
+        } catch (error) {
+          Logger.debug(`Error processing flat metadata xml ${itemPath}`, error);
+        }
+      }
+
+      elementNodes.sort((a, b) => a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' }));
+      for (const elementNode of elementNodes) {
+        elementNode.parent = typeNode;
+        typeNode.children?.push(elementNode);
       }
     } catch (error) {
       Logger.warn(`Error reading metadata type directory ${typePath}`, error);
@@ -744,63 +763,94 @@ export class DesignerParser {
 
     try {
       const items = await fs.promises.readdir(formsPath);
-
-      // Process all form items
-      const formNodes = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = path.join(formsPath, item);
-          try {
-            const stat = await fs.promises.stat(itemPath);
-
-            if (stat.isDirectory()) {
-              // Form folder: real content is Ext/Form.xml; {FormName}.xml often absent in Designer
-              const xmlPath = path.join(itemPath, `${item}.xml`);
-              let properties: Record<string, unknown> = { name: item };
-              try {
-                await fs.promises.access(xmlPath);
-                const xmlContent = await XmlParser.parseFileAsync(xmlPath);
-                properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
-              } catch {
-                // {FormName}.xml doesn't exist; properties panel will read from Ext/Form.xml
-              }
-              // filePath = form directory so getFormPaths() and properties panel resolve Ext/Form.xml
-              const formNode: TreeNode = {
-                id: `Forms.${item}`,
-                name: item,
-                type: MetadataType.Form,
-                properties,
-                filePath: itemPath,
-                children: [],
-              };
-
-              // Parse form's Ext directory for modules
-              const extPath = path.join(itemPath, 'Ext');
-              try {
-                await fs.promises.access(extPath);
-                const extNode = await this.parseExtensions(extPath);
-                if (extNode.children && extNode.children.length > 0) {
-                  extNode.parent = formNode;
-                  formNode.children?.push(extNode);
-                }
-              } catch {
-                // No Ext directory
-              }
-
-              formNode.parent = formsNode;
-              return formNode;
-            }
-          } catch (error) {
-            Logger.debug(`Error processing form ${itemPath}`, error);
+      const names = new Set<string>();
+      for (const item of items) {
+        const itemPath = path.join(formsPath, item);
+        try {
+          const stat = await fs.promises.stat(itemPath);
+          if (stat.isFile() && item.toLowerCase().endsWith('.xml')) {
+            names.add(path.basename(item, path.extname(item)));
+          } else if (stat.isDirectory()) {
+            names.add(item);
           }
-          return null;
-        })
-      );
+        } catch {
+          /* skip */
+        }
+      }
 
-      // Add non-null form nodes
-      for (const formNode of formNodes) {
-        if (formNode) {
-          formNode.parent = formsNode;
+      const sortedNames = Array.from(names).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+      for (const name of sortedNames) {
+        const flatMetaPath = path.join(formsPath, `${name}.xml`);
+        const nestedDir = path.join(formsPath, name);
+        const nestedMetaPath = path.join(nestedDir, `${name}.xml`);
+        let filePath: string;
+        let extBase: string;
+        let properties: Record<string, unknown> = { name };
+        try {
+          let hasFlatMeta = false;
+          try {
+            await fs.promises.access(flatMetaPath);
+            hasFlatMeta = true;
+          } catch {
+            hasFlatMeta = false;
+          }
+          let hasNestedDir = false;
+          try {
+            const st = await fs.promises.stat(nestedDir);
+            hasNestedDir = st.isDirectory();
+          } catch {
+            hasNestedDir = false;
+          }
+
+          if (hasFlatMeta) {
+            filePath = flatMetaPath;
+            extBase = nestedDir;
+            try {
+              const xmlContent = await XmlParser.parseFileAsync(flatMetaPath);
+              properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
+            } catch {
+              /* keep minimal properties */
+            }
+          } else if (hasNestedDir) {
+            filePath = nestedDir;
+            extBase = nestedDir;
+            try {
+              await fs.promises.access(nestedMetaPath);
+              const xmlContent = await XmlParser.parseFileAsync(nestedMetaPath);
+              properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
+            } catch {
+              /* {Name}.xml внутри каталога может отсутствовать */
+            }
+          } else {
+            continue;
+          }
+
+          const formNode: TreeNode = {
+            id: `Forms.${name}`,
+            name,
+            type: MetadataType.Form,
+            properties,
+            filePath,
+            children: [],
+            parent: formsNode,
+          };
+
+          const extPath = path.join(extBase, 'Ext');
+          try {
+            await fs.promises.access(extPath);
+            const extNode = await this.parseExtensions(extPath);
+            if (extNode.children && extNode.children.length > 0) {
+              extNode.parent = formNode;
+              formNode.children?.push(extNode);
+            }
+          } catch {
+            /* No Ext directory */
+          }
+
           formsNode.children?.push(formNode);
+        } catch (error) {
+          Logger.debug(`Error processing form ${name}`, error);
         }
       }
     } catch (error) {

@@ -1,6 +1,7 @@
 /**
  * Paths for form editor: Form.xml and Module.bsl from form node filePath.
- * Form node filePath can be either the form directory or path to {FormName}.xml (metadata file).
+ * Designer: `Forms/{Name}.xml` (метаданные) + каталог `Forms/{Name}/Ext/…` — filePath узла формы обычно указывает на `.xml`.
+ * Устаревшая выкладка: каталог `Forms/{Name}/` с `{Name}.xml` внутри — filePath = каталог.
  */
 
 import * as path from 'path';
@@ -32,10 +33,17 @@ export function getFormPaths(formNodeFilePath: string): FormPaths {
     return { formDirectory, formXmlPath, modulePath };
   }
 
-  const formDirectory =
-    path.extname(formNodeFilePath) === '.xml'
-      ? path.dirname(formNodeFilePath)
-      : formNodeFilePath;
+  // Метаданные формы в Designer: Forms/{Name}.xml + каталог Forms/{Name}/Ext/… (ibcmd ищет именно .xml рядом с папкой)
+  if (path.extname(normalized).toLowerCase() === '.xml') {
+    const formsParent = path.dirname(normalized);
+    const formStem = path.basename(normalized, path.extname(normalized));
+    const extRoot = path.join(formsParent, formStem);
+    const formXmlPath = path.join(extRoot, 'Ext', 'Form.xml');
+    const modulePath = path.join(extRoot, 'Ext', 'Form', 'Module.bsl');
+    return { formDirectory: extRoot, formXmlPath, modulePath };
+  }
+
+  const formDirectory = formNodeFilePath;
   const formXmlPath = path.join(formDirectory, 'Ext', 'Form.xml');
   const modulePath = path.join(formDirectory, 'Ext', 'Form', 'Module.bsl');
   return { formDirectory, formXmlPath, modulePath };

@@ -23,6 +23,44 @@ suite('services coverage helpers', function () {
       assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 1);
     });
 
+    test('buildInternalInfoXml ChartOfCharacteristicTypes includes Characteristic category (§29)', () => {
+      const xml = buildInternalInfoXml('ChartOfCharacteristicTypes', 'ВидыСубконто', '\t');
+      assert.ok(xml.includes('category="Characteristic"'));
+      assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 6);
+    });
+
+    test('buildInternalInfoXml AccountingRegister includes ExtDimensions (§29)', () => {
+      const xml = buildInternalInfoXml('AccountingRegister', 'Хозрасчетный', '\t');
+      assert.ok(xml.includes('AccountingRegisterExtDimensions.Хозрасчетный'));
+      assert.ok(xml.includes('category="ExtDimensions"'));
+    });
+
+    test('buildInternalInfoXml CalculationRegister includes Recalcs (§3.1 / §29)', () => {
+      const xml = buildInternalInfoXml('CalculationRegister', 'Начисления', '\t');
+      assert.ok(xml.includes('category="Recalcs"'));
+      assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 7);
+    });
+
+    test('buildInternalInfoXml ChartOfCalculationTypes emits Displacing/Base/Leading rows (§29)', () => {
+      const xml = buildInternalInfoXml('ChartOfCalculationTypes', 'ВидыРасчета', '\t');
+      assert.ok(xml.includes('category="DisplacingCalculationTypesRow"'));
+      assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 11);
+    });
+
+    test('buildInternalInfoXml DefinedType single GeneratedType (§29)', () => {
+      const xml = buildInternalInfoXml('DefinedType', 'Сумма', '\t');
+      assert.ok(xml.includes('name="DefinedType.Сумма" category="DefinedType"'));
+      assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 1);
+    });
+
+    test('buildInternalInfoXml ExchangePlan includes ThisNode before GeneratedType (§15.3)', () => {
+      const xml = buildInternalInfoXml('ExchangePlan', 'ОбменУТ', '\t');
+      const thisNode = xml.indexOf('<xr:ThisNode>');
+      const gt = xml.indexOf('<xr:GeneratedType ');
+      assert.ok(thisNode !== -1 && gt !== -1 && thisNode < gt);
+      assert.strictEqual((xml.match(/<xr:GeneratedType /g) || []).length, 5);
+    });
+
     test('injectInternalInfoIntoMetadataXml inserts block before Properties', () => {
       const source = [
         '<Catalog>',
@@ -79,6 +117,21 @@ suite('services coverage helpers', function () {
         '</MetaDataObject>',
       ].join('\n');
       const result = injectInternalInfoIntoMetadataXml(source, 'CommonModule', 'TestModule');
+      assert.strictEqual(result, source);
+      assert.ok(!result.includes('<InternalInfo>'));
+    });
+
+    test('injectInternalInfoIntoMetadataXml does not inject InternalInfo for CommonForm (ibcmd)', () => {
+      const source = [
+        '<MetaDataObject>',
+        '\t<CommonForm uuid="00000000-0000-0000-0000-000000000003">',
+        '\t\t<Properties>',
+        '\t\t\t<Name>F</Name>',
+        '\t\t</Properties>',
+        '\t</CommonForm>',
+        '</MetaDataObject>',
+      ].join('\n');
+      const result = injectInternalInfoIntoMetadataXml(source, 'CommonForm', 'F');
       assert.strictEqual(result, source);
       assert.ok(!result.includes('<InternalInfo>'));
     });

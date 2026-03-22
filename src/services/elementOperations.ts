@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
-import { XMLWriter } from '../utils/XMLWriter';
+import { ROOT_TAGS_WITHOUT_CHILDOBJECTS, XMLWriter } from '../utils/XMLWriter';
 import { validateElementName } from '../utils/elementNameValidator';
 import {
   findReferencesToElement,
@@ -10,6 +10,10 @@ import {
 } from '../utils/referenceFinder';
 import { getDesignerTemplateXml } from './designerTemplateRepository';
 import { substituteDesignerTemplate } from './designerTemplateSubstitutor';
+import {
+  appendRegisterReferenceToRecorderDocument,
+  removeRegisterReferenceFromRecorderDocument,
+} from './registerRecorderDocumentLinker';
 import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from './configurationXmlUpdater';
 import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
@@ -23,7 +27,7 @@ function isAllowedTypeFolderParent(parent: TreeNode): boolean {
 }
 
 /** Top-level metadata types that have their own XML file in Designer. */
-const TOP_LEVEL_TYPES = new Set<MetadataType>([
+export const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.Catalog,
   MetadataType.Document,
   MetadataType.Enum,
@@ -56,6 +60,19 @@ const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.HTTPService,
   MetadataType.IntegrationService,
   MetadataType.Subsystem,
+  MetadataType.ExchangePlan,
+  MetadataType.DocumentJournal,
+  MetadataType.DefinedType,
+  MetadataType.CommonAttribute,
+  MetadataType.CommonCommand,
+  MetadataType.CommonForm,
+  MetadataType.CommonPicture,
+  MetadataType.CommonTemplate,
+  MetadataType.DocumentNumerator,
+  MetadataType.Language,
+  MetadataType.WSReference,
+  MetadataType.XDTOPackage,
+  MetadataType.StyleItem,
 ]);
 
 /**
@@ -94,6 +111,40 @@ function findConfigurationRootDir(typeFolderPath: string): string {
     dir = parentDir;
   }
   return path.dirname(typeFolderPath);
+}
+
+/**
+ * BusinessProcess.Properties.Task must reference an existing Task metadata object.
+ * Template uses `Task.{Name}` with the same name as the business process; create the task first if missing.
+ */
+async function ensureCompanionTaskForBusinessProcess(
+  configRootPath: string,
+  businessProcessesFolderPath: string,
+  taskName: string
+): Promise<void> {
+  const tasksDir = path.join(path.dirname(businessProcessesFolderPath), 'Tasks');
+  await fs.promises.mkdir(tasksDir, { recursive: true });
+  const taskFilePath = path.join(tasksDir, `${taskName}.xml`);
+  if (fs.existsSync(taskFilePath)) {
+    return;
+  }
+  const templateXml = await getDesignerTemplateXml('Task');
+  if (templateXml !== null) {
+    const uuid = XMLWriter.generateSimpleUuid();
+    let content = substituteDesignerTemplate(templateXml, {
+      uuid,
+      Name: taskName,
+      Synonym_ru: taskName,
+    });
+    content = injectInternalInfoIntoMetadataXml(content, 'Task', taskName);
+    content = normalizeMetaDataObjectRoot(content);
+    await fs.promises.writeFile(taskFilePath, content, 'utf-8');
+  } else {
+    await XMLWriter.createMinimalElementFile(taskFilePath, 'Task', taskName);
+  }
+  const taskElementDir = path.join(tasksDir, taskName);
+  await fs.promises.mkdir(taskElementDir, { recursive: true });
+  await addRootObjectToConfiguration(configRootPath, 'Task', taskName);
 }
 
 /**
@@ -136,6 +187,10 @@ export async function createElement(
     throw new Error('Выберите узел типа (например Справочники) или объект для создания реквизита.');
   }
 
+  if (parentNode.id === 'Forms') {
+    return await createForm(parentNode, name);
+  }
+
   const parent = parentNode.parent;
   if (!parent) {
     throw new Error('Нет родительского узла.');
@@ -164,13 +219,27 @@ export async function createElement(
     }
     const rootTag = String(parentNode.type);
     const configRootPath = findConfigurationRootDir(typeFolderPath);
+    if (rootTag === 'BusinessProcess') {
+      await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
+    }
     const templateXml = await getDesignerTemplateXml(rootTag);
     if (templateXml !== null) {
       const uuid = XMLWriter.generateSimpleUuid();
+      const uuidDim = XMLWriter.generateSimpleUuid();
+      const uuidResource = XMLWriter.generateSimpleUuid();
       let content = substituteDesignerTemplate(templateXml, {
         uuid,
         Name: name,
         Synonym_ru: name,
+        ...(rootTag === 'InformationRegister' || rootTag === 'AccumulationRegister'
+          ? { uuidDim, uuidResource }
+          : {}),
+        ...(rootTag === 'DocumentJournal'
+          ? (() => {
+              const doc = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
+              return doc ? { RecorderDocumentRef: `Document.${doc}` } : {};
+            })()
+          : {}),
       });
       content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
       content = normalizeMetaDataObjectRoot(content);
@@ -186,11 +255,24 @@ export async function createElement(
       Logger.error('Failed to update Configuration.xml', err);
       throw err;
     }
+    if (rootTag === 'AccumulationRegister') {
+      try {
+        await appendRegisterReferenceToRecorderDocument(configRootPath, 'AccumulationRegister', name);
+      } catch (e) {
+        Logger.warn('Could not link AccumulationRegister to recorder document', e);
+      }
+    }
     return;
   }
 
   // Handle nested elements: when parentNode is a top-level type (Catalog, Document, etc.)
   if (TOP_LEVEL_TYPES.has(parentNode.type)) {
+    if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parentNode.type))) {
+      throw new Error(
+        'В формате Designer у этого типа метаданных нет ChildObjects (например, роль, общий модуль). ' +
+          'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
+      );
+    }
     const filePath = parentNode.filePath;
     if (!filePath || !fs.existsSync(filePath)) {
       throw new Error('Файл объекта не найден.');
@@ -208,6 +290,12 @@ export async function createElement(
   if (containerTypes.has(parentNode.type) && parent) {
     // Check if the parent of the container is a top-level type object
     if (TOP_LEVEL_TYPES.has(parent.type)) {
+      if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parent.type))) {
+        throw new Error(
+          'В формате Designer у этого типа метаданных нет ChildObjects. ' +
+            'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
+        );
+      }
       const filePath = parent.filePath;
       if (!filePath || !fs.existsSync(filePath)) {
         throw new Error('Файл объекта не найден.');
@@ -239,10 +327,9 @@ const MINIMAL_EXT_FORM_XML = `<?xml version="1.0" encoding="UTF-8"?>
 /**
  * Creates a new form under the Forms node (Designer format only).
  * 
- * Creates the complete form structure:
- * - FormName.xml (metadata file)
- * - Ext/Form.xml (minimal form structure)
- * - Ext/Form/Module.bsl (empty module file)
+ * Creates the complete form structure (выгрузка Designer / ibcmd):
+ * - Forms/FormName.xml (метаданные формы)
+ * - Forms/FormName/Ext/Form.xml и Forms/FormName/Ext/Form/Module.bsl
  * 
  * @param parentNode - The Forms node where the form will be created
  * @param formName - Name for the new form (will be validated)
@@ -263,17 +350,22 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
     throw new Error('Создание формы: выберите узел «Forms» в дереве метаданных.');
   }
   const formsPath = parentNode.filePath;
-  if (!formsPath || !fs.existsSync(formsPath) || !fs.statSync(formsPath).isDirectory()) {
+  if (!formsPath) {
+    throw new Error('Папка форм: не задан путь к каталогу Forms.');
+  }
+  if (!fs.existsSync(formsPath)) {
+    await fs.promises.mkdir(formsPath, { recursive: true });
+  }
+  if (!fs.statSync(formsPath).isDirectory()) {
     throw new Error(`Папка форм не найдена: ${formsPath}`);
   }
-  const formDir = path.join(formsPath, name);
-  const formMetaPath = path.join(formDir, `${name}.xml`);
-  if (fs.existsSync(formDir)) {
+  const formMetaPath = path.join(formsPath, `${name}.xml`);
+  const extRoot = path.join(formsPath, name);
+  if (fs.existsSync(formMetaPath) || fs.existsSync(extRoot)) {
     throw new Error(`Форма с именем «${name}» уже существует.`);
   }
-  await fs.promises.mkdir(formDir, { recursive: true });
   await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name);
-  const extDir = path.join(formDir, 'Ext');
+  const extDir = path.join(extRoot, 'Ext');
   const formXmlPath = path.join(extDir, 'Form.xml');
   const formModuleDir = path.join(extDir, 'Form');
   const modulePath = path.join(formModuleDir, 'Module.bsl');
@@ -281,6 +373,12 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   await fs.promises.writeFile(formXmlPath, MINIMAL_EXT_FORM_XML, 'utf-8');
   await fs.promises.writeFile(modulePath, '', 'utf-8');
   Logger.info(`Created form: ${formMetaPath}`);
+
+  const owner = parentNode.parent;
+  const ownerXmlPath = owner?.filePath;
+  if (ownerXmlPath && fs.existsSync(ownerXmlPath) && ownerXmlPath.toLowerCase().endsWith('.xml')) {
+    await XMLWriter.addDesignerFormReferenceToOwnerMetadata(ownerXmlPath, name);
+  }
 }
 
 /**
@@ -424,7 +522,53 @@ export async function deleteElement(node: TreeNode): Promise<void> {
       Logger.error('Failed to update Configuration.xml on delete', err);
       throw err;
     }
+    if (rootTag === 'AccumulationRegister') {
+      try {
+        await removeRegisterReferenceFromRecorderDocument(
+          configRootPath,
+          'AccumulationRegister',
+          node.name
+        );
+      } catch (e) {
+        Logger.warn('Could not remove AccumulationRegister ref from recorder document', e);
+      }
+    }
     Logger.info(`Deleted element file ${filePath}`);
+    return;
+  }
+
+  if (node.type === MetadataType.Form && node.id !== 'Forms') {
+    if (parent.id !== 'Forms') {
+      throw new Error('Удаление формы: ожидался родительский узел «Forms».');
+    }
+    const owner = parent.parent;
+    const ownerXmlPath = owner?.filePath;
+    if (ownerXmlPath && fs.existsSync(ownerXmlPath) && ownerXmlPath.toLowerCase().endsWith('.xml')) {
+      await XMLWriter.removeDesignerFormFromOwnerMetadata(ownerXmlPath, node.name);
+    }
+    const fp = node.filePath;
+    if (!fp || !fs.existsSync(fp)) {
+      throw new Error('Файл элемента не найден.');
+    }
+    const lower = fp.toLowerCase();
+    if (lower.endsWith('.xml')) {
+      const extRoot = path.join(path.dirname(fp), path.basename(fp, path.extname(fp)));
+      await fs.promises.unlink(fp);
+      if (fs.existsSync(extRoot)) {
+        const st = fs.statSync(extRoot);
+        if (st.isDirectory()) {
+          await fs.promises.rm(extRoot, { recursive: true, force: true });
+        }
+      }
+      Logger.info(`Deleted form metadata ${fp} and ext dir if present`);
+      return;
+    }
+    const stat = fs.statSync(fp);
+    if (!stat.isDirectory()) {
+      throw new Error('Ожидалась папка формы.');
+    }
+    await fs.promises.rm(fp, { recursive: true, force: true });
+    Logger.info(`Deleted form directory ${fp}`);
     return;
   }
 

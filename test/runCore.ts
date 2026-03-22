@@ -1,3 +1,4 @@
+import './helpers/vscodeStubRegister';
 import * as path from 'path';
 import Mocha from 'mocha';
 import { coreSuiteFiles } from './suite/coreSuites';

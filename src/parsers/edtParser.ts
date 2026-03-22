@@ -695,6 +695,19 @@ export class EdtParser {
       HTTPServices: 'HTTPService.mdo',
       IntegrationServices: 'IntegrationService.mdo',
       Subsystems: 'Subsystem.mdo',
+      ExchangePlans: 'ExchangePlan.mdo',
+      DocumentJournals: 'DocumentJournal.mdo',
+      DefinedTypes: 'DefinedType.mdo',
+      CommonAttributes: 'CommonAttribute.mdo',
+      CommonCommands: 'CommonCommand.mdo',
+      CommonForms: 'CommonForm.mdo',
+      CommonPictures: 'CommonPicture.mdo',
+      CommonTemplates: 'CommonTemplate.mdo',
+      DocumentNumerators: 'DocumentNumerator.mdo',
+      Languages: 'Language.mdo',
+      WSReferences: 'WSReference.mdo',
+      XDTOPackages: 'XDTOPackage.mdo',
+      StyleItems: 'StyleItem.mdo',
     };
 
     return typeMap[typeName] || 'Object.mdo';

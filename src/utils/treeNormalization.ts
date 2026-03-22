@@ -86,8 +86,9 @@ const R4_TOP_LEVEL_ORDER: ReadonlyArray<PlaceholderDef> = [
   { id: 'Constants', name: 'Константы', type: MetadataType.Constant, typeDirName: 'Constants' },
   { id: 'Catalogs', name: 'Справочники', type: MetadataType.Catalog, typeDirName: 'Catalogs' },
   { id: 'Documents', name: 'Документы', type: MetadataType.Document, typeDirName: 'Documents' },
-  // No technical mapping in codebase.
-  { id: 'DocumentJournals', name: 'Журналы документов', type: MetadataType.Unknown },
+  { id: 'ExchangePlans', name: 'Планы обмена', type: MetadataType.ExchangePlan, typeDirName: 'ExchangePlans' },
+  { id: 'DocumentJournals', name: 'Журналы документов', type: MetadataType.DocumentJournal, typeDirName: 'DocumentJournals' },
+  { id: 'DocumentNumerators', name: 'Нумераторы документов', type: MetadataType.DocumentNumerator, typeDirName: 'DocumentNumerators' },
   { id: 'Enums', name: 'Перечисления', type: MetadataType.Enum, typeDirName: 'Enums' },
   { id: 'Reports', name: 'Отчеты', type: MetadataType.Report, typeDirName: 'Reports' },
   { id: 'DataProcessors', name: 'Обработки', type: MetadataType.DataProcessor, typeDirName: 'DataProcessors' },
@@ -106,6 +107,7 @@ const R4_TOP_LEVEL_ORDER: ReadonlyArray<PlaceholderDef> = [
 const R5_COMMON_CHILD_ORDER: ReadonlyArray<PlaceholderDef> = [
   { id: 'Subsystems', name: 'Подсистемы', type: MetadataType.Subsystem, typeDirName: 'Subsystems' },
   { id: 'CommonModules', name: 'Общие модули', type: MetadataType.CommonModule, typeDirName: 'CommonModules' },
+  { id: 'CommonAttributes', name: 'Общие реквизиты', type: MetadataType.CommonAttribute, typeDirName: 'CommonAttributes' },
   { id: 'SessionParameters', name: 'Параметры сеанса', type: MetadataType.SessionParameter, typeDirName: 'SessionParameters' },
   { id: 'Roles', name: 'Роли', type: MetadataType.Role, typeDirName: 'Roles' },
   { id: 'FilterCriteria', name: 'Критерии отбора', type: MetadataType.FilterCriterion, typeDirName: 'FilterCriteria' },
@@ -116,22 +118,22 @@ const R5_COMMON_CHILD_ORDER: ReadonlyArray<PlaceholderDef> = [
   { id: 'Bots', name: 'Боты', type: MetadataType.Unknown },
   { id: 'FunctionalOptions', name: 'Функциональные опции', type: MetadataType.FunctionalOption, typeDirName: 'FunctionalOptions' },
   { id: 'FunctionalOptionsParameters', name: 'Параметры функциональных опций', type: MetadataType.FunctionalOptionsParameter, typeDirName: 'FunctionalOptionsParameters' },
-  { id: 'DefinableTypes', name: 'Определяемые типы', type: MetadataType.Unknown },
+  { id: 'DefinedTypes', name: 'Определяемые типы', type: MetadataType.DefinedType, typeDirName: 'DefinedTypes' },
   { id: 'SettingsStorages', name: 'Хранилища настроек', type: MetadataType.SettingsStorage, typeDirName: 'SettingsStorages' },
-  { id: 'CommonCommands', name: 'Общие команды', type: MetadataType.Unknown },
+  { id: 'CommonCommands', name: 'Общие команды', type: MetadataType.CommonCommand, typeDirName: 'CommonCommands' },
   { id: 'CommandGroups', name: 'Группы команд', type: MetadataType.CommandGroup, typeDirName: 'CommandGroups' },
-  { id: 'CommonForms', name: 'Общие формы', type: MetadataType.Unknown },
-  { id: 'CommonLayouts', name: 'Общие макеты', type: MetadataType.Unknown },
-  { id: 'CommonPictures', name: 'Общие картинки', type: MetadataType.Unknown },
-  { id: 'XDTO', name: 'XDTO-пакеты', type: MetadataType.Unknown },
+  { id: 'CommonForms', name: 'Общие формы', type: MetadataType.CommonForm, typeDirName: 'CommonForms' },
+  { id: 'CommonTemplates', name: 'Общие макеты', type: MetadataType.CommonTemplate, typeDirName: 'CommonTemplates' },
+  { id: 'CommonPictures', name: 'Общие картинки', type: MetadataType.CommonPicture, typeDirName: 'CommonPictures' },
+  { id: 'XDTOPackages', name: 'XDTO-пакеты', type: MetadataType.XDTOPackage, typeDirName: 'XDTOPackages' },
   { id: 'WebServices', name: 'Web-сервисы', type: MetadataType.WebService, typeDirName: 'WebServices' },
   { id: 'HTTPServices', name: 'HTTP-сервисы', type: MetadataType.HTTPService, typeDirName: 'HTTPServices' },
-  { id: 'WSLinks', name: 'WS-ссылки', type: MetadataType.Unknown },
+  { id: 'WSReferences', name: 'WS-ссылки', type: MetadataType.WSReference, typeDirName: 'WSReferences' },
   { id: 'WebSocketClients', name: 'WebSocket-клиенты', type: MetadataType.Unknown },
   { id: 'IntegrationServices', name: 'Сервисы интеграции', type: MetadataType.IntegrationService, typeDirName: 'IntegrationServices' },
-  { id: 'StyleElements', name: 'Элементы стиля', type: MetadataType.Unknown },
+  { id: 'StyleItems', name: 'Элементы стиля', type: MetadataType.StyleItem, typeDirName: 'StyleItems' },
   { id: 'Styles', name: 'Стили', type: MetadataType.Style, typeDirName: 'Styles' },
-  { id: 'Languages', name: 'Языки', type: MetadataType.Unknown },
+  { id: 'Languages', name: 'Языки', type: MetadataType.Language, typeDirName: 'Languages' },
 ];
 
 /**
@@ -232,6 +234,49 @@ const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
   { id: 'Templates', name: 'Макеты', type: MetadataType.Template, typeDirName: 'Templates' },
 ];
 
+/**
+ * Каталог содержимого объекта Designer (Forms/, Attributes/, …):
+ * - вложенно: `Type/Object/Object.xml` → корень объекта = `dirname(xml)`;
+ * - плоско (часто в выгрузке): `Type/Object.xml` → корень = `Type/Object/`, а не `Type/`.
+ */
+function getObjectContentDirForR6(instanceNode: TreeNode, ctx: NormalizeContext): string | undefined {
+  const fp = instanceNode.filePath;
+  if (!fp) {
+    return undefined;
+  }
+  if (ctx.format === ConfigFormat.EDT) {
+    return fp.toLowerCase().endsWith('.xml') ? path.dirname(fp) : fp;
+  }
+  if (!fp.toLowerCase().endsWith('.xml')) {
+    return fp;
+  }
+  const dir = path.dirname(fp);
+  const fileBase = path.basename(fp, '.xml');
+  const parentDirName = path.basename(dir);
+  if (parentDirName === fileBase) {
+    return dir;
+  }
+  return path.join(dir, fileBase);
+}
+
+function fixR6PlaceholderFilePaths(instanceNode: TreeNode, ctx: NormalizeContext): void {
+  const baseDir = getObjectContentDirForR6(instanceNode, ctx);
+  if (!baseDir) {
+    return;
+  }
+  for (const def of R6_OBJECT_CHILDREN) {
+    if (!def.typeDirName) {
+      continue;
+    }
+    const child = instanceNode.children?.find((c) => c.id === def.id);
+    if (!child) {
+      continue;
+    }
+    child.filePath = path.join(baseDir, def.typeDirName);
+    child.parent = instanceNode;
+  }
+}
+
 const R6_OBJECT_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
   MetadataType.Document,
@@ -259,6 +304,7 @@ export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: Normali
     upsertChildNode(node, def, ctx);
   }
   reorderChildrenByIds(node, R6_OBJECT_CHILDREN.map((x) => x.id));
+  fixR6PlaceholderFilePaths(node, ctx);
   // Mark R6 placeholders as lazy so the provider calls loadElementChildren on expand.
   for (const def of R6_OBJECT_CHILDREN) {
     const child = node.children!.find((c) => c.id === def.id);
@@ -331,20 +377,8 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
         continue;
       }
       ensureChildrenArray(instanceNode);
-      
-      // Add all R6 placeholders to this instance node
-      for (const childDef of R6_OBJECT_CHILDREN) {
-        upsertChildNode(instanceNode, childDef, ctx);
-      }
-      
-      // Mark R6 placeholders as lazy for proper loading behavior
-      const existingPlaceholders = instanceNode.children?.filter(c => R6_OBJECT_CHILDREN.some(def => def.id === c.id)) ?? [];
-      for (const placeholder of existingPlaceholders) {
-        (placeholder.properties as Record<string, unknown>)._lazy = true;
-      }
-      
-      // Reorder the R6 children for consistent display
-      reorderChildrenByIds(instanceNode, R6_OBJECT_CHILDREN.map((x) => x.id));
+      // Same as provider path: placeholders + корректные filePath рядом с Object.xml (Forms/, Attributes/, …)
+      ensureR6PlaceholdersForInstanceNode(instanceNode, ctx);
     }
   }
 

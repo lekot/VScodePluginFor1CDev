@@ -49,6 +49,19 @@ const ROOT_TAG_DEFAULTS: Record<string, DefaultProperties> = {
   HTTPService: {},
   IntegrationService: {},
   Subsystem: {},
+  ExchangePlan: {},
+  DocumentJournal: {},
+  DefinedType: {},
+  CommonAttribute: {},
+  CommonCommand: {},
+  CommonForm: {},
+  CommonPicture: {},
+  CommonTemplate: {},
+  DocumentNumerator: {},
+  Language: {},
+  WSReference: {},
+  XDTOPackage: {},
+  StyleItem: {},
 };
 
 /** Defaults for nested Attribute (Type = String 50 is applied in XMLWriter; here only extra scalars if needed). */

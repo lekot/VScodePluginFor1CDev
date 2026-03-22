@@ -9,7 +9,10 @@ coverage/
 .vscode-test/
 .env
 .env.local
-FormatSamples/
+FormatSamples/structure_samples/
+FormatSamples/structure_backup/
+FormatSamples/extensions_samples/                                        
+FormatSamples/ut_demo_ForFormat/
 BUGS/
 docs/
 # Specs (tracked only on branch local-specs, not pushed to origin)
@@ -21,3 +24,6 @@ mcp/
 mcp-*
 shcntx_help.db
 .roo/
+
+# Локальная настройка ibcmd (копия ibcmd.setup.example.bat с путями к платформе и ИБ)
+ibcmd-local.bat

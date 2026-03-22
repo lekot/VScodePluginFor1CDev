@@ -13,6 +13,13 @@ export function initDesignerTemplateRepository(context: vscode.ExtensionContext)
 }
 
 /**
+ * Drops cached extension context (for test isolation after suites that call `initDesignerTemplateRepository`).
+ */
+export function clearDesignerTemplateRepositoryForTests(): void {
+  extensionContext = undefined;
+}
+
+/**
  * Load Designer template XML for a given root tag (e.g. Catalog, Document).
  * @param rootTag - Metadata type tag (e.g. Catalog, Document, Enum).
  * @returns Template XML string or null if file not found / read error.

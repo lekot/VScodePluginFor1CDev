@@ -13,6 +13,7 @@ import {
   R5_COMMON_DISK_BACKED_FOLDER_IDS,
 } from '../utils/treeNormalization';
 import { OptimisticDeleteToken } from '../types/reloadContracts';
+import { TOP_LEVEL_TYPES } from '../services/elementOperations';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -45,6 +46,9 @@ const FILTERABLE_METADATA_TYPES: MetadataType[] = [
 ];
 
 const MAX_SEARCH_HISTORY = 10;
+
+/** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
+const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
 
 /**
  * Tree Data Provider for VS Code Tree View
@@ -323,6 +327,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       ['HTTPService', 'HTTPServices'],
       ['IntegrationService', 'IntegrationServices'],
       ['Subsystem', 'Subsystems'],
+      ['ExchangePlan', 'ExchangePlans'],
+      ['DocumentJournal', 'DocumentJournals'],
+      ['DefinedType', 'DefinedTypes'],
+      ['CommonAttribute', 'CommonAttributes'],
+      ['CommonCommand', 'CommonCommands'],
+      ['CommonForm', 'CommonForms'],
+      ['CommonPicture', 'CommonPictures'],
+      ['CommonTemplate', 'CommonTemplates'],
+      ['DocumentNumerator', 'DocumentNumerators'],
+      ['Language', 'Languages'],
+      ['WSReference', 'WSReferences'],
+      ['XDTOPackage', 'XDTOPackages'],
+      ['StyleItem', 'StyleItems'],
     ]);
     return map;
   }
@@ -544,6 +561,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       [MetadataType.HTTPService]: 'HTTP-сервис',
       [MetadataType.IntegrationService]: 'Сервис интеграции',
       [MetadataType.Subsystem]: 'Подсистема',
+      [MetadataType.ExchangePlan]: 'План обмена',
+      [MetadataType.DocumentJournal]: 'Журнал документов',
+      [MetadataType.DefinedType]: 'Определяемый тип',
+      [MetadataType.CommonAttribute]: 'Общий реквизит',
+      [MetadataType.CommonCommand]: 'Общая команда',
+      [MetadataType.CommonForm]: 'Общая форма',
+      [MetadataType.CommonPicture]: 'Общая картинка',
+      [MetadataType.CommonTemplate]: 'Общий макет',
+      [MetadataType.DocumentNumerator]: 'Нумератор документов',
+      [MetadataType.Language]: 'Язык',
+      [MetadataType.WSReference]: 'WS-ссылка',
+      [MetadataType.XDTOPackage]: 'XDTO-пакет',
+      [MetadataType.StyleItem]: 'Элемент стиля',
       [MetadataType.Attribute]: 'Реквизит',
       [MetadataType.TabularSection]: 'Табличная часть',
       [MetadataType.Form]: 'Форма',
@@ -741,6 +771,31 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   refresh(element?: TreeNode): void {
     Logger.debug('Refreshing tree view', element ? element.name : 'root');
     this._onDidChangeTreeData.fire(element);
+  }
+
+  /**
+   * Drop cached children so the next {@link getChildren} reloads from disk/XML.
+   * Call after create/delete that change files under this container (matrix, tests).
+   */
+  invalidateLoadedChildren(element: TreeNode): void {
+    const el = this.resolveActiveNode(element);
+    if (!el.properties) {
+      el.properties = {};
+    }
+    el.children = [];
+    if (R6_LAZY_SECTION_IDS.has(el.id) || el.type === MetadataType.Subsystem) {
+      (el.properties as Record<string, unknown>)._lazy = true;
+    } else if (
+      TOP_LEVEL_TYPES.has(el.type) &&
+      el.id.includes('.') &&
+      el.type !== MetadataType.Form
+    ) {
+      // Instance XML (e.g. Roles.Имя, CommonModules.X): after create/delete under this node,
+      // children must reload from disk like first expand — same as shallow parseMetadataElement.
+      (el.properties as Record<string, unknown>)._lazy = true;
+    }
+    this.filterAncestorOrVisibleIds = null;
+    this.refresh(el);
   }
 
   private getConfigurationRoot(node: TreeNode): TreeNode | null {
@@ -1212,6 +1267,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       [MetadataType.HTTPService]: 'server',
       [MetadataType.IntegrationService]: 'plug',
       [MetadataType.Subsystem]: 'folder-library',
+      [MetadataType.ExchangePlan]: 'repo-sync',
+      [MetadataType.DocumentJournal]: 'notebook',
+      [MetadataType.DefinedType]: 'symbol-misc',
+      [MetadataType.CommonAttribute]: 'symbol-field',
+      [MetadataType.CommonCommand]: 'terminal',
+      [MetadataType.CommonForm]: 'layout',
+      [MetadataType.CommonPicture]: 'file-media',
+      [MetadataType.CommonTemplate]: 'file-code',
+      [MetadataType.DocumentNumerator]: 'list-ordered',
+      [MetadataType.Language]: 'globe',
+      [MetadataType.WSReference]: 'link',
+      [MetadataType.XDTOPackage]: 'package',
+      [MetadataType.StyleItem]: 'symbol-color',
 
       // Sub-elements
       [MetadataType.Attribute]: 'symbol-field',

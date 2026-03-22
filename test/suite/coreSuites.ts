@@ -9,6 +9,8 @@ export const coreSuiteFiles: string[] = [
   'suite/elementNameValidator.test.js',
   'suite/referenceFinder.test.js',
   'suite/elementOperations.test.js',
+  'suite/registerRecorderDocumentLinker.test.js',
+  'suite/matrixTargetPredicate.test.js',
   'suite/dataProcessorOperations.test.js',
   'suite/configHelpers.test.js',
   'suite/formDragBugCondition.test.js',
@@ -30,4 +32,7 @@ export const coreSuiteFiles: string[] = [
   'suite/designerTemplateServices.test.js',
   'suite/servicesCoverage.test.js',
   'suite/fixtureMatrix.test.js',
+  ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
+    ? []
+    : ['suite/containerMatrix.e2e.test.js']),
 ];

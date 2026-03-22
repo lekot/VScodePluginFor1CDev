@@ -38,6 +38,19 @@ const METADATA_FOLDER_TO_RUSSIAN: Record<string, string> = {
   HTTPServices: 'HTTP-сервис',
   IntegrationServices: 'Сервис интеграции',
   Subsystems: 'Подсистема',
+  ExchangePlans: 'План обмена',
+  DocumentJournals: 'Журнал документов',
+  DocumentNumerators: 'Нумератор документов',
+  DefinedTypes: 'Определяемый тип',
+  CommonAttributes: 'Общий реквизит',
+  CommonCommands: 'Общая команда',
+  CommonForms: 'Общая форма',
+  CommonPictures: 'Общая картинка',
+  CommonTemplates: 'Общий макет',
+  Languages: 'Язык',
+  WSReferences: 'WS-ссылка',
+  XDTOPackages: 'XDTO-пакет',
+  StyleItems: 'Элемент стиля',
 };
 
 const FALLBACK_TITLE = 'Форма';

@@ -38,8 +38,19 @@ export class MetadataTypeMapper {
     HTTPServices: MetadataType.HTTPService,
     IntegrationServices: MetadataType.IntegrationService,
     Subsystems: MetadataType.Subsystem,
-    Languages: MetadataType.Unknown,
-    CommonPictures: MetadataType.Unknown,
+    ExchangePlans: MetadataType.ExchangePlan,
+    DocumentJournals: MetadataType.DocumentJournal,
+    DefinedTypes: MetadataType.DefinedType,
+    CommonAttributes: MetadataType.CommonAttribute,
+    CommonCommands: MetadataType.CommonCommand,
+    CommonForms: MetadataType.CommonForm,
+    CommonPictures: MetadataType.CommonPicture,
+    CommonTemplates: MetadataType.CommonTemplate,
+    DocumentNumerators: MetadataType.DocumentNumerator,
+    Languages: MetadataType.Language,
+    WSReferences: MetadataType.WSReference,
+    XDTOPackages: MetadataType.XDTOPackage,
+    StyleItems: MetadataType.StyleItem,
   };
 
   /**
