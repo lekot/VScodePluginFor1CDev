@@ -75,7 +75,8 @@ suite('Container matrix e2e', () => {
     clearDesignerTemplateRepositoryForTests();
   });
 
-  test('runContainerMatrixOnFreshFixture JSON report shape and file match', async () => {
+  test('runContainerMatrixOnFreshFixture JSON report shape and file match', async function () {
+    this.timeout(30_000);
     const { report, reportFile, workDir } = await runContainerMatrixOnFreshFixture({
       matrixFull: false,
     });

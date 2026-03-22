@@ -14,11 +14,13 @@ FormatSamples/structure_backup/
 FormatSamples/extensions_samples/                                        
 FormatSamples/ut_demo_ForFormat/
 BUGS/
-docs/
+docs/*
+suite-reports/
+AGENTS.md
 # Specs (tracked only on branch local-specs, not pushed to origin)
 .kiro/
 
-# Cursor and MCP (local / tooling)
+# Cursor (локально; в PR не включаем)
 .cursor/
 mcp/
 mcp-*

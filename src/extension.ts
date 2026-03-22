@@ -26,7 +26,11 @@ import { FormEditorProvider } from './formEditor/formEditorProvider';
 import { getFormPaths } from './formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from './utils/configHelpers';
 import { initDesignerTemplateRepository } from './services/designerTemplateRepository';
-import { ensureR6PlaceholdersForInstanceNode, normalizeEmptyPlaceholderTree } from './utils/treeNormalization';
+import {
+  ensureR6PlaceholdersForInstanceNode,
+  isTabularSectionColumnsContainer,
+  normalizeEmptyPlaceholderTree,
+} from './utils/treeNormalization';
 import { ReloadCoordinatorService } from './services/reloadCoordinatorService';
 import {
   DELETE_RECONCILE_ATTEMPTS,
@@ -65,6 +69,27 @@ function buildOptimisticCreatedNode(
       properties: {},
       children: [],
       filePath: path.join(targetDir, `${trimmed}.xml`),
+    };
+  }
+
+  if (isTabularSectionColumnsContainer(target)) {
+    const section = target.parent;
+    const parentXml =
+      section?.filePath && section.filePath.toLowerCase().endsWith('.xml')
+        ? section.filePath
+        : section?.parentFilePath;
+    return {
+      id: section ? `${section.id}.${trimmed}` : `${target.id}.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.Attribute,
+      parent: target,
+      properties: {
+        Name: trimmed,
+        Comment: '',
+        Type: 'String(50)',
+      },
+      children: [],
+      parentFilePath: parentXml,
     };
   }
 
@@ -300,6 +325,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         Logger.error('Failed to open XML', err);
         vscode.window.showErrorMessage(
           `Не удалось открыть файл: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
+  const openBslModuleCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openBslModule',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(node);
+      if (!target) {return;}
+      const fp = target.filePath;
+      if (!fp || !fp.toLowerCase().endsWith('.bsl')) {
+        vscode.window.showWarningMessage('Для этого узла нет файла модуля BSL или путь не задан.');
+        return;
+      }
+      try {
+        Logger.info(`Opening BSL module: ${fp}`);
+        await vscode.window.showTextDocument(vscode.Uri.file(fp));
+      } catch (err) {
+        Logger.error('Failed to open BSL module', err);
+        vscode.window.showErrorMessage(
+          `Не удалось открыть модуль: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }
@@ -766,6 +813,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     refreshCommand,
     showPropertiesCommand,
     openXMLCommand,
+    openBslModuleCommand,
     openFormEditorCommand,
     openRightsEditorCommand,
     saveRightsEditorCommand,

@@ -306,4 +306,39 @@ suite('XML Nested Element Structure', () => {
     assert.ok(!modified.includes('<Type>string(10)</Type>'),
       'Type must not be written as plain text');
   });
+
+  test('buildUpdatedNestedXml scoped Attribute updates column only in named TabularSection', () => {
+    const xml = fs.readFileSync(
+      path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTwoTabularSameColumn.xml'),
+      'utf-8'
+    );
+    const modified = XMLWriter.buildUpdatedNestedXml(
+      xml,
+      'Attribute',
+      'Номенклатура',
+      { Name: 'НоменклатураСкоуп' },
+      ['Name'],
+      { scopedTabularSectionName: 'SectionA' }
+    );
+    assert.ok(modified.includes('<Name>НоменклатураСкоуп</Name>'));
+    assert.ok(modified.includes('<Name>Номенклатура</Name>'));
+    assert.strictEqual((modified.match(/<Name>Номенклатура<\/Name>/g) || []).length, 1);
+  });
+
+  test('buildUpdatedNestedXml scoped Attribute with non-matching section name leaves columns unchanged', () => {
+    const xml = fs.readFileSync(
+      path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTwoTabularSameColumn.xml'),
+      'utf-8'
+    );
+    const modified = XMLWriter.buildUpdatedNestedXml(
+      xml,
+      'Attribute',
+      'Номенклатура',
+      { Name: 'ShouldNotApply' },
+      ['Name'],
+      { scopedTabularSectionName: 'NoSuchSection' }
+    );
+    assert.ok(!modified.includes('<Name>ShouldNotApply</Name>'));
+    assert.strictEqual((modified.match(/<Name>Номенклатура<\/Name>/g) || []).length, 2);
+  });
 });

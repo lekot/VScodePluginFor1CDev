@@ -552,4 +552,536 @@ suite('elementOperations', () => {
     const content = await readFileContent(catalogNode.filePath!);
     assert.ok(!content.includes('<Name>ToDelete</Name>'));
   });
+
+  test('createElement adds first column via tabular columns container (embedded ChildObjects)', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogEmptyEmbedded.xml');
+    const dest = path.join(tmpDir, 'Catalogs', 'EmbCat.xml');
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+
+    const embCatalog: TreeNode = {
+      id: 'Catalogs.CatalogEmptyEmbedded',
+      name: 'CatalogEmptyEmbedded',
+      type: MetadataType.Catalog,
+      filePath: dest,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: embCatalog,
+      filePath: path.join(tmpDir, 'Catalogs', 'TabularSectionsEmb'),
+      properties: {},
+    };
+    const section: TreeNode = {
+      id: 'TabularSections.EmbeddedEmpty',
+      name: 'EmbeddedEmpty',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      parentFilePath: dest,
+      properties: {},
+    };
+    const container: TreeNode = {
+      id: 'TabularSections.EmbeddedEmpty.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: section,
+      parentFilePath: dest,
+      children: [],
+    };
+
+    await createElement(container, 'FirstCol');
+    const content = await readFileContent(dest);
+    assert.ok(content.includes('<Name>FirstCol</Name>'));
+  });
+
+  test('createElement adds first column into dedicated TabularSections/Name/Name.xml file', async () => {
+    const fixtureRoot = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogEmptyFolder');
+    const catDestDir = path.join(tmpDir, 'Catalogs', 'ZFolder');
+    await fs.promises.cp(fixtureRoot, catDestDir, { recursive: true });
+    const catXml = path.join(catDestDir, 'CatalogEmptyFolder.xml');
+    const tsXml = path.join(catDestDir, 'TabularSections', 'FolderEmpty', 'FolderEmpty.xml');
+
+    const catNode: TreeNode = {
+      id: 'Catalogs.CatalogEmptyFolder',
+      name: 'CatalogEmptyFolder',
+      type: MetadataType.Catalog,
+      filePath: catXml,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catNode,
+      filePath: path.join(catDestDir, 'TabularSections'),
+      properties: {},
+    };
+    const section: TreeNode = {
+      id: 'TabularSections.FolderEmpty',
+      name: 'FolderEmpty',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      filePath: tsXml,
+      parentFilePath: catXml,
+      properties: {},
+    };
+    const container: TreeNode = {
+      id: 'TabularSections.FolderEmpty.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: section,
+      filePath: tsXml,
+      parentFilePath: tsXml,
+      children: [],
+    };
+
+    await createElement(container, 'DiskCol');
+    const tsContent = await readFileContent(tsXml);
+    assert.ok(tsContent.includes('<Name>DiskCol</Name>'));
+  });
+
+  test('duplicateElement clones tabular column XML (Type), not minimal Attribute', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogWithTabular.xml');
+    const dest = path.join(tmpDir, 'Catalogs', 'CatDupCol.xml');
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+
+    const catNode: TreeNode = {
+      id: 'Catalogs.CatalogWithTabular',
+      name: 'CatalogWithTabular',
+      type: MetadataType.Catalog,
+      filePath: dest,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catNode,
+      properties: {},
+    };
+    const section: TreeNode = {
+      id: 'TabularSections.Tabular1',
+      name: 'Tabular1',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      parentFilePath: dest,
+      properties: {},
+    };
+    const container: TreeNode = {
+      id: 'TabularSections.Tabular1.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: section,
+      parentFilePath: dest,
+      children: [
+        { id: 'TabularSections.Tabular1.Col1', name: 'Col1', type: MetadataType.Attribute, properties: {} },
+        { id: 'TabularSections.Tabular1.Col2', name: 'Col2', type: MetadataType.Attribute, properties: {} },
+      ],
+    };
+    const col1: TreeNode = {
+      id: 'TabularSections.Tabular1.Col1',
+      name: 'Col1',
+      type: MetadataType.Attribute,
+      parent: container,
+      parentFilePath: dest,
+      properties: {},
+    };
+
+    await duplicateElement(col1, 'Col1Clone');
+    const content = await readFileContent(dest);
+    assert.ok(content.includes('<Name>Col1</Name>'));
+    assert.ok(content.includes('<Name>Col1Clone</Name>'));
+    assert.strictEqual((content.match(/xs:string/g) || []).length, 2);
+    assert.strictEqual((content.match(/xs:decimal/g) || []).length, 1);
+  });
+
+  test('renameElement renames tabular column in embedded TabularSection ChildObjects', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogWithTabular.xml');
+    const dest = path.join(tmpDir, 'Catalogs', 'CatRenameCol.xml');
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+
+    const catNode: TreeNode = {
+      id: 'Catalogs.CatalogWithTabular',
+      name: 'CatalogWithTabular',
+      type: MetadataType.Catalog,
+      filePath: dest,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catNode,
+      properties: {},
+    };
+    const section: TreeNode = {
+      id: 'TabularSections.Tabular1',
+      name: 'Tabular1',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      parentFilePath: dest,
+      properties: {},
+    };
+    const container: TreeNode = {
+      id: 'TabularSections.Tabular1.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: section,
+      parentFilePath: dest,
+      children: [
+        { id: 'TabularSections.Tabular1.Col1', name: 'Col1', type: MetadataType.Attribute, properties: {} },
+        { id: 'TabularSections.Tabular1.Col2', name: 'Col2', type: MetadataType.Attribute, properties: {} },
+      ],
+    };
+    const col1: TreeNode = {
+      id: 'TabularSections.Tabular1.Col1',
+      name: 'Col1',
+      type: MetadataType.Attribute,
+      parent: container,
+      parentFilePath: dest,
+      properties: {},
+    };
+
+    await renameElement(col1, 'ColRenamed', tmpDir);
+    const content = await readFileContent(dest);
+    assert.ok(content.includes('<Name>ColRenamed</Name>'), 'column Name updated in owner XML');
+    assert.ok(content.includes('<Name>Col2</Name>'), 'sibling column unchanged');
+    assert.ok(!content.includes('<Name>Col1</Name>'), 'old column name must not remain');
+    assert.strictEqual((content.match(/xs:string/g) || []).length, 1);
+    assert.strictEqual((content.match(/xs:decimal/g) || []).length, 1);
+  });
+
+  test('renameElement renames tabular column only in scoped SectionA when SectionB has same column name', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTwoTabularSameColumn.xml');
+    const dest = path.join(tmpDir, 'Catalogs', 'CatTwoTs.xml');
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+
+    const catNode: TreeNode = {
+      id: 'Catalogs.CatalogTwoTabularSameColumn',
+      name: 'CatalogTwoTabularSameColumn',
+      type: MetadataType.Catalog,
+      filePath: dest,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catNode,
+      properties: {},
+    };
+    const sectionA: TreeNode = {
+      id: 'TabularSections.SectionA',
+      name: 'SectionA',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      parentFilePath: dest,
+      properties: {},
+    };
+    const containerA: TreeNode = {
+      id: 'TabularSections.SectionA.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: sectionA,
+      parentFilePath: dest,
+      children: [],
+    };
+    const colA: TreeNode = {
+      id: 'TabularSections.SectionA.Nom',
+      name: 'Номенклатура',
+      type: MetadataType.Attribute,
+      parent: containerA,
+      parentFilePath: dest,
+      properties: {},
+    };
+
+    await renameElement(colA, 'НоменклатураА', tmpDir);
+    const content = await readFileContent(dest);
+    assert.ok(content.includes('<Name>НоменклатураА</Name>'), 'SectionA column renamed');
+    assert.ok(content.includes('<Name>Номенклатура</Name>'), 'SectionB column name unchanged');
+    assert.ok(content.includes('<Name>Количество</Name>'), 'sibling column in SectionA unchanged');
+    assert.strictEqual((content.match(/<Name>Номенклатура<\/Name>/g) || []).length, 1);
+  });
+
+  test('renameElement renames column in first catalog Товары only when second catalog has same section and column name', async () => {
+    const srcA = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogGoodsA.xml');
+    const srcB = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogGoodsB.xml');
+    const destA = path.join(tmpDir, 'Catalogs', 'CatalogGoodsA.xml');
+    const destB = path.join(tmpDir, 'Catalogs', 'CatalogGoodsB.xml');
+    await fs.promises.mkdir(path.dirname(destA), { recursive: true });
+    await fs.promises.copyFile(srcA, destA);
+    await fs.promises.copyFile(srcB, destB);
+
+    const catA: TreeNode = {
+      id: 'Catalogs.CatalogGoodsA',
+      name: 'CatalogGoodsA',
+      type: MetadataType.Catalog,
+      filePath: destA,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolderA: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catA,
+      properties: {},
+    };
+    const sectionA: TreeNode = {
+      id: 'TabularSections.Товары',
+      name: 'Товары',
+      type: MetadataType.TabularSection,
+      parent: tabFolderA,
+      parentFilePath: destA,
+      properties: {},
+    };
+    const containerA: TreeNode = {
+      id: 'TabularSections.Товары.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: sectionA,
+      parentFilePath: destA,
+      children: [],
+    };
+    const colA: TreeNode = {
+      id: 'TabularSections.Товары.Art',
+      name: 'Артикул',
+      type: MetadataType.Attribute,
+      parent: containerA,
+      parentFilePath: destA,
+      properties: {},
+    };
+
+    await renameElement(colA, 'АртикулПрайм', tmpDir);
+    const contentA = await readFileContent(destA);
+    const contentB = await readFileContent(destB);
+    assert.ok(contentA.includes('<Name>АртикулПрайм</Name>'), 'catalog A column renamed');
+    assert.ok(contentB.includes('<Name>Артикул</Name>'), 'catalog B column unchanged');
+    assert.ok(!contentB.includes('<Name>АртикулПрайм</Name>'));
+  });
+
+  test('renameElement scoped tabular column does not rename top-level Attribute with same name', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTopLevelAndTabularDupName.xml');
+    const dest = path.join(tmpDir, 'Catalogs', 'CatDupTopTab.xml');
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+
+    const catNode: TreeNode = {
+      id: 'Catalogs.CatalogTopLevelAndTabularDupName',
+      name: 'CatalogTopLevelAndTabularDupName',
+      type: MetadataType.Catalog,
+      filePath: dest,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: catNode,
+      properties: {},
+    };
+    const section: TreeNode = {
+      id: 'TabularSections.Lines',
+      name: 'Lines',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      parentFilePath: dest,
+      properties: {},
+    };
+    const container: TreeNode = {
+      id: 'TabularSections.Lines.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: section,
+      parentFilePath: dest,
+      children: [],
+    };
+    const tabCol: TreeNode = {
+      id: 'TabularSections.Lines.SharedColName',
+      name: 'SharedColName',
+      type: MetadataType.Attribute,
+      parent: container,
+      parentFilePath: dest,
+      properties: {},
+    };
+
+    await renameElement(tabCol, 'LineColRenamed', tmpDir);
+    const content = await readFileContent(dest);
+    assert.ok(content.includes('<Name>SharedColName</Name>'), 'top-level attribute name unchanged');
+    assert.ok(content.includes('<Name>LineColRenamed</Name>'), 'tabular column renamed');
+    assert.strictEqual((content.match(/<Name>SharedColName<\/Name>/g) || []).length, 1);
+    assert.strictEqual((content.match(/xs:string/g) || []).length, 1);
+    assert.strictEqual((content.match(/xs:decimal/g) || []).length, 1);
+  });
+
+  test('writeNestedElementProperties scopes Attribute rename in dedicated TabularSection XML file', async () => {
+    const src = path.join(
+      __dirname,
+      '../fixtures/designer-config/Catalogs/CatalogWithTabular/TabularSections/Tabular1/Tabular1.xml'
+    );
+    const dest = path.join(tmpDir, 'Catalogs', 'DedicatedTs', 'Tabular1.xml');
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+
+    await XMLWriter.writeNestedElementProperties(
+      dest,
+      'Attribute',
+      'Col1',
+      { Name: 'ColDedicatedRenamed' },
+      ['Name'],
+      { scopedTabularSectionName: 'Tabular1' }
+    );
+    const content = await readFileContent(dest);
+    assert.ok(content.includes('<Name>ColDedicatedRenamed</Name>'));
+    assert.ok(content.includes('<Name>Col2</Name>'));
+    assert.ok(!content.includes('<Name>Col1</Name>'));
+  });
+
+  test('createElement rejects duplicate column name in tabular columns container', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogEmptyEmbedded.xml');
+    const dest = path.join(tmpDir, 'Catalogs', 'EmbCatDup.xml');
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.copyFile(src, dest);
+    const embCatalog: TreeNode = {
+      id: 'Catalogs.CatalogEmptyEmbedded',
+      name: 'CatalogEmptyEmbedded',
+      type: MetadataType.Catalog,
+      filePath: dest,
+      parent: catalogsTypeNode,
+      properties: {},
+    };
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      parent: embCatalog,
+      properties: {},
+    };
+    const section: TreeNode = {
+      id: 'TabularSections.EmbeddedEmpty',
+      name: 'EmbeddedEmpty',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      parentFilePath: dest,
+      properties: {},
+    };
+    const container: TreeNode = {
+      id: 'TabularSections.EmbeddedEmpty.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: section,
+      parentFilePath: dest,
+      children: [],
+    };
+    await createElement(container, 'DupCol');
+    container.children = [
+      { id: 'TabularSections.EmbeddedEmpty.DupCol', name: 'DupCol', type: MetadataType.Attribute, properties: {} },
+    ];
+    await assert.rejects(async () => createElement(container, 'DupCol'), Error);
+  });
+
+  test('createElement creates Ext/Module/Module.bsl for new CommonModule', async () => {
+    const cmFolder = path.join(tmpDir, 'CommonModules');
+    await fs.promises.mkdir(cmFolder, { recursive: true });
+    const cmType: TreeNode = {
+      id: 'CommonModules',
+      name: 'CommonModules',
+      type: MetadataType.CommonModule,
+      filePath: cmFolder,
+      parent: configNode,
+      properties: { type: 'CommonModules' },
+      children: [],
+    };
+    await createElement(cmType, 'NewCm');
+    const bslPath = path.join(cmFolder, 'NewCm', 'Ext', 'Module', 'Module.bsl');
+    assert.ok(await fileExists(bslPath));
+  });
+
+  test('duplicateElement copies CommonModule object directory including nested Ext', async () => {
+    const fixture = path.join(__dirname, '../fixtures/designer-config/CommonModules/NestedModule');
+    const cmRoot = path.join(tmpDir, 'CommonModules');
+    await fs.promises.mkdir(cmRoot, { recursive: true });
+    await fs.promises.copyFile(
+      path.join(fixture, 'NestedModule.xml'),
+      path.join(cmRoot, 'SrcMod.xml')
+    );
+    await fs.promises.cp(path.join(fixture, 'Ext'), path.join(cmRoot, 'SrcMod', 'Ext'), { recursive: true });
+    let content = await fs.promises.readFile(path.join(cmRoot, 'SrcMod.xml'), 'utf-8');
+    content = content.replace(/<Name>NestedModule<\/Name>/g, '<Name>SrcMod</Name>');
+    await fs.promises.writeFile(path.join(cmRoot, 'SrcMod.xml'), content, 'utf-8');
+    const cmType: TreeNode = {
+      id: 'CommonModules',
+      name: 'CommonModules',
+      type: MetadataType.CommonModule,
+      filePath: cmRoot,
+      parent: configNode,
+      properties: { type: 'CommonModules' },
+      children: [],
+    };
+    const node: TreeNode = {
+      id: 'CommonModules.SrcMod',
+      name: 'SrcMod',
+      type: MetadataType.CommonModule,
+      filePath: path.join(cmRoot, 'SrcMod.xml'),
+      parent: cmType,
+      properties: {},
+    };
+    await duplicateElement(node, 'DupMod');
+    const bsl = path.join(cmRoot, 'DupMod', 'Ext', 'Module', 'Module.bsl');
+    assert.ok(await fileExists(bsl));
+    const body = await fs.promises.readFile(bsl, 'utf-8');
+    assert.ok(body.includes('nested'));
+  });
+
+  test('renameElement moves CommonModule directory with nested Ext', async () => {
+    const fixture = path.join(__dirname, '../fixtures/designer-config/CommonModules/NestedModule');
+    const cmRoot = path.join(tmpDir, 'CommonModules');
+    await fs.promises.mkdir(cmRoot, { recursive: true });
+    await fs.promises.copyFile(
+      path.join(fixture, 'NestedModule.xml'),
+      path.join(cmRoot, 'SrcMod.xml')
+    );
+    await fs.promises.cp(path.join(fixture, 'Ext'), path.join(cmRoot, 'SrcMod', 'Ext'), { recursive: true });
+    let content = await fs.promises.readFile(path.join(cmRoot, 'SrcMod.xml'), 'utf-8');
+    content = content.replace(/<Name>NestedModule<\/Name>/g, '<Name>SrcMod</Name>');
+    await fs.promises.writeFile(path.join(cmRoot, 'SrcMod.xml'), content, 'utf-8');
+    const cmType: TreeNode = {
+      id: 'CommonModules',
+      name: 'CommonModules',
+      type: MetadataType.CommonModule,
+      filePath: cmRoot,
+      parent: configNode,
+      properties: { type: 'CommonModules' },
+      children: [],
+    };
+    const node: TreeNode = {
+      id: 'CommonModules.SrcMod',
+      name: 'SrcMod',
+      type: MetadataType.CommonModule,
+      filePath: path.join(cmRoot, 'SrcMod.xml'),
+      parent: cmType,
+      properties: {},
+    };
+    await renameElement(node, 'RenamedMod', tmpDir);
+    assert.ok(await fileExists(path.join(cmRoot, 'RenamedMod', 'Ext', 'Module', 'Module.bsl')));
+  });
 });

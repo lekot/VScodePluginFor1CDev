@@ -319,6 +319,113 @@ export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: Normali
  * - Stable IDs: `Catalogs` / `Documents`
  * - Inserted nodes are compatible with lazy loading in `MetadataTreeDataProvider`.
  */
+/** Properties.type value for the synthetic «Реквизиты» node under a tabular section instance (columns). */
+export const TABULAR_SECTION_COLUMNS_PLACEHOLDER_TYPE = 'TabularSectionColumns';
+
+export function isTabularSectionColumnsContainer(node: TreeNode): boolean {
+  return (node.properties as Record<string, unknown> | undefined)?.type === TABULAR_SECTION_COLUMNS_PLACEHOLDER_TYPE;
+}
+
+/** Stable id: `TabularSections.<SectionName>.Attributes` (columns under that ТЧ). */
+export function tabularSectionColumnsContainerId(sectionInstanceId: string): string {
+  return `${sectionInstanceId}.Attributes`;
+}
+
+/**
+ * Under the real folder node `TabularSections`, each section instance gets exactly one child container
+ * for columns (symmetry with R6 «Реквизиты»). Reparents flat Attribute children from the parser.
+ * Empty columns → `_lazy` on the container so the tree can expand and load from disk on demand.
+ */
+export function ensureTabularSectionColumnsPlaceholder(sectionInstance: TreeNode): void {
+  if (!sectionInstance.parent || sectionInstance.parent.id !== 'TabularSections') {
+    return;
+  }
+  if (sectionInstance.id === 'TabularSections' || !sectionInstance.id.startsWith('TabularSections.')) {
+    return;
+  }
+  if (sectionInstance.type !== MetadataType.TabularSection) {
+    return;
+  }
+
+  const containerId = tabularSectionColumnsContainerId(sectionInstance.id);
+  const xmlPath =
+    sectionInstance.filePath && sectionInstance.filePath.toLowerCase().endsWith('.xml')
+      ? sectionInstance.filePath
+      : sectionInstance.parentFilePath;
+
+  const existingContainer = sectionInstance.children?.find((c) => c.id === containerId);
+  if (existingContainer) {
+    const looseAttrs = (sectionInstance.children ?? []).filter(
+      (c) => c.type === MetadataType.Attribute && c.id !== containerId
+    );
+    if (looseAttrs.length > 0) {
+      ensureChildrenArray(existingContainer);
+      for (const a of looseAttrs) {
+        a.parent = existingContainer;
+        existingContainer.children!.push(a);
+      }
+    }
+    const rest = (sectionInstance.children ?? []).filter(
+      (c) => c.id !== containerId && !looseAttrs.includes(c)
+    );
+    sectionInstance.children = [existingContainer, ...rest];
+    existingContainer.name = 'Реквизиты';
+    existingContainer.type = MetadataType.Attribute;
+    existingContainer.filePath = sectionInstance.filePath ?? existingContainer.filePath;
+    existingContainer.parentFilePath = xmlPath ?? existingContainer.parentFilePath;
+    existingContainer.parent = sectionInstance;
+    (existingContainer.properties as Record<string, unknown>).type = TABULAR_SECTION_COLUMNS_PLACEHOLDER_TYPE;
+    for (const c of existingContainer.children ?? []) {
+      c.parent = existingContainer;
+    }
+    if (!existingContainer.children || existingContainer.children.length === 0) {
+      (existingContainer.properties as Record<string, unknown>)._lazy = true;
+    } else {
+      delete (existingContainer.properties as Record<string, unknown>)._lazy;
+    }
+    return;
+  }
+
+  const raw = sectionInstance.children;
+  const flatAttrs = (raw ?? []).filter((c) => c.type === MetadataType.Attribute);
+  const other = (raw ?? []).filter((c) => c.type !== MetadataType.Attribute);
+
+  const container: TreeNode = {
+    id: containerId,
+    name: 'Реквизиты',
+    type: MetadataType.Attribute,
+    properties: { type: TABULAR_SECTION_COLUMNS_PLACEHOLDER_TYPE },
+    children: flatAttrs.length > 0 ? [...flatAttrs] : [],
+    filePath: sectionInstance.filePath,
+    parentFilePath: xmlPath,
+    parent: sectionInstance,
+  };
+  for (const a of container.children ?? []) {
+    a.parent = container;
+  }
+  if (!container.children || container.children.length === 0) {
+    (container.properties as Record<string, unknown>)._lazy = true;
+  }
+
+  sectionInstance.children = [container, ...other];
+}
+
+function walkTabularSectionColumnPlaceholders(node: TreeNode): void {
+  if (node.id === 'TabularSections' && node.children) {
+    for (const ch of node.children) {
+      ensureTabularSectionColumnsPlaceholder(ch);
+    }
+  }
+  for (const ch of node.children ?? []) {
+    walkTabularSectionColumnPlaceholders(ch);
+  }
+}
+
+/** Apply {@link ensureTabularSectionColumnsPlaceholder} for every `TabularSections` folder in the tree. */
+export function normalizeTabularSectionColumnPlaceholders(rootNode: TreeNode): void {
+  walkTabularSectionColumnPlaceholders(rootNode);
+}
+
 export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: NormalizeContext): TreeNode {
   if (!rootNode) {
     return rootNode;
@@ -350,6 +457,8 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
 
   // Deterministic order under Configuration root.
   reorderChildrenByIds(rootNode, R4_TOP_LEVEL_ORDER.map((x) => x.id));
+
+  normalizeTabularSectionColumnPlaceholders(rootNode);
 
   // Process only the four R6 object type folders to add placeholders to their instance nodes
   const r6TypeFolders = R4_TOP_LEVEL_ORDER.filter(def => 

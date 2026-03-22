@@ -714,6 +714,61 @@ export class EdtParser {
   }
 
   /**
+   * Load column nodes for a tabular section instance (Designer parity) when expanding the columns placeholder.
+   */
+  static async loadTabularSectionColumnChildren(sectionInstance: TreeNode): Promise<TreeNode[]> {
+    const mdoPath = sectionInstance.parentFilePath || sectionInstance.filePath;
+    if (!mdoPath || !mdoPath.toLowerCase().endsWith('.mdo')) {
+      return [];
+    }
+    try {
+      await fs.promises.access(mdoPath);
+    } catch {
+      return [];
+    }
+    const mdoContent = await XmlParser.parseFileAsync(mdoPath);
+    const childObjects = findChildObjects(mdoContent as Record<string, unknown>);
+    if (!childObjects) {
+      return [];
+    }
+    const sectionList = extractTabularSections(childObjects);
+    for (const sec of sectionList) {
+      const ts = sec as Record<string, unknown>;
+      const props = this.extractPropertiesFromMdo({ TabularSection: ts });
+      const sn = String(
+        props.Name ?? (ts.Properties && (ts.Properties as Record<string, unknown>).Name) ?? ''
+      );
+      if (sn !== sectionInstance.name) {
+        continue;
+      }
+      const tsChildObjects = ts.ChildObjects;
+      const attrList =
+        tsChildObjects && typeof tsChildObjects === 'object' && !Array.isArray(tsChildObjects)
+          ? extractAttributes(tsChildObjects as Record<string, unknown>)
+          : [];
+      const out: TreeNode[] = [];
+      const baseId = sectionInstance.id;
+      for (const attr of attrList) {
+        const a = attr as Record<string, unknown>;
+        const attrName =
+          (a.Properties && (a.Properties as Record<string, unknown>).Name) ??
+          (a as Record<string, unknown>).Name ??
+          'Unknown';
+        const attributeNode: TreeNode = {
+          id: `${baseId}.${String(attrName)}`,
+          name: String(attrName),
+          type: MetadataType.Attribute,
+          properties: flattenAttributeProperties(a),
+          parentFilePath: mdoPath,
+        };
+        out.push(attributeNode);
+      }
+      return out;
+    }
+    return [];
+  }
+
+  /**
    * Detect if path contains EDT format configuration
    * @param configPath Path to check
    * @returns true if EDT format detected

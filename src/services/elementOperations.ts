@@ -17,6 +17,43 @@ import {
 import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from './configurationXmlUpdater';
 import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
+import {
+  ensureTabularSectionColumnsPlaceholder,
+  isTabularSectionColumnsContainer,
+} from '../utils/treeNormalization';
+
+function resolveTopLevelMetadataObject(node: TreeNode | undefined): TreeNode | undefined {
+  let p: TreeNode | undefined = node;
+  while (p) {
+    if (TOP_LEVEL_TYPES.has(p.type)) {
+      return p;
+    }
+    p = p.parent;
+  }
+  return undefined;
+}
+
+/** Section instance node for a tabular column (parent of «Реквизиты» / columns container), if any. */
+export function findTabularSectionInstanceForAttributeParent(parentOfAttribute: TreeNode): TreeNode | undefined {
+  if (isTabularSectionColumnsContainer(parentOfAttribute)) {
+    return parentOfAttribute.parent;
+  }
+  if (
+    parentOfAttribute.type === MetadataType.TabularSection &&
+    parentOfAttribute.id.startsWith('TabularSections.') &&
+    parentOfAttribute.parent?.id === 'TabularSections'
+  ) {
+    return parentOfAttribute;
+  }
+  return undefined;
+}
+
+function resolveXmlPathForTabularSectionInstance(sectionInstance: TreeNode): string | undefined {
+  if (sectionInstance.filePath && sectionInstance.filePath.toLowerCase().endsWith('.xml')) {
+    return sectionInstance.filePath;
+  }
+  return sectionInstance.parentFilePath;
+}
 
 /** Whether `parent` may hold a root-level type folder (e.g. Catalogs, Roles under «Общие»). */
 function isAllowedTypeFolderParent(parent: TreeNode): boolean {
@@ -249,6 +286,11 @@ export async function createElement(
     }
     const elementDir = path.join(typeFolderPath, name);
     await fs.promises.mkdir(elementDir, { recursive: true });
+    if (rootTag === 'CommonModule') {
+      const moduleBslPath = path.join(elementDir, 'Ext', 'Module', 'Module.bsl');
+      await fs.promises.mkdir(path.dirname(moduleBslPath), { recursive: true });
+      await fs.promises.writeFile(moduleBslPath, '', 'utf-8');
+    }
     try {
       await addRootObjectToConfiguration(configRootPath, rootTag, name);
     } catch (err) {
@@ -305,6 +347,38 @@ export async function createElement(
       const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
       await XMLWriter.addNestedElement(filePath, elementType, name, {}, parent.type, parent.name);
       return;
+    }
+  }
+
+  if (isTabularSectionColumnsContainer(parentNode)) {
+    const sectionInstance = parentNode.parent;
+    const owner = resolveTopLevelMetadataObject(sectionInstance);
+    if (!sectionInstance || !owner) {
+      throw new Error('Некорректный родитель для колонки табличной части.');
+    }
+    const xmlTarget = resolveXmlPathForTabularSectionInstance(sectionInstance);
+    if (!xmlTarget || !fs.existsSync(xmlTarget)) {
+      throw new Error('Файл табличной части или объекта не найден.');
+    }
+    await XMLWriter.addAttributeToTabularSection(
+      xmlTarget,
+      sectionInstance.name,
+      name,
+      owner.type,
+      owner.name
+    );
+    return;
+  }
+
+  if (
+    parentNode.type === MetadataType.TabularSection &&
+    parentNode.id.startsWith('TabularSections.') &&
+    parentNode.parent?.id === 'TabularSections'
+  ) {
+    ensureTabularSectionColumnsPlaceholder(parentNode);
+    const container = parentNode.children?.find((c) => isTabularSectionColumnsContainer(c));
+    if (container) {
+      return await createElement(container, newName);
     }
   }
 
@@ -422,13 +496,39 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
     }
     const attrProps = (node.properties || {}) as Record<string, unknown>;
     const minimalProps = { ...attrProps, Name: name } as Record<string, unknown>;
+    if (node.type === MetadataType.Attribute) {
+      const tsInstance = findTabularSectionInstanceForAttributeParent(parent as TreeNode);
+      if (tsInstance) {
+        const xmlTarget = resolveXmlPathForTabularSectionInstance(tsInstance);
+        if (!xmlTarget || !fs.existsSync(xmlTarget)) {
+          throw new Error('Файл табличной части или объекта не найден.');
+        }
+        await XMLWriter.duplicateAttributeInTabularSection(
+          xmlTarget,
+          tsInstance.name,
+          node.name,
+          name
+        );
+        return;
+      }
+      const owner = resolveTopLevelMetadataObject(parent as TreeNode);
+      if (!owner) {
+        throw new Error('Не удалось определить объект-владелец для реквизита.');
+      }
+      await XMLWriter.addNestedElement(parentFilePath, 'Attribute', name, minimalProps, owner.type, owner.name);
+      return;
+    }
+    const owner = resolveTopLevelMetadataObject(parent as TreeNode);
+    if (!owner) {
+      throw new Error('Не удалось определить объект-владелец.');
+    }
     await XMLWriter.addNestedElement(
       parentFilePath,
-      node.type === MetadataType.TabularSection ? 'TabularSection' : 'Attribute',
+      'TabularSection',
       name,
       minimalProps,
-      parent.type,
-      parent.name
+      owner.type,
+      owner.name
     );
     return;
   }
@@ -457,6 +557,14 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
       );
     }
     await fs.promises.writeFile(newFilePath, content, 'utf-8');
+    const oldDir = path.join(typeFolderPath, node.name);
+    const newDir = path.join(typeFolderPath, name);
+    if (fs.existsSync(oldDir) && fs.statSync(oldDir).isDirectory()) {
+      if (fs.existsSync(newDir)) {
+        throw new Error(`Каталог объекта уже существует: ${newDir}`);
+      }
+      await fs.promises.cp(oldDir, newDir, { recursive: true });
+    }
     Logger.info(`Duplicated element to ${newFilePath}`);
     return;
   }
@@ -492,6 +600,15 @@ export async function deleteElement(node: TreeNode): Promise<void> {
   }
 
   if (node.type === MetadataType.Attribute || node.type === MetadataType.TabularSection) {
+    const tsInstance = findTabularSectionInstanceForAttributeParent(parent as TreeNode);
+    if (node.type === MetadataType.Attribute && tsInstance) {
+      const xmlTarget = resolveXmlPathForTabularSectionInstance(tsInstance);
+      if (!xmlTarget || !fs.existsSync(xmlTarget)) {
+        throw new Error('Файл табличной части или объекта не найден.');
+      }
+      await XMLWriter.removeAttributeFromTabularSection(xmlTarget, tsInstance.name, node.name);
+      return;
+    }
     const parentFilePath = node.parentFilePath || (parent as TreeNode).filePath;
     if (!parentFilePath) {
       throw new Error('Родительский файл не найден.');
@@ -610,12 +727,20 @@ export async function renameElement(
     if (!parentFilePath) {
       throw new Error('Родительский файл не найден.');
     }
+    const nestedOpts =
+      node.type === MetadataType.Attribute
+        ? (() => {
+            const section = findTabularSectionInstanceForAttributeParent(parent as TreeNode);
+            return section?.name ? { scopedTabularSectionName: section.name } : undefined;
+          })()
+        : undefined;
     await XMLWriter.writeNestedElementProperties(
       parentFilePath,
       node.type === MetadataType.TabularSection ? 'TabularSection' : 'Attribute',
       oldName,
       { ...node.properties, Name: name } as Record<string, unknown>,
-      ['Name']
+      ['Name'],
+      nestedOpts
     );
     return;
   }
