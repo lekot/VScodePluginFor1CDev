@@ -11,6 +11,7 @@ import { RightType } from './roleModel';
 export type WebviewCommand = 
   | 'updateRight'
   | 'save'
+  | 'savePayload'
   | 'cancel'
   | 'toggleFilter'
   | 'search'
@@ -76,6 +77,11 @@ export interface WebviewMessageData {
    * User-edited restrictionTemplate XML block(s) (for save command)
    */
   restrictionTemplatesText?: string;
+
+  /**
+   * Correlates extension `requestSavePayload` with webview `savePayload` (external save / flush RLS).
+   */
+  requestId?: string;
 
   /**
    * Table render progress (for tableRenderProgress command)

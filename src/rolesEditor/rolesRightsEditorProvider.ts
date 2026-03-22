@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import { RoleModel } from './models/roleModel';
 import type { MetadataObject } from './models/metadataObject';
 import { FilterState } from './models/filterState';
@@ -37,6 +38,15 @@ export class RolesRightsEditorProvider {
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
+  /** Pending `requestSavePayload` → webview `savePayload` round-trips (external save / Ctrl+S). */
+  private pendingSavePayloadRequests = new Map<
+    string,
+    {
+      resolve: (value: string) => void;
+      reject: (err: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
 
   constructor(private context: vscode.ExtensionContext) {
     Logger.info('RolesRightsEditorProvider initialized');
@@ -254,6 +264,9 @@ export class RolesRightsEditorProvider {
         case 'tableRenderProgress':
           this.handleTableRenderProgress(message);
           break;
+        case 'savePayload':
+          this.handleSavePayloadResponse(message);
+          break;
         default:
           Logger.warn(`Unknown command: ${message.command}`);
       }
@@ -305,10 +318,49 @@ export class RolesRightsEditorProvider {
 
   /**
    * Trigger save from extension (e.g. command palette or keybinding).
-   * Use when webview postMessage may not reach the provider.
+   * `handleSave` flushes RLS from the webview when the payload has no `restrictionTemplatesText`.
    */
   public async triggerSave(): Promise<void> {
     await this.handleSave();
+  }
+
+  /**
+   * Ask the webview for a single read of `#rlsTemplates` (correlation via `requestId`).
+   */
+  private flushRestrictionTemplatesFromWebview(): Promise<string> {
+    if (!this.panel) {
+      return Promise.reject(new Error('Rights editor panel is not available'));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const pending = this.pendingSavePayloadRequests.get(requestId);
+        if (pending) {
+          this.pendingSavePayloadRequests.delete(requestId);
+          pending.reject(new Error('Timed out waiting for RLS from webview'));
+        }
+      }, 10000);
+      this.pendingSavePayloadRequests.set(requestId, { resolve, reject, timeout });
+      void this.panel!.webview.postMessage({
+        command: 'requestSavePayload',
+        data: { requestId },
+      });
+    });
+  }
+
+  private handleSavePayloadResponse(message: WebviewMessage): void {
+    const requestId = message.data?.requestId;
+    const text = message.data?.restrictionTemplatesText;
+    if (typeof requestId !== 'string' || !requestId) {
+      return;
+    }
+    const pending = this.pendingSavePayloadRequests.get(requestId);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timeout);
+    this.pendingSavePayloadRequests.delete(requestId);
+    pending.resolve(typeof text === 'string' ? text : '');
   }
 
   /**
@@ -329,14 +381,28 @@ export class RolesRightsEditorProvider {
       return;
     }
 
-    const rls = message?.data?.restrictionTemplatesText;
-    if (typeof rls === 'string') {
-      this.currentRoleModel.restrictionTemplatesText = rls;
-    }
-
     this.saveInProgress = true;
-    const statusDone = vscode.window.setStatusBarMessage('Saving rights...');
+    let statusDone: vscode.Disposable | undefined;
     try {
+      let effectiveMessage: WebviewMessage | undefined = message;
+      if (this.panel && typeof message?.data?.restrictionTemplatesText !== 'string') {
+        try {
+          const rls = await this.flushRestrictionTemplatesFromWebview();
+          effectiveMessage = { command: 'save', data: { ...message?.data, restrictionTemplatesText: rls } };
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          Logger.error('Failed to read RLS from webview', e);
+          vscode.window.showErrorMessage(`Could not read RLS from editor: ${errMsg}`);
+          return;
+        }
+      }
+
+      const rls = effectiveMessage?.data?.restrictionTemplatesText;
+      if (typeof rls === 'string') {
+        this.currentRoleModel.restrictionTemplatesText = rls;
+      }
+
+      statusDone = vscode.window.setStatusBarMessage('Saving rights...');
       Logger.info('handleSave: validation starting');
       const validator = new RightsValidator();
       const validationResult = validator.validateRights(this.currentRoleModel);
@@ -354,7 +420,6 @@ export class RolesRightsEditorProvider {
           'Cancel'
         );
         if (saveAnyway !== 'Save anyway') {
-          statusDone.dispose();
           return;
         }
         Logger.info('handleSave: user chose Save anyway, skipping validation');
@@ -404,7 +469,6 @@ export class RolesRightsEditorProvider {
         throw renameErr;
       }
 
-      statusDone.dispose();
       Logger.info('Rights saved successfully');
       vscode.window.showInformationMessage('Rights saved successfully');
 
@@ -412,7 +476,6 @@ export class RolesRightsEditorProvider {
         this.panel.dispose();
       }
     } catch (error) {
-      statusDone.dispose();
       const message = error instanceof Error ? error.message : String(error);
       const stack = error instanceof Error ? error.stack : undefined;
       Logger.error(`Failed to save rights: ${message}`, stack ? { stack } : error);
@@ -422,6 +485,7 @@ export class RolesRightsEditorProvider {
         data: { message },
       });
     } finally {
+      statusDone?.dispose();
       this.saveInProgress = false;
     }
   }
@@ -520,6 +584,7 @@ export class RolesRightsEditorProvider {
     const validCommands = [
       'updateRight',
       'save',
+      'savePayload',
       'cancel',
       'toggleFilter',
       'search',
@@ -590,6 +655,12 @@ export class RolesRightsEditorProvider {
    */
   public dispose(): void {
     Logger.info('Disposing RolesRightsEditorProvider');
+    for (const [, pending] of this.pendingSavePayloadRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('Rights editor closed'));
+    }
+    this.pendingSavePayloadRequests.clear();
+
     this.tableRenderStatusDisposable?.dispose();
     this.tableRenderStatusDisposable = undefined;
 

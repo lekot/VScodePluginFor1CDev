@@ -439,6 +439,20 @@
                 const data = message.data || {};
                 
                 switch (message.command) {
+                    case 'requestSavePayload': {
+                        var rid = data.requestId;
+                        var rlsTa = document.getElementById('rlsTemplates');
+                        var rlsText = rlsTa ? rlsTa.value : '';
+                        vscode.postMessage({
+                            command: 'savePayload',
+                            data: {
+                                requestId: rid,
+                                restrictionTemplatesText: rlsText
+                            }
+                        });
+                        break;
+                    }
+
                     case 'initialize':
                         roleData = message.roleData;
                         allObjects = message.objects;

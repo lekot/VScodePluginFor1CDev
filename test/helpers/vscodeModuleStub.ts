@@ -48,12 +48,57 @@ class VSCodeEventEmitter<T> {
   }
 }
 
+/** Enough for `RolesRightsEditorProvider` and rights editor integration tests under runCore. */
+const ExtensionMode = {
+  Production: 1,
+  Development: 2,
+  Test: 3,
+} as const;
+
+const ViewColumn = {
+  Active: -1,
+  Beside: 2,
+  One: 1,
+  Two: 2,
+  Three: 3,
+  Four: 4,
+  Five: 5,
+  Six: 6,
+  Seven: 7,
+  Eight: 8,
+  Nine: 9,
+} as const;
+
+const windowStub = {
+  createWebviewPanel: (): never => {
+    throw new Error('vscode.window.createWebviewPanel: override in test');
+  },
+  showErrorMessage: async (): Promise<undefined> => undefined,
+  showInformationMessage: async (): Promise<undefined> => undefined,
+  showWarningMessage: async (
+    _message: string,
+    _options?: unknown,
+    ...items: string[]
+  ): Promise<string | undefined> => Promise.resolve(items[0]),
+  setStatusBarMessage: (): { dispose: () => void } => ({ dispose: () => undefined }),
+};
+
+const workspaceStub = {
+  getConfiguration: () => ({
+    get: <T>(_section: string, defaultValue?: T) => defaultValue as T,
+  }),
+};
+
 const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
   Uri,
   ThemeIcon,
   EventEmitter: VSCodeEventEmitter,
+  ExtensionMode,
+  ViewColumn,
+  window: windowStub,
+  workspace: workspaceStub,
 };
 
 let installed = false;

@@ -103,7 +103,19 @@ suite('rightsEditor integration', () => {
             onMessageHandler = cb;
             return { dispose: () => undefined };
           },
-          postMessage: async () => true,
+          postMessage: async (msg: unknown) => {
+            const m = msg as { command?: string; data?: { requestId?: string } };
+            if (m.command === 'requestSavePayload' && m.data?.requestId && onMessageHandler) {
+              await onMessageHandler({
+                command: 'savePayload',
+                data: {
+                  requestId: m.data.requestId,
+                  restrictionTemplatesText: '',
+                },
+              });
+            }
+            return true;
+          },
         },
         dispose: () => {
           panelDisposed = true;
@@ -199,7 +211,19 @@ suite('rightsEditor integration', () => {
             onMessageHandler = cb;
             return { dispose: () => undefined };
           },
-          postMessage: async () => true,
+          postMessage: async (msg: unknown) => {
+            const m = msg as { command?: string; data?: { requestId?: string } };
+            if (m.command === 'requestSavePayload' && m.data?.requestId && onMessageHandler) {
+              await onMessageHandler({
+                command: 'savePayload',
+                data: {
+                  requestId: m.data.requestId,
+                  restrictionTemplatesText: '',
+                },
+              });
+            }
+            return true;
+          },
         },
         dispose: () => undefined,
       } as unknown as vscode.WebviewPanel;
@@ -220,6 +244,105 @@ suite('rightsEditor integration', () => {
         const xml = await fs.promises.readFile(rightsPath, 'utf-8');
         assert.ok(xml.includes('<Rights'), 'Rights.xml should be written');
         assert.ok(xml.includes('<name>Catalog.X</name>'), 'Saved rights should contain object');
+      } finally {
+        (vscode.window as unknown as { createWebviewPanel: typeof vscode.window.createWebviewPanel }).createWebviewPanel =
+          originalCreatePanel;
+        provider.dispose();
+      }
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('triggerSave flushes RLS from webview into Rights.xml (EDT)', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-rls-flush-'));
+    const roleDir = path.join(tmpRoot, 'Roles');
+    const rolePath = path.join(roleDir, 'RlsRole.xml');
+    const rightsPath = path.join(roleDir, 'RlsRole', 'Ext', 'Rights.xml');
+    const rlsMarker = '<restrictionTemplate>RLS_FLUSH_TEST</restrictionTemplate>';
+    try {
+      await fs.promises.mkdir(path.dirname(rightsPath), { recursive: true });
+      await fs.promises.writeFile(
+        rolePath,
+        [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<Role xmlns="http://v8.1c.ru/8.3/MDClasses">',
+          '  <Rights/>',
+          '</Role>',
+          '',
+        ].join('\n'),
+        'utf-8'
+      );
+
+      const initialDom = createMinimalRightsDom();
+      await fs.promises.writeFile(rightsPath, serializeRightsDomToXml(initialDom), 'utf-8');
+
+      const mockContext = {
+        subscriptions: [] as vscode.Disposable[],
+        extensionPath: '',
+        extensionUri: vscode.Uri.file(''),
+        globalState: {} as vscode.Memento,
+        workspaceState: {} as vscode.Memento,
+        secrets: {} as vscode.SecretStorage,
+        storageUri: undefined,
+        storagePath: undefined,
+        globalStorageUri: vscode.Uri.file(''),
+        globalStoragePath: '',
+        logUri: vscode.Uri.file(''),
+        logPath: '',
+        extensionMode: vscode.ExtensionMode.Test,
+        extension: {} as vscode.Extension<unknown>,
+        environmentVariableCollection: {} as vscode.EnvironmentVariableCollection,
+        languageModelAccessInformation: {} as vscode.LanguageModelAccessInformation,
+        asAbsolutePath: (p: string) => p,
+      } as vscode.ExtensionContext;
+
+      const originalCreatePanel = vscode.window.createWebviewPanel;
+      let onMessageHandler: ((message: unknown) => Promise<void>) | undefined;
+      const fakePanel = {
+        reveal: () => undefined,
+        onDidDispose: () => ({ dispose: () => undefined }),
+        webview: {
+          html: '',
+          onDidReceiveMessage: (cb: (message: unknown) => Promise<void>) => {
+            onMessageHandler = cb;
+            return { dispose: () => undefined };
+          },
+          postMessage: async (msg: unknown) => {
+            const m = msg as { command?: string; data?: { requestId?: string } };
+            if (m.command === 'requestSavePayload' && m.data?.requestId && onMessageHandler) {
+              await onMessageHandler({
+                command: 'savePayload',
+                data: {
+                  requestId: m.data.requestId,
+                  restrictionTemplatesText: rlsMarker,
+                },
+              });
+            }
+            return true;
+          },
+        },
+        dispose: () => undefined,
+      } as unknown as vscode.WebviewPanel;
+
+      const provider = new RolesRightsEditorProvider(mockContext);
+      (vscode.window as unknown as { createWebviewPanel: typeof vscode.window.createWebviewPanel }).createWebviewPanel =
+        (() => fakePanel) as typeof vscode.window.createWebviewPanel;
+
+      try {
+        await provider.show(rolePath, null);
+        assert.ok(onMessageHandler, 'Webview message handler should be wired by show()');
+        await onMessageHandler!({
+          command: 'updateRight',
+          data: { objectName: 'Catalog.Z', rightType: 'read', value: true },
+        });
+        await provider.triggerSave();
+
+        const xml = await fs.promises.readFile(rightsPath, 'utf-8');
+        assert.ok(
+          xml.includes('RLS_FLUSH_TEST'),
+          'Rights.xml should contain RLS text flushed before external save'
+        );
       } finally {
         (vscode.window as unknown as { createWebviewPanel: typeof vscode.window.createWebviewPanel }).createWebviewPanel =
           originalCreatePanel;

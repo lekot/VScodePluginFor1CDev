@@ -25,6 +25,7 @@ export const coreSuiteFiles: string[] = [
   'suite/filterUtils.test.js',
   'suite/rightsUpdateUtils.test.js',
   'suite/rightsXmlTemplates.test.js',
+  'suite/rightsEditor.integration.test.js',
   'suite/typeParser.test.js',
   'suite/subsystemTreeBuilder.test.js',
   'suite/typeFormatterAndFilterState.test.js',
