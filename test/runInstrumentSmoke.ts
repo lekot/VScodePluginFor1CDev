@@ -26,6 +26,10 @@ async function main(): Promise<void> {
     path.join(process.cwd(), 'suite-reports', 'instrument-matrix.json');
 
   try {
+    if (fs.existsSync(reportPath)) {
+      fs.unlinkSync(reportPath);
+    }
+
     const { report, reportFile } = await runContainerMatrix({
       workDir,
       matrixFull,
@@ -48,7 +52,13 @@ async function main(): Promise<void> {
 
     const ibcmdFailed = report.ibcmd.status === 'failed';
     if (ibcmdFailed) {
-      process.exit(1);
+      if (process.env.INSTRUMENT_IBCMD_NONFATAL === '1') {
+        console.warn(
+          '[instrument-smoke:matrix] ibcmd failed (see report JSON ibcmd.logSnippet) — INSTRUMENT_IBCMD_NONFATAL=1, continuing to VS Code smoke.'
+        );
+      } else {
+        process.exit(1);
+      }
     }
     if (report.stepSummary.failed > 0) {
       console.warn(

@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul 2>&1
 REM Container matrix on YOUR Designer export + optional ibcmd (see test\runMatrixLocal.ts).
 REM WARNING: matrix CREATES and DELETES files under MATRIX_WORK_DIR — use a COPY of the dump, not production.
 REM Usage from repo root:

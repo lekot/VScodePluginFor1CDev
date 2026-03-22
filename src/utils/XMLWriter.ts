@@ -66,8 +66,9 @@ const TOP_LEVEL_TYPES = new Set<MetadataType>([
 
 /**
  * Root metadata tags that omit ChildObjects in Designer XML (docs/1c-config-objects-spec.md).
+ * Не подставлять искусственно ChildObjects при добавлении вложенных элементов — иначе ibcmd / конфигуратор отвергнут файл.
  */
-const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
+export const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
   'CommonModule',
   'Role',
   'SessionParameter',
@@ -75,13 +76,21 @@ const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
   'FunctionalOptionsParameter',
   'CommandGroup',
   'Interface',
+  // Стиль оформления: в ibcmd при пустом ChildObjects — «ожидаемое Style»; в выгрузке нет контейнера ChildObjects.
+  'Style',
   'EventSubscription',
   'DefinedType',
   'Language',
   'CommonPicture',
   'CommonAttribute',
+  'CommonForm',
   'WSReference',
   'StyleItem',
+  'XDTOPackage',
+  // Только Properties, без ChildObjects (spec; иначе ibcmd config import падает).
+  'DocumentNumerator',
+  'ScheduledJob',
+  'Constant',
 ]);
 
 /** Properties that may store a reference like `Catalog.MyCat.Form.MyForm`. */
@@ -901,6 +910,17 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
             innerObj[elementType] = arr;
             result[typeName as string] = { ...elemObj, ChildObjects: { ...innerObj } };
             return result;
+          }
+          // Только типы, у которых в выгрузке бывает ChildObjects (Catalog, Document, …). Не Role/CommonModule/…
+          if (!ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(typeName))) {
+            const unwrapped = (newBlock as Record<string, unknown>)[elementType];
+            if (unwrapped !== undefined && unwrapped !== null) {
+              const innerObj: Record<string, unknown> = {
+                [elementType]: [unwrapped],
+              };
+              result[typeName as string] = { ...elemObj, ChildObjects: innerObj };
+              return result;
+            }
           }
         }
       }

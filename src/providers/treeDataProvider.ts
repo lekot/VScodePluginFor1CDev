@@ -13,6 +13,7 @@ import {
   R5_COMMON_DISK_BACKED_FOLDER_IDS,
 } from '../utils/treeNormalization';
 import { OptimisticDeleteToken } from '../types/reloadContracts';
+import { TOP_LEVEL_TYPES } from '../services/elementOperations';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -783,6 +784,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
     el.children = [];
     if (R6_LAZY_SECTION_IDS.has(el.id) || el.type === MetadataType.Subsystem) {
+      (el.properties as Record<string, unknown>)._lazy = true;
+    } else if (
+      TOP_LEVEL_TYPES.has(el.type) &&
+      el.id.includes('.') &&
+      el.type !== MetadataType.Form
+    ) {
+      // Instance XML (e.g. Roles.Имя, CommonModules.X): after create/delete under this node,
+      // children must reload from disk like first expand — same as shallow parseMetadataElement.
       (el.properties as Record<string, unknown>)._lazy = true;
     }
     this.filterAncestorOrVisibleIds = null;

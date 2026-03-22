@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul 2>&1
 echo Reading current version...
 for /f "tokens=2 delims=:, " %%a in ('findstr /C:"\"version\"" package.json') do set VERSION=%%~a
 

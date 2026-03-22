@@ -1,4 +1,6 @@
 @echo off
+chcp 65001 >nul 2>&1
+call "%~dp0cleanup-1cviewer-temp.bat"
 echo Running smoke tests...
 echo Compiling extension ^(tsconfig.json^)...
 node node_modules/typescript/bin/tsc -p .
@@ -11,5 +13,6 @@ echo Running VS Code smoke tests...
 node out\test\runSmoke.js %*
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+call "%~dp0cleanup-1cviewer-temp.bat"
 echo Smoke tests completed successfully.
 

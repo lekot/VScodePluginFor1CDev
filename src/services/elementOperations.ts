@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
-import { XMLWriter } from '../utils/XMLWriter';
+import { ROOT_TAGS_WITHOUT_CHILDOBJECTS, XMLWriter } from '../utils/XMLWriter';
 import { validateElementName } from '../utils/elementNameValidator';
 import {
   findReferencesToElement,
@@ -204,6 +204,12 @@ export async function createElement(
 
   // Handle nested elements: when parentNode is a top-level type (Catalog, Document, etc.)
   if (TOP_LEVEL_TYPES.has(parentNode.type)) {
+    if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parentNode.type))) {
+      throw new Error(
+        'В формате Designer у этого типа метаданных нет ChildObjects (например, роль, общий модуль). ' +
+          'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
+      );
+    }
     const filePath = parentNode.filePath;
     if (!filePath || !fs.existsSync(filePath)) {
       throw new Error('Файл объекта не найден.');
@@ -221,6 +227,12 @@ export async function createElement(
   if (containerTypes.has(parentNode.type) && parent) {
     // Check if the parent of the container is a top-level type object
     if (TOP_LEVEL_TYPES.has(parent.type)) {
+      if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parent.type))) {
+        throw new Error(
+          'В формате Designer у этого типа метаданных нет ChildObjects. ' +
+            'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
+        );
+      }
       const filePath = parent.filePath;
       if (!filePath || !fs.existsSync(filePath)) {
         throw new Error('Файл объекта не найден.');

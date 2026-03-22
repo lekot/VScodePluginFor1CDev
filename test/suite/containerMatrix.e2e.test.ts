@@ -168,4 +168,103 @@ suite('Container matrix e2e', () => {
     };
     assert.strictEqual(isMatrixTarget(attrsUnderSubsystem), false);
   });
+
+  test('isMatrixTarget: FilterCriteria type folder false (ibcmd needs non-empty Content/Type refs)', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      parent: configuration,
+    };
+    const filterCriteriaFolder: TreeNode = {
+      id: 'FilterCriteria',
+      name: 'Критерии отбора',
+      type: MetadataType.FilterCriterion,
+      properties: {},
+      parent: common,
+    };
+    assert.strictEqual(isMatrixTarget(filterCriteriaFolder), false);
+  });
+
+  test('isMatrixTarget: ExternalDataSources type folder false (ibcmd needs table/schema content)', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      parent: configuration,
+    };
+    const externalDataSourcesFolder: TreeNode = {
+      id: 'ExternalDataSources',
+      name: 'Внешние источники данных',
+      type: MetadataType.ExternalDataSource,
+      properties: {},
+      parent: common,
+    };
+    assert.strictEqual(isMatrixTarget(externalDataSourcesFolder), false);
+  });
+
+  test('isMatrixTarget: Roles type folder true, Role instance false', () => {
+    const configuration: TreeNode = {
+      id: 'cfg',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    const common: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      parent: configuration,
+      children: [],
+    };
+    configuration.children = [common];
+    const rolesFolder: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      parent: common,
+      children: [],
+    };
+    common.children = [rolesFolder];
+    assert.strictEqual(isMatrixTarget(rolesFolder), true);
+
+    const roleInstance: TreeNode = {
+      id: 'Roles.R1',
+      name: 'R1',
+      type: MetadataType.Role,
+      properties: {},
+      parent: rolesFolder,
+    };
+    assert.strictEqual(isMatrixTarget(roleInstance), false);
+
+    const attrsUnderRole: TreeNode = {
+      id: 'Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: {},
+      parent: roleInstance,
+    };
+    assert.strictEqual(
+      isMatrixTarget(attrsUnderRole),
+      false,
+      'Attributes under Role: Role has no ChildObjects per spec / ROOT_TAGS_WITHOUT_CHILDOBJECTS'
+    );
+  });
 });

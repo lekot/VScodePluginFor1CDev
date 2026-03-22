@@ -396,6 +396,35 @@ suite('elementOperations', () => {
     assert.ok(fs.existsSync(catalogNode.filePath!));
   });
 
+  test('createElement rejects nested attribute on Role instance (Designer: no ChildObjects)', async () => {
+    const rolesDir = path.join(tmpDir, 'Roles');
+    await fs.promises.mkdir(rolesDir, { recursive: true });
+    const roleXml = path.join(rolesDir, 'R1.xml');
+    await XMLWriter.createMinimalElementFile(roleXml, 'Role', 'R1');
+    const rolesTypeNode: TreeNode = {
+      id: 'Roles',
+      name: 'Роли',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: rolesDir,
+      parent: configNode,
+      children: [],
+    };
+    const roleInstance: TreeNode = {
+      id: 'Roles.R1',
+      name: 'R1',
+      type: MetadataType.Role,
+      properties: {},
+      filePath: roleXml,
+      parent: rolesTypeNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => createElement(roleInstance, 'BadAttr'),
+      /нет ChildObjects/
+    );
+  });
+
   test('createElement creates attribute with proper structure', async () => {
     await createElement(catalogNode, 'NewAttribute');
     const content = await readFileContent(catalogNode.filePath!);

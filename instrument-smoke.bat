@@ -1,6 +1,8 @@
 @echo off
 setlocal
+chcp 65001 >nul 2>&1
 cd /d "%~dp0"
+call "%~dp0cleanup-1cviewer-temp.bat"
 
 REM ============================================================================
 REM  Полный смокер инструмента CDT 41 (не «исторический» только-VS Code smoke):
@@ -11,7 +13,11 @@ REM
 REM  ibcmd (после мутаций матрицы на диске):
 REM    set IBCMD_PATH=C:\Program Files\1cv8\8.3.27.1859\bin\ibcmd.exe
 REM    set IBCMD_INFOBASE_CONFIG=C:\path\to\infobase.yml
+REM    YAML для файловой ИБ обычно создают один раз: ibcmd server config init
+REM      --database-path="<каталог как в конфигураторе File=...>" --name=... --out=...
+REM    Шаблон с комментариями: ibcmd.setup.example.bat → копия в ibcmd-local.bat
 REM    (опционально IBCMD_USER, IBCMD_PASSWORD, IBCMD_TIMEOUT_MS — см. design §6.5)
+REM    INSTRUMENT_IBCMD_NONFATAL=1 — при ошибке ibcmd не прерывать батник (фаза VS Code smoke всё равно выполнится).
 REM
 REM  Матрица (по умолчанию — полный обход; быстрый срез: задайте MATRIX_SLICE_LIMIT или MATRIX_FULL=0):
 REM    set MATRIX_FULL=0
@@ -46,6 +52,7 @@ if errorlevel 1 (
 set SKIP_CONTAINER_MATRIX_E2E=
 
 if not defined MATRIX_REPORT_PATH set MATRIX_REPORT_PATH=%CD%\suite-reports\instrument-matrix.json
+if exist "%MATRIX_REPORT_PATH%" del /f /q "%MATRIX_REPORT_PATH%"
 
 REM Полный обход целей матрицы, если не заданы ни срез, ни явный MATRIX_FULL (0 = только срез по умолчанию 5).
 if not defined MATRIX_SLICE_LIMIT if not defined MATRIX_FULL set MATRIX_FULL=1
@@ -69,12 +76,14 @@ if /i "%SKIP_VSCODE_SMOKE%"=="1" (
 
 if not defined SUITE_REPORT_PATH_SMOKE set SUITE_REPORT_PATH_SMOKE=%CD%\suite-reports\instrument-vscode-smoke.json
 if not defined MANDATORY_SUITES_SMOKE set MANDATORY_SUITES_SMOKE=suite/smoke/smoke.test.js
+if exist "%SUITE_REPORT_PATH_SMOKE%" del /f /q "%SUITE_REPORT_PATH_SMOKE%"
 
 echo [instrument-smoke] VS Code extension smoke...
 node out\test\runSmoke.js %*
 if errorlevel 1 exit /b 1
 
 :done
+call "%~dp0cleanup-1cviewer-temp.bat"
 echo [instrument-smoke] Completed successfully.
 endlocal
 exit /b 0

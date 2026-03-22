@@ -83,11 +83,41 @@ export function generateMatrixName(targetId: string, attempt: number): string {
   return name;
 }
 
+/** Compare metadata names with NFC so Cyrillic fixture names match tree/XML consistently. */
+function matrixNameKey(s: string): string {
+  return s.normalize('NFC');
+}
+
+function nodeMatchesMatrixVictim(c: TreeNode, target: TreeNode, name2: string): boolean {
+  const k = matrixNameKey(name2);
+  if (matrixNameKey(c.name) === k) {
+    return true;
+  }
+  if (c.id === `${target.id}.${name2}` || c.id.endsWith(`.${name2}`)) {
+    return true;
+  }
+  const idN = matrixNameKey(c.id);
+  return idN.endsWith(`.${k}`);
+}
+
+/**
+ * Pick node to delete after create×2. Attributes from Designer ChildObjects sit under an
+ * `Attributes` folder node, not as direct children of the object (Role, CommonModule, …).
+ */
 function pickVictimNodeFromList(children: TreeNode[], target: TreeNode, name2: string): TreeNode | undefined {
-  return (
-    children.find((c) => c.name === name2) ??
-    children.find((c) => c.id === `${target.id}.${name2}` || c.id.endsWith(`.${name2}`))
-  );
+  const direct = children.find((c) => nodeMatchesMatrixVictim(c, target, name2));
+  if (direct) {
+    return direct;
+  }
+  for (const c of children) {
+    if (c.id === 'Attributes' && c.children?.length) {
+      const hit = c.children.find((a) => nodeMatchesMatrixVictim(a, target, name2));
+      if (hit) {
+        return hit;
+      }
+    }
+  }
+  return undefined;
 }
 
 function containerLabel(node: TreeNode): { containerId: string; path: string } {

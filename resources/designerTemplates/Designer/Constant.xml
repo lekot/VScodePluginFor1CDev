@@ -44,6 +44,5 @@
       <UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>
       <UseStandardCommands>true</UseStandardCommands>
     </Properties>
-    <ChildObjects />
   </Constant>
 </MetaDataObject>

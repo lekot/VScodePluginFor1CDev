@@ -1,4 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
+<!-- Критерий отбора: для ibcmd/config import нужны непустой Content (xr:Item) и cfg:-типы в Type; шаблон — заготовка до настройки в конфигураторе. Матрица e2e не создаёт FilterCriterion (см. matrixTargetPredicate). -->
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <FilterCriterion uuid="{uuid}">
     <Properties>

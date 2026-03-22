@@ -155,6 +155,13 @@ function getSpecsForRootTag(rootTag: string): GeneratedTypeSpec[] {
         { namePrefix: 'DocumentJournalList', category: 'List' },
         { namePrefix: 'DocumentJournalManager', category: 'Manager' },
       ];
+    case 'FilterCriterion':
+      // Как в выгрузке Designer (см. FormatSamples/ut_demo_ForFormat/FilterCriteria); иначе ibcmd:
+      // «отсутствует один или более типов объекта FilterCriterion» при одном Manager из default.
+      return [
+        { namePrefix: 'FilterCriterionManager', category: 'Manager' },
+        { namePrefix: 'FilterCriterionList', category: 'List' },
+      ];
     default:
       // Best-effort fallback: at least provide a Manager, which is commonly present.
       return [{ namePrefix: `${rootTag}Manager`, category: 'Manager' }];
