@@ -46,6 +46,9 @@ const FILTERABLE_METADATA_TYPES: MetadataType[] = [
 
 const MAX_SEARCH_HISTORY = 10;
 
+/** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
+const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
+
 /**
  * Tree Data Provider for VS Code Tree View
  */
@@ -741,6 +744,23 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   refresh(element?: TreeNode): void {
     Logger.debug('Refreshing tree view', element ? element.name : 'root');
     this._onDidChangeTreeData.fire(element);
+  }
+
+  /**
+   * Drop cached children so the next {@link getChildren} reloads from disk/XML.
+   * Call after create/delete that change files under this container (matrix, tests).
+   */
+  invalidateLoadedChildren(element: TreeNode): void {
+    const el = this.resolveActiveNode(element);
+    if (!el.properties) {
+      el.properties = {};
+    }
+    el.children = [];
+    if (R6_LAZY_SECTION_IDS.has(el.id) || el.type === MetadataType.Subsystem) {
+      (el.properties as Record<string, unknown>)._lazy = true;
+    }
+    this.filterAncestorOrVisibleIds = null;
+    this.refresh(el);
   }
 
   private getConfigurationRoot(node: TreeNode): TreeNode | null {

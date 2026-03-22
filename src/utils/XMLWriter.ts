@@ -12,7 +12,10 @@ import { TypeParser } from '../parsers/typeParser';
 import { TypeFormatter } from './typeFormatter';
 import { buildTabularSectionInternalInfoObject } from '../services/internalInfoGenerator';
 
-/** Top-level metadata types that have their own XML file in Designer. */
+/**
+ * Root metadata object tags in a single-object Designer XML (same coverage as elementOperations TOP_LEVEL_TYPES)
+ * so ChildObjects / Properties mutations hit the correct node.
+ */
 const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.Catalog,
   MetadataType.Document,
@@ -30,7 +33,37 @@ const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.Task,
   MetadataType.ExternalDataSource,
   MetadataType.Constant,
+  MetadataType.SessionParameter,
+  MetadataType.FilterCriterion,
+  MetadataType.ScheduledJob,
+  MetadataType.FunctionalOption,
+  MetadataType.FunctionalOptionsParameter,
+  MetadataType.SettingsStorage,
+  MetadataType.EventSubscription,
+  MetadataType.CommonModule,
+  MetadataType.CommandGroup,
+  MetadataType.Role,
+  MetadataType.Interface,
+  MetadataType.Style,
+  MetadataType.WebService,
+  MetadataType.HTTPService,
+  MetadataType.IntegrationService,
+  MetadataType.Subsystem,
 ]);
+
+/** Properties that may store a reference like `Catalog.MyCat.Form.MyForm`. */
+const DEFAULT_FORM_REF_PROPERTY_KEYS = [
+  'DefaultObjectForm',
+  'DefaultFolderForm',
+  'DefaultListForm',
+  'DefaultChoiceForm',
+  'DefaultFolderChoiceForm',
+  'AuxiliaryObjectForm',
+  'AuxiliaryFolderForm',
+  'AuxiliaryListForm',
+  'AuxiliaryChoiceForm',
+  'AuxiliaryFolderChoiceForm',
+] as const;
 
 /**
  * XML Writer options for preserving formatting and structure
@@ -335,6 +368,310 @@ export class XMLWriter {
       Logger.debug(`Could not remove backup ${backupPath}`);
     }
     Logger.info(`Removed ${elementType} '${elementName}' from ${filePath}`);
+  }
+
+  /**
+   * Adds `<Form>formName</Form>` to the owner metadata object's ChildObjects (Designer).
+   */
+  static async addDesignerFormReferenceToOwnerMetadata(filePath: string, formName: string): Promise<void> {
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    const parsed = this.parser.parse(xmlContent);
+    const state = { changed: false };
+    const updated = this.addDesignerFormReferenceInOwnerParsed(parsed, formName, state);
+    if (!state.changed) {
+      return;
+    }
+    await this.persistParsedXmlMutation(filePath, xmlContent, updated);
+    Logger.info(`Registered form '${formName}' in ChildObjects of ${filePath}`);
+  }
+
+  /**
+   * Removes the form from ChildObjects and clears Default*Form / Auxiliary*Form properties
+   * whose value ends with `.Form.<formName>`.
+   */
+  static async removeDesignerFormFromOwnerMetadata(filePath: string, formName: string): Promise<void> {
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    const parsed = this.parser.parse(xmlContent);
+    const state = { changed: false };
+    const updated = this.removeDesignerFormFromOwnerParsed(parsed, formName, state);
+    if (!state.changed) {
+      return;
+    }
+    await this.persistParsedXmlMutation(filePath, xmlContent, updated);
+    Logger.info(`Removed form '${formName}' references from ${filePath}`);
+  }
+
+  private static async persistParsedXmlMutation(
+    filePath: string,
+    originalXml: string,
+    updatedParsed: unknown
+  ): Promise<void> {
+    const xmlString = this.builder.build(updatedParsed);
+    const backupPath = `${filePath}.bak`;
+    try {
+      await fs.promises.writeFile(backupPath, originalXml, 'utf-8');
+    } catch (backupErr) {
+      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+    }
+    try {
+      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    } catch (writeError) {
+      Logger.error(`Failed to write file: ${filePath}`, writeError);
+      try {
+        if (fs.existsSync(backupPath)) {
+          const restored = await fs.promises.readFile(backupPath, 'utf-8');
+          await fs.promises.writeFile(filePath, restored, 'utf-8');
+          await fs.promises.unlink(backupPath);
+          Logger.info(`Rolled back ${filePath} from backup`);
+        }
+      } catch (rollbackErr) {
+        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+      }
+      throw new Error(
+        `Unable to write to file. Check file permissions and disk space. ${
+          writeError instanceof Error ? writeError.message : String(writeError)
+        }`
+      );
+    }
+    try {
+      if (fs.existsSync(backupPath)) {
+        await fs.promises.unlink(backupPath);
+      }
+    } catch {
+      Logger.debug(`Could not remove backup ${backupPath}`);
+    }
+  }
+
+  private static extractScalarXmlText(value: unknown): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value) && '#text' in value) {
+      return String((value as Record<string, unknown>)['#text']);
+    }
+    if (Array.isArray(value) && value.length > 0) {
+      const first = value[0];
+      if (typeof first === 'string') {
+        return first;
+      }
+      if (first && typeof first === 'object' && '#text' in first) {
+        return String((first as Record<string, unknown>)['#text']);
+      }
+    }
+    return '';
+  }
+
+  private static formNamesFromChildObjectsFormField(raw: unknown): string[] {
+    if (raw === undefined || raw === null || raw === '') {
+      return [];
+    }
+    if (typeof raw === 'string') {
+      return [raw];
+    }
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && '#text' in raw) {
+      return [String((raw as Record<string, unknown>)['#text'])];
+    }
+    if (Array.isArray(raw)) {
+      const res: string[] = [];
+      for (const x of raw) {
+        if (typeof x === 'string') {
+          res.push(x);
+        } else if (x && typeof x === 'object' && '#text' in x) {
+          res.push(String((x as Record<string, unknown>)['#text']));
+        }
+      }
+      return res;
+    }
+    return [];
+  }
+
+  private static appendFormToChildObjectsInner(
+    innerObj: Record<string, unknown>,
+    formName: string
+  ): { inner: Record<string, unknown>; changed: boolean } {
+    const names = this.formNamesFromChildObjectsFormField(innerObj.Form);
+    if (names.includes(formName)) {
+      return { inner: innerObj, changed: false };
+    }
+    const next = { ...innerObj };
+    names.push(formName);
+    next.Form = names.length === 1 ? names[0] : names;
+    return { inner: next, changed: true };
+  }
+
+  private static stripFormEntryFromChildObjectsInner(
+    innerObj: Record<string, unknown>,
+    formName: string
+  ): { inner: Record<string, unknown>; changed: boolean } {
+    if (!('Form' in innerObj)) {
+      return { inner: innerObj, changed: false };
+    }
+    const names = this.formNamesFromChildObjectsFormField(innerObj.Form);
+    const filtered = names.filter((n) => n !== formName);
+    if (filtered.length === names.length) {
+      return { inner: innerObj, changed: false };
+    }
+    const next = { ...innerObj };
+    if (filtered.length === 0) {
+      delete next.Form;
+    } else if (filtered.length === 1) {
+      next.Form = filtered[0];
+    } else {
+      next.Form = filtered;
+    }
+    return { inner: next, changed: true };
+  }
+
+  private static childObjectsArrayToRecord(childObjects: unknown[]): Record<string, unknown> {
+    const innerObj: Record<string, unknown> = {};
+    for (const item of childObjects) {
+      if (item && typeof item === 'object') {
+        for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+          if (!innerObj[k]) {
+            innerObj[k] = [];
+          }
+          (innerObj[k] as unknown[]).push(v);
+        }
+      }
+    }
+    return innerObj;
+  }
+
+  private static normalizeOwnerChildObjectsRecord(elemObj: Record<string, unknown>): Record<string, unknown> {
+    if (!('ChildObjects' in elemObj) || elemObj.ChildObjects === '' || elemObj.ChildObjects === undefined) {
+      return {};
+    }
+    const co = elemObj.ChildObjects;
+    if (Array.isArray(co)) {
+      return this.childObjectsArrayToRecord(co);
+    }
+    if (typeof co === 'object') {
+      return { ...(co as Record<string, unknown>) };
+    }
+    return {};
+  }
+
+  private static clearDefaultFormPropertyRefs(
+    properties: unknown,
+    formName: string,
+    state: { changed: boolean }
+  ): unknown {
+    const suffix = `.Form.${formName}`;
+    const clearObj = (o: Record<string, unknown>): Record<string, unknown> => {
+      const out = { ...o };
+      for (const key of DEFAULT_FORM_REF_PROPERTY_KEYS) {
+        if (!(key in out)) {
+          continue;
+        }
+        const text = this.extractScalarXmlText(out[key]);
+        if (text && text.endsWith(suffix)) {
+          out[key] = '';
+          state.changed = true;
+        }
+      }
+      return out;
+    };
+    if (!properties || typeof properties !== 'object') {
+      return properties;
+    }
+    if (Array.isArray(properties)) {
+      return properties.map((p) =>
+        p && typeof p === 'object' ? clearObj(p as Record<string, unknown>) : p
+      );
+    }
+    return clearObj(properties as Record<string, unknown>);
+  }
+
+  private static addDesignerFormReferenceInOwnerParsed(
+    parsed: unknown,
+    formName: string,
+    state: { changed: boolean }
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => this.addDesignerFormReferenceInOwnerParsed(item, formName, state));
+    }
+    const obj = parsed as Record<string, unknown>;
+    const result: Record<string, unknown> = { ...obj };
+
+    for (const typeName of TOP_LEVEL_TYPES) {
+      if (typeName in obj) {
+        const elementContent = obj[typeName as string];
+        if (elementContent && typeof elementContent === 'object' && !Array.isArray(elementContent)) {
+          const elemObj = elementContent as Record<string, unknown>;
+          const next: Record<string, unknown> = { ...elemObj };
+          const innerObj = this.normalizeOwnerChildObjectsRecord(elemObj);
+          const { inner, changed } = this.appendFormToChildObjectsInner(innerObj, formName);
+          if (changed) {
+            state.changed = true;
+          }
+          next.ChildObjects = inner;
+          result[typeName as string] = next;
+          return result;
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (Array.isArray(value)) {
+        result[key] = value.map((v) => this.addDesignerFormReferenceInOwnerParsed(v, formName, state));
+      } else if (value && typeof value === 'object') {
+        result[key] = this.addDesignerFormReferenceInOwnerParsed(value, formName, state);
+      }
+    }
+    return result;
+  }
+
+  private static removeDesignerFormFromOwnerParsed(
+    parsed: unknown,
+    formName: string,
+    state: { changed: boolean }
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => this.removeDesignerFormFromOwnerParsed(item, formName, state));
+    }
+    const obj = parsed as Record<string, unknown>;
+    const result: Record<string, unknown> = { ...obj };
+
+    for (const typeName of TOP_LEVEL_TYPES) {
+      if (typeName in obj) {
+        const elementContent = obj[typeName as string];
+        if (elementContent && typeof elementContent === 'object' && !Array.isArray(elementContent)) {
+          const elemObj = elementContent as Record<string, unknown>;
+          const next: Record<string, unknown> = { ...elemObj };
+
+          if ('Properties' in elemObj) {
+            next.Properties = this.clearDefaultFormPropertyRefs(elemObj.Properties, formName, state);
+          }
+
+          if ('ChildObjects' in elemObj && elemObj.ChildObjects !== '' && elemObj.ChildObjects !== undefined) {
+            const innerObj = this.normalizeOwnerChildObjectsRecord(elemObj);
+            const { inner, changed } = this.stripFormEntryFromChildObjectsInner(innerObj, formName);
+            if (changed) {
+              state.changed = true;
+            }
+            next.ChildObjects = inner;
+          }
+
+          result[typeName as string] = next;
+          return result;
+        }
+      }
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (Array.isArray(value)) {
+        result[key] = value.map((v) => this.removeDesignerFormFromOwnerParsed(v, formName, state));
+      } else if (value && typeof value === 'object') {
+        result[key] = this.removeDesignerFormFromOwnerParsed(value, formName, state);
+      }
+    }
+    return result;
   }
 
   /**

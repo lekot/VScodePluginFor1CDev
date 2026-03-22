@@ -30,4 +30,7 @@ export const coreSuiteFiles: string[] = [
   'suite/designerTemplateServices.test.js',
   'suite/servicesCoverage.test.js',
   'suite/fixtureMatrix.test.js',
+  ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
+    ? []
+    : ['suite/containerMatrix.e2e.test.js']),
 ];

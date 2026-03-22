@@ -25,6 +25,7 @@ import {
 
 suite('elementOperations', () => {
   let tmpDir: string;
+  let catalogPath: string;
   let configNode: TreeNode;
   let catalogsTypeNode: TreeNode;
   let catalogNode: TreeNode;
@@ -33,7 +34,7 @@ suite('elementOperations', () => {
     tmpDir = await createTempDir('1cviewer-el-');
     const catalogsPath = path.join(tmpDir, 'Catalogs');
     await fs.promises.mkdir(catalogsPath, { recursive: true });
-    const catalogPath = path.join(catalogsPath, 'ExistingCatalog.xml');
+    catalogPath = path.join(catalogsPath, 'ExistingCatalog.xml');
     await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'ExistingCatalog');
     // Configuration.xml required for createElement (addRootObjectToConfiguration)
     const configXmlPath = path.join(tmpDir, 'Configuration.xml');
@@ -289,6 +290,63 @@ suite('elementOperations', () => {
     assert.ok(metaContent.includes('<Name>НоваяФорма</Name>'));
     const extContent = await readFileContent(formXmlPath);
     assert.ok(extContent.includes('http://v8.1c.ru/8.3/xcf/logform') && extContent.includes('<Form'));
+
+    const ownerXml = await readFileContent(catalogPath);
+    assert.ok(
+      ownerXml.includes('<Form>НоваяФорма</Form>'),
+      'owner metadata ChildObjects must list the new form'
+    );
+  });
+
+  test('deleteElement removes form directory created by createForm', async () => {
+    const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
+    await fs.promises.mkdir(formsPath, { recursive: true });
+    const formsNode = createFormsNode(catalogNode, formsPath);
+    await createForm(formsNode, 'FormToDelete');
+    const formDir = path.join(formsPath, 'FormToDelete');
+    const formNode: TreeNode = {
+      id: 'Forms.FormToDelete',
+      name: 'FormToDelete',
+      type: MetadataType.Form,
+      properties: {},
+      children: [],
+      filePath: formDir,
+      parent: formsNode,
+    };
+    await deleteElement(formNode);
+    assert.ok(!dirExists(formDir));
+    const ownerXmlAfter = await readFileContent(catalogPath);
+    assert.ok(
+      !ownerXmlAfter.includes('<Form>FormToDelete</Form>'),
+      'form reference must be removed from owner ChildObjects'
+    );
+  });
+
+  test('deleteElement clears DefaultListForm when it points at the deleted form', async () => {
+    const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
+    await fs.promises.mkdir(formsPath, { recursive: true });
+    const formsNode = createFormsNode(catalogNode, formsPath);
+    await createForm(formsNode, 'ListFormRef');
+    let ownerXml = await readFileContent(catalogPath);
+    ownerXml = ownerXml.replace(
+      /\t\t<\/Properties>/,
+      '\t\t\t<DefaultListForm>Catalog.ExistingCatalog.Form.ListFormRef</DefaultListForm>\n\t\t</Properties>'
+    );
+    await fs.promises.writeFile(catalogPath, ownerXml, 'utf-8');
+
+    const formDir = path.join(formsPath, 'ListFormRef');
+    const formNode: TreeNode = {
+      id: 'Forms.ListFormRef',
+      name: 'ListFormRef',
+      type: MetadataType.Form,
+      properties: {},
+      children: [],
+      filePath: formDir,
+      parent: formsNode,
+    };
+    await deleteElement(formNode);
+    const after = await readFileContent(catalogPath);
+    assert.ok(!after.includes('ListFormRef'), 'default form ref and ChildObjects entry should be gone');
   });
 
   test('duplicateElement creates copy of catalog', async () => {

@@ -23,7 +23,7 @@ function isAllowedTypeFolderParent(parent: TreeNode): boolean {
 }
 
 /** Top-level metadata types that have their own XML file in Designer. */
-const TOP_LEVEL_TYPES = new Set<MetadataType>([
+export const TOP_LEVEL_TYPES = new Set<MetadataType>([
   MetadataType.Catalog,
   MetadataType.Document,
   MetadataType.Enum,
@@ -263,7 +263,13 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
     throw new Error('Создание формы: выберите узел «Forms» в дереве метаданных.');
   }
   const formsPath = parentNode.filePath;
-  if (!formsPath || !fs.existsSync(formsPath) || !fs.statSync(formsPath).isDirectory()) {
+  if (!formsPath) {
+    throw new Error('Папка форм: не задан путь к каталогу Forms.');
+  }
+  if (!fs.existsSync(formsPath)) {
+    await fs.promises.mkdir(formsPath, { recursive: true });
+  }
+  if (!fs.statSync(formsPath).isDirectory()) {
     throw new Error(`Папка форм не найдена: ${formsPath}`);
   }
   const formDir = path.join(formsPath, name);
@@ -281,6 +287,12 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   await fs.promises.writeFile(formXmlPath, MINIMAL_EXT_FORM_XML, 'utf-8');
   await fs.promises.writeFile(modulePath, '', 'utf-8');
   Logger.info(`Created form: ${formMetaPath}`);
+
+  const owner = parentNode.parent;
+  const ownerXmlPath = owner?.filePath;
+  if (ownerXmlPath && fs.existsSync(ownerXmlPath) && ownerXmlPath.toLowerCase().endsWith('.xml')) {
+    await XMLWriter.addDesignerFormReferenceToOwnerMetadata(ownerXmlPath, name);
+  }
 }
 
 /**
@@ -425,6 +437,28 @@ export async function deleteElement(node: TreeNode): Promise<void> {
       throw err;
     }
     Logger.info(`Deleted element file ${filePath}`);
+    return;
+  }
+
+  if (node.type === MetadataType.Form && node.id !== 'Forms') {
+    if (parent.id !== 'Forms') {
+      throw new Error('Удаление формы: ожидался родительский узел «Forms».');
+    }
+    const owner = parent.parent;
+    const ownerXmlPath = owner?.filePath;
+    if (ownerXmlPath && fs.existsSync(ownerXmlPath) && ownerXmlPath.toLowerCase().endsWith('.xml')) {
+      await XMLWriter.removeDesignerFormFromOwnerMetadata(ownerXmlPath, node.name);
+    }
+    const formDir = node.filePath;
+    if (!formDir || !fs.existsSync(formDir)) {
+      throw new Error('Файл элемента не найден.');
+    }
+    const stat = fs.statSync(formDir);
+    if (!stat.isDirectory()) {
+      throw new Error('Ожидалась папка формы.');
+    }
+    await fs.promises.rm(formDir, { recursive: true, force: true });
+    Logger.info(`Deleted form directory ${formDir}`);
     return;
   }
 

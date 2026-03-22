@@ -232,6 +232,49 @@ const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
   { id: 'Templates', name: 'Макеты', type: MetadataType.Template, typeDirName: 'Templates' },
 ];
 
+/**
+ * Каталог содержимого объекта Designer (Forms/, Attributes/, …):
+ * - вложенно: `Type/Object/Object.xml` → корень объекта = `dirname(xml)`;
+ * - плоско (часто в выгрузке): `Type/Object.xml` → корень = `Type/Object/`, а не `Type/`.
+ */
+function getObjectContentDirForR6(instanceNode: TreeNode, ctx: NormalizeContext): string | undefined {
+  const fp = instanceNode.filePath;
+  if (!fp) {
+    return undefined;
+  }
+  if (ctx.format === ConfigFormat.EDT) {
+    return fp.toLowerCase().endsWith('.xml') ? path.dirname(fp) : fp;
+  }
+  if (!fp.toLowerCase().endsWith('.xml')) {
+    return fp;
+  }
+  const dir = path.dirname(fp);
+  const fileBase = path.basename(fp, '.xml');
+  const parentDirName = path.basename(dir);
+  if (parentDirName === fileBase) {
+    return dir;
+  }
+  return path.join(dir, fileBase);
+}
+
+function fixR6PlaceholderFilePaths(instanceNode: TreeNode, ctx: NormalizeContext): void {
+  const baseDir = getObjectContentDirForR6(instanceNode, ctx);
+  if (!baseDir) {
+    return;
+  }
+  for (const def of R6_OBJECT_CHILDREN) {
+    if (!def.typeDirName) {
+      continue;
+    }
+    const child = instanceNode.children?.find((c) => c.id === def.id);
+    if (!child) {
+      continue;
+    }
+    child.filePath = path.join(baseDir, def.typeDirName);
+    child.parent = instanceNode;
+  }
+}
+
 const R6_OBJECT_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
   MetadataType.Document,
@@ -259,6 +302,7 @@ export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: Normali
     upsertChildNode(node, def, ctx);
   }
   reorderChildrenByIds(node, R6_OBJECT_CHILDREN.map((x) => x.id));
+  fixR6PlaceholderFilePaths(node, ctx);
   // Mark R6 placeholders as lazy so the provider calls loadElementChildren on expand.
   for (const def of R6_OBJECT_CHILDREN) {
     const child = node.children!.find((c) => c.id === def.id);
@@ -331,20 +375,8 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
         continue;
       }
       ensureChildrenArray(instanceNode);
-      
-      // Add all R6 placeholders to this instance node
-      for (const childDef of R6_OBJECT_CHILDREN) {
-        upsertChildNode(instanceNode, childDef, ctx);
-      }
-      
-      // Mark R6 placeholders as lazy for proper loading behavior
-      const existingPlaceholders = instanceNode.children?.filter(c => R6_OBJECT_CHILDREN.some(def => def.id === c.id)) ?? [];
-      for (const placeholder of existingPlaceholders) {
-        (placeholder.properties as Record<string, unknown>)._lazy = true;
-      }
-      
-      // Reorder the R6 children for consistent display
-      reorderChildrenByIds(instanceNode, R6_OBJECT_CHILDREN.map((x) => x.id));
+      // Same as provider path: placeholders + корректные filePath рядом с Object.xml (Forms/, Attributes/, …)
+      ensureR6PlaceholdersForInstanceNode(instanceNode, ctx);
     }
   }
 
