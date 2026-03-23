@@ -11,6 +11,8 @@ import {
   isFormDocumentDirty,
   type FormSelectionPayload,
   type MessageHandlerContext,
+  type FormSelectionEntityType,
+  applyExternalPropertyChange,
 } from './formMessageHandler';
 import { FormCommandEngine } from './formCommandEngine';
 import { getWebviewHtml } from './formWebviewHtml';
@@ -80,5 +82,21 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     if (choice === returnLabel) {
       await vscode.commands.executeCommand('vscode.openWith', documentUri, '1c-form-editor');
     }
+  }
+
+  public applySelectionPropertyChange(payload: {
+    docUri: string;
+    entityType: FormSelectionEntityType;
+    entityId?: string;
+    entityName?: string;
+    scope: 'property' | 'event';
+    key: string;
+    value: unknown;
+  }): void {
+    const ctx = this.contextByDocument.get(payload.docUri);
+    if (!ctx) {
+      return;
+    }
+    applyExternalPropertyChange(ctx, payload);
   }
 }

@@ -74,6 +74,9 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --vscode-input-border: #cbd5e1;
       --vscode-toolbar-hoverBackground: #e5edff;
       --vscode-sideBar-foreground: #374151;
+      --vscode-tab-activeBackground: #eaf0fb;
+      --vscode-badge-background: #dbeafe;
+      --vscode-badge-foreground: #1f2937;
     }
     body[data-theme-mode='dark'] {
       --vscode-editor-background: #111827;
@@ -97,6 +100,27 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --vscode-input-border: #4b5563;
       --vscode-toolbar-hoverBackground: #334155;
       --vscode-sideBar-foreground: #cbd5e1;
+      --vscode-tab-activeBackground: #25364b;
+      --vscode-badge-background: #334155;
+      --vscode-badge-foreground: #e5e7eb;
+    }
+    body[data-theme-mode='light'] .zone-right-upper {
+      background: #ffffff;
+    }
+    body[data-theme-mode='light'] .fe-table-wrap {
+      background: #ffffff;
+    }
+    body[data-theme-mode='light'] .fe-table th {
+      background: #f3f6fb;
+      color: #4b5563;
+    }
+    body[data-theme-mode='light'] .right-panel-tabs button.active,
+    body[data-theme-mode='light'] .left-zone-tabs button.active {
+      background: color-mix(in srgb, #dbeafe 80%, #ffffff 20%);
+      color: #1f2937;
+    }
+    body[data-theme-mode='dark'] .zone-right-upper {
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 82%, var(--vscode-editor-background) 18%);
     }
     .fe-toolbar {
       flex-shrink: 0;
@@ -120,6 +144,17 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       color: var(--vscode-input-foreground);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
+      color-scheme: light;
+    }
+    .fe-theme-select:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    body[data-theme-mode='dark'] .fe-theme-select {
+      color-scheme: dark;
+      background: color-mix(in srgb, var(--vscode-input-background) 88%, var(--vscode-editor-background) 12%);
+      border-color: color-mix(in srgb, var(--vscode-input-border) 80%, var(--vscode-focusBorder) 20%);
+    }
+    body[data-theme-mode='dark'] .fe-theme-select option {
+      background: var(--vscode-sideBar-background);
+      color: var(--vscode-foreground);
     }
     .fe-toolbar-btn {
       display: inline-flex;

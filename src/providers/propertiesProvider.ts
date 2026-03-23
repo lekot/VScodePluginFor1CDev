@@ -28,7 +28,24 @@ type WebviewMessage =
   | { type: 'save'; properties: Record<string, unknown> }
   | { type: 'cancel' }
   | { type: 'validate'; properties: Record<string, unknown> }
-  | { type: 'propertyChanged'; propertyName: string; value: unknown }
+  | {
+      type: 'propertyChanged';
+      propertyName: string;
+      value: unknown;
+      scope?: 'property' | 'event';
+      docUri?: string;
+      entityType?: FormSelectionPayload['entityType'];
+      entityId?: string;
+      entityName?: string;
+    }
+  | {
+      type: 'editFormSelectionType';
+      propertyName: string;
+      docUri?: string;
+      entityType?: FormSelectionPayload['entityType'];
+      entityId?: string;
+      entityName?: string;
+    }
   | { type: 'editType'; propertyName: string };
 
 /**
@@ -57,7 +74,7 @@ function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
   
-  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType'];
+  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editFormSelectionType'];
   return validTypes.includes(m.type);
 }
 
@@ -74,7 +91,16 @@ export class PropertiesProvider {
   constructor(
       private context: vscode.ExtensionContext,
       private treeDataProvider: MetadataTreeDataProvider,
-      private typeEditorProvider: TypeEditorProvider
+      private typeEditorProvider: TypeEditorProvider,
+      private readonly onFormPropertyChanged?: (payload: {
+        docUri: string;
+        entityType: FormSelectionPayload['entityType'];
+        entityId?: string;
+        entityName?: string;
+        scope: 'property' | 'event';
+        key: string;
+        value: unknown;
+      }) => void
     ) {
       Logger.info('PropertiesProvider initialized');
       // Store reference for future use (tree refresh will be implemented in later tasks)
@@ -296,10 +322,57 @@ export class PropertiesProvider {
     const lines = entries.length
       ? entries.map(([k, v]) => {
           const raw = Array.isArray(v) || (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
+          const isComplex = Array.isArray(v) || (typeof v === 'object' && v !== null);
+          const isTypeProperty = k.toLowerCase() === 'type';
+          const editorControl = isComplex
+            ? `
+              <textarea
+                class="property-input property-input-textarea"
+                data-form-scope="property"
+                data-form-key="${this.escapeHtml(k)}"
+                data-form-value-kind="json"
+                data-form-doc-uri="${this.escapeHtml(selection.docUri)}"
+                data-form-entity-type="${this.escapeHtml(selection.entityType)}"
+                data-form-entity-id="${this.escapeHtml(selection.id || '')}"
+                data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+              >${this.escapeHtml(raw)}</textarea>
+            `
+            : `
+              <input
+                type="text"
+                class="property-input"
+                data-form-scope="property"
+                data-form-key="${this.escapeHtml(k)}"
+                data-form-value-kind="primitive"
+                data-form-doc-uri="${this.escapeHtml(selection.docUri)}"
+                data-form-entity-type="${this.escapeHtml(selection.entityType)}"
+                data-form-entity-id="${this.escapeHtml(selection.id || '')}"
+                data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+                value="${this.escapeHtml(raw)}"
+              />
+            `;
+          const editTypeButton = isTypeProperty
+            ? `
+              <button
+                type="button"
+                class="edit-form-type-btn"
+                data-form-type-key="${this.escapeHtml(k)}"
+                data-form-doc-uri="${this.escapeHtml(selection.docUri)}"
+                data-form-entity-type="${this.escapeHtml(selection.entityType)}"
+                data-form-entity-id="${this.escapeHtml(selection.id || '')}"
+                data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+                aria-label="Редактировать тип"
+                title="Редактировать тип"
+              >
+                ${this.getEditTypePencilSvg()}
+              </button>
+            `
+            : '';
           return `
             <div class="property-row">
               <label class="property-label">${this.escapeHtml(k)}</label>
-              <input type="text" class="property-input" value="${this.escapeHtml(raw)}" disabled />
+              ${editorControl}
+              ${editTypeButton}
             </div>
           `;
         }).join('')
@@ -311,7 +384,18 @@ export class PropertiesProvider {
           ${events.map(([k, v]) => `
             <div class="property-row">
               <label class="property-label">${this.escapeHtml(k)}</label>
-              <input type="text" class="property-input" value="${this.escapeHtml(v)}" disabled />
+              <input
+                type="text"
+                class="property-input"
+                data-form-scope="event"
+                data-form-key="${this.escapeHtml(k)}"
+                data-form-value-kind="primitive"
+                data-form-doc-uri="${this.escapeHtml(selection.docUri)}"
+                data-form-entity-type="${this.escapeHtml(selection.entityType)}"
+                data-form-entity-id="${this.escapeHtml(selection.id || '')}"
+                data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+                value="${this.escapeHtml(v)}"
+              />
             </div>
           `).join('')}
         </div>
@@ -347,6 +431,24 @@ export class PropertiesProvider {
             color: var(--vscode-input-foreground);
             border: 1px solid var(--vscode-input-border);
           }
+          .property-input-textarea {
+            min-height: 72px;
+            resize: vertical;
+            font-family: var(--vscode-editor-font-family);
+          }
+          .property-input.error {
+            border-color: var(--vscode-inputValidation-errorBorder);
+          }
+          .edit-form-type-btn {
+            border: none;
+            padding: 4px 8px;
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            cursor: pointer;
+          }
+          .edit-form-type-btn:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
+          }
           .property-section-title {
             margin: 16px 0 8px 0;
             color: var(--vscode-descriptionForeground);
@@ -360,12 +462,55 @@ export class PropertiesProvider {
           <h2>Свойства формы: ${this.escapeHtml(selection.name || selection.id || 'элемент')}</h2>
           <p>Тип: ${this.escapeHtml(selection.entityType)}${selection.tag ? ` (${this.escapeHtml(selection.tag)})` : ''}</p>
         </div>
-        <p class="hint">MVP режим: read-only отображение выделения из form editor. Изменение значений выполняется в редакторе формы.</p>
+        <p class="hint">Свойства и события можно менять прямо здесь для выделенного объекта формы.</p>
         <div class="property-section">
           <div class="property-section-title">Свойства</div>
           ${lines}
         </div>
         ${eventLines}
+        <script>
+          const vscode = acquireVsCodeApi();
+          document.querySelectorAll('.property-input[data-form-key]').forEach((input) => {
+            input.addEventListener('change', () => {
+              const isJson = input.dataset.formValueKind === 'json';
+              let value = input.value;
+              if (isJson) {
+                try {
+                  value = JSON.parse(input.value);
+                  input.value = JSON.stringify(value, null, 2);
+                  input.classList.remove('error');
+                  input.title = '';
+                } catch (err) {
+                  input.classList.add('error');
+                  input.title = 'Некорректный JSON: изменение не отправлено';
+                  return;
+                }
+              }
+              vscode.postMessage({
+                type: 'propertyChanged',
+                propertyName: input.dataset.formKey,
+                value,
+                scope: input.dataset.formScope || 'property',
+                docUri: input.dataset.formDocUri || '',
+                entityType: input.dataset.formEntityType,
+                entityId: input.dataset.formEntityId || undefined,
+                entityName: input.dataset.formEntityName || undefined
+              });
+            });
+          });
+          document.querySelectorAll('.edit-form-type-btn[data-form-type-key]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              vscode.postMessage({
+                type: 'editFormSelectionType',
+                propertyName: btn.dataset.formTypeKey,
+                docUri: btn.dataset.formDocUri || '',
+                entityType: btn.dataset.formEntityType,
+                entityId: btn.dataset.formEntityId || undefined,
+                entityName: btn.dataset.formEntityName || undefined
+              });
+            });
+          });
+        </script>
       </body>
       </html>
     `;
@@ -1175,6 +1320,14 @@ export class PropertiesProvider {
           Logger.info('editType message received from webview');
           await this.handleEditTypeMessage(message);
           break;
+
+        case 'propertyChanged':
+          this.handleFormSelectionPropertyChanged(message);
+          break;
+
+        case 'editFormSelectionType':
+          await this.handleEditFormSelectionTypeMessage(message);
+          break;
         
         default:
           Logger.warn(`Unknown message type: ${message && typeof message === 'object' && 'type' in message ? String((message as WebviewMessage).type) : 'unknown'}`);
@@ -1184,6 +1337,102 @@ export class PropertiesProvider {
       this.postMessage({
         type: 'error',
         message: error instanceof Error ? error.message : 'Unknown error occurred'
+      });
+    }
+  }
+
+  private handleFormSelectionPropertyChanged(message: WebviewMessage): void {
+    if (message.type !== 'propertyChanged' || !this.currentFormSelection) {
+      return;
+    }
+    const key = message.propertyName;
+    const scope = message.scope === 'event' ? 'event' : 'property';
+    if (!key || !this.onFormPropertyChanged) {
+      return;
+    }
+    this.onFormPropertyChanged({
+      docUri: message.docUri || this.currentFormSelection.docUri,
+      entityType: (message.entityType as FormSelectionPayload['entityType']) ?? this.currentFormSelection.entityType,
+      entityId: message.entityId || this.currentFormSelection.id,
+      entityName: message.entityName || this.currentFormSelection.name,
+      scope,
+      key,
+      value: message.value,
+    });
+  }
+
+  private async handleEditFormSelectionTypeMessage(message: WebviewMessage): Promise<void> {
+    if (message.type !== 'editFormSelectionType' || !this.currentFormSelection || !this.onFormPropertyChanged) {
+      return;
+    }
+    const key = message.propertyName || 'Type';
+    const rawType = this.currentFormSelection.properties?.[key];
+    if (rawType === undefined || rawType === null) {
+      this.postMessage({
+        type: 'error',
+        message: 'Type property is empty',
+      });
+      return;
+    }
+
+    let typeXMLForEditor: string;
+    if (typeof rawType === 'object' && rawType !== null && !Array.isArray(rawType)) {
+      try {
+        const typeDef = TypeParser.parseFromObject(rawType as Record<string, unknown>);
+        const { TypeSerializer: typeSerializer } = await import('../serializers/typeSerializer');
+        typeXMLForEditor = typeSerializer.serialize(typeDef);
+      } catch (error) {
+        Logger.error('Failed to serialize Type object for form selection', error);
+        this.postMessage({ type: 'error', message: 'Failed to open type editor: invalid type data' });
+        return;
+      }
+    } else if (typeof rawType === 'string' && rawType.includes('<')) {
+      typeXMLForEditor = rawType;
+    } else if (typeof rawType === 'string') {
+      const typeDef = this.parseDisplayTypeString(rawType);
+      if (!typeDef) {
+        this.postMessage({
+          type: 'error',
+          message: 'Type cannot be edited: could not parse type',
+        });
+        return;
+      }
+      const { TypeSerializer: typeSerializer } = await import('../serializers/typeSerializer');
+      typeXMLForEditor = typeSerializer.serialize(typeDef);
+    } else {
+      this.postMessage({
+        type: 'error',
+        message: 'Type property has unexpected format',
+      });
+      return;
+    }
+
+    try {
+      const result = await this.typeEditorProvider.show(typeXMLForEditor, []);
+      if (result === null) {
+        return;
+      }
+      const { TypeSerializer: typeSerializer } = await import('../serializers/typeSerializer');
+      const updatedTypeXML = typeSerializer.serialize(result);
+      this.onFormPropertyChanged({
+        docUri: message.docUri || this.currentFormSelection.docUri,
+        entityType: (message.entityType as FormSelectionPayload['entityType']) ?? this.currentFormSelection.entityType,
+        entityId: message.entityId || this.currentFormSelection.id,
+        entityName: message.entityName || this.currentFormSelection.name,
+        scope: 'property',
+        key,
+        value: updatedTypeXML,
+      });
+      this.currentFormSelection.properties[key] = updatedTypeXML;
+      this.updateWebviewContent();
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Type editor cancelled') {
+        return;
+      }
+      Logger.error('Failed to edit form selection type', error);
+      this.postMessage({
+        type: 'error',
+        message: `Failed to edit type: ${error instanceof Error ? error.message : 'Unknown error'}`,
       });
     }
   }

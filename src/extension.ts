@@ -175,6 +175,7 @@ let treeView: vscode.TreeView<TreeNode> | null = null;
 let propertiesProvider: PropertiesProvider | null = null;
 let typeEditorProvider: TypeEditorProvider | null = null;
 let rolesRightsEditorProvider: RolesRightsEditorProvider | null = null;
+let formEditorProvider: FormEditorProvider | null = null;
 let extensionContext: vscode.ExtensionContext | undefined;
 let metadataWatchers: MetadataWatcherService[] = [];
 let reloadCoordinator: ReloadCoordinatorService | null = null;
@@ -210,7 +211,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(rolesRightsEditorProvider);
 
   // Create properties provider
-  propertiesProvider = new PropertiesProvider(context, treeDataProvider, typeEditorProvider);
+  propertiesProvider = new PropertiesProvider(
+    context,
+    treeDataProvider,
+    typeEditorProvider,
+    (payload) => {
+      formEditorProvider?.applySelectionPropertyChange(payload);
+    }
+  );
   context.subscriptions.push(propertiesProvider);
   reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
     Logger.info('reload.run.started', { configPath, reason, operationId });
@@ -226,7 +234,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   // Form editor (custom editor for Ext/Form.xml)
-  const formEditorProvider = new FormEditorProvider((payload) => {
+  formEditorProvider = new FormEditorProvider((payload) => {
     if (propertiesProvider) {
       void propertiesProvider.showFormSelectionProperties(payload);
     }

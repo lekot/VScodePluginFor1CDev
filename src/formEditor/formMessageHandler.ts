@@ -64,6 +64,16 @@ export interface MessageHandlerContext {
   onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void;
 }
 
+export interface ExternalPropertyChangePayload {
+  docUri: string;
+  entityType: FormSelectionEntityType;
+  entityId?: string;
+  entityName?: string;
+  scope: 'property' | 'event';
+  key: string;
+  value: unknown;
+}
+
 export type FormMessage = { type: string; [key: string]: unknown };
 
 export function createSerializedExecutor<T>(
@@ -166,6 +176,36 @@ export function createSerializedMessageHandler(
   ctx: MessageHandlerContext
 ): (msg: FormMessage) => Promise<void> {
   return createSerializedExecutor((msg: FormMessage) => handleMessage(ctx, msg));
+}
+
+export function applyExternalPropertyChange(
+  ctx: MessageHandlerContext,
+  payload: ExternalPropertyChangePayload
+): void {
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  if (!model || !payload.key) {
+    return;
+  }
+
+  const elementId = payload.entityId ?? payload.entityName;
+  const section =
+    payload.entityType === 'attribute'
+      ? 'attributes'
+      : payload.entityType === 'command'
+        ? 'commands'
+        : payload.scope === 'event'
+          ? 'events'
+          : undefined;
+
+  applyPropertyChange(model, {
+    elementId,
+    section,
+    key: payload.key,
+    value: payload.value,
+  });
+
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 // ---------------------------------------------------------------------------
