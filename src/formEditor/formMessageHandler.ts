@@ -182,8 +182,12 @@ export function applyExternalPropertyChange(
   ctx: MessageHandlerContext,
   payload: ExternalPropertyChangePayload
 ): void {
-  const model = ctx.documentModel.get(ctx.document.uri.toString());
-  if (!model || !payload.key) {
+  const documentKey = ctx.document.uri.toString();
+  if (!payload.key || payload.docUri !== documentKey) {
+    return;
+  }
+  const model = ctx.documentModel.get(documentKey);
+  if (!model) {
     return;
   }
 

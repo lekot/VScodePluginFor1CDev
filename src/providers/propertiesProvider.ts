@@ -33,6 +33,7 @@ type WebviewMessage =
       propertyName: string;
       value: unknown;
       scope?: 'property' | 'event';
+      selectionRevision?: string;
       docUri?: string;
       entityType?: FormSelectionPayload['entityType'];
       entityId?: string;
@@ -41,6 +42,7 @@ type WebviewMessage =
   | {
       type: 'editFormSelectionType';
       propertyName: string;
+      selectionRevision?: string;
       docUri?: string;
       entityType?: FormSelectionPayload['entityType'];
       entityId?: string;
@@ -85,6 +87,7 @@ export class PropertiesProvider {
   private panel: vscode.WebviewPanel | undefined;
   private currentNode: TreeNode | undefined;
   private currentFormSelection: FormSelectionPayload | null = null;
+  private currentFormSelectionRevision = 0;
   private disposables: vscode.Disposable[] = [];
   private _isSaving = false;
 
@@ -114,6 +117,7 @@ export class PropertiesProvider {
    */
   public async showProperties(node: TreeNode | undefined): Promise<void> {
     this.currentFormSelection = null;
+    this.currentFormSelectionRevision += 1;
     this.currentNode = node;
 
     if (!node) {
@@ -189,6 +193,7 @@ export class PropertiesProvider {
     selection: FormSelectionPayload | undefined
   ): Promise<void> {
     this.currentFormSelection = selection ?? null;
+    this.currentFormSelectionRevision += 1;
     this.currentNode = undefined;
     if (!this.panel) {
       this.panel = this.createPanel();
@@ -344,6 +349,7 @@ export class PropertiesProvider {
                 data-form-entity-type="${this.escapeHtml(selection.entityType)}"
                 data-form-entity-id="${this.escapeHtml(selection.id || '')}"
                 data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+                data-form-selection-revision="${String(this.currentFormSelectionRevision)}"
               >${this.escapeHtml(raw)}</textarea>
             `
             : `
@@ -357,6 +363,7 @@ export class PropertiesProvider {
                 data-form-entity-type="${this.escapeHtml(selection.entityType)}"
                 data-form-entity-id="${this.escapeHtml(selection.id || '')}"
                 data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+                data-form-selection-revision="${String(this.currentFormSelectionRevision)}"
                 value="${this.escapeHtml(raw)}"
               />
             `;
@@ -370,6 +377,7 @@ export class PropertiesProvider {
                 data-form-entity-type="${this.escapeHtml(selection.entityType)}"
                 data-form-entity-id="${this.escapeHtml(selection.id || '')}"
                 data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+                data-form-selection-revision="${String(this.currentFormSelectionRevision)}"
                 aria-label="Редактировать тип"
                 title="Редактировать тип"
               >
@@ -403,6 +411,7 @@ export class PropertiesProvider {
                 data-form-entity-type="${this.escapeHtml(selection.entityType)}"
                 data-form-entity-id="${this.escapeHtml(selection.id || '')}"
                 data-form-entity-name="${this.escapeHtml(selection.name || '')}"
+                data-form-selection-revision="${String(this.currentFormSelectionRevision)}"
                 value="${this.escapeHtml(v)}"
               />
             </div>
@@ -508,6 +517,7 @@ export class PropertiesProvider {
                 propertyName: input.dataset.formKey,
                 value,
                 scope: input.dataset.formScope || 'property',
+                selectionRevision: input.dataset.formSelectionRevision || '',
                 docUri: input.dataset.formDocUri || '',
                 entityType: input.dataset.formEntityType,
                 entityId: input.dataset.formEntityId || undefined,
@@ -520,6 +530,7 @@ export class PropertiesProvider {
               vscode.postMessage({
                 type: 'editFormSelectionType',
                 propertyName: btn.dataset.formTypeKey,
+                selectionRevision: btn.dataset.formSelectionRevision || '',
                 docUri: btn.dataset.formDocUri || '',
                 entityType: btn.dataset.formEntityType,
                 entityId: btn.dataset.formEntityId || undefined,
@@ -1362,6 +1373,10 @@ export class PropertiesProvider {
     if (message.type !== 'propertyChanged' || !this.currentFormSelection) {
       return;
     }
+    if (!this.isMatchingCurrentFormSelection(message)) {
+      Logger.debug('Ignored stale form selection propertyChanged payload');
+      return;
+    }
     const key = message.propertyName;
     const scope = message.scope === 'event' ? 'event' : 'property';
     if (!key || !this.onFormPropertyChanged) {
@@ -1380,6 +1395,10 @@ export class PropertiesProvider {
 
   private async handleEditFormSelectionTypeMessage(message: WebviewMessage): Promise<void> {
     if (message.type !== 'editFormSelectionType' || !this.currentFormSelection || !this.onFormPropertyChanged) {
+      return;
+    }
+    if (!this.isMatchingCurrentFormSelection(message)) {
+      Logger.debug('Ignored stale form selection editFormSelectionType payload');
       return;
     }
     const key = message.propertyName || 'Type';
@@ -1603,6 +1622,32 @@ export class PropertiesProvider {
       };
     }
     return null;
+  }
+
+  private isMatchingCurrentFormSelection(
+    message:
+      | Extract<WebviewMessage, { type: 'propertyChanged' }>
+      | Extract<WebviewMessage, { type: 'editFormSelectionType' }>
+  ): boolean {
+    if (!this.currentFormSelection) {
+      return false;
+    }
+    const revision = Number(message.selectionRevision ?? '');
+    if (!Number.isFinite(revision) || revision !== this.currentFormSelectionRevision) {
+      return false;
+    }
+    if (!message.docUri || message.docUri !== this.currentFormSelection.docUri) {
+      return false;
+    }
+    if (message.entityType && message.entityType !== this.currentFormSelection.entityType) {
+      return false;
+    }
+    const messageEntityId = message.entityId ?? message.entityName ?? '';
+    const selectionEntityId = this.currentFormSelection.id ?? this.currentFormSelection.name ?? '';
+    if (messageEntityId && selectionEntityId && messageEntityId !== selectionEntityId) {
+      return false;
+    }
+    return true;
   }
 
   /**
