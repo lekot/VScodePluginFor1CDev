@@ -49,6 +49,9 @@ const IBMATRIX_SKIP_TYPE_FOLDER_IDS = new Set([
   'CommonCommands',
   'AccountingRegisters',
   'CalculationRegisters',
+  // ibcmd: журнал без регистрируемых документов; регистр накопления без регистратора — не минимальный шаблон.
+  'DocumentJournals',
+  'AccumulationRegisters',
 ]);
 
 function isIbcmdFragileTypeFolder(node: TreeNode): boolean {

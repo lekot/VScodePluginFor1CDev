@@ -17,6 +17,8 @@ export const ROOT_TAGS_WITHOUT_INTERNALINFO = new Set<string>([
   'Style',
   'EventSubscription',
   'CommonForm',
+  /** Встроенная форма: ibcmd — «Form не может иметь внутренней информации». */
+  'Form',
   'XDTOPackage',
   'DocumentNumerator',
   'CommonAttribute',

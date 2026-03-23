@@ -84,6 +84,8 @@ export const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
   'CommonPicture',
   'CommonAttribute',
   'CommonForm',
+  /** Встроенная форма объекта: в ibcmd ожидается последовательность без пустого ChildObjects (см. docs/1c-config-objects-spec.md §6.3). */
+  'Form',
   'WSReference',
   'StyleItem',
   'XDTOPackage',

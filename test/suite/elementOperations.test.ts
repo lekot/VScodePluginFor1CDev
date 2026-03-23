@@ -288,6 +288,14 @@ suite('elementOperations', () => {
     
     const metaContent = await readFileContent(formMetaPath);
     assert.ok(metaContent.includes('<Name>НоваяФорма</Name>'));
+    assert.ok(
+      metaContent.includes('<FormType>Ordinary</FormType>'),
+      'Designer/ibcmd: у метаданных формы должно быть FormType'
+    );
+    assert.ok(
+      !metaContent.includes('<ChildObjects'),
+      'метаданные встроенной формы без ChildObjects (ibcmd)'
+    );
     const extContent = await readFileContent(formXmlPath);
     assert.ok(extContent.includes('http://v8.1c.ru/8.3/xcf/logform') && extContent.includes('<Form'));
 

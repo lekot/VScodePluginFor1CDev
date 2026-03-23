@@ -25,6 +25,29 @@ import {
   patchCreateWebviewPanel,
 } from '../helpers/rightsEditorTestHarness';
 
+/**
+ * Windows: immediate `fs.rm(recursive)` after rights save sometimes throws ENOTEMPTY on a
+ * nested dir (race / AV). Not a product bug — test harness retry.
+ */
+async function rmRfTestDir(dir: string): Promise<void> {
+  const maxAttempts = 12;
+  let last: unknown;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      last = e;
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code === 'ENOENT') {
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 25 * (i + 1)));
+    }
+  }
+  throw last;
+}
+
 suite('rightsEditor integration', () => {
   suite('axis 1 — regression (full save path, no unnecessary RLS round-trip)', () => {
     test('webview save with restrictionTemplatesText does not send requestSavePayload', async () => {
@@ -78,7 +101,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -139,7 +162,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
   });
@@ -176,7 +199,7 @@ suite('rightsEditor integration', () => {
         assert.strictEqual(modelAfter.rights[objectName].delete, true, 'Edited delete right should survive roundtrip');
         assert.strictEqual(modelAfter.rights[objectName].read, true, 'Dependency right should survive roundtrip');
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -240,7 +263,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -288,7 +311,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -341,7 +364,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -410,7 +433,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -461,7 +484,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
   });
@@ -530,7 +553,7 @@ suite('rightsEditor integration', () => {
           restorePanel();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -599,7 +622,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -646,7 +669,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
 
@@ -692,7 +715,7 @@ suite('rightsEditor integration', () => {
           provider.dispose();
         }
       } finally {
-        await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+        await rmRfTestDir(tmpRoot);
       }
     });
   });
