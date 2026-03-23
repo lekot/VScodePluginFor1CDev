@@ -315,11 +315,20 @@ export class PropertiesProvider {
 
   private getFormSelectionWebviewContent(selection: FormSelectionPayload): string {
     const props = selection.properties || {};
+    const selectedIds = Array.isArray(selection.selectedIds) ? selection.selectedIds : [];
+    const isMultiSelection = selectedIds.length > 1;
     const entries = Object.entries(props)
       .filter(([k]) => k !== ':@' && !k.startsWith('@'))
       .slice(0, 24);
     const events = Object.entries(selection.events || {});
-    const lines = entries.length
+    const lines = isMultiSelection
+      ? `
+        <div class="empty-state">
+          <p>Выбрано элементов: ${selectedIds.length}</p>
+          <p>Mixed-state режим: редактирование свойств для multi-select пока отключено.</p>
+        </div>
+      `
+      : entries.length
       ? entries.map(([k, v]) => {
           const raw = Array.isArray(v) || (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
           const isComplex = Array.isArray(v) || (typeof v === 'object' && v !== null);
@@ -377,7 +386,7 @@ export class PropertiesProvider {
           `;
         }).join('')
       : '<div class="empty-state"><p>Нет доступных свойств для отображения.</p></div>';
-    const eventLines = events.length
+    const eventLines = !isMultiSelection && events.length
       ? `
         <div class="property-section">
           <div class="property-section-title">События</div>
@@ -455,14 +464,22 @@ export class PropertiesProvider {
             border-bottom: 1px solid var(--vscode-panel-border);
             padding-bottom: 4px;
           }
+          .empty-state p {
+            margin: 6px 0;
+            color: var(--vscode-descriptionForeground);
+          }
         </style>
       </head>
       <body>
         <div class="header">
-          <h2>Свойства формы: ${this.escapeHtml(selection.name || selection.id || 'элемент')}</h2>
+          <h2>Свойства формы: ${this.escapeHtml(isMultiSelection ? 'множественный выбор' : (selection.name || selection.id || 'элемент'))}</h2>
           <p>Тип: ${this.escapeHtml(selection.entityType)}${selection.tag ? ` (${this.escapeHtml(selection.tag)})` : ''}</p>
         </div>
-        <p class="hint">Свойства и события можно менять прямо здесь для выделенного объекта формы.</p>
+        <p class="hint">${
+          isMultiSelection
+            ? 'Панель показывает mixed-state для множественного выбора. Редактирование будет доступно после полной поддержки multi-select.'
+            : 'Свойства и события можно менять прямо здесь для выделенного объекта формы.'
+        }</p>
         <div class="property-section">
           <div class="property-section-title">Свойства</div>
           ${lines}
