@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+	<CommonModule uuid="b0000000-0000-0000-0000-000000000088">
+		<Properties>
+			<Name>FlatOnlyModule</Name>
+			<Synonym/>
+			<Comment/>
+			<Server>true</Server>
+			<Global>false</Global>
+			<ClientManagedApplication>false</ClientManagedApplication>
+			<ClientOrdinaryApplication>false</ClientOrdinaryApplication>
+			<ExternalConnection>false</ExternalConnection>
+			<Privileged>false</Privileged>
+			<ReturnValuesReuse>DontUse</ReturnValuesReuse>
+			<ServerCall>false</ServerCall>
+		</Properties>
+	</CommonModule>
+</MetaDataObject>

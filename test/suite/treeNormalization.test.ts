@@ -5,6 +5,8 @@ import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import {
+  ensureTabularSectionColumnsPlaceholder,
+  isTabularSectionColumnsContainer,
   mergeR5TypeFoldersUnderCommon,
   normalizeEmptyPlaceholderTree,
 } from '../../src/utils/treeNormalization';
@@ -732,6 +734,44 @@ suite('treeNormalization Test Suite', () => {
       () => mergeR5TypeFoldersUnderCommon(root, { configPath, format: ConfigFormat.Designer }),
       /Дубликат дочернего узла «Roles.DupRole»/
     );
+  });
+
+  test('ensureTabularSectionColumnsPlaceholder reparents flat column attributes under one container', () => {
+    const tabFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.TabularSection,
+      properties: {},
+      children: [],
+    };
+    const col: TreeNode = {
+      id: 'TabularSections.Sec.Col1',
+      name: 'Col1',
+      type: MetadataType.Attribute,
+      parentFilePath: '/tmp/Catalog.xml',
+      properties: {},
+    };
+    const section: TreeNode = {
+      id: 'TabularSections.Sec',
+      name: 'Sec',
+      type: MetadataType.TabularSection,
+      parent: tabFolder,
+      parentFilePath: '/tmp/Catalog.xml',
+      properties: {},
+      children: [col],
+    };
+    col.parent = section;
+    tabFolder.children = [section];
+
+    ensureTabularSectionColumnsPlaceholder(section);
+    assert.strictEqual(section.children!.length, 1);
+    const ph = section.children![0];
+    assert.ok(isTabularSectionColumnsContainer(ph));
+    assert.strictEqual(ph.children!.length, 1);
+    assert.strictEqual(ph.children![0].name, 'Col1');
+
+    ensureTabularSectionColumnsPlaceholder(section);
+    assert.strictEqual(section.children!.length, 1);
   });
 });
 

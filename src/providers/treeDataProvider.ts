@@ -1006,8 +1006,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
       const treeItem = new vscode.TreeItem(element.name, collapsibleState);
 
-      // Set context value for context menu (Forms folder vs concrete Form node)
-      treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
+      // Set context value for context menu (Forms folder vs concrete Form node vs BSL module leaf)
+      const props = element.properties as Record<string, unknown> | undefined;
+      if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
+        treeItem.contextValue = 'MethodBsl';
+      } else {
+        treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
+      }
 
       // Set tooltip: name, type, path (additional_req.md п.14)
       const synonym = element.properties.synonym as string | undefined;

@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
+import { listRightsXmlCandidatePaths } from './rightsXmlEditWriter';
 import {
   RoleModel,
   RightsMap,
@@ -435,9 +436,21 @@ export class RoleXmlParser {
     return null;
   }
 
-  /** Get string from Name element (may be string or { '#text': '...' }) */
+  /** Get string from Name element (may be string, { '#text': '...' }, or array of text nodes from fast-xml-parser) */
   private static nameValueToString(value: unknown): string | null {
     if (typeof value === 'string') {return value.trim() || null;}
+    if (value && typeof value === 'object' && Array.isArray(value)) {
+      for (const item of value) {
+        if (item && typeof item === 'object' && '#text' in (item as object)) {
+          const t = (item as Record<string, unknown>)['#text'];
+          if (t != null) {
+            const s = String(t).trim();
+            if (s) {return s;}
+          }
+        }
+      }
+      return null;
+    }
     if (value && typeof value === 'object' && '#text' in (value as object)) {
       const t = (value as Record<string, unknown>)['#text'];
       return t != null ? String(t).trim() || null : null;
@@ -510,15 +523,7 @@ export class RoleXmlParser {
     const rights: RightsMap = {};
     
     try {
-      const roleDir = path.dirname(roleXmlPath);
-      const baseName = path.basename(roleXmlPath, path.extname(roleXmlPath));
-
-      // EDT: Roles/ИмяРоли.xml → Rights in Roles/ИмяРоли/Ext/Rights.xml
-      // Designer: Roles/ИмяРоли/Role.xml → Rights in Roles/ИмяРоли/Ext/Rights.xml (same roleDir/Ext)
-      const candidates =
-        baseName.toLowerCase() !== 'role'
-          ? [path.join(roleDir, baseName, 'Ext', 'Rights.xml'), path.join(roleDir, 'Ext', 'Rights.xml')]
-          : [path.join(roleDir, 'Ext', 'Rights.xml')];
+      const candidates = listRightsXmlCandidatePaths(roleXmlPath);
 
       let rightsXmlPath: string | null = null;
       for (const candidate of candidates) {
@@ -581,9 +586,12 @@ export class RoleXmlParser {
         if (!nameElement) {
           continue;
         }
-        
-        const objectName = String(nameElement);
-        
+
+        const objectName = this.nameValueToString(nameElement);
+        if (!objectName) {
+          continue;
+        }
+
         // Extract rights for this object
         const objectRights = this.extractRightsFromRightsXml(objectElement);
         
@@ -632,9 +640,12 @@ export class RoleXmlParser {
       if (!nameElement) {
         continue;
       }
-      
-      const rightName = String(nameElement);
-      
+
+      const rightName = this.nameValueToString(nameElement);
+      if (!rightName) {
+        continue;
+      }
+
       // Extract right value from <value> element
       const valueElement = rightElement['value'] || rightElement['v8:value'];
       if (valueElement === undefined) {

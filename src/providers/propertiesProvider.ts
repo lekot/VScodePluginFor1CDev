@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TreeNode } from '../models/treeNode';
+import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { MetadataTreeDataProvider } from './treeDataProvider';
 import { TypeEditorProvider } from './typeEditorProvider';
@@ -17,6 +17,7 @@ import { MESSAGES } from '../constants/messages';
 import type { TypeDefinition, ReferenceTypeInfo } from '../types/typeDefinitions';
 import { validateElementName } from '../utils/elementNameValidator';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
+import { findTabularSectionInstanceForAttributeParent } from '../services/elementOperations';
 import * as path from 'path';
 
 /**
@@ -1432,13 +1433,19 @@ export class PropertiesProvider {
           Logger.info(`Saving properties for ${node.name}:`);
           Logger.info(`  Properties keys: ${Object.keys(properties).join(', ')}`);
           Logger.info(`  Changed keys: ${changedKeys ? changedKeys.join(', ') : 'undefined (all)'}`);
-          
+
+          const scopedTabularSectionName =
+            node.type === MetadataType.Attribute && node.parent
+              ? findTabularSectionInstanceForAttributeParent(node.parent)?.name
+              : undefined;
+
           await xmlWriter.writeNestedElementProperties(
             targetFilePath,
             node.type,
             node.name,
             properties,
-            changedKeys
+            changedKeys,
+            scopedTabularSectionName ? { scopedTabularSectionName } : undefined
           );
         } else {
           // For root elements, use standard write method

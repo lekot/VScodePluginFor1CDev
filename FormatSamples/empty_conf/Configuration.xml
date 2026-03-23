@@ -257,6 +257,7 @@
       <DataProcessor>ещеОднаОбработка</DataProcessor>
       <ChartOfCharacteristicTypes>ПланВидовХарактеристик1</ChartOfCharacteristicTypes>
       <Role>РольИзРасширения</Role>
+      <CommonModule>мойМодлуоьэ</CommonModule>
     </ChildObjects>
   </Configuration>
 </MetaDataObject>

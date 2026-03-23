@@ -303,9 +303,33 @@
         @keyframes rights-editor-spin {
             to { transform: rotate(360deg); }
         }
+
+        .host-message-banner {
+            display: none;
+            margin-bottom: 8px;
+            padding: 8px 12px;
+            border-radius: 2px;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .host-message-banner--error {
+            background: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+        }
+
+        .host-message-banner--info {
+            background: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+        }
     </style>
 </head>
 <body>
+    <div id="hostMessageBanner" class="host-message-banner host-message-banner--error" aria-live="polite"></div>
+
     <div class="header">
         <h1 id="roleTitle">Rights Editor</h1>
         <div class="controls">
@@ -375,6 +399,10 @@
                 typeFilter: ''
             };
 
+            /** Set from extension `objectsLoaded` when no configuration path — Save is disabled. */
+            let saveDisabledByHost = false;
+            var hostBannerClearTimer = null;
+
             var TABLE_RENDER_CHUNK = 120;
             var renderTableSeq = 0;
             var searchDebounceTimer = null;
@@ -400,6 +428,45 @@
                 }
             }
 
+            function syncSaveButtonState() {
+                var btn = document.getElementById('saveButton');
+                if (btn) {
+                    btn.disabled = saveDisabledByHost === true;
+                }
+            }
+
+            function clearHostBannerTimer() {
+                if (hostBannerClearTimer) {
+                    clearTimeout(hostBannerClearTimer);
+                    hostBannerClearTimer = null;
+                }
+            }
+
+            function showHostBanner(kind, text, autoClearMs) {
+                var el = document.getElementById('hostMessageBanner');
+                if (!el) {
+                    return;
+                }
+                clearHostBannerTimer();
+                el.textContent = text || '';
+                el.className = 'host-message-banner host-message-banner--' + (kind === 'info' ? 'info' : 'error');
+                el.style.display = text ? 'block' : 'none';
+                if (text && typeof autoClearMs === 'number' && autoClearMs > 0) {
+                    hostBannerClearTimer = setTimeout(function () {
+                        hideHostBanner();
+                    }, autoClearMs);
+                }
+            }
+
+            function hideHostBanner() {
+                clearHostBannerTimer();
+                var el = document.getElementById('hostMessageBanner');
+                if (el) {
+                    el.textContent = '';
+                    el.style.display = 'none';
+                }
+            }
+
             function beginRightsEditorSession() {
                 if (roleData && roleData.name) {
                     document.getElementById('roleTitle').textContent = 'Rights: ' + roleData.name;
@@ -416,6 +483,7 @@
                     initializeUI();
                     renderTable();
                 }
+                syncSaveButtonState();
             }
 
             // Initialize event listeners
@@ -433,22 +501,30 @@
                 }
             });
 
-            // Handle messages from extension
+            // Extension → webview: metadata rows use command `objectsLoaded` only (no `initialize`).
             window.addEventListener('message', event => {
                 const message = event.data;
                 const data = message.data || {};
                 
                 switch (message.command) {
-                    case 'initialize':
-                        roleData = message.roleData;
-                        allObjects = message.objects;
-                        initializeUI();
-                        renderTable();
+                    case 'requestSavePayload': {
+                        var rid = data.requestId;
+                        var rlsTa = document.getElementById('rlsTemplates');
+                        var rlsText = rlsTa ? rlsTa.value : '';
+                        vscode.postMessage({
+                            command: 'savePayload',
+                            data: {
+                                requestId: rid,
+                                restrictionTemplatesText: rlsText
+                            }
+                        });
                         break;
+                    }
 
                     case 'objectsLoaded':
                         allObjects = data.objects || [];
                         tableInitialLoading = false;
+                        saveDisabledByHost = data.saveDisabled === true;
                         setLoadingOverlay(false);
                         if (data.error) {
                             setMetadataLoadError(data.error);
@@ -457,22 +533,38 @@
                         }
                         initializeUI();
                         renderTable();
+                        syncSaveButtonState();
                         break;
                     
                     case 'updateSuccess':
                         // Rights updated successfully
                         break;
                     
-                    case 'updateError':
-                        alert('Error updating rights: ' + (Array.isArray(data.errors) ? data.errors.join('\n') : data.message || 'Unknown error'));
+                    case 'updateError': {
+                        var ue = Array.isArray(data.errors) ? data.errors.join('\n') : (data.message || 'Unknown error');
+                        showHostBanner('error', 'Error updating rights: ' + ue, 14000);
                         break;
-                    
-                    case 'validationError':
-                        alert('Validation error: ' + (Array.isArray(data.errors) ? data.errors.join('\n') : JSON.stringify(data)));
+                    }
+
+                    case 'validationError': {
+                        var ve = Array.isArray(data.errors) ? data.errors.join('\n') : JSON.stringify(data);
+                        showHostBanner('error', 'Validation issue(s): ' + ve, 0);
                         break;
-                    
+                    }
+
+                    case 'validationCancelled':
+                        hideHostBanner();
+                        if (data.message) {
+                            showHostBanner('info', data.message, 8000);
+                        }
+                        break;
+
                     case 'saveError':
-                        alert('Save failed: ' + (data.message || 'Unknown error'));
+                        showHostBanner('error', 'Save failed: ' + (data.message || 'Unknown error'), 16000);
+                        break;
+
+                    case 'error':
+                        showHostBanner('error', data.message || 'Unknown error', 14000);
                         break;
                 }
             });
@@ -773,6 +865,9 @@
             }
 
             function handleSave() {
+                if (saveDisabledByHost) {
+                    return;
+                }
                 var ta = document.getElementById('rlsTemplates');
                 var rls = ta ? ta.value : '';
                 vscode.postMessage({

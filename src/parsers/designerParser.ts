@@ -207,32 +207,13 @@ export class DesignerParser {
       const items = await fs.promises.readdir(elementPath);
       for (const item of items) {
         if (item === 'Ext') {
-          if (typeName === 'CommonModules') {
-            const extPath = path.join(elementPath, item);
-            try {
-              const extItems = await fs.promises.readdir(extPath);
-              for (const extItem of extItems) {
-                if (extItem.endsWith('.bsl')) {
-                  const bslPath = path.join(extPath, extItem);
-                  const child: TreeNode = {
-                    id: `${typeName}.${elementName}.${extItem}`,
-                    name: extItem,
-                    type: MetadataType.Method,
-                    properties: {},
-                    filePath: bslPath,
-                  };
-                  children.push(child);
-                }
-              }
-            } catch (error) {
-              Logger.debug(`Error reading Ext for CommonModule ${elementPath}`, error);
-            }
-          } else {
-            const extPath = path.join(elementPath, item);
-            const extNode = await this.parseExtensions(extPath);
-            if (extNode.children && extNode.children.length > 0) {
-              children.push(extNode);
-            }
+          const extPath = path.join(elementPath, item);
+          const extNode = await this.parseExtensions(
+            extPath,
+            typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined
+          );
+          if (extNode.children && extNode.children.length > 0) {
+            children.push(extNode);
           }
         } else if (item === 'Forms') {
           const formsPath = path.join(elementPath, item);
@@ -542,36 +523,14 @@ export class DesignerParser {
 
       for (const item of items) {
         if (item === 'Ext') {
-          // Special handling for CommonModule - add .bsl files directly without Extensions container
-          if (typeName === 'CommonModules') {
-            const extPath = path.join(elementPath, item);
-            try {
-              const extItems = await fs.promises.readdir(extPath);
-              for (const extItem of extItems) {
-                if (extItem.endsWith('.bsl')) {
-                  const bslPath = path.join(extPath, extItem);
-                  const child: TreeNode = {
-                    id: `${typeName}.${elementName}.${extItem}`,
-                    name: extItem,
-                    type: MetadataType.Method,
-                    properties: {},
-                    filePath: bslPath,
-                  };
-                  child.parent = elementNode;
-                  elementNode.children?.push(child);
-                }
-              }
-            } catch (error) {
-              Logger.debug(`Error reading Ext directory for CommonModule ${elementPath}`, error);
-            }
-          } else {
-            // For other types, use Extensions container
-            const extPath = path.join(elementPath, item);
-            const extNode = await this.parseExtensions(extPath);
-            if (extNode.children && extNode.children.length > 0) {
-              extNode.parent = elementNode;
-              elementNode.children?.push(extNode);
-            }
+          const extPath = path.join(elementPath, item);
+          const extNode = await this.parseExtensions(
+            extPath,
+            typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined
+          );
+          if (extNode.children && extNode.children.length > 0) {
+            extNode.parent = elementNode;
+            elementNode.children?.push(extNode);
           }
         } else if (item === 'Forms') {
           // Parse forms
@@ -622,11 +581,13 @@ export class DesignerParser {
   /**
    * Parse extensions directory
    * @param extPath Path to Ext directory
+   * @param idPrefix Optional prefix for stable node ids (e.g. `CommonModules.MyModule`) so `Ext` is unique in the tree cache
    * @returns Tree node for extensions
    */
-  private static async parseExtensions(extPath: string): Promise<TreeNode> {
+  private static async parseExtensions(extPath: string, idPrefix?: string): Promise<TreeNode> {
+    const qp = idPrefix != null && idPrefix !== '' ? `${idPrefix}.` : '';
     const extNode: TreeNode = {
-      id: 'Ext',
+      id: `${qp}Ext`,
       name: 'Extensions',
       type: MetadataType.Extension,
       properties: {},
@@ -650,18 +611,18 @@ export class DesignerParser {
               if (bslFiles.length > 0) {
                 // Create a container node with .bsl files as children
                 return {
-                  id: `Ext.${item}`,
+                  id: `${qp}Ext.${item}`,
                   name: item,
                   type: MetadataType.Extension,
                   properties: { isExtension: true },
                   filePath: itemPath,
-                  children: bslFiles.map(bslPath => ({
-                    id: `Ext.${item}.${path.basename(bslPath)}`,
+                  children: bslFiles.map((bslPath) => ({
+                    id: `${qp}Ext.${item}.${path.basename(bslPath)}`,
                     name: path.basename(bslPath),
                     type: MetadataType.Method,
-                    properties: { 
+                    properties: {
                       isModule: true,
-                      fileType: 'bsl'
+                      fileType: 'bsl',
                     },
                     filePath: bslPath,
                   })),
@@ -671,12 +632,12 @@ export class DesignerParser {
             } else if (stat.isFile() && item.endsWith('.bsl')) {
               // Add .bsl module files directly
               return {
-                id: `Ext.${item}`,
+                id: `${qp}Ext.${item}`,
                 name: item,
                 type: MetadataType.Method,
-                properties: { 
+                properties: {
                   isModule: true,
-                  fileType: 'bsl'
+                  fileType: 'bsl',
                 },
                 filePath: itemPath,
               };
@@ -1207,6 +1168,90 @@ export class DesignerParser {
       return convertStringBooleans(result);
     }
 
+  private static buildTabularColumnNodesFromTsBlock(
+    ts: Record<string, unknown>,
+    sectionInstance: TreeNode,
+    xmlPath: string
+  ): TreeNode[] {
+    const tsChildObjects = ts.ChildObjects;
+    const attrList =
+      tsChildObjects && typeof tsChildObjects === 'object' && !Array.isArray(tsChildObjects)
+        ? extractAttributes(tsChildObjects as Record<string, unknown>)
+        : [];
+    const out: TreeNode[] = [];
+    const baseId = sectionInstance.id;
+    for (const attr of attrList) {
+      const a = attr as Record<string, unknown>;
+      const attrName =
+        (a.Properties && (a.Properties as Record<string, unknown>).Name) ??
+        (a as Record<string, unknown>).Name ??
+        'Unknown';
+      const attributeNode: TreeNode = {
+        id: `${baseId}.${String(attrName)}`,
+        name: String(attrName),
+        type: MetadataType.Attribute,
+        properties: flattenAttributeProperties(a),
+        parentFilePath: xmlPath,
+      };
+      out.push(attributeNode);
+    }
+    return out;
+  }
+
+  /**
+   * Load column (Attribute) nodes for a tabular section instance when expanding the «Реквизиты» placeholder.
+   */
+  static async loadTabularSectionColumnChildren(sectionInstance: TreeNode): Promise<TreeNode[]> {
+    const xmlPath =
+      sectionInstance.filePath && sectionInstance.filePath.toLowerCase().endsWith('.xml')
+        ? sectionInstance.filePath
+        : sectionInstance.parentFilePath;
+    if (!xmlPath) {
+      return [];
+    }
+    try {
+      await fs.promises.access(xmlPath);
+    } catch {
+      return [];
+    }
+    const xmlContent = await XmlParser.parseFileAsync(xmlPath);
+    const metaWrapper = xmlContent as Record<string, unknown>;
+    const rootObj = (metaWrapper.MetaDataObject ?? metaWrapper) as Record<string, unknown>;
+    const tsRaw = rootObj.TabularSection;
+    if (tsRaw) {
+      const tsBlock = (Array.isArray(tsRaw) ? tsRaw[0] : tsRaw) as Record<string, unknown>;
+      const props = this.extractPropertiesFromElement({ TabularSection: tsBlock });
+      const nameFromXml = String(props.Name ?? '');
+      if (!nameFromXml || nameFromXml === sectionInstance.name) {
+        return this.buildTabularColumnNodesFromTsBlock(tsBlock, sectionInstance, xmlPath);
+      }
+    }
+    for (const key of Object.keys(rootObj)) {
+      if (key === '@_' || key.startsWith('#')) {
+        continue;
+      }
+      const val = rootObj[key];
+      if (!val || typeof val !== 'object' || Array.isArray(val)) {
+        continue;
+      }
+      const elem = val as Record<string, unknown>;
+      const co = findChildObjects(elem);
+      if (!co) {
+        continue;
+      }
+      const sectionList = extractTabularSections(co);
+      for (const sec of sectionList) {
+        const ts = sec as Record<string, unknown>;
+        const props = this.extractPropertiesFromElement({ TabularSection: ts });
+        const sn = String(props.Name ?? '');
+        if (sn !== sectionInstance.name) {
+          continue;
+        }
+        return this.buildTabularColumnNodesFromTsBlock(ts, sectionInstance, xmlPath);
+      }
+    }
+    return [];
+  }
 
   /**
    * Detect if path contains Designer format configuration

@@ -2,7 +2,12 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DesignerParser } from '../../src/parsers/designerParser';
-import { MetadataType } from '../../src/models/treeNode';
+import { MetadataType, TreeNode } from '../../src/models/treeNode';
+import {
+  ensureTabularSectionColumnsPlaceholder,
+  isTabularSectionColumnsContainer,
+  tabularSectionColumnsContainerId,
+} from '../../src/utils/treeNormalization';
 
 suite('DesignerParser', () => {
   test('should detect Designer format', async () => {
@@ -74,13 +79,19 @@ suite('DesignerParser', () => {
     const section = tabularNode!.children![0];
     assert.strictEqual(section.name, 'Tabular1');
     assert.strictEqual(section.type, MetadataType.TabularSection);
+    ensureTabularSectionColumnsPlaceholder(section);
     assert.ok(section.children);
-    assert.strictEqual(section.children!.length, 2, 'two attributes in tabular section');
+    assert.strictEqual(section.children!.length, 1, 'columns container under section');
+    const colContainer = section.children![0];
+    assert.strictEqual(colContainer.id, tabularSectionColumnsContainerId(section.id));
+    assert.ok(isTabularSectionColumnsContainer(colContainer));
+    assert.ok(colContainer.children);
+    assert.strictEqual(colContainer.children!.length, 2, 'two attributes in tabular section');
 
-    const attrNames = section.children!.map((a) => a.name).sort();
+    const attrNames = colContainer.children!.map((a) => a.name).sort();
     assert.deepStrictEqual(attrNames, ['Col1', 'Col2']);
-    assert.strictEqual(section.children![0].type, MetadataType.Attribute);
-    assert.strictEqual(section.children![1].type, MetadataType.Attribute);
+    assert.strictEqual(colContainer.children![0].type, MetadataType.Attribute);
+    assert.strictEqual(colContainer.children![1].type, MetadataType.Attribute);
   });
 
   test('should load tabular section attributes from filesystem folder structure', async () => {
@@ -96,13 +107,66 @@ suite('DesignerParser', () => {
 
     const section = tabularNode!.children!.find((c) => c.name === 'Tabular1');
     assert.ok(section, 'Tabular1 section should exist');
-    assert.ok(section!.children && section!.children.length > 0, 'Tabular1 should have attribute children');
+    ensureTabularSectionColumnsPlaceholder(section!);
+    const colContainer = section!.children!.find((c) => isTabularSectionColumnsContainer(c));
+    assert.ok(colContainer && colContainer.children && colContainer.children.length > 0);
 
-    for (const attr of section!.children!) {
+    for (const attr of colContainer!.children!) {
       assert.notStrictEqual(attr.name, 'Tabular1', `Attribute name should not be the TS name, got: ${attr.name}`);
       assert.ok(attr.name === 'Col1' || attr.name === 'Col2', `Expected Col1 or Col2, got: ${attr.name}`);
       assert.strictEqual(attr.type, MetadataType.Attribute);
     }
+  });
+
+  test('empty tabular section (embedded) gets columns placeholder with lazy flag', async () => {
+    const configPath = path.join(__dirname, '../fixtures/designer-config');
+    const children = await DesignerParser.loadChildrenForElement(
+      configPath,
+      'Catalogs',
+      'CatalogEmptyEmbedded'
+    );
+    const tabularNode = children.find((c) => c.id === 'TabularSections');
+    assert.ok(tabularNode?.children?.length === 1);
+    const section = tabularNode!.children![0];
+    assert.strictEqual(section.name, 'EmbeddedEmpty');
+    ensureTabularSectionColumnsPlaceholder(section);
+    assert.strictEqual(section.children!.length, 1);
+    const ph = section.children![0];
+    assert.strictEqual(ph.id, 'TabularSections.EmbeddedEmpty.Attributes');
+    assert.strictEqual((ph.properties as { _lazy?: boolean })._lazy, true);
+    assert.ok(!ph.children || ph.children.length === 0);
+  });
+
+  test('empty tabular section (folder file) gets columns placeholder with lazy flag', async () => {
+    const configPath = path.join(__dirname, '../fixtures/designer-config');
+    const children = await DesignerParser.loadChildrenForElement(
+      configPath,
+      'Catalogs',
+      'CatalogEmptyFolder'
+    );
+    const tabularNode = children.find((c) => c.id === 'TabularSections');
+    assert.ok(tabularNode?.children?.some((c) => c.name === 'FolderEmpty'));
+    const section = tabularNode!.children!.find((c) => c.name === 'FolderEmpty');
+    assert.ok(section);
+    ensureTabularSectionColumnsPlaceholder(section!);
+    const ph = section!.children!.find((c) => isTabularSectionColumnsContainer(c));
+    assert.ok(ph);
+    assert.strictEqual((ph!.properties as { _lazy?: boolean })._lazy, true);
+  });
+
+  test('loadTabularSectionColumnChildren reads columns from embedded object xml', async () => {
+    const configPath = path.join(__dirname, '../fixtures/designer-config');
+    const xmlPath = path.join(configPath, 'Catalogs', 'CatalogWithTabular.xml');
+    const section: TreeNode = {
+      id: 'TabularSections.Tabular1',
+      name: 'Tabular1',
+      type: MetadataType.TabularSection,
+      parentFilePath: xmlPath,
+      properties: {},
+    };
+    const cols = await DesignerParser.loadTabularSectionColumnChildren(section);
+    assert.strictEqual(cols.length, 2);
+    assert.ok(cols.some((c) => c.name === 'Col1'));
   });
 
   test('parseTypeContents loads flat Catalogs/*.xml when there are no per-object subfolders', async function () {
@@ -131,5 +195,33 @@ suite('DesignerParser', () => {
     assert.ok(Array.isArray(rootNode.children));
     const catalogs = rootNode.children?.find((c) => c.name === 'Catalogs');
     assert.ok(catalogs, 'Catalogs type node should exist');
+  });
+
+  test('CommonModule Ext lists nested Module/Module.bsl with fileType bsl', async () => {
+    const configPath = path.join(__dirname, '../fixtures/designer-config');
+    const children = await DesignerParser.loadChildrenForElement(
+      configPath,
+      'CommonModules',
+      'NestedModule'
+    );
+    const ext = children.find((c) => c.id === 'CommonModules.NestedModule.Ext');
+    assert.ok(ext, 'Ext container');
+    const moduleDir = ext?.children?.find((c) => c.name === 'Module');
+    assert.ok(moduleDir?.children?.length);
+    const leaf = moduleDir!.children!.find((x) => x.name === 'Module.bsl');
+    assert.ok(leaf);
+    assert.strictEqual(leaf!.type, MetadataType.Method);
+    assert.strictEqual((leaf!.properties as { fileType?: string }).fileType, 'bsl');
+    assert.ok(leaf!.filePath && leaf!.filePath.toLowerCase().endsWith('module.bsl'));
+  });
+
+  test('CommonModule flat xml only: no Ext in tree without object directory on disk', async () => {
+    const configPath = path.join(__dirname, '../fixtures/designer-config');
+    const children = await DesignerParser.loadChildrenForElement(
+      configPath,
+      'CommonModules',
+      'FlatOnlyModule'
+    );
+    assert.ok(!children.some((c) => c.type === MetadataType.Extension));
   });
 });

@@ -3,6 +3,10 @@ import { Logger } from '../utils/logger';
 import { DesignerParser } from './designerParser';
 import { EdtParser } from './edtParser';
 import { FormatDetector, ConfigFormat } from './formatDetector';
+import {
+  ensureTabularSectionColumnsPlaceholder,
+  isTabularSectionColumnsContainer,
+} from '../utils/treeNormalization';
 
 const R6_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
 const R6_OBJECT_TYPES = new Set<MetadataType>([
@@ -65,6 +69,24 @@ export class MetadataParser {
     const id = element.id;
     const parent = element.parent;
 
+    if (
+      parent &&
+      isTabularSectionColumnsContainer(element) &&
+      parent.id.startsWith('TabularSections.') &&
+      parent.parent?.id === 'TabularSections'
+    ) {
+      const loaded =
+        format === ConfigFormat.Designer
+          ? await DesignerParser.loadTabularSectionColumnChildren(parent)
+          : format === ConfigFormat.EDT
+            ? await EdtParser.loadTabularSectionColumnChildren(parent)
+            : [];
+      for (const c of loaded) {
+        c.parent = element;
+      }
+      return loaded;
+    }
+
     // When expanding an R6 placeholder (Attributes, Forms, etc.) under an object, use parent path:
     // e.g. Catalogs/ТелеграмСервис.xml (Designer) or src/Catalogs/ТелеграмСервис (EDT), not Attributes/Реквизиты.
     if (
@@ -83,6 +105,9 @@ export class MetadataParser {
             : [];
       const sectionNode = siblings.find((c) => c.id === id);
       if (sectionNode?.children) {
+        for (const c of sectionNode.children) {
+          ensureTabularSectionColumnsPlaceholder(c);
+        }
         for (const c of sectionNode.children) {
           c.parent = element;
         }

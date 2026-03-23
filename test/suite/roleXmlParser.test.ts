@@ -136,4 +136,50 @@ suite('RoleXmlParser Tests', () => {
       await fs.promises.rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test('parseRoleXml reads Rights.xml object and right names when name nodes are #text + xsi:type (fast-xml-parser)', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-rights-name-'));
+    const roleFilePath = path.join(tempRoot, 'src', 'Roles', 'TestRole.xml');
+    const rightsDir = path.join(tempRoot, 'src', 'Roles', 'TestRole', 'Ext');
+    const rightsFilePath = path.join(rightsDir, 'Rights.xml');
+
+    await fs.promises.mkdir(path.dirname(roleFilePath), { recursive: true });
+    await fs.promises.mkdir(rightsDir, { recursive: true });
+
+    const roleXml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<Role xmlns="http://v8.1c.ru/8.3/MDClasses">',
+      '  <Rights/>',
+      '</Role>',
+      ''
+    ].join('\n');
+    await fs.promises.writeFile(roleFilePath, roleXml, 'utf-8');
+
+    const rightsXml = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xs="http://www.w3.org/2001/XMLSchema" ',
+      'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">',
+      '  <object>',
+      '    <name xsi:type="xs:string">Catalog.NameTextNodeObject</name>',
+      '    <right>',
+      '      <name xsi:type="xs:string">Read</name>',
+      '      <value>true</value>',
+      '    </right>',
+      '  </object>',
+      '</Rights>',
+      ''
+    ].join('\n');
+    await fs.promises.writeFile(rightsFilePath, rightsXml, 'utf-8');
+
+    try {
+      const model = await RoleXmlParser.parseRoleXml(roleFilePath);
+      assert.ok(
+        model.rights['Catalog.NameTextNodeObject'],
+        'object key must not be [object Object] from String(nameElement)'
+      );
+      assert.strictEqual(model.rights['Catalog.NameTextNodeObject'].read, true);
+    } finally {
+      await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

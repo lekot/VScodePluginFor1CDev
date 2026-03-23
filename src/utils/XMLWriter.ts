@@ -93,6 +93,21 @@ export const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
   'Constant',
 ]);
 
+/**
+ * Options for {@link XMLWriter.writeNestedElementProperties}.
+ * When `scopedTabularSectionName` is set with `elementType === 'Attribute'`, name-based updates apply only
+ * to columns under that tabular section (not top-level attributes or other sections).
+ */
+export type WriteNestedElementOptions = {
+  scopedTabularSectionName?: string;
+};
+
+/** Internal: Attribute nested write scoped to one tabular section by `<Name>`. */
+type NestedAttributeScopeState = {
+  scopedTabularSectionName: string;
+  insideMatchingTabularSection: boolean;
+};
+
 /** Properties that may store a reference like `Catalog.MyCat.Form.MyForm`. */
 const DEFAULT_FORM_REF_PROPERTY_KEYS = [
   'DefaultObjectForm',
@@ -355,6 +370,166 @@ export class XMLWriter {
       Logger.debug(`Could not remove backup ${backupPath}`);
     }
     Logger.info(`Added ${elementType} '${elementName}' to ${filePath}`);
+  }
+
+  /**
+   * Add an Attribute (column) into a TabularSection's ChildObjects — either a dedicated
+   * `TabularSections/Name/Name.xml` file or a TabularSection inside an object's ChildObjects.
+   */
+  static async addAttributeToTabularSection(
+    filePath: string,
+    tabularSectionName: string,
+    columnName: string,
+    parentRootType: MetadataType,
+    parentObjectName: string
+  ): Promise<void> {
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    const parsed = this.parser.parse(xmlContent);
+    const updated = this.addAttributeToTabularSectionInParsed(
+      parsed,
+      tabularSectionName,
+      columnName,
+      parentRootType,
+      parentObjectName
+    );
+    const xmlString = this.builder.build(updated);
+    const backupPath = `${filePath}.bak`;
+    try {
+      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+    } catch (backupErr) {
+      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+    }
+    try {
+      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    } catch (writeError) {
+      Logger.error(`Failed to write file: ${filePath}`, writeError);
+      try {
+        if (fs.existsSync(backupPath)) {
+          const restored = await fs.promises.readFile(backupPath, 'utf-8');
+          await fs.promises.writeFile(filePath, restored, 'utf-8');
+          await fs.promises.unlink(backupPath);
+        }
+      } catch (rollbackErr) {
+        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+      }
+      throw new Error(
+        `Unable to write to file. Check file permissions and disk space. ${
+          writeError instanceof Error ? writeError.message : String(writeError)
+        }`
+      );
+    }
+    try {
+      if (fs.existsSync(backupPath)) {
+        await fs.promises.unlink(backupPath);
+      }
+    } catch {
+      Logger.debug(`Could not remove backup ${backupPath}`);
+    }
+    Logger.info(`Added column '${columnName}' to tabular section '${tabularSectionName}' in ${filePath}`);
+  }
+
+  /**
+   * Remove a column (Attribute) from a TabularSection's ChildObjects in the same layouts as
+   * {@link addAttributeToTabularSection}.
+   */
+  static async removeAttributeFromTabularSection(
+    filePath: string,
+    tabularSectionName: string,
+    columnName: string
+  ): Promise<void> {
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    const parsed = this.parser.parse(xmlContent);
+    const updated = this.removeAttributeFromTabularSectionInParsed(parsed, tabularSectionName, columnName);
+    const xmlString = this.builder.build(updated);
+    const backupPath = `${filePath}.bak`;
+    try {
+      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+    } catch (backupErr) {
+      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+    }
+    try {
+      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    } catch (writeError) {
+      Logger.error(`Failed to write file: ${filePath}`, writeError);
+      try {
+        if (fs.existsSync(backupPath)) {
+          const restored = await fs.promises.readFile(backupPath, 'utf-8');
+          await fs.promises.writeFile(filePath, restored, 'utf-8');
+          await fs.promises.unlink(backupPath);
+        }
+      } catch (rollbackErr) {
+        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+      }
+      throw new Error(
+        `Unable to write to file. Check file permissions and disk space. ${
+          writeError instanceof Error ? writeError.message : String(writeError)
+        }`
+      );
+    }
+    try {
+      if (fs.existsSync(backupPath)) {
+        await fs.promises.unlink(backupPath);
+      }
+    } catch {
+      Logger.debug(`Could not remove backup ${backupPath}`);
+    }
+    Logger.info(`Removed column '${columnName}' from tabular section '${tabularSectionName}' in ${filePath}`);
+  }
+
+  /**
+   * Duplicate a tabular section column by deep-cloning its XML block (Type, qualifiers, etc.),
+   * assigning a new uuid and {@link MetadataType.Attribute} name.
+   */
+  static async duplicateAttributeInTabularSection(
+    filePath: string,
+    tabularSectionName: string,
+    sourceColumnName: string,
+    newColumnName: string
+  ): Promise<void> {
+    const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    const parsed = this.parser.parse(xmlContent);
+    const updated = this.duplicateAttributeInTabularSectionInParsed(
+      parsed,
+      tabularSectionName,
+      sourceColumnName,
+      newColumnName
+    );
+    const xmlString = this.builder.build(updated);
+    const backupPath = `${filePath}.bak`;
+    try {
+      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
+    } catch (backupErr) {
+      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
+    }
+    try {
+      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
+    } catch (writeError) {
+      Logger.error(`Failed to write file: ${filePath}`, writeError);
+      try {
+        if (fs.existsSync(backupPath)) {
+          const restored = await fs.promises.readFile(backupPath, 'utf-8');
+          await fs.promises.writeFile(filePath, restored, 'utf-8');
+          await fs.promises.unlink(backupPath);
+        }
+      } catch (rollbackErr) {
+        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+      }
+      throw new Error(
+        `Unable to write to file. Check file permissions and disk space. ${
+          writeError instanceof Error ? writeError.message : String(writeError)
+        }`
+      );
+    }
+    try {
+      if (fs.existsSync(backupPath)) {
+        await fs.promises.unlink(backupPath);
+      }
+    } catch {
+      Logger.debug(`Could not remove backup ${backupPath}`);
+    }
+    Logger.info(
+      `Duplicated column '${sourceColumnName}' -> '${newColumnName}' in tabular section '${tabularSectionName}' in ${filePath}`
+    );
   }
 
   /**
@@ -1057,6 +1232,452 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     return '';
   }
 
+  private static unwrapSingleTabularSection(mo: Record<string, unknown>): Record<string, unknown> | null {
+    const ts = mo.TabularSection;
+    if (ts == null) {
+      return null;
+    }
+    if (Array.isArray(ts)) {
+      return ts[0] as Record<string, unknown>;
+    }
+    return ts as Record<string, unknown>;
+  }
+
+  private static tabularSectionNameFromBlock(ts: Record<string, unknown>): string {
+    const props = ts.Properties;
+    if (props && !Array.isArray(props) && typeof props === 'object') {
+      const n = (props as Record<string, unknown>).Name;
+      if (typeof n === 'string') {
+        return n;
+      }
+    }
+    if (Array.isArray(props)) {
+      const n = this.extractNameFromElementArray(props as unknown[]);
+      if (n) {
+        return n;
+      }
+    }
+    return '';
+  }
+
+  private static insertAttributeIntoTabularSectionBlock(
+    tsElem: Record<string, unknown>,
+    attributeInnerContent: unknown
+  ): void {
+    const co = tsElem.ChildObjects;
+    if (
+      co == null ||
+      co === '' ||
+      (typeof co === 'object' && !Array.isArray(co) && Object.keys(co as object).length === 0)
+    ) {
+      tsElem.ChildObjects = { Attribute: [attributeInnerContent] };
+      return;
+    }
+    if (typeof co !== 'object' || Array.isArray(co)) {
+      tsElem.ChildObjects = { Attribute: [attributeInnerContent] };
+      return;
+    }
+    const childObj = { ...(co as Record<string, unknown>) };
+    const existing = childObj.Attribute;
+    const arr = Array.isArray(existing) ? [...existing] : existing !== undefined && existing !== null ? [existing] : [];
+    arr.push(attributeInnerContent);
+    childObj.Attribute = arr;
+    tsElem.ChildObjects = childObj;
+  }
+
+  private static removeAttributeFromTabularSectionBlock(tsElem: Record<string, unknown>, columnName: string): boolean {
+    const co = tsElem.ChildObjects;
+    if (!co || typeof co !== 'object' || Array.isArray(co)) {
+      return false;
+    }
+    const childObj = co as Record<string, unknown>;
+    if (!('Attribute' in childObj)) {
+      return false;
+    }
+    const inner = childObj.Attribute;
+    const items = Array.isArray(inner) ? inner : inner != null ? [inner] : [];
+    const filtered = items.filter((item) => this.extractNameFromNestedElement(item) !== columnName);
+    if (filtered.length === items.length) {
+      return false;
+    }
+    const next = { ...childObj };
+    if (filtered.length === 0) {
+      delete next.Attribute;
+    } else {
+      next.Attribute = filtered;
+    }
+    tsElem.ChildObjects = Object.keys(next).length === 0 ? {} : next;
+    return true;
+  }
+
+  private static addAttributeToTabularSectionInParsed(
+    parsed: unknown,
+    tabularSectionName: string,
+    columnName: string,
+    parentRootType: MetadataType,
+    parentObjectName: string
+  ): unknown {
+    const newBlock = this.buildMinimalNestedElement(
+      'Attribute',
+      columnName,
+      {},
+      parentRootType,
+      parentObjectName
+    );
+    const unwrapped = (newBlock as Record<string, unknown>).Attribute;
+
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+    const root = { ...(parsed as Record<string, unknown>) };
+    const moKey = 'MetaDataObject' in root ? 'MetaDataObject' : null;
+    const mo = (moKey ? (root.MetaDataObject as Record<string, unknown>) : root) as Record<string, unknown>;
+    if (!mo || typeof mo !== 'object') {
+      return parsed;
+    }
+
+    const moCopy = { ...mo };
+    const dedicatedTs = this.unwrapSingleTabularSection(moCopy);
+    if (dedicatedTs) {
+      const tsName = this.tabularSectionNameFromBlock(dedicatedTs);
+      if (!tsName || tsName === tabularSectionName) {
+        const tsMut = { ...dedicatedTs };
+        this.insertAttributeIntoTabularSectionBlock(tsMut, unwrapped);
+        if (moKey) {
+          const inner = {
+            ...moCopy,
+            TabularSection: Array.isArray(moCopy.TabularSection) ? [tsMut] : tsMut,
+          };
+          return { ...root, MetaDataObject: inner };
+        }
+        return { ...root, TabularSection: tsMut };
+      }
+    }
+
+    for (const typeName of TOP_LEVEL_TYPES) {
+      if (!(typeName in moCopy)) {
+        continue;
+      }
+      const elem = moCopy[typeName as string] as Record<string, unknown>;
+      if (!elem || typeof elem !== 'object' || Array.isArray(elem)) {
+        continue;
+      }
+      const childObjects = elem.ChildObjects;
+      if (!childObjects || typeof childObjects !== 'object' || Array.isArray(childObjects)) {
+        continue;
+      }
+      const co = { ...(childObjects as Record<string, unknown>) };
+      if (!co.TabularSection) {
+        continue;
+      }
+
+      const tsRaw = co.TabularSection;
+      const tsList = Array.isArray(tsRaw) ? [...tsRaw] : [tsRaw];
+      let hit = false;
+      const updated = tsList.map((ts) => {
+        if (!ts || typeof ts !== 'object') {
+          return ts;
+        }
+        const tsRec = ts as Record<string, unknown>;
+        if (this.tabularSectionNameFromBlock(tsRec) !== tabularSectionName) {
+          return tsRec;
+        }
+        hit = true;
+        const tsMut = { ...tsRec };
+        this.insertAttributeIntoTabularSectionBlock(tsMut, unwrapped);
+        return tsMut;
+      });
+      if (!hit) {
+        continue;
+      }
+
+      co.TabularSection = updated.length === 1 && !Array.isArray(tsRaw) ? updated[0] : updated;
+      const newElem = { ...elem, ChildObjects: co };
+      const newMo = { ...moCopy, [typeName as string]: newElem };
+      if (moKey) {
+        return { ...root, MetaDataObject: newMo };
+      }
+      return { ...root, ...newMo };
+    }
+
+    throw new Error(`Табличная часть «${tabularSectionName}» не найдена в XML.`);
+  }
+
+  private static duplicateAttributeInTabularSectionInParsed(
+    parsed: unknown,
+    tabularSectionName: string,
+    sourceColumnName: string,
+    newColumnName: string
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+    const root = { ...(parsed as Record<string, unknown>) };
+    const moKey = 'MetaDataObject' in root ? 'MetaDataObject' : null;
+    const mo = (moKey ? (root.MetaDataObject as Record<string, unknown>) : root) as Record<string, unknown>;
+    if (!mo || typeof mo !== 'object') {
+      return parsed;
+    }
+
+    const moCopy = { ...mo };
+    const dedicatedTs = this.unwrapSingleTabularSection(moCopy);
+    if (dedicatedTs) {
+      const tsName = this.tabularSectionNameFromBlock(dedicatedTs);
+      if (!tsName || tsName === tabularSectionName) {
+        const tsMut = { ...dedicatedTs };
+        this.insertDuplicatedTabularColumnIntoBlock(tsMut, sourceColumnName, newColumnName);
+        if (moKey) {
+          const inner = {
+            ...moCopy,
+            TabularSection: Array.isArray(moCopy.TabularSection) ? [tsMut] : tsMut,
+          };
+          return { ...root, MetaDataObject: inner };
+        }
+        return { ...root, TabularSection: tsMut };
+      }
+    }
+
+    for (const typeName of TOP_LEVEL_TYPES) {
+      if (!(typeName in moCopy)) {
+        continue;
+      }
+      const elem = moCopy[typeName as string] as Record<string, unknown>;
+      if (!elem || typeof elem !== 'object' || Array.isArray(elem)) {
+        continue;
+      }
+      const childObjects = elem.ChildObjects;
+      if (!childObjects || typeof childObjects !== 'object' || Array.isArray(childObjects)) {
+        continue;
+      }
+      const co = { ...(childObjects as Record<string, unknown>) };
+      if (!co.TabularSection) {
+        continue;
+      }
+
+      const tsRaw = co.TabularSection;
+      const tsList = Array.isArray(tsRaw) ? [...tsRaw] : [tsRaw];
+      let hit = false;
+      const updated = tsList.map((ts) => {
+        if (!ts || typeof ts !== 'object') {
+          return ts;
+        }
+        const tsRec = ts as Record<string, unknown>;
+        if (this.tabularSectionNameFromBlock(tsRec) !== tabularSectionName) {
+          return tsRec;
+        }
+        hit = true;
+        const tsMut = { ...tsRec };
+        this.insertDuplicatedTabularColumnIntoBlock(tsMut, sourceColumnName, newColumnName);
+        return tsMut;
+      });
+      if (!hit) {
+        continue;
+      }
+
+      co.TabularSection = updated.length === 1 && !Array.isArray(tsRaw) ? updated[0] : updated;
+      const newElem = { ...elem, ChildObjects: co };
+      const newMo = { ...moCopy, [typeName as string]: newElem };
+      if (moKey) {
+        return { ...root, MetaDataObject: newMo };
+      }
+      return { ...root, ...newMo };
+    }
+
+    throw new Error(`Табличная часть «${tabularSectionName}» не найдена в XML.`);
+  }
+
+  private static getAttributeItemsFromTsBlock(tsElem: Record<string, unknown>): Record<string, unknown>[] {
+    const co = tsElem.ChildObjects;
+    if (!co || typeof co !== 'object' || Array.isArray(co)) {
+      return [];
+    }
+    const childObj = co as Record<string, unknown>;
+    if (!('Attribute' in childObj)) {
+      return [];
+    }
+    const inner = childObj.Attribute;
+    const items = Array.isArray(inner) ? inner : inner != null ? [inner] : [];
+    return items.filter(
+      (x): x is Record<string, unknown> => x != null && typeof x === 'object' && !Array.isArray(x)
+    );
+  }
+
+  private static findAttributeItemInTsBlock(
+    tsElem: Record<string, unknown>,
+    columnName: string
+  ): Record<string, unknown> | null {
+    for (const item of this.getAttributeItemsFromTsBlock(tsElem)) {
+      if (this.extractNameFromNestedElement(item) === columnName) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  private static tsBlockHasColumnName(tsElem: Record<string, unknown>, name: string): boolean {
+    return this.getAttributeItemsFromTsBlock(tsElem).some(
+      (item) => this.extractNameFromNestedElement(item) === name
+    );
+  }
+
+  private static cloneTabularColumnAttributeForDuplicate(
+    sourceItem: Record<string, unknown>,
+    sourceColumnName: string,
+    newColumnName: string
+  ): Record<string, unknown> {
+    const cloned = JSON.parse(JSON.stringify(sourceItem)) as Record<string, unknown>;
+    cloned['@_uuid'] = this.generateSimpleUuid();
+    const props = cloned.Properties;
+    if (props && typeof props === 'object' && !Array.isArray(props)) {
+      const po = props as Record<string, unknown>;
+      po.Name = [{ '#text': newColumnName }];
+      this.tryAlignSynonymWithNewColumnName(po, sourceColumnName, newColumnName);
+    }
+    return cloned;
+  }
+
+  /**
+   * If the parsed synonym text still matches the old column name, set it to the new name (Designer-like duplicate).
+   * Custom synonyms that differ from the technical name are left unchanged.
+   */
+  private static tryAlignSynonymWithNewColumnName(
+    props: Record<string, unknown>,
+    previousColumnName: string,
+    newName: string
+  ): void {
+    const syn = props.Synonym;
+    if (syn == null) {
+      return;
+    }
+    if (typeof syn === 'string' && syn.trim() === '') {
+      return;
+    }
+    if (!Array.isArray(syn) || syn.length === 0) {
+      return;
+    }
+    const first = syn[0];
+    if (!first || typeof first !== 'object' || Array.isArray(first)) {
+      return;
+    }
+    const v8item = (first as Record<string, unknown>)['v8:item'];
+    if (!Array.isArray(v8item) || v8item.length === 0) {
+      return;
+    }
+    const row = v8item[0];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      return;
+    }
+    const content = (row as Record<string, unknown>)['v8:content'];
+    if (!Array.isArray(content) || content.length === 0) {
+      return;
+    }
+    const cell = content[0];
+    if (cell && typeof cell === 'object' && !Array.isArray(cell) && '#text' in cell) {
+      const cur = String((cell as Record<string, unknown>)['#text'] ?? '');
+      if (cur === previousColumnName) {
+        (cell as Record<string, unknown>)['#text'] = newName;
+      }
+    }
+  }
+
+  private static insertDuplicatedTabularColumnIntoBlock(
+    tsMut: Record<string, unknown>,
+    sourceColumnName: string,
+    newColumnName: string
+  ): void {
+    const sourceItem = this.findAttributeItemInTsBlock(tsMut, sourceColumnName);
+    if (!sourceItem) {
+      throw new Error(`Колонка «${sourceColumnName}» не найдена в табличной части.`);
+    }
+    if (this.tsBlockHasColumnName(tsMut, newColumnName)) {
+      throw new Error(`Колонка «${newColumnName}» уже существует.`);
+    }
+    const cloned = this.cloneTabularColumnAttributeForDuplicate(sourceItem, sourceColumnName, newColumnName);
+    this.insertAttributeIntoTabularSectionBlock(tsMut, cloned);
+  }
+
+  private static removeAttributeFromTabularSectionInParsed(
+    parsed: unknown,
+    tabularSectionName: string,
+    columnName: string
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+    const root = { ...(parsed as Record<string, unknown>) };
+    const moKey = 'MetaDataObject' in root ? 'MetaDataObject' : null;
+    const mo = (moKey ? (root.MetaDataObject as Record<string, unknown>) : root) as Record<string, unknown>;
+    if (!mo || typeof mo !== 'object') {
+      return parsed;
+    }
+
+    const moCopy = { ...mo };
+    const dedicatedTs = this.unwrapSingleTabularSection(moCopy);
+    if (dedicatedTs) {
+      const tsName = this.tabularSectionNameFromBlock(dedicatedTs);
+      if (!tsName || tsName === tabularSectionName) {
+        const tsMut = { ...dedicatedTs };
+        const ok = this.removeAttributeFromTabularSectionBlock(tsMut, columnName);
+        if (ok) {
+          if (moKey) {
+            const inner = {
+              ...moCopy,
+              TabularSection: Array.isArray(moCopy.TabularSection) ? [tsMut] : tsMut,
+            };
+            return { ...root, MetaDataObject: inner };
+          }
+          return { ...root, TabularSection: tsMut };
+        }
+      }
+    }
+
+    for (const typeName of TOP_LEVEL_TYPES) {
+      if (!(typeName in moCopy)) {
+        continue;
+      }
+      const elem = moCopy[typeName as string] as Record<string, unknown>;
+      if (!elem || typeof elem !== 'object' || Array.isArray(elem)) {
+        continue;
+      }
+      const childObjects = elem.ChildObjects;
+      if (!childObjects || typeof childObjects !== 'object' || Array.isArray(childObjects)) {
+        continue;
+      }
+      const co = { ...(childObjects as Record<string, unknown>) };
+      if (!co.TabularSection) {
+        continue;
+      }
+      const tsRaw = co.TabularSection;
+      const tsList = Array.isArray(tsRaw) ? [...tsRaw] : [tsRaw];
+      let hit = false;
+      const updated = tsList.map((ts) => {
+        if (!ts || typeof ts !== 'object') {
+          return ts;
+        }
+        const tsRec = ts as Record<string, unknown>;
+        if (this.tabularSectionNameFromBlock(tsRec) !== tabularSectionName) {
+          return tsRec;
+        }
+        hit = true;
+        const tsMut = { ...tsRec };
+        this.removeAttributeFromTabularSectionBlock(tsMut, columnName);
+        return tsMut;
+      });
+      if (!hit) {
+        continue;
+      }
+      co.TabularSection = updated.length === 1 && !Array.isArray(tsRaw) ? updated[0] : updated;
+      const newElem = { ...elem, ChildObjects: co };
+      const newMo = { ...moCopy, [typeName as string]: newElem };
+      if (moKey) {
+        return { ...root, MetaDataObject: newMo };
+      }
+      return { ...root, ...newMo };
+    }
+
+    throw new Error(`Колонка «${columnName}» в табличной части «${tabularSectionName}» не найдена в XML.`);
+  }
+
   private static buildMinimalNestedElement(
     elementType: string,
     elementName: string,
@@ -1296,10 +1917,19 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     elementType: string,
     elementName: string,
     properties: Record<string, unknown>,
-    changedKeys?: string[]
+    changedKeys?: string[],
+    options?: WriteNestedElementOptions
   ): string {
     const parsed = this.parser.parse(xmlContent);
-    let updated = this.updateNestedElementInStructure(parsed, elementType, elementName, properties, changedKeys);
+    const scopeState = this.buildNestedAttributeScopeState(elementType, options);
+    let updated = this.updateNestedElementInStructure(
+      parsed,
+      elementType,
+      elementName,
+      properties,
+      changedKeys,
+      scopeState
+    );
     // Parser may return root as array of one element; builder expects single object
     if (Array.isArray(updated) && updated.length === 1) {
       updated = updated[0];
@@ -1321,7 +1951,8 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
       elementType: string,
       elementName: string,
       properties: Record<string, unknown>,
-      changedKeys?: string[]
+      changedKeys?: string[],
+      options?: WriteNestedElementOptions
     ): Promise<void> {
       try {
         let xmlContent: string;
@@ -1337,7 +1968,14 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
 
         let xmlString: string;
         try {
-          xmlString = this.buildUpdatedNestedXml(xmlContent, elementType, elementName, properties, changedKeys);
+          xmlString = this.buildUpdatedNestedXml(
+            xmlContent,
+            elementType,
+            elementName,
+            properties,
+            changedKeys,
+            options
+          );
         } catch (buildError) {
           Logger.error(`Failed to build XML for ${filePath}`, buildError);
           throw new Error(
@@ -1772,12 +2410,278 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     });
   }
 
+  private static buildNestedAttributeScopeState(
+    elementType: string,
+    options?: WriteNestedElementOptions
+  ): NestedAttributeScopeState | undefined {
+    const n = options?.scopedTabularSectionName?.trim();
+    if (!n || elementType !== 'Attribute') {
+      return undefined;
+    }
+    return { scopedTabularSectionName: n, insideMatchingTabularSection: false };
+  }
+
+  private static matchesTabularSectionXmlKey(key: string): boolean {
+    return key === 'TabularSection' || key.endsWith(':TabularSection');
+  }
+
+  private static matchesNestedMetadataElementKey(key: string, elementType: string): boolean {
+    return key === elementType || key.endsWith(':' + elementType);
+  }
+
+  /**
+   * Designer sometimes stores `Attribute` / `TabularSection` directly under a parent object (not only under ChildObjects).
+   * Normalize to the wrapped shape expected by {@link updateNestedElementArray}.
+   */
+  private static applyDirectNestedElementKeyUpdate(
+    key: string,
+    value: unknown,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>,
+    changedKeys: string[] | undefined,
+    scopeState?: NestedAttributeScopeState
+  ): unknown {
+    const wasArray = Array.isArray(value);
+    const raw = wasArray ? value : value != null ? [value] : [];
+    const elementsArray = raw.map((x: unknown) => ({ [key]: [x] }));
+    const updated = this.updateNestedElementArray(
+      elementsArray,
+      elementType,
+      elementName,
+      properties,
+      changedKeys,
+      scopeState
+    );
+    const flat = updated.flatMap((it) => ((it as Record<string, unknown>)[key] as unknown[]) || []);
+    return wasArray ? flat : flat[0] ?? flat;
+  }
+
+  private static isScopedTabularAttributeMode(
+    elementType: string,
+    scopeState: NestedAttributeScopeState | undefined
+  ): scopeState is NestedAttributeScopeState {
+    return elementType === 'Attribute' && scopeState !== undefined;
+  }
+
+  private static extractPlainTextFromXmlScalar(val: unknown): string {
+    if (typeof val === 'string') {
+      return val;
+    }
+    if (Array.isArray(val) && val.length > 0) {
+      const first = val[0];
+      if (first && typeof first === 'object' && '#text' in first) {
+        return String((first as Record<string, unknown>)['#text']);
+      }
+    }
+    if (val && typeof val === 'object' && '#text' in (val as object)) {
+      return String((val as Record<string, unknown>)['#text']);
+    }
+    return '';
+  }
+
+  private static extractNameFromMetadataPropertiesItem(item: unknown): string {
+    if (!item || typeof item !== 'object') {
+      return '';
+    }
+    const o = item as Record<string, unknown>;
+    const nameKey = 'Name' in o ? 'Name' : Object.keys(o).find((k) => k === 'Name' || k.endsWith(':Name'));
+    if (!nameKey) {
+      return '';
+    }
+    return this.extractPlainTextFromXmlScalar(o[nameKey]);
+  }
+
+  private static extractTabularSectionNameFromSectionObject(sectionObj: Record<string, unknown>): string {
+    const props = sectionObj.Properties;
+    if (props === undefined || props === null) {
+      return '';
+    }
+    if (Array.isArray(props)) {
+      for (const p of props) {
+        const n = this.extractNameFromMetadataPropertiesItem(p);
+        if (n) {
+          return n;
+        }
+      }
+      return '';
+    }
+    if (typeof props === 'object') {
+      return this.extractNameFromMetadataPropertiesItem(props);
+    }
+    return '';
+  }
+
+  /** TabularSection node(s) under ChildObjects: parser may use a single object or an array. */
+  private static mapTabularSectionValueForScopedAttribute(
+    value: unknown,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>,
+    changedKeys: string[] | undefined,
+    scopeState: NestedAttributeScopeState
+  ): unknown {
+    if (Array.isArray(value)) {
+      return value.map((sectionEl) =>
+        this.updateTabularSectionNodeForScopedAttribute(
+          sectionEl,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          scopeState
+        )
+      );
+    }
+    if (value && typeof value === 'object') {
+      return this.updateTabularSectionNodeForScopedAttribute(
+        value,
+        elementType,
+        elementName,
+        properties,
+        changedKeys,
+        scopeState
+      );
+    }
+    return value;
+  }
+
+  /**
+   * Apply nested element updates to a ChildObjects value (array or compressed object form from fast-xml-parser).
+   */
+  private static updateChildObjectsNestedValue(
+    value: unknown,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>,
+    changedKeys: string[] | undefined,
+    scopeState?: NestedAttributeScopeState
+  ): unknown {
+    const innerHasElementType = (v: Record<string, unknown>) =>
+      elementType in v || Object.keys(v).some((k) => k === elementType || k.endsWith(':' + elementType));
+
+    if (Array.isArray(value)) {
+      return this.updateNestedElementArray(
+        value,
+        elementType,
+        elementName,
+        properties,
+        changedKeys,
+        scopeState
+      );
+    }
+    if (value && typeof value === 'object' && innerHasElementType(value as Record<string, unknown>)) {
+      const inner = value as Record<string, unknown>;
+      const metaKeys = Object.keys(inner).filter((k) => k !== ':@');
+      const elementKey =
+        elementType in inner
+          ? elementType
+          : Object.keys(inner).find((k) => k === elementType || k.endsWith(':' + elementType));
+      if (!elementKey) {
+        return this.updateNestedElementInStructure(
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          scopeState
+        );
+      }
+      const onlyThisElementTypeMetadata =
+        metaKeys.length === 1 &&
+        (metaKeys[0] === elementKey || metaKeys[0].endsWith(':' + elementType));
+      if (!onlyThisElementTypeMetadata) {
+        return this.updateNestedElementInStructure(
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          scopeState
+        );
+      }
+      const raw = inner[elementKey];
+      const innerArr = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
+      const elementsArray = innerArr.map((x: unknown) => ({ [elementKey]: [x] }));
+      const updated = this.updateNestedElementArray(
+        elementsArray,
+        elementType,
+        elementName,
+        properties,
+        changedKeys,
+        scopeState
+      );
+      return {
+        [elementKey]: updated.flatMap((it) => ((it as Record<string, unknown>)[elementKey] as unknown[]) || []),
+      };
+    }
+    if (value !== null && value !== undefined && typeof value === 'object') {
+      return this.updateNestedElementInStructure(
+        value,
+        elementType,
+        elementName,
+        properties,
+        changedKeys,
+        scopeState
+      );
+    }
+    return value;
+  }
+
+  private static updateTabularSectionNodeForScopedAttribute(
+    sectionEl: unknown,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>,
+    changedKeys: string[] | undefined,
+    scopeState: NestedAttributeScopeState
+  ): unknown {
+    if (!sectionEl || typeof sectionEl !== 'object') {
+      return sectionEl;
+    }
+    const obj = sectionEl as Record<string, unknown>;
+    const sectionName = this.extractTabularSectionNameFromSectionObject(obj);
+    const childMatching = sectionName === scopeState.scopedTabularSectionName;
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === ':@') {
+        result[key] = value;
+        continue;
+      }
+      if (key === 'ChildObjects' || key.endsWith(':ChildObjects')) {
+        const next: NestedAttributeScopeState = {
+          ...scopeState,
+          insideMatchingTabularSection: childMatching,
+        };
+        result[key] = this.updateChildObjectsNestedValue(
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          next
+        );
+      } else {
+        result[key] = this.updateNestedElementInStructure(
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          { ...scopeState, insideMatchingTabularSection: false }
+        );
+      }
+    }
+    return result;
+  }
+
   private static updateNestedElementInStructure(
     parsed: unknown,
     elementType: string,
     elementName: string,
     properties: Record<string, unknown>,
-    changedKeys?: string[]
+    changedKeys?: string[],
+    scopeState?: NestedAttributeScopeState
   ): unknown {
     if (!parsed || typeof parsed !== 'object') {
       return parsed;
@@ -1788,8 +2692,6 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
         ? 'ChildObjects'
         : elementType + 's';
     const matchesContainer = (k: string) => k === containerName || k.endsWith(':' + containerName);
-    const innerHasElementType = (v: Record<string, unknown>) =>
-      elementType in v || Object.keys(v).some((k) => k === elementType || k.endsWith(':' + elementType));
 
     if (Array.isArray(parsed)) {
       return parsed.map((item) => {
@@ -1798,31 +2700,76 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
         }
 
         const result: Record<string, unknown> = {};
-        
+
         for (const [key, value] of Object.entries(item)) {
           if (key === ':@') {
             result[key] = value;
             continue;
           }
 
+          if (
+            this.matchesTabularSectionXmlKey(key) &&
+            this.isScopedTabularAttributeMode(elementType, scopeState) &&
+            value !== null &&
+            value !== undefined &&
+            (Array.isArray(value) || typeof value === 'object')
+          ) {
+            result[key] = this.mapTabularSectionValueForScopedAttribute(
+              value,
+              elementType,
+              elementName,
+              properties,
+              changedKeys,
+              scopeState
+            );
+            continue;
+          }
+
+          if (
+            this.matchesNestedMetadataElementKey(key, elementType) &&
+            value !== null &&
+            value !== undefined &&
+            (Array.isArray(value) || typeof value === 'object')
+          ) {
+            result[key] = this.applyDirectNestedElementKeyUpdate(
+              key,
+              value,
+              elementType,
+              elementName,
+              properties,
+              changedKeys,
+              scopeState
+            );
+            continue;
+          }
+
           if (matchesContainer(key)) {
-            if (Array.isArray(value)) {
-              result[key] = this.updateNestedElementArray(value, elementType, elementName, properties, changedKeys);
-            } else if (value && typeof value === 'object' && innerHasElementType(value as Record<string, unknown>)) {
-              const inner = value as Record<string, unknown>;
-              const elementKey = elementType in inner ? elementType : Object.keys(inner).find((k) => k === elementType || k.endsWith(':' + elementType))!;
-              const raw = inner[elementKey];
-              const innerArr = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
-              const elementsArray = innerArr.map((x: unknown) => ({ [elementKey]: [x] }));
-              const updated = this.updateNestedElementArray(elementsArray, elementType, elementName, properties, changedKeys);
-              result[key] = { [elementKey]: updated.flatMap((it) => ((it as Record<string, unknown>)[elementKey] as unknown[]) || []) };
-            } else {
-              result[key] = value;
-            }
+            result[key] = this.updateChildObjectsNestedValue(
+              value,
+              elementType,
+              elementName,
+              properties,
+              changedKeys,
+              scopeState
+            );
           } else if (Array.isArray(value)) {
-            result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties, changedKeys);
+            result[key] = this.updateNestedElementInStructure(
+              value,
+              elementType,
+              elementName,
+              properties,
+              changedKeys,
+              scopeState
+            );
           } else if (value !== null && value !== undefined && typeof value === 'object') {
-            result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties, changedKeys);
+            result[key] = this.updateNestedElementInStructure(
+              value,
+              elementType,
+              elementName,
+              properties,
+              changedKeys,
+              scopeState
+            );
           } else {
             result[key] = value;
           }
@@ -1840,23 +2787,61 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
         result[key] = value;
         continue;
       }
+
+      if (
+        this.matchesTabularSectionXmlKey(key) &&
+        this.isScopedTabularAttributeMode(elementType, scopeState) &&
+        value !== null &&
+        value !== undefined &&
+        (Array.isArray(value) || typeof value === 'object')
+      ) {
+        result[key] = this.mapTabularSectionValueForScopedAttribute(
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          scopeState
+        );
+        continue;
+      }
+
+      if (
+        this.matchesNestedMetadataElementKey(key, elementType) &&
+        value !== null &&
+        value !== undefined &&
+        (Array.isArray(value) || typeof value === 'object')
+      ) {
+        result[key] = this.applyDirectNestedElementKeyUpdate(
+          key,
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          scopeState
+        );
+        continue;
+      }
+
       if (matchesContainer(key)) {
-        if (Array.isArray(value)) {
-          result[key] = this.updateNestedElementArray(value, elementType, elementName, properties, changedKeys);
-        } else if (value && typeof value === 'object' && innerHasElementType(value as Record<string, unknown>)) {
-          const inner = value as Record<string, unknown>;
-          const elementKey = elementType in inner ? elementType : Object.keys(inner).find((k) => k === elementType || k.endsWith(':' + elementType))!;
-          const raw = inner[elementKey];
-          const innerArr = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
-          const elementsArray = innerArr.map((x: unknown) => ({ [elementKey]: [x] }));
-          // Apply selective write: recursively pass changedKeys to nested updater
-          const updated = this.updateNestedElementArray(elementsArray, elementType, elementName, properties, changedKeys);
-          result[key] = { [elementKey]: updated.flatMap((it) => ((it as Record<string, unknown>)[elementKey] as unknown[]) || []) };
-        } else {
-          result[key] = value;
-        }
+        result[key] = this.updateChildObjectsNestedValue(
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          scopeState
+        );
       } else if (value !== null && value !== undefined && typeof value === 'object') {
-        result[key] = this.updateNestedElementInStructure(value, elementType, elementName, properties, changedKeys);
+        result[key] = this.updateNestedElementInStructure(
+          value,
+          elementType,
+          elementName,
+          properties,
+          changedKeys,
+          scopeState
+        );
       } else {
         result[key] = value;
       }
@@ -1869,7 +2854,8 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     elementType: string,
     elementName: string,
     properties: Record<string, unknown>,
-    changedKeys?: string[]
+    changedKeys?: string[],
+    scopeState?: NestedAttributeScopeState
   ): unknown[] {
     const matchesElementType = (k: string) => k === elementType || k.endsWith(':' + elementType);
     return elementsArray.map((item) => {
@@ -1885,13 +2871,46 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
           continue;
         }
 
+        if (
+          this.matchesTabularSectionXmlKey(key) &&
+          this.isScopedTabularAttributeMode(elementType, scopeState) &&
+          value !== null &&
+          value !== undefined &&
+          (Array.isArray(value) || typeof value === 'object')
+        ) {
+          result[key] = this.mapTabularSectionValueForScopedAttribute(
+            value,
+            elementType,
+            elementName,
+            properties,
+            changedKeys,
+            scopeState
+          );
+          continue;
+        }
+
         if (matchesElementType(key) && Array.isArray(value)) {
           const elementData = this.extractNestedElementData(value);
           if (elementData.name === elementName) {
-            result[key] = this.updateNestedElementProperties(value, properties, changedKeys);
+            if (this.isScopedTabularAttributeMode(elementType, scopeState) && !scopeState.insideMatchingTabularSection) {
+              result[key] = value;
+            } else {
+              result[key] = this.updateNestedElementProperties(value, properties, changedKeys);
+            }
           } else {
             result[key] = value;
           }
+        } else if (typeof key === 'string' && key.startsWith('?')) {
+          result[key] = value;
+        } else if (value !== null && value !== undefined && typeof value === 'object') {
+          result[key] = this.updateNestedElementInStructure(
+            value,
+            elementType,
+            elementName,
+            properties,
+            changedKeys,
+            scopeState
+          );
         } else {
           result[key] = value;
         }

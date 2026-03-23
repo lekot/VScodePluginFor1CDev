@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.25.9",
+  "version": "0.26.0",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -45,6 +45,11 @@
       {
         "command": "1c-metadata-tree.openXML",
         "title": "Open XML File",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.openBslModule",
+        "title": "Открыть модуль BSL",
         "category": "CDT 41"
       },
       {
@@ -173,6 +178,11 @@
         {
           "command": "1c-metadata-tree.openXML",
           "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.openBslModule",
+          "when": "view == 1c-metadata-tree && viewItem == 'MethodBsl'",
           "group": "navigation"
         },
         {
