@@ -78,4 +78,17 @@ export class MetadataTypeMapper {
   static isValidType(typeString: string): boolean {
     return typeString in this.TYPE_MAP;
   }
+
+  /**
+   * Designer configuration folder id (e.g. `CommonModules`, `Roles`) for a metadata type.
+   * Reverse of {@link map}: each folder name maps to one `MetadataType`; values are unique in the internal map.
+   */
+  static getDesignerFolderIdForMetadataType(type: MetadataType): string | undefined {
+    for (const [folderId, metaType] of Object.entries(this.TYPE_MAP)) {
+      if (metaType === type) {
+        return folderId;
+      }
+    }
+    return undefined;
+  }
 }

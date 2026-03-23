@@ -1,10 +1,29 @@
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { isRootObjectCreateInTypeFolder, TOP_LEVEL_TYPES } from '../../src/services/elementOperations';
+import { MetadataTypeMapper } from '../../src/utils/metadataTypeMapper';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from '../../src/utils/XMLWriter';
 
 /** Конкретная форма (лист под «Forms»), не папка-контейнер `id === 'Forms'`. */
 function isFormInstanceNode(node: TreeNode): boolean {
   return node.type === MetadataType.Form && node.id !== 'Forms';
+}
+
+/**
+ * Экземпляр корневого типа без ChildObjects в XML (см. ROOT_TAGS_WITHOUT_CHILDOBJECTS): не цель матрицы create×2.
+ * Папки типов (`id` совпадает с каталогом Designer, напр. `CommonModules`, `Constants`) остаются целями.
+ */
+function isExcludedRootInstanceWithoutChildObjects(node: TreeNode): boolean {
+  if (!TOP_LEVEL_TYPES.has(node.type)) {
+    return false;
+  }
+  if (!ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(node.type))) {
+    return false;
+  }
+  const folderId = MetadataTypeMapper.getDesignerFolderIdForMetadataType(node.type);
+  if (folderId === undefined) {
+    return false;
+  }
+  return node.id !== folderId;
 }
 
 function isFormsFolderTarget(node: TreeNode): boolean {
@@ -30,6 +49,9 @@ const IBMATRIX_SKIP_TYPE_FOLDER_IDS = new Set([
   'CommonCommands',
   'AccountingRegisters',
   'CalculationRegisters',
+  // ibcmd: журнал без регистрируемых документов; регистр накопления без регистратора — не минимальный шаблон.
+  'DocumentJournals',
+  'AccumulationRegisters',
 ]);
 
 function isIbcmdFragileTypeFolder(node: TreeNode): boolean {
@@ -111,8 +133,7 @@ export function isMatrixTarget(node: TreeNode): boolean {
   if (node.type === MetadataType.Configuration) {
     return false;
   }
-  // Экземпляр роли (не папка «Роли» id=Roles): в XML только Properties, без ChildObjects (ibcmd).
-  if (node.type === MetadataType.Role && node.id !== 'Roles') {
+  if (isExcludedRootInstanceWithoutChildObjects(node)) {
     return false;
   }
   if (isFormInstanceNode(node)) {

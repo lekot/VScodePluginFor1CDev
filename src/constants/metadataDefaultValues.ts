@@ -55,6 +55,10 @@ const ROOT_TAG_DEFAULTS: Record<string, DefaultProperties> = {
   CommonAttribute: {},
   CommonCommand: {},
   CommonForm: {},
+  /** Метаданные встроенной формы (Forms/*.xml); ibcmd требует FormType. */
+  Form: {
+    FormType: 'Ordinary',
+  },
   CommonPicture: {},
   CommonTemplate: {},
   DocumentNumerator: {},
