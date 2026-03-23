@@ -5,6 +5,18 @@ import { DesignerParser } from '../../src/parsers/designerParser';
 import { EdtParser } from '../../src/parsers/edtParser';
 import { PropertiesProvider } from '../../src/providers/propertiesProvider';
 
+/** Keys that must not be used with ordinary `{}` + dynamic assignment (prototype pollution). */
+function isUnsafePropertyName(name: string): boolean {
+  return name === '__proto__' || name === 'constructor' || name === 'prototype';
+}
+
+/** Arbitrary for metadata-like property names (excludes boolean strings + unsafe keys). */
+function fcSafeMetadataPropertyName(): fc.Arbitrary<string> {
+  return fc
+    .string({ minLength: 1, maxLength: 20 })
+    .filter((s) => s !== 'false' && s !== 'true' && !isUnsafePropertyName(s));
+}
+
 /**
  * Bug Condition Exploration Test for Boolean Properties Display Fix
  * 
@@ -36,7 +48,7 @@ suite('Boolean Properties Bug Condition Exploration', () => {
     fc.assert(
       fc.property(
         fc.constantFrom('false', 'true'),
-        fc.string({ minLength: 1, maxLength: 20 }).filter(s => s !== 'false' && s !== 'true'),
+        fcSafeMetadataPropertyName(),
         (booleanString, propertyName) => {
           // Test the actual conversion logic from the parsers
           // This simulates what convertStringBooleans does
@@ -208,7 +220,7 @@ suite('Boolean Properties Bug Condition Exploration', () => {
       fc.property(
         fc.string({ minLength: 1, maxLength: 50 })
           .filter(s => s !== 'false' && s !== 'true'), // Exclude boolean strings
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (stringValue, propertyName) => {
           const mockProperties: Record<string, unknown> = {
             [propertyName]: stringValue
@@ -241,7 +253,7 @@ suite('Boolean Properties Bug Condition Exploration', () => {
     fc.assert(
       fc.property(
         fc.integer(),
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (numericValue, propertyName) => {
           const mockProperties: Record<string, unknown> = {
             [propertyName]: numericValue
@@ -293,7 +305,7 @@ suite('Property 2: Preservation - Non-Boolean Property Behavior', () => {
       fc.property(
         fc.string({ minLength: 1, maxLength: 50 })
           .filter(s => s !== 'false' && s !== 'true'), // Exclude boolean strings
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (stringValue, propertyName) => {
           const mockProperties: Record<string, unknown> = {
             [propertyName]: stringValue
@@ -341,7 +353,7 @@ suite('Property 2: Preservation - Non-Boolean Property Behavior', () => {
     fc.assert(
       fc.property(
         fc.integer(),
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (numericValue, propertyName) => {
           const mockProperties: Record<string, unknown> = {
             [propertyName]: numericValue
@@ -388,7 +400,7 @@ suite('Property 2: Preservation - Non-Boolean Property Behavior', () => {
   test('Property 2.3: Empty strings remain as empty strings', () => {
     fc.assert(
       fc.property(
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (propertyName) => {
           const mockProperties: Record<string, unknown> = {
             [propertyName]: ''
@@ -427,7 +439,7 @@ suite('Property 2: Preservation - Non-Boolean Property Behavior', () => {
     fc.assert(
       fc.property(
         fc.constantFrom(null, undefined),
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (nullishValue, propertyName) => {
           const mockProperties: Record<string, unknown> = {
             [propertyName]: nullishValue
@@ -553,7 +565,7 @@ suite('Property 2: Preservation - Non-Boolean Property Behavior', () => {
     fc.assert(
       fc.property(
         fc.boolean(),
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (booleanValue, propertyName) => {
           const mockProperties: Record<string, unknown> = {
             [propertyName]: booleanValue
@@ -628,7 +640,7 @@ suite('Property 2: Preservation - Non-Boolean Property Behavior', () => {
           fc.integer(),
           fc.constant('')
         ),
-        fc.string({ minLength: 1, maxLength: 20 }),
+        fcSafeMetadataPropertyName(),
         (value, propertyName) => {
           const mockProperties1: Record<string, unknown> = {
             [propertyName]: value
