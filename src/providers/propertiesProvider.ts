@@ -19,6 +19,7 @@ import { validateElementName } from '../utils/elementNameValidator';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
 import { findTabularSectionInstanceForAttributeParent } from '../services/elementOperations';
 import * as path from 'path';
+import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 
 /**
  * Message types sent from webview to extension (discriminated union for type safety)
@@ -66,6 +67,7 @@ function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
 export class PropertiesProvider {
   private panel: vscode.WebviewPanel | undefined;
   private currentNode: TreeNode | undefined;
+  private currentFormSelection: FormSelectionPayload | null = null;
   private disposables: vscode.Disposable[] = [];
   private _isSaving = false;
 
@@ -85,6 +87,7 @@ export class PropertiesProvider {
    * Creates new panel or reuses existing one (singleton pattern)
    */
   public async showProperties(node: TreeNode | undefined): Promise<void> {
+    this.currentFormSelection = null;
     this.currentNode = node;
 
     if (!node) {
@@ -153,6 +156,19 @@ export class PropertiesProvider {
     }
     // For nested elements with parentFilePath, use already loaded properties from node.properties
 
+    this.updateWebviewContent();
+  }
+
+  public async showFormSelectionProperties(
+    selection: FormSelectionPayload | undefined
+  ): Promise<void> {
+    this.currentFormSelection = selection ?? null;
+    this.currentNode = undefined;
+    if (!this.panel) {
+      this.panel = this.createPanel();
+    } else {
+      this.panel.reveal(vscode.ViewColumn.Beside);
+    }
     this.updateWebviewContent();
   }
 
@@ -254,13 +270,105 @@ export class PropertiesProvider {
    * Update webview content with current node
    */
   private updateWebviewContent(): void {
-    if (!this.panel || !this.currentNode) {
+    if (!this.panel) {
+      return;
+    }
+    if (this.currentFormSelection !== null) {
+      this.panel.webview.html = this.getFormSelectionWebviewContent(this.currentFormSelection);
+      return;
+    }
+    if (!this.currentNode) {
+      this.panel.webview.html = this.getEmptyStateContent();
       return;
     }
 
     const html = this.getWebviewContent(this.currentNode);
     this.panel.webview.html = html;
     Logger.debug(`Properties panel updated for node: ${this.currentNode.name}`);
+  }
+
+  private getFormSelectionWebviewContent(selection: FormSelectionPayload): string {
+    const props = selection.properties || {};
+    const entries = Object.entries(props)
+      .filter(([k]) => k !== ':@' && !k.startsWith('@'))
+      .slice(0, 24);
+    const events = Object.entries(selection.events || {});
+    const lines = entries.length
+      ? entries.map(([k, v]) => {
+          const raw = Array.isArray(v) || (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
+          return `
+            <div class="property-row">
+              <label class="property-label">${this.escapeHtml(k)}</label>
+              <input type="text" class="property-input" value="${this.escapeHtml(raw)}" disabled />
+            </div>
+          `;
+        }).join('')
+      : '<div class="empty-state"><p>Нет доступных свойств для отображения.</p></div>';
+    const eventLines = events.length
+      ? `
+        <div class="property-section">
+          <div class="property-section-title">События</div>
+          ${events.map(([k, v]) => `
+            <div class="property-row">
+              <label class="property-label">${this.escapeHtml(k)}</label>
+              <input type="text" class="property-input" value="${this.escapeHtml(v)}" disabled />
+            </div>
+          `).join('')}
+        </div>
+      `
+      : '';
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+        <title>Properties</title>
+        <style>
+          body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            padding: 16px;
+          }
+          .header { margin-bottom: 16px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 10px; }
+          .header h2 { margin: 0 0 6px 0; }
+          .header p { margin: 0; color: var(--vscode-descriptionForeground); }
+          .hint { margin: 12px 0; color: var(--vscode-descriptionForeground); }
+          .property-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+          .property-label { min-width: 180px; font-weight: 600; }
+          .property-input {
+            flex: 1;
+            padding: 4px 8px;
+            background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+          }
+          .property-section-title {
+            margin: 16px 0 8px 0;
+            color: var(--vscode-descriptionForeground);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            padding-bottom: 4px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h2>Свойства формы: ${this.escapeHtml(selection.name || selection.id || 'элемент')}</h2>
+          <p>Тип: ${this.escapeHtml(selection.entityType)}${selection.tag ? ` (${this.escapeHtml(selection.tag)})` : ''}</p>
+        </div>
+        <p class="hint">MVP режим: read-only отображение выделения из form editor. Изменение значений выполняется в редакторе формы.</p>
+        <div class="property-section">
+          <div class="property-section-title">Свойства</div>
+          ${lines}
+        </div>
+        ${eventLines}
+      </body>
+      </html>
+    `;
   }
 
   /**

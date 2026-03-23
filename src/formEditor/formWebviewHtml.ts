@@ -26,14 +26,23 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --fe-spacing-sm: 8px;
       --fe-spacing-md: 12px;
       --fe-spacing-lg: 16px;
-      --fe-radius-sm: 2px;
-      --fe-radius-md: 4px;
-      --fe-radius-btn: 6px;
+      --fe-radius-sm: 4px;
+      --fe-radius-md: 8px;
+      --fe-radius-btn: 8px;
+      --fe-border-subtle: color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
+      --fe-border-strong: color-mix(in srgb, var(--vscode-panel-border) 95%, var(--vscode-foreground) 5%);
+      --fe-surface-muted: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-list-hoverBackground) 10%);
+      --fe-focus-ring: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 85%, transparent);
+      --fe-hover-bg: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-focusBorder) 18%);
+      --fe-hover-bg-strong: color-mix(in srgb, var(--vscode-editor-background) 74%, var(--vscode-focusBorder) 26%);
+      --fe-selected-bg: color-mix(in srgb, var(--vscode-editor-background) 70%, var(--vscode-focusBorder) 30%);
+      --fe-selected-fg: var(--vscode-foreground);
+      --fe-card-bg: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background) 10%);
     }
     body {
       margin: 0;
       font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
+      font-size: 13px;
       color: var(--vscode-foreground);
       background: var(--vscode-editor-background);
       height: 100vh;
@@ -41,36 +50,94 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       flex-direction: column;
       overflow: hidden;
       --tree-width: 280px;
-      --preview-height: 200px;
+      --preview-height: 300px;
+    }
+    body[data-theme-mode='light'] {
+      --vscode-editor-background: #f3f5f8;
+      --vscode-sideBar-background: #ffffff;
+      --vscode-editorWidget-background: #f8fafc;
+      --vscode-foreground: #1f2937;
+      --vscode-descriptionForeground: #6b7280;
+      --vscode-panel-border: #d9dee7;
+      --vscode-focusBorder: #2563eb;
+      --vscode-list-hoverBackground: #eaf0fb;
+      --vscode-list-activeSelectionBackground: #dbeafe;
+      --vscode-list-activeSelectionForeground: #1f2937;
+      --vscode-button-background: #2563eb;
+      --vscode-button-foreground: #ffffff;
+      --vscode-button-hoverBackground: #1d4ed8;
+      --vscode-button-secondaryBackground: #e5e7eb;
+      --vscode-button-secondaryForeground: #1f2937;
+      --vscode-button-secondaryHoverBackground: #d1d5db;
+      --vscode-input-background: #ffffff;
+      --vscode-input-foreground: #1f2937;
+      --vscode-input-border: #cbd5e1;
+      --vscode-toolbar-hoverBackground: #e5edff;
+      --vscode-sideBar-foreground: #374151;
+    }
+    body[data-theme-mode='dark'] {
+      --vscode-editor-background: #111827;
+      --vscode-sideBar-background: #1f2937;
+      --vscode-editorWidget-background: #273244;
+      --vscode-foreground: #e5e7eb;
+      --vscode-descriptionForeground: #9ca3af;
+      --vscode-panel-border: #374151;
+      --vscode-focusBorder: #60a5fa;
+      --vscode-list-hoverBackground: #334155;
+      --vscode-list-activeSelectionBackground: #1e3a5f;
+      --vscode-list-activeSelectionForeground: #e5e7eb;
+      --vscode-button-background: #2563eb;
+      --vscode-button-foreground: #ffffff;
+      --vscode-button-hoverBackground: #1d4ed8;
+      --vscode-button-secondaryBackground: #334155;
+      --vscode-button-secondaryForeground: #e5e7eb;
+      --vscode-button-secondaryHoverBackground: #475569;
+      --vscode-input-background: #0f172a;
+      --vscode-input-foreground: #e5e7eb;
+      --vscode-input-border: #4b5563;
+      --vscode-toolbar-hoverBackground: #334155;
+      --vscode-sideBar-foreground: #cbd5e1;
     }
     .fe-toolbar {
       flex-shrink: 0;
       display: flex;
       align-items: center;
-      gap: 2px;
+      gap: 6px;
       padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
-      background: var(--vscode-editor-background);
-      border-bottom: 1px solid var(--vscode-panel-border);
-      min-height: 28px;
+      background: var(--fe-surface-muted);
+      border-bottom: 1px solid var(--fe-border-strong);
+      min-height: 36px;
+    }
+    .fe-toolbar-spacer { flex: 1; }
+    .fe-theme-wrap { display: inline-flex; align-items: center; gap: 6px; }
+    .fe-theme-label { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+    .fe-theme-select {
+      height: 24px;
+      padding: 0 6px;
+      border: 1px solid var(--fe-border-subtle);
+      border-radius: var(--fe-radius-md);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
     }
     .fe-toolbar-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 28px;
-      height: 24px;
+      width: 30px;
+      height: 28px;
       padding: 0;
       border: none;
       background: transparent;
       color: var(--vscode-foreground);
       border-radius: var(--fe-radius-sm);
       cursor: pointer;
-      font-size: 14px;
+      font-size: 13px;
+      font-weight: 500;
       font-family: var(--vscode-font-family);
     }
-    .fe-toolbar-btn:hover:not(:disabled) {
-      background: var(--vscode-toolbar-hoverBackground);
-    }
+    .fe-toolbar-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-toolbar-hoverBackground) 75%, var(--vscode-focusBorder) 25%); }
     .fe-toolbar-btn:disabled {
       opacity: 0.5;
       cursor: default;
@@ -79,6 +146,39 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       outline: 2px solid var(--vscode-focusBorder);
       outline-offset: 2px;
     }
+    #tb-save {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      width: auto;
+      min-width: 98px;
+      padding: 0 12px;
+      font-size: 13px;
+      border-radius: var(--fe-radius-btn);
+    }
+    #tb-save:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+    #tb-save:focus-visible { box-shadow: var(--fe-focus-ring); }
+    #tb-cancel {
+      width: auto;
+      min-width: 90px;
+      padding: 0 12px;
+      border: 1px solid var(--fe-border-subtle);
+      border-radius: var(--fe-radius-btn);
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      font-size: 13px;
+    }
+    #tb-cancel:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+    #tb-module {
+      width: auto;
+      min-width: 112px;
+      padding: 0 12px;
+      border: 1px solid var(--fe-border-subtle);
+      border-radius: var(--fe-radius-btn);
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      font-size: 13px;
+    }
+    #tb-module:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
     .fe-toolbar-sep {
       width: 1px;
       height: 16px;
@@ -89,19 +189,25 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .top-row {
       flex: 1;
       min-height: 0;
-      display: flex;
-      flex-direction: row;
+      display: grid;
+      grid-template-columns: var(--tree-width) 6px minmax(520px, 1fr) 0;
+      grid-template-rows: 1fr;
+      align-items: stretch;
+      overflow: hidden;
+      gap: 0;
+      background: var(--vscode-editor-background);
     }
     .zone-tree {
-      width: var(--tree-width);
-      min-width: 120px;
-      max-width: 80%;
+      width: auto;
+      min-width: 0;
+      max-width: none;
       background: var(--vscode-sideBar-background);
-      border-right: 1px solid var(--vscode-panel-border);
+      border-right: 1px solid var(--fe-border-strong);
       overflow-y: auto;
       overflow-x: hidden;
-      padding: var(--fe-spacing-sm);
+      padding: var(--fe-spacing-md);
       flex-shrink: 0;
+      border-radius: 0;
     }
     .splitter-v {
       width: 6px;
@@ -124,33 +230,31 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .splitter-v:hover { background: var(--vscode-focusBorder); }
     .splitter-v:hover::before { opacity: 0.6; }
     .zone-right-column {
-      flex: 1;
       min-width: 0;
-      min-height: 80px;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      --right-upper-ratio: 40%;
     }
     .zone-right-upper {
-      flex: 0 0 var(--right-upper-ratio);
-      min-height: 100px;
-      max-height: 50vh;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      padding: var(--fe-spacing-sm);
-      border-bottom: 1px solid var(--vscode-panel-border);
+      padding: var(--fe-spacing-md);
+      border-right: 1px solid var(--fe-border-strong);
+      border-left: 1px solid var(--fe-border-subtle);
+      background: var(--fe-card-bg);
     }
     .right-panel-tabs {
       display: flex;
       gap: 0;
-      margin-bottom: var(--fe-spacing-sm);
-      border-bottom: 1px solid var(--vscode-panel-border);
+      margin-bottom: var(--fe-spacing-md);
+      border-bottom: 1px solid var(--fe-border-strong);
       flex-shrink: 0;
     }
     .right-panel-tabs button {
-      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      padding: 6px 10px;
       background: transparent;
       color: var(--vscode-foreground);
       border: none;
@@ -159,10 +263,11 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       cursor: pointer;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      border-radius: 0;
+      border-radius: var(--fe-radius-sm) var(--fe-radius-sm) 0 0;
+      font-weight: 500;
     }
-    .right-panel-tabs button:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
-    .right-panel-tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: var(--vscode-tab-activeBackground, transparent); }
+    .right-panel-tabs button:hover { background: var(--fe-hover-bg); color: var(--vscode-foreground); }
+    .right-panel-tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: color-mix(in srgb, var(--vscode-tab-activeBackground, transparent) 70%, var(--vscode-focusBorder) 30%); font-weight: 600; }
     .right-tab-panel {
       flex: 1;
       min-height: 0;
@@ -170,21 +275,30 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       display: flex;
       flex-direction: column;
     }
-    .fe-table-wrap { overflow: auto; flex: 1; min-height: 0; }
+    .fe-table-wrap { overflow: auto; flex: 1; min-height: 0; border: 1px solid var(--fe-border-subtle); border-radius: var(--fe-radius-md); background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%); }
     .fe-table {
       width: 100%;
       border-collapse: collapse;
       font-size: var(--vscode-font-size);
     }
     .fe-table th, .fe-table td {
-      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      padding: 8px 10px;
       text-align: left;
-      border-bottom: 1px solid var(--vscode-panel-border);
+      border-bottom: 1px solid var(--fe-border-subtle);
+      vertical-align: top;
     }
-    .fe-table th { color: var(--vscode-descriptionForeground); font-weight: 500; }
+    .fe-table th { color: var(--vscode-descriptionForeground); font-weight: 600; font-size: 0.82em; letter-spacing: 0.02em; text-transform: uppercase; background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-list-hoverBackground) 12%); position: sticky; top: 0; z-index: 1; }
     .fe-table tbody tr { cursor: pointer; }
-    .fe-table tbody tr:hover { background: var(--vscode-list-hoverBackground); }
-    .fe-table tbody tr.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .fe-table tbody tr:hover { background: var(--fe-hover-bg); }
+    .fe-table tbody tr.selected { background: var(--fe-selected-bg); color: var(--fe-selected-fg); }
+    .fe-table tbody tr:last-child td { border-bottom: none; }
+    .attributes-col-name { width: 40%; }
+    .attributes-col-usage { width: 42%; }
+    .attributes-col-type { width: 18%; min-width: 120px; }
+    .attr-name-primary { display: block; font-weight: 600; color: var(--vscode-foreground); max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .attr-name-secondary { display: block; margin-top: 2px; color: var(--vscode-descriptionForeground); font-size: 0.84em; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .attr-usage { color: color-mix(in srgb, var(--vscode-foreground) 90%, var(--vscode-descriptionForeground) 10%); max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+    .attr-type-muted { display: inline-block; max-width: 100%; font-size: 0.82em; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--fe-border-subtle); padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--vscode-editor-background) 75%, var(--vscode-sideBar-background) 25%); }
     .fe-toolbar-buttons {
       display: flex;
       gap: var(--fe-spacing-xs);
@@ -199,19 +313,22 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
       border: none;
-      border-radius: var(--fe-radius-md);
+      border-radius: var(--fe-radius-btn);
       cursor: pointer;
     }
     .fe-toolbar-buttons button:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .fe-toolbar-buttons button:disabled { opacity: 0.5; cursor: default; }
     .zone-props {
-      flex: 1;
-      min-height: 80px;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      padding: var(--fe-spacing-sm);
+      padding: var(--fe-spacing-md);
+      border-left: 1px solid var(--fe-border-subtle);
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 82%, var(--vscode-editor-background) 18%);
+      display: none;
     }
+    .zone-props h3 { padding-bottom: var(--fe-spacing-xs); border-bottom: 1px solid var(--fe-border-subtle); margin-bottom: var(--fe-spacing-sm); }
     .zone-props-scroll {
       flex: 1;
       min-height: 0;
@@ -244,16 +361,18 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       max-width: 100%;
       min-width: 0;
       overflow: auto;
-      padding: var(--fe-spacing-sm);
+      padding: var(--fe-spacing-md);
       flex-shrink: 0;
       align-self: stretch;
       box-sizing: border-box;
+      border-top: 1px solid var(--fe-border-strong);
+      background: var(--fe-card-bg);
     }
     .zone-tree h3, .zone-props h3, .zone-preview h3 {
       margin: 0 0 var(--fe-spacing-sm) 0;
-      font-size: 0.9em;
+      font-size: 1em;
       color: var(--vscode-foreground);
-      opacity: 0.9;
+      font-weight: 600;
     }
     .props-selection-header {
       margin-bottom: var(--fe-spacing-sm);
@@ -268,12 +387,13 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       align-items: center;
       gap: var(--fe-spacing-xs);
       min-width: 0;
+      line-height: 1.25;
     }
-    .tree-node:hover { background: var(--vscode-list-hoverBackground); }
-    .tree-node.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .tree-node:hover { background: var(--fe-hover-bg); }
+    .tree-node.selected { background: var(--fe-selected-bg); color: var(--fe-selected-fg); box-shadow: inset 2px 0 0 var(--vscode-focusBorder); }
     .tree-node.drop-target { outline: 2px solid var(--vscode-focusBorder); }
     .tree-node:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
-    .tree-node-container { font-weight: 600; flex-wrap: wrap; }
+    .tree-node-container { font-weight: 500; flex-wrap: wrap; }
     .tree-node-container > .tree-children { flex-basis: 100%; width: 100%; }
     .tree-chevron {
       flex-shrink: 0;
@@ -290,6 +410,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       text-overflow: ellipsis;
       white-space: nowrap;
       min-width: 0;
+      font-weight: 400;
     }
     .tree-icon {
       flex-shrink: 0;
@@ -322,18 +443,39 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       padding: var(--fe-spacing-md) var(--fe-spacing-sm);
     }
     .preview-placeholder { color: var(--vscode-descriptionForeground); font-style: italic; padding: var(--fe-spacing-sm) 0; }
-    #preview-form { width: 100%; min-width: 100%; box-sizing: border-box; }
-    .preview-item { width: 100%; min-width: 0; box-sizing: border-box; padding: var(--fe-spacing-xs) var(--fe-spacing-sm); margin: 2px 0; cursor: pointer; border-radius: var(--fe-radius-md); border: 1px solid var(--vscode-panel-border); }
-    .preview-item:hover { background: var(--vscode-list-hoverBackground); }
-    .preview-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    #preview-form { width: 100%; min-width: 100%; box-sizing: border-box; border: 1px solid var(--fe-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%); }
+    .preview-item { width: 100%; min-width: 0; box-sizing: border-box; padding: 4px 6px; margin: 2px 0; cursor: pointer; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 75%, transparent); transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease; }
+    .preview-item:hover { border-color: color-mix(in srgb, var(--vscode-focusBorder) 45%, var(--vscode-panel-border) 55%); background: var(--fe-hover-bg); }
+    .preview-item.selected { background: var(--fe-selected-bg); color: var(--fe-selected-fg); box-shadow: inset 2px 0 0 var(--vscode-focusBorder); border-color: color-mix(in srgb, var(--vscode-focusBorder) 65%, var(--vscode-panel-border) 35%); }
     .preview-item.drop-target { outline: 2px solid var(--vscode-focusBorder); }
-    .preview-container { background: var(--vscode-editor-inactiveSelectionBackground); min-height: 20px; width: 100%; box-sizing: border-box; }
-    .preview-control { background: var(--vscode-input-background); width: 100%; box-sizing: border-box; }
-    .preview-children { margin-left: var(--fe-spacing-md); width: 100%; box-sizing: border-box; min-width: 0; }
-    .preview-control-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-xs); min-height: 22px; }
-    .preview-input { flex: 1; min-width: 80px; padding: var(--fe-radius-sm) var(--fe-spacing-sm); font-size: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: var(--fe-radius-md); }
+    .preview-container { background: transparent; min-height: 16px; width: 100%; box-sizing: border-box; }
+    .preview-item.preview-container { border-color: transparent; padding: 4px 6px; margin: 2px 0; }
+    .preview-item.preview-container:hover { border-color: var(--fe-border-subtle); background: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-focusBorder) 6%); }
+    .preview-control { background: color-mix(in srgb, var(--vscode-input-background) 85%, var(--vscode-editor-background) 15%); width: 100%; box-sizing: border-box; }
+    .preview-children { margin-left: 0; width: 100%; box-sizing: border-box; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .preview-children.preview-children-vertical { flex-direction: column; }
+    .preview-children.preview-children-horizontal { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: var(--fe-spacing-sm); }
+    .preview-children.preview-children-horizontal > .preview-item { flex: 1 1 220px; min-width: 180px; width: auto; }
+    .preview-children.preview-children-indented { margin-left: 10px; }
+    .preview-children.preview-container-page,
+    .preview-children.preview-container-pages {
+      border: 1px solid var(--fe-border-subtle);
+      border-radius: var(--fe-radius-md);
+      padding: 8px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 95%, var(--vscode-sideBar-background) 5%);
+    }
+    .preview-control-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 22px; }
+    .preview-input { flex: 1; min-width: 120px; padding: 4px 8px; font-size: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid color-mix(in srgb, var(--vscode-input-border) 82%, var(--vscode-focusBorder) 18%); border-radius: 6px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
     .preview-button { padding: var(--fe-spacing-xs) var(--fe-spacing-md); font-size: inherit; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: var(--fe-radius-btn); cursor: default; }
-    .preview-label { color: var(--vscode-foreground); }
+    .preview-label { color: var(--vscode-foreground); padding: 1px 0; }
+    .preview-check { width: 15px; height: 15px; accent-color: var(--vscode-focusBorder); }
+    .preview-radio-stack { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-md); align-items: center; }
+    .preview-radio-option { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
+    .preview-radio-option input { accent-color: var(--vscode-focusBorder); }
+    .preview-list-mock { min-width: 180px; border: 1px solid var(--fe-border-subtle); border-radius: 6px; background: var(--vscode-input-background); overflow: hidden; }
+    .preview-list-row { padding: 5px var(--fe-spacing-sm); border-bottom: 1px solid var(--fe-border-subtle); color: var(--vscode-foreground); font-size: 0.92em; }
+    .preview-list-row:last-child { border-bottom: none; }
+    .preview-list-row.active { background: var(--fe-selected-bg); color: var(--fe-selected-fg); }
     .preview-table { padding: var(--fe-spacing-sm); border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); font-size: 0.9em; color: var(--vscode-descriptionForeground); }
     .preview-table-columns { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--fe-spacing-sm); }
     .preview-table-cols-row { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--fe-spacing-xs); }
@@ -346,17 +488,19 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .preview-field-label { min-width: 80px; color: var(--vscode-foreground); font-size: inherit; flex-shrink: 0; }
     .preview-field-row .preview-input { flex: 1; min-width: 100px; }
     .preview-buttons-row { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-xs); align-items: center; }
-    .preview-table-mock { overflow-x: auto; border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); margin: var(--fe-spacing-xs) 0; }
+    .preview-table-mock { overflow-x: auto; border: 1px solid var(--fe-border-strong); border-radius: 6px; margin: 4px 0; background: var(--vscode-editor-background); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
     .preview-table-mock table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-    .preview-table-mock th, .preview-table-mock td { padding: var(--fe-spacing-xs) var(--fe-spacing-sm); text-align: left; border-bottom: 1px solid var(--vscode-panel-border); }
-    .preview-table-mock th { background: var(--vscode-editor-inactiveSelectionBackground); font-weight: 600; color: var(--vscode-foreground); cursor: pointer; }
-    .preview-table-mock th:hover { background: var(--vscode-list-hoverBackground); }
-    .preview-table-mock th.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+    .preview-table-mock th, .preview-table-mock td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--fe-border-subtle); border-right: 1px solid color-mix(in srgb, var(--fe-border-subtle) 85%, transparent); }
+    .preview-table-mock th:last-child, .preview-table-mock td:last-child { border-right: none; }
+    .preview-table-mock th { background: color-mix(in srgb, var(--vscode-editor-background) 78%, var(--vscode-list-hoverBackground) 22%); font-weight: 600; color: var(--vscode-foreground); cursor: pointer; text-transform: uppercase; letter-spacing: 0.01em; font-size: 0.82em; }
+    .preview-table-mock th:hover { background: var(--fe-hover-bg-strong); }
+    .preview-table-mock th.selected { background: var(--fe-selected-bg); color: var(--fe-selected-fg); }
+    .preview-table-mock tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-focusBorder) 10%); }
     .preview-table-mock tbody tr:last-child td { border-bottom: none; }
-    .preview-page-block { margin: var(--fe-spacing-sm) 0; }
-    .preview-page-title { font-weight: 700; font-size: 0.95em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-foreground); padding-bottom: 2px; border-bottom: 1px solid var(--vscode-panel-border); }
-    .preview-group-block { margin-left: var(--fe-spacing-md); margin-bottom: var(--fe-spacing-xs); }
-    .preview-group-title { font-weight: 600; font-size: 0.9em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-descriptionForeground); }
+    .preview-page-block { margin: 6px 0; }
+    .preview-page-title { font-weight: 700; font-size: 0.92em; margin-bottom: 4px; color: var(--vscode-foreground); padding-bottom: 2px; border-bottom: 1px solid var(--vscode-panel-border); }
+    .preview-group-block { margin-left: 0; margin-bottom: var(--fe-spacing-xs); }
+    .preview-group-title { font-weight: 600; font-size: 0.88em; margin-bottom: 6px; color: var(--vscode-descriptionForeground); }
     .preview-children.preview-buttons-container { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-sm); align-items: center; margin-left: 0; }
     .empty-state { text-align: center; padding: var(--fe-spacing-lg); color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 var(--fe-spacing-sm) 0; font-size: 1em; color: var(--vscode-foreground); opacity: 0.9; }
@@ -365,31 +509,20 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .preview-empty-state .preview-empty-title { font-size: 0.95em; margin: 0 0 var(--fe-spacing-xs) 0; color: var(--vscode-foreground); opacity: 0.9; }
     .preview-empty-state .preview-empty-hint { margin: 0; font-size: 0.85em; }
     .error { color: var(--vscode-errorForeground); padding: var(--fe-spacing-sm); }
-    .tabs {
+    .zone-preview-head {
       display: flex;
-      gap: 0;
+      align-items: center;
+      justify-content: flex-start;
       margin-bottom: var(--fe-spacing-sm);
-      border-bottom: 1px solid var(--vscode-panel-border);
+      border-bottom: 1px solid var(--fe-border-strong);
+      padding-bottom: var(--fe-spacing-xs);
     }
-    .tabs button {
-      padding: var(--fe-spacing-sm) var(--fe-spacing-md);
-      background: transparent;
-      color: var(--vscode-foreground);
-      border: none;
-      border-bottom: 2px solid transparent;
-      margin-bottom: -1px;
-      cursor: pointer;
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-      border-radius: 0;
-    }
-    .tabs button:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
-    .tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: var(--vscode-tab-activeBackground, transparent); }
+    .zone-preview-head h3 { margin: 0; }
     .left-zone-tabs {
       display: flex;
       gap: 0;
       margin-bottom: var(--fe-spacing-sm);
-      border-bottom: 1px solid var(--vscode-panel-border);
+      border-bottom: 1px solid var(--fe-border-strong);
     }
     .left-zone-tabs button {
       padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
@@ -401,10 +534,11 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       cursor: pointer;
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      border-radius: 0;
+      border-radius: var(--fe-radius-sm) var(--fe-radius-sm) 0 0;
+      font-weight: 500;
     }
-    .left-zone-tabs button:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
-    .left-zone-tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: var(--vscode-tab-activeBackground, transparent); }
+    .left-zone-tabs button:hover { background: var(--fe-hover-bg); color: var(--vscode-foreground); }
+    .left-zone-tabs button.active { border-bottom-color: var(--vscode-focusBorder); background: color-mix(in srgb, var(--vscode-tab-activeBackground, transparent) 75%, var(--vscode-focusBorder) 25%); font-weight: 600; }
     .command-interface-section { margin-bottom: var(--fe-spacing-md); }
     .command-interface-section-title { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin: 0 0 var(--fe-spacing-xs) 0; text-transform: uppercase; letter-spacing: 0.02em; }
     .command-interface-list { list-style: none; margin: 0; padding: 0; }
@@ -414,7 +548,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       font-size: 0.9em;
       color: var(--vscode-foreground);
     }
-    .command-interface-list li:hover { background: var(--vscode-list-hoverBackground); }
+    .command-interface-list li:hover { background: var(--fe-hover-bg); }
     .command-interface-empty { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 0.9em; padding: var(--fe-spacing-xs) 0; }
     .props-block { margin-bottom: var(--fe-spacing-md); }
     .props-block-title { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin: 0 0 var(--fe-spacing-xs) 0; text-transform: uppercase; letter-spacing: 0.02em; }
@@ -461,6 +595,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
       border-radius: var(--fe-radius-btn);
+      font-weight: 600;
     }
     #btn-cancel:focus-visible, #btn-save:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
     #btn-save {
@@ -473,6 +608,15 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       color: var(--vscode-button-secondaryForeground);
     }
     #btn-cancel:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    #save-status {
+      margin-left: var(--fe-spacing-sm);
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+    }
+    #save-status:not(:empty) {
+      color: var(--vscode-foreground);
+      opacity: 0.9;
+    }
     .btn-goto-proc {
       padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
       background: var(--vscode-button-secondaryBackground);
@@ -485,18 +629,6 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     }
     .btn-goto-proc:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .btn-goto-proc:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
-    #btn-open-module {
-      padding: var(--fe-spacing-sm) var(--fe-spacing-md);
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-      border: none;
-      cursor: pointer;
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-      border-radius: var(--fe-radius-btn);
-    }
-    #btn-open-module:hover { background: var(--vscode-button-hoverBackground); }
-    #btn-open-module:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
   </style>
 </head>
 <body>
@@ -507,9 +639,18 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     <button type="button" class="fe-toolbar-btn" id="tb-down" title="Вниз" aria-label="Вниз">&#x2193;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-copy" title="Копировать" aria-label="Копировать">&#x2398;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-paste" title="Вставить" aria-label="Вставить">&#x2399;</button>
-    <span class="fe-toolbar-sep" aria-hidden="true"></span>
-    <button type="button" class="fe-toolbar-btn" id="tb-save" title="Сохранить" aria-label="Сохранить">&#x1F4BE;</button>
-    <button type="button" class="fe-toolbar-btn" id="tb-cancel" title="Отмена" aria-label="Отмена">&#x27F3;</button>
+    <span class="fe-toolbar-spacer" aria-hidden="true"></span>
+    <div class="fe-theme-wrap">
+      <label class="fe-theme-label" for="tb-theme-mode">Тема:</label>
+      <select id="tb-theme-mode" class="fe-theme-select" title="Режим темы">
+        <option value="auto">Auto</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </div>
+    <button type="button" class="fe-toolbar-btn" id="tb-module" title="Открыть модуль формы" aria-label="Модуль формы">Модуль</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-cancel" title="Отмена" aria-label="Отмена">Отмена</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-save" title="Сохранить" aria-label="Сохранить">Сохранить</button>
   </div>
   <div class="top-row">
     <div class="zone-tree">
@@ -532,8 +673,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       </div>
     </div>
     <div class="splitter-v" id="splitter-v" title="Изменить ширину панели"></div>
-    <div class="zone-right-column">
-      <div class="zone-right-upper">
+    <div class="zone-right-upper">
         <div class="right-panel-tabs" role="tablist">
           <button type="button" role="tab" data-right-tab="attributes" aria-selected="true">Реквизиты</button>
           <button type="button" role="tab" data-right-tab="commands" aria-selected="false">Команды</button>
@@ -542,7 +682,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         <div id="right-tab-attributes" class="right-tab-panel" role="tabpanel">
           <div id="attributes-table-wrap" class="fe-table-wrap">
             <table class="fe-table" id="attributes-table">
-              <thead><tr><th>Реквизит</th><th>Использование</th><th>Тип</th></tr></thead>
+              <thead><tr><th class="attributes-col-name">Реквизит</th><th class="attributes-col-usage">Использование</th><th class="attributes-col-type">Тип</th></tr></thead>
               <tbody id="attributes-tbody"></tbody>
             </table>
           </div>
@@ -571,47 +711,60 @@ export function getWebviewHtml(webview: vscode.Webview): string {
           <p class="placeholder">Параметры формы будут доступны после поддержки секции в Form.xml</p>
         </div>
       </div>
-      <div class="zone-props" role="region" aria-label="Свойства элемента">
-        <h3>Свойства</h3>
-        <div class="zone-props-scroll">
-          <div id="props-header" class="props-selection-header"></div>
-          <div id="props-content" style="display:none;"></div>
-          <div id="props-placeholder" class="placeholder">Выберите элемент</div>
-        </div>
-        <div id="props-actions" class="props-actions-sticky" style="display:none;">
-          <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
-          <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
-          <span id="save-status"></span>
-        </div>
+    <div class="zone-props" role="region" aria-label="Свойства элемента">
+      <h3>Свойства</h3>
+      <div class="zone-props-scroll">
+        <div id="props-header" class="props-selection-header"></div>
+        <div id="props-content" style="display:none;"></div>
+        <div id="props-placeholder" class="placeholder">Выберите элемент</div>
+      </div>
+      <div id="props-actions" class="props-actions-sticky" style="display:none;">
+        <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
+        <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
+        <span id="save-status"></span>
       </div>
     </div>
   </div>
   <div class="splitter-h" id="splitter-h" title="Изменить высоту превью"></div>
   <div class="zone-preview">
-    <h3>Превью</h3>
-    <div class="tabs" role="tablist">
-      <button type="button" role="tab" data-tab="form" title="Форма" aria-selected="true">Форма</button>
-      <button type="button" role="tab" data-tab="module" title="Модуль" aria-selected="false">Модуль</button>
+    <div class="zone-preview-head">
+      <h3>Превью</h3>
     </div>
     <div id="preview-form" class="preview-placeholder" role="tabpanel">
       <div class="preview-empty-state">
-        <p class="preview-empty-title">Визуальное превью формы пока не реализовано</p>
-        <p class="preview-empty-hint">Структуру можно просматривать в дереве элементов и в панели свойств.</p>
+        <p class="preview-empty-title">Превью формы</p>
+        <p class="preview-empty-hint">Добавляйте элементы слева, чтобы сразу увидеть структуру и компоновку.</p>
       </div>
-    </div>
-    <div id="preview-module" style="display:none;" role="tabpanel">
-      <button type="button" id="btn-open-module" title="Модуль формы">Модуль формы</button>
-      <p class="placeholder">Открывает Ext/Form/Module.bsl в редакторе</p>
     </div>
   </div>
   <script>
     const vscode = acquireVsCodeApi();
+    const THEME_MODE_KEY = 'form-editor-theme-mode';
+    function applyThemeMode(mode) {
+      var m = mode || 'auto';
+      document.body.setAttribute('data-theme-mode', m);
+      var sel = document.getElementById('tb-theme-mode');
+      if (sel && sel.value !== m) sel.value = m;
+    }
+    (function initThemeMode() {
+      var saved = localStorage.getItem(THEME_MODE_KEY) || 'auto';
+      applyThemeMode(saved);
+      var sel = document.getElementById('tb-theme-mode');
+      if (sel) {
+        sel.addEventListener('change', function() {
+          var mode = sel.value || 'auto';
+          localStorage.setItem(THEME_MODE_KEY, mode);
+          applyThemeMode(mode);
+        });
+      }
+    })();
     let formModel = null;
     let selectedIds = [];
     let anchorId = null;
     let clipboardBuffer = null;
     let selectedAttributeId = null;
     let selectedCommandId = null;
+    
     (function setupSplitters() {
       var root = document.body;
       var sv = document.getElementById('splitter-v');
@@ -644,7 +797,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         sh.addEventListener('mousedown', function(e) {
           e.preventDefault();
           var startY = e.clientY;
-          var startH = parsePx(getComputedStyle(root).getPropertyValue('--preview-height')) || 200;
+          var startH = parsePx(getComputedStyle(root).getPropertyValue('--preview-height')) || 300;
           function move(e2) {
             var dy = startY - e2.clientY;
             var newH = Math.max(60, Math.min(window.innerHeight - 100, startH + dy));
@@ -708,6 +861,95 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         }
       }
       return '';
+    }
+    function normalizeLayoutKey(k) { return String(k || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+    function toScalarLayoutValue(v) {
+      if (v == null) return '';
+      if (typeof v === 'string') return v.trim();
+      if (typeof v === 'number' || typeof v === 'boolean') return String(v).trim();
+      if (typeof v !== 'object') return '';
+      var rec = v;
+      var candidateKeys = ['#text', '_', 'value', 'Value', 'name', 'Name'];
+      for (var i = 0; i < candidateKeys.length; i++) {
+        var nested = toScalarLayoutValue(rec[candidateKeys[i]]);
+        if (nested) return nested;
+      }
+      return '';
+    }
+    function getLayoutPropertyValueByAliases(properties, aliases) {
+      if (!properties) return '';
+      var normalizedToReal = new Map();
+      Object.keys(properties).forEach(function(key) {
+        if (key === ':@' || key.startsWith('@')) return;
+        var local = key.indexOf(':') >= 0 ? (key.split(':').pop() || key) : key;
+        normalizedToReal.set(normalizeLayoutKey(local), key);
+      });
+      for (var i = 0; i < aliases.length; i++) {
+        var realKey = normalizedToReal.get(normalizeLayoutKey(aliases[i]));
+        if (!realKey) continue;
+        var val = toScalarLayoutValue(properties[realKey]);
+        if (val) return val;
+      }
+      return '';
+    }
+    function normalizeContainerOrientation(rawValue) {
+      var v = String(rawValue || '').toLowerCase().replace(/[\s_-]+/g, '');
+      if (!v) return null;
+      if (v.indexOf('horizontal') >= 0 || v.indexOf('horiz') >= 0 || v === 'row' || v.indexOf('leftright') >= 0 || v.indexOf('горизонт') >= 0 || v.indexOf('слеванаправо') >= 0) return 'horizontal';
+      if (v.indexOf('vertical') >= 0 || v.indexOf('vert') >= 0 || v === 'column' || v.indexOf('topbottom') >= 0 || v.indexOf('вертикал') >= 0 || v.indexOf('сверхувниз') >= 0) return 'vertical';
+      return null;
+    }
+    function getContainerLayoutMeta(item) {
+      var tag = String((item && item.tag) || '');
+      var props = item ? item.properties : null;
+      var rawOrientation = getLayoutPropertyValueByAliases(props, [
+        'Group',
+        'groups',
+        'GroupOrientation',
+        'Orientation',
+        'Layout',
+        'LayoutOrientation',
+        'ChildrenLayout',
+        'ChildItemsLayout',
+        'Расположение',
+        'Ориентация',
+        'Группировка'
+      ]);
+      var orientation = normalizeContainerOrientation(rawOrientation) || 'vertical';
+      var rawIndent = getLayoutPropertyValueByAliases(props, [
+        'IndentChildren',
+        'ShouldIndentChildren',
+        'ChildIndent',
+        'Вложенность',
+        'ОтступДетей'
+      ]).toLowerCase();
+      var explicitIndent = (rawIndent === 'true' || rawIndent === '1' || rawIndent === 'yes' || rawIndent === 'да') ? true
+        : (rawIndent === 'false' || rawIndent === '0' || rawIndent === 'no' || rawIndent === 'нет') ? false
+          : null;
+      var shouldIndentChildren = explicitIndent != null
+        ? explicitIndent
+        : (tag === 'Page' || tag === 'Group' || tag === 'UsualGroup' || tag === 'CollapsibleGroup');
+      var hints = ['container', 'container-' + orientation];
+      if (shouldIndentChildren) hints.push('container-indent');
+      if (tag) hints.push('container-' + tag.toLowerCase());
+      if (tag === 'AutoCommandBar') hints.push('container-buttons');
+      if (tag === 'Page' || tag === 'Pages') hints.push('container-page');
+      return {
+        orientation: orientation,
+        shouldIndentChildren: !!shouldIndentChildren,
+        containerClassHints: hints
+      };
+    }
+    function getPreviewDropIndex(children, evt, orientation) {
+      var horizontal = orientation === 'horizontal';
+      var idx = 0;
+      var point = horizontal ? evt.clientX : evt.clientY;
+      for (var i = 0; i < children.length; i++) {
+        var r = children[i].getBoundingClientRect();
+        var middle = horizontal ? (r.left + r.width / 2) : (r.top + r.height / 2);
+        if (point > middle) idx = i + 1;
+      }
+      return idx;
     }
     function hasDataPath(item) { return getDataPathValue(item).length > 0; }
     function isDescendantOfItem(items, sourceId, targetId) {
@@ -955,11 +1197,50 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         var cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.disabled = true;
+        cb.className = 'preview-check';
         var lblCb = document.createElement('span');
         lblCb.className = 'preview-field-label';
         lblCb.textContent = label || '\u2014';
         wrap.appendChild(lblCb);
         wrap.appendChild(cb);
+      } else if (tag === 'RadioButtonField' || tag === 'RadioButton') {
+        wrap.className = 'preview-control-wrap preview-field-row';
+        var radioLabel = document.createElement('span');
+        radioLabel.className = 'preview-field-label';
+        radioLabel.textContent = label || '\u2014';
+        var radioStack = document.createElement('div');
+        radioStack.className = 'preview-radio-stack';
+        ['Да', 'Нет', 'Авто'].forEach(function(option, idx) {
+          var optionWrap = document.createElement('label');
+          optionWrap.className = 'preview-radio-option';
+          var rb = document.createElement('input');
+          rb.type = 'radio';
+          rb.name = (item.id || item.name || 'radio') + '-preview';
+          rb.disabled = true;
+          if (idx === 1) rb.checked = true;
+          var text = document.createElement('span');
+          text.textContent = option;
+          optionWrap.appendChild(rb);
+          optionWrap.appendChild(text);
+          radioStack.appendChild(optionWrap);
+        });
+        wrap.appendChild(radioLabel);
+        wrap.appendChild(radioStack);
+      } else if (tag === 'ListBox' || tag === 'ListField') {
+        wrap.className = 'preview-control-wrap preview-field-row';
+        var listLabel = document.createElement('span');
+        listLabel.className = 'preview-field-label';
+        listLabel.textContent = label || '\u2014';
+        var listMock = document.createElement('div');
+        listMock.className = 'preview-list-mock';
+        ['Первый элемент', 'Второй элемент', 'Третий элемент'].forEach(function(option, idx) {
+          var row = document.createElement('div');
+          row.className = 'preview-list-row' + (idx === 1 ? ' active' : '');
+          row.textContent = option;
+          listMock.appendChild(row);
+        });
+        wrap.appendChild(listLabel);
+        wrap.appendChild(listMock);
       } else if (tag === 'Button' || tag === 'Hyperlink') {
         var btn = document.createElement(tag === 'Hyperlink' ? 'a' : 'button');
         btn.textContent = label || (item.name || tag);
@@ -996,7 +1277,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         var dataTr = document.createElement('tr');
         var td = document.createElement('td');
         td.colSpan = Math.max(1, tableCols.length);
-        td.textContent = '(пусто)';
+        td.textContent = '\u041d\u0435\u0442 \u0434\u0430\u043d\u043d\u044b\u0445';
         td.style.color = 'var(--vscode-descriptionForeground)';
         dataTr.appendChild(td);
         tbody.appendChild(dataTr);
@@ -1044,8 +1325,12 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         var id = (item.id != null ? String(item.id) : (item.name != null ? String(item.name) : ''));
         var tag = item.tag || '';
         var isContainer = isContainerTag(tag);
+        var layoutMeta = isContainer ? getContainerLayoutMeta(item) : null;
         var div = document.createElement('div');
         div.className = 'preview-item ' + (isContainer ? 'preview-container' : 'preview-control');
+        if (layoutMeta) {
+          div.classList.add('preview-container-' + layoutMeta.orientation);
+        }
         div.dataset.id = id;
         div.dataset.tag = tag;
         var controlWrap = createPreviewControl(item, tag);
@@ -1074,12 +1359,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
             if (!isContainer) return;
             var ch = div.querySelector('.preview-children');
             var kids = ch ? ch.children : [];
-            var dropY = e.clientY;
-            var idx = 0;
-            for (var i = 0; i < kids.length; i++) {
-              var r = kids[i].getBoundingClientRect();
-              if (dropY > r.top + r.height / 2) idx = i + 1;
-            }
+            var idx = getPreviewDropIndex(kids, e, layoutMeta ? layoutMeta.orientation : 'vertical');
             vscode.postMessage({ type: 'addElementFromRequisite', requisiteName: requisiteName, dataPath: requisiteName, targetId: id, index: idx, source: 'preview' });
             return;
           }
@@ -1089,12 +1369,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
           if (formModel && formModel.childItemsRoot && isDescendantOfItem(formModel.childItemsRoot, srcId, id)) return;
           var ch = div.querySelector('.preview-children');
           var kids = ch ? ch.children : [];
-          var dropY = e.clientY;
-          var idx = 0;
-          for (var i = 0; i < kids.length; i++) {
-            var r = kids[i].getBoundingClientRect();
-            if (dropY > r.top + r.height / 2) idx = i + 1;
-          }
+          var idx = getPreviewDropIndex(kids, e, layoutMeta ? layoutMeta.orientation : 'vertical');
           vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: id, index: idx, source: 'preview' });
         };
         div._formItem = item;
@@ -1137,7 +1412,15 @@ export function getWebviewHtml(webview: vscode.Webview): string {
           }
         } else if (isContainer && item.childItems && item.childItems.length && controlWrap._mockupChildContainer) {
           var childWrap = controlWrap._mockupChildContainer;
-          childWrap.className = 'preview-children' + (tag === 'AutoCommandBar' ? ' preview-buttons-container' : '');
+          var childClasses = ['preview-children', 'preview-children-' + (layoutMeta ? layoutMeta.orientation : 'vertical')];
+          if (layoutMeta && layoutMeta.shouldIndentChildren) childClasses.push('preview-children-indented');
+          if (tag === 'AutoCommandBar') childClasses.push('preview-buttons-container');
+          if (layoutMeta && layoutMeta.containerClassHints && layoutMeta.containerClassHints.length) {
+            layoutMeta.containerClassHints.forEach(function(hint) {
+              childClasses.push('preview-' + String(hint).replace(/[^a-z0-9_-]/gi, '-'));
+            });
+          }
+          childWrap.className = childClasses.join(' ');
           renderPreview(item.childItems, childWrap);
         }
       });
@@ -1378,11 +1661,27 @@ export function getWebviewHtml(webview: vscode.Webview): string {
           };
         }
         var nameCell = document.createElement('td');
-        nameCell.textContent = attr.name || '';
+        var namePrimary = document.createElement('span');
+        namePrimary.className = 'attr-name-primary';
+        namePrimary.textContent = attr.name || '';
+        nameCell.appendChild(namePrimary);
+        var attrId = attr.id && attr.id !== attr.name ? String(attr.id) : '';
+        if (attrId) {
+          var nameSecondary = document.createElement('span');
+          nameSecondary.className = 'attr-name-secondary';
+          nameSecondary.textContent = attrId;
+          nameCell.appendChild(nameSecondary);
+        }
         var usageCell = document.createElement('td');
-        usageCell.textContent = getAttributeUsage(attr);
+        var usageText = document.createElement('span');
+        usageText.className = 'attr-usage';
+        usageText.textContent = getAttributeUsage(attr);
+        usageCell.appendChild(usageText);
         var typeCell = document.createElement('td');
-        typeCell.textContent = attr.fromTree ? '\u2014' : (getAttributeTypeDisplay(attr) || '\u2014');
+        var typeText = document.createElement('span');
+        typeText.className = 'attr-type-muted';
+        typeText.textContent = attr.fromTree ? '\u2014' : (getAttributeTypeDisplay(attr) || '\u2014');
+        typeCell.appendChild(typeText);
         tr.appendChild(nameCell);
         tr.appendChild(usageCell);
         tr.appendChild(typeCell);
@@ -1876,19 +2175,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       vscode.postMessage({ type: 'deleteCommand', commandId: selectedCommandId, commandName: selectedCommandId });
     });
 
-    document.querySelectorAll('[data-tab]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var t = this.dataset.tab;
-        document.querySelectorAll('[data-tab]').forEach(function(b) {
-          b.classList.toggle('active', b.dataset.tab === t);
-          b.setAttribute('aria-selected', b.dataset.tab === t ? 'true' : 'false');
-        });
-        document.getElementById('preview-form').style.display = t === 'form' ? 'block' : 'none';
-        document.getElementById('preview-module').style.display = t === 'module' ? 'block' : 'none';
-      });
-    });
-    document.querySelector('[data-tab="form"]').classList.add('active');
-    document.getElementById('btn-open-module').addEventListener('click', () => {
+    document.getElementById('tb-module').addEventListener('click', () => {
       vscode.postMessage({ type: 'openModule' });
     });
 

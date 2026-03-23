@@ -226,7 +226,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   // Form editor (custom editor for Ext/Form.xml)
-  const formEditorProvider = new FormEditorProvider();
+  const formEditorProvider = new FormEditorProvider((payload) => {
+    if (propertiesProvider) {
+      void propertiesProvider.showFormSelectionProperties(payload);
+    }
+  });
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider('1c-form-editor', formEditorProvider, {
       webviewOptions: { retainContextWhenHidden: true },
