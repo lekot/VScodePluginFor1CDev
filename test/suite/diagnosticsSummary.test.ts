@@ -137,6 +137,51 @@ suite('diagnosticsSummary', () => {
     );
   });
 
+  test('full bundle with multiple config roots (snapshot)', () => {
+    const text = buildDiagnosticsSummaryText({
+      productLabel: 'CDT 41',
+      extensionVersion: '0.26.0',
+      vscodeVersion: '1.99.0',
+      extensionRunMode: 'production',
+      workspaceFolders: [
+        { name: 'alpha', path: '/proj/alpha' },
+        { name: 'beta', path: '/proj/beta' },
+      ],
+      configRoots: [
+        {
+          configPath: '/proj/alpha/sub/Configuration',
+          workspaceFolderPath: '/proj/alpha',
+          format: 'Designer',
+        },
+        {
+          configPath: '/proj/beta',
+          workspaceFolderPath: '/proj/beta',
+          format: 'EDT',
+        },
+      ],
+      nowIso: '2026-03-24T00:00:00.000Z',
+    });
+
+    assert.strictEqual(
+      text,
+      [
+        'CDT 41 diagnostics',
+        'Extension version: 0.26.0',
+        'VS Code version: 1.99.0',
+        'Extension run mode: production',
+        'Workspace folders: 2',
+        '  - alpha: /proj/alpha',
+        '  - beta: /proj/beta',
+        'Configuration roots: 2',
+        '  - /proj/alpha/sub/Configuration',
+        '    format: Designer (workspace folder: /proj/alpha)',
+        '  - /proj/beta',
+        '    format: EDT (workspace folder: /proj/beta)',
+        'Generated (UTC): 2026-03-24T00:00:00.000Z',
+      ].join('\n')
+    );
+  });
+
   test('lists folders and config roots with formats', () => {
     const text = buildDiagnosticsSummaryText({
       productLabel: 'CDT 41',
