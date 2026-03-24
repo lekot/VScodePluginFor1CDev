@@ -41,6 +41,17 @@ import {
 import { ReloadReason } from './types/reloadContracts';
 import { buildDiagnosticsSummaryText } from './utils/diagnosticsSummary';
 
+function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
+  switch (mode) {
+    case vscode.ExtensionMode.Development:
+      return 'development';
+    case vscode.ExtensionMode.Test:
+      return 'test';
+    default:
+      return 'production';
+  }
+}
+
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
   if (node) {
@@ -759,6 +770,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           hostPlatform: process.platform,
           uiLocale: vscode.env.language,
           remoteName: vscode.env.remoteName,
+          extensionRunMode: extensionRunModeLabel(context.extensionMode),
           workspaceFolders,
           configRoots,
         });

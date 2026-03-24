@@ -25,6 +25,8 @@ export type BuildDiagnosticsSummaryOptions = {
   appName?: string;
   /** Remote extension host (`vscode.env.remoteName`), e.g. wsl, ssh-remote — omitted when local. */
   remoteName?: string;
+  /** `vscode.ExtensionContext.extensionMode` as production | development | test. */
+  extensionRunMode?: string;
   workspaceFolders: DiagnosticsWorkspaceFolder[];
   configRoots: DiagnosticsConfigRoot[];
   /** Override timestamp line (tests). */
@@ -51,6 +53,9 @@ export function buildDiagnosticsSummaryText(options: BuildDiagnosticsSummaryOpti
   }
   if (options.remoteName) {
     lines.push(`Remote: ${options.remoteName}`);
+  }
+  if (options.extensionRunMode) {
+    lines.push(`Extension run mode: ${options.extensionRunMode}`);
   }
   lines.push(`Workspace folders: ${workspaceFolders.length}`);
 
