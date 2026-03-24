@@ -21,6 +21,8 @@ export type BuildDiagnosticsSummaryOptions = {
   hostPlatform?: string;
   /** VS Code UI locale (`vscode.env.language`), e.g. `en`, `ru`. */
   uiLocale?: string;
+  /** Host editor display name (`vscode.env.appName`), e.g. Visual Studio Code, Cursor. */
+  appName?: string;
   workspaceFolders: DiagnosticsWorkspaceFolder[];
   configRoots: DiagnosticsConfigRoot[];
   /** Override timestamp line (tests). */
@@ -36,6 +38,9 @@ export function buildDiagnosticsSummaryText(options: BuildDiagnosticsSummaryOpti
     `Extension version: ${extensionVersion}`,
     `VS Code version: ${vscodeVersion}`,
   ];
+  if (options.appName) {
+    lines.push(`Host app: ${options.appName}`);
+  }
   if (options.hostPlatform) {
     lines.push(`Host platform: ${options.hostPlatform}`);
   }
