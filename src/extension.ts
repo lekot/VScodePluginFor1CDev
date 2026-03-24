@@ -755,6 +755,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           productLabel: 'CDT 41',
           extensionVersion: String(context.extension.packageJSON.version ?? 'unknown'),
           vscodeVersion: vscode.version,
+          hostPlatform: process.platform,
           workspaceFolders,
           configRoots,
         });

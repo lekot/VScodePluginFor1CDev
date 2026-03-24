@@ -17,6 +17,8 @@ export type BuildDiagnosticsSummaryOptions = {
   productLabel: string;
   extensionVersion: string;
   vscodeVersion: string;
+  /** Node `process.platform` (e.g. win32, darwin, linux). */
+  hostPlatform?: string;
   workspaceFolders: DiagnosticsWorkspaceFolder[];
   configRoots: DiagnosticsConfigRoot[];
   /** Override timestamp line (tests). */
@@ -31,8 +33,11 @@ export function buildDiagnosticsSummaryText(options: BuildDiagnosticsSummaryOpti
     `${productLabel} diagnostics`,
     `Extension version: ${extensionVersion}`,
     `VS Code version: ${vscodeVersion}`,
-    `Workspace folders: ${workspaceFolders.length}`,
   ];
+  if (options.hostPlatform) {
+    lines.push(`Host platform: ${options.hostPlatform}`);
+  }
+  lines.push(`Workspace folders: ${workspaceFolders.length}`);
 
   for (const folder of workspaceFolders) {
     lines.push(`  - ${folder.name}: ${folder.path}`);
