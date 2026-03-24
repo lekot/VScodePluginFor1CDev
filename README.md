@@ -286,6 +286,12 @@ npm run test:smoke -- -await-user-close
 npm run lint
 ```
 
+Быстрая проверка перед PR (строгий линт, линт async для тестовых entrypoints, core-набор без VS Code):
+
+```bash
+npm run verify
+```
+
 ### Форматирование
 
 ```bash

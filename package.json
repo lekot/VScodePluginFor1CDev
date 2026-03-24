@@ -115,6 +115,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.copyDiagnosticsSummary",
+        "title": "Copy diagnostics summary",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.openFormEditor",
         "title": "Открыть в редакторе форм",
         "category": "CDT 41"
@@ -318,6 +323,7 @@
     "lint": "eslint src --ext ts",
     "lint:test-promises": "eslint --no-eslintrc -c .eslintrc.test-promises.json test/runCore.ts test/runTest.ts test/runSmoke.ts test/suite/index.ts test/suite/smoke/index.ts test/suite/fixtureMatrix.test.ts --max-warnings 0",
     "lint:ci": "eslint src --ext ts --max-warnings 0",
+    "verify": "npm run lint:ci && npm run lint:test-promises && npm run test:ci",
     "test": "tsc -p tsconfig.test.json && node -e \"require('fs').cpSync('test/fixtures','out/test/fixtures',{recursive:true,force:true})\" && node node_modules/mocha/bin/mocha --ui tdd out/test/suite/*.test.js",
     "copy:test-fixtures": "node -e \"require('fs').cpSync('test/fixtures','out/test/fixtures',{recursive:true,force:true})\"",
     "test:ci": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node out/test/runCore.js",
