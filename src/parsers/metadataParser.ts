@@ -119,13 +119,33 @@ export class MetadataParser {
     const dot = id.indexOf('.');
     const typeName = dot >= 0 ? id.slice(0, dot) : id;
     const elementName = dot >= 0 ? id.slice(dot + 1) : element.name;
+
+    let loaded: TreeNode[] = [];
     if (format === ConfigFormat.Designer) {
-      return await DesignerParser.loadChildrenForElement(configPath, typeName, elementName, element);
+      loaded = await DesignerParser.loadChildrenForElement(configPath, typeName, elementName, element);
+    } else if (format === ConfigFormat.EDT) {
+      loaded = await EdtParser.loadChildrenForElement(configPath, typeName, elementName, element);
+    } else {
+      return [];
     }
-    if (format === ConfigFormat.EDT) {
-      return await EdtParser.loadChildrenForElement(configPath, typeName, elementName, element);
+
+    // Lazy expand of a tabular section instance: parsers may return [] when there are no columns;
+    // still expose the «Реквизиты» placeholder so the user can add the first column (same as R6 TabularSections path).
+    if (
+      element.parent?.id === 'TabularSections' &&
+      element.type === MetadataType.TabularSection &&
+      element.id.startsWith('TabularSections.') &&
+      element.id !== 'TabularSections'
+    ) {
+      element.children = loaded;
+      for (const c of loaded) {
+        c.parent = element;
+      }
+      ensureTabularSectionColumnsPlaceholder(element);
+      return element.children ?? loaded;
     }
-    return [];
+
+    return loaded;
   }
 
   /**
