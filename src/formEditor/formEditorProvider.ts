@@ -6,7 +6,15 @@
 
 import * as vscode from 'vscode';
 import type { FormModel } from './formModel';
-import { createSerializedMessageHandler, type MessageHandlerContext } from './formMessageHandler';
+import {
+  createSerializedMessageHandler,
+  isFormDocumentDirty,
+  type FormSelectionPayload,
+  type MessageHandlerContext,
+  type FormSelectionEntityType,
+  applyExternalPropertyChange,
+} from './formMessageHandler';
+import { FormCommandEngine } from './formCommandEngine';
 import { getWebviewHtml } from './formWebviewHtml';
 export { moveNodeInModel } from './formTreeOperations'; // backward compat
 
@@ -18,8 +26,22 @@ class FormEditorDocument implements vscode.CustomDocument {
 
 export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<FormEditorDocument> {
   private documentModel = new Map<string, FormModel>();
+  private commandEngines = new Map<string, FormCommandEngine>();
+  private dirtyDocuments = new Set<string>();
+  private contextByDocument = new Map<string, MessageHandlerContext>();
+  private activeSelectionDocumentUri: string | null = null;
+  private latestSelectionByDocument = new Map<
+    string,
+    {
+      entityType: FormSelectionEntityType;
+      entityId?: string;
+      entityName?: string;
+    }
+  >();
 
-  constructor() {}
+  constructor(
+    private readonly onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void
+  ) {}
 
   openCustomDocument(uri: vscode.Uri): FormEditorDocument {
     return new FormEditorDocument(uri);
@@ -35,8 +57,87 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       document,
       webviewPanel,
       documentModel: this.documentModel,
+      commandEngines: this.commandEngines,
+      dirtyDocuments: this.dirtyDocuments,
+      onFormSelectionChanged: (payload) => {
+        if (payload) {
+          this.activeSelectionDocumentUri = payload.docUri;
+          this.latestSelectionByDocument.set(payload.docUri, {
+            entityType: payload.entityType,
+            entityId: payload.id,
+            entityName: payload.name,
+          });
+        } else {
+          this.activeSelectionDocumentUri = null;
+        }
+        this.onFormSelectionChanged?.(payload);
+      },
     };
+    const docKey = document.uri.toString();
+    this.contextByDocument.set(docKey, ctx);
     const onMessage = createSerializedMessageHandler(ctx);
     webviewPanel.webview.onDidReceiveMessage(onMessage);
+    webviewPanel.onDidDispose(() => {
+      void this.handlePanelDispose(document.uri);
+    });
+  }
+
+  private async handlePanelDispose(documentUri: vscode.Uri): Promise<void> {
+    const key = documentUri.toString();
+    const ctx = this.contextByDocument.get(key);
+    const dirty = ctx ? isFormDocumentDirty(ctx) : this.dirtyDocuments.has(key);
+    this.contextByDocument.delete(key);
+    this.commandEngines.delete(key);
+    this.dirtyDocuments.delete(key);
+    this.latestSelectionByDocument.delete(key);
+    if (this.activeSelectionDocumentUri === key) {
+      this.activeSelectionDocumentUri = null;
+    }
+    if (!dirty) {
+      return;
+    }
+    const closeLabel = 'Закрыть без сохранения';
+    const returnLabel = 'Вернуться к форме';
+    const choice = await vscode.window.showWarningMessage(
+      'Чувак, ты не сохранился. Закрыть форму без сохранения?',
+      { modal: true },
+      closeLabel,
+      returnLabel
+    );
+    if (choice === returnLabel) {
+      await vscode.commands.executeCommand('vscode.openWith', documentUri, '1c-form-editor');
+    }
+  }
+
+  public applySelectionPropertyChange(payload: {
+    docUri: string;
+    entityType: FormSelectionEntityType;
+    entityId?: string;
+    entityName?: string;
+    scope: 'property' | 'event';
+    key: string;
+    value: unknown;
+  }): void {
+    if (!payload.docUri || payload.docUri !== this.activeSelectionDocumentUri) {
+      return;
+    }
+    const ctx = this.contextByDocument.get(payload.docUri);
+    if (!ctx) {
+      return;
+    }
+    const selection = this.latestSelectionByDocument.get(payload.docUri);
+    if (!selection || selection.entityType !== payload.entityType) {
+      return;
+    }
+    const hasPayloadEntity = Boolean(payload.entityId || payload.entityName);
+    const hasSelectionEntity = Boolean(selection.entityId || selection.entityName);
+    if (hasPayloadEntity && hasSelectionEntity) {
+      const payloadEntityKey = payload.entityId ?? payload.entityName ?? '';
+      const selectionEntityKey = selection.entityId ?? selection.entityName ?? '';
+      if (payloadEntityKey !== selectionEntityKey) {
+        return;
+      }
+    }
+    applyExternalPropertyChange(ctx, payload);
   }
 }

@@ -12,6 +12,7 @@ import {
   FormChildItem,
   FormAttribute,
   FormCommand,
+  FormParameter,
   FormEventItem,
   FormParseResult,
   FormParseError,
@@ -212,6 +213,76 @@ function parseCommandsContent(content: unknown[] | undefined): FormCommand[] {
 }
 
 /**
+ * Parse Parameters section: array of Parameter elements.
+ */
+function parseParametersContent(content: unknown[] | undefined): FormParameter[] {
+  const result: FormParameter[] = [];
+  if (!Array.isArray(content)) {return result;}
+  for (const item of content) {
+    if (!item || typeof item !== 'object') {continue;}
+    const o = item as Record<string, unknown>;
+    const paramContent = getByLocalName(o, 'Parameter');
+    if (paramContent === undefined) {continue;}
+    const c = Array.isArray(paramContent) ? paramContent : [paramContent];
+    const { name: n, id } = getAttrsFromContent(c);
+    const properties: Record<string, unknown> = {};
+    for (const prop of c) {
+      if (!prop || typeof prop !== 'object') {continue;}
+      const p = prop as Record<string, unknown>;
+      const k = Object.keys(p)[0];
+      if (!k || k.startsWith('@') || k === '#text') {continue;}
+      properties[k] = p[k];
+    }
+    if (n || Object.keys(properties).length > 0 || id) {
+      result.push({ name: n ?? 'Parameter', id, properties });
+    }
+  }
+  return result;
+}
+
+/**
+ * Parse CommandSet section and return ExcludedCommand values.
+ */
+function parseExcludedCommands(content: unknown[] | undefined): string[] {
+  const result: string[] = [];
+  if (!Array.isArray(content)) {return result;}
+  for (const item of content) {
+    if (!item || typeof item !== 'object') {continue;}
+    const o = item as Record<string, unknown>;
+    const excludedRaw = getByLocalName(o, 'ExcludedCommand');
+    if (excludedRaw === undefined) {continue;}
+    const excludedItems = Array.isArray(excludedRaw) ? excludedRaw : [excludedRaw];
+    for (const excludedItem of excludedItems) {
+      if (excludedItem && typeof excludedItem === 'object' && !Array.isArray(excludedItem)) {
+        const excludedObj = excludedItem as Record<string, unknown>;
+        if (excludedObj['#text'] != null) {
+          const value = String(excludedObj['#text']).trim();
+          if (value) {result.push(value);}
+        }
+      } else if (excludedItem != null) {
+        const value = String(excludedItem).trim();
+        if (value) {result.push(value);}
+      }
+    }
+  }
+  return result;
+}
+
+function getTopLevelSection(formContent: unknown[], targetTag: string): { tag: string; content: unknown[] } | undefined {
+  for (const item of formContent) {
+    if (!item || typeof item !== 'object') {continue;}
+    const o = item as Record<string, unknown>;
+    for (const k of Object.keys(o)) {
+      if (k === ':@' || k.startsWith('@') || k === '#text') {continue;}
+      if (localName(k) !== targetTag) {continue;}
+      const val = o[k];
+      return { tag: k, content: Array.isArray(val) ? val : [val] };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Parse Attributes section when it's direct array of Attribute objects (form root level).
  */
 function parseAttributesSection(formContent: unknown[]): FormAttribute[] {
@@ -235,6 +306,45 @@ function parseCommandsSection(formContent: unknown[]): FormCommand[] {
     if (Array.isArray(cmds)) {return parseCommandsContent(cmds as unknown[]);}
   }
   return [];
+}
+
+function isParametersFirstClassLossless(content: unknown[], parsedParameters: FormParameter[]): boolean {
+  if (!parsedParameters.length) {return false;}
+  const parameterEntries = content.filter((item) => {
+    if (!item || typeof item !== 'object') {return false;}
+    return Object.keys(item as Record<string, unknown>).some((k) => localName(k) === 'Parameter');
+  }).length;
+  if (parameterEntries !== parsedParameters.length) {return false;}
+  for (const item of content) {
+    if (!item || typeof item !== 'object') {return false;}
+    const keys = Object.keys(item as Record<string, unknown>).filter((k) => k !== ':@' && !k.startsWith('@') && k !== '#text');
+    if (keys.length !== 1 || localName(keys[0]) !== 'Parameter') {return false;}
+  }
+  return true;
+}
+
+function isCommandSetFirstClassLossless(content: unknown[], parsedExcludedCommands: string[]): boolean {
+  if (!parsedExcludedCommands.length) {return false;}
+  let countedExcluded = 0;
+  for (const item of content) {
+    if (!item || typeof item !== 'object') {return false;}
+    const keys = Object.keys(item as Record<string, unknown>).filter((k) => k !== ':@' && !k.startsWith('@') && k !== '#text');
+    if (keys.length !== 1 || localName(keys[0]) !== 'ExcludedCommand') {return false;}
+    const o = item as Record<string, unknown>;
+    const excludedRaw = getByLocalName(o, 'ExcludedCommand');
+    const excludedItems = Array.isArray(excludedRaw) ? excludedRaw : [excludedRaw];
+    for (const excludedItem of excludedItems) {
+      if (excludedItem && typeof excludedItem === 'object' && !Array.isArray(excludedItem)) {
+        const excludedObj = excludedItem as Record<string, unknown>;
+        const childKeys = Object.keys(excludedObj).filter((k) => k !== '#text');
+        if (childKeys.length > 0 || excludedObj['#text'] == null) {return false;}
+      } else if (excludedItem == null) {
+        return false;
+      }
+      countedExcluded += 1;
+    }
+  }
+  return countedExcluded === parsedExcludedCommands.length;
 }
 
 /**
@@ -355,21 +465,43 @@ export async function parseFormXml(
     return { error: 'В Form.xml не найден корневой элемент Form.' } as FormParseError;
   }
 
+  const parametersSection = getTopLevelSection(formContent, 'Parameters');
+  const commandSetSection = getTopLevelSection(formContent, 'CommandSet');
+  const parameters = parametersSection ? parseParametersContent(parametersSection.content) : [];
+  const excludedCommands = commandSetSection ? parseExcludedCommands(commandSetSection.content) : [];
+  const parametersFirstClassLossless = parametersSection
+    ? isParametersFirstClassLossless(parametersSection.content, parameters)
+    : true;
+  const commandSetFirstClassLossless = commandSetSection
+    ? isCommandSetFirstClassLossless(commandSetSection.content, excludedCommands)
+    : true;
   const autoCommandBar = parseAutoCommandBar(formContent);
   const model: FormModel = {
     childItemsRoot: parseRootChildItems(formContent),
     attributes: parseAttributesSection(formContent),
     commands: parseCommandsSection(formContent),
+    parameters,
+    excludedCommands,
     formEvents: parseFormEventsSection(formContent),
     autoCommandBarName: autoCommandBar.name,
     autoCommandBarId: autoCommandBar.id,
+    parametersFirstClassLossless,
+    commandSetFirstClassLossless,
   };
 
   model.xmlnsDeclarations = Object.keys(xmlnsDeclarations).length ? xmlnsDeclarations : undefined;
   model.version = formVersion;
 
-  // Extract top-level fields (not ChildItems/Attributes/Commands/Events/AutoCommandBar)
-  const SKIP_TAGS = new Set(['ChildItems', 'Attributes', 'Commands', 'Events', 'AutoCommandBar']);
+  // Extract top-level fields (not first-class sections)
+  const SKIP_TAGS = new Set([
+    'ChildItems',
+    'Attributes',
+    'Commands',
+    'Events',
+    'AutoCommandBar',
+    'Parameters',
+    'CommandSet',
+  ]);
   const topLevelFields: Array<{ tag: string; content: unknown[] }> = [];
   for (const item of formContent) {
     if (!item || typeof item !== 'object') {continue;}
@@ -377,7 +509,13 @@ export async function parseFormXml(
     for (const k of Object.keys(o)) {
       if (k === ':@' || k.startsWith('@') || k === '#text') {continue;}
       const local = k.includes(':') ? k.split(':').pop()! : k;
-      if (SKIP_TAGS.has(local)) {continue;}
+      if (local === 'Parameters') {
+        if (model.parametersFirstClassLossless) {continue;}
+      } else if (local === 'CommandSet') {
+        if (model.commandSetFirstClassLossless) {continue;}
+      } else if (SKIP_TAGS.has(local)) {
+        continue;
+      }
       const val = o[k];
       topLevelFields.push({ tag: k, content: Array.isArray(val) ? val : [] });
     }

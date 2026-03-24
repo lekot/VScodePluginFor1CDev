@@ -35,6 +35,10 @@ function normalizePropertyValue(v: unknown): unknown[] | undefined {
   return [{ '#text': String(v) }];
 }
 
+function localName(key: string): string {
+  return key.includes(':') ? key.split(':').pop()! : key;
+}
+
 function buildChildItem(item: FormChildItem): Record<string, unknown[]> {
   const content: unknown[] = [];
   const at: Record<string, string> = {};
@@ -76,21 +80,46 @@ export function buildFormContent(model: FormModel): unknown[] {
   if (model.version) {
     rootAttrs['@_version'] = model.version;
   } else {
-    rootAttrs['@_version'] = '2.20';
+    rootAttrs['@_version'] = '2.17';
   }
   formContent.push({ ':@': rootAttrs });
+  const topLevelFields = model.topLevelFields ?? [];
+  const rawCommandSet = topLevelFields.find((field) => localName(field.tag) === 'CommandSet');
+  const rawParameters = topLevelFields.find((field) => localName(field.tag) === 'Parameters');
+  const canWriteCommandSetFirstClass = model.commandSetFirstClassLossless !== false;
+  const canWriteParametersFirstClass = model.parametersFirstClassLossless !== false;
   if (model.topLevelFields && model.topLevelFields.length) {
     for (const field of model.topLevelFields) {
+      const tagName = localName(field.tag);
+      if (tagName === 'CommandSet' || tagName === 'Parameters') {continue;}
       formContent.push({ [field.tag]: field.content });
     }
   }
-  if (model.autoCommandBarName !== undefined && model.autoCommandBarName !== '') {
-    const autoBarAttrs: Record<string, string> = { '@_name': model.autoCommandBarName };
-    if (model.autoCommandBarId !== undefined && model.autoCommandBarId !== '') {
-      autoBarAttrs['@_id'] = model.autoCommandBarId;
-    }
-    formContent.push({ AutoCommandBar: [{ ':@': autoBarAttrs }] });
+  if (canWriteCommandSetFirstClass && model.excludedCommands && model.excludedCommands.length) {
+    formContent.push({
+      CommandSet: model.excludedCommands.map((commandName) => ({
+        ExcludedCommand: [{ '#text': commandName }],
+      })),
+    });
+  } else if (rawCommandSet) {
+    formContent.push({ [rawCommandSet.tag]: rawCommandSet.content });
   }
+  const autoCommandBarName = model.autoCommandBarName !== undefined && model.autoCommandBarName !== ''
+    ? model.autoCommandBarName
+    : 'ФормаКоманднаяПанель';
+  const autoCommandBarId = model.autoCommandBarId !== undefined && model.autoCommandBarId !== ''
+    ? model.autoCommandBarId
+    : '-1';
+  formContent.push({
+    AutoCommandBar: [
+      {
+        ':@': {
+          '@_name': autoCommandBarName,
+          '@_id': autoCommandBarId,
+        },
+      },
+    ],
+  });
   if (model.formEvents && model.formEvents.length) {
     formContent.push({ Events: buildEventsArray(model.formEvents) });
   }
@@ -117,6 +146,27 @@ export function buildFormContent(model: FormModel): unknown[] {
         return { Attribute: arr };
       }),
     });
+  }
+  if (canWriteParametersFirstClass && model.parameters && model.parameters.length) {
+    formContent.push({
+      Parameters: model.parameters.map((param) => {
+        const arr: unknown[] = [];
+        const at: Record<string, string> = {};
+        if (param.name != null && String(param.name) !== '') {at['@_name'] = String(param.name);}
+        if (param.id != null && String(param.id) !== '') {at['@_id'] = String(param.id);}
+        if (Object.keys(at).length) {arr.push({ ':@': at });}
+        const props = param.properties ?? {};
+        for (const [k, v] of Object.entries(props)) {
+          if (k === ':@' || k.startsWith('@')) {continue;}
+          const value = normalizePropertyValue(v);
+          if (value === undefined) {continue;}
+          arr.push({ [k]: value });
+        }
+        return { Parameter: arr };
+      }),
+    });
+  } else if (rawParameters) {
+    formContent.push({ [rawParameters.tag]: rawParameters.content });
   }
   if (model.commands && model.commands.length) {
     formContent.push({

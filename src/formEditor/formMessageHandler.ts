@@ -30,16 +30,48 @@ import {
   openModuleInEditor,
   getFormEditorTitle,
 } from './formFileIo';
+import {
+  FormCommandEngine,
+  type FormEditorCommand,
+} from './formCommandEngine';
+import { isFormCommandEngineEnabled } from './formCommandEngineFeatureFlag';
 
 /** Minimal custom document interface (matches FormEditorDocument). */
 export interface FormEditorDocument {
   readonly uri: vscode.Uri;
 }
 
+export type FormSelectionEntityType = 'element' | 'attribute' | 'command';
+
+export interface FormSelectionPayload {
+  source: 'form-editor';
+  docUri: string;
+  entityType: FormSelectionEntityType;
+  id?: string;
+  name?: string;
+  tag?: string;
+  properties: Record<string, unknown>;
+  events: Record<string, string>;
+  selectedIds: string[];
+}
+
 export interface MessageHandlerContext {
   document: FormEditorDocument;
   webviewPanel: vscode.WebviewPanel;
   documentModel: Map<string, FormModel>;
+  commandEngines?: Map<string, FormCommandEngine>;
+  dirtyDocuments?: Set<string>;
+  onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void;
+}
+
+export interface ExternalPropertyChangePayload {
+  docUri: string;
+  entityType: FormSelectionEntityType;
+  entityId?: string;
+  entityName?: string;
+  scope: 'property' | 'event';
+  key: string;
+  value: unknown;
 }
 
 export type FormMessage = { type: string; [key: string]: unknown };
@@ -76,22 +108,38 @@ export async function handleMessage(
       await handleSave(ctx, msg);
       break;
     case 'propertyChange':
-      handlePropertyChange(ctx, msg);
+      if (isFormCommandEngineEnabled()) {
+        handlePropertyChangeWithEngine(ctx, msg);
+      } else {
+        handlePropertyChange(ctx, msg);
+      }
       break;
     case 'dragDrop':
       await handleDragDrop(ctx, msg);
       break;
     case 'addElement':
-      await handleAddElement(ctx, msg);
+      if (isFormCommandEngineEnabled()) {
+        await handleAddElementWithEngine(ctx, msg);
+      } else {
+        await handleAddElement(ctx, msg);
+      }
       break;
     case 'deleteElement':
-      await handleDeleteElement(ctx, msg);
+      if (isFormCommandEngineEnabled()) {
+        await handleDeleteElementWithEngine(ctx, msg);
+      } else {
+        await handleDeleteElement(ctx, msg);
+      }
       break;
     case 'pasteElement':
       await handlePasteElement(ctx, msg);
       break;
     case 'moveElementSibling':
-      await handleMoveElementSibling(ctx, msg);
+      if (isFormCommandEngineEnabled()) {
+        await handleMoveElementSiblingWithEngine(ctx, msg);
+      } else {
+        await handleMoveElementSibling(ctx, msg);
+      }
       break;
     case 'addElementFromRequisite':
       await handleAddElementFromRequisite(ctx, msg);
@@ -114,6 +162,9 @@ export async function handleMessage(
     case 'openModule':
       await handleOpenModule(ctx, msg);
       break;
+    case 'selectElement':
+      handleSelectElement(ctx, msg);
+      break;
   }
 }
 
@@ -127,12 +178,79 @@ export function createSerializedMessageHandler(
   return createSerializedExecutor((msg: FormMessage) => handleMessage(ctx, msg));
 }
 
+export function applyExternalPropertyChange(
+  ctx: MessageHandlerContext,
+  payload: ExternalPropertyChangePayload
+): void {
+  const documentKey = ctx.document.uri.toString();
+  if (!payload.key || payload.docUri !== documentKey) {
+    return;
+  }
+  const model = ctx.documentModel.get(documentKey);
+  if (!model) {
+    return;
+  }
+
+  const elementId = payload.entityId ?? payload.entityName;
+  const section =
+    payload.entityType === 'attribute'
+      ? 'attributes'
+      : payload.entityType === 'command'
+        ? 'commands'
+        : payload.scope === 'event'
+          ? 'events'
+          : undefined;
+
+  applyPropertyChange(model, {
+    elementId,
+    section,
+    key: payload.key,
+    value: payload.value,
+  });
+
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function postError(webviewPanel: vscode.WebviewPanel, message: string): void {
   webviewPanel.webview.postMessage({ type: 'error', message });
+}
+
+function getDocumentKey(ctx: MessageHandlerContext): string {
+  return ctx.document.uri.toString();
+}
+
+function getCleanTitle(ctx: MessageHandlerContext): string {
+  return getFormEditorTitle(ctx.document.uri.fsPath);
+}
+
+function updateTitleWithDirty(ctx: MessageHandlerContext, dirty: boolean): void {
+  const baseTitle = getCleanTitle(ctx);
+  ctx.webviewPanel.title = dirty ? `${baseTitle} *` : baseTitle;
+}
+
+function setDirtyState(ctx: MessageHandlerContext, dirty: boolean): void {
+  const key = getDocumentKey(ctx);
+  if (!ctx.dirtyDocuments) {
+    ctx.dirtyDocuments = new Set<string>();
+  }
+  if (dirty) {
+    ctx.dirtyDocuments.add(key);
+  } else {
+    ctx.dirtyDocuments.delete(key);
+  }
+  updateTitleWithDirty(ctx, dirty);
+}
+
+function isDocumentDirty(ctx: MessageHandlerContext): boolean {
+  const key = getDocumentKey(ctx);
+  const viaEngine = ctx.commandEngines?.get(key)?.isDirty() ?? false;
+  const viaLegacy = ctx.dirtyDocuments?.has(key) ?? false;
+  return viaEngine || viaLegacy;
 }
 
 function sendFormData(
@@ -160,7 +278,8 @@ async function reloadFormAndSend(ctx: MessageHandlerContext): Promise<void> {
   }
   const fileMissing = isFormParseFileMissing(result as never) || result.fileMissing;
   ctx.documentModel.set(ctx.document.uri.toString(), result.model);
-  ctx.webviewPanel.title = getFormEditorTitle(formXmlPath);
+  resetCommandEngine(ctx);
+  setDirtyState(ctx, false);
   ctx.webviewPanel.webview.postMessage({
     type: 'formData',
     formModel: result.model,
@@ -189,14 +308,17 @@ async function handleSave(
   msg: Record<string, unknown>
 ): Promise<void> {
   const formXmlPath = ctx.document.uri.fsPath;
-  const model = (msg.formModel as FormModel | undefined) ?? ctx.documentModel.get(ctx.document.uri.toString());
+  const key = getDocumentKey(ctx);
+  const model = (msg.formModel as FormModel | undefined) ?? ctx.documentModel.get(key);
   if (!model) {
     postError(ctx.webviewPanel, 'Нет данных для сохранения.');
     return;
   }
   try {
     await saveFormModel(formXmlPath, model);
-    ctx.documentModel.set(ctx.document.uri.toString(), model);
+    ctx.documentModel.set(key, model);
+    ctx.commandEngines?.get(key)?.markSaved();
+    setDirtyState(ctx, false);
     ctx.webviewPanel.webview.postMessage({ type: 'saved' });
     vscode.window.showInformationMessage(MESSAGES.SAVE_SUCCESS);
   } catch (err) {
@@ -234,6 +356,51 @@ function handlePropertyChange(
     });
   }
   // No disk write — in-memory only (Requirement 4.4)
+  setDirtyState(ctx, true);
+}
+
+function handlePropertyChangeWithEngine(
+  ctx: MessageHandlerContext,
+  msg: Record<string, unknown>
+): void {
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  if (!model || msg.key === undefined) {
+    return;
+  }
+  const engine = getOrCreateCommandEngine(ctx, model);
+  const elementIds = msg.elementIds as string[] | undefined;
+  if (elementIds && elementIds.length > 0) {
+    for (const elementId of elementIds) {
+      const result = engine.execute({
+        type: 'propertyChange',
+        payload: {
+          elementId,
+          section: msg.section as string | undefined,
+          key: msg.key as string,
+          value: msg.value,
+        },
+      });
+      if (!result.ok) {
+        postError(ctx.webviewPanel, result.error);
+        return;
+      }
+    }
+    return;
+  }
+  const result = engine.execute({
+    type: 'propertyChange',
+    payload: {
+      elementId: msg.elementId as string | undefined,
+      section: msg.section as string | undefined,
+      key: msg.key as string,
+      value: msg.value,
+    },
+  });
+  if (!result.ok) {
+    postError(ctx.webviewPanel, result.error);
+    return;
+  }
+  setDirtyState(ctx, true);
 }
 
 async function handleDragDrop(
@@ -256,14 +423,8 @@ async function handleDragDrop(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after dragDrop failed', err);
-    postError(ctx.webviewPanel, message);
-  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handleAddElement(
@@ -284,14 +445,35 @@ async function handleAddElement(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after addElement failed', err);
-    postError(ctx.webviewPanel, message);
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
+}
+
+async function handleAddElementWithEngine(
+  ctx: MessageHandlerContext,
+  msg: Record<string, unknown>
+): Promise<void> {
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  if (!model) {
+    postError(ctx.webviewPanel, 'Нет модели формы.');
+    return;
   }
+  const command: FormEditorCommand = {
+    type: 'addElement',
+    payload: {
+      parentId: msg.parentId as string | undefined,
+      tag: (msg.tag as string) || 'InputField',
+      name: (msg.name as string) || 'NewItem',
+      index: typeof msg.index === 'number' ? msg.index : undefined,
+    },
+  };
+  const result = getOrCreateCommandEngine(ctx, model).execute(command);
+  if (!result.ok) {
+    postError(ctx.webviewPanel, result.error);
+    return;
+  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handleDeleteElement(
@@ -311,14 +493,32 @@ async function handleDeleteElement(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after delete failed', err);
-    postError(ctx.webviewPanel, message);
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
+}
+
+async function handleDeleteElementWithEngine(
+  ctx: MessageHandlerContext,
+  msg: Record<string, unknown>
+): Promise<void> {
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  const elementIds = msg.elementIds as string[] | undefined;
+  const elementId = msg.elementId as string | undefined;
+  const ids = elementIds?.length ? elementIds : (elementId ? [elementId] : []);
+  if (!model || !ids.length) {
+    postError(ctx.webviewPanel, 'Неверные параметры deleteElement.');
+    return;
   }
+  const result = getOrCreateCommandEngine(ctx, model).execute({
+    type: 'deleteElement',
+    payload: { elementIds: ids },
+  });
+  if (!result.ok) {
+    postError(ctx.webviewPanel, result.error);
+    return;
+  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handlePasteElement(
@@ -343,14 +543,8 @@ async function handlePasteElement(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after paste failed', err);
-    postError(ctx.webviewPanel, message);
-  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handleMoveElementSibling(
@@ -369,14 +563,52 @@ async function handleMoveElementSibling(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after moveSibling failed', err);
-    postError(ctx.webviewPanel, message);
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
+}
+
+async function handleMoveElementSiblingWithEngine(
+  ctx: MessageHandlerContext,
+  msg: Record<string, unknown>
+): Promise<void> {
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  const elementId = msg.elementId as string | undefined;
+  const direction = msg.direction as 'up' | 'down' | undefined;
+  if (!model || !elementId || (direction !== 'up' && direction !== 'down')) {
+    postError(ctx.webviewPanel, 'Неверные параметры moveElementSibling.');
+    return;
   }
+  const result = getOrCreateCommandEngine(ctx, model).execute({
+    type: 'moveElementSibling',
+    payload: { elementId, direction },
+  });
+  if (!result.ok) {
+    postError(ctx.webviewPanel, result.error);
+    return;
+  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
+}
+
+function getOrCreateCommandEngine(
+  ctx: MessageHandlerContext,
+  model: FormModel
+): FormCommandEngine {
+  const key = ctx.document.uri.toString();
+  if (!ctx.commandEngines) {
+    ctx.commandEngines = new Map<string, FormCommandEngine>();
+  }
+  const existing = ctx.commandEngines.get(key);
+  if (existing) {
+    return existing;
+  }
+  const created = new FormCommandEngine(model);
+  ctx.commandEngines.set(key, created);
+  return created;
+}
+
+function resetCommandEngine(ctx: MessageHandlerContext): void {
+  ctx.commandEngines?.delete(ctx.document.uri.toString());
 }
 
 async function handleAddElementFromRequisite(
@@ -397,14 +629,8 @@ async function handleAddElementFromRequisite(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after addElementFromRequisite failed', err);
-    postError(ctx.webviewPanel, message);
-  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handleAddAttribute(ctx: MessageHandlerContext): Promise<void> {
@@ -418,14 +644,8 @@ async function handleAddAttribute(ctx: MessageHandlerContext): Promise<void> {
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after addAttribute failed', err);
-    postError(ctx.webviewPanel, message);
-  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handleDeleteAttribute(
@@ -445,14 +665,8 @@ async function handleDeleteAttribute(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after deleteAttribute failed', err);
-    postError(ctx.webviewPanel, message);
-  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handleAddCommand(ctx: MessageHandlerContext): Promise<void> {
@@ -466,14 +680,8 @@ async function handleAddCommand(ctx: MessageHandlerContext): Promise<void> {
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after addCommand failed', err);
-    postError(ctx.webviewPanel, message);
-  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
 }
 
 async function handleDeleteCommand(
@@ -493,14 +701,12 @@ async function handleDeleteCommand(
     postError(ctx.webviewPanel, result.error);
     return;
   }
-  try {
-    await saveFormModel(ctx.document.uri.fsPath, model);
-    sendFormData(ctx, model);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save after deleteCommand failed', err);
-    postError(ctx.webviewPanel, message);
-  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
+}
+
+export function isFormDocumentDirty(ctx: MessageHandlerContext): boolean {
+  return isDocumentDirty(ctx);
 }
 
 async function handleGetProcedures(ctx: MessageHandlerContext): Promise<void> {
@@ -519,4 +725,91 @@ async function handleOpenModule(
 ): Promise<void> {
   const procedureName = msg.procedureName as string | undefined;
   await openModuleInEditor(ctx.document.uri.fsPath, procedureName);
+}
+
+function handleSelectElement(
+  ctx: MessageHandlerContext,
+  msg: Record<string, unknown>
+): void {
+  if (!ctx.onFormSelectionChanged) {
+    return;
+  }
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  if (!model) {
+    ctx.onFormSelectionChanged(undefined);
+    return;
+  }
+  const selectedIds = Array.isArray(msg.selectedIds)
+    ? msg.selectedIds
+        .filter((id): id is string => typeof id === 'string')
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0)
+    : [];
+  const elementId = typeof msg.elementId === 'string' ? msg.elementId : undefined;
+  const targetId = elementId ?? selectedIds[0];
+  if (!targetId) {
+    ctx.onFormSelectionChanged(undefined);
+    return;
+  }
+
+  const attribute = model.attributes.find((a) => a.id === targetId || a.name === targetId);
+  if (attribute) {
+    ctx.onFormSelectionChanged({
+      source: 'form-editor',
+      docUri: ctx.document.uri.toString(),
+      entityType: 'attribute',
+      id: attribute.id,
+      name: attribute.name,
+      properties: attribute.properties ?? {},
+      events: {},
+      selectedIds,
+    });
+    return;
+  }
+
+  const command = model.commands.find((c) => c.id === targetId || c.name === targetId);
+  if (command) {
+    ctx.onFormSelectionChanged({
+      source: 'form-editor',
+      docUri: ctx.document.uri.toString(),
+      entityType: 'command',
+      id: command.id,
+      name: command.name,
+      properties: command.properties ?? {},
+      events: {},
+      selectedIds,
+    });
+    return;
+  }
+
+  const element = findElementById(model.childItemsRoot, targetId);
+  if (!element) {
+    ctx.onFormSelectionChanged(undefined);
+    return;
+  }
+  ctx.onFormSelectionChanged({
+    source: 'form-editor',
+    docUri: ctx.document.uri.toString(),
+    entityType: 'element',
+    id: element.id,
+    name: element.name,
+    tag: element.tag,
+    properties: element.properties ?? {},
+    events: element.events ?? {},
+    selectedIds,
+  });
+}
+
+function findElementById(items: FormChildItem[], targetId: string): FormChildItem | undefined {
+  for (const item of items) {
+    const id = item.id ?? item.name;
+    if (id === targetId) {
+      return item;
+    }
+    const found = findElementById(item.childItems ?? [], targetId);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }

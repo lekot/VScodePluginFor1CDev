@@ -21,6 +21,7 @@ export const coreSuiteFiles: string[] = [
   'suite/formTreeRootDragPreservation.test.js',
   'suite/formModelUtils.test.js',
   'suite/formModelCommands.test.js',
+  'suite/formCommandEngine.test.js',
   'suite/roleXmlParser.test.js',
   'suite/roleXmlSerializer.test.js',
   'suite/rightsValidator.test.js',
