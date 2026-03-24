@@ -38,6 +38,10 @@ export const MESSAGES = {
   LOGS_EXPORTED: 'Логи экспортированы',
   LOGS_EXPORT_FAILED: 'Не удалось экспортировать логи',
 
+  // Diagnostics clipboard
+  DIAGNOSTICS_COPIED: 'CDT 41: сводка диагностики скопирована в буфер обмена.',
+  DIAGNOSTICS_COPY_FAILED: 'CDT 41: не удалось скопировать сводку диагностики',
+
   // Log messages
   EXTENSION_ACTIVATED: 'CDT 41 extension activated',
   EXTENSION_DEACTIVATED: 'CDT 41 extension deactivated',

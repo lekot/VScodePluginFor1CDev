@@ -48,6 +48,8 @@ VS Code расширение для визуализации и редактир
 
 ### Команды (CDT 41)
 
+Практический чеклист «день без EDT»: [docs/analytics/user-workflow-without-edt.md](docs/analytics/user-workflow-without-edt.md).
+
 | Команда | Описание |
 |--------|----------|
 | CDT 41: Open Metadata Tree | Открыть панель дерева метаданных |
@@ -67,6 +69,8 @@ VS Code расширение для визуализации и редактир
 | Next search result | Следующий результат поиска |
 | Previous search result | Предыдущий результат поиска |
 | Clear tree cache | Очистить кэш дерева |
+| CDT 41: Export logs | Экспорт логов расширения |
+| CDT 41: Copy diagnostics summary | Сводка для багрепортов: версии, хост-приложение, ОС, язык UI, remote (если есть), режим запуска расширения (production / development / test), workspace, корни конфигурации |
 
 ### Горячие клавиши (в панели CDT 41)
 
@@ -284,6 +288,12 @@ npm run test:smoke -- -await-user-close
 
 ```bash
 npm run lint
+```
+
+Быстрая проверка перед PR (строгий линт, линт async для тестовых entrypoints, core-набор без VS Code):
+
+```bash
+npm run verify
 ```
 
 ### Форматирование

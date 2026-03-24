@@ -70,4 +70,20 @@ suite('FormatDetector', () => {
     const result = await FormatDetector.findAllConfigurationRoots([]);
     assert.deepStrictEqual(result, []);
   });
+
+  test('matrix small fixture (XML-only export) is detected as Designer', async () => {
+    const configPath = path.join(__dirname, '../fixtures/matrix/small');
+    const format = await FormatDetector.detect(configPath);
+
+    assert.strictEqual(format, ConfigFormat.Designer);
+  });
+
+  test('findAllConfigurationRoots discovers nested matrix fixture configs', async () => {
+    const fixturesPath = path.join(__dirname, '../fixtures');
+    const result = await FormatDetector.findAllConfigurationRoots([fixturesPath]);
+
+    const smallMatrix = result.find((r) => r.configPath.endsWith(path.join('matrix', 'small')));
+    assert.ok(smallMatrix, 'expected matrix/small configuration root');
+    assert.strictEqual(smallMatrix?.workspaceFolderPath, fixturesPath);
+  });
 });

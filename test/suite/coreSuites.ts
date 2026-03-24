@@ -13,6 +13,7 @@ export const coreSuiteFiles: string[] = [
   'suite/registerRecorderDocumentLinker.test.js',
   'suite/matrixTargetPredicate.test.js',
   'suite/dataProcessorOperations.test.js',
+  'suite/diagnosticsSummary.test.js',
   'suite/configHelpers.test.js',
   'suite/formDragBugCondition.test.js',
   'suite/formDragPreservation.test.js',
