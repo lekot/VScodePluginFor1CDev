@@ -928,7 +928,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       return '';
     }
     function normalizeContainerOrientation(rawValue) {
-      var v = String(rawValue || '').toLowerCase().replace(/[\s_-]+/g, '');
+      var v = String(rawValue || '').toLowerCase().replace(/[\\s_-]+/g, '');
       if (!v) return null;
       if (v.indexOf('horizontal') >= 0 || v.indexOf('horiz') >= 0 || v === 'row' || v.indexOf('leftright') >= 0 || v.indexOf('горизонт') >= 0 || v.indexOf('слеванаправо') >= 0) return 'horizontal';
       if (v.indexOf('vertical') >= 0 || v.indexOf('vert') >= 0 || v === 'column' || v.indexOf('topbottom') >= 0 || v.indexOf('вертикал') >= 0 || v.indexOf('сверхувниз') >= 0) return 'vertical';
