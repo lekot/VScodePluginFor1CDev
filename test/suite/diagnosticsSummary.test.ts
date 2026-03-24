@@ -14,6 +14,7 @@ suite('diagnosticsSummary', () => {
 
     assert.ok(text.includes('Workspace folders: 0'));
     assert.ok(!text.includes('Host platform:'));
+    assert.ok(!text.includes('Host architecture:'));
     assert.ok(!text.includes('Host app:'));
     assert.ok(!text.includes('VS Code UI locale:'));
     assert.ok(!text.includes('\nRemote:'));
@@ -28,6 +29,7 @@ suite('diagnosticsSummary', () => {
       extensionVersion: '0.1.0',
       vscodeVersion: '1.80.0',
       hostPlatform: 'linux',
+      hostArchitecture: 'x64',
       workspaceFolders: [],
       configRoots: [],
       nowIso: '2026-03-24T12:00:00.000Z',
@@ -35,8 +37,10 @@ suite('diagnosticsSummary', () => {
 
     assert.ok(text.includes('VS Code version: 1.80.0'));
     assert.ok(text.includes('Host platform: linux'));
+    assert.ok(text.includes('Host architecture: x64'));
     assert.ok(text.indexOf('VS Code version: 1.80.0') < text.indexOf('Host platform: linux'));
-    assert.ok(text.indexOf('Host platform: linux') < text.indexOf('Workspace folders: 0'));
+    assert.ok(text.indexOf('Host platform: linux') < text.indexOf('Host architecture: x64'));
+    assert.ok(text.indexOf('Host architecture: x64') < text.indexOf('Workspace folders: 0'));
   });
 
   test('includes host app name when provided', () => {
@@ -61,13 +65,17 @@ suite('diagnosticsSummary', () => {
       extensionVersion: '0.1.0',
       vscodeVersion: '1.80.0',
       hostPlatform: 'win32',
+      hostArchitecture: 'arm64',
       uiLocale: 'ru',
       workspaceFolders: [],
       configRoots: [],
       nowIso: '2026-03-24T12:00:00.000Z',
     });
 
+    assert.ok(text.includes('Host architecture: arm64'));
     assert.ok(text.includes('VS Code UI locale: ru'));
+    assert.ok(text.indexOf('Host platform: win32') < text.indexOf('Host architecture: arm64'));
+    assert.ok(text.indexOf('Host architecture: arm64') < text.indexOf('VS Code UI locale: ru'));
     assert.ok(text.indexOf('VS Code UI locale: ru') < text.indexOf('Workspace folders: 0'));
   });
 
@@ -110,6 +118,7 @@ suite('diagnosticsSummary', () => {
       vscodeVersion: '1.99.0',
       appName: 'Visual Studio Code',
       hostPlatform: 'linux',
+      hostArchitecture: 'x64',
       uiLocale: 'ru',
       remoteName: 'wsl',
       extensionRunMode: 'development',
@@ -126,6 +135,7 @@ suite('diagnosticsSummary', () => {
         'VS Code version: 1.99.0',
         'Host app: Visual Studio Code',
         'Host platform: linux',
+        'Host architecture: x64',
         'VS Code UI locale: ru',
         'Remote: wsl',
         'Extension run mode: development',
