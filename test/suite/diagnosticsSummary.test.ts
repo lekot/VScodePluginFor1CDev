@@ -16,6 +16,7 @@ suite('diagnosticsSummary', () => {
     assert.ok(!text.includes('Host platform:'));
     assert.ok(!text.includes('Host app:'));
     assert.ok(!text.includes('VS Code UI locale:'));
+    assert.ok(!text.includes('\nRemote:'));
     assert.ok(text.includes('Configuration roots: (none found'));
     assert.ok(text.endsWith('Generated (UTC): 2026-03-24T12:00:00.000Z'));
   });
@@ -67,6 +68,23 @@ suite('diagnosticsSummary', () => {
 
     assert.ok(text.includes('VS Code UI locale: ru'));
     assert.ok(text.indexOf('VS Code UI locale: ru') < text.indexOf('Workspace folders: 0'));
+  });
+
+  test('includes remote host name when provided', () => {
+    const text = buildDiagnosticsSummaryText({
+      productLabel: 'CDT 41',
+      extensionVersion: '0.1.0',
+      vscodeVersion: '1.80.0',
+      uiLocale: 'en',
+      remoteName: 'wsl',
+      workspaceFolders: [],
+      configRoots: [],
+      nowIso: '2026-03-24T12:00:00.000Z',
+    });
+
+    assert.ok(text.includes('Remote: wsl'));
+    assert.ok(text.indexOf('VS Code UI locale: en') < text.indexOf('Remote: wsl'));
+    assert.ok(text.indexOf('Remote: wsl') < text.indexOf('Workspace folders: 0'));
   });
 
   test('lists folders and config roots with formats', () => {

@@ -23,6 +23,8 @@ export type BuildDiagnosticsSummaryOptions = {
   uiLocale?: string;
   /** Host editor display name (`vscode.env.appName`), e.g. Visual Studio Code, Cursor. */
   appName?: string;
+  /** Remote extension host (`vscode.env.remoteName`), e.g. wsl, ssh-remote — omitted when local. */
+  remoteName?: string;
   workspaceFolders: DiagnosticsWorkspaceFolder[];
   configRoots: DiagnosticsConfigRoot[];
   /** Override timestamp line (tests). */
@@ -46,6 +48,9 @@ export function buildDiagnosticsSummaryText(options: BuildDiagnosticsSummaryOpti
   }
   if (options.uiLocale) {
     lines.push(`VS Code UI locale: ${options.uiLocale}`);
+  }
+  if (options.remoteName) {
+    lines.push(`Remote: ${options.remoteName}`);
   }
   lines.push(`Workspace folders: ${workspaceFolders.length}`);
 

@@ -70,7 +70,7 @@ VS Code расширение для визуализации и редактир
 | Previous search result | Предыдущий результат поиска |
 | Clear tree cache | Очистить кэш дерева |
 | CDT 41: Export logs | Экспорт логов расширения |
-| CDT 41: Copy diagnostics summary | Сводка для багрепортов: версии, хост-приложение (`vscode.env.appName`), ОС, язык UI, workspace, корни конфигурации (в буфер обмена) |
+| CDT 41: Copy diagnostics summary | Сводка для багрепортов: версии, хост-приложение, ОС, язык UI, remote (`vscode.env.remoteName`, если WSL/SSH/Dev Container), workspace, корни конфигурации |
 
 ### Горячие клавиши (в панели CDT 41)
 

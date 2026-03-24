@@ -758,6 +758,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           appName: vscode.env.appName,
           hostPlatform: process.platform,
           uiLocale: vscode.env.language,
+          remoteName: vscode.env.remoteName,
           workspaceFolders,
           configRoots,
         });
