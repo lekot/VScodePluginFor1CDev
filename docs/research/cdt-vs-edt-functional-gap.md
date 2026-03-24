@@ -37,7 +37,7 @@
 - Просмотр/редактирование свойств через веб-панель, открытие исходного XML.
 - Операции жизненного цикла элементов: создание, дублирование, удаление, переименование (в границах реализованной логики и типов).
 - Визуальный редактор типов реквизитов (ограниченный набор ссылочных видов).
-- Редактор прав роли (в т.ч. работа с `restrictionTemplate` / RLS в ветке EDT `Ext/Rights.xml` — контекст и баги: [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18), паритет с EDT: [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28)).
+- Редактор прав роли (в т.ч. работа с `restrictionTemplate` / RLS в ветке EDT `Ext/Rights.xml`; транспортный баг [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) по факту закрыт в коде и тестах на 2026-03-24, паритет с EDT остаётся в [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28)).
 - Кастомный редактор форм по `Ext/Form.xml` (в README явно отмечен как **нестабильный прототип**).
 
 Этого **недостаточно**, чтобы заменить EDT как **единственную** среду разработки конфигурации для большинства команд.
@@ -101,7 +101,7 @@
 
 **Схемная / платформенно-осмысленная валидация текста RLS** (`restrictionTemplate` и т.п.) относится к **паритету редактора прав с EDT** ([#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28)) — «что допустимо в XML с точки зрения ожиданий платформы», а не к транспортному сценарию «текст из webview доехал до файла» ([#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18)). В [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) комментарий в трекере имеет смысл оставить: закрытие #18 не снимает задачу валидации содержимого; она живёт в матрице [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28). Подробнее см. **§12**.
 
-**Трекер:** [#28 — §5 паритет редактора прав и RLS с EDT](https://github.com/lekot/VScodePluginFor1CDev/issues/28). Баг сохранения RLS: [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18).
+**Трекер:** [#28 — §5 паритет редактора прав и RLS с EDT](https://github.com/lekot/VScodePluginFor1CDev/issues/28). Транспортный баг сохранения RLS [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) фактически закрыт (см. ревью-заметку ниже).
 
 ---
 
@@ -201,11 +201,9 @@
 | §8 расширения | [#4](https://github.com/lekot/VScodePluginFor1CDev/issues/4) | Новые конфигурации и расширения в инструменте |
 | §8 / `ibcmd` | [#22](https://github.com/lekot/VScodePluginFor1CDev/issues/22), [#23](https://github.com/lekot/VScodePluginFor1CDev/issues/23) | Мастера FilterCriterion, ChartOfAccounts |
 | Фундамент CDT (не только EDT) | [#7](https://github.com/lekot/VScodePluginFor1CDev/issues/7) | Дерево узлов отдельно от XML |
-| §5 баг | [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) | Сохранение RLS без webview |
-| §4 / §7 | [#19](https://github.com/lekot/VScodePluginFor1CDev/issues/19) | Плейсхолдер в пустой ТЧ |
 | §2 / дерево | [#21](https://github.com/lekot/VScodePluginFor1CDev/issues/21) | Общий модуль — BSL в дереве |
 
-### 11.3. Матрица «боль / дёшево» для приоритизации (оценка на 2026-03-22)
+### 11.3. Матрица «боль / дёшево» для приоритизации (актуализация на 2026-03-24)
 
 Субъективные баллы для планирования, не для KPI. Шкалы:
 
@@ -216,11 +214,10 @@
 
 **Формула приоритета:** `Приоритет = 2 × Боль + Дёшево` (максимум **30**). Боль учитывается **вдвое сильнее**, чем «дёшевизна», чтобы не выходили наверх узкие мастера при низкой боли относительно паритета прав, merge и платформы.
 
-Строки отсортированы по убыванию `Приоритет`.
+Строки отсортированы по убыванию `Приоритет` и отражают **текущий открытый backlog**. Исторический транспортный баг RLS [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) вынесен из матрицы (см. §11.4).
 
 | Issue / тема | § | Боль | Дёшево | Приоритет |
 |--------------|---|------|--------|------------|
-| [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) | §5 баг | 8 | 9 | **25** |
 | [#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30) | §7 проверка | 8 | 6 | **22** |
 | [#12](https://github.com/lekot/VScodePluginFor1CDev/issues/12) | §7 merge | 10 | 2 | **22** |
 | [#27](https://github.com/lekot/VScodePluginFor1CDev/issues/27) | §4 UI | 9 | 3 | **21** |
@@ -228,16 +225,26 @@
 | [#26](https://github.com/lekot/VScodePluginFor1CDev/issues/26) | §3 отчёты | 9 | 2 | **20** |
 | [#29](https://github.com/lekot/VScodePluginFor1CDev/issues/29) | §6 ИБ / отладка | 9 | 2 | **20** |
 | [#4](https://github.com/lekot/VScodePluginFor1CDev/issues/4) | §8 расширения | 7 | 5 | **19** |
-| [#19](https://github.com/lekot/VScodePluginFor1CDev/issues/19) | §4 / §7 | 5 | 8 | **18** |
 | [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28) | §5 паритет прав | 7 | 4 | **18** |
 | [#22](https://github.com/lekot/VScodePluginFor1CDev/issues/22), [#23](https://github.com/lekot/VScodePluginFor1CDev/issues/23) | §8 мастера | 5 | 6 | **16** |
 | [#7](https://github.com/lekot/VScodePluginFor1CDev/issues/7) | фундамент | 6 | 3 | **15** |
 | [#25](https://github.com/lekot/VScodePluginFor1CDev/issues/25) | §2 BSL / рефакторинг | 7 | 1 | **15** |
 | [#31](https://github.com/lekot/VScodePluginFor1CDev/issues/31) | §8 хвост | 6 | 2 | **14** |
 
-**Заметки:** [#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30) и [#12](https://github.com/lekot/VScodePluginFor1CDev/issues/12) совпадают по баллу (22): высокая боль при апдейтах у merge компенсирует низкую «дёшевизну»; проверка конфигурации дешевле по объёму, но боль ниже, чем у полного 3-way merge. [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28) (18) выше [#22](https://github.com/lekot/VScodePluginFor1CDev/issues/22)/[#23](https://github.com/lekot/VScodePluginFor1CDev/issues/23) (16) — с весом ×2 на боль паритет прав не уступает нишевым мастерам. Крупные блоки (**#27**, **#26**, **#29**) остаются дорогими по реализации при высокой боли; дробление на подзадачи даст отдельные строки матрицы.
+**Заметки:** [#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30) и [#12](https://github.com/lekot/VScodePluginFor1CDev/issues/12) совпадают по баллу (22): высокая боль при апдейтах у merge компенсирует низкую «дёшевизну»; проверка конфигурации дешевле по объёму, но боль ниже, чем у полного 3-way merge. [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28) (18) выше [#22](https://github.com/lekot/VScodePluginFor1CDev/issues/22)/[#23](https://github.com/lekot/VScodePluginFor1CDev/issues/23) (16) — с весом ×2 на боль паритет прав не уступает нишевым мастерам. Крупные блоки (**#27**, **#26**, **#29**) остаются дорогими по реализации при высокой боли; дробление на подзадачи даст отдельные строки матрицы. Транспортный RLS-баг [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) не участвует в текущем ранжировании, так как вынесен в «фактически закрыто» (§11.4).
 
 Трекер живёт быстрее статичного markdown: при планировании **сверяйтесь с актуальным списком issues**.
+
+---
+
+### 11.4. Актуализация статуса по факту реализации (ревью 2026-03-24)
+
+- **Пункт «сохранение RLS без webview» (issue [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18)) считать фактически закрытым в кодовой базе CDT 41.**
+- Основание: в `RolesRightsEditorProvider.handleSave()` реализован route `save` с `restrictionTemplatesText` и fallback-flush `requestSavePayload/savePayload` для внешнего сохранения; запись идёт в `Ext/Rights.xml`.
+- Подтверждение тестами: `test/suite/rightsEditor.integration.test.ts` покрывает сценарии button-save, triggerSave/flush, wrong requestId, empty flush и конкурентные/route кейсы; `test/suite/rightsXmlTemplates.test.ts` покрывает вставку/очистку `restrictionTemplate`.
+- Прогон на ревью: `.\test-suite.bat` — `489 passing`, `1 pending`.
+- Остающийся EDT-gap по RLS относится к **паритету и платформенной/схемной валидации содержимого** (issue [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28)), а не к доставке текста в файл.
+- **Пункт «плейсхолдер/контейнер Реквизиты в пустой ТЧ» (issue [#19](https://github.com/lekot/VScodePluginFor1CDev/issues/19)) считать фактически закрытым**: в lazy-сценарии гарантировано создаётся контейнер `TabularSections.<ИмяТЧ>.Attributes`, что позволяет добавить первый реквизит (фикс в `c207717` + edge-тест `metadataParser.edge.test.ts`).
 
 ---
 
