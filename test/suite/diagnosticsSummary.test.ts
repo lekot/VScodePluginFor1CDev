@@ -103,6 +103,40 @@ suite('diagnosticsSummary', () => {
     assert.ok(text.indexOf('Extension run mode: development') < text.indexOf('Workspace folders: 0'));
   });
 
+  test('full bundle field order (snapshot)', () => {
+    const text = buildDiagnosticsSummaryText({
+      productLabel: 'CDT 41',
+      extensionVersion: '0.26.0',
+      vscodeVersion: '1.99.0',
+      appName: 'Visual Studio Code',
+      hostPlatform: 'linux',
+      uiLocale: 'ru',
+      remoteName: 'wsl',
+      extensionRunMode: 'development',
+      workspaceFolders: [{ name: 'w', path: '/tmp/w' }],
+      configRoots: [],
+      nowIso: '2026-03-24T00:00:00.000Z',
+    });
+
+    assert.strictEqual(
+      text,
+      [
+        'CDT 41 diagnostics',
+        'Extension version: 0.26.0',
+        'VS Code version: 1.99.0',
+        'Host app: Visual Studio Code',
+        'Host platform: linux',
+        'VS Code UI locale: ru',
+        'Remote: wsl',
+        'Extension run mode: development',
+        'Workspace folders: 1',
+        '  - w: /tmp/w',
+        'Configuration roots: (none found under workspace folders, max search depth 5)',
+        'Generated (UTC): 2026-03-24T00:00:00.000Z',
+      ].join('\n')
+    );
+  });
+
   test('lists folders and config roots with formats', () => {
     const text = buildDiagnosticsSummaryText({
       productLabel: 'CDT 41',
