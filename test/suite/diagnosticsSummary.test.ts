@@ -14,6 +14,7 @@ suite('diagnosticsSummary', () => {
 
     assert.ok(text.includes('Workspace folders: 0'));
     assert.ok(!text.includes('Host platform:'));
+    assert.ok(!text.includes('VS Code UI locale:'));
     assert.ok(text.includes('Configuration roots: (none found'));
     assert.ok(text.endsWith('Generated (UTC): 2026-03-24T12:00:00.000Z'));
   });
@@ -32,6 +33,22 @@ suite('diagnosticsSummary', () => {
     assert.ok(text.includes('VS Code version: 1.80.0'));
     assert.ok(text.includes('Host platform: linux'));
     assert.ok(text.indexOf('Host platform: linux') < text.indexOf('Workspace folders: 0'));
+  });
+
+  test('includes UI locale when provided', () => {
+    const text = buildDiagnosticsSummaryText({
+      productLabel: 'CDT 41',
+      extensionVersion: '0.1.0',
+      vscodeVersion: '1.80.0',
+      hostPlatform: 'win32',
+      uiLocale: 'ru',
+      workspaceFolders: [],
+      configRoots: [],
+      nowIso: '2026-03-24T12:00:00.000Z',
+    });
+
+    assert.ok(text.includes('VS Code UI locale: ru'));
+    assert.ok(text.indexOf('VS Code UI locale: ru') < text.indexOf('Workspace folders: 0'));
   });
 
   test('lists folders and config roots with formats', () => {

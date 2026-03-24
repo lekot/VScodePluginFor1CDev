@@ -19,6 +19,8 @@ export type BuildDiagnosticsSummaryOptions = {
   vscodeVersion: string;
   /** Node `process.platform` (e.g. win32, darwin, linux). */
   hostPlatform?: string;
+  /** VS Code UI locale (`vscode.env.language`), e.g. `en`, `ru`. */
+  uiLocale?: string;
   workspaceFolders: DiagnosticsWorkspaceFolder[];
   configRoots: DiagnosticsConfigRoot[];
   /** Override timestamp line (tests). */
@@ -36,6 +38,9 @@ export function buildDiagnosticsSummaryText(options: BuildDiagnosticsSummaryOpti
   ];
   if (options.hostPlatform) {
     lines.push(`Host platform: ${options.hostPlatform}`);
+  }
+  if (options.uiLocale) {
+    lines.push(`VS Code UI locale: ${options.uiLocale}`);
   }
   lines.push(`Workspace folders: ${workspaceFolders.length}`);
 

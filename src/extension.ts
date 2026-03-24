@@ -756,6 +756,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           extensionVersion: String(context.extension.packageJSON.version ?? 'unknown'),
           vscodeVersion: vscode.version,
           hostPlatform: process.platform,
+          uiLocale: vscode.env.language,
           workspaceFolders,
           configRoots,
         });
