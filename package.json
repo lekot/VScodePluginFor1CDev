@@ -352,5 +352,8 @@
   },
   "dependencies": {
     "fast-xml-parser": "^4.3.0"
+  },
+  "c8": {
+    "include": ["out/src/**/*.js"]
   }
 }
