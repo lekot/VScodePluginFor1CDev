@@ -13,6 +13,7 @@
  *   IBCMD_PATH            — optional path to ibcmd.exe
  *   IBCMD_INFOBASE_CONFIG — optional YAML for target IB (required together with IBCMD_PATH for import)
  *   IBCMD_USER / IBCMD_PASSWORD / IBCMD_TIMEOUT_MS — optional (see docs/design/e2e-container-matrix-ibcmd.md §6.5)
+ *   IBMATRIX_SKIP_CONFIG_CHECK=1 — optional; skip `ibcmd infobase config check` after successful import (see design §6.6)
  */
 import './helpers/vscodeStubRegister';
 import { runContainerMatrix } from './matrix/containerMatrixRunner';
@@ -41,6 +42,7 @@ async function main(): Promise<void> {
         reportFile,
         stepSummary: report.stepSummary,
         ibcmd: report.ibcmd,
+        ibcmdCheck: report.ibcmdCheck,
         stepsTotal: report.steps.length,
       },
       null,
@@ -48,7 +50,7 @@ async function main(): Promise<void> {
     )
   );
 
-  const ibcmdFailed = report.ibcmd.status === 'failed';
+  const ibcmdFailed = report.ibcmd.status === 'failed' || report.ibcmdCheck.status === 'failed';
   const stepsFailed = report.stepSummary.failed > 0;
   if (stepsFailed || ibcmdFailed) {
     process.exit(1);

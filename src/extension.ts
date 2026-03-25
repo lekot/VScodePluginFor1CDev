@@ -40,6 +40,17 @@ import {
 } from './services/deleteReconcileRecovery';
 import { ReloadReason } from './types/reloadContracts';
 import { buildDiagnosticsSummaryText } from './utils/diagnosticsSummary';
+import { validateSubsystemCompositionRef } from './parsers/xmlChildObjects';
+import {
+  applySubsystemCompositionFileUpdate,
+  readSubsystemCompositionRefsFromFile,
+} from './services/subsystemCompositionFileUpdater';
+import { runIbcmdConfigCheckGate } from './services/ibcmdConfigCheckGate';
+import {
+  buildMissingIbcmdReportMessage,
+  getIbcmdLastReportPath,
+  getIbcmdTaskLabel,
+} from './services/ibcmdReportPaths';
 
 function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
   switch (mode) {
@@ -264,6 +275,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       Logger.info(MESSAGES.OPENING_PANEL);
       await loadMetadataTree();
     }
+  );
+
+  const openIbcmdReport = async (mode: 'check' | 'import'): Promise<void> => {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) {
+      vscode.window.showWarningMessage('No workspace folder is open.');
+      return;
+    }
+    const reportPath = getIbcmdLastReportPath(ws.uri.fsPath, mode);
+    if (!fs.existsSync(reportPath)) {
+      const taskLabel = getIbcmdTaskLabel(mode);
+      const action = await vscode.window.showWarningMessage(
+        buildMissingIbcmdReportMessage(mode, reportPath),
+        'Run task'
+      );
+      if (action === 'Run task') {
+        await vscode.commands.executeCommand('workbench.action.tasks.runTask', taskLabel);
+      }
+      return;
+    }
+    try {
+      await vscode.window.showTextDocument(vscode.Uri.file(reportPath), { preview: false });
+    } catch (err) {
+      Logger.error('Failed to open ibcmd report', err);
+      vscode.window.showErrorMessage(
+        `Не удалось открыть отчёт ibcmd: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  };
+
+  const openIbcmdCheckReportCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openIbcmdCheckReport',
+    async () => openIbcmdReport('check')
+  );
+
+  const openIbcmdImportReportCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openIbcmdImportReport',
+    async () => openIbcmdReport('import')
   );
 
   /** Find first Form node by traversing tree (expands path when revealing). */
@@ -840,6 +889,132 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
+  const addToSubsystemCompositionCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.addToSubsystemComposition',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(node);
+      if (!target || target.type !== MetadataType.Subsystem) {
+        vscode.window.showWarningMessage(MESSAGES.SUBSYSTEM_COMPOSITION_SELECT_SUBSYSTEM);
+        return;
+      }
+      if (!target.filePath || !treeDataProvider) {
+        vscode.window.showErrorMessage(MESSAGES.SUBSYSTEM_COMPOSITION_NO_FILE);
+        return;
+      }
+      const ref = await vscode.window.showInputBox({
+        title: MESSAGES.SUBSYSTEM_COMPOSITION_ADD_TITLE,
+        placeHolder: 'Catalog.Items',
+        validateInput: (value) => {
+          const v = (value || '').trim();
+          if (!v) {
+            return undefined;
+          }
+          const err = validateSubsystemCompositionRef(v);
+          return err !== null ? err : undefined;
+        },
+      });
+      if (ref === undefined) {
+        return;
+      }
+      const trimmed = ref.trim();
+      if (!trimmed) {
+        return;
+      }
+      const resolved = treeDataProvider.findRootObjectForCompositionRef(trimmed, target);
+      if (!resolved) {
+        const inOtherConfig = treeDataProvider.hasCompositionRefInOtherConfiguration(trimmed, target);
+        vscode.window.showErrorMessage(
+          inOtherConfig
+            ? MESSAGES.SUBSYSTEM_COMPOSITION_OBJECT_IN_OTHER_CONFIG
+            : MESSAGES.SUBSYSTEM_COMPOSITION_OBJECT_NOT_FOUND
+        );
+        return;
+      }
+      try {
+        const gate = await runIbcmdConfigCheckGate();
+        if (!gate.ok) {
+          vscode.window.showErrorMessage(
+            `Проверка валидности конфигурации (ibcmd) обязательна перед изменением состава подсистем: ${gate.message}`
+          );
+          return;
+        }
+        const { rejected } = await applySubsystemCompositionFileUpdate(target.filePath, {
+          add: [trimmed],
+          remove: [],
+        });
+        if (rejected.length > 0) {
+          vscode.window.showWarningMessage(
+            `${MESSAGES.SUBSYSTEM_COMPOSITION_REJECTED_PREFIX} ${rejected.map((r) => `${r.ref} (${r.reason})`).join('; ')}`
+          );
+        }
+        const cp = treeDataProvider.getConfigPathForNode(target);
+        if (cp) {
+          await invalidateTreeCacheOnly(cp);
+          await loadMetadataTree();
+        }
+        vscode.window.showInformationMessage(`${MESSAGES.SUBSYSTEM_COMPOSITION_ADD_OK} (${trimmed})`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        vscode.window.showErrorMessage(`${MESSAGES.SUBSYSTEM_COMPOSITION_WRITE_FAILED} ${msg}`);
+      }
+    }
+  );
+
+  const removeFromSubsystemCompositionCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.removeFromSubsystemComposition',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(node);
+      if (!target || target.type !== MetadataType.Subsystem) {
+        vscode.window.showWarningMessage(MESSAGES.SUBSYSTEM_COMPOSITION_SELECT_SUBSYSTEM);
+        return;
+      }
+      if (!target.filePath || !treeDataProvider) {
+        vscode.window.showErrorMessage(MESSAGES.SUBSYSTEM_COMPOSITION_NO_FILE);
+        return;
+      }
+      let refs: string[];
+      try {
+        refs = await readSubsystemCompositionRefsFromFile(target.filePath);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        vscode.window.showErrorMessage(`${MESSAGES.SUBSYSTEM_COMPOSITION_READ_FAILED} ${msg}`);
+        return;
+      }
+      if (refs.length === 0) {
+        vscode.window.showInformationMessage(MESSAGES.SUBSYSTEM_COMPOSITION_EMPTY);
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(refs, {
+        placeHolder: MESSAGES.SUBSYSTEM_COMPOSITION_REMOVE_PLACEHOLDER,
+      });
+      if (picked === undefined) {
+        return;
+      }
+      try {
+        const gate = await runIbcmdConfigCheckGate();
+        if (!gate.ok) {
+          vscode.window.showErrorMessage(
+            `Проверка валидности конфигурации (ibcmd) обязательна перед изменением состава подсистем: ${gate.message}`
+          );
+          return;
+        }
+        await applySubsystemCompositionFileUpdate(target.filePath, {
+          add: [],
+          remove: [picked],
+        });
+        const cp = treeDataProvider.getConfigPathForNode(target);
+        if (cp) {
+          await invalidateTreeCacheOnly(cp);
+          await loadMetadataTree();
+        }
+        vscode.window.showInformationMessage(`${MESSAGES.SUBSYSTEM_COMPOSITION_REMOVE_OK} (${picked})`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        vscode.window.showErrorMessage(`${MESSAGES.SUBSYSTEM_COMPOSITION_WRITE_FAILED} ${msg}`);
+      }
+    }
+  );
+
   const nextMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.nextMatch',
     () => {
@@ -878,6 +1053,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     openPanelCommand,
+    openIbcmdCheckReportCommand,
+    openIbcmdImportReportCommand,
     focusTreeCommand,
     getTreeReadyForTestCommand,
     refreshCommand,
@@ -901,6 +1078,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     filterByTypeCommand,
     filterBySubsystemCommand,
     clearSubsystemFilterCommand,
+    addToSubsystemCompositionCommand,
+    removeFromSubsystemCompositionCommand,
     nextMatchCommand,
     previousMatchCommand
   );

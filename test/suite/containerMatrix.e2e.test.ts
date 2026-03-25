@@ -31,6 +31,16 @@ function assertReportShape(report: ContainerMatrixReport): void {
     'ibcmd.exitCode'
   );
   assert.strictEqual(typeof report.ibcmd.logSnippet, 'string', 'ibcmd.logSnippet');
+  assert.ok(report.ibcmdCheck, 'report.ibcmdCheck');
+  assert.ok(
+    report.ibcmdCheck.status === 'executed' || report.ibcmdCheck.status === 'skipped' || report.ibcmdCheck.status === 'failed',
+    'ibcmdCheck.status'
+  );
+  assert.ok(
+    report.ibcmdCheck.exitCode === null || typeof report.ibcmdCheck.exitCode === 'number',
+    'ibcmdCheck.exitCode'
+  );
+  assert.strictEqual(typeof report.ibcmdCheck.logSnippet, 'string', 'ibcmdCheck.logSnippet');
 }
 
 suite('Container matrix e2e', () => {
@@ -89,6 +99,12 @@ suite('Container matrix e2e', () => {
       'without IBCMD_PATH (and no IBCMD_INFOBASE_CONFIG) ibcmd step must be skipped (design §6.5 / ADR-003)'
     );
     assert.strictEqual(report.ibcmd.exitCode, null, 'skipped ibcmd has null exitCode');
+    assert.strictEqual(report.ibcmdCheck.status, 'skipped', 'ibcmdCheck skipped when import skipped');
+    assert.strictEqual(report.ibcmdCheck.exitCode, null, 'skipped ibcmdCheck has null exitCode');
+    assert.ok(
+      report.ibcmdCheck.logSnippet.includes('import skipped'),
+      'ibcmdCheck should explain import was skipped'
+    );
 
     const resolvedExpected = path.resolve(matrixReportFile);
     assert.strictEqual(reportFile, resolvedExpected, 'reportFile follows MATRIX_REPORT_PATH');
@@ -103,6 +119,7 @@ suite('Container matrix e2e', () => {
     assert.strictEqual(parsed.configFormat, report.configFormat);
     assert.deepStrictEqual(parsed.stepSummary, report.stepSummary);
     assert.deepStrictEqual(parsed.ibcmd, report.ibcmd);
+    assert.deepStrictEqual(parsed.ibcmdCheck, report.ibcmdCheck);
     assert.strictEqual(parsed.steps.length, report.steps.length);
   });
 

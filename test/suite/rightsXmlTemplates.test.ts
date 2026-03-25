@@ -49,6 +49,23 @@ suite('Rights.xml restrictionTemplate string helpers', () => {
     assert.ok(out.includes('CDATA'));
     assert.ok(out.includes('a < b'));
   });
+
+  test('insertRestrictionTemplatesBeforeClosingRights falls back to append when closing Rights tag is missing', () => {
+    const malformed = '<?xml version="1.0"?><Rights><object><name>X</name></object>';
+    const tpl = '<restrictionTemplate><name>N</name></restrictionTemplate>';
+    const out = insertRestrictionTemplatesBeforeClosingRights(malformed, tpl);
+    assert.ok(out.includes('<restrictionTemplate>'), 'template block should not be dropped on malformed XML');
+    assert.ok(out.endsWith('\n'), 'fallback output keeps trailing newline for writer consistency');
+  });
+
+  test('insertRestrictionTemplatesBeforeClosingRights fallback still strips old templates first', () => {
+    const malformedWithOld =
+      '<?xml version="1.0"?><Rights><restrictionTemplate><name>OLD</name></restrictionTemplate><object><name>X</name></object>';
+    const tpl = '<restrictionTemplate><name>NEW</name></restrictionTemplate>';
+    const out = insertRestrictionTemplatesBeforeClosingRights(malformedWithOld, tpl);
+    assert.ok(!out.includes('<name>OLD</name>'), 'old template should be removed before fallback append');
+    assert.ok(out.includes('<name>NEW</name>'), 'new template should be present');
+  });
 });
 
 /**
@@ -169,7 +186,7 @@ suite('Rights.xml 1C XDTO root', () => {
 });
 
 suite('mergeRightsIntoDom with non-simple right', () => {
-  test('compactWrite false clears read but keeps restrictionByCondition on the right', async () => {
+  test('compactWrite true clears read but keeps restrictionByCondition on the right', async () => {
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-rights-merge-nonsimple-'));
     const p = path.join(tmp, 'Rights.xml');
     try {

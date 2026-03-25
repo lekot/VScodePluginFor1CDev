@@ -27,6 +27,16 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.openIbcmdCheckReport",
+        "title": "CDT 41: Open last ibcmd check report",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.openIbcmdImportReport",
+        "title": "CDT 41: Open last ibcmd import report",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.focus",
         "title": "Focus CDT 41",
         "category": "CDT 41"
@@ -148,6 +158,16 @@
         "command": "1c-metadata-tree.clearSubsystemFilter",
         "title": "Clear Subsystem Filter",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.addToSubsystemComposition",
+        "title": "Добавить объект в состав подсистемы",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.removeFromSubsystemComposition",
+        "title": "Удалить объект из состава подсистемы",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -239,6 +259,16 @@
           "command": "1c-metadata-tree.filterBySubsystem",
           "when": "view == 1c-metadata-tree && viewItem == 'Subsystem'",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.addToSubsystemComposition",
+          "when": "view == 1c-metadata-tree && viewItem == 'Subsystem'",
+          "group": "1_modify"
+        },
+        {
+          "command": "1c-metadata-tree.removeFromSubsystemComposition",
+          "when": "view == 1c-metadata-tree && viewItem == 'Subsystem'",
+          "group": "1_modify"
         },
         {
           "command": "1c-metadata-tree.clearSubsystemFilter",
