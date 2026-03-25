@@ -10,6 +10,8 @@ import { coreSuiteFiles } from './coreSuites';
 const mustRegisterInCoreCi: readonly string[] = [
   'suite/formXmlWriter.test.js',
   'suite/subsystemComposition.test.js',
+  'suite/subsystemCompositionFileUpdater.test.js',
+  'suite/subsystemCompositionRefResolver.test.js',
   'suite/formPaths.test.js',
   'suite/xmlChildObjects.test.js',
   'suite/xmlPropertyUtils.test.js',

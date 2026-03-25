@@ -14,6 +14,8 @@ import {
 } from '../utils/treeNormalization';
 import { OptimisticDeleteToken } from '../types/reloadContracts';
 import { TOP_LEVEL_TYPES } from '../services/elementOperations';
+import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
+import { expectedTreeNodeIdForCompositionRef } from '../services/subsystemCompositionRefResolver';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -1312,6 +1314,32 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   findNodeById(id: string): TreeNode | null {
     return this.nodeCache.get(id) || null;
+  }
+
+  /**
+   * Resolve a subsystem composition ref (`Catalog.Name`) to a loaded root object node in the same
+   * configuration as `scopeNode`. Returns `null` if invalid or not found in the tree.
+   */
+  findRootObjectForCompositionRef(ref: string, scopeNode: TreeNode): TreeNode | null {
+    if (validateSubsystemCompositionRef(ref) !== null) {
+      return null;
+    }
+    const expectedId = expectedTreeNodeIdForCompositionRef(ref);
+    if (!expectedId) {
+      return null;
+    }
+    const candidates = this.nodeCandidatesById.get(expectedId) ?? [];
+    const configPath = this.getConfigPathForNode(scopeNode);
+    if (candidates.length === 0) {
+      return this.nodeCache.get(expectedId) ?? null;
+    }
+    if (configPath) {
+      const scoped = candidates.find((candidate) => this.getConfigPathForNode(candidate) === configPath);
+      if (scoped) {
+        return scoped;
+      }
+    }
+    return candidates[0] ?? null;
   }
 
   /** Resolve possibly stale node reference to active in-memory node. */

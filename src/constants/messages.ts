@@ -48,4 +48,18 @@ export const MESSAGES = {
   OPENING_PANEL: 'Opening metadata tree panel',
   REFRESHING: 'Refreshing metadata tree',
   TREE_LOADED: 'Metadata tree loaded successfully',
+
+  // Subsystem composition (B.3)
+  SUBSYSTEM_COMPOSITION_SELECT_SUBSYSTEM: 'Выберите узел подсистемы в дереве метаданных.',
+  SUBSYSTEM_COMPOSITION_NO_FILE: 'CDT 41: у подсистемы нет пути к файлу XML.',
+  SUBSYSTEM_COMPOSITION_ADD_TITLE: 'Добавить объект в состав подсистемы',
+  SUBSYSTEM_COMPOSITION_OBJECT_NOT_FOUND:
+    'CDT 41: объект не найден в загруженном дереве метаданных этой конфигурации (проверьте имя и обновите дерево).',
+  SUBSYSTEM_COMPOSITION_REJECTED_PREFIX: 'CDT 41: отклонённые ссылки:',
+  SUBSYSTEM_COMPOSITION_WRITE_FAILED: 'CDT 41: не удалось записать состав подсистемы',
+  SUBSYSTEM_COMPOSITION_READ_FAILED: 'CDT 41: не удалось прочитать состав подсистемы',
+  SUBSYSTEM_COMPOSITION_EMPTY: 'CDT 41: состав подсистемы пуст.',
+  SUBSYSTEM_COMPOSITION_REMOVE_PLACEHOLDER: 'Выберите объект для удаления из состава',
+  SUBSYSTEM_COMPOSITION_ADD_OK: 'CDT 41: объект добавлен в состав подсистемы.',
+  SUBSYSTEM_COMPOSITION_REMOVE_OK: 'CDT 41: объект удалён из состава подсистемы.',
 } as const;

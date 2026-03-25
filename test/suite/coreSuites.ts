@@ -41,6 +41,8 @@ export const coreSuiteFiles: string[] = [
   'suite/typeParser.test.js',
   'suite/subsystemTreeBuilder.test.js',
   'suite/subsystemComposition.test.js',
+  'suite/subsystemCompositionFileUpdater.test.js',
+  'suite/subsystemCompositionRefResolver.test.js',
   'suite/treeNormalization.test.js',
   'suite/typeFormatterAndFilterState.test.js',
   'suite/configurationXmlUpdater.test.js',
