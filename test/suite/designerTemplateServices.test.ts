@@ -46,6 +46,42 @@ suite('Designer template services', () => {
     assert.ok(!out.includes('{RecorderDocumentRef}'));
   });
 
+  test('substituteDesignerTemplate replaces optional uuidDim and uuidResource', () => {
+    const template = '<R d="{uuidDim}" r="{uuidResource}">{uuid}</R>';
+    const out = substituteDesignerTemplate(template, {
+      uuid: 'u',
+      Name: 'N',
+      Synonym_ru: 'S',
+      uuidDim: 'dim&1',
+      uuidResource: 'res<2',
+    });
+    assert.ok(out.includes('d="dim&amp;1"'));
+    assert.ok(out.includes('r="res&lt;2"'));
+  });
+
+  test('substituteDesignerTemplate replaces RecorderDocumentRef when provided', () => {
+    const template = '<Ref>{RecorderDocumentRef}</Ref>';
+    const out = substituteDesignerTemplate(template, {
+      uuid: 'u',
+      Name: 'N',
+      Synonym_ru: 'S',
+      RecorderDocumentRef: 'Document.Тест',
+    });
+    assert.ok(out.includes('Document.Тест'));
+    assert.ok(!out.includes('{RecorderDocumentRef}'));
+  });
+
+  test('substituteDesignerTemplate trims RecorderDocumentRef before substitution', () => {
+    const template = '<Ref>{RecorderDocumentRef}</Ref>';
+    const out = substituteDesignerTemplate(template, {
+      uuid: 'u',
+      Name: 'N',
+      Synonym_ru: 'S',
+      RecorderDocumentRef: '  Document.X  ',
+    });
+    assert.ok(out.includes('Document.X'));
+  });
+
   test('getDesignerTemplateXml returns null when repository is not initialized', async () => {
     const content = await getDesignerTemplateXml('Catalog');
     assert.strictEqual(content, null);

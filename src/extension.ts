@@ -39,6 +39,18 @@ import {
   recoverDeleteUiStateAfterReconcileIssue,
 } from './services/deleteReconcileRecovery';
 import { ReloadReason } from './types/reloadContracts';
+import { buildDiagnosticsSummaryText } from './utils/diagnosticsSummary';
+
+function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
+  switch (mode) {
+    case vscode.ExtensionMode.Development:
+      return 'development';
+    case vscode.ExtensionMode.Test:
+      return 'test';
+    default:
+      return 'production';
+  }
+}
 
 /** Resolve node from command argument or current tree selection. */
 function getSelectedNode(node?: TreeNode): TreeNode | undefined {
@@ -738,6 +750,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
+  const copyDiagnosticsSummaryCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.copyDiagnosticsSummary',
+    async () => {
+      try {
+        const workspaceFolders =
+          vscode.workspace.workspaceFolders?.map((wf) => ({
+            name: wf.name,
+            path: wf.uri.fsPath,
+          })) ?? [];
+        const folderPaths = workspaceFolders.map((f) => f.path);
+        const found =
+          folderPaths.length > 0
+            ? await FormatDetector.findAllConfigurationRoots(folderPaths)
+            : [];
+        const configRoots: Array<{ configPath: string; workspaceFolderPath: string; format: string }> =
+          [];
+        for (const entry of found) {
+          const format = await FormatDetector.detect(entry.configPath);
+          configRoots.push({
+            configPath: entry.configPath,
+            workspaceFolderPath: entry.workspaceFolderPath,
+            format,
+          });
+        }
+        const text = buildDiagnosticsSummaryText({
+          productLabel: 'CDT 41',
+          extensionVersion: String(context.extension.packageJSON.version ?? 'unknown'),
+          vscodeVersion: vscode.version,
+          appName: vscode.env.appName,
+          hostPlatform: process.platform,
+          hostArchitecture: process.arch,
+          uiLocale: vscode.env.language,
+          remoteName: vscode.env.remoteName,
+          extensionRunMode: extensionRunModeLabel(context.extensionMode),
+          workspaceFolders,
+          configRoots,
+        });
+        await vscode.env.clipboard.writeText(text);
+        vscode.window.showInformationMessage(MESSAGES.DIAGNOSTICS_COPIED);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`${MESSAGES.DIAGNOSTICS_COPY_FAILED}: ${msg}`);
+      }
+    }
+  );
+
   const filterByTypeCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.filterByType',
     async () => {
@@ -839,6 +897,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     clearSearchCommand,
     clearCacheCommand,
     exportLogsCommand,
+    copyDiagnosticsSummaryCommand,
     filterByTypeCommand,
     filterBySubsystemCommand,
     clearSubsystemFilterCommand,

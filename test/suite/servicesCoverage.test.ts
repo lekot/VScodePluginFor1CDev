@@ -219,5 +219,30 @@ suite('services coverage helpers', function () {
       assert.ok(!buffer.some((line) => line.includes('msg-0')), 'Oldest lines should be trimmed');
       assert.ok(buffer.some((line) => line.includes('msg-10004')), 'Newest lines should remain');
     });
+
+    test('error serializes non-Error second argument', () => {
+      console.error = () => undefined;
+      Logger.error('bad', 'plain string');
+      const buffered = Logger.getBufferedContent();
+      assert.ok(buffered.includes('[ERROR] bad'));
+      assert.ok(buffered.includes('plain string'));
+    });
+
+    test('show invokes output channel when configured', () => {
+      let shown = false;
+      (Logger as any).outputChannel = {
+        appendLine: () => undefined,
+        show: () => {
+          shown = true;
+        },
+      };
+      Logger.show();
+      assert.strictEqual(shown, true);
+    });
+
+    test('show is a no-op when output channel is absent', () => {
+      (Logger as any).outputChannel = null;
+      Logger.show();
+    });
   });
 });

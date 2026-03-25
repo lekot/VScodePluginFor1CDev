@@ -20,6 +20,8 @@ assignees: ''
 - ОС: Windows / macOS / Linux
 - Формат конфигурации: EDT / Designer
 
+**Сводка диагностики (рекомендуется):** в палитре команд выполните **CDT 41: Copy diagnostics summary**, вставьте вывод сюда. В нём уже есть версии редактора и расширения, хост-приложение (VS Code / Cursor и т.п.), ОС, язык UI, при необходимости remote (WSL, SSH, Dev Container), режим запуска расширения (production / development / test), список папок workspace и найденные корни конфигурации (если не найдены — в тексте указано «max search depth 5»). Дублировать вручную ниже не обязательно, если сводка полная. **Пути в сводке могут раскрывать личные каталоги** — при публикации в открытый issue при необходимости замените их на нейтральные. Расшифровка полей: [docs/analytics/diagnostics-summary-field-dictionary.md](../../docs/analytics/diagnostics-summary-field-dictionary.md).
+
 ## Логи
 Приложите при необходимости фрагмент логов из панели **Output** → канал **CDT 41**.
 

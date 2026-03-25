@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { RightsDom } from '../../src/rolesEditor/rightsXmlEditWriter';
 import {
+  createMinimalRightsDom,
   ensureRightsRootAttrsFor1CXdto,
   insertRestrictionTemplatesBeforeClosingRights,
   loadRightsXml,
@@ -11,6 +12,7 @@ import {
   serializeRightsDomToXml,
   stripRestrictionTemplateBlocksFromRightsXml,
 } from '../../src/rolesEditor/rightsXmlEditWriter';
+import { RoleXmlParser } from '../../src/rolesEditor/roleXmlParser';
 import { createEmptyObjectRights } from '../../src/rolesEditor/models/roleModel';
 
 suite('Rights.xml restrictionTemplate string helpers', () => {
@@ -46,6 +48,81 @@ suite('Rights.xml restrictionTemplate string helpers', () => {
     const out = insertRestrictionTemplatesBeforeClosingRights(xml, tpl);
     assert.ok(out.includes('CDATA'));
     assert.ok(out.includes('a < b'));
+  });
+});
+
+/**
+ * Regression for GitHub #18 / developer-backlog: RLS fragments must survive the same
+ * load → serialize → strip → reinsert path used on save (no webview).
+ */
+suite('RLS restrictionTemplate round-trip (regression #18)', () => {
+  test('load → serialize → strip → reinsert preserves extractRestrictionTemplatesBlocks', async () => {
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-rights-rls-rt-'));
+    const p = path.join(tmp, 'Rights.xml');
+    try {
+      const base = serializeRightsDomToXml(createMinimalRightsDom());
+      const injection = [
+        '<object>',
+        '<name>Catalog.RlsRoundTrip</name>',
+        '<right><name>Read</name><value>true</value></right>',
+        '</object>',
+        '<restrictionTemplate>',
+        '<name>TemplateOne</name>',
+        '<condition>true</condition>',
+        '</restrictionTemplate>',
+        '<v8:restrictionTemplate><v8:name>TemplateTwo</v8:name></v8:restrictionTemplate>',
+      ].join('');
+      const fullXml = base.replace(/<\/(?:[a-zA-Z0-9_.]+:)?Rights\s*>/i, `${injection}\n</Rights>`);
+      await fs.promises.writeFile(p, fullXml, 'utf-8');
+
+      const onDisk = await fs.promises.readFile(p, 'utf-8');
+      const rls = RoleXmlParser.extractRestrictionTemplatesBlocks(onDisk);
+      assert.ok(rls.includes('TemplateOne'), 'fixture must expose first template');
+      assert.ok(rls.includes('v8:restrictionTemplate'), 'fixture must expose v8-prefixed template');
+
+      const dom = await loadRightsXml(p);
+      const rebuilt = insertRestrictionTemplatesBeforeClosingRights(
+        stripRestrictionTemplateBlocksFromRightsXml(serializeRightsDomToXml(dom)),
+        rls
+      );
+      const rlsAfter = RoleXmlParser.extractRestrictionTemplatesBlocks(rebuilt);
+      assert.strictEqual(
+        rlsAfter,
+        rls,
+        'RLS blocks must survive EDT Rights.xml save pipeline (strip + reinsert)'
+      );
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('quoted entities in restrictionTemplate text survive round-trip', async () => {
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-rights-rls-ent-'));
+    const p = path.join(tmp, 'Rights.xml');
+    try {
+      const base = serializeRightsDomToXml(createMinimalRightsDom());
+      const injection = [
+        '<restrictionTemplate>',
+        '<condition>Where Name &quot;Item&quot; = &quot;x&quot; &amp; Flag</condition>',
+        '</restrictionTemplate>',
+      ].join('');
+      const fullXml = base.replace(/<\/(?:[a-zA-Z0-9_.]+:)?Rights\s*>/i, `${injection}\n</Rights>`);
+      await fs.promises.writeFile(p, fullXml, 'utf-8');
+
+      const onDisk = await fs.promises.readFile(p, 'utf-8');
+      const rls = RoleXmlParser.extractRestrictionTemplatesBlocks(onDisk);
+      assert.ok(rls.includes('"Item"'), 'entities should decode for editor/save payload');
+
+      const dom = await loadRightsXml(p);
+      const rebuilt = insertRestrictionTemplatesBeforeClosingRights(
+        stripRestrictionTemplateBlocksFromRightsXml(serializeRightsDomToXml(dom)),
+        rls
+      );
+      const rlsAfter = RoleXmlParser.extractRestrictionTemplatesBlocks(rebuilt);
+      assert.strictEqual(rlsAfter, rls);
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
   });
 });
 
