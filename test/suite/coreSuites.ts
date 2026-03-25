@@ -21,6 +21,7 @@ export const coreSuiteFiles: string[] = [
   'suite/dataProcessorOperations.test.js',
   'suite/diagnosticsSummary.test.js',
   'suite/configHelpers.test.js',
+  'suite/coreSuiteRegistration.test.js',
   'suite/formDragBugCondition.test.js',
   'suite/formDragPreservation.test.js',
   'suite/formTreeRootDragBugCondition.test.js',
