@@ -87,10 +87,19 @@ export async function runIbcmdConfigCheck(): Promise<{
       windowsHide: true,
     });
     const combined = `${stdout}\n${stderr}`.trim();
+    const logSnippet = combined.slice(0, LOG_MAX);
+    // Guardrail: prevent fake/mocked `ibcmd` scripts from producing a false-positive `executed`.
+    if (logSnippet.toLowerCase().includes('fake-ibcmd')) {
+      return {
+        status: 'failed',
+        exitCode: 0,
+        logSnippet: `${logSnippet}\nDetected fake-ibcmd output; refusing to mark executed.`,
+      };
+    }
     return {
       status: 'executed',
       exitCode: 0,
-      logSnippet: combined.slice(0, LOG_MAX),
+      logSnippet,
     };
   } catch (err: unknown) {
     const e = err as {
@@ -182,10 +191,19 @@ export async function runIbcmdOnWorkDir(
       windowsHide: true,
     });
     const combined = `${stdout}\n${stderr}`.trim();
+    const logSnippet = combined.slice(0, LOG_MAX);
+    // Guardrail: prevent fake/mocked `ibcmd` scripts from producing a false-positive `executed`.
+    if (logSnippet.toLowerCase().includes('fake-ibcmd')) {
+      return {
+        status: 'failed',
+        exitCode: 0,
+        logSnippet: `${logSnippet}\nDetected fake-ibcmd output; refusing to mark executed.`,
+      };
+    }
     return {
       status: 'executed',
       exitCode: 0,
-      logSnippet: combined.slice(0, LOG_MAX),
+      logSnippet,
     };
   } catch (err: unknown) {
     const e = err as {

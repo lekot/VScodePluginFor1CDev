@@ -45,16 +45,17 @@ suite('ibcmd-cli.cjs (VS Code tasks helper)', () => {
   test('check: forwards to ibcmd with resolved --config and optional --force', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-cli-'));
     const cfg = path.join(tmp, 'ib.yml');
+    const reports = path.join(tmp, 'reports');
     const fake =
       process.platform === 'win32'
         ? (() => {
             const p = path.join(tmp, 'ibcmd-fake.cmd');
-            fs.writeFileSync(p, '@exit /b 0\r\n', 'utf8');
+            fs.writeFileSync(p, '@echo fake-ibcmd\r\n@exit /b 0\r\n', 'utf8');
             return p;
           })()
         : (() => {
             const p = path.join(tmp, 'ibcmd-fake');
-            fs.writeFileSync(p, '#!/bin/sh\nexit 0\n', 'utf8');
+            fs.writeFileSync(p, '#!/bin/sh\necho fake-ibcmd\nexit 0\n', 'utf8');
             fs.chmodSync(p, 0o755);
             return p;
           })();
@@ -65,10 +66,18 @@ suite('ibcmd-cli.cjs (VS Code tasks helper)', () => {
         IBCMD_PATH: fake,
         IBCMD_INFOBASE_CONFIG: cfg,
         IBCMD_CONFIG_CHECK_FORCE: '1',
+        IBCMD_REPORT_DIR: reports,
       },
       ['check']
     );
     assert.strictEqual(r.status, 0);
+    assert.ok(r.combined.includes('[ibcmd-cli] exitCode: 0'));
+    assert.ok(r.combined.includes('[ibcmd-cli] report:'), 'report path should be printed');
+    const reportPath = path.join(reports, 'check-last.log');
+    assert.ok(fs.existsSync(reportPath), 'check report should be written');
+    const report = fs.readFileSync(reportPath, 'utf8');
+    assert.ok(report.includes('mode=check'));
+    assert.ok(report.includes('fake-ibcmd'));
   });
 
   test('import: requires MATRIX_WORK_DIR with Configuration.xml', () => {
@@ -108,9 +117,51 @@ suite('ibcmd-cli.cjs (VS Code tasks helper)', () => {
     assert.strictEqual(ok.status, 0);
   });
 
+  test('check: writes report with non-zero exit code on ibcmd failure', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-cli-fail-'));
+    const cfg = path.join(tmp, 'ib.yml');
+    const reports = path.join(tmp, 'reports');
+    const fake =
+      process.platform === 'win32'
+        ? (() => {
+            const p = path.join(tmp, 'ibcmd-fail.cmd');
+            fs.writeFileSync(p, '@echo fail-stderr 1>&2\r\n@exit /b 2\r\n', 'utf8');
+            return p;
+          })()
+        : (() => {
+            const p = path.join(tmp, 'ibcmd-fail');
+            fs.writeFileSync(p, '#!/bin/sh\necho fail-stderr 1>&2\nexit 2\n', 'utf8');
+            fs.chmodSync(p, 0o755);
+            return p;
+          })();
+    fs.writeFileSync(cfg, '# stub\n', 'utf8');
+
+    const r = runCli(
+      {
+        IBCMD_PATH: fake,
+        IBCMD_INFOBASE_CONFIG: cfg,
+        IBCMD_REPORT_DIR: reports,
+      },
+      ['check']
+    );
+    assert.strictEqual(r.status, 2);
+    assert.ok(r.combined.includes('[ibcmd-cli] exitCode: 2'));
+    const reportPath = path.join(reports, 'check-last.log');
+    assert.ok(fs.existsSync(reportPath), 'failure report should be written');
+    const report = fs.readFileSync(reportPath, 'utf8');
+    assert.ok(report.includes('exitCode=2'));
+    assert.ok(report.includes('fail-stderr'));
+  });
+
   test('.vscode/tasks.json lists CDT ibcmd tasks wired to scripts/ibcmd-cli.cjs', () => {
     const raw = fs.readFileSync(path.join(repoRootFromSuite(), '.vscode', 'tasks.json'), 'utf8');
-    const doc = JSON.parse(raw) as { tasks?: Array<{ label?: string; args?: string[] }> };
+    const doc = JSON.parse(raw) as {
+      tasks?: Array<{
+        label?: string;
+        args?: string[];
+        options?: { env?: Record<string, string> };
+      }>;
+    };
     const tasks = doc.tasks ?? [];
     const check = tasks.find((t) => t.label === 'CDT: ibcmd — check infobase configuration');
     const imp = tasks.find((t) => t.label === 'CDT: ibcmd — import configuration from XML');
@@ -118,5 +169,13 @@ suite('ibcmd-cli.cjs (VS Code tasks helper)', () => {
     assert.ok(imp, 'import task');
     assert.deepStrictEqual(check!.args, ['scripts/ibcmd-cli.cjs', 'check']);
     assert.deepStrictEqual(imp!.args, ['scripts/ibcmd-cli.cjs', 'import']);
+    assert.strictEqual(
+      check!.options?.env?.IBCMD_REPORT_DIR,
+      '${workspaceFolder}/.ibcmd-reports'
+    );
+    assert.strictEqual(
+      imp!.options?.env?.IBCMD_REPORT_DIR,
+      '${workspaceFolder}/.ibcmd-reports'
+    );
   });
 });

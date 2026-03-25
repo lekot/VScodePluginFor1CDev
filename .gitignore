@@ -37,3 +37,5 @@ shcntx_help.db
 
 # Локальная настройка ibcmd (копия ibcmd.setup.example.bat с путями к платформе и ИБ)
 ibcmd-local.bat
+.ibcmd-reports/
+suite-report-core.json

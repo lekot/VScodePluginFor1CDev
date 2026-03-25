@@ -46,6 +46,11 @@ import {
   readSubsystemCompositionRefsFromFile,
 } from './services/subsystemCompositionFileUpdater';
 import { runIbcmdConfigCheckGate } from './services/ibcmdConfigCheckGate';
+import {
+  buildMissingIbcmdReportMessage,
+  getIbcmdLastReportPath,
+  getIbcmdTaskLabel,
+} from './services/ibcmdReportPaths';
 
 function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
   switch (mode) {
@@ -270,6 +275,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       Logger.info(MESSAGES.OPENING_PANEL);
       await loadMetadataTree();
     }
+  );
+
+  const openIbcmdReport = async (mode: 'check' | 'import'): Promise<void> => {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) {
+      vscode.window.showWarningMessage('No workspace folder is open.');
+      return;
+    }
+    const reportPath = getIbcmdLastReportPath(ws.uri.fsPath, mode);
+    if (!fs.existsSync(reportPath)) {
+      const taskLabel = getIbcmdTaskLabel(mode);
+      const action = await vscode.window.showWarningMessage(
+        buildMissingIbcmdReportMessage(mode, reportPath),
+        'Run task'
+      );
+      if (action === 'Run task') {
+        await vscode.commands.executeCommand('workbench.action.tasks.runTask', taskLabel);
+      }
+      return;
+    }
+    try {
+      await vscode.window.showTextDocument(vscode.Uri.file(reportPath), { preview: false });
+    } catch (err) {
+      Logger.error('Failed to open ibcmd report', err);
+      vscode.window.showErrorMessage(
+        `Не удалось открыть отчёт ibcmd: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  };
+
+  const openIbcmdCheckReportCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openIbcmdCheckReport',
+    async () => openIbcmdReport('check')
+  );
+
+  const openIbcmdImportReportCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openIbcmdImportReport',
+    async () => openIbcmdReport('import')
   );
 
   /** Find first Form node by traversing tree (expands path when revealing). */
@@ -1010,6 +1053,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     openPanelCommand,
+    openIbcmdCheckReportCommand,
+    openIbcmdImportReportCommand,
     focusTreeCommand,
     getTreeReadyForTestCommand,
     refreshCommand,

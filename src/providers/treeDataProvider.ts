@@ -420,14 +420,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Check if node is ancestor of the subsystem (Configuration → Subsystems → SelectedSubsystem)
       let current: TreeNode | undefined = node;
       while (current) {
-        if (current.id === this.subsystemFilter.subsystemId) {
+        // `id` is expected to be unique in real metadata. In property-based tests it can be duplicated,
+        // so we also require the node to be an actual subsystem.
+        if (
+          current.id === this.subsystemFilter.subsystemId &&
+          current.type === MetadataType.Subsystem
+        ) {
           return true;
         }
         current = current.parent;
       }
 
       const subsystemNode = this.nodeCache.get(this.subsystemFilter.subsystemId);
-      if (!subsystemNode) {return false;}
+      if (!subsystemNode || subsystemNode.type !== MetadataType.Subsystem) {return false;}
 
       const subsystemsToCheck = this.collectSubsystemAndDescendants(subsystemNode);
       for (const sub of subsystemsToCheck) {

@@ -77,7 +77,7 @@
 | B | 2. Макеты / печать | **Разрыв** | Нет встроенного редактора; нужен явный offload в документации процесса (см. README «известные ограничения»). |
 | B | 3. Состав подсистем | **Разрыв** | В дереве есть фильтр по подсистеме; **редактирование состава** подсистемы из CDT не заявлено как готовое. |
 | C | Отчёты / СКД / запросы | **Вне scope текущего релиза** | Дорожная карта — [#26](https://github.com/lekot/VScodePluginFor1CDev/issues/26). |
-| D | Проверка конфигурации из CDT | **Разрыв** | [#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30); до интеграции — конфигуратор/`ibcmd` (см. user workflow). |
+| D | Проверка конфигурации из CDT | **Частично OK** | Добавлен VS Code task контур `ibcmd` (check/import) через `scripts/ibcmd-cli.cjs` с артефактом отчёта `.ibcmd-reports/*` и явным описанием в `DEVELOPING.md` и `docs/analytics/user-workflow-without-edt.md` (task → artifact → interpretar exit code / stderr). UI-отчёт в расширении — следующий шаг. |
 | D | Контур отладки | **Разрыв** | [#29](https://github.com/lekot/VScodePluginFor1CDev/issues/29). |
 
 **Итог для заявления EDT-killer (§3):** уровни **A и B по таблице выше ещё не закрыты** (блокеры: роли/RLS, формы, макеты/состав подсистем); **C и D** требуют публичной дорожной карты или явного scope-limit, согласованного с владельцем реализации.

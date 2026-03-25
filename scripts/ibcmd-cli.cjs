@@ -57,5 +57,44 @@ if (mode === 'check') {
   args.push(root);
 }
 
-const r = spawnSync(ibcmd, args, { stdio: 'inherit', shell: false });
-process.exit(typeof r.status === 'number' ? r.status : 1);
+const reportDirRaw = process.env.IBCMD_REPORT_DIR?.trim();
+const reportDir = reportDirRaw ? path.resolve(reportDirRaw) : path.resolve('.ibcmd-reports');
+const reportPath = path.join(reportDir, `${mode}-last.log`);
+
+const r = spawnSync(ibcmd, args, { encoding: 'utf8', shell: false });
+const stdout = (r.stdout ?? '').toString();
+const stderr = (r.stderr ?? '').toString();
+const exitCode = typeof r.status === 'number' ? r.status : 1;
+
+if (stdout) {
+  process.stdout.write(stdout);
+}
+if (stderr) {
+  process.stderr.write(stderr);
+}
+
+try {
+  fs.mkdirSync(reportDir, { recursive: true });
+  const stamp = new Date().toISOString();
+  const body = [
+    `mode=${mode}`,
+    `command=${ibcmd} ${args.join(' ')}`,
+    `timestamp=${stamp}`,
+    `exitCode=${exitCode}`,
+    '',
+    '--- stdout ---',
+    stdout,
+    '',
+    '--- stderr ---',
+    stderr,
+    '',
+  ].join('\n');
+  fs.writeFileSync(reportPath, body, 'utf8');
+  process.stdout.write(`[ibcmd-cli] exitCode: ${exitCode}\n`);
+  process.stdout.write(`\n[ibcmd-cli] report: ${reportPath}\n`);
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`\n[ibcmd-cli] failed to write report: ${msg}\n`);
+}
+
+process.exit(exitCode);

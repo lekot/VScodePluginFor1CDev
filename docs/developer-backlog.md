@@ -4,11 +4,15 @@
 
 ## Топ-3 разрыва по свежему снимку EDT-killer (аналитика)
 
+Исполнение по компании ведётся в [AIF-19](/AIF/issues/AIF-19) **по этому разделу и** [plans/fe-next-top3-sprint-spec.md](plans/fe-next-top3-sprint-spec.md), а не по «верхним строкам» таблицы «Высокий приоритет» ниже без учёта вынесения [#27](https://github.com/lekot/VScodePluginFor1CDev/issues/27) из спринт-пакета ([AIF-40](/AIF/issues/AIF-40)).
+
 Актуализация чеклиста: [analytics/edt-killer-target.md](analytics/edt-killer-target.md) §4 (после интеграции диагностик / PR #34). Для закрытия уровней **A и B** по продуктовым критериям сейчас наиболее критичны:
 
+**Спринт-спека для FE (топ-3):** [plans/fe-next-top3-sprint-spec.md](plans/fe-next-top3-sprint-spec.md) — краткие спеки, критерии приёмки в духе EDT-killer, зависимости и риски по пунктам ниже.
+
 1. **Роли и RLS** — матрица паритета с EDT и сохранение ограничений без потерь: [#28](https://github.com/lekot/VScodePluginFor1CDev/issues/28), [#18](https://github.com/lekot/VScodePluginFor1CDev/issues/18) (критерий A.5).
-2. **Редактор форм** — стабильный round-trip и доведение до критериев уровня B.1: [#27](https://github.com/lekot/VScodePluginFor1CDev/issues/27).
-3. **Макеты / печать и состав подсистем** — критерии B.2–B.3: либо реализация в CDT, либо явный задокументированный offload без «тихих» дыр; редактирование состава подсистемы сейчас не закрыто фильтром по подсистеме в дереве.
+2. **Проверка конфигурации / задачи VS Code** — доведение контура [#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30) до критерия **D.1** ([edt-killer-target.md](analytics/edt-killer-target.md)): задачи + документированный отчёт; UI расширения — следующий шаг. *Редактор форм [#27](https://github.com/lekot/VScodePluginFor1CDev/issues/27) по решению владельца вынесен из текущего спринт-скопа аналитики — см. комментарий в [AIF-40](/AIF/issues/AIF-40#comment-0a29a5b9-e5dc-41bf-bcfc-a2c6652510da) и [fe-next-top3-sprint-spec.md](plans/fe-next-top3-sprint-spec.md).*
+3. **Состав подсистем и макеты / печать** — критерии **B.3 → B.2** по приоритету исполнения ([AIF-40](/AIF/issues/AIF-40#comment-aa2fc814-607e-41a7-a3e3-e77b1e712bde)): **сначала B.3** (редактирование состава подсистем из CDT с валидацией ссылок); **B.2** — реализация в CDT или явный задокументированный offload без «тихих» дыр. Детали — [fe-next-top3-sprint-spec.md](plans/fe-next-top3-sprint-spec.md) §3.
 
 ## Высокий приоритет (матрица «боль × дёшево»)
 

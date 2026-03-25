@@ -36,6 +36,11 @@
       "type": "shell",
       "command": "node",
       "args": ["scripts/ibcmd-cli.cjs", "check"],
+      "options": {
+        "env": {
+          "IBCMD_REPORT_DIR": "${workspaceFolder}/.ibcmd-reports"
+        }
+      },
       "group": "test",
       "presentation": {
         "reveal": "always",
@@ -48,6 +53,11 @@
       "type": "shell",
       "command": "node",
       "args": ["scripts/ibcmd-cli.cjs", "import"],
+      "options": {
+        "env": {
+          "IBCMD_REPORT_DIR": "${workspaceFolder}/.ibcmd-reports"
+        }
+      },
       "group": "test",
       "presentation": {
         "reveal": "always",
