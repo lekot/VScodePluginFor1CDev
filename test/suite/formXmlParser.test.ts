@@ -54,6 +54,162 @@ suite('FormXmlParser', () => {
     assert.ok(result.error.length > 0);
   });
 
+  test('parses Parameters section into first-class model.parameters', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-params-parse-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      await writeFormXml(formXmlPath, {
+        childItemsRoot: [],
+        attributes: [],
+        commands: [],
+        formEvents: [],
+        parameters: [
+          {
+            name: 'Парам1',
+            id: '10',
+            properties: { Title: [{ '#text': 'ЗаголовокПараметра' }] },
+          },
+        ],
+      });
+      const result = await parseFormXml(formXmlPath);
+      assert.ok(!isFormParseError(result), (result as { error?: string }).error ?? '');
+      assert.strictEqual(result.model.parameters?.length ?? 0, 1);
+      assert.ok(result.model.parameters?.[0].name);
+      assert.ok(
+        result.model.parameters?.[0].properties['Title'],
+        'Parameter properties should keep known nested tags'
+      );
+      assert.ok(
+        !(result.model.topLevelFields ?? []).some((f) => /(^|:)Parameters$/.test(f.tag)),
+        'Parameters must not remain in topLevelFields when parsed as first-class section'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('parses CommandSet/ExcludedCommand into first-class model.excludedCommands', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-commandset-parse-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      await writeFormXml(formXmlPath, {
+        childItemsRoot: [],
+        attributes: [],
+        commands: [],
+        formEvents: [],
+        excludedCommands: ['Form.CommandA', 'Form.CommandB'],
+      });
+      const result = await parseFormXml(formXmlPath);
+      assert.ok(!isFormParseError(result), (result as { error?: string }).error ?? '');
+      assert.deepStrictEqual(result.model.excludedCommands, ['Form.CommandA', 'Form.CommandB']);
+      assert.ok(
+        !(result.model.topLevelFields ?? []).some((f) => /(^|:)CommandSet$/.test(f.tag)),
+        'CommandSet must not remain in topLevelFields when parsed as first-class section'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('round-trip keeps raw Parameters when section has unknown child nodes', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-params-raw-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.17">
+	<Parameters>
+		<Parameter name="P1">
+			<Title>P1</Title>
+		</Parameter>
+		<UnknownParamNode>
+			<Value>42</Value>
+		</UnknownParamNode>
+	</Parameters>
+</Form>`;
+      await fs.promises.writeFile(formXmlPath, xml, 'utf-8');
+      const parsed = await parseFormXml(formXmlPath);
+      assert.ok(!isFormParseError(parsed), (parsed as { error?: string }).error ?? '');
+      assert.strictEqual(parsed.model.parameters?.length ?? 0, 1);
+      assert.strictEqual(parsed.model.parametersFirstClassLossless, false);
+      assert.ok(
+        (parsed.model.topLevelFields ?? []).some((f) => /(^|:)Parameters$/.test(f.tag)),
+        'Raw Parameters should be retained in topLevelFields when first-class is not lossless'
+      );
+      await writeFormXml(formXmlPath, parsed.model);
+      const after = await fs.promises.readFile(formXmlPath, 'utf-8');
+      assert.ok(after.includes('<UnknownParamNode>'));
+      assert.ok(after.includes('<Value>42</Value>'));
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('round-trip keeps raw CommandSet when it has nodes other than ExcludedCommand', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-commandset-raw-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.17">
+	<CommandSet>
+		<ExcludedCommand>Form.CommandA</ExcludedCommand>
+		<CustomCommandNode>
+			<Name>KeepMe</Name>
+		</CustomCommandNode>
+	</CommandSet>
+</Form>`;
+      await fs.promises.writeFile(formXmlPath, xml, 'utf-8');
+      const parsed = await parseFormXml(formXmlPath);
+      assert.ok(!isFormParseError(parsed), (parsed as { error?: string }).error ?? '');
+      assert.deepStrictEqual(parsed.model.excludedCommands, ['Form.CommandA']);
+      assert.strictEqual(parsed.model.commandSetFirstClassLossless, false);
+      assert.ok(
+        (parsed.model.topLevelFields ?? []).some((f) => /(^|:)CommandSet$/.test(f.tag)),
+        'Raw CommandSet should be retained in topLevelFields when first-class is not lossless'
+      );
+      await writeFormXml(formXmlPath, parsed.model);
+      const after = await fs.promises.readFile(formXmlPath, 'utf-8');
+      assert.ok(after.includes('<CustomCommandNode>'));
+      assert.ok(after.includes('<Name>KeepMe</Name>'));
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('does not deep-scan nested Parameters or CommandSet outside top-level Form sections', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-top-level-only-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.17">
+	<ChildItems>
+		<Group name="G1">
+			<Parameters>
+				<Parameter name="NestedParam"/>
+			</Parameters>
+			<CommandSet>
+				<ExcludedCommand>Nested.Command</ExcludedCommand>
+			</CommandSet>
+		</Group>
+	</ChildItems>
+</Form>`;
+      await fs.promises.writeFile(formXmlPath, xml, 'utf-8');
+      const parsed = await parseFormXml(formXmlPath);
+      assert.ok(!isFormParseError(parsed), (parsed as { error?: string }).error ?? '');
+      assert.strictEqual(parsed.model.parameters?.length ?? 0, 0);
+      assert.strictEqual(parsed.model.excludedCommands?.length ?? 0, 0);
+      assert.ok(
+        !(parsed.model.topLevelFields ?? []).some((f) => /(^|:)Parameters$/.test(f.tag)),
+        'Nested Parameters must not be treated as top-level'
+      );
+      assert.ok(
+        !(parsed.model.topLevelFields ?? []).some((f) => /(^|:)CommandSet$/.test(f.tag)),
+        'Nested CommandSet must not be treated as top-level'
+      );
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   test('should return error or no Form for invalid XML', async () => {
     const invalidPath = path.resolve(__dirname, '../fixtures/form-editor/FormInvalid.xml');
     const result = await parseFormXml(invalidPath);

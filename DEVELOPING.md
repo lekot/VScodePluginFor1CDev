@@ -1,5 +1,7 @@
 # Разработка расширения CDT 41 (Community Development Tools for 1C)
 
+Указатель документации (gap, архитектура, backlog): [docs/documentation-map.md](docs/documentation-map.md).
+
 ## Сборка и тесты
 
 ### Компиляция

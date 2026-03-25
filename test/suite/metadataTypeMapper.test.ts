@@ -25,4 +25,10 @@ suite('metadataTypeMapper', () => {
     assert.strictEqual(MetadataTypeMapper.isValidType('Languages'), true);
     assert.strictEqual(MetadataTypeMapper.isValidType('NopeType'), false);
   });
+
+  test('getDesignerFolderIdForMetadataType returns Designer folder id', () => {
+    assert.strictEqual(MetadataTypeMapper.getDesignerFolderIdForMetadataType(MetadataType.Catalog), 'Catalogs');
+    assert.strictEqual(MetadataTypeMapper.getDesignerFolderIdForMetadataType(MetadataType.Role), 'Roles');
+    assert.strictEqual(MetadataTypeMapper.getDesignerFolderIdForMetadataType(MetadataType.Unknown), undefined);
+  });
 });

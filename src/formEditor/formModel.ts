@@ -43,6 +43,13 @@ export interface FormCommand {
   properties: Record<string, unknown>;
 }
 
+/** Form parameter. */
+export interface FormParameter {
+  name: string;
+  id?: string;
+  properties: Record<string, unknown>;
+}
+
 /** Root model of Ext/Form.xml. */
 export interface FormModel {
   /** Root of the form elements tree (top-level ChildItems). */
@@ -57,8 +64,10 @@ export interface FormModel {
   autoCommandBarName?: string;
   /** Id of the form command bar element (from root AutoCommandBar), for round-trip. */
   autoCommandBarId?: string;
-  /** Optional: parameters, group list, etc. for future use. */
-  parameters?: unknown[];
+  /** Form parameters. */
+  parameters?: FormParameter[];
+  /** Excluded command names from CommandSet/ExcludedCommand. */
+  excludedCommands?: string[];
   /** All xmlns declarations from the original Form.xml root element, for round-trip. */
   xmlnsDeclarations?: Record<string, string>;
   /** version attribute from the root <Form> element, for round-trip. */
@@ -66,6 +75,10 @@ export interface FormModel {
   /** Top-level fields of <Form> that are not ChildItems/Attributes/Commands/Events/AutoCommandBar.
    *  E.g. WindowOpeningMode, UseForFoldersAndItems. Stored as raw parsed content for round-trip. */
   topLevelFields?: Array<{ tag: string; content: unknown[] }>;
+  /** Internal parser flag: true when model.parameters is sufficient for lossless write without raw Parameters section. */
+  parametersFirstClassLossless?: boolean;
+  /** Internal parser flag: true when model.excludedCommands is sufficient for lossless write without raw CommandSet section. */
+  commandSetFirstClassLossless?: boolean;
 }
 
 /** Result of parsing when file is missing (allowed by option). */

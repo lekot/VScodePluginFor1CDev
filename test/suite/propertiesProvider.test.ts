@@ -339,6 +339,96 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     assert.ok(htmlLower.includes('String(10)'));
     assert.ok(htmlUpper.includes('String(10)'));
   });
+
+  test('form selection payload is ignored when docUri mismatches current selection', () => {
+    (provider as any).currentFormSelection = {
+      source: 'form-editor',
+      docUri: 'file:///form-a/Ext/Form.xml',
+      entityType: 'element',
+      id: 'el-1',
+      name: 'Element1',
+      tag: 'InputField',
+      properties: { Width: '100' },
+      events: {},
+      selectedIds: ['el-1'],
+    };
+    (provider as any).currentFormSelectionRevision = 5;
+
+    const isMatching = (provider as any).isMatchingCurrentFormSelection.bind(provider);
+    const result = isMatching({
+      type: 'propertyChanged',
+      propertyName: 'Width',
+      value: '130',
+      selectionRevision: '5',
+      docUri: 'file:///form-b/Ext/Form.xml',
+      entityType: 'element',
+      entityId: 'el-1',
+    });
+    assert.strictEqual(result, false);
+  });
+
+  test('form selection payload is ignored when revision is stale', () => {
+    (provider as any).currentFormSelection = {
+      source: 'form-editor',
+      docUri: 'file:///form-a/Ext/Form.xml',
+      entityType: 'element',
+      id: 'el-1',
+      name: 'Element1',
+      tag: 'InputField',
+      properties: { Width: '100' },
+      events: {},
+      selectedIds: ['el-1'],
+    };
+    (provider as any).currentFormSelectionRevision = 7;
+
+    const isMatching = (provider as any).isMatchingCurrentFormSelection.bind(provider);
+    const result = isMatching({
+      type: 'propertyChanged',
+      propertyName: 'Width',
+      value: '130',
+      selectionRevision: '6',
+      docUri: 'file:///form-a/Ext/Form.xml',
+      entityType: 'element',
+      entityId: 'el-1',
+    });
+    assert.strictEqual(result, false);
+  });
+
+  test('form selection payload matches only the active context', () => {
+    (provider as any).currentFormSelection = {
+      source: 'form-editor',
+      docUri: 'file:///form-b/Ext/Form.xml',
+      entityType: 'attribute',
+      id: 'attr-2',
+      name: 'Attr2',
+      properties: { Type: 'String(20)' },
+      events: {},
+      selectedIds: ['attr-2'],
+    };
+    (provider as any).currentFormSelectionRevision = 9;
+
+    const isMatching = (provider as any).isMatchingCurrentFormSelection.bind(provider);
+    const staleFromOtherContext = isMatching({
+      type: 'propertyChanged',
+      propertyName: 'Type',
+      value: 'String(30)',
+      selectionRevision: '9',
+      docUri: 'file:///form-a/Ext/Form.xml',
+      entityType: 'attribute',
+      entityId: 'attr-2',
+    });
+    const activeContext = isMatching({
+      type: 'propertyChanged',
+      propertyName: 'Type',
+      value: 'String(30)',
+      selectionRevision: '9',
+      docUri: 'file:///form-b/Ext/Form.xml',
+      entityType: 'attribute',
+      entityId: 'attr-2',
+    });
+    assert.strictEqual(staleFromOtherContext, false, 'stale payload from other form must be ignored');
+    assert.strictEqual(activeContext, true, 'payload for active form context must be accepted');
+  });
 });
 
 suite('PropertiesProvider Save Operation Test Suite', () => {
