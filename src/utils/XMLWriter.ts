@@ -1,6 +1,9 @@
 import * as fs from 'fs';
-import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { Logger } from './logger';
+import { xmlParser } from './xml/xmlCore';
+import { buildXmlString, writeUtf8FileWithBackup } from './xml/xmlFileIo';
+import { generateSimpleUuid as xmlGenerateSimpleUuid } from './xml/xmlHelpers';
+import { extractProperties, updatePropertiesInStructure } from './xml/xmlPropertiesService';
 import {
   getDefaultPropertiesForRootTag,
   getDefaultPropertiesForNestedElement,
@@ -8,8 +11,6 @@ import {
 import { MetadataType } from '../models/treeNode';
 import { injectInternalInfoIntoMetadataXml } from '../services/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../services/metaDataObjectRootNormalizer';
-import { TypeParser } from '../parsers/typeParser';
-import { TypeFormatter } from './typeFormatter';
 import { buildTabularSectionInternalInfoObject } from '../services/internalInfoGenerator';
 
 /**
@@ -125,33 +126,10 @@ const DEFAULT_FORM_REF_PROPERTY_KEYS = [
 ] as const;
 
 /**
- * XML Writer options for preserving formatting and structure
- */
-const XML_WRITER_OPTIONS = {
-  ignoreAttributes: false,
-  attributeNamePrefix: '@_',
-  textNodeName: '#text',
-  format: true,
-  indentBy: '  ',
-  suppressEmptyNode: true,
-  preserveOrder: false,
-  commentPropName: '#comment',
-  cdataTagName: '__cdata',
-  processEntities: true,
-  suppressBooleanAttributes: false,
-  suppressUnpairedNode: false,
-  unpairedTags: [],
-  enableToString: true,
-};
-
-/**
  * XMLWriter utility class for reading and writing XML files
  * while preserving structure and formatting
  */
 export class XMLWriter {
-  private static parser = new XMLParser(XML_WRITER_OPTIONS);
-  private static builder = new XMLBuilder(XML_WRITER_OPTIONS);
-
   /**
    * Read properties from XML file
    * @param filePath Path to XML file
@@ -179,7 +157,7 @@ export class XMLWriter {
 
       let parsed: unknown;
       try {
-        parsed = this.parser.parse(xmlContent);
+        parsed = xmlParser.parse(xmlContent);
       } catch (parseError) {
         const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
         Logger.error(`XML parsing failed for ${filePath}`, parseError);
@@ -192,7 +170,7 @@ export class XMLWriter {
         throw new Error('Failed to read properties. Invalid XML structure in file.');
       }
 
-      const properties = this.extractProperties(parsed);
+      const properties = extractProperties(parsed);
       Logger.info(`Successfully read properties from ${filePath}`);
       return properties;
     } catch (error) {
@@ -234,7 +212,7 @@ export class XMLWriter {
 
       let parsed: unknown;
       try {
-        parsed = this.parser.parse(xmlContent);
+        parsed = xmlParser.parse(xmlContent);
       } catch (parseError) {
         const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
         Logger.error(`XML parsing failed for ${filePath}`, parseError);
@@ -243,11 +221,11 @@ export class XMLWriter {
         );
       }
 
-      const updated = this.updatePropertiesInStructure(parsed, properties);
+      const updated = updatePropertiesInStructure(parsed, properties);
 
       let xmlString: string;
       try {
-        xmlString = this.builder.build(updated);
+        xmlString = buildXmlString(updated);
       } catch (buildError) {
         Logger.error(`Failed to build XML for ${filePath}`, buildError);
         throw new Error(
@@ -255,41 +233,7 @@ export class XMLWriter {
         );
       }
 
-      const backupPath = `${filePath}.bak`;
-      try {
-        await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-      } catch (backupErr) {
-        Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-      }
-
-      try {
-        await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-      } catch (writeError) {
-        Logger.error(`Failed to write file: ${filePath}`, writeError);
-        try {
-          if (fs.existsSync(backupPath)) {
-            const restored = await fs.promises.readFile(backupPath, 'utf-8');
-            await fs.promises.writeFile(filePath, restored, 'utf-8');
-            await fs.promises.unlink(backupPath);
-            Logger.info(`Rolled back ${filePath} from backup`);
-          }
-        } catch (rollbackErr) {
-          Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-        }
-        throw new Error(
-          `Unable to write to file. Check file permissions and disk space. ${
-            writeError instanceof Error ? writeError.message : String(writeError)
-          }`
-        );
-      }
-
-      try {
-        if (fs.existsSync(backupPath)) {
-          await fs.promises.unlink(backupPath);
-        }
-      } catch {
-        Logger.debug(`Could not remove backup ${backupPath}`);
-      }
+      await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
       Logger.info(`Successfully wrote properties to ${filePath}`);
     } catch (error) {
       Logger.error(`Error writing properties to ${filePath}`, error);
@@ -325,7 +269,7 @@ export class XMLWriter {
     parentObjectName?: string
   ): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const updated = this.addNestedElementInStructure(
       parsed,
       elementType,
@@ -334,43 +278,8 @@ export class XMLWriter {
       parentRootType,
       parentObjectName
     );
-    const xmlString = this.builder.build(updated);
-
-    const backupPath = `${filePath}.bak`;
-    try {
-      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-    } catch (backupErr) {
-      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-    }
-
-    try {
-      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-    } catch (writeError) {
-      Logger.error(`Failed to write file: ${filePath}`, writeError);
-      try {
-        if (fs.existsSync(backupPath)) {
-          const restored = await fs.promises.readFile(backupPath, 'utf-8');
-          await fs.promises.writeFile(filePath, restored, 'utf-8');
-          await fs.promises.unlink(backupPath);
-          Logger.info(`Rolled back ${filePath} from backup`);
-        }
-      } catch (rollbackErr) {
-        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-      }
-      throw new Error(
-        `Unable to write to file. Check file permissions and disk space. ${
-          writeError instanceof Error ? writeError.message : String(writeError)
-        }`
-      );
-    }
-
-    try {
-      if (fs.existsSync(backupPath)) {
-        await fs.promises.unlink(backupPath);
-      }
-    } catch {
-      Logger.debug(`Could not remove backup ${backupPath}`);
-    }
+    const xmlString = buildXmlString(updated);
+    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
     Logger.info(`Added ${elementType} '${elementName}' to ${filePath}`);
   }
 
@@ -386,7 +295,7 @@ export class XMLWriter {
     parentObjectName: string
   ): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const updated = this.addAttributeToTabularSectionInParsed(
       parsed,
       tabularSectionName,
@@ -394,39 +303,8 @@ export class XMLWriter {
       parentRootType,
       parentObjectName
     );
-    const xmlString = this.builder.build(updated);
-    const backupPath = `${filePath}.bak`;
-    try {
-      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-    } catch (backupErr) {
-      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-    }
-    try {
-      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-    } catch (writeError) {
-      Logger.error(`Failed to write file: ${filePath}`, writeError);
-      try {
-        if (fs.existsSync(backupPath)) {
-          const restored = await fs.promises.readFile(backupPath, 'utf-8');
-          await fs.promises.writeFile(filePath, restored, 'utf-8');
-          await fs.promises.unlink(backupPath);
-        }
-      } catch (rollbackErr) {
-        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-      }
-      throw new Error(
-        `Unable to write to file. Check file permissions and disk space. ${
-          writeError instanceof Error ? writeError.message : String(writeError)
-        }`
-      );
-    }
-    try {
-      if (fs.existsSync(backupPath)) {
-        await fs.promises.unlink(backupPath);
-      }
-    } catch {
-      Logger.debug(`Could not remove backup ${backupPath}`);
-    }
+    const xmlString = buildXmlString(updated);
+    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
     Logger.info(`Added column '${columnName}' to tabular section '${tabularSectionName}' in ${filePath}`);
   }
 
@@ -440,41 +318,10 @@ export class XMLWriter {
     columnName: string
   ): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const updated = this.removeAttributeFromTabularSectionInParsed(parsed, tabularSectionName, columnName);
-    const xmlString = this.builder.build(updated);
-    const backupPath = `${filePath}.bak`;
-    try {
-      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-    } catch (backupErr) {
-      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-    }
-    try {
-      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-    } catch (writeError) {
-      Logger.error(`Failed to write file: ${filePath}`, writeError);
-      try {
-        if (fs.existsSync(backupPath)) {
-          const restored = await fs.promises.readFile(backupPath, 'utf-8');
-          await fs.promises.writeFile(filePath, restored, 'utf-8');
-          await fs.promises.unlink(backupPath);
-        }
-      } catch (rollbackErr) {
-        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-      }
-      throw new Error(
-        `Unable to write to file. Check file permissions and disk space. ${
-          writeError instanceof Error ? writeError.message : String(writeError)
-        }`
-      );
-    }
-    try {
-      if (fs.existsSync(backupPath)) {
-        await fs.promises.unlink(backupPath);
-      }
-    } catch {
-      Logger.debug(`Could not remove backup ${backupPath}`);
-    }
+    const xmlString = buildXmlString(updated);
+    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
     Logger.info(`Removed column '${columnName}' from tabular section '${tabularSectionName}' in ${filePath}`);
   }
 
@@ -489,46 +336,15 @@ export class XMLWriter {
     newColumnName: string
   ): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const updated = this.duplicateAttributeInTabularSectionInParsed(
       parsed,
       tabularSectionName,
       sourceColumnName,
       newColumnName
     );
-    const xmlString = this.builder.build(updated);
-    const backupPath = `${filePath}.bak`;
-    try {
-      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-    } catch (backupErr) {
-      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-    }
-    try {
-      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-    } catch (writeError) {
-      Logger.error(`Failed to write file: ${filePath}`, writeError);
-      try {
-        if (fs.existsSync(backupPath)) {
-          const restored = await fs.promises.readFile(backupPath, 'utf-8');
-          await fs.promises.writeFile(filePath, restored, 'utf-8');
-          await fs.promises.unlink(backupPath);
-        }
-      } catch (rollbackErr) {
-        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-      }
-      throw new Error(
-        `Unable to write to file. Check file permissions and disk space. ${
-          writeError instanceof Error ? writeError.message : String(writeError)
-        }`
-      );
-    }
-    try {
-      if (fs.existsSync(backupPath)) {
-        await fs.promises.unlink(backupPath);
-      }
-    } catch {
-      Logger.debug(`Could not remove backup ${backupPath}`);
-    }
+    const xmlString = buildXmlString(updated);
+    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
     Logger.info(
       `Duplicated column '${sourceColumnName}' -> '${newColumnName}' in tabular section '${tabularSectionName}' in ${filePath}`
     );
@@ -547,45 +363,10 @@ export class XMLWriter {
     elementName: string
   ): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const updated = this.removeNestedElementInStructure(parsed, elementType, elementName);
-    const xmlString = this.builder.build(updated);
-
-    const backupPath = `${filePath}.bak`;
-    try {
-      await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-    } catch (backupErr) {
-      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-    }
-
-    try {
-      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-    } catch (writeError) {
-      Logger.error(`Failed to write file: ${filePath}`, writeError);
-      try {
-        if (fs.existsSync(backupPath)) {
-          const restored = await fs.promises.readFile(backupPath, 'utf-8');
-          await fs.promises.writeFile(filePath, restored, 'utf-8');
-          await fs.promises.unlink(backupPath);
-          Logger.info(`Rolled back ${filePath} from backup`);
-        }
-      } catch (rollbackErr) {
-        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-      }
-      throw new Error(
-        `Unable to write to file. Check file permissions and disk space. ${
-          writeError instanceof Error ? writeError.message : String(writeError)
-        }`
-      );
-    }
-
-    try {
-      if (fs.existsSync(backupPath)) {
-        await fs.promises.unlink(backupPath);
-      }
-    } catch {
-      Logger.debug(`Could not remove backup ${backupPath}`);
-    }
+    const xmlString = buildXmlString(updated);
+    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
     Logger.info(`Removed ${elementType} '${elementName}' from ${filePath}`);
   }
 
@@ -594,7 +375,7 @@ export class XMLWriter {
    */
   static async addDesignerFormReferenceToOwnerMetadata(filePath: string, formName: string): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const state = { changed: false };
     const updated = this.addDesignerFormReferenceInOwnerParsed(parsed, formName, state);
     if (!state.changed) {
@@ -610,7 +391,7 @@ export class XMLWriter {
    */
   static async removeDesignerFormFromOwnerMetadata(filePath: string, formName: string): Promise<void> {
     const xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const state = { changed: false };
     const updated = this.removeDesignerFormFromOwnerParsed(parsed, formName, state);
     if (!state.changed) {
@@ -625,40 +406,7 @@ export class XMLWriter {
     originalXml: string,
     updatedParsed: unknown
   ): Promise<void> {
-    const xmlString = this.builder.build(updatedParsed);
-    const backupPath = `${filePath}.bak`;
-    try {
-      await fs.promises.writeFile(backupPath, originalXml, 'utf-8');
-    } catch (backupErr) {
-      Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-    }
-    try {
-      await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-    } catch (writeError) {
-      Logger.error(`Failed to write file: ${filePath}`, writeError);
-      try {
-        if (fs.existsSync(backupPath)) {
-          const restored = await fs.promises.readFile(backupPath, 'utf-8');
-          await fs.promises.writeFile(filePath, restored, 'utf-8');
-          await fs.promises.unlink(backupPath);
-          Logger.info(`Rolled back ${filePath} from backup`);
-        }
-      } catch (rollbackErr) {
-        Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-      }
-      throw new Error(
-        `Unable to write to file. Check file permissions and disk space. ${
-          writeError instanceof Error ? writeError.message : String(writeError)
-        }`
-      );
-    }
-    try {
-      if (fs.existsSync(backupPath)) {
-        await fs.promises.unlink(backupPath);
-      }
-    } catch {
-      Logger.debug(`Could not remove backup ${backupPath}`);
-    }
+    await writeUtf8FileWithBackup(filePath, originalXml, buildXmlString(updatedParsed));
   }
 
   private static extractScalarXmlText(value: unknown): string {
@@ -942,11 +690,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
    * Public for use by elementOperations when creating from designer templates.
    */
   static generateSimpleUuid(): string {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      const v = c === 'x' ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
+    return xmlGenerateSimpleUuid();
   }
 
   private static escapeXml(s: string): string {
@@ -1922,7 +1666,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     changedKeys?: string[],
     options?: WriteNestedElementOptions
   ): string {
-    const parsed = this.parser.parse(xmlContent);
+    const parsed = xmlParser.parse(xmlContent);
     const scopeState = this.buildNestedAttributeScopeState(elementType, options);
     let updated = this.updateNestedElementInStructure(
       parsed,
@@ -1936,7 +1680,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     if (Array.isArray(updated) && updated.length === 1) {
       updated = updated[0];
     }
-    return this.builder.build(updated);
+    return buildXmlString(updated);
   }
 
   /**
@@ -1985,41 +1729,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
           );
         }
 
-        const backupPath = `${filePath}.bak`;
-        try {
-          await fs.promises.writeFile(backupPath, xmlContent, 'utf-8');
-        } catch (backupErr) {
-          Logger.warn(`Failed to create backup ${backupPath}`, backupErr);
-        }
-
-        try {
-          await fs.promises.writeFile(filePath, xmlString, 'utf-8');
-        } catch (writeError) {
-          Logger.error(`Failed to write file: ${filePath}`, writeError);
-          try {
-            if (fs.existsSync(backupPath)) {
-              const restored = await fs.promises.readFile(backupPath, 'utf-8');
-              await fs.promises.writeFile(filePath, restored, 'utf-8');
-              await fs.promises.unlink(backupPath);
-              Logger.info(`Rolled back ${filePath} from backup`);
-            }
-          } catch (rollbackErr) {
-            Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
-          }
-          throw new Error(
-            `Unable to write to file. Check file permissions and disk space. ${
-              writeError instanceof Error ? writeError.message : String(writeError)
-            }`
-          );
-        }
-
-        try {
-          if (fs.existsSync(backupPath)) {
-            await fs.promises.unlink(backupPath);
-          }
-        } catch {
-          Logger.debug(`Could not remove backup ${backupPath}`);
-        }
+        await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
         Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
       } catch (error) {
         Logger.error(`Error writing nested element properties to ${filePath}`, error);
@@ -2037,380 +1747,6 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
         );
       }
     }
-
-
-  /**
-   * Convert string boolean values to actual boolean primitives
-   * @param properties Properties object that may contain string "false"/"true" values
-   * @returns Properties object with string booleans converted to primitives
-   */
-  private static convertStringBooleans(properties: Record<string, unknown>): Record<string, unknown> {
-    const converted: Record<string, unknown> = {};
-    
-    for (const [key, value] of Object.entries(properties)) {
-      if (value === 'false') {
-        converted[key] = false;
-      } else if (value === 'true') {
-        converted[key] = true;
-      } else {
-        converted[key] = value;
-      }
-    }
-    
-    return converted;
-  }
-
-  private static extractProperties(parsed: unknown): Record<string, unknown> {
-    const properties: Record<string, unknown> = {};
-
-    if (!parsed || typeof parsed !== 'object') {
-      return properties;
-    }
-
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
-        if (item && typeof item === 'object') {
-          for (const [key, value] of Object.entries(item)) {
-            if (key === ':@' || key.startsWith('?')) {
-              continue;
-            }
-
-            if (key === 'Properties' && Array.isArray(value)) {
-              const flattened = this.flattenPropertiesArray(value);
-              return this.convertStringBooleans(this.postProcessProperties(flattened));
-            }
-
-            if (Array.isArray(value)) {
-              const nested = this.extractProperties(value);
-              if (Object.keys(nested).length > 0) {
-                return nested;
-              }
-            }
-          }
-        }
-      }
-      return properties;
-    }
-
-    const obj = parsed as Record<string, unknown>;
-    if (obj.Properties && typeof obj.Properties === 'object') {
-      const flattened = this.flattenProperties(obj.Properties as Record<string, unknown>);
-      return this.convertStringBooleans(this.postProcessProperties(flattened));
-    }
-
-    // Recurse into nested structure (e.g. MetaDataObject → Configuration → Properties)
-    for (const [k, value] of Object.entries(obj)) {
-      if (value === null || value === undefined) {continue;}
-      if (k === ':@' || (typeof k === 'string' && k.startsWith('?'))) {continue;}
-      const nested = this.extractProperties(value);
-      if (Object.keys(nested).length > 0) {
-        return nested;
-      }
-    }
-
-    return properties;
-  }
-
-  /**
-   * Post-process properties to format Type arrays
-   */
-  private static postProcessProperties(properties: Record<string, unknown>): Record<string, unknown> {
-    // Check if Type property is an array that needs formatting
-    if (properties.Type && Array.isArray(properties.Type)) {
-      try {
-        // Merge all type-related elements into a single object
-        const typeObject: Record<string, unknown> = {};
-        const v8Types: unknown[] = [];
-        
-        for (const typeItem of properties.Type) {
-          if (typeItem && typeof typeItem === 'object') {
-            for (const [typeKey, typeValue] of Object.entries(typeItem)) {
-              if (typeKey === 'v8:Type') {
-                // Collect all v8:Type elements
-                if (Array.isArray(typeValue)) {
-                  v8Types.push(...typeValue);
-                } else {
-                  v8Types.push(typeValue);
-                }
-              } else if (typeKey.startsWith('v8:')) {
-                // Collect qualifiers (v8:StringQualifiers, v8:NumberQualifiers, etc.)
-                typeObject[typeKey] = typeValue;
-              }
-            }
-          }
-        }
-        
-        // Add collected v8:Type elements to typeObject
-        if (v8Types.length > 0) {
-          typeObject['v8:Type'] = v8Types;
-        }
-        
-        const typeDef = TypeParser.parseFromObject(typeObject);
-        properties.Type = TypeFormatter.formatTypeDisplay(typeDef);
-      } catch (error) {
-        // If parsing fails, leave as-is
-        Logger.error('Failed to format Type property in postProcessProperties', error);
-      }
-    }
-    
-    return properties;
-  }
-
-  private static flattenPropertiesArray(propertiesArray: unknown[]): Record<string, unknown> {
-    const flattened: Record<string, unknown> = {};
-
-    for (const item of propertiesArray) {
-      if (!item || typeof item !== 'object') {
-        continue;
-      }
-
-      for (const [key, value] of Object.entries(item)) {
-        if (key === ':@') {
-          continue;
-        }
-
-        if (key === 'Type' && Array.isArray(value) && value.length > 0) {
-          // Handle Type element - collect all v8:Type, qualifiers, etc. from array
-          try {
-            // Merge all type-related elements into a single object
-            const typeObject: Record<string, unknown> = {};
-            const v8Types: unknown[] = [];
-            
-            for (const typeItem of value) {
-              if (typeItem && typeof typeItem === 'object') {
-                for (const [typeKey, typeValue] of Object.entries(typeItem)) {
-                  if (typeKey === 'v8:Type') {
-                    // Collect all v8:Type elements
-                    if (Array.isArray(typeValue)) {
-                      v8Types.push(...typeValue);
-                    } else {
-                      v8Types.push(typeValue);
-                    }
-                  } else if (typeKey.startsWith('v8:')) {
-                    // Collect qualifiers (v8:StringQualifiers, v8:NumberQualifiers, etc.)
-                    typeObject[typeKey] = typeValue;
-                  }
-                }
-              }
-            }
-            
-            // Add collected v8:Type elements to typeObject
-            if (v8Types.length > 0) {
-              typeObject['v8:Type'] = v8Types;
-            }
-            
-            const typeDef = TypeParser.parseFromObject(typeObject);
-            flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
-          } catch (error) {
-            // If parsing fails, fall back to raw value
-            Logger.error('Failed to parse type in XMLWriter.flattenPropertiesArray', error);
-            flattened[key] = value;
-          }
-        } else if (Array.isArray(value) && value.length > 0) {
-          const firstChild = value[0];
-          if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
-            const rec = firstChild as Record<string, unknown>;
-            flattened[key] = rec['#text'];
-          } else {
-            flattened[key] = value;
-          }
-        } else if (key === 'Type' && value && typeof value === 'object' && 'v8:Type' in value) {
-          // Handle Type element when it's a single object (not array)
-          try {
-            const typeDef = TypeParser.parseFromObject(value as Record<string, unknown>);
-            flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
-          } catch (error) {
-            Logger.error('Failed to parse type in XMLWriter.flattenPropertiesArray', error);
-            const valueRec = value as Record<string, unknown>;
-            const typeValue = valueRec['v8:Type'];
-            flattened[key] = Array.isArray(typeValue) ? typeValue[0] : typeValue;
-          }
-        } else {
-          flattened[key] = value;
-        }
-      }
-    }
-
-    return flattened;
-  }
-
-  private static flattenProperties(properties: Record<string, unknown>): Record<string, unknown> {
-    const flattened: Record<string, unknown> = {};
-
-    for (const [key, value] of Object.entries(properties)) {
-      if (key.startsWith('@_') || key.startsWith('#')) {
-        continue;
-      }
-
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        const obj = value as Record<string, unknown>;
-        if ('#text' in obj) {
-          flattened[key] = obj['#text'];
-        } else if ('v8:Type' in obj) {
-          // Handle Type element with v8:Type child
-          // Parse and format the type for display
-          try {
-            const typeDef = TypeParser.parseFromObject(obj);
-            flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
-          } catch (error) {
-            // If parsing fails, fall back to raw v8:Type value
-            Logger.error('Failed to parse type in XMLWriter.flattenProperties', error);
-            flattened[key] = obj['v8:Type'];
-          }
-        } else {
-          flattened[key] = value;
-        }
-      } else {
-        flattened[key] = value;
-      }
-    }
-
-    return flattened;
-  }
-
-  private static updatePropertiesInStructure(
-    parsed: unknown,
-    properties: Record<string, unknown>
-  ): unknown {
-    if (!parsed || typeof parsed !== 'object') {
-      return parsed;
-    }
-
-    if (Array.isArray(parsed)) {
-      return parsed.map((item) => {
-        if (!item || typeof item !== 'object') {
-          return item;
-        }
-
-        const result: Record<string, unknown> = {};
-        
-        for (const [key, value] of Object.entries(item)) {
-          if (key === ':@') {
-            result[key] = value;
-            continue;
-          }
-
-          if (key === 'Properties' && Array.isArray(value)) {
-            result[key] = this.updatePropertiesArray(value, properties);
-          } else if (key === 'Properties' && value && typeof value === 'object') {
-            result[key] = this.updatePropertiesObject(value as Record<string, unknown>, properties);
-          } else if (Array.isArray(value)) {
-            result[key] = this.updatePropertiesInStructure(value, properties);
-          } else if (value !== null && value !== undefined && typeof value === 'object') {
-            result[key] = this.updatePropertiesInStructure(value, properties);
-          } else {
-            result[key] = value;
-          }
-        }
-
-        return result;
-      });
-    }
-
-    // Root or nested object (e.g. MetaDataObject → Catalog → Properties): recurse into values
-    const obj = parsed as Record<string, unknown>;
-    const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      if (key === ':@' || (typeof key === 'string' && key.startsWith('?'))) {
-        result[key] = value;
-        continue;
-      }
-      if (key === 'Properties') {
-        if (Array.isArray(value)) {
-          result[key] = this.updatePropertiesArray(value, properties);
-        } else if (value && typeof value === 'object') {
-          result[key] = this.updatePropertiesObject(value as Record<string, unknown>, properties);
-        } else {
-          result[key] = value;
-        }
-      } else if (value !== null && value !== undefined && typeof value === 'object') {
-        result[key] = this.updatePropertiesInStructure(value, properties);
-      } else {
-        result[key] = value;
-      }
-    }
-    return result;
-  }
-
-  /** Updates Properties when parsed as object (key -> array or single value per property). */
-  private static updatePropertiesObject(
-    propertiesObj: Record<string, unknown>,
-    newProperties: Record<string, unknown>
-  ): Record<string, unknown> {
-    const result = { ...propertiesObj };
-    for (const [key, newVal] of Object.entries(newProperties)) {
-      const textVal = typeof newVal === 'boolean' || typeof newVal === 'number'
-        ? newVal
-        : String(newVal);
-      const existing = result[key];
-      if (Array.isArray(existing) && existing.length > 0) {
-        const first = existing[0];
-        if (first && typeof first === 'object' && '#text' in (first as object)) {
-          result[key] = [{ ...(first as Record<string, unknown>), '#text': textVal }];
-        } else {
-          result[key] = [{ '#text': textVal }];
-        }
-      } else if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
-        const rec = existing as Record<string, unknown>;
-        if ('#text' in rec) {
-          result[key] = { ...rec, '#text': textVal };
-        } else {
-          result[key] = existing;
-        }
-      } else {
-        result[key] = [{ '#text': textVal }];
-      }
-    }
-    return result;
-  }
-
-  private static updatePropertiesArray(
-    propertiesArray: unknown[],
-    properties: Record<string, unknown>
-  ): unknown[] {
-    return propertiesArray.map((item) => {
-      if (!item || typeof item !== 'object') {
-        return item;
-      }
-
-      const result: Record<string, unknown> = {};
-
-      for (const [key, value] of Object.entries(item)) {
-        if (key === ':@') {
-          result[key] = value;
-          continue;
-        }
-
-        if (key in properties) {
-          const newValue = properties[key];
-          
-          if (Array.isArray(value) && value.length > 0) {
-            const firstChild = value[0];
-            if (firstChild && typeof firstChild === 'object' && '#text' in firstChild) {
-              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number' 
-                ? newValue 
-                : String(newValue);
-              result[key] = [{ ...firstChild, '#text': textValue }];
-            } else {
-              const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
-                ? newValue
-                : String(newValue);
-              result[key] = [{ '#text': textValue }];
-            }
-          } else {
-            const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
-              ? newValue
-              : String(newValue);
-            result[key] = [{ '#text': textValue }];
-          }
-        } else {
-          result[key] = value;
-        }
-      }
-
-      return result;
-    });
-  }
 
   private static buildNestedAttributeScopeState(
     elementType: string,
@@ -3022,7 +2358,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
       // Handle Type as structured XML (from type editor)
       if (key === 'Type' && typeof newVal === 'string' && newVal.trim().includes('<')) {
         try {
-          const typeParsed = this.parser.parse(newVal.trim());
+          const typeParsed = xmlParser.parse(newVal.trim());
           const inner = this.extractTypeContentFromParsed(typeParsed);
           result[key] = inner != null ? (Array.isArray(inner) ? inner : [inner]) : [{ '#text': newVal }];
         } catch {
@@ -3115,7 +2451,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
           // Type from type editor is sent as XML string; write as structured content, not #text
           if (key === 'Type' && typeof newValue === 'string' && newValue.trim().includes('<')) {
             try {
-              const typeParsed = this.parser.parse(newValue.trim());
+              const typeParsed = xmlParser.parse(newValue.trim());
               const inner = this.extractTypeContentFromParsed(typeParsed);
               result[key] = inner != null ? (Array.isArray(inner) ? inner : [inner]) : [{ '#text': textValue }];
             } catch (parseErr) {
