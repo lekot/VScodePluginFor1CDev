@@ -15,8 +15,14 @@ FormatSamples/extensions_samples/
 FormatSamples/ut_demo_ForFormat/
 BUGS/
 docs/*
-# Единственный обязательный backlog для разработки (AIF-19 / Paperclip); остальной docs/ по-прежнему локальный
+# Документы, на которые ссылается docs/developer-backlog.md (остальной docs/ — локальный)
 !docs/developer-backlog.md
+!docs/analytics/
+docs/analytics/*
+!docs/analytics/edt-killer-target.md
+!docs/plans/
+docs/plans/*
+!docs/plans/issue-bsl-common-module-tree-plan.md
 suite-reports/
 AGENTS.md
 # Specs (tracked only on branch local-specs, not pushed to origin)
