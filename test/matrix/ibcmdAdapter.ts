@@ -26,6 +26,7 @@ const DEFAULT_TIMEOUT_MS = 600_000;
  *
  * **Config check** (see design §6.6): `runIbcmdConfigCheck` — `ibcmd infobase config check --config=<YAML> ...`
  * (same env contract as import; typically run after a successful import in the matrix report).
+ * Optional: `IBCMD_CONFIG_CHECK_FORCE=1` → append `--force`.
  */
 export async function runIbcmdConfigCheck(): Promise<{
   status: 'executed' | 'skipped' | 'failed';
@@ -71,6 +72,9 @@ export async function runIbcmdConfigCheck(): Promise<{
   }
   if (password) {
     args.push(`--password=${password}`);
+  }
+  if (process.env.IBCMD_CONFIG_CHECK_FORCE?.trim() === '1') {
+    args.push('--force');
   }
 
   const timeoutMs = parseInt(process.env.IBCMD_TIMEOUT_MS ?? '', 10);

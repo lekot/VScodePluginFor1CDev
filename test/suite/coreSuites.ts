@@ -45,6 +45,7 @@ export const coreSuiteFiles: string[] = [
   'suite/subsystemCompositionFileUpdater.test.js',
   'suite/subsystemCompositionRefResolver.test.js',
   'suite/ibcmdConfigCheckGate.test.js',
+  'suite/ibcmdMatrixAdapter.test.js',
   'suite/treeNormalization.test.js',
   'suite/typeFormatterAndFilterState.test.js',
   'suite/configurationXmlUpdater.test.js',

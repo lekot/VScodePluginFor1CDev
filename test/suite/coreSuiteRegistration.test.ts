@@ -13,6 +13,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/subsystemCompositionFileUpdater.test.js',
   'suite/subsystemCompositionRefResolver.test.js',
   'suite/ibcmdConfigCheckGate.test.js',
+  'suite/ibcmdMatrixAdapter.test.js',
   'suite/formCommandEngineFeatureFlag.test.js',
   'suite/formPaths.test.js',
   'suite/xmlChildObjects.test.js',
