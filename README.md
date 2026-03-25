@@ -70,7 +70,7 @@ VS Code расширение для визуализации и редактир
 | Previous search result | Предыдущий результат поиска |
 | Clear tree cache | Очистить кэш дерева |
 | CDT 41: Export logs | Экспорт логов расширения |
-| CDT 41: Copy diagnostics summary | Сводка для багрепортов: версии, хост-приложение, ОС (`process.platform`), архитектура CPU (`process.arch`), язык UI, remote (если есть), режим запуска расширения, workspace, корни конфигурации |
+| CDT 41: Copy diagnostics summary | Сводка для багрепортов: версии, хост-приложение, ОС, язык UI, remote (если есть), режим расширения (production / development / test), папки workspace и найденные корни конфигурации (поиск до глубины 5), метка UTC. [Словарь полей](docs/analytics/diagnostics-summary-field-dictionary.md) |
 
 ### Горячие клавиши (в панели CDT 41)
 
@@ -147,40 +147,34 @@ VS Code расширение для визуализации и редактир
 ```
 VScodePluginFor1CDev/
 ├── src/
-│   ├── extension.ts              # Точка входа расширения
-│   ├── models/
-│   │   └── treeNode.ts           # Модель узла дерева
-│   ├── parsers/
-│   │   ├── metadataParser.ts     # Главный парсер
-│   │   ├── edtParser.ts         # EDT формат
-│   │   ├── designerParser.ts    # Designer формат
-│   │   ├── formatDetector.ts    # Определение формата
-│   │   └── xmlParser.ts         # Базовый XML парсер
-│   ├── providers/
-│   │   ├── treeDataProvider.ts  # Tree View провайдер
-│   │   ├── propertiesProvider.ts # Панель свойств
-│   │   └── typeEditorProvider.ts # Редактор типа
-│   ├── services/
-│   │   ├── elementOperations.ts # Создание/дублирование/удаление/переименование
-│   │   └── metadataWatcherService.ts # Слежение за изменениями XML
-│   ├── utils/
-│   │   ├── logger.ts
-│   │   ├── XMLWriter.ts         # Запись/чтение XML
-│   │   ├── metadataTypeMapper.ts
-│   │   ├── elementNameValidator.ts
-│   │   ├── referenceFinder.ts   # Поиск и замена ссылок
-│   │   └── ...
-│   ├── constants/
-│   │   ├── messages.ts
-│   │   ├── propertyLabels.ts
-│   │   └── propertySections.ts
-│   └── types/
-│       └── typeDefinitions.ts
+│   ├── extension.ts                 # Точка входа, команды, связка провайдеров
+│   ├── models/                      # TreeNode, типы узлов
+│   ├── parsers/                     # metadataParser, designerParser, edtParser, formatDetector, xmlParser, …
+│   ├── providers/                   # treeDataProvider, propertiesProvider, typeEditorProvider
+│   ├── services/                    # elementOperations, metadataWatcherService, reloadCoordinator, шаблоны Designer, …
+│   ├── utils/                       # XMLWriter, logger, diskCache, validators, referenceFinder, …
+│   ├── constants/                   # UI-сообщения, подписи свойств, секции
+│   ├── types/                       # Контракты перезагрузки и прочие типы
+│   ├── serializers/                 # Сериализация типов для UI
+│   ├── formEditor/                  # Кастомный редактор Ext/Form.xml (webview)
+│   └── rolesEditor/                 # Редактор прав роли (Role.xml, webview)
 ├── test/
-│   ├── fixtures/                 # Фикстуры (designer-config и др.)
-│   └── suite/                    # Модульные и интеграционные тесты
+│   ├── fixtures/                    # Фикстуры (designer-config и др.)
+│   ├── suite/                       # Модульные, интеграционные, smoke
+│   └── matrix/                      # Матрица контейнеров + опциональный ibcmd
+├── docs/
+│   ├── documentation-map.md         # Указатель: research → analytics → plans → код
+│   ├── architecture.md              # Карта src/ и потоков данных
+│   ├── developer-backlog.md         # Очередь задач (синхрон с gap и GitHub)
+│   ├── design/                      # Дизайн E2E / ibcmd
+│   ├── plans/                       # Планы фич и матрицы
+│   ├── research/                    # Gap с EDT, спеки объектов XML
+│   └── analytics/                   # EDT-killer, user workflow, инвентаризация
+├── DEVELOPING.md
 └── package.json
 ```
+
+Подробная архитектура: [docs/architecture.md](docs/architecture.md). Полный указатель документов: [docs/documentation-map.md](docs/documentation-map.md).
 
 ## Разработка
 
@@ -306,16 +300,28 @@ npm run format
 
 Расширение использует следующую архитектуру:
 
-1. **Extension** - точка входа, регистрация команд и провайдеров
-2. **MetadataParser** - парсинг XML файлов конфигурации
-3. **TreeDataProvider** - реализация VS Code TreeDataProvider API
-4. **TreeNode** - модель данных для узлов дерева
+1. **Extension** — точка входа, регистрация команд и провайдеров
+2. **MetadataParser** — парсинг XML (Designer / EDT), фасад над `DesignerParser` и `EdtParser`
+3. **TreeDataProvider** — VS Code TreeDataProvider API и фильтры
+4. **TreeNode** — модель узла дерева
+5. **FormEditorProvider / RolesRightsEditorProvider** — кастомные редакторы XML в webview
+6. **MetadataWatcherService + ReloadCoordinatorService** — реакция на внешние правки файлов
 
 ### Поток данных
 
 ```
-Workspace → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree View
+Workspace → FormatDetector → MetadataParser → TreeNode → TreeDataProvider → VS Code Tree View
 ```
+
+Детальная карта каталогов `src/`, сервисов и тестов: [docs/architecture.md](docs/architecture.md).
+
+### Документация для разработчиков
+
+- [docs/documentation-map.md](docs/documentation-map.md) — порядок чтения (исследование → критерии → планы → код)
+- [docs/developer-backlog.md](docs/developer-backlog.md) — приоритетный backlog с ссылками на GitHub issues
+- [docs/manifest.md](docs/manifest.md) — контракт изменений на диске
+- [docs/plans/issue-bsl-common-module-tree-plan.md](docs/plans/issue-bsl-common-module-tree-plan.md) — план по дереву общих модулей / BSL (#21, #25)
+- [DEVELOPING.md](DEVELOPING.md) — сборка и тесты
 
 ## Производительность
 

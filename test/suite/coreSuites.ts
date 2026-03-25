@@ -4,6 +4,8 @@ export const coreSuiteFiles: string[] = [
   'suite/formEditorTitle.test.js',
   'suite/formXmlParser.test.js',
   'suite/metadataParser.test.js',
+  'suite/metadataDefaultValues.test.js',
+  'suite/metadataTypeMapper.test.js',
   'suite/xmlParser.test.js',
   'suite/xmlWriter.test.js',
   'suite/xmlWriter.tabularColumn.test.js',
