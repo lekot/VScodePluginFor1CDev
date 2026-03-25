@@ -5,6 +5,110 @@
 
 import type { FormModel, FormChildItem, FormAttribute } from './formModel';
 
+export type ContainerOrientation = 'horizontal' | 'vertical';
+
+export interface ContainerLayoutPreviewMeta {
+  orientation: ContainerOrientation;
+  shouldIndentChildren: boolean;
+  containerClassHints: string[];
+}
+
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function toScalarString(value: unknown): string {
+  if (value == null) {return '';}
+  if (typeof value === 'string') {return value.trim();}
+  if (typeof value === 'number' || typeof value === 'boolean') {return String(value).trim();}
+  if (typeof value !== 'object') {return '';}
+  const rec = value as Record<string, unknown>;
+  for (const k of ['#text', '_', 'value', 'Value', 'name', 'Name']) {
+    if (rec[k] != null) {
+      const nested = toScalarString(rec[k]);
+      if (nested) {return nested;}
+    }
+  }
+  return '';
+}
+
+function getPropertyValueByAliases(
+  properties: Record<string, unknown> | undefined,
+  aliases: readonly string[],
+): string {
+  if (!properties) {return '';}
+  const directKeyMap = new Map<string, string>();
+  for (const key of Object.keys(properties)) {
+    if (key === ':@' || key.startsWith('@')) {continue;}
+    directKeyMap.set(normalizeKey(key.includes(':') ? key.split(':').pop() ?? key : key), key);
+  }
+  for (const alias of aliases) {
+    const lookup = directKeyMap.get(normalizeKey(alias));
+    if (!lookup) {continue;}
+    const val = toScalarString(properties[lookup]);
+    if (val) {return val;}
+  }
+  return '';
+}
+
+function normalizeOrientation(rawValue: string): ContainerOrientation | null {
+  const v = rawValue.toLowerCase().replace(/[\s_-]+/g, '');
+  if (!v) {return null;}
+  if (v.includes('horizontal') || v.includes('horiz') || v === 'row' || v.includes('leftright') || v.includes('слеванаправо')) {
+    return 'horizontal';
+  }
+  if (v.includes('vertical') || v.includes('vert') || v === 'column' || v.includes('topbottom') || v.includes('сверхувниз')) {
+    return 'vertical';
+  }
+  if (v.includes('по горизонтали') || v.includes('горизонт')) {return 'horizontal';}
+  if (v.includes('по вертикали') || v.includes('вертикал')) {return 'vertical';}
+  return null;
+}
+
+/** Compact, safe layout metadata for preview rendering of container child items. */
+export function getContainerLayoutPreviewMeta(item: FormChildItem | undefined): ContainerLayoutPreviewMeta {
+  const tag = String(item?.tag || '');
+  const properties = item?.properties as Record<string, unknown> | undefined;
+  const rawOrientation = getPropertyValueByAliases(properties, [
+    'Group',
+    'groups',
+    'GroupOrientation',
+    'Orientation',
+    'Layout',
+    'LayoutOrientation',
+    'ChildrenLayout',
+    'ChildItemsLayout',
+    'Расположение',
+    'Ориентация',
+    'Группировка',
+  ]);
+  const orientation = normalizeOrientation(rawOrientation) ?? 'vertical';
+  const rawIndent = getPropertyValueByAliases(properties, [
+    'IndentChildren',
+    'ShouldIndentChildren',
+    'ChildIndent',
+    'Вложенность',
+    'ОтступДетей',
+  ]).toLowerCase();
+  const explicitIndent = rawIndent === 'true' || rawIndent === '1' || rawIndent === 'yes' || rawIndent === 'да'
+    ? true
+    : rawIndent === 'false' || rawIndent === '0' || rawIndent === 'no' || rawIndent === 'нет'
+      ? false
+      : undefined;
+  const baseIndentByTag = tag === 'Page' || tag === 'Group' || tag === 'UsualGroup' || tag === 'CollapsibleGroup';
+  const shouldIndentChildren = explicitIndent ?? baseIndentByTag;
+  const hints = new Set<string>(['container', `container-${orientation}`]);
+  if (shouldIndentChildren) {hints.add('container-indent');}
+  if (tag) {hints.add(`container-${tag.toLowerCase()}`);}
+  if (tag === 'AutoCommandBar') {hints.add('container-buttons');}
+  if (tag === 'Page' || tag === 'Pages') {hints.add('container-page');}
+  return {
+    orientation,
+    shouldIndentChildren,
+    containerClassHints: [...hints],
+  };
+}
+
 /** Resolve attribute type string from FormAttribute.properties (Type or v8:Type etc.). */
 export function getAttributeTypeString(attr: FormAttribute): string {
   if (!attr?.properties) {return '';}
