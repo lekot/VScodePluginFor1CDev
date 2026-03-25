@@ -1,7 +1,7 @@
 # Дизайн рефакторинга «красных» модулей
 
 **Дата:** 2026-03-25  
-**Обновление:** 2026-03-26 — шаг 6 (xmlTabularSectionService) выполнен в коде.  
+**Обновление:** 2026-03-26 — шаги 6–8 по XMLWriter: `xmlTabularSectionService` ранее; добавлен `xmlFormReferenceService`, фасад `XMLWriter` с `readUtf8AndParse` / `saveParsedWithBackup`.  
 **Статус:** Draft  
 **Scope:** `src/utils/XMLWriter.ts` (~700 строк после шага 6; было ~3150), `src/extension.ts` (~1410 строк)
 
@@ -18,7 +18,7 @@
 ### 2.1 Метрики
 | Показатель | Значение |
 |------------|----------|
-| Строк кода (`XMLWriter.ts`, после шагов 1–6) | ~700 |
+| Строк кода (`XMLWriter.ts`, после шагов 1–8) | ~510 |
 | Публичных методов | 25+ |
 | Приватных helper'ов | 40+ |
 | Зависимости | `fast-xml-parser`, `fs`, внутренние (`Logger`, `TypeParser`, `TypeFormatter`, `internalInfoGenerator`, …) |
@@ -88,8 +88,8 @@ export function removeNestedElementInStructure(parsed: unknown, elementType: str
 | 4 | Извлечь `xmlPropertiesService.ts` | Средний | Регрессия через e2e |+|
 | 5 | Извлечь `xmlChildObjectsService.ts` | Средний | Регрессия через e2e |+|
 | 6 | Извлечь `xmlTabularSectionService.ts` | Средний | e2e + регресс в `xmlWriter.tabularColumn.test.ts` |+|
-| 7 | Извлечь `xmlFormReferenceService.ts` | Низкий | Регрессия через e2e | |
-| 8 | Превратить `XMLWriter` в facade, удалить дублирование | Низкий | Полный прогон test-suite | |
+| 7 | Извлечь `xmlFormReferenceService.ts` | Низкий | Регрессия через e2e |+|
+| 8 | Превратить `XMLWriter` в facade, удалить дублирование | Низкий | Полный прогон test-suite |+|
 
 **Критерий готовности шага:** `.\test-suite.bat` проходит, `.\instrument-smoke.bat` (ibcmd slice) проходит.
 
@@ -116,6 +116,12 @@ export function removeNestedElementInStructure(parsed: unknown, elementType: str
 4. **Регрессии:** оба layout; тексты ошибок на русском — сохранять дословно.
 
 **Критерий после шага 6:** общий критерий готовности шага; дополнительно — регресс-тесты выше (и при желании unit на `*InParsed`).
+
+#### 3.3.2 Шаги 7–8 — `xmlFormReferenceService`, фасад `XMLWriter`
+
+**Шаг 7:** `src/utils/xml/xmlFormReferenceService.ts` — чистые `addDesignerFormReferenceInParsed` / `removeDesignerFormFromOwnerInParsed(parsed, formName, state)`; внутренние хелперы ChildObjects/Form и сброс свойств `Default*Form` / `Auxiliary*Form`. Barrel `index.ts` реэкспортирует обе функции.
+
+**Шаг 8:** публичные async-методы `XMLWriter`, которые «прочитать → parse → сервис → backup-write», используют `readUtf8AndParse` и `saveParsedWithBackup`; формы — ранний выход при `!state.changed`.
 
 ---
 

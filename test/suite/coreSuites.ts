@@ -15,6 +15,7 @@ export const coreSuiteFiles: string[] = [
   'suite/xmlPropertyUtils.test.js',
   'suite/xmlWriter.test.js',
   'suite/xmlWriter.tabularColumn.test.js',
+  'suite/xmlFormReferenceService.test.js',
   'suite/elementNameValidator.test.js',
   'suite/referenceFinder.test.js',
   'suite/elementOperations.test.js',

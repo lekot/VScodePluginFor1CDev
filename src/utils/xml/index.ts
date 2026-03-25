@@ -1,3 +1,4 @@
+/** Barrel: low-level I/O/helpers + pure `*InParsed` transforms for Designer XML. */
 export { XML_WRITER_OPTIONS, xmlParser, xmlBuilder } from './xmlCore';
 export { buildXmlString, writeUtf8FileWithBackup } from './xmlFileIo';
 export { generateSimpleUuid } from './xmlHelpers';
@@ -18,3 +19,7 @@ export {
   duplicateAttributeInTabularSectionInParsed,
   removeAttributeFromTabularSectionInParsed,
 } from './xmlTabularSectionService';
+export {
+  addDesignerFormReferenceInParsed,
+  removeDesignerFormFromOwnerInParsed,
+} from './xmlFormReferenceService';
