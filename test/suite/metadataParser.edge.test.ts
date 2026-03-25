@@ -4,6 +4,10 @@ import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat, FormatDetector } from '../../src/parsers/formatDetector';
 import { DesignerParser } from '../../src/parsers/designerParser';
 import { EdtParser } from '../../src/parsers/edtParser';
+import {
+  isTabularSectionColumnsContainer,
+  TABULAR_SECTION_COLUMNS_PLACEHOLDER_TYPE,
+} from '../../src/utils/treeNormalization';
 
 suite('MetadataParser edge branches', () => {
   test('parseStructureOnly throws for invalid path and unknown format', async () => {
@@ -76,6 +80,50 @@ suite('MetadataParser edge branches', () => {
 
       const unknownChildren = await MetadataParser.loadElementChildren('cfg', ConfigFormat.Unknown, regularElement);
       assert.deepStrictEqual(unknownChildren, []);
+    } finally {
+      (DesignerParser.loadChildrenForElement as unknown as typeof DesignerParser.loadChildrenForElement) = originalDesignerLoad;
+      (EdtParser.loadChildrenForElement as unknown as typeof EdtParser.loadChildrenForElement) = originalEdtLoad;
+    }
+  });
+
+  test('loadElementChildren generic branch adds Реквизиты placeholder for empty tabular section (lazy load)', async () => {
+    const originalDesignerLoad = DesignerParser.loadChildrenForElement;
+    const originalEdtLoad = EdtParser.loadChildrenForElement;
+    try {
+      (DesignerParser.loadChildrenForElement as unknown as (...args: unknown[]) => Promise<TreeNode[]>) = async () => [];
+      (EdtParser.loadChildrenForElement as unknown as (...args: unknown[]) => Promise<TreeNode[]>) = async () => [];
+
+      const tabularSectionsFolder: TreeNode = {
+        id: 'TabularSections',
+        name: 'Табличные части',
+        type: MetadataType.TabularSection,
+        properties: {},
+        children: [],
+      };
+      const tsInstance: TreeNode = {
+        id: 'TabularSections.EmptySection',
+        name: 'EmptySection',
+        type: MetadataType.TabularSection,
+        properties: { _lazy: true },
+        parent: tabularSectionsFolder,
+        filePath: 'C:\\cfg\\Catalogs\\Cat\\TabularSections\\EmptySection\\EmptySection.xml',
+      };
+
+      for (const fmt of [ConfigFormat.Designer, ConfigFormat.EDT] as const) {
+        const children = await MetadataParser.loadElementChildren('cfg', fmt, tsInstance);
+        assert.strictEqual(children.length, 1, fmt);
+        const col = children[0];
+        assert.strictEqual(col.name, 'Реквизиты', fmt);
+        assert.strictEqual(col.id, 'TabularSections.EmptySection.Attributes', fmt);
+        assert.ok(isTabularSectionColumnsContainer(col), fmt);
+        assert.strictEqual(
+          (col.properties as Record<string, unknown>).type,
+          TABULAR_SECTION_COLUMNS_PLACEHOLDER_TYPE,
+          fmt
+        );
+        assert.strictEqual(col.parent, tsInstance, fmt);
+        assert.strictEqual((col.properties as Record<string, unknown>)._lazy, true, fmt);
+      }
     } finally {
       (DesignerParser.loadChildrenForElement as unknown as typeof DesignerParser.loadChildrenForElement) = originalDesignerLoad;
       (EdtParser.loadChildrenForElement as unknown as typeof EdtParser.loadChildrenForElement) = originalEdtLoad;

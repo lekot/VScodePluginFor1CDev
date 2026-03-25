@@ -2,9 +2,11 @@ import * as assert from 'assert';
 import {
   extractAttributes,
   extractChildSubsystems,
+  extractSubsystemCompositionRefs,
   extractTabularSections,
   findChildObjects,
   flattenAttributeProperties,
+  validateSubsystemCompositionRef,
 } from '../../src/parsers/xmlChildObjects';
 
 suite('xmlChildObjects', () => {
@@ -101,5 +103,37 @@ suite('xmlChildObjects', () => {
     assert.deepStrictEqual(flattenAttributeProperties(undefined as unknown as Record<string, unknown>), {});
     assert.deepStrictEqual(flattenAttributeProperties({ Name: 'A' }), {});
     assert.deepStrictEqual(flattenAttributeProperties({ Properties: 'bad' as unknown as Record<string, unknown> }), {});
+  });
+
+  test('extractSubsystemCompositionRefs reads xr:Item list and bare Item', () => {
+    assert.deepStrictEqual(extractSubsystemCompositionRefs(undefined), []);
+    assert.deepStrictEqual(extractSubsystemCompositionRefs(''), []);
+    assert.deepStrictEqual(extractSubsystemCompositionRefs('  Catalog.X  '), ['Catalog.X']);
+    assert.deepStrictEqual(
+      extractSubsystemCompositionRefs({
+        'xr:Item': [{ '#text': 'Catalog.A' }, { '#text': 'Document.B' }],
+      }),
+      ['Catalog.A', 'Document.B']
+    );
+    assert.deepStrictEqual(
+      extractSubsystemCompositionRefs({
+        Item: 'CommonModule.C',
+      }),
+      ['CommonModule.C']
+    );
+  });
+
+  test('validateSubsystemCompositionRef accepts Type.Name and rejects bad shapes', () => {
+    assert.strictEqual(validateSubsystemCompositionRef('Catalog.Товары'), null);
+    assert.strictEqual(validateSubsystemCompositionRef('  Catalog.X  '), null);
+    assert.strictEqual(validateSubsystemCompositionRef(''), 'empty reference');
+    assert.strictEqual(validateSubsystemCompositionRef('Catalog'), 'expected format MetadataType.ObjectName');
+    assert.strictEqual(validateSubsystemCompositionRef('Catalog.'), 'expected format MetadataType.ObjectName');
+    assert.strictEqual(
+      validateSubsystemCompositionRef('Catalog.A.B'),
+      'expected a single dot between metadata type and object name'
+    );
+    assert.strictEqual(validateSubsystemCompositionRef('Catalog .X'), 'reference must not contain whitespace');
+    assert.strictEqual(validateSubsystemCompositionRef('.X'), 'expected format MetadataType.ObjectName');
   });
 });

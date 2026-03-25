@@ -22,6 +22,18 @@ class TreeItem {
 
 const Uri = {
   file: (fsPath: string) => ({ fsPath, scheme: 'file' as const }),
+  // Minimal subset used by core tests:
+  // - parse('file:///tmp/x') for equality checks via `toString()`
+  // - `fsPath` extraction is best-effort and only for `file://` URIs.
+  parse: (uri: string) => {
+    const m = uri.match(/^file:\/\/\/(.*)$/);
+    const fsPath = m ? `/${m[1]}` : uri;
+    return {
+      fsPath,
+      scheme: 'file' as const,
+      toString: () => uri,
+    };
+  },
 };
 
 class ThemeIcon {

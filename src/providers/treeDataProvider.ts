@@ -14,6 +14,8 @@ import {
 } from '../utils/treeNormalization';
 import { OptimisticDeleteToken } from '../types/reloadContracts';
 import { TOP_LEVEL_TYPES } from '../services/elementOperations';
+import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
+import { expectedTreeNodeIdForCompositionRef } from '../services/subsystemCompositionRefResolver';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -418,14 +420,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Check if node is ancestor of the subsystem (Configuration → Subsystems → SelectedSubsystem)
       let current: TreeNode | undefined = node;
       while (current) {
-        if (current.id === this.subsystemFilter.subsystemId) {
+        // `id` is expected to be unique in real metadata. In property-based tests it can be duplicated,
+        // so we also require the node to be an actual subsystem.
+        if (
+          current.id === this.subsystemFilter.subsystemId &&
+          current.type === MetadataType.Subsystem
+        ) {
           return true;
         }
         current = current.parent;
       }
 
       const subsystemNode = this.nodeCache.get(this.subsystemFilter.subsystemId);
-      if (!subsystemNode) {return false;}
+      if (!subsystemNode || subsystemNode.type !== MetadataType.Subsystem) {return false;}
 
       const subsystemsToCheck = this.collectSubsystemAndDescendants(subsystemNode);
       for (const sub of subsystemsToCheck) {
@@ -1312,6 +1319,57 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   findNodeById(id: string): TreeNode | null {
     return this.nodeCache.get(id) || null;
+  }
+
+  /**
+   * Resolve a subsystem composition ref (`Catalog.Name`) to a loaded root object node in the same
+   * configuration as `scopeNode`. Returns `null` if invalid or not found in the tree.
+   */
+  findRootObjectForCompositionRef(ref: string, scopeNode: TreeNode): TreeNode | null {
+    if (validateSubsystemCompositionRef(ref) !== null) {
+      return null;
+    }
+    const expectedId = expectedTreeNodeIdForCompositionRef(ref);
+    if (!expectedId) {
+      return null;
+    }
+    const candidates = this.nodeCandidatesById.get(expectedId) ?? [];
+    const configPath = this.getConfigPathForNode(scopeNode);
+    if (candidates.length === 0) {
+      return this.nodeCache.get(expectedId) ?? null;
+    }
+    if (configPath) {
+      const scoped = candidates.find((candidate) => this.getConfigPathForNode(candidate) === configPath);
+      return scoped ?? null;
+    }
+    return candidates[0] ?? null;
+  }
+
+  /**
+   * Returns true when a valid composition ref exists in the workspace cache,
+   * but only under another configuration root than `scopeNode`.
+   */
+  hasCompositionRefInOtherConfiguration(ref: string, scopeNode: TreeNode): boolean {
+    if (validateSubsystemCompositionRef(ref) !== null) {
+      return false;
+    }
+    const expectedId = expectedTreeNodeIdForCompositionRef(ref);
+    if (!expectedId) {
+      return false;
+    }
+    const candidates = this.nodeCandidatesById.get(expectedId) ?? [];
+    if (candidates.length === 0) {
+      return false;
+    }
+    const scopeConfigPath = this.getConfigPathForNode(scopeNode);
+    if (!scopeConfigPath) {
+      return false;
+    }
+    const inSameConfig = candidates.some((candidate) => this.getConfigPathForNode(candidate) === scopeConfigPath);
+    if (inSameConfig) {
+      return false;
+    }
+    return candidates.some((candidate) => this.getConfigPathForNode(candidate) !== scopeConfigPath);
   }
 
   /** Resolve possibly stale node reference to active in-memory node. */

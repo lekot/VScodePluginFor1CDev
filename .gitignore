@@ -15,6 +15,14 @@ FormatSamples/extensions_samples/
 FormatSamples/ut_demo_ForFormat/
 BUGS/
 docs/*
+# Документы, на которые ссылается docs/developer-backlog.md (остальной docs/ — локальный)
+!docs/developer-backlog.md
+!docs/analytics/
+docs/analytics/*
+!docs/analytics/edt-killer-target.md
+!docs/plans/
+docs/plans/*
+!docs/plans/issue-bsl-common-module-tree-plan.md
 suite-reports/
 AGENTS.md
 # Specs (tracked only on branch local-specs, not pushed to origin)
@@ -29,3 +37,5 @@ shcntx_help.db
 
 # Локальная настройка ibcmd (копия ibcmd.setup.example.bat с путями к платформе и ИБ)
 ibcmd-local.bat
+.ibcmd-reports/
+suite-report-core.json

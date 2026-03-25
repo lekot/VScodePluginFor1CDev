@@ -237,6 +237,11 @@ set IBCMD_INFOBASE_CONFIG=C:\Users\You\ibcmd-infobase.yml
 
 После прогона с рабочим ibcmd в `suite-reports/instrument-matrix.json` блок **`ibcmd`** будет с `"status": "executed"` и фрагментом лога; при ошибке импорта смокер завершится с ненулевым кодом. Откройте ту же ИБ в конфигураторе и выполните типовую проверку конфигурации при необходимости.
 
+Для сценария через задачи VS Code (`CDT: ibcmd — check/import`) отчёты пишутся в `.ibcmd-reports/` в workspace (`check-last.log`, `import-last.log`). Их можно открыть из палитры:
+
+- `CDT 41: Open last ibcmd check report`
+- `CDT 41: Open last ibcmd import report`
+
 Своя копия конфигурации в составе `instrument-smoke.bat` (вместо temp-копии `empty_conf`): перед запуском задайте **`INSTRUMENT_MATRIX_WORK_DIR`** (абсолютный путь к корню с `Configuration.xml`).
 
 Только матрица на **своей** копии выгрузки (без полного instrument-smoke): `.\matrix-local.bat`.

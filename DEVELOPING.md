@@ -51,6 +51,34 @@ npm run format
 2. F5 или Run → Start Debugging — запустится Extension Development Host с установленным расширением.
 3. В новом окне откройте папку с конфигурацией 1С (EDT или Designer) и проверьте панель «CDT 41».
 
+## IBCMD: задачи VS Code и артефакты отчёта
+
+Для сценария без EDT доступны задачи:
+
+- `CDT: ibcmd — check infobase configuration`
+- `CDT: ibcmd — import configuration from XML`
+
+Обе задачи вызывают `node scripts/ibcmd-cli.cjs ...` и используют переменные окружения:
+
+- `IBCMD_PATH` — путь к `ibcmd(.exe)`.
+- `IBCMD_INFOBASE_CONFIG` — путь к YAML-конфигу ИБ.
+- `IBCMD_USER` / `IBCMD_PASSWORD` — опционально.
+- `IBCMD_CONFIG_CHECK_FORCE=1` — только для `check`, добавляет `--force`.
+- `MATRIX_WORK_DIR` — только для `import`, корень выгрузки Designer (с `Configuration.xml`).
+- `IBCMD_REPORT_DIR` — опционально, каталог отчётов (по умолчанию `.ibcmd-reports` в workspace).
+
+После каждого запуска helper пишет артефакт отчёта:
+
+- `check`: `.ibcmd-reports/check-last.log`
+- `import`: `.ibcmd-reports/import-last.log`
+
+Также можно открыть последний отчёт прямо из палитры команд CDT 41:
+
+- `CDT 41: Open last ibcmd check report`
+- `CDT 41: Open last ibcmd import report`
+
+В логах задачи печатается путь вида `[ibcmd-cli] report: ...`, а в файле есть команда, exit code, stdout/stderr.
+
 ## Структура тестов
 
 - **Парсеры и дерево**: `xmlParser.test.ts`, `designerParser.test.ts`, `metadataParser.test.ts`, `formatDetector.test.ts`, `treeDataProvider.test.ts`.

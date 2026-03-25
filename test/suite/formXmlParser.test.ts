@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { parseFormXml } from '../../src/formEditor/formXmlParser';
-import { writeFormXml } from '../../src/formEditor/formXmlWriter';
+import { injectMissingFormOpenTagAttrs, writeFormXml } from '../../src/formEditor/formXmlWriter';
 import { isFormParseError, isFormParseFileMissing, createEmptyFormModel } from '../../src/formEditor/formModel';
 
 suite('FormXmlParser', () => {
@@ -232,6 +232,15 @@ suite('FormXmlParser', () => {
     assert.strictEqual(empty.formEvents.length, 0);
   });
 
+  test('writeFormXml adds xmlns and version on Form open tag when builder omits them', () => {
+    const bare = '<Form>\n\t<ChildItems></ChildItems>\n</Form>';
+    const model = createEmptyFormModel();
+    model.version = '2.17';
+    const out = injectMissingFormOpenTagAttrs(bare, model);
+    assert.ok(out.includes('xmlns="http://v8.1c.ru/8.3/xcf/logform"'), 'default logform xmlns');
+    assert.ok(out.includes('version="2.17"'), 'version from model');
+  });
+
   test('round-trip: parse, write, parse produces valid model', async () => {
     const result = await parseFormXml(fixturePath);
     assert.ok(!isFormParseError(result), (result as { error?: string }).error ?? '');
@@ -239,11 +248,16 @@ suite('FormXmlParser', () => {
     const tmpPath = path.join(os.tmpdir(), `1cviewer-form-roundtrip-${Date.now()}.xml`);
     try {
       await writeFormXml(tmpPath, model);
+      const written = await fs.promises.readFile(tmpPath, 'utf-8');
+      assert.ok(
+        /<\s*Form[^>]*\bversion\s*=\s*"2\.20"/.test(written),
+        'written Form.xml should declare version on opening tag (B.1 contract)'
+      );
       const reParsed = await parseFormXml(tmpPath);
       assert.ok(!isFormParseError(reParsed), (reParsed as { error?: string }).error ?? '');
       assert.ok(reParsed.model.childItemsRoot.length >= 1, 'round-trip model has childItemsRoot');
-      assert.ok(reParsed.model.childItemsRoot[0].tag, 'round-trip first element has tag');
-      assert.ok(reParsed.model.childItemsRoot[0].name, 'round-trip first element has name');
+      assert.strictEqual(reParsed.model.childItemsRoot[0].tag, 'UsualGroup');
+      assert.strictEqual(reParsed.model.childItemsRoot[0].name, 'Группа1');
       // id and name remain strings after round-trip
       const first = reParsed.model.childItemsRoot[0];
       if (first.id != null) assert.strictEqual(typeof first.id, 'string', 'childItemsRoot[0].id is string');

@@ -15,13 +15,13 @@ function createBaseModel(): FormModel {
 }
 
 suite('FormXmlWriter', () => {
-  test('writes default Form version 2.17 when model version is absent', async () => {
+  test('writes default Form version 2.20 when model version is absent', async () => {
     const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-version-'));
     const formXmlPath = path.join(tmpRoot, 'Form.xml');
     try {
       await writeFormXml(formXmlPath, createBaseModel());
       const xml = await fs.promises.readFile(formXmlPath, 'utf-8');
-      assert.ok(xml.includes('<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.17">'));
+      assert.ok(xml.includes('<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">'));
     } finally {
       await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }

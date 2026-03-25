@@ -43,6 +43,7 @@ async function main(): Promise<void> {
           reportFile,
           stepSummary: report.stepSummary,
           ibcmd: report.ibcmd,
+          ibcmdCheck: report.ibcmdCheck,
           stepsTotal: report.steps.length,
         },
         null,
@@ -50,11 +51,12 @@ async function main(): Promise<void> {
       )
     );
 
-    const ibcmdFailed = report.ibcmd.status === 'failed';
+    const ibcmdFailed =
+      report.ibcmd.status === 'failed' || report.ibcmdCheck.status === 'failed';
     if (ibcmdFailed) {
       if (process.env.INSTRUMENT_IBCMD_NONFATAL === '1') {
         console.warn(
-          '[instrument-smoke:matrix] ibcmd failed (see report JSON ibcmd.logSnippet) — INSTRUMENT_IBCMD_NONFATAL=1, continuing to VS Code smoke.'
+          '[instrument-smoke:matrix] ibcmd import/check failed (see report JSON `ibcmd` / `ibcmdCheck`) — INSTRUMENT_IBCMD_NONFATAL=1, continuing to VS Code smoke.'
         );
       } else {
         process.exit(1);
