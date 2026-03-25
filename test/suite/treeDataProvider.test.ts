@@ -514,6 +514,30 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.strictEqual(treeItem.description, 'Test Synonym');
   });
 
+  test('getTreeItem sets MethodBsl context for BSL method leaf', () => {
+    const node: TreeNode = {
+      id: 'MethodModule.bsl',
+      name: 'Module',
+      type: MetadataType.Method,
+      properties: { fileType: 'bsl' },
+    };
+
+    const treeItem = provider.getTreeItem(node);
+    assert.strictEqual(treeItem.contextValue, 'MethodBsl');
+  });
+
+  test('getTreeItem sets Forms context for Forms folder node id', () => {
+    const node: TreeNode = {
+      id: 'Forms',
+      name: 'Forms',
+      type: MetadataType.Form,
+      properties: {},
+    };
+
+    const treeItem = provider.getTreeItem(node);
+    assert.strictEqual(treeItem.contextValue, 'Forms');
+  });
+
   // ADR 0001 / Plan 7.1: Configuration resourceUri → Configuration.xml in configDir
   test('getTreeItem for Configuration with filePath sets resourceUri to Configuration.xml in configDir', () => {
     const configDir = path.join('C:', 'reps', 'myconfig');
@@ -646,6 +670,192 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     const found = provider.findNodeById('non-existent');
 
     assert.strictEqual(found, null);
+  });
+
+  test('findRootObjectForCompositionRef returns null for invalid ref', () => {
+    const scope: TreeNode = {
+      id: 'scope',
+      name: 'Scope',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    assert.strictEqual(provider.findRootObjectForCompositionRef('BadRef', scope), null);
+  });
+
+  test('findRootObjectForCompositionRef prefers node from same configuration root', () => {
+    const makeConfig = (
+      rootId: string,
+      cfgDir: string,
+      objectName: string
+    ): { root: TreeNode; objectNode: TreeNode } => {
+      const objectNode: TreeNode = {
+        id: `Catalogs.${objectName}`,
+        name: objectName,
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+      const catalogs: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [objectNode],
+      };
+      const root: TreeNode = {
+        id: rootId,
+        name: rootId,
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join(cfgDir, 'Configuration.xml'),
+        children: [catalogs],
+      };
+      catalogs.parent = root;
+      objectNode.parent = catalogs;
+      return { root, objectNode };
+    };
+
+    const cfgA = makeConfig('config:A', path.join('C:', 'cfgA'), 'Shared');
+    const cfgB = makeConfig('config:B', path.join('C:', 'cfgB'), 'Shared');
+    provider.setRootNodes([cfgA.root, cfgB.root]);
+
+    const resolved = provider.findRootObjectForCompositionRef('Catalog.Shared', cfgB.objectNode);
+    assert.ok(resolved, 'Expected Catalog.Shared to resolve');
+    const resolvedConfigPath = provider.getConfigPathForNode(resolved!);
+    assert.ok(resolvedConfigPath, 'Resolved node should have a config path');
+    assert.strictEqual(
+      normalizeFsPathForCompare(resolvedConfigPath!),
+      normalizeFsPathForCompare(path.join('C:', 'cfgB'))
+    );
+  });
+
+  test('findRootObjectForCompositionRef returns null when ref exists only in another configuration', () => {
+    const cfgAObject: TreeNode = {
+      id: 'Catalogs.Shared',
+      name: 'Shared',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    const catalogsA: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [cfgAObject],
+    };
+    const rootA: TreeNode = {
+      id: 'config:A',
+      name: 'Configuration A',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join('C:', 'cfgA', 'Configuration.xml'),
+      children: [catalogsA],
+    };
+    catalogsA.parent = rootA;
+    cfgAObject.parent = catalogsA;
+
+    const scopeInB: TreeNode = {
+      id: 'Subsystems.ScopeB',
+      name: 'ScopeB',
+      type: MetadataType.Subsystem,
+      properties: {},
+      parent: {
+        id: 'config:B',
+        name: 'Configuration B',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'cfgB', 'Configuration.xml'),
+        children: [],
+      },
+    };
+    provider.setRootNodes([rootA, scopeInB.parent! as TreeNode]);
+
+    const resolved = provider.findRootObjectForCompositionRef('Catalog.Shared', scopeInB);
+    assert.strictEqual(
+      resolved,
+      null,
+      'Must not resolve object from a different configuration root'
+    );
+  });
+
+  test('hasCompositionRefInOtherConfiguration returns true when ref exists only in another root', () => {
+    const cfgAObject: TreeNode = {
+      id: 'Catalogs.Shared',
+      name: 'Shared',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    const catalogsA: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [cfgAObject],
+    };
+    const rootA: TreeNode = {
+      id: 'config:A',
+      name: 'Configuration A',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join('C:', 'cfgA', 'Configuration.xml'),
+      children: [catalogsA],
+    };
+    catalogsA.parent = rootA;
+    cfgAObject.parent = catalogsA;
+
+    const rootB: TreeNode = {
+      id: 'config:B',
+      name: 'Configuration B',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join('C:', 'cfgB', 'Configuration.xml'),
+      children: [],
+    };
+    const scopeInB: TreeNode = {
+      id: 'Subsystems.ScopeB',
+      name: 'ScopeB',
+      type: MetadataType.Subsystem,
+      properties: {},
+      parent: rootB,
+    };
+    provider.setRootNodes([rootA, rootB]);
+
+    assert.strictEqual(provider.hasCompositionRefInOtherConfiguration('Catalog.Shared', scopeInB), true);
+  });
+
+  test('hasCompositionRefInOtherConfiguration returns false when ref resolves in same root', () => {
+    const cfgBObject: TreeNode = {
+      id: 'Catalogs.Shared',
+      name: 'Shared',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    const catalogsB: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [cfgBObject],
+    };
+    const rootB: TreeNode = {
+      id: 'config:B',
+      name: 'Configuration B',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join('C:', 'cfgB', 'Configuration.xml'),
+      children: [catalogsB],
+    };
+    catalogsB.parent = rootB;
+    cfgBObject.parent = catalogsB;
+    const scopeInB: TreeNode = {
+      id: 'Subsystems.ScopeB',
+      name: 'ScopeB',
+      type: MetadataType.Subsystem,
+      properties: {},
+      parent: rootB,
+    };
+    provider.setRootNodes([rootB]);
+
+    assert.strictEqual(provider.hasCompositionRefInOtherConfiguration('Catalog.Shared', scopeInB), false);
   });
 
   test('expandNode should set isExpanded to true', () => {

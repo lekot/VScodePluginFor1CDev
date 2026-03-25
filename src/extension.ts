@@ -45,6 +45,7 @@ import {
   applySubsystemCompositionFileUpdate,
   readSubsystemCompositionRefsFromFile,
 } from './services/subsystemCompositionFileUpdater';
+import { runIbcmdConfigCheckGate } from './services/ibcmdConfigCheckGate';
 
 function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
   switch (mode) {
@@ -878,10 +879,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const resolved = treeDataProvider.findRootObjectForCompositionRef(trimmed, target);
       if (!resolved) {
-        vscode.window.showErrorMessage(MESSAGES.SUBSYSTEM_COMPOSITION_OBJECT_NOT_FOUND);
+        const inOtherConfig = treeDataProvider.hasCompositionRefInOtherConfiguration(trimmed, target);
+        vscode.window.showErrorMessage(
+          inOtherConfig
+            ? MESSAGES.SUBSYSTEM_COMPOSITION_OBJECT_IN_OTHER_CONFIG
+            : MESSAGES.SUBSYSTEM_COMPOSITION_OBJECT_NOT_FOUND
+        );
         return;
       }
       try {
+        const gate = await runIbcmdConfigCheckGate();
+        if (!gate.ok) {
+          vscode.window.showErrorMessage(
+            `Проверка валидности конфигурации (ibcmd) обязательна перед изменением состава подсистем: ${gate.message}`
+          );
+          return;
+        }
         const { rejected } = await applySubsystemCompositionFileUpdate(target.filePath, {
           add: [trimmed],
           remove: [],
@@ -935,6 +948,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
+        const gate = await runIbcmdConfigCheckGate();
+        if (!gate.ok) {
+          vscode.window.showErrorMessage(
+            `Проверка валидности конфигурации (ibcmd) обязательна перед изменением состава подсистем: ${gate.message}`
+          );
+          return;
+        }
         await applySubsystemCompositionFileUpdate(target.filePath, {
           add: [],
           remove: [picked],

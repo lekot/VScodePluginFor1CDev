@@ -509,10 +509,17 @@ export function insertRestrictionTemplatesBeforeClosingRights(
   if (!trimmed) {
     return withoutOld;
   }
-  return withoutOld.replace(
+  const next = withoutOld.replace(
     /<\/(?:[a-zA-Z0-9_.]+:)?Rights\s*>/i,
     (closeTag) => `\n${trimmed}\n${closeTag}`
   );
+  // Defensive fallback for malformed XML where closing tag is missing:
+  // keep user RLS text instead of silently dropping it.
+  if (next === withoutOld) {
+    const suffix = withoutOld.endsWith('\n') ? '' : '\n';
+    return `${withoutOld}${suffix}${trimmed}\n`;
+  }
+  return next;
 }
 
 export function serializeRightsDomToXml(dom: RightsDom): string {

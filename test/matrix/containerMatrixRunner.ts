@@ -12,7 +12,7 @@ import {
   dfsPreorderNodes,
   getRepoRootFromCompiledTestFile,
 } from '../helpers/matrixTreeWalker';
-import { runIbcmdOnWorkDir } from './ibcmdAdapter';
+import { runIbcmdConfigCheck, runIbcmdOnWorkDir } from './ibcmdAdapter';
 import { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject } from './matrixTargetPredicate';
 
 export { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject };
@@ -48,7 +48,7 @@ export interface ContainerMatrixIbcmdBlock {
 /**
  * Full JSON report (§6.2). `stepSummary` counts only create/delete matrix steps (create×2 + delete×1 per target;
  * при полном обходе добавляется второй проход по вложенным целям под `Matrix_*`).
- * `ibcmd` is an optional separate validation gate; its outcome is not folded into `stepSummary`.
+ * `ibcmd` / `ibcmdCheck` are optional separate validation gates; their outcome is not folded into `stepSummary`.
  */
 export interface ContainerMatrixReport {
   runId: string;
@@ -60,6 +60,8 @@ export interface ContainerMatrixReport {
   /** Passed/failed/skipped counts for matrix steps only; ibcmd does not affect these fields. */
   stepSummary: ContainerMatrixSummary;
   ibcmd: ContainerMatrixIbcmdBlock;
+  /** `ibcmd infobase config check` after successful import (skipped when import skipped/failed or `IBMATRIX_SKIP_CONFIG_CHECK=1`). */
+  ibcmdCheck: ContainerMatrixIbcmdBlock;
 }
 
 /** Короткий стабильный отпечаток цели — длинный targetId давал имена > 80 символов (лимит 1С), обрезка в XML ломала поиск при delete. */
@@ -370,6 +372,31 @@ export async function runContainerMatrix(
 
   const ibcmd = await runIbcmdOnWorkDir(workDir);
 
+  const ibcmdCheck: ContainerMatrixIbcmdBlock = await (async () => {
+    if (process.env.IBMATRIX_SKIP_CONFIG_CHECK === '1') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'IBMATRIX_SKIP_CONFIG_CHECK=1 (config check not run).',
+      };
+    }
+    if (ibcmd.status === 'skipped') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'ibcmd import skipped; config check not run.',
+      };
+    }
+    if (ibcmd.status === 'failed') {
+      return {
+        status: 'skipped',
+        exitCode: null,
+        logSnippet: 'ibcmd import failed; config check not run.',
+      };
+    }
+    return runIbcmdConfigCheck();
+  })();
+
   const runId = `matrix-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const report: ContainerMatrixReport = {
     runId,
@@ -380,6 +407,7 @@ export async function runContainerMatrix(
     steps,
     stepSummary,
     ibcmd,
+    ibcmdCheck,
   };
 
   const reportFile = resolveReportFile(options.reportPath);

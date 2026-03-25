@@ -1335,11 +1335,36 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
     if (configPath) {
       const scoped = candidates.find((candidate) => this.getConfigPathForNode(candidate) === configPath);
-      if (scoped) {
-        return scoped;
-      }
+      return scoped ?? null;
     }
     return candidates[0] ?? null;
+  }
+
+  /**
+   * Returns true when a valid composition ref exists in the workspace cache,
+   * but only under another configuration root than `scopeNode`.
+   */
+  hasCompositionRefInOtherConfiguration(ref: string, scopeNode: TreeNode): boolean {
+    if (validateSubsystemCompositionRef(ref) !== null) {
+      return false;
+    }
+    const expectedId = expectedTreeNodeIdForCompositionRef(ref);
+    if (!expectedId) {
+      return false;
+    }
+    const candidates = this.nodeCandidatesById.get(expectedId) ?? [];
+    if (candidates.length === 0) {
+      return false;
+    }
+    const scopeConfigPath = this.getConfigPathForNode(scopeNode);
+    if (!scopeConfigPath) {
+      return false;
+    }
+    const inSameConfig = candidates.some((candidate) => this.getConfigPathForNode(candidate) === scopeConfigPath);
+    if (inSameConfig) {
+      return false;
+    }
+    return candidates.some((candidate) => this.getConfigPathForNode(candidate) !== scopeConfigPath);
   }
 
   /** Resolve possibly stale node reference to active in-memory node. */

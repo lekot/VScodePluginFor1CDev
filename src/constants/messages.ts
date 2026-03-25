@@ -55,6 +55,8 @@ export const MESSAGES = {
   SUBSYSTEM_COMPOSITION_ADD_TITLE: 'Добавить объект в состав подсистемы',
   SUBSYSTEM_COMPOSITION_OBJECT_NOT_FOUND:
     'CDT 41: объект не найден в загруженном дереве метаданных этой конфигурации (проверьте имя и обновите дерево).',
+  SUBSYSTEM_COMPOSITION_OBJECT_IN_OTHER_CONFIG:
+    'CDT 41: объект найден в другой конфигурации workspace. Добавлять можно только объекты из текущей конфигурации подсистемы.',
   SUBSYSTEM_COMPOSITION_REJECTED_PREFIX: 'CDT 41: отклонённые ссылки:',
   SUBSYSTEM_COMPOSITION_WRITE_FAILED: 'CDT 41: не удалось записать состав подсистемы',
   SUBSYSTEM_COMPOSITION_READ_FAILED: 'CDT 41: не удалось прочитать состав подсистемы',
