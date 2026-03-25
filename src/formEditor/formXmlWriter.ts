@@ -39,12 +39,55 @@ function localName(key: string): string {
   return key.includes(':') ? key.split(':').pop()! : key;
 }
 
-function buildChildItem(item: FormChildItem): Record<string, unknown[]> {
+/**
+ * fast-xml-parser XMLBuilder with preserveOrder:true expects each tag as
+ * `{ TagName: children[], ':@'?: attrs }`, not `{ TagName: [ { ':@': attrs }, ...children ] }`.
+ * The latter drops attributes (and a lone `{ ':@': ... }` list item has no tag name and is skipped).
+ */
+function normalizePreserveOrderNode(node: unknown): unknown {
+  if (node === null || typeof node !== 'object') {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map(normalizePreserveOrderNode);
+  }
+  const o = node as Record<string, unknown>;
+  const tagKeys = Object.keys(o).filter((k) => k !== ':@');
+  if (tagKeys.length === 1) {
+    const tag = tagKeys[0];
+    const children = o[tag];
+    if (Array.isArray(children) && children.length > 0) {
+      const first = children[0];
+      if (first !== null && typeof first === 'object' && !Array.isArray(first)) {
+        const fo = first as Record<string, unknown>;
+        if (Object.keys(fo).length === 1 && fo[':@'] !== undefined) {
+          const attrs = fo[':@'];
+          const rest = children.slice(1).map(normalizePreserveOrderNode);
+          return {
+            [tag]: rest.map(normalizePreserveOrderNode),
+            ':@': attrs,
+          };
+        }
+      }
+      return { ...o, [tag]: children.map(normalizePreserveOrderNode) };
+    }
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) {
+    out[k] = normalizePreserveOrderNode(v);
+  }
+  return out;
+}
+
+/**
+ * preserveOrder + XMLBuilder: put name/id on sibling `:@` of the tag key (same object),
+ * not as first node inside the tag array — otherwise attributes are dropped in output.
+ */
+function buildChildItem(item: FormChildItem): Record<string, unknown> {
   const content: unknown[] = [];
   const at: Record<string, string> = {};
   if (item.name != null && String(item.name) !== '') {at['@_name'] = String(item.name);}
   if (item.id != null && String(item.id) !== '') {at['@_id'] = String(item.id);}
-  if (Object.keys(at).length) {content.push({ ':@': at });}
   const props = item.properties ?? {};
   for (const [k, v] of Object.entries(props)) {
     if (k === ':@' || k.startsWith('@')) {continue;}
@@ -64,7 +107,11 @@ function buildChildItem(item: FormChildItem): Record<string, unknown[]> {
       ),
     });
   }
-  return { [item.tag]: content };
+  const wrap: Record<string, unknown> = { [item.tag]: content };
+  if (Object.keys(at).length) {
+    wrap[':@'] = at;
+  }
+  return wrap;
 }
 
 export function buildFormContent(model: FormModel): unknown[] {
@@ -80,7 +127,7 @@ export function buildFormContent(model: FormModel): unknown[] {
   if (model.version) {
     rootAttrs['@_version'] = model.version;
   } else {
-    rootAttrs['@_version'] = '2.17';
+    rootAttrs['@_version'] = '2.20';
   }
   formContent.push({ ':@': rootAttrs });
   const topLevelFields = model.topLevelFields ?? [];
@@ -111,14 +158,11 @@ export function buildFormContent(model: FormModel): unknown[] {
     ? model.autoCommandBarId
     : '-1';
   formContent.push({
-    AutoCommandBar: [
-      {
-        ':@': {
-          '@_name': autoCommandBarName,
-          '@_id': autoCommandBarId,
-        },
-      },
-    ],
+    AutoCommandBar: [],
+    ':@': {
+      '@_name': autoCommandBarName,
+      '@_id': autoCommandBarId,
+    },
   });
   if (model.formEvents && model.formEvents.length) {
     formContent.push({ Events: buildEventsArray(model.formEvents) });
@@ -135,7 +179,6 @@ export function buildFormContent(model: FormModel): unknown[] {
         const at: Record<string, string> = {};
         if (attr.name != null && String(attr.name) !== '') {at['@_name'] = String(attr.name);}
         if (attr.id != null && String(attr.id) !== '') {at['@_id'] = String(attr.id);}
-        if (Object.keys(at).length) {arr.push({ ':@': at });}
         const props = attr.properties ?? {};
         for (const [k, v] of Object.entries(props)) {
           if (k === ':@' || k.startsWith('@')) {continue;}
@@ -143,7 +186,11 @@ export function buildFormContent(model: FormModel): unknown[] {
           if (value === undefined) {continue;}
           arr.push({ [k]: value });
         }
-        return { Attribute: arr };
+        const wrap: Record<string, unknown> = { Attribute: arr };
+        if (Object.keys(at).length) {
+          wrap[':@'] = at;
+        }
+        return wrap;
       }),
     });
   }
@@ -154,7 +201,6 @@ export function buildFormContent(model: FormModel): unknown[] {
         const at: Record<string, string> = {};
         if (param.name != null && String(param.name) !== '') {at['@_name'] = String(param.name);}
         if (param.id != null && String(param.id) !== '') {at['@_id'] = String(param.id);}
-        if (Object.keys(at).length) {arr.push({ ':@': at });}
         const props = param.properties ?? {};
         for (const [k, v] of Object.entries(props)) {
           if (k === ':@' || k.startsWith('@')) {continue;}
@@ -162,7 +208,11 @@ export function buildFormContent(model: FormModel): unknown[] {
           if (value === undefined) {continue;}
           arr.push({ [k]: value });
         }
-        return { Parameter: arr };
+        const wrap: Record<string, unknown> = { Parameter: arr };
+        if (Object.keys(at).length) {
+          wrap[':@'] = at;
+        }
+        return wrap;
       }),
     });
   } else if (rawParameters) {
@@ -175,7 +225,6 @@ export function buildFormContent(model: FormModel): unknown[] {
         const at: Record<string, string> = {};
         if (cmd.name != null && String(cmd.name) !== '') {at['@_name'] = String(cmd.name);}
         if (cmd.id != null && String(cmd.id) !== '') {at['@_id'] = String(cmd.id);}
-        if (Object.keys(at).length) {arr.push({ ':@': at });}
         const props = cmd.properties ?? {};
         for (const [k, v] of Object.entries(props)) {
           if (k === ':@' || k.startsWith('@')) {continue;}
@@ -183,11 +232,44 @@ export function buildFormContent(model: FormModel): unknown[] {
           if (value === undefined) {continue;}
           arr.push({ [k]: value });
         }
-        return { Command: arr };
+        const wrap: Record<string, unknown> = { Command: arr };
+        if (Object.keys(at).length) {
+          wrap[':@'] = at;
+        }
+        return wrap;
       }),
     });
   }
   return formContent;
+}
+
+const DEFAULT_LOGFORM_XMLNS = 'http://v8.1c.ru/8.3/xcf/logform';
+
+function escapeXmlAttrValue(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+/**
+ * XMLBuilder often omits `version` and sometimes `xmlns` on the opening &lt;Form&gt; tag.
+ * Ensures both are present for platform-compatible Ext/Form.xml (B.1 / sprint spec).
+ */
+export function injectMissingFormOpenTagAttrs(xmlString: string, model: FormModel): string {
+  const versionRaw = (model.version && model.version.trim()) || '2.20';
+  const version = escapeXmlAttrValue(versionRaw);
+  return xmlString.replace(/<Form(\s[^>]*)?>/, (_full, inner: string | undefined) => {
+    const attrs = inner ?? '';
+    let add = '';
+    if (!/\bxmlns\s*=/.test(attrs)) {
+      add += ` xmlns="${DEFAULT_LOGFORM_XMLNS}"`;
+    }
+    if (!/\bversion\s*=/.test(attrs)) {
+      add += ` version="${version}"`;
+    }
+    if (!add) {
+      return `<Form${attrs}>`;
+    }
+    return `<Form${attrs}${add}>`;
+  });
 }
 
 /**
@@ -215,7 +297,15 @@ export function injectXmlnsIntoFormTag(xmlString: string, xmlnsDeclarations: Rec
  * Write FormModel to Ext/Form.xml. Creates backup before write; on write failure restores from backup.
  */
 export async function writeFormXml(formXmlPath: string, model: FormModel): Promise<void> {
-  const root = [{ Form: buildFormContent(model) }];
+  const rawContent = buildFormContent(model);
+  const head = rawContent[0] as Record<string, unknown> | undefined;
+  const formAttrs =
+    head && typeof head === 'object' && Object.keys(head).length === 1 && head[':@'] !== undefined
+      ? (head[':@'] as Record<string, string>)
+      : {};
+  const body = head && Object.keys(head).length === 1 && head[':@'] !== undefined ? rawContent.slice(1) : rawContent;
+  const normalizedBody = body.map(normalizePreserveOrderNode);
+  const root = [{ Form: normalizedBody, ':@': formAttrs }];
   const builder = new XMLBuilder(BUILDER_OPTIONS);
   let xmlString: string;
   try {
@@ -231,9 +321,10 @@ export async function writeFormXml(formXmlPath: string, model: FormModel): Promi
   if (model.xmlnsDeclarations && Object.keys(model.xmlnsDeclarations).length) {
     xmlString = injectXmlnsIntoFormTag(xmlString, model.xmlnsDeclarations);
   }
+  xmlString = injectMissingFormOpenTagAttrs(xmlString, model);
 
   // Validate: never write empty Form when model has content
-  if (model.childItemsRoot.length > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
+  if ((model.childItemsRoot?.length ?? 0) > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
     throw new Error(
       'Validation failed: XMLBuilder generated empty <Form> for a non-empty model. Write aborted.'
     );

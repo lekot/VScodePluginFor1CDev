@@ -3,6 +3,7 @@ export const coreSuiteFiles: string[] = [
   'suite/formatDetector.test.js',
   'suite/formEditorTitle.test.js',
   'suite/formXmlParser.test.js',
+  'suite/formXmlWriter.test.js',
   'suite/metadataParser.test.js',
   'suite/metadataParser.edge.test.js',
   'suite/metadataDefaultValues.test.js',

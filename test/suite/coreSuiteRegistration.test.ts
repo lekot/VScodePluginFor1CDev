@@ -8,6 +8,7 @@ import { coreSuiteFiles } from './coreSuites';
  * Update this list when intentionally adding new always-on core coverage.
  */
 const mustRegisterInCoreCi: readonly string[] = [
+  'suite/formXmlWriter.test.js',
   'suite/formPaths.test.js',
   'suite/xmlChildObjects.test.js',
   'suite/xmlPropertyUtils.test.js',
