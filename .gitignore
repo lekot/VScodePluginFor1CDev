@@ -1,3 +1,5 @@
+.playwright-mcp/
+smoke-avansovyotchet-console.log
 node_modules/
 dist/
 out/
