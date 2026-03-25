@@ -780,6 +780,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           vscodeVersion: vscode.version,
           appName: vscode.env.appName,
           hostPlatform: process.platform,
+          hostArchitecture: process.arch,
           uiLocale: vscode.env.language,
           remoteName: vscode.env.remoteName,
           extensionRunMode: extensionRunModeLabel(context.extensionMode),

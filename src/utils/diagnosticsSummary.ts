@@ -19,6 +19,8 @@ export type BuildDiagnosticsSummaryOptions = {
   vscodeVersion: string;
   /** Node `process.platform` (e.g. win32, darwin, linux). */
   hostPlatform?: string;
+  /** Node `process.arch` (e.g. x64, arm64). */
+  hostArchitecture?: string;
   /** VS Code UI locale (`vscode.env.language`), e.g. `en`, `ru`. */
   uiLocale?: string;
   /** Host editor display name (`vscode.env.appName`), e.g. Visual Studio Code, Cursor. */
@@ -47,6 +49,9 @@ export function buildDiagnosticsSummaryText(options: BuildDiagnosticsSummaryOpti
   }
   if (options.hostPlatform) {
     lines.push(`Host platform: ${options.hostPlatform}`);
+  }
+  if (options.hostArchitecture) {
+    lines.push(`Host architecture: ${options.hostArchitecture}`);
   }
   if (options.uiLocale) {
     lines.push(`VS Code UI locale: ${options.uiLocale}`);
