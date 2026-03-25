@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { coreSuiteFiles } from './coreSuites';
 
 /**
@@ -18,6 +20,22 @@ suite('coreSuiteFiles registration guard', () => {
     const set = new Set(coreSuiteFiles);
     for (const file of mustRegisterInCoreCi) {
       assert.ok(set.has(file), `${file} must be in coreSuiteFiles (merge regression)`);
+    }
+  });
+
+  test('coreSuiteFiles has no duplicate entries', () => {
+    const seen = new Set<string>();
+    for (const file of coreSuiteFiles) {
+      assert.ok(!seen.has(file), `duplicate core suite entry: ${file}`);
+      seen.add(file);
+    }
+  });
+
+  test('each coreSuiteFiles entry exists under out/test (typos / stale names)', () => {
+    const testsRoot = path.join(__dirname, '..');
+    for (const file of coreSuiteFiles) {
+      const abs = path.join(testsRoot, file);
+      assert.ok(fs.existsSync(abs), `core suite file missing after compile: ${file}`);
     }
   });
 });
