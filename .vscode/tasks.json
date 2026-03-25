@@ -30,6 +30,30 @@
       "args": ["run", "watch"],
       "isBackground": true,
       "problemMatcher": "$tsc-watch"
+    },
+    {
+      "label": "CDT: ibcmd — check infobase configuration",
+      "type": "shell",
+      "command": "node",
+      "args": ["scripts/ibcmd-cli.cjs", "check"],
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "CDT: ibcmd — import configuration from XML",
+      "type": "shell",
+      "command": "node",
+      "args": ["scripts/ibcmd-cli.cjs", "import"],
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
     }
   ]
 }
