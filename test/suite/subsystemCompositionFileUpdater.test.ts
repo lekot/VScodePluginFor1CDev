@@ -89,4 +89,81 @@ suite('subsystemCompositionFileUpdater (B.3 file slice)', () => {
       /Not a subsystem metadata file/
     );
   });
+
+  test('readSubsystemCompositionRefsFromFile returns [] for non-subsystem XML', async () => {
+    const fp = path.join(tmpDir, 'Configuration.xml');
+    await fs.promises.writeFile(
+      fp,
+      `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="u">
+    <Properties><Name>X</Name></Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>`,
+      'utf-8'
+    );
+    const refs = await readSubsystemCompositionRefsFromFile(fp);
+    assert.deepStrictEqual(refs, []);
+  });
+});
+
+suite('getSubsystemPropertiesFromParsed (B.3 navigation)', () => {
+  test('returns null when MetaDataObject is missing', () => {
+    assert.strictEqual(getSubsystemPropertiesFromParsed({ ChildObjects: [] } as Record<string, unknown>), null);
+  });
+
+  test('returns null when Subsystem branch is missing', () => {
+    const parsed = {
+      MetaDataObject: {
+        Configuration: { Properties: { Name: 'X' } },
+      },
+    } as Record<string, unknown>;
+    assert.strictEqual(getSubsystemPropertiesFromParsed(parsed), null);
+  });
+
+  test('returns Properties object for plain nested shape', () => {
+    const props = { Content: {}, Name: 'N' };
+    const parsed = {
+      MetaDataObject: {
+        Subsystem: {
+          Properties: props,
+        },
+      },
+    } as Record<string, unknown>;
+    assert.strictEqual(getSubsystemPropertiesFromParsed(parsed), props);
+  });
+
+  test('unwraps array-wrapped MetaDataObject and Subsystem', () => {
+    const props = { Content: [] };
+    const parsed = {
+      MetaDataObject: [{ Subsystem: [{ Properties: props }] }],
+    } as Record<string, unknown>;
+    assert.strictEqual(getSubsystemPropertiesFromParsed(parsed), props);
+  });
+
+  test('returns null when Properties is an array', () => {
+    const parsed = {
+      MetaDataObject: {
+        Subsystem: {
+          Properties: [],
+        },
+      },
+    } as Record<string, unknown>;
+    assert.strictEqual(getSubsystemPropertiesFromParsed(parsed), null);
+  });
+
+  test('returns null when Subsystem is not an object', () => {
+    const parsed = {
+      MetaDataObject: {
+        Subsystem: 'broken',
+      },
+    } as unknown as Record<string, unknown>;
+    assert.strictEqual(getSubsystemPropertiesFromParsed(parsed), null);
+  });
+
+  test('returns null when MetaDataObject is null', () => {
+    const parsed = { MetaDataObject: null } as unknown as Record<string, unknown>;
+    assert.strictEqual(getSubsystemPropertiesFromParsed(parsed), null);
+  });
 });

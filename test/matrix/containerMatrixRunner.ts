@@ -327,7 +327,7 @@ export interface RunContainerMatrixResult {
 }
 
 /**
- * Runs create×2 → delete×1 per matrix target on `workDir`, writes JSON report, then optional ibcmd stub.
+ * Runs create×2 → delete×1 per matrix target on `workDir`, writes JSON report, then optional `ibcmd` import + `config check`.
  */
 export async function runContainerMatrix(
   options: RunContainerMatrixOptions

@@ -11,6 +11,7 @@ suite('ibcmdConfigCheckGate', () => {
     'IBCMD_USER',
     'IBCMD_PASSWORD',
     'IBCMD_TIMEOUT_MS',
+    'IBCMD_CONFIG_CHECK_FORCE',
   ] as const;
   let savedEnv: Record<string, string | undefined>;
   let tempDir: string;
@@ -85,6 +86,77 @@ suite('ibcmdConfigCheckGate', () => {
     assert.ok(result.message.includes('ibcmd config check failed'));
     assert.ok(result.message.includes('exitCode=17'));
     assert.ok(result.message.includes('validation failed'));
+  });
+
+  test('appends --force when IBCMD_CONFIG_CHECK_FORCE=1', async () => {
+    const scriptPath = path.join(tempDir, 'fake-ibcmd-force.sh');
+    fs.writeFileSync(
+      scriptPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+joined="$*"
+if [[ "$joined" != *"--force"* ]]; then
+  echo "missing --force: $joined" >&2
+  exit 3
+fi
+if [ "$1" = "infobase" ] && [ "$2" = "config" ] && [ "$3" = "check" ]; then
+  echo "force ok"
+  exit 0
+fi
+exit 2
+`,
+      'utf-8'
+    );
+    fs.chmodSync(scriptPath, 0o755);
+    process.env.IBCMD_PATH = scriptPath;
+    process.env.IBCMD_INFOBASE_CONFIG = path.join(tempDir, 'ib.yml');
+    fs.writeFileSync(process.env.IBCMD_INFOBASE_CONFIG, 'kind: fake\n', 'utf-8');
+    process.env.IBCMD_CONFIG_CHECK_FORCE = '1';
+
+    const result = await runIbcmdConfigCheckGate();
+    assert.strictEqual(result.ok, true);
+    assert.ok(result.message.includes('force ok'));
+  });
+
+  test('resolves relative IBCMD_INFOBASE_CONFIG to absolute --config argument', async () => {
+    const prevCwd = process.cwd();
+    try {
+      process.chdir(tempDir);
+      const cfgDir = path.join(tempDir, 'cfg');
+      fs.mkdirSync(cfgDir);
+      const rel = path.join('cfg', 'ib.yml');
+      fs.writeFileSync(rel, 'kind: fake\n', 'utf-8');
+
+      const scriptPath = path.join(tempDir, 'abs-config-check.sh');
+      fs.writeFileSync(
+        scriptPath,
+        `#!/usr/bin/env bash
+set -euo pipefail
+for a in "$@"; do
+  case "$a" in
+    --config=*)
+      p="\${a#--config=}"
+      case "$p" in
+        /*) exit 0 ;;
+        *) echo "config path not absolute: $p" >&2; exit 6 ;;
+      esac
+      ;;
+  esac
+done
+echo "missing --config" >&2
+exit 7
+`,
+        'utf-8'
+      );
+      fs.chmodSync(scriptPath, 0o755);
+      process.env.IBCMD_PATH = scriptPath;
+      process.env.IBCMD_INFOBASE_CONFIG = rel;
+
+      const result = await runIbcmdConfigCheckGate();
+      assert.strictEqual(result.ok, true);
+    } finally {
+      process.chdir(prevCwd);
+    }
   });
 
   test('passes ibcmd user and password flags when set', async () => {

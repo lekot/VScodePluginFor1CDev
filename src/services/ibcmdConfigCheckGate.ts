@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import * as path from 'path';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -25,7 +26,7 @@ function trimLog(stdout: string, stderr: string): string {
  * Requires the same ibcmd environment as matrix runs:
  * - IBCMD_PATH
  * - IBCMD_INFOBASE_CONFIG
- * Optional: IBCMD_USER / IBCMD_PASSWORD / IBCMD_TIMEOUT_MS.
+ * Optional: IBCMD_USER / IBCMD_PASSWORD / IBCMD_TIMEOUT_MS / IBCMD_CONFIG_CHECK_FORCE (=1 → append `--force`).
  */
 export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult> {
   const ibcmdPath = process.env.IBCMD_PATH?.trim();
@@ -45,7 +46,7 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
     };
   }
 
-  const args = ['infobase', 'config', 'check', `--config=${configPath}`];
+  const args = ['infobase', 'config', 'check', `--config=${path.resolve(configPath)}`];
   const user = process.env.IBCMD_USER?.trim();
   const password = process.env.IBCMD_PASSWORD?.trim();
   if (user) {
@@ -53,6 +54,9 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
   }
   if (password) {
     args.push(`--password=${password}`);
+  }
+  if (process.env.IBCMD_CONFIG_CHECK_FORCE?.trim() === '1') {
+    args.push('--force');
   }
 
   try {
