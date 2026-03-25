@@ -13,3 +13,8 @@ export {
   extractNameFromNestedElement,
   type WriteNestedElementOptions,
 } from './xmlChildObjectsService';
+export {
+  addAttributeToTabularSectionInParsed,
+  duplicateAttributeInTabularSectionInParsed,
+  removeAttributeFromTabularSectionInParsed,
+} from './xmlTabularSectionService';
