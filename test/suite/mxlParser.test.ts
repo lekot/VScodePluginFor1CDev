@@ -461,10 +461,10 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables.length, 1);
     const table = model.tables[0];
     assert.ok(table.colWidthsPx, 'colWidthsPx should be defined');
-    assert.strictEqual(table.colWidthsPx![0], Math.round(130 * 96 / 254));
-    assert.strictEqual(table.colWidthsPx![1], Math.round(103 * 96 / 254));
-    assert.strictEqual(table.colWidthsPx![0], 49);
-    assert.strictEqual(table.colWidthsPx![1], 39);
+    assert.strictEqual(table.colWidthsPx![0], Math.round(130 * 96 / 175));
+    assert.strictEqual(table.colWidthsPx![1], Math.round(103 * 96 / 175));
+    assert.strictEqual(table.colWidthsPx![0], 71);
+    assert.strictEqual(table.colWidthsPx![1], 57);
   });
 
   test('colWidthsPx is undefined when no columns section present', () => {

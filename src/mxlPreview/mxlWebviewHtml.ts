@@ -74,9 +74,9 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
     }
     table.mxl-table td {
       border: 1px solid var(--vscode-panel-border);
-      padding: 4px 6px;
+      padding: 2px 4px;
       vertical-align: top;
-      font-size: 12px;
+      font-size: 9px;
       white-space: normal;
       overflow-wrap: break-word;
     }
@@ -303,13 +303,25 @@ function indexCells(table: MxlRenderTable): {
   let maxRow = Math.max(0, table.rowCount);
   let maxCol = Math.max(0, table.colCount);
 
-  table.cells.forEach((cell) => {
+  // Two-pass: first pass anchors cells with rowspan/colspan > 1 (merge anchors),
+  // second pass adds remaining cells, skipping those already covered.
+  const sorted = [...table.cells].sort((a, b) => {
+    const aSpan = (a.rowspan ?? 1) * (a.colspan ?? 1);
+    const bSpan = (b.rowspan ?? 1) * (b.colspan ?? 1);
+    return bSpan - aSpan; // larger spans first so they win
+  });
+
+  sorted.forEach((cell) => {
     const row = Math.max(0, cell.row);
     const col = Math.max(0, cell.col);
     const rowspan = Math.max(1, cell.rowspan);
     const colspan = Math.max(1, cell.colspan);
+    const key = cellKey(row, col);
+    if (covered.has(key)) {
+      return; // this cell is inside another cell's span — skip it
+    }
     const normalized: MxlRenderCell = { ...cell, row, col, rowspan, colspan };
-    anchors.set(cellKey(row, col), normalized);
+    anchors.set(key, normalized);
 
     for (let r = row; r < row + rowspan; r += 1) {
       for (let c = col; c < col + colspan; c += 1) {
