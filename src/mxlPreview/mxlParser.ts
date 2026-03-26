@@ -72,6 +72,10 @@ export class MxlParser {
       };
     }
 
+    if (this.isDesignerXmlRoot(root)) {
+      return this.parseDesignerXml(root as Record<string, unknown>, diagnostics);
+    }
+
     const tableNodes = this.findNodesByName(root, TABLE_NODE_NAMES);
     if (tableNodes.length === 0) {
       this.warn(diagnostics, 'MXL_TABLE_NOT_FOUND', 'No supported table node found in MXL document.');
@@ -576,5 +580,205 @@ export class MxlParser {
       col += 1;
     }
     return col;
+  }
+
+  private isDesignerXmlRoot(root: unknown): boolean {
+    const record = this.asRecord(root);
+    if (!record) {
+      return false;
+    }
+    const docNode = this.asRecord(record['document']);
+    if (!docNode) {
+      return false;
+    }
+    return docNode['@_xmlns'] === 'http://v8.1c.ru/8.2/data/spreadsheet';
+  }
+
+  private parseDesignerXml(root: Record<string, unknown>, diagnostics: MxlDiagnostic[]): MxlRenderModel {
+    const docNode = this.asRecord(root['document']);
+    if (!docNode) {
+      this.warn(diagnostics, 'MXL_TABLE_NOT_FOUND', 'Designer XML: missing document node.');
+      return { version: 'v1', tables: [], diagnostics };
+    }
+
+    const rawRowsItem = docNode['rowsItem'];
+    const rowsItems: unknown[] = Array.isArray(rawRowsItem)
+      ? rawRowsItem
+      : rawRowsItem !== undefined && rawRowsItem !== null
+        ? [rawRowsItem]
+        : [];
+
+    if (rowsItems.length > MAX_TABLE_ROWS) {
+      this.warn(
+        diagnostics,
+        'MXL_TABLE_ROW_LIMIT_EXCEEDED',
+        `Row count exceeds safe limit (${MAX_TABLE_ROWS}). Preview is truncated.`
+      );
+    }
+    const rowsItemsToProcess = rowsItems.length > MAX_TABLE_ROWS ? rowsItems.slice(0, MAX_TABLE_ROWS) : rowsItems;
+
+    const cells: MxlRenderCell[] = [];
+    let inferredMaxRow = 0;
+    let inferredMaxCol = 0;
+    let totalCells = 0;
+    let truncated = false;
+
+    for (const rowsItem of rowsItemsToProcess) {
+      if (totalCells >= MAX_TOTAL_CELLS_PER_TABLE) {
+        truncated = true;
+        break;
+      }
+      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics);
+      for (const cell of rowCells) {
+        if (totalCells >= MAX_TOTAL_CELLS_PER_TABLE) {
+          truncated = true;
+          break;
+        }
+        cells.push(cell);
+        totalCells += 1;
+        inferredMaxRow = Math.max(inferredMaxRow, cell.row + 1);
+        inferredMaxCol = Math.max(inferredMaxCol, cell.col + Math.max(cell.colspan, 1));
+      }
+    }
+
+    if (truncated) {
+      this.warn(
+        diagnostics,
+        'MXL_TABLE_CELL_LIMIT_EXCEEDED',
+        `Table cell count exceeds safe limit (${MAX_TOTAL_CELLS_PER_TABLE}). Preview is truncated.`
+      );
+    }
+
+    const table: MxlRenderTable = {
+      rowCount: Math.min(inferredMaxRow, MAX_TABLE_ROWS),
+      colCount: Math.min(inferredMaxCol, MAX_TABLE_COLS),
+      cells,
+    };
+
+    return { version: 'v1', tables: [table], diagnostics };
+  }
+
+  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[]): MxlRenderCell[] {
+    const record = this.asRecord(rowsItemNode);
+    if (!record) {
+      return [];
+    }
+
+    const rawIndex = record['index'];
+    const rowIndex =
+      typeof rawIndex === 'number' && Number.isFinite(rawIndex)
+        ? rawIndex
+        : typeof rawIndex === 'string'
+          ? Number.parseInt(rawIndex, 10)
+          : 0;
+    const row = this.clampIndex(Number.isFinite(rowIndex) ? rowIndex : 0, MAX_TABLE_ROWS - 1);
+
+    const rowNode = this.asRecord(record['row']);
+    if (!rowNode) {
+      return [];
+    }
+
+    const rawC = rowNode['c'];
+    const outerCells: unknown[] = Array.isArray(rawC)
+      ? rawC
+      : rawC !== undefined && rawC !== null
+        ? [rawC]
+        : [];
+
+    const cells: MxlRenderCell[] = [];
+    let colCursor = 0;
+
+    for (const outerC of outerCells) {
+      if (colCursor >= MAX_TABLE_COLS) {
+        this.warn(diagnostics, 'MXL_CELL_INDEX_LIMIT_EXCEEDED', `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Remaining cells skipped.`);
+        break;
+      }
+      const result = this.parseDesignerXmlCell(outerC, row, colCursor, diagnostics);
+      cells.push(result.cell);
+      colCursor = result.nextCursor;
+    }
+
+    return cells;
+  }
+
+  private parseDesignerXmlCell(
+    outerC: unknown,
+    row: number,
+    colCursor: number,
+    diagnostics: MxlDiagnostic[]
+  ): { cell: MxlRenderCell; nextCursor: number } {
+    const record = this.asRecord(outerC);
+
+    let colspan = 1;
+    let innerC: unknown = undefined;
+
+    if (record) {
+      const rawI = record['i'];
+      if (rawI !== undefined && rawI !== null) {
+        const iVal =
+          typeof rawI === 'number' && Number.isFinite(rawI)
+            ? rawI
+            : typeof rawI === 'string'
+              ? Number.parseInt(rawI, 10)
+              : NaN;
+        if (Number.isFinite(iVal) && iVal >= 0) {
+          colspan = iVal + 1;
+        }
+      }
+      innerC = record['c'];
+    }
+
+    const col = this.clampIndex(colCursor, MAX_TABLE_COLS - 1);
+    const text = this.extractDesignerXmlText(innerC);
+
+    const cell: MxlRenderCell = { row, col, text, rowspan: 1, colspan, style: undefined };
+    return { cell, nextCursor: colCursor + colspan };
+  }
+
+  private extractDesignerXmlText(innerC: unknown): string {
+    const record = this.asRecord(innerC);
+    if (!record) {
+      return '';
+    }
+
+    const tl = this.asRecord(record['tl']);
+    if (tl) {
+      const rawItems = tl['v8:item'];
+      const items: unknown[] = Array.isArray(rawItems)
+        ? rawItems
+        : rawItems !== undefined && rawItems !== null
+          ? [rawItems]
+          : [];
+
+      let firstContent: string | undefined;
+      for (const item of items) {
+        const itemRecord = this.asRecord(item);
+        if (!itemRecord) {
+          continue;
+        }
+        const lang = itemRecord['v8:lang'];
+        const content = itemRecord['v8:content'];
+        const contentStr = typeof content === 'string' ? content : typeof content === 'number' ? String(content) : undefined;
+        if (contentStr !== undefined && firstContent === undefined) {
+          firstContent = contentStr;
+        }
+        if (lang === 'ru' && contentStr !== undefined) {
+          return contentStr;
+        }
+      }
+      if (firstContent !== undefined) {
+        return firstContent;
+      }
+    }
+
+    const parameter = record['parameter'];
+    if (typeof parameter === 'string') {
+      return parameter;
+    }
+    if (typeof parameter === 'number') {
+      return String(parameter);
+    }
+
+    return '';
   }
 }

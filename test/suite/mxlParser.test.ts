@@ -214,3 +214,233 @@ suite('MxlParser', () => {
     assert.strictEqual(model.diagnostics[0].level, 'error');
   });
 });
+
+suite('MxlParser — Designer XML format', () => {
+  const XMLNS = 'http://v8.1c.ru/8.2/data/spreadsheet';
+
+  test('minimal document with one cell with tl text', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c>
+              <c>
+                <f>1</f>
+                <tl>
+                  <v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core">
+                    <v8:lang>ru</v8:lang>
+                    <v8:content>Привет</v8:content>
+                  </v8:item>
+                </tl>
+              </c>
+            </c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.version, 'v1');
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'Привет');
+    assert.strictEqual(model.tables[0].cells[0].row, 0);
+    assert.strictEqual(model.tables[0].cells[0].col, 0);
+    assert.strictEqual(model.tables[0].cells[0].rowspan, 1);
+    assert.strictEqual(model.tables[0].cells[0].colspan, 1);
+  });
+
+  test('multiple cells without <i> get sequential columns', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>B</v8:content></v8:item></tl></c></c>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>C</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables[0].cells.length, 3);
+    assert.strictEqual(model.tables[0].cells[0].col, 0);
+    assert.strictEqual(model.tables[0].cells[1].col, 1);
+    assert.strictEqual(model.tables[0].cells[2].col, 2);
+  });
+
+  test('cell with <i>2</i> gets colspan=3 and next cell is at col=3', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c>
+              <i>2</i>
+              <c><f>1</f></c>
+            </c>
+            <c>
+              <c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Next</v8:content></v8:item></tl></c>
+            </c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables[0].cells.length, 2);
+    assert.strictEqual(model.tables[0].cells[0].col, 0);
+    assert.strictEqual(model.tables[0].cells[0].colspan, 3);
+    assert.strictEqual(model.tables[0].cells[1].col, 3);
+    assert.strictEqual(model.tables[0].cells[1].text, 'Next');
+  });
+
+  test('cell with <parameter> gets parameter value as text', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c>
+              <c>
+                <f>5</f>
+                <parameter>ИмяПараметра</parameter>
+              </c>
+            </c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'ИмяПараметра');
+  });
+
+  test('cell with only <f> (no text) gets empty text and is present', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c>
+              <c>
+                <f>3</f>
+              </c>
+            </c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, '');
+  });
+
+  test('rowsItem without <row> produces 0 cells', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].cells.length, 0);
+  });
+
+  test('cell with <i>0</i> gets colspan=1 and next cell is at col=1', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c>
+              <i>0</i>
+              <c><f>1</f></c>
+            </c>
+            <c>
+              <c>
+                <f>2</f>
+                <tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>B</v8:content></v8:item></tl>
+              </c>
+            </c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables[0].cells.length, 2);
+    assert.strictEqual(model.tables[0].cells[0].col, 0);
+    assert.strictEqual(model.tables[0].cells[0].colspan, 1);
+    assert.strictEqual(model.tables[0].cells[1].col, 1);
+  });
+
+  test('two rowsItem elements produce cells with correct row indices', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <rowsItem>
+          <index>1</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row1</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables[0].cells.length, 2);
+    assert.strictEqual(model.tables[0].cells[0].row, 0);
+    assert.strictEqual(model.tables[0].cells[0].text, 'Row0');
+    assert.strictEqual(model.tables[0].cells[1].row, 1);
+    assert.strictEqual(model.tables[0].cells[1].text, 'Row1');
+  });
+
+  test('root without required xmlns falls back to old path (MXL_TABLE_NOT_FOUND)', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="http://example.com/other">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 0);
+    assert.ok(model.diagnostics.some((d) => d.code === 'MXL_TABLE_NOT_FOUND'));
+  });
+});
