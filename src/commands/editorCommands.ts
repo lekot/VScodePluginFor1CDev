@@ -134,6 +134,45 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const openTemplatePreviewCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openTemplatePreview',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target) {
+        vscode.window.showWarningMessage('Выберите узел шаблона в дереве метаданных.');
+        return;
+      }
+
+      const isTemplateNode =
+        target.type === MetadataType.Template || target.type === MetadataType.CommonTemplate;
+      if (!isTemplateNode) {
+        vscode.window.showWarningMessage(
+          'Preview макета доступен только для узлов Template/CommonTemplate.'
+        );
+        return;
+      }
+
+      if (!target.filePath) {
+        vscode.window.showWarningMessage('Для выбранного макета не задан путь к файлу.');
+        return;
+      }
+
+      try {
+        Logger.info(`Opening MXL preview: ${target.filePath}`);
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(target.filePath),
+          '1c-mxl-preview'
+        );
+      } catch (err) {
+        Logger.error('Failed to open MXL preview', err);
+        vscode.window.showErrorMessage(
+          `Не удалось открыть preview макета: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
   const saveRightsEditorCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.saveRightsEditor',
     async () => {
@@ -151,6 +190,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     openBslModuleCommand,
     openFormEditorCommand,
     openRightsEditorCommand,
+    openTemplatePreviewCommand,
     saveRightsEditorCommand,
   ];
 }

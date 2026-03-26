@@ -4,6 +4,7 @@ import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
+import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { TreeNode } from '../models/treeNode';
@@ -19,6 +20,7 @@ export class ExtensionState {
   typeEditorProvider: TypeEditorProvider | null = null;
   rolesRightsEditorProvider: RolesRightsEditorProvider | null = null;
   formEditorProvider: FormEditorProvider | null = null;
+  mxlPreviewProvider: MxlPreviewProvider | null = null;
   extensionContext: vscode.ExtensionContext | undefined;
   metadataWatchers: MetadataWatcherService[] = [];
   reloadCoordinator: ReloadCoordinatorService | null = null;

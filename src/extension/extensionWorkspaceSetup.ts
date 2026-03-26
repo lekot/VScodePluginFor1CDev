@@ -5,6 +5,7 @@ import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
+import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
@@ -68,6 +69,14 @@ export function registerExtensionWorkspace(
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider('1c-form-editor', state.formEditorProvider, {
       webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+
+  state.mxlPreviewProvider = new MxlPreviewProvider();
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider('1c-mxl-preview', state.mxlPreviewProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+      supportsMultipleEditorsPerDocument: true,
     })
   );
 

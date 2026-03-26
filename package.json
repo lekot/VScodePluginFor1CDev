@@ -140,6 +140,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.openTemplatePreview",
+        "title": "Открыть preview макета",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.saveRightsEditor",
         "title": "Save Rights (Editor)",
         "category": "CDT 41"
@@ -177,6 +182,25 @@
         "selector": [
           {
             "filenamePattern": "**/Ext/Form.xml"
+          }
+        ]
+      },
+      {
+        "viewType": "1c-mxl-preview",
+        "displayName": "Preview макета MXL",
+        "priority": "option",
+        "selector": [
+          {
+            "filenamePattern": "**/Ext/Template.mxl"
+          },
+          {
+            "filenamePattern": "**/Ext/Template.xml"
+          },
+          {
+            "filenamePattern": "**/Ext/CommonTemplate.mxl"
+          },
+          {
+            "filenamePattern": "**/Ext/CommonTemplate.xml"
           }
         ]
       }
@@ -223,6 +247,16 @@
         {
           "command": "1c-metadata-tree.openRightsEditor",
           "when": "view == 1c-metadata-tree && viewItem == 'Role'",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.openTemplatePreview",
+          "when": "view == 1c-metadata-tree && viewItem == 'Template'",
+          "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.openTemplatePreview",
+          "when": "view == 1c-metadata-tree && viewItem == 'CommonTemplate'",
           "group": "navigation"
         },
         {
