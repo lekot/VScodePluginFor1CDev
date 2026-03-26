@@ -461,10 +461,10 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables.length, 1);
     const table = model.tables[0];
     assert.ok(table.colWidthsPx, 'colWidthsPx should be defined');
-    assert.strictEqual(table.colWidthsPx![0], Math.round(130 * 96 / 25.4));
-    assert.strictEqual(table.colWidthsPx![1], Math.round(103 * 96 / 25.4));
-    assert.strictEqual(table.colWidthsPx![0], 491);
-    assert.strictEqual(table.colWidthsPx![1], 389);
+    assert.strictEqual(table.colWidthsPx![0], Math.round(130 * 96 / 254));
+    assert.strictEqual(table.colWidthsPx![1], Math.round(103 * 96 / 254));
+    assert.strictEqual(table.colWidthsPx![0], 49);
+    assert.strictEqual(table.colWidthsPx![1], 39);
   });
 
   test('colWidthsPx is undefined when no columns section present', () => {
@@ -482,6 +482,35 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
     assert.strictEqual(model.tables.length, 1);
     assert.strictEqual(model.tables[0].colWidthsPx, undefined);
+  });
+
+  test('Designer XML: merge section sets colspan and rowspan', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><tl><v8:item><v8:lang>ru</v8:lang><v8:content>Title</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>1</index>
+          <row><c><c><tl><v8:item><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <merge><r>0</r><c>0</c><w>2</w></merge>
+        <merge><r>1</r><c>0</c><h>1</h></merge>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    const title = cells.find(c => c.text === 'Title');
+    assert.ok(title, 'Title cell found');
+    assert.strictEqual(title!.colspan, 3);
+    assert.strictEqual(title!.rowspan, 1);
+    const a = cells.find(c => c.text === 'A');
+    assert.ok(a, 'A cell found');
+    assert.strictEqual(a!.rowspan, 2);
+    assert.strictEqual(a!.colspan, 1);
   });
 
   test('root without required xmlns falls back to old path (MXL_TABLE_NOT_FOUND)', () => {

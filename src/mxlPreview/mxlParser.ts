@@ -649,6 +649,16 @@ export class MxlParser {
       );
     }
 
+    const mergeMap = this.buildMergeMap(docNode);
+    for (const cell of cells) {
+      const key = `${cell.row}:${cell.col}`;
+      const merge = mergeMap.get(key);
+      if (merge) {
+        cell.colspan = this.clampSpan(merge.colspan);
+        cell.rowspan = this.clampSpan(merge.rowspan);
+      }
+    }
+
     const colCount = Math.min(inferredMaxCol, MAX_TABLE_COLS);
     const colWidthsPx = this.buildDesignerColWidths(docNode, colCount);
 
@@ -660,6 +670,31 @@ export class MxlParser {
     };
 
     return { version: 'v1', tables: [table], diagnostics };
+  }
+
+  private buildMergeMap(docNode: Record<string, unknown>): Map<string, { colspan: number; rowspan: number }> {
+    const result = new Map<string, { colspan: number; rowspan: number }>();
+    const rawMerge = docNode['merge'];
+    if (rawMerge === undefined || rawMerge === null) {
+      return result;
+    }
+    const mergeNodes: unknown[] = Array.isArray(rawMerge) ? rawMerge : [rawMerge];
+    for (const node of mergeNodes) {
+      const rec = this.asRecord(node);
+      if (!rec) {
+        continue;
+      }
+      const r = this.getFirstNumber(rec, ['r']);
+      const c = this.getFirstNumber(rec, ['c']);
+      if (r === undefined || c === undefined) {
+        continue;
+      }
+      const w = this.getFirstNumber(rec, ['w']) ?? 0;
+      const h = this.getFirstNumber(rec, ['h']) ?? 0;
+      const key = `${r}:${c}`;
+      result.set(key, { colspan: w + 1, rowspan: h + 1 });
+    }
+    return result;
   }
 
   private buildDesignerColWidths(docNode: Record<string, unknown>, colCount: number): number[] | undefined {
@@ -775,7 +810,7 @@ export class MxlParser {
       if (formatIndex !== undefined) {
         const fmt = formats[formatIndex - 1];
         if (fmt && fmt.width !== undefined) {
-          widths.push(Math.round(fmt.width * 96 / 25.4));
+          widths.push(Math.round(fmt.width * 96 / 254));
           hasAny = true;
           continue;
         }
