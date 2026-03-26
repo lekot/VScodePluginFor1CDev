@@ -775,7 +775,7 @@ export class MxlParser {
       if (formatIndex !== undefined) {
         const fmt = formats[formatIndex - 1];
         if (fmt && fmt.width !== undefined) {
-          widths.push(Math.round(fmt.width * 96 / 254));
+          widths.push(Math.round(fmt.width * 96 / 25.4));
           hasAny = true;
           continue;
         }
