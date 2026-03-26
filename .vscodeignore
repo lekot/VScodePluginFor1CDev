@@ -45,3 +45,6 @@ node_modules/mocha/**
 node_modules/prettier/**
 node_modules/typescript/**
 coverage/tmp/**
+.playwright-mcp/
+smoke-avansovyotchet-console.log
+suite-reports/

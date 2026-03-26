@@ -1,3 +1,5 @@
+.playwright-mcp/
+smoke-avansovyotchet-console.log
 node_modules/
 dist/
 out/
@@ -37,5 +39,7 @@ shcntx_help.db
 
 # Локальная настройка ibcmd (копия ibcmd.setup.example.bat с путями к платформе и ИБ)
 ibcmd-local.bat
+ibcmd-local.sh
 .ibcmd-reports/
 suite-report-core.json
+/shcntx_help_db_path.txt

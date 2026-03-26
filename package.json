@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.26.4",
+  "version": "0.26.8",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -384,6 +384,8 @@
     "fast-xml-parser": "^4.3.0"
   },
   "c8": {
-    "include": ["out/src/**/*.js"]
+    "include": [
+      "out/src/**/*.js"
+    ]
   }
 }

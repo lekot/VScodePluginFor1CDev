@@ -101,6 +101,14 @@ const workspaceStub = {
   }),
 };
 
+/** Shared by core tests; `import * as vscode` binds getters to these objects. */
+const commandsStub = {
+  registerCommand: (_id: string, _callback?: unknown): { dispose: () => void } => ({
+    dispose: () => undefined,
+  }),
+  executeCommand: async (..._args: unknown[]): Promise<unknown> => undefined,
+};
+
 const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
@@ -109,6 +117,7 @@ const vscodeStub = {
   EventEmitter: VSCodeEventEmitter,
   ExtensionMode,
   ViewColumn,
+  commands: commandsStub,
   window: windowStub,
   workspace: workspaceStub,
 };

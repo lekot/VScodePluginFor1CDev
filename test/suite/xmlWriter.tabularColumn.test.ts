@@ -5,6 +5,11 @@ import { MetadataType } from '../../src/models/treeNode';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
 
+function countColumnName(xml: string, columnName: string): number {
+  const re = new RegExp(`<Name>${columnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</Name>`, 'g');
+  return (xml.match(re) || []).length;
+}
+
 suite('XMLWriter tabular section columns', () => {
   let tmp: string;
 
@@ -51,6 +56,68 @@ suite('XMLWriter tabular section columns', () => {
     const xml = await fs.promises.readFile(dest, 'utf-8');
     assert.ok(!xml.match(/<Name>Col1<\/Name>/));
     assert.ok(xml.includes('<Name>Col2</Name>'));
+  });
+
+  test('removeAttributeFromTabularSection throws when column is missing in embedded tabular section', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogWithTabular.xml');
+    const dest = path.join(tmp, 'NoGhostCol.xml');
+    await fs.promises.copyFile(src, dest);
+    await assert.rejects(
+      () => XMLWriter.removeAttributeFromTabularSection(dest, 'Tabular1', 'GhostCol'),
+      /Колонка.*GhostCol.*не найдена/
+    );
+  });
+
+  test('removeAttributeFromTabularSection does not touch another metadata XML with same ТЧ/column', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTovaryNomenklatura.xml');
+    const destA = path.join(tmp, 'NeighborA.xml');
+    const destB = path.join(tmp, 'NeighborB.xml');
+    await fs.promises.copyFile(src, destA);
+    await fs.promises.copyFile(src, destB);
+    const beforeB = await fs.promises.readFile(destB, 'utf-8');
+    assert.strictEqual(countColumnName(beforeB, 'Номенклатура'), 1);
+
+    await XMLWriter.removeAttributeFromTabularSection(destA, 'Товары', 'Номенклатура');
+
+    const xmlA = await fs.promises.readFile(destA, 'utf-8');
+    const xmlB = await fs.promises.readFile(destB, 'utf-8');
+    assert.strictEqual(
+      countColumnName(xmlA, 'Номенклатура'),
+      0,
+      'edited file: column removed from Товары'
+    );
+    assert.strictEqual(
+      xmlB,
+      beforeB,
+      'sibling file on disk must be byte-identical (single-file scope)'
+    );
+  });
+
+  test('removeAttributeFromTabularSection does not remove same-named column from another ТЧ in the same object', async () => {
+    const src = path.join(__dirname, '../fixtures/designer-config/Catalogs/CatalogTovaryIZakazyNomenklatura.xml');
+    const dest = path.join(tmp, 'TwoTsSameCol.xml');
+    await fs.promises.copyFile(src, dest);
+    const before = await fs.promises.readFile(dest, 'utf-8');
+    assert.strictEqual(countColumnName(before, 'Номенклатура'), 2, 'Товары and Заказы each have Номенклатура');
+    assert.ok(before.includes('<Name>Заказы</Name>') && before.includes('xs:decimal'), 'fixture: Заказы column is decimal');
+
+    await XMLWriter.removeAttributeFromTabularSection(dest, 'Товары', 'Номенклатура');
+
+    const xml = await fs.promises.readFile(dest, 'utf-8');
+    assert.strictEqual(countColumnName(xml, 'Номенклатура'), 1, 'only Заказы keeps the column');
+    assert.ok(xml.includes('<Name>Заказы</Name>'), 'Заказы section still present');
+    assert.ok(
+      xml.includes('xs:decimal'),
+      'decimal type from Заказы Номенклатура must remain'
+    );
+    assert.ok(
+      !xml.includes('c0000000-0000-0000-0000-000000000311'),
+      'Товары attribute uuid removed'
+    );
+    assert.ok(
+      xml.includes('c0000000-0000-0000-0000-000000000321'),
+      'Заказы attribute uuid still present'
+    );
   });
 
   test('duplicateAttributeInTabularSection clones Type and assigns new uuid', async () => {

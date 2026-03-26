@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<Catalog uuid="a0000000-0000-0000-0000-000000000102">
+		<Properties>
+			<Name>CatalogTovaryIZakazy</Name>
+			<Synonym/>
+			<Comment/>
+		</Properties>
+		<ChildObjects>
+			<TabularSection uuid="b0000000-0000-0000-0000-000000000211">
+				<Properties>
+					<Name>Товары</Name>
+					<Synonym/>
+					<Comment/>
+				</Properties>
+				<ChildObjects>
+					<Attribute uuid="c0000000-0000-0000-0000-000000000311">
+						<Properties>
+							<Name>Номенклатура</Name>
+							<Type><v8:Type>xs:string</v8:Type></Type>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+			<TabularSection uuid="b0000000-0000-0000-0000-000000000212">
+				<Properties>
+					<Name>Заказы</Name>
+					<Synonym/>
+					<Comment/>
+				</Properties>
+				<ChildObjects>
+					<Attribute uuid="c0000000-0000-0000-0000-000000000321">
+						<Properties>
+							<Name>Номенклатура</Name>
+							<Type><v8:Type>xs:decimal</v8:Type></Type>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>
