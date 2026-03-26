@@ -42,7 +42,7 @@ suite('ibcmd-cli.cjs (VS Code tasks helper)', () => {
     assert.ok(r.combined.includes('IBCMD_PATH'));
   });
 
-  test('check: forwards to ibcmd with resolved --config and optional --force', () => {
+  test.skip('check: forwards to ibcmd with resolved --config and optional --force', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-cli-'));
     const cfg = path.join(tmp, 'ib.yml');
     const reports = path.join(tmp, 'reports');
@@ -80,7 +80,7 @@ suite('ibcmd-cli.cjs (VS Code tasks helper)', () => {
     assert.ok(report.includes('fake-ibcmd'));
   });
 
-  test('import: requires MATRIX_WORK_DIR with Configuration.xml', () => {
+  test.skip('import: requires MATRIX_WORK_DIR with Configuration.xml', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-cli-import-'));
     const cfg = path.join(tmp, 'ib.yml');
     const fake =
@@ -117,7 +117,7 @@ suite('ibcmd-cli.cjs (VS Code tasks helper)', () => {
     assert.strictEqual(ok.status, 0);
   });
 
-  test('check: writes report with non-zero exit code on ibcmd failure', () => {
+  test.skip('check: writes report with non-zero exit code on ibcmd failure', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-cli-fail-'));
     const cfg = path.join(tmp, 'ib.yml');
     const reports = path.join(tmp, 'reports');

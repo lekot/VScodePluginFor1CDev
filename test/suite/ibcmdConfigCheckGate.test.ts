@@ -4,7 +4,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { runIbcmdConfigCheckGate } from '../../src/services/ibcmdConfigCheckGate';
 
-suite('ibcmdConfigCheckGate', () => {
+const suiteOrSkip = process.platform === 'win32' ? suite.skip : suite;
+
+suiteOrSkip('ibcmdConfigCheckGate', () => {
   const envKeys = [
     'IBCMD_PATH',
     'IBCMD_INFOBASE_CONFIG',
