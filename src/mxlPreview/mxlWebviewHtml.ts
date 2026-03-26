@@ -75,7 +75,6 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
     table.mxl-table td {
       border: 1px solid var(--vscode-panel-border);
       padding: 4px 6px;
-      min-width: 48px;
       vertical-align: top;
       font-size: 12px;
       white-space: pre-wrap;
@@ -246,6 +245,19 @@ function renderTables(tables: MxlRenderTable[]): string {
     .join('');
 }
 
+function renderColgroup(table: MxlRenderTable, colCount: number): string {
+  if (!table.colWidthsPx || table.colWidthsPx.length === 0) {
+    return '';
+  }
+  const cols = Array.from({ length: colCount }, (_, i) => {
+    const w = table.colWidthsPx![i];
+    return w !== undefined && w > 0
+      ? `<col style="width:${w}px">`
+      : '<col>';
+  });
+  return `<colgroup>${cols.join('')}</colgroup>`;
+}
+
 function renderTable(table: MxlRenderTable): string {
   const matrix = indexCells(table);
   const rowCount = matrix.rowCount;
@@ -274,7 +286,7 @@ function renderTable(table: MxlRenderTable): string {
     rows.push(`<tr>${cols.join('')}</tr>`);
   }
 
-  return `<table class="mxl-table"><tbody>${rows.join('')}</tbody></table>`;
+  return `<table class="mxl-table">${renderColgroup(table, colCount)}<tbody>${rows.join('')}</tbody></table>`;
 }
 
 function indexCells(table: MxlRenderTable): {

@@ -649,13 +649,141 @@ export class MxlParser {
       );
     }
 
+    const colCount = Math.min(inferredMaxCol, MAX_TABLE_COLS);
+    const colWidthsPx = this.buildDesignerColWidths(docNode, colCount);
+
     const table: MxlRenderTable = {
       rowCount: Math.min(inferredMaxRow, MAX_TABLE_ROWS),
-      colCount: Math.min(inferredMaxCol, MAX_TABLE_COLS),
+      colCount,
       cells,
+      ...(colWidthsPx !== undefined ? { colWidthsPx } : {}),
     };
 
     return { version: 'v1', tables: [table], diagnostics };
+  }
+
+  private buildDesignerColWidths(docNode: Record<string, unknown>, colCount: number): number[] | undefined {
+    // Collect formats (1-based in XML, stored 0-based here)
+    const rawFormat = docNode['format'];
+    const formatNodes: unknown[] = Array.isArray(rawFormat)
+      ? rawFormat
+      : rawFormat !== undefined && rawFormat !== null
+        ? [rawFormat]
+        : [];
+
+    if (formatNodes.length === 0) {
+      return undefined;
+    }
+
+    const formats: Array<{ width?: number }> = formatNodes.map((f) => {
+      const rec = this.asRecord(f);
+      if (!rec) {
+        return {};
+      }
+      const rawWidth = rec['width'];
+      const width =
+        typeof rawWidth === 'number' && Number.isFinite(rawWidth)
+          ? rawWidth
+          : typeof rawWidth === 'string'
+            ? Number.parseFloat(rawWidth)
+            : NaN;
+      return { width: Number.isFinite(width) && width > 0 ? width : undefined };
+    });
+
+    // Collect columns sections: id → Map<colIndex(1-based), formatIndex(1-based)>
+    const rawColumns = docNode['columns'];
+    const columnsSections: unknown[] = Array.isArray(rawColumns)
+      ? rawColumns
+      : rawColumns !== undefined && rawColumns !== null
+        ? [rawColumns]
+        : [];
+
+    if (columnsSections.length === 0) {
+      return undefined;
+    }
+
+    // Map: sectionId (string) or undefined (default section) → colIndex → formatIndex
+    const sectionMap = new Map<string | undefined, Map<number, number>>();
+
+    for (const section of columnsSections) {
+      const secRec = this.asRecord(section);
+      if (!secRec) {
+        continue;
+      }
+      const idVal = secRec['id'];
+      const sectionId: string | undefined =
+        typeof idVal === 'string' && idVal.trim().length > 0 ? idVal.trim() : undefined;
+
+      const colMap = new Map<number, number>();
+
+      const rawItems = secRec['columnsItem'];
+      const items: unknown[] = Array.isArray(rawItems)
+        ? rawItems
+        : rawItems !== undefined && rawItems !== null
+          ? [rawItems]
+          : [];
+
+      for (const item of items) {
+        const itemRec = this.asRecord(item);
+        if (!itemRec) {
+          continue;
+        }
+        const rawIdx = itemRec['index'];
+        const colIndex =
+          typeof rawIdx === 'number' && Number.isFinite(rawIdx)
+            ? rawIdx
+            : typeof rawIdx === 'string'
+              ? Number.parseInt(rawIdx, 10)
+              : NaN;
+        if (!Number.isFinite(colIndex) || colIndex < 1) {
+          continue;
+        }
+
+        const colNode = this.asRecord(itemRec['column']);
+        if (!colNode) {
+          continue;
+        }
+        const rawFmtIdx = colNode['formatIndex'];
+        const formatIndex =
+          typeof rawFmtIdx === 'number' && Number.isFinite(rawFmtIdx)
+            ? rawFmtIdx
+            : typeof rawFmtIdx === 'string'
+              ? Number.parseInt(rawFmtIdx, 10)
+              : NaN;
+        if (!Number.isFinite(formatIndex) || formatIndex < 1) {
+          continue;
+        }
+
+        colMap.set(colIndex, formatIndex);
+      }
+
+      if (!sectionMap.has(sectionId)) {
+        sectionMap.set(sectionId, colMap);
+      }
+    }
+
+    // Use default section (undefined id) for all columns (simple case — no columnsID lookup needed)
+    const defaultSection = sectionMap.get(undefined) ?? sectionMap.values().next().value;
+    if (!defaultSection) {
+      return undefined;
+    }
+
+    const widths: number[] = [];
+    let hasAny = false;
+    for (let col = 0; col < colCount; col += 1) {
+      const formatIndex = defaultSection.get(col + 1);
+      if (formatIndex !== undefined) {
+        const fmt = formats[formatIndex - 1];
+        if (fmt && fmt.width !== undefined) {
+          widths.push(Math.round(fmt.width * 96 / 254));
+          hasAny = true;
+          continue;
+        }
+      }
+      widths.push(0);
+    }
+
+    return hasAny ? widths : undefined;
   }
 
   private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[]): MxlRenderCell[] {

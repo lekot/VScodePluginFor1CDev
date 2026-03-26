@@ -425,6 +425,65 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables[0].cells[1].text, 'Row1');
   });
 
+  test('parses column widths from columns/format sections', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>18</size>
+          <columnsItem>
+            <index>1</index>
+            <column>
+              <formatIndex>1</formatIndex>
+            </column>
+          </columnsItem>
+          <columnsItem>
+            <index>2</index>
+            <column>
+              <formatIndex>2</formatIndex>
+            </column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f></c></c>
+            <c><c><f>2</f></c></c>
+          </row>
+        </rowsItem>
+        <format><width>130</width></format>
+        <format><width>103</width></format>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const table = model.tables[0];
+    assert.ok(table.colWidthsPx, 'colWidthsPx should be defined');
+    assert.strictEqual(table.colWidthsPx![0], Math.round(130 * 96 / 254));
+    assert.strictEqual(table.colWidthsPx![1], Math.round(103 * 96 / 254));
+    assert.strictEqual(table.colWidthsPx![0], 49);
+    assert.strictEqual(table.colWidthsPx![1], 39);
+  });
+
+  test('colWidthsPx is undefined when no columns section present', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].colWidthsPx, undefined);
+  });
+
   test('root without required xmlns falls back to old path (MXL_TABLE_NOT_FOUND)', () => {
     const parser = new MxlParser();
     const xml = `

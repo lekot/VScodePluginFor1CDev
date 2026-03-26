@@ -31,6 +31,7 @@ export interface MxlRenderTable {
   rowCount: number;
   colCount: number;
   cells: MxlRenderCell[];
+  colWidthsPx?: number[];
 }
 
 export interface MxlRenderModel {
