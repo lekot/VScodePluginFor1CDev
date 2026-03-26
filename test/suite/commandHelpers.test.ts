@@ -6,25 +6,18 @@ import { MetadataType, TreeNode } from '../../src/models/treeNode';
 
 suite('commandHelpers', () => {
   const originalDetect = FormatDetector.detect;
-  let originalWindow: any;
+  const defaultShowWarning = vscode.window.showWarningMessage.bind(vscode.window);
+  const defaultShowInformation = vscode.window.showInformationMessage.bind(vscode.window);
 
   setup(() => {
-    const vsAny = vscode as any;
-    originalWindow = vsAny.window;
-    if (!vsAny.window) {
-      vsAny.window = {};
-    }
-    if (!vsAny.window.showWarningMessage) {
-      vsAny.window.showWarningMessage = async () => undefined;
-    }
-    if (!vsAny.window.showInformationMessage) {
-      vsAny.window.showInformationMessage = async () => undefined;
-    }
+    (vscode.window as any).showWarningMessage = defaultShowWarning;
+    (vscode.window as any).showInformationMessage = defaultShowInformation;
   });
 
   teardown(() => {
     (FormatDetector as any).detect = originalDetect;
-    (vscode as any).window = originalWindow;
+    (vscode.window as any).showWarningMessage = defaultShowWarning;
+    (vscode.window as any).showInformationMessage = defaultShowInformation;
   });
 
   test('getSelectedNode prefers command argument', () => {

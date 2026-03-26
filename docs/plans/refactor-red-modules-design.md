@@ -3,7 +3,7 @@
 **Дата:** 2026-03-25  
 **Обновление:** 2026-03-26 — шаги 6–8 по XMLWriter: `xmlTabularSectionService` ранее; добавлен `xmlFormReferenceService`, фасад `XMLWriter` с `readUtf8AndParse` / `saveParsedWithBackup`.  
 **Статус:** Draft  
-**Scope:** `src/utils/XMLWriter.ts` (~700 строк после шага 6; было ~3150), `src/extension.ts` (~1410 строк)
+**Scope:** `src/utils/XMLWriter.ts` (~700 строк после шага 6; было ~3150), `src/extension.ts` (после шага 10 — тонкий фасад ~60 строк + `src/extension/*`)
 
 ---
 
@@ -82,14 +82,14 @@ export function removeNestedElementInStructure(parsed: unknown, elementType: str
 
 | Шаг | Действие | Риск | Покрытие тестами | Статус |
 |-----|----------|------|------------------|--------|
-| 1 | Создать `src/utils/xml/` и `xmlCore.ts` с экспортом parser/builder | Низкий | Существующие тесты |+|
-| 2 | Извлечь `xmlFileIo.ts` (readXml, writeXmlAtomic) | Низкий | Unit-тесты на I/O |+|
-| 3 | Извлечь `xmlHelpers.ts` | Низкий | Unit-тесты |+|
-| 4 | Извлечь `xmlPropertiesService.ts` | Средний | Регрессия через e2e |+|
-| 5 | Извлечь `xmlChildObjectsService.ts` | Средний | Регрессия через e2e |+|
-| 6 | Извлечь `xmlTabularSectionService.ts` | Средний | e2e + регресс в `xmlWriter.tabularColumn.test.ts` |+|
-| 7 | Извлечь `xmlFormReferenceService.ts` | Низкий | Регрессия через e2e |+|
-| 8 | Превратить `XMLWriter` в facade, удалить дублирование | Низкий | Полный прогон test-suite |+|
+| 1 | Создать `src/utils/xml/` и `xmlCore.ts` с экспортом parser/builder | Низкий | Существующие тесты | ✓ |
+| 2 | Извлечь `xmlFileIo.ts` (readXml, writeXmlAtomic) | Низкий | Unit-тесты на I/O | ✓ |
+| 3 | Извлечь `xmlHelpers.ts` | Низкий | Unit-тесты | ✓ |
+| 4 | Извлечь `xmlPropertiesService.ts` | Средний | Регрессия через e2e | ✓ |
+| 5 | Извлечь `xmlChildObjectsService.ts` | Средний | Регрессия через e2e | ✓ |
+| 6 | Извлечь `xmlTabularSectionService.ts` | Средний | e2e + регресс в `xmlWriter.tabularColumn.test.ts` | ✓ |
+| 7 | Извлечь `xmlFormReferenceService.ts` | Низкий | Регрессия через e2e | ✓ |
+| 8 | Превратить `XMLWriter` в facade, удалить дублирование | Низкий | Полный прогон test-suite | ✓ |
 
 **Критерий готовности шага:** `.\test-suite.bat` проходит, `.\instrument-smoke.bat` (ibcmd slice) проходит.
 
@@ -130,7 +130,7 @@ export function removeNestedElementInStructure(parsed: unknown, elementType: str
 ### 4.1 Метрики
 | Показатель | Значение |
 |------------|----------|
-| Строк кода | ~1410 |
+| Строк кода (до шага 10) | ~1410; фасад `extension.ts` после шага 10 — порядка десятков строк |
 | Команд (registerCommand) | 27 |
 | Глобальных переменных | 9 |
 | Функция `activate` | ~920 строк |
@@ -160,14 +160,17 @@ export function removeNestedElementInStructure(parsed: unknown, elementType: str
 
 ```
 src/
-├── extension.ts                  # activate/deactivate (~100 строк), делегирует
+├── extension.ts                  # activate/deactivate (тонкий фасад), делегирует
+├── extension/
+│   ├── metadataTreeLifecycle.ts  # loadMetadataTree, invalidate*, reload handlers
+│   └── extensionWorkspaceSetup.ts # провайдеры, команды, selection, context
 ├── state/
 │   └── extensionState.ts         # класс ExtensionState (providers, watchers, coordinator)
 ├── commands/
 │   ├── index.ts                  # registerAllCommands(context, state)
 │   ├── elementCommands.ts        # create, delete, duplicate, rename
 │   ├── navigationCommands.ts     # focus, search, nextMatch, previousMatch
-│   ├── editorCommands.ts         # openXML, openBslModule, openFormEditor, openRightsEditor
+│   ├── editorCommands.ts         # showProperties, openXML, openBslModule, openFormEditor, openRightsEditor, saveRightsEditor
 │   ├── filterCommands.ts         # filterByType, filterBySubsystem, subsystemComposition
 │   └── utilityCommands.ts        # copyPath, clearCache, exportLogs, diagnostics, ibcmd
 ├── helpers/
@@ -217,18 +220,28 @@ export async function requireDesignerFormat(
 
 **Статус шага 5 (2026-03-26):** `src/commands/navigationCommands.ts` — вынесены навигационные команды (`focus`, `focusSearch`, `clearSearch`, `nextMatch`, `previousMatch`) в `registerNavigationCommands({ state })`; `extension.ts` подключает модуль и добавляет `...navigationCommandDisposables` в `context.subscriptions`, сохраняя исходное поведение команд.
 
-| Шаг | Действие | Риск | Покрытие тестами |
-|-----|----------|------|------------------|
-| 1 | Создать `state/extensionState.ts`, перенести глобальные переменные | Средний | e2e smoke |
-| 2 | Извлечь `helpers/commandHelpers.ts` (`requireDesignerFormat`, `getSelectedNode`) | Низкий | Unit |
-| 3 | Извлечь `helpers/optimisticNodeBuilder.ts` | Низкий | Unit |
-| 4 | Извлечь `commands/elementCommands.ts` | Средний | e2e CRUD |
-| 5 | Извлечь `commands/navigationCommands.ts` | Низкий | e2e |+
-| 6 | Извлечь `commands/editorCommands.ts` | Низкий | e2e |
-| 7 | Извлечь `commands/filterCommands.ts` | Средний | e2e |
-| 8 | Извлечь `commands/utilityCommands.ts` | Низкий | e2e |
-| 9 | Извлечь `reload/reloadOrchestrator.ts` | Средний | e2e delete reconcile |
-| 10 | Упростить `extension.ts` до ~100 строк | Низкий | Полный прогон |
+**Статус шага 6 (2026-03-26):** `src/commands/editorCommands.ts` — вынесены команды редакторов и панели свойств (`showProperties`, `openXML`, `openBslModule`, `openFormEditor`, `openRightsEditor`, `saveRightsEditor`) в `registerEditorCommands({ state })`; в активации команды подписываются в том же порядке, что до рефакторинга: блок утилит (openPanel…refresh) → редакторы → CRUD → навигация → остальные утилиты → фильтры (`registerAllCommands` + `registerUtilityCommandsLeading` / `registerUtilityCommandsTrailing`). Юнит-тест: `test/suite/editorCommands.test.ts` (core).
+
+**Статус шага 7 (2026-03-26):** `src/commands/filterCommands.ts` — вынесены команды фильтров и состава подсистем (`filterByType`, `filterBySubsystem`, `clearSubsystemFilter`, `addToSubsystemComposition`, `removeFromSubsystemComposition`) в `registerFilterCommands({ state, loadMetadataTree, invalidateTreeCacheOnly })`; `extension.ts` подключает модуль и добавляет `...filterCommandDisposables` в `context.subscriptions`, идентификаторы команд и пользовательские тексты без изменений.
+
+**Статус шага 8 (2026-03-26):** `src/commands/utilityCommands.ts` — те же utility-команды, что в шаге 6 по плану списка; регистрация разбита на `registerUtilityCommandsLeading` (openPanel…refresh) и `registerUtilityCommandsTrailing` (copyPath…copyDiagnostics), чтобы порядок подписок в `registerAllCommands` совпадал с монолитным `extension.ts` до рефакторинга.
+
+**Статус шага 9 (2026-03-26):** `src/reload/reloadOrchestrator.ts` — координация перезагрузки: `scheduleCoordinatedReload`, `scheduleDeleteReconcile`, `recoverDeleteUiState`, DI-тип `ReloadOrchestratorDeps`, фабрика `createReloadOrchestratorHandlers` (bound-обработчики без дублирующей обёртки в `extension.ts`). `extension.ts` только собирает `deps` (`extensionState`, `invalidateCacheAndReload`) и передаёт обработчики в `registerElementCommands` и в watcher `MetadataWatcherService`.
+
+**Статус шага 10 (2026-03-26):** `extension.ts` сведён к фасаду: `activate`/`deactivate`, инициализация `ExtensionState`, `createMetadataTreeLifecycle`, `registerExtensionWorkspace`. Логика загрузки дерева, инвалидации кэша, wiring `createReloadOrchestratorHandlers` и файловых watcher'ов — в `src/extension/metadataTreeLifecycle.ts`; регистрация провайдеров, `ReloadCoordinatorService`, команд и обработчика выбора дерева — в `src/extension/extensionWorkspaceSetup.ts`. Публичные экспорты точки входа и идентификаторы команд без изменений. **Проверка:** `npm run compile`, `npm run lint:ci`, `npm run test:ci` (скрипт делает `tsc -p tsconfig.test.json`, копию `test/fixtures` → `out/test/fixtures`, `node out/test/runCore.js` — полный core-прогон; container matrix e2e включается, если не задан `SKIP_CONTAINER_MATRIX_E2E=1`). На Windows `test-suite.bat` дополнительно выставляет `IBCMD_TESTS=1` (в текущем коде runCore этот флаг не читается — эквивалент полного прогона через `npm run test:ci`).
+
+| Шаг | Действие | Риск | Покрытие тестами | Статус |
+|-----|----------|------|------------------|--------|
+| 1 | Создать `state/extensionState.ts`, перенести глобальные переменные | Средний | e2e smoke | ✓ |
+| 2 | Извлечь `helpers/commandHelpers.ts` (`requireDesignerFormat`, `getSelectedNode`) | Низкий | Unit | ✓ |
+| 3 | Извлечь `helpers/optimisticNodeBuilder.ts` | Низкий | Unit | ✓ |
+| 4 | Извлечь `commands/elementCommands.ts` | Средний | e2e CRUD | ✓ |
+| 5 | Извлечь `commands/navigationCommands.ts` | Низкий | e2e | ✓ |
+| 6 | Извлечь `commands/editorCommands.ts` | Низкий | e2e + unit `editorCommands.test` | ✓ |
+| 7 | Извлечь `commands/filterCommands.ts` | Средний | e2e | ✓ |
+| 8 | Извлечь `commands/utilityCommands.ts` | Низкий | e2e | ✓ |
+| 9 | Извлечь `reload/reloadOrchestrator.ts` | Средний | e2e delete reconcile | ✓ |
+| 10 | Упростить `extension.ts` до ~100 строк | Низкий | Полный прогон | ✓ |
 
 **Критерий готовности шага:** `.\test-suite.bat` + `.\instrument-smoke.bat` проходят.
 
@@ -257,11 +270,11 @@ export async function requireDesignerFormat(
 
 ## 8. Следующий шаг
 
-Выбрать один из модулей для старта:
-- **XMLWriter** — меньше связей с VS Code API, проще тестировать изолированно.
-- **extension.ts** — больше влияния на UX, но сложнее из-за глобального state.
+**План по `extension.ts` (раздел 5.3):** шаги 1–10 закрыты в целевой архитектуре; активация — фасад + `src/extension/*`, команды — `src/commands/*`, перезагрузка — `src/reload/reloadOrchestrator.ts`.
 
-**Рекомендация:** начать с XMLWriter (шаги 1–3), затем extension.ts.
+**Дальше по желанию (вне таблицы 5.3):**
+- Закоммитить и прогнать на Windows `test-suite.bat` / `instrument-smoke.bat` при необходимости полного смокера с VS Code Extension Host.
+- **XMLWriter** (раздел 3): дальнейшее дробление или полировка сервисов при появлении новых требований; шаги 1–8 таблицы 3.3 уже отмечены выполненными.
 
 ---
 
@@ -300,6 +313,7 @@ export async function requireDesignerFormat(
 | `clearSearch` | navigationCommands |
 | `nextMatch` | navigationCommands |
 | `previousMatch` | navigationCommands |
+| `showProperties` | editorCommands |
 | `openXML` | editorCommands |
 | `openBslModule` | editorCommands |
 | `openFormEditor` | editorCommands |
@@ -316,7 +330,6 @@ export async function requireDesignerFormat(
 | `copyDiagnosticsSummary` | utilityCommands |
 | `openIbcmdCheckReport` | utilityCommands |
 | `openIbcmdImportReport` | utilityCommands |
-| `showProperties` | editorCommands |
 | `refresh` | utilityCommands |
 | `openPanel` | utilityCommands |
 | `getTreeReadyForTest` | utilityCommands |

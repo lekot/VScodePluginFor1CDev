@@ -29,6 +29,7 @@ export const coreSuiteFiles: string[] = [
   'suite/commandHelpers.test.js',
   'suite/optimisticNodeBuilder.test.js',
   'suite/elementCommands.test.js',
+  'suite/editorCommands.test.js',
   'suite/coreSuiteRegistration.test.js',
   'suite/formDragBugCondition.test.js',
   'suite/formDragPreservation.test.js',

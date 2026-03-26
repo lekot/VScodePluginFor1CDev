@@ -3,24 +3,19 @@ import * as vscode from 'vscode';
 import { registerElementCommands } from '../../src/commands/elementCommands';
 
 suite('elementCommands', () => {
-  let originalCommands: any;
+  const defaultRegisterCommand = vscode.commands.registerCommand.bind(vscode.commands);
 
   setup(() => {
-    const vsAny = vscode as any;
-    originalCommands = vsAny.commands;
-    if (!vsAny.commands) {
-      vsAny.commands = {};
-    }
+    (vscode.commands as any).registerCommand = defaultRegisterCommand;
   });
 
   teardown(() => {
-    const vsAny = vscode as any;
-    vsAny.commands = originalCommands;
+    (vscode.commands as any).registerCommand = defaultRegisterCommand;
   });
 
   test('registers five element command handlers', () => {
     const ids: string[] = [];
-    (vscode as any).commands.registerCommand = (id: string) => {
+    (vscode.commands as any).registerCommand = (id: string) => {
       ids.push(id);
       return { dispose: () => undefined };
     };
