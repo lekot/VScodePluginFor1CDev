@@ -386,7 +386,12 @@ function sanitizeFontFamily(value?: string): string | undefined {
   if (!trimmed) {
     return undefined;
   }
-  return /^[A-Za-z0-9 _\-,"]{1,80}$/.test(trimmed) ? trimmed : undefined;
+  // font-family value goes into HTML attribute `style="..."`, so we must not allow `"` to
+  // break the attribute boundary (CSP/escaping hardening).
+  if (trimmed.includes('"')) {
+    return undefined;
+  }
+  return /^[A-Za-z0-9 _\-,']{1,80}$/.test(trimmed) ? trimmed : undefined;
 }
 
 function sanitizeColor(value?: string): string | undefined {

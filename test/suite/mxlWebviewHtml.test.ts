@@ -88,4 +88,66 @@ suite('mxlWebviewHtml', () => {
     assert.ok(html.includes('[MXL_XML_PARSE_ERROR]'));
     assert.ok(html.includes('validate encoding/XML structure'));
   });
+
+  test('does not inject font-family when it contains double quotes', () => {
+    const model: MxlRenderModel = {
+      version: 'v1',
+      tables: [
+        {
+          rowCount: 1,
+          colCount: 1,
+          cells: [
+            {
+              row: 0,
+              col: 0,
+              text: 'A1',
+              rowspan: 1,
+              colspan: 1,
+              style: { fontFamily: '"Times New Roman"' },
+            },
+          ],
+        },
+      ],
+      diagnostics: [],
+    };
+
+    const html = buildMxlPreviewHtml({
+      webview: mockWebview,
+      filePath: 'table/file.mxl',
+      sourceFormat: 'mxl',
+      model,
+    });
+
+    assert.ok(!html.includes('Times New Roman'));
+  });
+
+  test('renders rowspan and does not render covered cells', () => {
+    const model: MxlRenderModel = {
+      version: 'v1',
+      tables: [
+        {
+          rowCount: 2,
+          colCount: 2,
+          cells: [
+            { row: 0, col: 0, text: 'A', rowspan: 2, colspan: 1 },
+            { row: 0, col: 1, text: 'B', rowspan: 1, colspan: 1 },
+            { row: 1, col: 1, text: 'C', rowspan: 1, colspan: 1 },
+          ],
+        },
+      ],
+      diagnostics: [],
+    };
+
+    const html = buildMxlPreviewHtml({
+      webview: mockWebview,
+      filePath: 'table/file.mxl',
+      sourceFormat: 'mxl',
+      model,
+    });
+
+    assert.ok(html.includes('<td rowspan="2">A</td>'));
+    const tdCount = (html.match(/<td/g) ?? []).length;
+    assert.strictEqual(tdCount, 3);
+    assert.ok(!html.includes('class="empty"'));
+  });
 });

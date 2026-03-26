@@ -13,6 +13,11 @@ class MxlPreviewDocument implements vscode.CustomDocument {
 export class MxlPreviewProvider implements vscode.CustomReadonlyEditorProvider<MxlPreviewDocument> {
   private readonly loader = new MxlLoaderService();
   private static readonly OPEN_SOURCE_ACTION = 'Open source';
+  private static readonly BLOCKING_PARSE_ERROR_CODES = new Set<string>([
+    'MXL_XML_PARSE_ERROR',
+    'MXL_EMPTY_INPUT',
+    'MXL_ENCODING_DECODE_ERROR',
+  ]);
 
   openCustomDocument(uri: vscode.Uri): MxlPreviewDocument {
     return new MxlPreviewDocument(uri);
@@ -36,8 +41,11 @@ export class MxlPreviewProvider implements vscode.CustomReadonlyEditorProvider<M
 
   private getPreviewHtml(webview: vscode.Webview, result: MxlLoadResult): string {
     const relativePath = vscode.workspace.asRelativePath(result.uri, false);
-    const hasBlockingErrors = result.model.diagnostics.some((diag) => diag.level === 'error');
-    if (hasBlockingErrors) {
+    const hasBlockingParseErrors = result.model.diagnostics.some(
+      (diag) =>
+        typeof diag.code === 'string' && MxlPreviewProvider.BLOCKING_PARSE_ERROR_CODES.has(diag.code)
+    );
+    if (hasBlockingParseErrors) {
       return buildMxlParserErrorHtml({
         webview,
         filePath: relativePath,
@@ -59,8 +67,11 @@ export class MxlPreviewProvider implements vscode.CustomReadonlyEditorProvider<M
   }
 
   private async handleBlockingDiagnostics(result: MxlLoadResult): Promise<void> {
-    const hasBlockingErrors = result.model.diagnostics.some((diag) => diag.level === 'error');
-    if (!hasBlockingErrors) {
+    const hasBlockingParseErrors = result.model.diagnostics.some(
+      (diag) =>
+        typeof diag.code === 'string' && MxlPreviewProvider.BLOCKING_PARSE_ERROR_CODES.has(diag.code)
+    );
+    if (!hasBlockingParseErrors) {
       return;
     }
     const selection = await vscode.window.showWarningMessage(

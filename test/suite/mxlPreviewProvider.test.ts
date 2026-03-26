@@ -65,4 +65,52 @@ suite('MxlPreviewProvider', () => {
     assert.strictEqual(fallbackNode.filePath, uri.fsPath);
     assert.ok(docStub.uri);
   });
+
+  test('does not suggest openXML fallback for size-limit diagnostic', async () => {
+    const provider = new MxlPreviewProvider();
+    const uri = { fsPath: 'C:/tmp/too-big.mxl' } as vscode.Uri;
+    const selectedWarnings: string[] = [];
+    const openXmlCalls: Array<{ command: string; args: unknown[] }> = [];
+
+    (provider as any).loader = {
+      loadFromUri: async () => ({
+        uri,
+        sourceFormat: 'mxl',
+        rawXml: '',
+        model: {
+          version: 'v1',
+          tables: [],
+          diagnostics: [
+            {
+              level: 'error',
+              code: 'MXL_FILE_SIZE_LIMIT_EXCEEDED',
+              message: 'too big',
+            },
+          ],
+        },
+      }),
+    };
+
+    (vscode.window as any).showWarningMessage = async (message: string, ...items: string[]) => {
+      selectedWarnings.push(message);
+      return items[0];
+    };
+
+    (vscode.commands as any).executeCommand = async (command: string, ...args: unknown[]) => {
+      openXmlCalls.push({ command, args });
+      return {} as any;
+    };
+
+    const panel = {
+      webview: { options: {}, html: '', cspSource: 'vscode-test-csp' },
+      title: '',
+    } as unknown as vscode.WebviewPanel;
+
+    await provider.resolveCustomEditor({ uri, dispose: () => undefined } as any, panel);
+
+    // Should not use parser-error HTML and should not open source automatically.
+    assert.ok(!panel.webview.html.includes('MXL preview unavailable'));
+    assert.strictEqual(selectedWarnings.length, 0);
+    assert.strictEqual(openXmlCalls.length, 0);
+  });
 });
