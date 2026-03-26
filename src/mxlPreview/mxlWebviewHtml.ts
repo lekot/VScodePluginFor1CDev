@@ -66,19 +66,19 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
       border-radius: 4px;
       background: var(--vscode-editor-background);
       margin: 0 0 12px 0;
+      max-width: 100%;
     }
     table.mxl-table {
       border-collapse: collapse;
       table-layout: fixed;
-      min-width: 100%;
     }
     table.mxl-table td {
       border: 1px solid var(--vscode-panel-border);
       padding: 4px 6px;
       vertical-align: top;
       font-size: 12px;
-      white-space: pre-wrap;
-      word-break: break-word;
+      white-space: normal;
+      overflow-wrap: break-word;
     }
     table.mxl-table td.empty {
       color: var(--vscode-descriptionForeground);
@@ -245,17 +245,18 @@ function renderTables(tables: MxlRenderTable[]): string {
     .join('');
 }
 
-function renderColgroup(table: MxlRenderTable, colCount: number): string {
+function renderColgroup(table: MxlRenderTable, colCount: number): { html: string; totalWidth: number } {
   if (!table.colWidthsPx || table.colWidthsPx.length === 0) {
-    return '';
+    return { html: '', totalWidth: 0 };
   }
+  let totalWidth = 0;
   const cols = Array.from({ length: colCount }, (_, i) => {
     const w = table.colWidthsPx![i];
-    return w !== undefined && w > 0
-      ? `<col style="width:${w}px">`
-      : '<col>';
+    const px = w !== undefined && w > 0 ? w : 60;
+    totalWidth += px;
+    return `<col style="width:${px}px">`;
   });
-  return `<colgroup>${cols.join('')}</colgroup>`;
+  return { html: `<colgroup>${cols.join('')}</colgroup>`, totalWidth };
 }
 
 function renderTable(table: MxlRenderTable): string {
@@ -286,7 +287,9 @@ function renderTable(table: MxlRenderTable): string {
     rows.push(`<tr>${cols.join('')}</tr>`);
   }
 
-  return `<table class="mxl-table">${renderColgroup(table, colCount)}<tbody>${rows.join('')}</tbody></table>`;
+  const { html: colgroupHtml, totalWidth } = renderColgroup(table, colCount);
+  const tableStyle = totalWidth > 0 ? ` style="width:${totalWidth}px"` : '';
+  return `<table class="mxl-table"${tableStyle}>${colgroupHtml}<tbody>${rows.join('')}</tbody></table>`;
 }
 
 function indexCells(table: MxlRenderTable): {
