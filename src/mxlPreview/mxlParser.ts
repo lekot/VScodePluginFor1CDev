@@ -74,15 +74,21 @@ export class MxlParser {
     const cells: MxlRenderCell[] = [];
     let inferredMaxRow = 0;
     let inferredMaxCol = 0;
+    const occupiedByRow = new Map<number, Set<number>>();
 
     if (rowNodes.length > 0) {
       rowNodes.forEach((rowNode, rowIndex) => {
         const explicitRow = this.getFirstNumber(rowNode.node, ROW_INDEX_KEYS);
         const row = explicitRow ?? rowIndex;
         const cellNodes = this.getNamedChildren(rowNode.node, CELL_NODE_NAMES);
-        cellNodes.forEach((cellNode, colIndex) => {
-          const cell = this.parseCell(cellNode.node, row, colIndex, diagnostics, `${rowNode.path}.${cellNode.key}`);
+        let nextColCursor = this.findNextFreeCol(occupiedByRow, row, 0);
+        cellNodes.forEach((cellNode) => {
+          const explicitCol = this.getFirstNumber(cellNode.node, COL_INDEX_KEYS);
+          const fallbackCol = explicitCol ?? nextColCursor;
+          const cell = this.parseCell(cellNode.node, row, fallbackCol, diagnostics, `${rowNode.path}.${cellNode.key}`);
           cells.push(cell);
+          this.markOccupied(occupiedByRow, cell.row, cell.col, cell.rowspan, cell.colspan);
+          nextColCursor = this.findNextFreeCol(occupiedByRow, row, cell.col + Math.max(cell.colspan, 1));
           inferredMaxRow = Math.max(inferredMaxRow, cell.row + Math.max(cell.rowspan, 1));
           inferredMaxCol = Math.max(inferredMaxCol, cell.col + Math.max(cell.colspan, 1));
         });
@@ -385,5 +391,37 @@ export class MxlParser {
       return;
     }
     diagnostics.push({ level: 'warning', code, message, path });
+  }
+
+  private markOccupied(
+    occupiedByRow: Map<number, Set<number>>,
+    row: number,
+    col: number,
+    rowspan: number,
+    colspan: number
+  ): void {
+    const normalizedRow = Math.max(0, row);
+    const normalizedCol = Math.max(0, col);
+    const safeRowspan = Math.max(1, rowspan);
+    const safeColspan = Math.max(1, colspan);
+    for (let r = normalizedRow; r < normalizedRow + safeRowspan; r += 1) {
+      const rowCells = occupiedByRow.get(r) ?? new Set<number>();
+      for (let c = normalizedCol; c < normalizedCol + safeColspan; c += 1) {
+        rowCells.add(c);
+      }
+      occupiedByRow.set(r, rowCells);
+    }
+  }
+
+  private findNextFreeCol(occupiedByRow: Map<number, Set<number>>, row: number, colStart: number): number {
+    const occupiedCols = occupiedByRow.get(Math.max(0, row));
+    if (!occupiedCols || occupiedCols.size === 0) {
+      return Math.max(0, colStart);
+    }
+    let col = Math.max(0, colStart);
+    while (occupiedCols.has(col)) {
+      col += 1;
+    }
+    return col;
   }
 }
