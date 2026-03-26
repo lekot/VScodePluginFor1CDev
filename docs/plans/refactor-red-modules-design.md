@@ -215,13 +215,15 @@ export async function requireDesignerFormat(
 
 **Статус шага 4 (2026-03-26):** `src/commands/elementCommands.ts` — вынесена регистрация CRUD-команд (`createElement`, `createForm`, `duplicateElement`, `deleteElement`, `renameElement`) в `registerElementCommands({ state, loadMetadataTree, invalidateCacheAndReload, scheduleDeleteReconcile })`; `extension.ts` подключает модуль и добавляет `...elementCommandDisposables` в `context.subscriptions`.
 
+**Статус шага 5 (2026-03-26):** `src/commands/navigationCommands.ts` — вынесены навигационные команды (`focus`, `focusSearch`, `clearSearch`, `nextMatch`, `previousMatch`) в `registerNavigationCommands({ state })`; `extension.ts` подключает модуль и добавляет `...navigationCommandDisposables` в `context.subscriptions`, сохраняя исходное поведение команд.
+
 | Шаг | Действие | Риск | Покрытие тестами |
 |-----|----------|------|------------------|
 | 1 | Создать `state/extensionState.ts`, перенести глобальные переменные | Средний | e2e smoke |
 | 2 | Извлечь `helpers/commandHelpers.ts` (`requireDesignerFormat`, `getSelectedNode`) | Низкий | Unit |
 | 3 | Извлечь `helpers/optimisticNodeBuilder.ts` | Низкий | Unit |
 | 4 | Извлечь `commands/elementCommands.ts` | Средний | e2e CRUD |
-| 5 | Извлечь `commands/navigationCommands.ts` | Низкий | e2e |
+| 5 | Извлечь `commands/navigationCommands.ts` | Низкий | e2e |+
 | 6 | Извлечь `commands/editorCommands.ts` | Низкий | e2e |
 | 7 | Извлечь `commands/filterCommands.ts` | Средний | e2e |
 | 8 | Извлечь `commands/utilityCommands.ts` | Низкий | e2e |

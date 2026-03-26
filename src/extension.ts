@@ -21,6 +21,7 @@ import { ReloadCoordinatorService } from './services/reloadCoordinatorService';
 import { ExtensionState } from './state/extensionState';
 import { getSelectedNode } from './helpers/commandHelpers';
 import { registerElementCommands } from './commands/elementCommands';
+import { registerNavigationCommands } from './commands/navigationCommands';
 import {
   DELETE_RECONCILE_ATTEMPTS,
   DELETE_RECONCILE_POLL_MS,
@@ -166,36 +167,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     async () => openIbcmdReport('import')
   );
 
-  /** Find first Form node by traversing tree (expands path when revealing). */
-  const findFirstFormNode = async (element: TreeNode): Promise<TreeNode | null> => {
-    if (element.type === MetadataType.Form) {return element;}
-    const children = await extensionState.treeDataProvider!.getChildren(element);
-    for (const child of children) {
-      const found = await findFirstFormNode(child);
-      if (found) {return found;}
-    }
-    return null;
-  };
-
-  const focusTreeCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.focus',
-    async () => {
-      if (!extensionState.treeView || !extensionState.treeDataProvider) {return;}
-      let root = extensionState.treeDataProvider.getRootNode();
-      if (!root) {
-        await new Promise((r) => setTimeout(r, 200));
-        root = extensionState.treeDataProvider.getRootNode();
-      }
-      if (!root) {
-        await new Promise((r) => setTimeout(r, 400));
-        root = extensionState.treeDataProvider.getRootNode();
-      }
-      if (!root) {return;}
-      const formNode = await findFirstFormNode(root);
-      const nodeToReveal = formNode ?? root;
-      await extensionState.treeView.reveal(nodeToReveal, { focus: true });
-    }
-  );
 
   const getTreeReadyForTestCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.getTreeReadyForTest',
@@ -344,6 +315,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     invalidateCacheAndReload,
     scheduleDeleteReconcile,
   });
+  const navigationCommandDisposables = registerNavigationCommands({
+    state: extensionState,
+  });
 
   const copyPathOrNameCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.copyPathOrName',
@@ -359,53 +333,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
-  const focusSearchCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.focusSearch',
-    async () => {
-      if (!extensionState.treeDataProvider) {return;}
-      const history = extensionState.treeDataProvider.getSearchHistory();
-      const current = extensionState.treeDataProvider.getSearchQuery();
-      let query = current;
-      if (history.length > 0) {
-        const pick = await vscode.window.showQuickPick(
-          [
-            { label: '$(add) Новый поиск…', value: '' },
-            ...history.map((h) => ({ label: h, value: h })),
-          ],
-          { placeHolder: 'Поиск по названиям (и синониму)', matchOnDescription: false }
-        );
-        if (pick === undefined) {return;}
-        query = pick.value;
-        if (query === '') {
-          const input = await vscode.window.showInputBox({
-            value: current,
-            prompt: 'Поиск по названиям (и синониму)',
-            placeHolder: 'Введите строку или выберите из истории',
-          });
-          if (input === undefined) {return;}
-          query = input;
-        }
-      } else {
-        const input = await vscode.window.showInputBox({
-          value: current,
-          prompt: 'Поиск по названиям (и синониму)',
-          placeHolder: 'Введите строку',
-        });
-        if (input === undefined) {return;}
-        query = input;
-      }
-      extensionState.treeDataProvider.setSearchQuery(query);
-      if (query.trim()) {extensionState.treeDataProvider.addSearchToHistory(query);}
-    }
-  );
-
-  const clearSearchCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.clearSearch',
-    () => {
-      extensionState.treeDataProvider?.clearSearch();
-      vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
-    }
-  );
 
   const clearCacheCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearCache',
@@ -653,47 +580,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
-  const nextMatchCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.nextMatch',
-    () => {
-      if (!extensionState.treeDataProvider || !extensionState.treeView) {return;}
-      const ids = extensionState.treeDataProvider.getVisibleOrderedNodeIds();
-      if (ids.length === 0) {return;}
-      const sel = extensionState.treeView.selection[0];
-      const currentId = sel?.id;
-      const idx = currentId ? ids.indexOf(currentId) : -1;
-      const nextIdx = idx < ids.length - 1 ? idx + 1 : 0;
-      const nextId = ids[nextIdx];
-      const node = extensionState.treeDataProvider.findNodeById(nextId);
-      if (node) {
-        extensionState.treeView.reveal(node, { select: true, focus: true });
-      }
-    }
-  );
-
-  const previousMatchCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.previousMatch',
-    () => {
-      if (!extensionState.treeDataProvider || !extensionState.treeView) {return;}
-      const ids = extensionState.treeDataProvider.getVisibleOrderedNodeIds();
-      if (ids.length === 0) {return;}
-      const sel = extensionState.treeView.selection[0];
-      const currentId = sel?.id;
-      const idx = currentId ? ids.indexOf(currentId) : -1;
-      const prevIdx = idx > 0 ? idx - 1 : ids.length - 1;
-      const prevId = ids[prevIdx];
-      const node = extensionState.treeDataProvider.findNodeById(prevId);
-      if (node) {
-        extensionState.treeView.reveal(node, { select: true, focus: true });
-      }
-    }
-  );
-
   context.subscriptions.push(
     openPanelCommand,
     openIbcmdCheckReportCommand,
     openIbcmdImportReportCommand,
-    focusTreeCommand,
     getTreeReadyForTestCommand,
     refreshCommand,
     showPropertiesCommand,
@@ -703,9 +593,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     openRightsEditorCommand,
     saveRightsEditorCommand,
     ...elementCommandDisposables,
+    ...navigationCommandDisposables,
     copyPathOrNameCommand,
-    focusSearchCommand,
-    clearSearchCommand,
     clearCacheCommand,
     exportLogsCommand,
     copyDiagnosticsSummaryCommand,
@@ -713,9 +602,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     filterBySubsystemCommand,
     clearSubsystemFilterCommand,
     addToSubsystemCompositionCommand,
-    removeFromSubsystemCompositionCommand,
-    nextMatchCommand,
-    previousMatchCommand
+    removeFromSubsystemCompositionCommand
   );
 
   // Handle tree view selection to show properties or rights editor
