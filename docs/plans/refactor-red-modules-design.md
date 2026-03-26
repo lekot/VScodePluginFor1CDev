@@ -207,6 +207,10 @@ export async function requireDesignerFormat(
 
 ### 5.3 План миграции (инкрементальный)
 
+**Статус шага 1 (2026-03-26):** добавлен `src/state/extensionState.ts` (`ExtensionState` с полями провайдеров / `treeView` / `metadataWatchers` / `reloadCoordinator`), в `extension.ts` — синглтон `extensionState`, `activate` пишет в него, `deactivate` вызывает `extensionState.dispose()`.
+
+**Статус шага 2 (2026-03-26):** `src/helpers/commandHelpers.ts` — `getSelectedNode(state, node?)`, `requireDesignerFormat(state, target, { notLoadedMessage, nonDesignerMessage })`; CRUD-команды create/duplicate/delete/rename и createForm используют `requireDesignerFormat`, все вызовы `getSelectedNode` переведены на передачу `extensionState`.
+
 | Шаг | Действие | Риск | Покрытие тестами |
 |-----|----------|------|------------------|
 | 1 | Создать `state/extensionState.ts`, перенести глобальные переменные | Средний | e2e smoke |

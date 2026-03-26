@@ -32,6 +32,8 @@ import {
   normalizeEmptyPlaceholderTree,
 } from './utils/treeNormalization';
 import { ReloadCoordinatorService } from './services/reloadCoordinatorService';
+import { ExtensionState } from './state/extensionState';
+import { getSelectedNode, requireDesignerFormat } from './helpers/commandHelpers';
 import {
   DELETE_RECONCILE_ATTEMPTS,
   DELETE_RECONCILE_POLL_MS,
@@ -52,6 +54,8 @@ import {
   getIbcmdTaskLabel,
 } from './services/ibcmdReportPaths';
 
+const extensionState = new ExtensionState();
+
 function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
   switch (mode) {
     case vscode.ExtensionMode.Development:
@@ -61,14 +65,6 @@ function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
     default:
       return 'production';
   }
-}
-
-/** Resolve node from command argument or current tree selection. */
-function getSelectedNode(node?: TreeNode): TreeNode | undefined {
-  if (node) {
-    return node;
-  }
-  return treeView?.selection?.[0];
 }
 
 /** Build a lightweight node so create operations can appear in the tree immediately. */
@@ -179,7 +175,7 @@ async function optimisticAppendCreatedNode(
   name: string,
   ctx: { configPath: string; format: ConfigFormat }
 ): Promise<void> {
-  const provider = treeDataProvider;
+  const provider = extensionState.treeDataProvider;
   if (!provider) {return;}
   const activeTarget = provider.resolveNodeForUi(target);
   const trimmed = name.trim();
@@ -193,57 +189,47 @@ async function optimisticAppendCreatedNode(
   provider.refresh(activeTarget);
 }
 
-let treeDataProvider: MetadataTreeDataProvider | null = null;
-let treeView: vscode.TreeView<TreeNode> | null = null;
-let propertiesProvider: PropertiesProvider | null = null;
-let typeEditorProvider: TypeEditorProvider | null = null;
-let rolesRightsEditorProvider: RolesRightsEditorProvider | null = null;
-let formEditorProvider: FormEditorProvider | null = null;
-let extensionContext: vscode.ExtensionContext | undefined;
-let metadataWatchers: MetadataWatcherService[] = [];
-let reloadCoordinator: ReloadCoordinatorService | null = null;
-
 /**
  * Activate the extension
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   try {
-    extensionContext = context;
+    extensionState.init(context);
     initDesignerTemplateRepository(context);
     Logger.initialize();
     Logger.info(MESSAGES.EXTENSION_ACTIVATED);
 
   // Create tree data provider
-  treeDataProvider = new MetadataTreeDataProvider(context);
+  extensionState.treeDataProvider = new MetadataTreeDataProvider(context);
 
   // Register tree view
-  treeView = vscode.window.createTreeView('1c-metadata-tree', {
-    treeDataProvider: treeDataProvider,
+  extensionState.treeView = vscode.window.createTreeView('1c-metadata-tree', {
+    treeDataProvider: extensionState.treeDataProvider,
     showCollapseAll: true,
   });
-  treeDataProvider.setMessageUpdater((msg) => {
-    if (treeView) {treeView.message = msg ?? '';}
+  extensionState.treeDataProvider.setMessageUpdater((msg) => {
+    if (extensionState.treeView) {extensionState.treeView.message = msg ?? '';}
   });
-  context.subscriptions.push(treeView);
+  context.subscriptions.push(extensionState.treeView);
 
   // Create type editor provider
-  typeEditorProvider = new TypeEditorProvider(context);
+  extensionState.typeEditorProvider = new TypeEditorProvider(context);
 
   // Create roles rights editor provider
-  rolesRightsEditorProvider = new RolesRightsEditorProvider(context);
-  context.subscriptions.push(rolesRightsEditorProvider);
+  extensionState.rolesRightsEditorProvider = new RolesRightsEditorProvider(context);
+  context.subscriptions.push(extensionState.rolesRightsEditorProvider);
 
   // Create properties provider
-  propertiesProvider = new PropertiesProvider(
+  extensionState.propertiesProvider = new PropertiesProvider(
     context,
-    treeDataProvider,
-    typeEditorProvider,
+    extensionState.treeDataProvider,
+    extensionState.typeEditorProvider,
     (payload) => {
-      formEditorProvider?.applySelectionPropertyChange(payload);
+      extensionState.formEditorProvider?.applySelectionPropertyChange(payload);
     }
   );
-  context.subscriptions.push(propertiesProvider);
-  reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
+  context.subscriptions.push(extensionState.propertiesProvider);
+  extensionState.reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
     Logger.info('reload.run.started', { configPath, reason, operationId });
     await invalidateTreeCacheOnly(configPath);
     await loadMetadataTree();
@@ -251,19 +237,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   context.subscriptions.push({
     dispose: () => {
-      reloadCoordinator?.dispose();
-      reloadCoordinator = null;
+      extensionState.reloadCoordinator?.dispose();
+      extensionState.reloadCoordinator = null;
     },
   });
 
   // Form editor (custom editor for Ext/Form.xml)
-  formEditorProvider = new FormEditorProvider((payload) => {
-    if (propertiesProvider) {
-      void propertiesProvider.showFormSelectionProperties(payload);
+  extensionState.formEditorProvider = new FormEditorProvider((payload) => {
+    if (extensionState.propertiesProvider) {
+      void extensionState.propertiesProvider.showFormSelectionProperties(payload);
     }
   });
   context.subscriptions.push(
-    vscode.window.registerCustomEditorProvider('1c-form-editor', formEditorProvider, {
+    vscode.window.registerCustomEditorProvider('1c-form-editor', extensionState.formEditorProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     })
   );
@@ -318,7 +304,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   /** Find first Form node by traversing tree (expands path when revealing). */
   const findFirstFormNode = async (element: TreeNode): Promise<TreeNode | null> => {
     if (element.type === MetadataType.Form) {return element;}
-    const children = await treeDataProvider!.getChildren(element);
+    const children = await extensionState.treeDataProvider!.getChildren(element);
     for (const child of children) {
       const found = await findFirstFormNode(child);
       if (found) {return found;}
@@ -329,26 +315,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const focusTreeCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.focus',
     async () => {
-      if (!treeView || !treeDataProvider) {return;}
-      let root = treeDataProvider.getRootNode();
+      if (!extensionState.treeView || !extensionState.treeDataProvider) {return;}
+      let root = extensionState.treeDataProvider.getRootNode();
       if (!root) {
         await new Promise((r) => setTimeout(r, 200));
-        root = treeDataProvider.getRootNode();
+        root = extensionState.treeDataProvider.getRootNode();
       }
       if (!root) {
         await new Promise((r) => setTimeout(r, 400));
-        root = treeDataProvider.getRootNode();
+        root = extensionState.treeDataProvider.getRootNode();
       }
       if (!root) {return;}
       const formNode = await findFirstFormNode(root);
       const nodeToReveal = formNode ?? root;
-      await treeView.reveal(nodeToReveal, { focus: true });
+      await extensionState.treeView.reveal(nodeToReveal, { focus: true });
     }
   );
 
   const getTreeReadyForTestCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.getTreeReadyForTest',
-    (): boolean => !!(treeDataProvider?.getRootNode() ?? null)
+    (): boolean => !!(extensionState.treeDataProvider?.getRootNode() ?? null)
   );
 
   const refreshCommand = vscode.commands.registerCommand(
@@ -363,14 +349,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const showPropertiesCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.showProperties',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
-      if (propertiesProvider) {
+      const target = getSelectedNode(extensionState, node);
+      if (extensionState.propertiesProvider) {
         if (target) {
           Logger.info(`Showing properties for: ${target.name}`);
         } else {
           Logger.debug('Showing properties panel (no node selected)');
         }
-        await propertiesProvider.showProperties(target);
+        await extensionState.propertiesProvider.showProperties(target);
       }
     }
   );
@@ -379,10 +365,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const openXMLCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.openXML',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target) {return;}
       const pathToOpen =
-        (treeDataProvider && getConfigurationXmlPathForNode(target, treeDataProvider.getConfigPathForNode.bind(treeDataProvider))) ??
+        (extensionState.treeDataProvider && getConfigurationXmlPathForNode(target, extensionState.treeDataProvider.getConfigPathForNode.bind(extensionState.treeDataProvider))) ??
         (target.type === MetadataType.Form && target.filePath
           ? getFormPaths(target.filePath).formXmlPath
           : target.filePath);
@@ -406,7 +392,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const openBslModuleCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.openBslModule',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target) {return;}
       const fp = target.filePath;
       if (!fp || !fp.toLowerCase().endsWith('.bsl')) {
@@ -429,7 +415,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const openFormEditorCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.openFormEditor',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target) {
         vscode.window.showWarningMessage('Выберите узел формы в дереве метаданных.');
         return;
@@ -453,7 +439,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const openRightsEditorCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.openRightsEditor',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target) {
         vscode.window.showWarningMessage('Select a role node in the metadata tree.');
         return;
@@ -463,10 +449,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       try {
-        if (rolesRightsEditorProvider) {
+        if (extensionState.rolesRightsEditorProvider) {
           // Get config path from tree data provider - this avoids searching outside workspace
-          const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
-          await rolesRightsEditorProvider.show(target.filePath, configPath);
+          const configPath = extensionState.treeDataProvider?.getConfigPathForNode(target) ?? extensionState.treeDataProvider?.getConfigPath();
+          await extensionState.rolesRightsEditorProvider.show(target.filePath, configPath);
         }
       } catch (err) {
         Logger.error('Failed to open rights editor', err);
@@ -479,8 +465,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const saveRightsEditorCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.saveRightsEditor',
     async () => {
-      if (rolesRightsEditorProvider) {
-        await rolesRightsEditorProvider.triggerSave();
+      if (extensionState.rolesRightsEditorProvider) {
+        await extensionState.rolesRightsEditorProvider.triggerSave();
       } else {
         vscode.window.showWarningMessage('Rights editor is not open.');
       }
@@ -491,21 +477,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const createElementCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.createElement',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target) {
         vscode.window.showWarningMessage('Выберите узел типа (Справочники, Документы и т.д.) или объект метаданных.');
         return;
       }
-      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
-      if (!configPath) {
-        vscode.window.showWarningMessage('Дерево метаданных не загружено. Откройте конфигурацию.');
-        return;
-      }
-      const format = await FormatDetector.detect(configPath);
-      if (format !== ConfigFormat.Designer) {
-        vscode.window.showInformationMessage('Операции с элементами поддерживаются только для формата Designer.');
-        return;
-      }
+      const designerCtx = await requireDesignerFormat(extensionState, target, {
+        notLoadedMessage: 'Дерево метаданных не загружено. Откройте конфигурацию.',
+        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
+      });
+      if (!designerCtx) {return;}
+      const { configPath, format } = designerCtx;
       const name = await vscode.window.showInputBox({
         prompt: 'Имя нового элемента',
         placeHolder: 'Введите имя (латиница, кириллица, цифры, _)',
@@ -537,7 +519,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const createFormCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.createForm',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target) {
         vscode.window.showWarningMessage('Выберите узел «Forms» в дереве метаданных.');
         return;
@@ -546,16 +528,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showWarningMessage('Создание формы: выберите узел «Forms» (папку форм объекта).');
         return;
       }
-      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
-      if (!configPath) {
-        vscode.window.showWarningMessage('Дерево метаданных не загружено. Откройте конфигурацию.');
-        return;
-      }
-      const format = await FormatDetector.detect(configPath);
-      if (format !== ConfigFormat.Designer) {
-        vscode.window.showInformationMessage('Создание форм поддерживается только для формата Designer.');
-        return;
-      }
+      const designerCtx = await requireDesignerFormat(extensionState, target, {
+        notLoadedMessage: 'Дерево метаданных не загружено. Откройте конфигурацию.',
+        nonDesignerMessage: 'Создание форм поддерживается только для формата Designer.',
+      });
+      if (!designerCtx) {return;}
       const siblingNames = (target.children || []).map((c) => c.name);
       const name = await vscode.window.showInputBox({
         prompt: 'Имя новой формы',
@@ -577,20 +554,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const duplicateElementCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.duplicateElement',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target || target.type === MetadataType.Configuration) {
         return;
       }
-      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
-      if (!configPath) {
-        vscode.window.showWarningMessage('Дерево метаданных не загружено.');
-        return;
-      }
-      const format = await FormatDetector.detect(configPath);
-      if (format !== ConfigFormat.Designer) {
-        vscode.window.showInformationMessage('Операции с элементами поддерживаются только для формата Designer.');
-        return;
-      }
+      const designerCtx = await requireDesignerFormat(extensionState, target, {
+        notLoadedMessage: 'Дерево метаданных не загружено.',
+        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
+      });
+      if (!designerCtx) {return;}
+      const { configPath } = designerCtx;
       const parent = target.parent;
       const siblingNames = parent ? (parent.children || []).map((c) => c.name) : [];
       const newName = await vscode.window.showInputBox({
@@ -613,20 +586,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const deleteElementCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.deleteElement',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target || target.type === MetadataType.Configuration) {
         return;
       }
-      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
-      if (!configPath) {
-        vscode.window.showWarningMessage('Дерево метаданных не загружено.');
-        return;
-      }
-      const format = await FormatDetector.detect(configPath);
-      if (format !== ConfigFormat.Designer) {
-        vscode.window.showInformationMessage('Операции с элементами поддерживаются только для формата Designer.');
-        return;
-      }
+      const designerCtx = await requireDesignerFormat(extensionState, target, {
+        notLoadedMessage: 'Дерево метаданных не загружено.',
+        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
+      });
+      if (!designerCtx) {return;}
+      const { configPath } = designerCtx;
       // For Ext node or child of Ext, count references to the parent metadata object
       const effectiveNode =
         target.type === MetadataType.Extension
@@ -653,7 +622,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const operationId = `delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         await doDeleteElement(target);
         try {
-          treeDataProvider?.applyOptimisticDelete(target, operationId);
+          extensionState.treeDataProvider?.applyOptimisticDelete(target, operationId);
         } catch (optimisticError) {
           Logger.error('delete.optimistic.apply.failed', optimisticError);
           await invalidateCacheAndReload(configPath);
@@ -674,20 +643,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const renameElementCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.renameElement',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target || target.type === MetadataType.Configuration) {
         return;
       }
-      const configPath = treeDataProvider?.getConfigPathForNode(target) ?? treeDataProvider?.getConfigPath();
-      if (!configPath) {
-        vscode.window.showWarningMessage('Дерево метаданных не загружено.');
-        return;
-      }
-      const format = await FormatDetector.detect(configPath);
-      if (format !== ConfigFormat.Designer) {
-        vscode.window.showInformationMessage('Операции с элементами поддерживаются только для формата Designer.');
-        return;
-      }
+      const designerCtx = await requireDesignerFormat(extensionState, target, {
+        notLoadedMessage: 'Дерево метаданных не загружено.',
+        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
+      });
+      if (!designerCtx) {return;}
+      const { configPath } = designerCtx;
       const parent = target.parent;
       const siblingNames = parent ? (parent.children || []).map((c) => c.name).filter((n) => n !== target.name) : [];
       const newName = await vscode.window.showInputBox({
@@ -710,7 +675,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const copyPathOrNameCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.copyPathOrName',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target) {
         vscode.window.showWarningMessage('Select an element in the metadata tree first.');
         return;
@@ -724,9 +689,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const focusSearchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.focusSearch',
     async () => {
-      if (!treeDataProvider) {return;}
-      const history = treeDataProvider.getSearchHistory();
-      const current = treeDataProvider.getSearchQuery();
+      if (!extensionState.treeDataProvider) {return;}
+      const history = extensionState.treeDataProvider.getSearchHistory();
+      const current = extensionState.treeDataProvider.getSearchQuery();
       let query = current;
       if (history.length > 0) {
         const pick = await vscode.window.showQuickPick(
@@ -756,15 +721,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (input === undefined) {return;}
         query = input;
       }
-      treeDataProvider.setSearchQuery(query);
-      if (query.trim()) {treeDataProvider.addSearchToHistory(query);}
+      extensionState.treeDataProvider.setSearchQuery(query);
+      if (query.trim()) {extensionState.treeDataProvider.addSearchToHistory(query);}
     }
   );
 
   const clearSearchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearSearch',
     () => {
-      treeDataProvider?.clearSearch();
+      extensionState.treeDataProvider?.clearSearch();
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
   );
@@ -772,8 +737,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const clearCacheCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearCache',
     async () => {
-      if (extensionContext?.globalStoragePath) {
-        await clearTreeCache(extensionContext.globalStoragePath);
+      if (extensionState.extensionContext?.globalStoragePath) {
+        await clearTreeCache(extensionState.extensionContext.globalStoragePath);
         vscode.window.showInformationMessage('CDT 41: cache cleared.');
       }
     }
@@ -848,12 +813,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const filterByTypeCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.filterByType',
     async () => {
-      if (!treeDataProvider) {return;}
+      if (!extensionState.treeDataProvider) {return;}
       const items = MetadataTreeDataProvider.getFilterableTypeLabels().map(({ type, label }) => ({
         label,
         type,
         picked: (() => {
-          const current = treeDataProvider!.getTypeFilter();
+          const current = extensionState.treeDataProvider!.getTypeFilter();
           return current != null && current.includes(type);
         })(),
       }));
@@ -862,20 +827,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         placeHolder: 'Выберите типы метаданных для отображения',
       });
       if (picks === undefined) {return;}
-      treeDataProvider.setTypeFilter(picks.length > 0 ? picks.map((p) => p.type) : null);
+      extensionState.treeDataProvider.setTypeFilter(picks.length > 0 ? picks.map((p) => p.type) : null);
     }
   );
 
   const filterBySubsystemCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.filterBySubsystem',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target || target.type !== MetadataType.Subsystem) {
         vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
         return;
       }
-      if (!treeDataProvider) {return;}
-      await treeDataProvider.setSubsystemFilter(target.id, target.name);
+      if (!extensionState.treeDataProvider) {return;}
+      await extensionState.treeDataProvider.setSubsystemFilter(target.id, target.name);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', true);
     }
   );
@@ -883,8 +848,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const clearSubsystemFilterCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.clearSubsystemFilter',
     async () => {
-      if (!treeDataProvider) {return;}
-      await treeDataProvider.setSubsystemFilter(null, null);
+      if (!extensionState.treeDataProvider) {return;}
+      await extensionState.treeDataProvider.setSubsystemFilter(null, null);
       vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
     }
   );
@@ -892,12 +857,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const addToSubsystemCompositionCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.addToSubsystemComposition',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target || target.type !== MetadataType.Subsystem) {
         vscode.window.showWarningMessage(MESSAGES.SUBSYSTEM_COMPOSITION_SELECT_SUBSYSTEM);
         return;
       }
-      if (!target.filePath || !treeDataProvider) {
+      if (!target.filePath || !extensionState.treeDataProvider) {
         vscode.window.showErrorMessage(MESSAGES.SUBSYSTEM_COMPOSITION_NO_FILE);
         return;
       }
@@ -920,9 +885,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!trimmed) {
         return;
       }
-      const resolved = treeDataProvider.findRootObjectForCompositionRef(trimmed, target);
+      const resolved = extensionState.treeDataProvider.findRootObjectForCompositionRef(trimmed, target);
       if (!resolved) {
-        const inOtherConfig = treeDataProvider.hasCompositionRefInOtherConfiguration(trimmed, target);
+        const inOtherConfig = extensionState.treeDataProvider.hasCompositionRefInOtherConfiguration(trimmed, target);
         vscode.window.showErrorMessage(
           inOtherConfig
             ? MESSAGES.SUBSYSTEM_COMPOSITION_OBJECT_IN_OTHER_CONFIG
@@ -947,7 +912,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             `${MESSAGES.SUBSYSTEM_COMPOSITION_REJECTED_PREFIX} ${rejected.map((r) => `${r.ref} (${r.reason})`).join('; ')}`
           );
         }
-        const cp = treeDataProvider.getConfigPathForNode(target);
+        const cp = extensionState.treeDataProvider.getConfigPathForNode(target);
         if (cp) {
           await invalidateTreeCacheOnly(cp);
           await loadMetadataTree();
@@ -963,12 +928,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const removeFromSubsystemCompositionCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.removeFromSubsystemComposition',
     async (node?: TreeNode) => {
-      const target = getSelectedNode(node);
+      const target = getSelectedNode(extensionState, node);
       if (!target || target.type !== MetadataType.Subsystem) {
         vscode.window.showWarningMessage(MESSAGES.SUBSYSTEM_COMPOSITION_SELECT_SUBSYSTEM);
         return;
       }
-      if (!target.filePath || !treeDataProvider) {
+      if (!target.filePath || !extensionState.treeDataProvider) {
         vscode.window.showErrorMessage(MESSAGES.SUBSYSTEM_COMPOSITION_NO_FILE);
         return;
       }
@@ -1002,7 +967,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           add: [],
           remove: [picked],
         });
-        const cp = treeDataProvider.getConfigPathForNode(target);
+        const cp = extensionState.treeDataProvider.getConfigPathForNode(target);
         if (cp) {
           await invalidateTreeCacheOnly(cp);
           await loadMetadataTree();
@@ -1018,17 +983,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const nextMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.nextMatch',
     () => {
-      if (!treeDataProvider || !treeView) {return;}
-      const ids = treeDataProvider.getVisibleOrderedNodeIds();
+      if (!extensionState.treeDataProvider || !extensionState.treeView) {return;}
+      const ids = extensionState.treeDataProvider.getVisibleOrderedNodeIds();
       if (ids.length === 0) {return;}
-      const sel = treeView.selection[0];
+      const sel = extensionState.treeView.selection[0];
       const currentId = sel?.id;
       const idx = currentId ? ids.indexOf(currentId) : -1;
       const nextIdx = idx < ids.length - 1 ? idx + 1 : 0;
       const nextId = ids[nextIdx];
-      const node = treeDataProvider.findNodeById(nextId);
+      const node = extensionState.treeDataProvider.findNodeById(nextId);
       if (node) {
-        treeView.reveal(node, { select: true, focus: true });
+        extensionState.treeView.reveal(node, { select: true, focus: true });
       }
     }
   );
@@ -1036,17 +1001,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const previousMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.previousMatch',
     () => {
-      if (!treeDataProvider || !treeView) {return;}
-      const ids = treeDataProvider.getVisibleOrderedNodeIds();
+      if (!extensionState.treeDataProvider || !extensionState.treeView) {return;}
+      const ids = extensionState.treeDataProvider.getVisibleOrderedNodeIds();
       if (ids.length === 0) {return;}
-      const sel = treeView.selection[0];
+      const sel = extensionState.treeView.selection[0];
       const currentId = sel?.id;
       const idx = currentId ? ids.indexOf(currentId) : -1;
       const prevIdx = idx > 0 ? idx - 1 : ids.length - 1;
       const prevId = ids[prevIdx];
-      const node = treeDataProvider.findNodeById(prevId);
+      const node = extensionState.treeDataProvider.findNodeById(prevId);
       if (node) {
-        treeView.reveal(node, { select: true, focus: true });
+        extensionState.treeView.reveal(node, { select: true, focus: true });
       }
     }
   );
@@ -1085,7 +1050,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // Handle tree view selection to show properties or rights editor
-  treeView.onDidChangeSelection(async (e) => {
+  extensionState.treeView.onDidChangeSelection(async (e) => {
     if (e.selection.length > 0) {
       const selectedNode = e.selection[0];
       Logger.debug(`Tree selection changed: ${selectedNode.name}`);
@@ -1093,7 +1058,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // For Role nodes, open rights editor instead of properties panel
       if (selectedNode.type === MetadataType.Role && selectedNode.filePath) {
         await vscode.commands.executeCommand('1c-metadata-tree.openRightsEditor', selectedNode);
-      } else if (propertiesProvider) {
+      } else if (extensionState.propertiesProvider) {
         // For all other nodes, show properties panel
         await vscode.commands.executeCommand('1c-metadata-tree.showProperties', selectedNode);
       }
@@ -1151,8 +1116,8 @@ async function invalidateCacheAndReload(configPath: string): Promise<void> {
 }
 
 async function invalidateTreeCacheOnly(configPath: string): Promise<void> {
-  if (extensionContext?.globalStoragePath) {
-    await invalidateTreeCache(extensionContext.globalStoragePath, configPath);
+  if (extensionState.extensionContext?.globalStoragePath) {
+    await invalidateTreeCache(extensionState.extensionContext.globalStoragePath, configPath);
   }
 }
 
@@ -1197,16 +1162,16 @@ function scheduleCoordinatedReload(
   reason: ReloadReason,
   options?: { debounceMs?: number; operationId?: string }
 ): void {
-  if (!reloadCoordinator) {
+  if (!extensionState.reloadCoordinator) {
     void invalidateCacheAndReload(configPath).catch((error) => Logger.error('Fallback reload failed', error));
     return;
   }
-  reloadCoordinator.scheduleReload(configPath, reason, options);
+  extensionState.reloadCoordinator.scheduleReload(configPath, reason, options);
   Logger.info('reload.schedule', {
     configPath,
     reason,
     operationId: options?.operationId,
-    state: reloadCoordinator.getState(configPath),
+    state: extensionState.reloadCoordinator.getState(configPath),
   });
 }
 
@@ -1216,7 +1181,7 @@ function scheduleDeleteReconcile(
   deletedNodeId: string,
   elementName: string
 ): void {
-  const coordinator = reloadCoordinator;
+  const coordinator = extensionState.reloadCoordinator;
   if (!coordinator) {
     void invalidateCacheAndReload(configPath).catch((error) => Logger.error('Fallback delete reconcile failed', error));
     return;
@@ -1268,7 +1233,7 @@ function scheduleDeleteReconcile(
 }
 
 async function verifyNodeDeletedInTree(configPath: string, deletedNodeId: string): Promise<boolean | null> {
-  const provider = treeDataProvider;
+  const provider = extensionState.treeDataProvider;
   if (!provider) {
     return null;
   }
@@ -1287,7 +1252,7 @@ async function verifyNodeDeletedInTree(configPath: string, deletedNodeId: string
  * Load metadata tree from workspace (all configurations in all workspace folders).
  */
 async function loadMetadataTree(): Promise<void> {
-  if (!treeDataProvider) {
+  if (!extensionState.treeDataProvider) {
     Logger.error(MESSAGES.ERROR_PROVIDER_NOT_INITIALIZED);
     return;
   }
@@ -1295,7 +1260,7 @@ async function loadMetadataTree(): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
     vscode.window.showWarningMessage(MESSAGES.NO_WORKSPACE);
-    treeDataProvider.setRootNodes([], undefined);
+    extensionState.treeDataProvider.setRootNodes([], undefined);
     return;
   }
 
@@ -1303,7 +1268,7 @@ async function loadMetadataTree(): Promise<void> {
   const configs = await FormatDetector.findAllConfigurationRoots(workspacePaths);
   if (configs.length === 0) {
     vscode.window.showWarningMessage(MESSAGES.NO_CONFIGURATION);
-    treeDataProvider.setRootNodes([], undefined);
+    extensionState.treeDataProvider.setRootNodes([], undefined);
     return;
   }
 
@@ -1317,7 +1282,7 @@ async function loadMetadataTree(): Promise<void> {
       async (progress) => {
         progress.report({ increment: 0 });
 
-        const storagePath = extensionContext?.globalStoragePath ?? '';
+        const storagePath = extensionState.extensionContext?.globalStoragePath ?? '';
         const roots: TreeNode[] = [];
         const loadContextMap = new Map<string, { configPath: string; format: ConfigFormat }>();
 
@@ -1347,22 +1312,22 @@ async function loadMetadataTree(): Promise<void> {
           progress.report({ increment: (100 * (i + 1)) / configs.length });
         }
 
-        const provider = treeDataProvider!;
+        const provider = extensionState.treeDataProvider!;
         if (roots.length === 1) {
           provider.setRootNode(roots[0], loadContextMap.get(roots[0].id));
         } else {
           provider.setRootNodes(roots, loadContextMap);
         }
 
-        for (const w of metadataWatchers) {
+        for (const w of extensionState.metadataWatchers) {
           w.dispose();
         }
-        metadataWatchers = [];
+        extensionState.metadataWatchers = [];
         const onReload = () => {
           // Backward-compatible callback path: watcher still invokes this shape.
         };
         const onFileChanged = (changedPath: string) => {
-          propertiesProvider?.notifyFileChangedExternally(changedPath);
+          extensionState.propertiesProvider?.notifyFileChangedExternally(changedPath);
         };
         for (const { configPath: configRoot } of configs) {
           const watcher = new MetadataWatcherService();
@@ -1373,8 +1338,8 @@ async function loadMetadataTree(): Promise<void> {
             },
             onFileChanged,
           });
-          metadataWatchers.push(watcher);
-          extensionContext?.subscriptions.push(watcher);
+          extensionState.metadataWatchers.push(watcher);
+          extensionState.extensionContext?.subscriptions.push(watcher);
         }
 
         vscode.window.showInformationMessage(MESSAGES.SUCCESS);
@@ -1399,11 +1364,6 @@ function handleLoadError(error: unknown): void {
  * Deactivate the extension
  */
 export function deactivate(): void {
-  for (const w of metadataWatchers) {
-    w.dispose();
-  }
-  metadataWatchers = [];
-  reloadCoordinator?.dispose();
-  reloadCoordinator = null;
+  extensionState.dispose();
   Logger.info(MESSAGES.EXTENSION_DEACTIVATED);
 }
