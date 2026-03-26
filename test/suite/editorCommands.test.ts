@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { registerEditorCommands } from '../../src/commands/editorCommands';
 import { MetadataType } from '../../src/models/treeNode';
@@ -35,7 +38,7 @@ suite('editorCommands', () => {
     ]);
   });
 
-  test('openTemplatePreview opens mxl preview for Template/CommonTemplate', async () => {
+  test('openTemplatePreview opens mxl preview with resolved Ext/Template.xml URI', async () => {
     const handlers: Record<string, (node: any) => Promise<void> | void> = {};
 
     (vscode.commands as any).registerCommand = (id: string, handler: any) => {
@@ -43,7 +46,6 @@ suite('editorCommands', () => {
       return { dispose: () => undefined };
     };
 
-    // command registration only; we will invoke handler directly
     registerEditorCommands({ state: {} as any });
 
     const executeCalls: Array<{ command: string; args: unknown[] }> = [];
@@ -58,32 +60,44 @@ suite('editorCommands', () => {
       return undefined;
     };
 
-    const templateNode = {
-      id: 'tpl',
-      name: 'tpl',
-      type: MetadataType.Template,
-      properties: {},
-      filePath: 'C:/tmp/template.mxl',
-    };
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), '1cv-ed-cmd-'));
+    try {
+      const bodyPath = path.join(tmpRoot, 'Templates', 'tpl', 'Ext', 'Template.xml');
+      await fs.mkdir(path.dirname(bodyPath), { recursive: true });
+      await fs.writeFile(bodyPath, '<mxl/>', 'utf8');
+      const descPath = path.join(tmpRoot, 'Templates', 'tpl.xml');
 
-    await handlers['1c-metadata-tree.openTemplatePreview'](templateNode);
-    assert.ok(
-      executeCalls.some((c) => c.command === 'vscode.openWith' && c.args[1] === '1c-mxl-preview'),
-      'vscode.openWith called with viewType=1c-mxl-preview'
-    );
+      const templateNode = {
+        id: 'tpl',
+        name: 'tpl',
+        type: MetadataType.Template,
+        properties: {},
+        filePath: descPath,
+      };
 
-    const wrongNode = {
-      id: 'cat',
-      name: 'cat',
-      type: MetadataType.Catalog,
-      properties: {},
-      filePath: 'C:/tmp/catalog.xml',
-    };
+      await handlers['1c-metadata-tree.openTemplatePreview'](templateNode);
 
-    await handlers['1c-metadata-tree.openTemplatePreview'](wrongNode);
-    assert.ok(
-      warningCalls.some((m) => m.includes('Preview макета доступен только')),
-      'warns for non-template node'
-    );
+      const openWith = executeCalls.find((c) => c.command === 'vscode.openWith');
+      assert.ok(openWith, 'vscode.openWith invoked');
+      assert.strictEqual(openWith!.args[1], '1c-mxl-preview');
+      const uri = openWith!.args[0] as vscode.Uri;
+      assert.strictEqual(uri.fsPath, path.normalize(bodyPath));
+
+      const wrongNode = {
+        id: 'cat',
+        name: 'cat',
+        type: MetadataType.Catalog,
+        properties: {},
+        filePath: 'C:/tmp/catalog.xml',
+      };
+
+      await handlers['1c-metadata-tree.openTemplatePreview'](wrongNode);
+      assert.ok(
+        warningCalls.some((m) => m.includes('Preview макета доступен только')),
+        'warns for non-template node'
+      );
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

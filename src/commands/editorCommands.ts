@@ -5,6 +5,7 @@ import { getSelectedNode } from '../helpers/commandHelpers';
 import { Logger } from '../utils/logger';
 import { getFormPaths } from '../formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
+import { resolveTemplatePreviewTargetPath } from './resolveTemplatePreviewTargetPath';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
@@ -158,10 +159,14 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
       }
 
       try {
-        Logger.info(`Opening MXL preview: ${target.filePath}`);
+        const previewPath = await resolveTemplatePreviewTargetPath(
+          target.filePath,
+          target.type as MetadataType.Template | MetadataType.CommonTemplate
+        );
+        Logger.info(`Opening MXL preview: ${previewPath}`);
         await vscode.commands.executeCommand(
           'vscode.openWith',
-          vscode.Uri.file(target.filePath),
+          vscode.Uri.file(previewPath),
           '1c-mxl-preview'
         );
       } catch (err) {

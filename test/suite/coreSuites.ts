@@ -30,6 +30,7 @@ export const coreSuiteFiles: string[] = [
   'suite/optimisticNodeBuilder.test.js',
   'suite/elementCommands.test.js',
   'suite/editorCommands.test.js',
+  'suite/resolveTemplatePreviewTargetPath.test.js',
   'suite/mxlLoaderService.test.js',
   'suite/mxlParser.test.js',
   'suite/mxlPreviewProvider.test.js',
