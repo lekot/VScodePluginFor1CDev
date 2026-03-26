@@ -10,6 +10,13 @@ export interface MxlWebviewHtmlInput {
   model: MxlRenderModel;
 }
 
+export interface MxlParserErrorHtmlInput {
+  webview: vscode.Webview;
+  filePath: string;
+  sourceFormat: string;
+  diagnostics: MxlDiagnostic[];
+}
+
 export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
   const escapedPath = escapeHtml(input.filePath);
   const escapedFormat = escapeHtml(input.sourceFormat);
@@ -169,6 +176,61 @@ export function buildMxlErrorHtml(webview: vscode.Webview, filePath: string, err
     <p class="title">MXL preview error</p>
     <p class="subtitle">Failed to load <code>${escapedPath}</code>.</p>
     <p class="subtitle"><code>${escapedError}</code></p>
+  </div>
+</body>
+</html>`;
+}
+
+export function buildMxlParserErrorHtml(input: MxlParserErrorHtmlInput): string {
+  const escapedPath = escapeHtml(input.filePath);
+  const escapedFormat = escapeHtml(input.sourceFormat);
+  const diagnosticsHtml = renderDiagnostics(input.diagnostics);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${input.webview.cspSource} data:; style-src ${input.webview.cspSource} 'unsafe-inline';">
+  <title>MXL Preview</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: var(--vscode-font-family);
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+    }
+    .container {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 12px 14px;
+      background: var(--vscode-sideBar-background);
+    }
+    .title {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vscode-errorForeground);
+    }
+    .subtitle {
+      margin: 0 0 8px 0;
+      opacity: 0.92;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    code {
+      font-family: var(--vscode-editor-font-family);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <p class="title">MXL preview unavailable</p>
+    <p class="subtitle">File: <code>${escapedPath}</code></p>
+    <p class="subtitle">Detected format: <b>${escapedFormat}</b></p>
+    <p class="subtitle">Parser reported blocking errors. Try opening the source as text/XML and validate encoding/XML structure.</p>
+    ${diagnosticsHtml}
   </div>
 </body>
 </html>`;

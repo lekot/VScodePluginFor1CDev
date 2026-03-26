@@ -1,4 +1,4 @@
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { MxlDiagnostic, MxlRenderCell, MxlRenderModel, MxlRenderTable } from './mxlRenderModel';
 
 const XML_PARSER_OPTIONS = {
@@ -21,6 +21,12 @@ const ROWSPAN_KEYS = ['@_rowspan', 'rowspan', 'RowSpan', 'ВысотаОбъед
 const COLSPAN_KEYS = ['@_colspan', 'colspan', 'ColSpan', 'ШиринаОбъединения'];
 
 const MAX_DIAGNOSTICS = 200;
+const MAX_TABLE_ROWS = 1000;
+const MAX_TABLE_COLS = 1000;
+const MAX_CELL_SPAN = 128;
+const MAX_TOTAL_CELLS_PER_TABLE = 20000;
+const MAX_TABLES_PER_DOCUMENT = 200;
+const MAX_TOTAL_CELLS_PER_DOCUMENT = 100000;
 
 export class MxlParser {
   private readonly parser = new XMLParser(XML_PARSER_OPTIONS);
@@ -36,6 +42,20 @@ export class MxlParser {
     }
 
     let root: unknown;
+    const validation = XMLValidator.validate(xml);
+    if (validation !== true) {
+      return {
+        version: 'v1',
+        tables: [],
+        diagnostics: [
+          {
+            level: 'error',
+            code: 'MXL_XML_PARSE_ERROR',
+            message: `Failed to parse XML: ${validation.err.msg}`,
+          },
+        ],
+      };
+    }
     try {
       root = this.parser.parse(xml);
     } catch (err) {
@@ -58,10 +78,25 @@ export class MxlParser {
       return { version: 'v1', tables: [], diagnostics };
     }
 
-    const tables = tableNodes.map((tableNode, index) =>
-      this.parseTable(tableNode.node, diagnostics, `${tableNode.path}[${index}]`)
-    );
-
+    const tables: MxlRenderTable[] = [];
+    const tablesToParse = Math.min(tableNodes.length, MAX_TABLES_PER_DOCUMENT);
+    let remainingDocumentCellBudget = MAX_TOTAL_CELLS_PER_DOCUMENT;
+    for (let index = 0; index < tablesToParse; index += 1) {
+      const tableNode = tableNodes[index];
+      const parsed = this.parseTable(tableNode.node, diagnostics, `${tableNode.path}[${index}]`, remainingDocumentCellBudget);
+      tables.push(parsed.table);
+      remainingDocumentCellBudget = Math.max(0, remainingDocumentCellBudget - parsed.cellCount);
+      if (parsed.exceededDocumentCellBudget) {
+        break;
+      }
+    }
+    if (tableNodes.length > MAX_TABLES_PER_DOCUMENT) {
+      this.warn(
+        diagnostics,
+        'MXL_DOCUMENT_TABLE_LIMIT_EXCEEDED',
+        `Document table count exceeds safe limit (${MAX_TABLES_PER_DOCUMENT}). Preview is truncated.`
+      );
+    }
     return {
       version: 'v1',
       tables,
@@ -69,22 +104,54 @@ export class MxlParser {
     };
   }
 
-  private parseTable(input: unknown, diagnostics: MxlDiagnostic[], path: string): MxlRenderTable {
+  private parseTable(
+    input: unknown,
+    diagnostics: MxlDiagnostic[],
+    path: string,
+    remainingDocumentCellBudget: number
+  ): { table: MxlRenderTable; cellCount: number; exceededDocumentCellBudget: boolean } {
     const rowNodes = this.getNamedChildren(input, ROW_NODE_NAMES);
     const cells: MxlRenderCell[] = [];
     let inferredMaxRow = 0;
     let inferredMaxCol = 0;
     const occupiedByRow = new Map<number, Set<number>>();
+    let droppedCellsByLimit = false;
 
+    const tableCellLimit = Math.min(MAX_TOTAL_CELLS_PER_TABLE, Math.max(0, remainingDocumentCellBudget));
+    const exceedsTableLimit = (): boolean => cells.length >= tableCellLimit;
     if (rowNodes.length > 0) {
       rowNodes.forEach((rowNode, rowIndex) => {
+        if (exceedsTableLimit()) {
+          droppedCellsByLimit = true;
+          return;
+        }
         const explicitRow = this.getFirstNumber(rowNode.node, ROW_INDEX_KEYS);
-        const row = explicitRow ?? rowIndex;
+        const row = this.clampIndex(explicitRow ?? rowIndex, MAX_TABLE_ROWS - 1);
+        if (typeof explicitRow === 'number' && explicitRow !== row) {
+          this.warn(
+            diagnostics,
+            'MXL_CELL_INDEX_LIMIT_EXCEEDED',
+            `Row index exceeds safe limit (${MAX_TABLE_ROWS - 1}). Index is clamped for preview.`,
+            rowNode.path
+          );
+        }
         const cellNodes = this.getNamedChildren(rowNode.node, CELL_NODE_NAMES);
         let nextColCursor = this.findNextFreeCol(occupiedByRow, row, 0);
         cellNodes.forEach((cellNode) => {
+          if (exceedsTableLimit()) {
+            droppedCellsByLimit = true;
+            return;
+          }
           const explicitCol = this.getFirstNumber(cellNode.node, COL_INDEX_KEYS);
-          const fallbackCol = explicitCol ?? nextColCursor;
+          const fallbackCol = this.clampIndex(explicitCol ?? nextColCursor, MAX_TABLE_COLS - 1);
+          if (typeof explicitCol === 'number' && explicitCol !== fallbackCol) {
+            this.warn(
+              diagnostics,
+              'MXL_CELL_INDEX_LIMIT_EXCEEDED',
+              `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Index is clamped for preview.`,
+              `${rowNode.path}.${cellNode.key}`
+            );
+          }
           const cell = this.parseCell(cellNode.node, row, fallbackCol, diagnostics, `${rowNode.path}.${cellNode.key}`);
           cells.push(cell);
           this.markOccupied(occupiedByRow, cell.row, cell.col, cell.rowspan, cell.colspan);
@@ -103,22 +170,68 @@ export class MxlParser {
       });
     } else {
       const flatCells = this.getNamedChildren(input, CELL_NODE_NAMES);
-      flatCells.forEach((cellNode, index) => {
-        const row = this.getFirstNumber(cellNode.node, ROW_INDEX_KEYS) ?? 0;
-        const col = this.getFirstNumber(cellNode.node, COL_INDEX_KEYS) ?? index;
+      flatCells.forEach((cellNode) => {
+        if (exceedsTableLimit()) {
+          droppedCellsByLimit = true;
+          return;
+        }
+        const row = this.clampIndex(this.getFirstNumber(cellNode.node, ROW_INDEX_KEYS) ?? 0, MAX_TABLE_ROWS - 1);
+        const explicitCol = this.getFirstNumber(cellNode.node, COL_INDEX_KEYS);
+        const col = this.clampIndex(
+          explicitCol ?? this.findNextFreeCol(occupiedByRow, row, 0),
+          MAX_TABLE_COLS - 1
+        );
+        if (typeof explicitCol === 'number' && explicitCol !== col) {
+          this.warn(
+            diagnostics,
+            'MXL_CELL_INDEX_LIMIT_EXCEEDED',
+            `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Index is clamped for preview.`,
+            cellNode.path
+          );
+        }
         const cell = this.parseCell(cellNode.node, row, col, diagnostics, cellNode.path);
         cells.push(cell);
+        this.markOccupied(occupiedByRow, cell.row, cell.col, cell.rowspan, cell.colspan);
         inferredMaxRow = Math.max(inferredMaxRow, cell.row + Math.max(cell.rowspan, 1));
         inferredMaxCol = Math.max(inferredMaxCol, cell.col + Math.max(cell.colspan, 1));
       });
     }
 
+    if (droppedCellsByLimit && tableCellLimit < MAX_TOTAL_CELLS_PER_TABLE) {
+      this.warn(
+        diagnostics,
+        'MXL_DOCUMENT_CELL_LIMIT_EXCEEDED',
+        `Document cell count exceeds safe limit (${MAX_TOTAL_CELLS_PER_DOCUMENT}). Preview is truncated.`,
+        path
+      );
+    } else if (droppedCellsByLimit) {
+      this.warn(
+        diagnostics,
+        'MXL_TABLE_CELL_LIMIT_EXCEEDED',
+        `Table cell count exceeds safe limit (${MAX_TOTAL_CELLS_PER_TABLE}). Preview is truncated.`,
+        path
+      );
+    }
+
+    if (inferredMaxRow > MAX_TABLE_ROWS || inferredMaxCol > MAX_TABLE_COLS) {
+      this.warn(
+        diagnostics,
+        'MXL_TABLE_DIMENSION_LIMIT_EXCEEDED',
+        `Table dimensions exceed safe limit (${MAX_TABLE_ROWS}x${MAX_TABLE_COLS}). Preview is clamped.`,
+        path
+      );
+    }
+
     this.warnUnknownKeys(input, new Set([...ROW_NODE_NAMES, ...CELL_NODE_NAMES]), diagnostics, path, ['#text']);
 
     return {
-      rowCount: inferredMaxRow,
-      colCount: inferredMaxCol,
-      cells,
+      table: {
+        rowCount: Math.min(inferredMaxRow, MAX_TABLE_ROWS),
+        colCount: Math.min(inferredMaxCol, MAX_TABLE_COLS),
+        cells,
+      },
+      cellCount: cells.length,
+      exceededDocumentCellBudget: droppedCellsByLimit && tableCellLimit < MAX_TOTAL_CELLS_PER_TABLE,
     };
   }
 
@@ -129,10 +242,20 @@ export class MxlParser {
     diagnostics: MxlDiagnostic[],
     path: string
   ): MxlRenderCell {
-    const row = this.getFirstNumber(input, ROW_INDEX_KEYS) ?? fallbackRow;
-    const col = this.getFirstNumber(input, COL_INDEX_KEYS) ?? fallbackCol;
-    const rowspan = Math.max(1, this.getFirstNumber(input, ROWSPAN_KEYS) ?? 1);
-    const colspan = Math.max(1, this.getFirstNumber(input, COLSPAN_KEYS) ?? 1);
+    const row = this.clampIndex(this.getFirstNumber(input, ROW_INDEX_KEYS) ?? fallbackRow, MAX_TABLE_ROWS - 1);
+    const col = this.clampIndex(this.getFirstNumber(input, COL_INDEX_KEYS) ?? fallbackCol, MAX_TABLE_COLS - 1);
+    const rawRowspan = this.getFirstNumber(input, ROWSPAN_KEYS) ?? 1;
+    const rawColspan = this.getFirstNumber(input, COLSPAN_KEYS) ?? 1;
+    const rowspan = this.clampSpan(rawRowspan);
+    const colspan = this.clampSpan(rawColspan);
+    if (rawRowspan !== rowspan || rawColspan !== colspan) {
+      this.warn(
+        diagnostics,
+        'MXL_CELL_SPAN_LIMIT_EXCEEDED',
+        `Cell span exceeds safe limit (${MAX_CELL_SPAN}). Span is clamped for preview.`,
+        path
+      );
+    }
 
     const styleNode = this.getNamedChildren(input, STYLE_NODE_NAMES)[0]?.node;
     const style = styleNode ? this.parseStyle(styleNode) : undefined;
@@ -246,7 +369,11 @@ export class MxlParser {
     const found: Array<{ key: string; node: unknown; path: string }> = [];
     this.walk(input, path, (key, value, nodePath) => {
       if (names.has(this.localName(key))) {
-        found.push({ key, node: value, path: nodePath });
+        if (Array.isArray(value)) {
+          value.forEach((item, index) => found.push({ key, node: item, path: `${nodePath}[${index}]` }));
+        } else {
+          found.push({ key, node: value, path: nodePath });
+        }
       }
     });
     return found;
@@ -284,13 +411,14 @@ export class MxlParser {
       return;
     }
 
+    const normalizedSupported = this.toLocalNameSet(supportedNames);
     const allowed = new Set(extraAllowedKeys.map((k) => this.localName(k)));
     for (const key of Object.keys(record)) {
       if (key.startsWith('@_')) {
         continue;
       }
       const keyLocalName = this.localName(key);
-      if (supportedNames.has(keyLocalName) || allowed.has(keyLocalName)) {
+      if (normalizedSupported.has(keyLocalName) || allowed.has(keyLocalName)) {
         continue;
       }
       this.warn(
@@ -327,8 +455,9 @@ export class MxlParser {
     if (!record) {
       return undefined;
     }
+    const normalizedRecord = this.toLocalNameMap(record);
     for (const key of keys) {
-      const value = record[key];
+      const value = record[key] ?? normalizedRecord.get(this.localName(key));
       if (typeof value === 'string') {
         return value;
       }
@@ -344,8 +473,9 @@ export class MxlParser {
     if (!record) {
       return undefined;
     }
+    const normalizedRecord = this.toLocalNameMap(record);
     for (const key of keys) {
-      const value = record[key];
+      const value = record[key] ?? normalizedRecord.get(this.localName(key));
       if (typeof value === 'number' && Number.isFinite(value)) {
         return value;
       }
@@ -384,6 +514,29 @@ export class MxlParser {
       return undefined;
     }
     return value as Record<string, unknown>;
+  }
+
+  private clampIndex(value: number, max: number): number {
+    return Math.max(0, Math.min(max, value));
+  }
+
+  private clampSpan(value: number): number {
+    return Math.max(1, Math.min(MAX_CELL_SPAN, value));
+  }
+
+  private toLocalNameSet(source: Set<string>): Set<string> {
+    return new Set(Array.from(source).map((name) => this.localName(name)));
+  }
+
+  private toLocalNameMap(record: Record<string, unknown>): Map<string, unknown> {
+    const normalized = new Map<string, unknown>();
+    for (const [key, value] of Object.entries(record)) {
+      const local = this.localName(key);
+      if (!normalized.has(local)) {
+        normalized.set(local, value);
+      }
+    }
+    return normalized;
   }
 
   private warn(diagnostics: MxlDiagnostic[], code: string, message: string, path?: string): void {
