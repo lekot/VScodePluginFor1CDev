@@ -10,30 +10,17 @@ import { MetadataParser } from './parsers/metadataParser';
 import { FormatDetector, ConfigFormat } from './parsers/formatDetector';
 import { MetadataWatcherService } from './services/metadataWatcherService';
 import { loadTreeFromCache, saveTreeToCache, clearTreeCache, invalidateTreeCache } from './utils/diskCache';
-import {
-  createElement as doCreateElement,
-  createForm as doCreateForm,
-  duplicateElement as doDuplicateElement,
-  deleteElement as doDeleteElement,
-  renameElement as doRenameElement,
-  findReferencesToElement,
-  isRootObjectCreateInTypeFolder,
-} from './services/elementOperations';
-import { validateElementName } from './utils/elementNameValidator';
 import { TreeNode, MetadataType } from './models/treeNode';
 import { MESSAGES } from './constants/messages';
 import { FormEditorProvider } from './formEditor/formEditorProvider';
 import { getFormPaths } from './formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from './utils/configHelpers';
 import { initDesignerTemplateRepository } from './services/designerTemplateRepository';
-import {
-  ensureR6PlaceholdersForInstanceNode,
-  isTabularSectionColumnsContainer,
-  normalizeEmptyPlaceholderTree,
-} from './utils/treeNormalization';
+import { normalizeEmptyPlaceholderTree } from './utils/treeNormalization';
 import { ReloadCoordinatorService } from './services/reloadCoordinatorService';
 import { ExtensionState } from './state/extensionState';
-import { getSelectedNode, requireDesignerFormat } from './helpers/commandHelpers';
+import { getSelectedNode } from './helpers/commandHelpers';
+import { registerElementCommands } from './commands/elementCommands';
 import {
   DELETE_RECONCILE_ATTEMPTS,
   DELETE_RECONCILE_POLL_MS,
@@ -65,128 +52,6 @@ function extensionRunModeLabel(mode: vscode.ExtensionMode): string {
     default:
       return 'production';
   }
-}
-
-/** Build a lightweight node so create operations can appear in the tree immediately. */
-function buildOptimisticCreatedNode(
-  target: TreeNode,
-  name: string,
-  ctx: { configPath: string; format: ConfigFormat }
-): TreeNode {
-  const trimmed = name.trim();
-  if (isRootObjectCreateInTypeFolder(target)) {
-    const targetDir =
-      target.filePath ??
-      (ctx.format === ConfigFormat.Designer
-        ? path.join(ctx.configPath, target.id)
-        : path.join(ctx.configPath, 'src', target.id));
-    return {
-      id: `${target.id}.${trimmed}`,
-      name: trimmed,
-      type: target.type,
-      parent: target,
-      properties: {},
-      children: [],
-      filePath: path.join(targetDir, `${trimmed}.xml`),
-    };
-  }
-
-  if (isTabularSectionColumnsContainer(target)) {
-    const section = target.parent;
-    const parentXml =
-      section?.filePath && section.filePath.toLowerCase().endsWith('.xml')
-        ? section.filePath
-        : section?.parentFilePath;
-    return {
-      id: section ? `${section.id}.${trimmed}` : `${target.id}.${trimmed}`,
-      name: trimmed,
-      type: MetadataType.Attribute,
-      parent: target,
-      properties: {
-        Name: trimmed,
-        Comment: '',
-        Type: 'String(50)',
-      },
-      children: [],
-      parentFilePath: parentXml,
-    };
-  }
-
-  if (target.type === MetadataType.Attribute) {
-    return {
-      id: `${target.id}.Attribute.${trimmed}`,
-      name: trimmed,
-      type: MetadataType.Attribute,
-      parent: target,
-      properties: {
-        Name: trimmed,
-        Comment: '',
-        Type: 'String(50)',
-      },
-      children: [],
-      parentFilePath: target.parent?.filePath ?? target.parent?.parentFilePath,
-    };
-  }
-
-  if (target.type === MetadataType.TabularSection) {
-    return {
-      id: `${target.id}.TabularSection.${trimmed}`,
-      name: trimmed,
-      type: MetadataType.TabularSection,
-      parent: target,
-      properties: {
-        Name: trimmed,
-        Comment: '',
-      },
-      children: [],
-      parentFilePath: target.parent?.filePath ?? target.parent?.parentFilePath,
-    };
-  }
-
-  if (target.type !== MetadataType.Configuration) {
-    // Object-level create defaults to Attribute in elementOperations.
-    return {
-      id: `${target.id}.Attribute.${trimmed}`,
-      name: trimmed,
-      type: MetadataType.Attribute,
-      parent: target,
-      properties: {
-        Name: trimmed,
-        Comment: '',
-        Type: 'String(50)',
-      },
-      children: [],
-      parentFilePath: target.filePath ?? target.parentFilePath,
-    };
-  }
-
-  return {
-    id: `${target.id}.${trimmed}`,
-    name: trimmed,
-    type: MetadataType.Unknown,
-    parent: target,
-    properties: {},
-    children: [],
-  };
-}
-
-async function optimisticAppendCreatedNode(
-  target: TreeNode,
-  name: string,
-  ctx: { configPath: string; format: ConfigFormat }
-): Promise<void> {
-  const provider = extensionState.treeDataProvider;
-  if (!provider) {return;}
-  const activeTarget = provider.resolveNodeForUi(target);
-  const trimmed = name.trim();
-  const existing = (activeTarget.children || []).some((c) => c.name === trimmed);
-  if (existing) {return;}
-
-  if (!activeTarget.children) {activeTarget.children = [];}
-  const created = buildOptimisticCreatedNode(activeTarget, trimmed, ctx);
-  ensureR6PlaceholdersForInstanceNode(created, ctx);
-  activeTarget.children.push(created);
-  provider.refresh(activeTarget);
 }
 
 /**
@@ -473,204 +338,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   );
 
-  // Create / Duplicate / Delete / Rename — Stage 7 implementation
-  const createElementCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.createElement',
-    async (node?: TreeNode) => {
-      const target = getSelectedNode(extensionState, node);
-      if (!target) {
-        vscode.window.showWarningMessage('Выберите узел типа (Справочники, Документы и т.д.) или объект метаданных.');
-        return;
-      }
-      const designerCtx = await requireDesignerFormat(extensionState, target, {
-        notLoadedMessage: 'Дерево метаданных не загружено. Откройте конфигурацию.',
-        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
-      });
-      if (!designerCtx) {return;}
-      const { configPath, format } = designerCtx;
-      const name = await vscode.window.showInputBox({
-        prompt: 'Имя нового элемента',
-        placeHolder: 'Введите имя (латиница, кириллица, цифры, _)',
-        validateInput: (value) => {
-          const siblingNames = (target.children || []).map((c) => c.name);
-          return validateElementName(value.trim(), siblingNames) ?? undefined;
-        },
-      });
-      if (name === undefined || name.trim() === '') {return;}
-      try {
-        const trimmedName = name.trim();
-        await doCreateElement(target, trimmedName);
-        if (target.id === 'Forms') {
-          vscode.window.showInformationMessage(`Создана форма: ${trimmedName}`);
-        } else {
-          await optimisticAppendCreatedNode(target, trimmedName, { configPath, format });
-          vscode.window.showInformationMessage(`Создан элемент: ${trimmedName}`);
-        }
-        void invalidateCacheAndReload(configPath).catch((err) => {
-          Logger.error('Background reload after create failed', err);
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(msg);
-      }
-    }
-  );
-
-  const createFormCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.createForm',
-    async (node?: TreeNode) => {
-      const target = getSelectedNode(extensionState, node);
-      if (!target) {
-        vscode.window.showWarningMessage('Выберите узел «Forms» в дереве метаданных.');
-        return;
-      }
-      if (target.id !== 'Forms') {
-        vscode.window.showWarningMessage('Создание формы: выберите узел «Forms» (папку форм объекта).');
-        return;
-      }
-      const designerCtx = await requireDesignerFormat(extensionState, target, {
-        notLoadedMessage: 'Дерево метаданных не загружено. Откройте конфигурацию.',
-        nonDesignerMessage: 'Создание форм поддерживается только для формата Designer.',
-      });
-      if (!designerCtx) {return;}
-      const siblingNames = (target.children || []).map((c) => c.name);
-      const name = await vscode.window.showInputBox({
-        prompt: 'Имя новой формы',
-        placeHolder: 'Введите имя формы (латиница, кириллица, цифры, _)',
-        validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
-      });
-      if (name === undefined || name.trim() === '') {return;}
-      try {
-        await doCreateForm(target, name.trim());
-        vscode.window.showInformationMessage(`Создана форма: ${name.trim()}`);
-        await loadMetadataTree();
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(msg);
-      }
-    }
-  );
-
-  const duplicateElementCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.duplicateElement',
-    async (node?: TreeNode) => {
-      const target = getSelectedNode(extensionState, node);
-      if (!target || target.type === MetadataType.Configuration) {
-        return;
-      }
-      const designerCtx = await requireDesignerFormat(extensionState, target, {
-        notLoadedMessage: 'Дерево метаданных не загружено.',
-        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
-      });
-      if (!designerCtx) {return;}
-      const { configPath } = designerCtx;
-      const parent = target.parent;
-      const siblingNames = parent ? (parent.children || []).map((c) => c.name) : [];
-      const newName = await vscode.window.showInputBox({
-        value: `${target.name}Copy`,
-        prompt: 'Имя дубликата',
-        validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
-      });
-      if (newName === undefined || newName.trim() === '') {return;}
-      try {
-        await doDuplicateElement(target, newName.trim());
-        vscode.window.showInformationMessage(`Дублирован элемент: ${newName.trim()}`);
-        await invalidateCacheAndReload(configPath);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(msg);
-      }
-    }
-  );
-
-  const deleteElementCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.deleteElement',
-    async (node?: TreeNode) => {
-      const target = getSelectedNode(extensionState, node);
-      if (!target || target.type === MetadataType.Configuration) {
-        return;
-      }
-      const designerCtx = await requireDesignerFormat(extensionState, target, {
-        notLoadedMessage: 'Дерево метаданных не загружено.',
-        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
-      });
-      if (!designerCtx) {return;}
-      const { configPath } = designerCtx;
-      // For Ext node or child of Ext, count references to the parent metadata object
-      const effectiveNode =
-        target.type === MetadataType.Extension
-          ? target.parent
-          : target.parent?.type === MetadataType.Extension
-            ? target.parent.parent
-            : target;
-      const refs =
-        effectiveNode && effectiveNode.type !== MetadataType.Configuration
-          ? await findReferencesToElement(configPath, effectiveNode.name, effectiveNode.type)
-          : [];
-      const refMsg =
-        refs.length > 0
-          ? ` Найдено ссылок: ${refs.length} (файлов: ${new Set(refs.map((r) => r.filePath)).size}). Удаление может нарушить конфигурацию.`
-          : '';
-      const choice = await vscode.window.showWarningMessage(
-        `Удалить элемент «${target.name}»?${refMsg}`,
-        { modal: true },
-        'Удалить',
-        'Отмена'
-      );
-      if (choice !== 'Удалить') {return;}
-      try {
-        const operationId = `delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        await doDeleteElement(target);
-        try {
-          extensionState.treeDataProvider?.applyOptimisticDelete(target, operationId);
-        } catch (optimisticError) {
-          Logger.error('delete.optimistic.apply.failed', optimisticError);
-          await invalidateCacheAndReload(configPath);
-          vscode.window.showWarningMessage(
-            `Удалён элемент: ${target.name}. Быстрое обновление дерева не удалось; выполнена полная перезагрузка.`
-          );
-          return;
-        }
-
-        scheduleDeleteReconcile(configPath, operationId, target.id, target.name);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(msg);
-      }
-    }
-  );
-
-  const renameElementCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.renameElement',
-    async (node?: TreeNode) => {
-      const target = getSelectedNode(extensionState, node);
-      if (!target || target.type === MetadataType.Configuration) {
-        return;
-      }
-      const designerCtx = await requireDesignerFormat(extensionState, target, {
-        notLoadedMessage: 'Дерево метаданных не загружено.',
-        nonDesignerMessage: 'Операции с элементами поддерживаются только для формата Designer.',
-      });
-      if (!designerCtx) {return;}
-      const { configPath } = designerCtx;
-      const parent = target.parent;
-      const siblingNames = parent ? (parent.children || []).map((c) => c.name).filter((n) => n !== target.name) : [];
-      const newName = await vscode.window.showInputBox({
-        value: target.name,
-        prompt: 'Новое имя',
-        validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
-      });
-      if (newName === undefined || newName.trim() === '' || newName.trim() === target.name) {return;}
-      try {
-        await doRenameElement(target, newName.trim(), configPath);
-        vscode.window.showInformationMessage(`Переименован в: ${newName.trim()}`);
-        await invalidateCacheAndReload(configPath);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        vscode.window.showErrorMessage(msg);
-      }
-    }
-  );
+  const elementCommandDisposables = registerElementCommands({
+    state: extensionState,
+    loadMetadataTree,
+    invalidateCacheAndReload,
+    scheduleDeleteReconcile,
+  });
 
   const copyPathOrNameCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.copyPathOrName',
@@ -1029,11 +702,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     openFormEditorCommand,
     openRightsEditorCommand,
     saveRightsEditorCommand,
-    createElementCommand,
-    createFormCommand,
-    duplicateElementCommand,
-    deleteElementCommand,
-    renameElementCommand,
+    ...elementCommandDisposables,
     copyPathOrNameCommand,
     focusSearchCommand,
     clearSearchCommand,
@@ -1050,7 +719,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   // Handle tree view selection to show properties or rights editor
-  extensionState.treeView.onDidChangeSelection(async (e) => {
+  const treeSelectionDisposable = extensionState.treeView.onDidChangeSelection(async (e) => {
     if (e.selection.length > 0) {
       const selectedNode = e.selection[0];
       Logger.debug(`Tree selection changed: ${selectedNode.name}`);
@@ -1064,6 +733,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }
   });
+  context.subscriptions.push(treeSelectionDisposable);
 
   // Set context for conditional activation
   vscode.commands.executeCommand('setContext', '1c-metadata-tree:enabled', true);

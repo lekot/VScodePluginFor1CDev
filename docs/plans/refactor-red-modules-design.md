@@ -211,6 +211,10 @@ export async function requireDesignerFormat(
 
 **Статус шага 2 (2026-03-26):** `src/helpers/commandHelpers.ts` — `getSelectedNode(state, node?)`, `requireDesignerFormat(state, target, { notLoadedMessage, nonDesignerMessage })`; CRUD-команды create/duplicate/delete/rename и createForm используют `requireDesignerFormat`, все вызовы `getSelectedNode` переведены на передачу `extensionState`.
 
+**Статус шага 3 (2026-03-26):** `src/helpers/optimisticNodeBuilder.ts` — вынесены `buildOptimisticCreatedNode` + `optimisticAppendCreatedNode(state, target, name, ctx)`; `extension.ts` использует helper, инлайн-реализация удалена.
+
+**Статус шага 4 (2026-03-26):** `src/commands/elementCommands.ts` — вынесена регистрация CRUD-команд (`createElement`, `createForm`, `duplicateElement`, `deleteElement`, `renameElement`) в `registerElementCommands({ state, loadMetadataTree, invalidateCacheAndReload, scheduleDeleteReconcile })`; `extension.ts` подключает модуль и добавляет `...elementCommandDisposables` в `context.subscriptions`.
+
 | Шаг | Действие | Риск | Покрытие тестами |
 |-----|----------|------|------------------|
 | 1 | Создать `state/extensionState.ts`, перенести глобальные переменные | Средний | e2e smoke |

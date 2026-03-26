@@ -41,3 +41,4 @@ shcntx_help.db
 ibcmd-local.bat
 .ibcmd-reports/
 suite-report-core.json
+/shcntx_help_db_path.txt
