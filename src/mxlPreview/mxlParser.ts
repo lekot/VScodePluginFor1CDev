@@ -693,7 +693,7 @@ export class MxlParser {
         this.warn(diagnostics, 'MXL_CELL_INDEX_LIMIT_EXCEEDED', `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Remaining cells skipped.`);
         break;
       }
-      const result = this.parseDesignerXmlCell(outerC, row, colCursor, diagnostics);
+      const result = this.parseDesignerXmlCell(outerC, row, colCursor);
       cells.push(result.cell);
       colCursor = result.nextCursor;
     }
@@ -704,8 +704,7 @@ export class MxlParser {
   private parseDesignerXmlCell(
     outerC: unknown,
     row: number,
-    colCursor: number,
-    diagnostics: MxlDiagnostic[]
+    colCursor: number
   ): { cell: MxlRenderCell; nextCursor: number } {
     const record = this.asRecord(outerC);
 
