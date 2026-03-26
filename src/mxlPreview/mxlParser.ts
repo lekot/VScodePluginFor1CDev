@@ -617,6 +617,12 @@ export class MxlParser {
     }
     const rowsItemsToProcess = rowsItems.length > MAX_TABLE_ROWS ? rowsItems.slice(0, MAX_TABLE_ROWS) : rowsItems;
 
+    const fonts = this.parseDesignerFonts(docNode);
+    const formatCssMap = this.parseDesignerFormats(docNode, fonts);
+    const formatCss = formatCssMap.length > 0
+      ? formatCssMap.map((css, i) => `.mxl-f${i}{${css}}`).join('')
+      : undefined;
+
     const cells: MxlRenderCell[] = [];
     let inferredMaxRow = 0;
     let inferredMaxCol = 0;
@@ -628,7 +634,7 @@ export class MxlParser {
         truncated = true;
         break;
       }
-      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics);
+      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics, formatCssMap);
       for (const cell of rowCells) {
         if (totalCells >= MAX_TOTAL_CELLS_PER_TABLE) {
           truncated = true;
@@ -667,6 +673,7 @@ export class MxlParser {
       colCount,
       cells,
       ...(colWidthsPx !== undefined ? { colWidthsPx } : {}),
+      ...(formatCss !== undefined ? { formatCss } : {}),
     };
 
     return { version: 'v1', tables: [table], diagnostics };
@@ -821,7 +828,112 @@ export class MxlParser {
     return hasAny ? widths : undefined;
   }
 
-  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[]): MxlRenderCell[] {
+  private parseDesignerFonts(docNode: Record<string, unknown>): Array<{ faceName: string; heightPt: number; bold: boolean; italic: boolean }> {
+    const rawFont = docNode['font'];
+    const fontNodes: unknown[] = Array.isArray(rawFont)
+      ? rawFont
+      : rawFont !== undefined && rawFont !== null
+        ? [rawFont]
+        : [];
+
+    return fontNodes.map((f) => {
+      const rec = this.asRecord(f);
+      if (!rec) {
+        return { faceName: '', heightPt: 9, bold: false, italic: false };
+      }
+      const faceName = typeof rec['@_faceName'] === 'string' ? rec['@_faceName'] : '';
+      const rawHeight = rec['@_height'];
+      const heightRaw =
+        typeof rawHeight === 'number' && Number.isFinite(rawHeight)
+          ? rawHeight
+          : typeof rawHeight === 'string'
+            ? Number.parseFloat(rawHeight)
+            : NaN;
+      const heightPt = Number.isFinite(heightRaw) ? Math.min(72, Math.max(5, heightRaw)) : 9;
+      const boldRaw = rec['@_bold'];
+      const bold = boldRaw === 'true' || boldRaw === true || boldRaw === 1;
+      const italicRaw = rec['@_italic'];
+      const italic = italicRaw === 'true' || italicRaw === true || italicRaw === 1;
+      return { faceName, heightPt, bold, italic };
+    });
+  }
+
+  private parseDesignerFormats(
+    docNode: Record<string, unknown>,
+    fonts: Array<{ faceName: string; heightPt: number; bold: boolean; italic: boolean }>
+  ): string[] {
+    const rawFormat = docNode['format'];
+    const formatNodes: unknown[] = Array.isArray(rawFormat)
+      ? rawFormat
+      : rawFormat !== undefined && rawFormat !== null
+        ? [rawFormat]
+        : [];
+
+    return formatNodes.map((f) => {
+      const rec = this.asRecord(f);
+      if (!rec) {
+        return '';
+      }
+
+      const declarations: string[] = [];
+
+      const rawFontIdx = rec['font'];
+      const fontIdxRaw =
+        typeof rawFontIdx === 'number' && Number.isFinite(rawFontIdx)
+          ? rawFontIdx
+          : typeof rawFontIdx === 'string'
+            ? Number.parseInt(rawFontIdx, 10)
+            : NaN;
+
+      if (Number.isFinite(fontIdxRaw) && fontIdxRaw >= 0 && fontIdxRaw < fonts.length) {
+        const font = fonts[fontIdxRaw];
+        declarations.push(`font-size:${font.heightPt}pt`);
+        if (font.bold) {
+          declarations.push('font-weight:bold');
+        }
+        if (font.italic) {
+          declarations.push('font-style:italic');
+        }
+        const safeFace = /^[A-Za-z0-9 \-_,']{1,60}$/.test(font.faceName) ? font.faceName : '';
+        if (safeFace) {
+          declarations.push(`font-family:${safeFace}`);
+        }
+      }
+
+      const hAlign = typeof rec['horizontalAlignment'] === 'string' ? rec['horizontalAlignment'].trim().toLowerCase() : '';
+      if (hAlign === 'left') {
+        declarations.push('text-align:left');
+      } else if (hAlign === 'right') {
+        declarations.push('text-align:right');
+      } else if (hAlign === 'center') {
+        declarations.push('text-align:center');
+      } else if (hAlign === 'justify') {
+        declarations.push('text-align:justify');
+      }
+
+      const vAlign = typeof rec['verticalAlignment'] === 'string' ? rec['verticalAlignment'].trim().toLowerCase() : '';
+      if (vAlign === 'top') {
+        declarations.push('vertical-align:top');
+      } else if (vAlign === 'bottom') {
+        declarations.push('vertical-align:bottom');
+      } else if (vAlign === 'center') {
+        declarations.push('vertical-align:middle');
+      }
+
+      const placement = typeof rec['textPlacement'] === 'string' ? rec['textPlacement'].trim() : '';
+      if (placement === 'Wrap') {
+        declarations.push('white-space:normal;overflow-wrap:break-word');
+      } else if (placement === 'Cut') {
+        declarations.push('white-space:nowrap;overflow:hidden');
+      } else if (placement === 'Auto') {
+        declarations.push('white-space:normal');
+      }
+
+      return declarations.join(';');
+    });
+  }
+
+  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[], formatCssMap: string[]): MxlRenderCell[] {
     const record = this.asRecord(rowsItemNode);
     if (!record) {
       return [];
@@ -856,7 +968,7 @@ export class MxlParser {
         this.warn(diagnostics, 'MXL_CELL_INDEX_LIMIT_EXCEEDED', `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Remaining cells skipped.`);
         break;
       }
-      const result = this.parseDesignerXmlCell(outerC, row, colCursor);
+      const result = this.parseDesignerXmlCell(outerC, row, colCursor, formatCssMap);
       cells.push(result.cell);
       colCursor = result.nextCursor;
     }
@@ -867,7 +979,8 @@ export class MxlParser {
   private parseDesignerXmlCell(
     outerC: unknown,
     row: number,
-    colCursor: number
+    colCursor: number,
+    formatCssMap: string[]
   ): { cell: MxlRenderCell; nextCursor: number } {
     const record = this.asRecord(outerC);
 
@@ -893,7 +1006,22 @@ export class MxlParser {
     const col = this.clampIndex(colCursor, MAX_TABLE_COLS - 1);
     const text = this.extractDesignerXmlText(innerC);
 
-    const cell: MxlRenderCell = { row, col, text, rowspan: 1, colspan, style: undefined };
+    let formatClass: string | undefined;
+    const innerRecord = this.asRecord(innerC);
+    if (innerRecord) {
+      const rawF = innerRecord['f'];
+      const fVal =
+        typeof rawF === 'number' && Number.isFinite(rawF)
+          ? rawF
+          : typeof rawF === 'string'
+            ? Number.parseInt(rawF, 10)
+            : NaN;
+      if (Number.isFinite(fVal) && fVal >= 0 && fVal < formatCssMap.length) {
+        formatClass = `mxl-f${fVal}`;
+      }
+    }
+
+    const cell: MxlRenderCell = { row, col, text, rowspan: 1, colspan, style: undefined, ...(formatClass !== undefined ? { formatClass } : {}) };
     return { cell, nextCursor: colCursor + colspan };
   }
 

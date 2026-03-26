@@ -76,7 +76,6 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
       border: 1px solid var(--vscode-panel-border);
       padding: 2px 4px;
       vertical-align: top;
-      font-size: 9px;
       white-space: normal;
       overflow-wrap: break-word;
     }
@@ -281,15 +280,17 @@ function renderTable(table: MxlRenderTable): string {
         continue;
       }
       const attrs = `${cell.rowspan > 1 ? ` rowspan="${cell.rowspan}"` : ''}${cell.colspan > 1 ? ` colspan="${cell.colspan}"` : ''}`;
+      const classAttr = cell.formatClass ? ` class="${cell.formatClass}"` : '';
       const style = buildCellStyle(cell);
-      cols.push(`<td${attrs}${style ? ` style="${style}"` : ''}>${escapeHtml(cell.text)}</td>`);
+      cols.push(`<td${attrs}${classAttr}${style ? ` style="${style}"` : ''}>${escapeHtml(cell.text)}</td>`);
     }
     rows.push(`<tr>${cols.join('')}</tr>`);
   }
 
   const { html: colgroupHtml, totalWidth } = renderColgroup(table, colCount);
   const tableStyle = totalWidth > 0 ? ` style="width:${totalWidth}px"` : '';
-  return `<table class="mxl-table"${tableStyle}>${colgroupHtml}<tbody>${rows.join('')}</tbody></table>`;
+  const formatStyleBlock = table.formatCss ? `<style>${table.formatCss}</style>` : '';
+  return `${formatStyleBlock}<table class="mxl-table"${tableStyle}>${colgroupHtml}<tbody>${rows.join('')}</tbody></table>`;
 }
 
 function indexCells(table: MxlRenderTable): {

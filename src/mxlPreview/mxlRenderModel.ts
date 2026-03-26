@@ -25,6 +25,7 @@ export interface MxlRenderCell {
   rowspan: number;
   colspan: number;
   style?: MxlCellStyle;
+  formatClass?: string;
 }
 
 export interface MxlRenderTable {
@@ -32,6 +33,7 @@ export interface MxlRenderTable {
   colCount: number;
   cells: MxlRenderCell[];
   colWidthsPx?: number[];
+  formatCss?: string;
 }
 
 export interface MxlRenderModel {
