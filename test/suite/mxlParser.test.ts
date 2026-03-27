@@ -785,4 +785,135 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables.length, 0);
     assert.ok(model.diagnostics.some((d) => d.code === 'MXL_TABLE_NOT_FOUND'));
   });
+
+  test('vgRows greater than inferredMaxRow fills gaps', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <vgRows>25</vgRows>
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>17</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].rowCount, 25);
+  });
+
+  test('vgRows less than inferredMaxRow uses inferredMaxRow', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <vgRows>10</vgRows>
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>17</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].rowCount, 18);
+  });
+
+  test('vgRows absent falls back to inferredMaxRow', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>17</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].rowCount, 18);
+  });
+
+  test('vgRows zero falls back to inferredMaxRow', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <vgRows>0</vgRows>
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>17</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].rowCount, 18);
+  });
+
+  test('vgRows negative falls back to inferredMaxRow', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <vgRows>-5</vgRows>
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>17</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].rowCount, 18);
+  });
+
+  test('vgRows non-numeric string falls back to inferredMaxRow', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <vgRows>abc</vgRows>
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>17</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].rowCount, 18);
+  });
 });

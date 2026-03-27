@@ -601,6 +601,13 @@ export class MxlParser {
       return { version: 'v1', tables: [], diagnostics };
     }
 
+    const rawVgRows = docNode['vgRows'];
+    const vgRows = typeof rawVgRows === 'number' && Number.isFinite(rawVgRows)
+      ? rawVgRows
+      : typeof rawVgRows === 'string'
+        ? Number.parseInt(rawVgRows, 10)
+        : undefined;
+
     const rawRowsItem = docNode['rowsItem'];
     const rowsItems: unknown[] = Array.isArray(rawRowsItem)
       ? rawRowsItem
@@ -646,6 +653,13 @@ export class MxlParser {
         inferredMaxCol = Math.max(inferredMaxCol, cell.col + Math.max(cell.colspan, 1));
       }
     }
+
+    const authorativeRowCount = vgRows !== undefined && Number.isFinite(vgRows) && vgRows > 0
+      ? vgRows
+      : undefined;
+    const rowCount = authorativeRowCount !== undefined
+      ? Math.max(authorativeRowCount, inferredMaxRow)
+      : inferredMaxRow;
 
     if (truncated) {
       this.warn(
@@ -696,7 +710,7 @@ export class MxlParser {
     const colWidthsPx = this.buildDesignerColWidths(docNode, colCount);
 
     const table: MxlRenderTable = {
-      rowCount: Math.min(inferredMaxRow, MAX_TABLE_ROWS),
+      rowCount: Math.min(rowCount, MAX_TABLE_ROWS),
       colCount,
       cells,
       ...(colWidthsPx !== undefined ? { colWidthsPx } : {}),
