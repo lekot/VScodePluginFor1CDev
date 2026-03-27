@@ -483,11 +483,37 @@ suite('MxlParser — Designer XML format', () => {
 
     assert.strictEqual(model.tables.length, 1);
     const table = model.tables[0];
+    assert.strictEqual(table.colCount, 18, '<columns><size> should set grid width for sparse rows (common templates)');
     assert.ok(table.colWidthsPx, 'colWidthsPx should be defined');
+    assert.strictEqual(table.colWidthsPx!.length, 18);
     assert.strictEqual(table.colWidthsPx![0], Math.round(130 * 96 / 175));
     assert.strictEqual(table.colWidthsPx![1], Math.round(103 * 96 / 175));
     assert.strictEqual(table.colWidthsPx![0], 71);
     assert.strictEqual(table.colWidthsPx![1], 57);
+  });
+
+  test('Designer XML: inner <c> colspan attribute is honored', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c colspan="3"><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Wide</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>After</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables[0].cells.length, 2);
+    const wide = model.tables[0].cells.find((c) => c.text === 'Wide');
+    assert.ok(wide);
+    assert.strictEqual(wide!.col, 0);
+    assert.strictEqual(wide!.colspan, 3);
+    const after = model.tables[0].cells.find((c) => c.text === 'After');
+    assert.ok(after);
+    assert.strictEqual(after!.col, 3);
   });
 
   test('parses column widths from legacy 1-based columns/format indexes', () => {
@@ -784,6 +810,110 @@ suite('MxlParser — Designer XML format', () => {
 
     assert.strictEqual(model.tables.length, 0);
     assert.ok(model.diagnostics.some((d) => d.code === 'MXL_TABLE_NOT_FOUND'));
+  });
+
+  test('Designer XML: columnsID on row picks the matching columns section for declared width', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <id>narrow</id>
+          <size>5</size>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>1</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <columns>
+          <id>wide</id>
+          <size>12</size>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>1</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <columnsID>wide</columnsID>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>X</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format><width>100</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables[0].colCount, 12, 'grid width should follow <columns><id>wide</id>, not narrow');
+    assert.strictEqual(model.tables[0].colWidthsPx?.length, 12);
+  });
+
+  test('Designer XML: inner <c> ШиринаОбъединения (colspan) is applied', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><ШиринаОбъединения>2</ШиринаОбъединения><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>B</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const a = model.tables[0].cells.find((c) => c.text === 'A');
+    const b = model.tables[0].cells.find((c) => c.text === 'B');
+    assert.ok(a && b);
+    assert.strictEqual(a!.colspan, 2);
+    assert.strictEqual(b!.col, 2);
+  });
+
+  test('Designer XML: inner <c> ColSpan attribute variant', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c ColSpan="2"><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>P</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Q</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const p = model.tables[0].cells.find((c) => c.text === 'P');
+    assert.ok(p);
+    assert.strictEqual(p!.colspan, 2);
+  });
+
+  test('Designer XML: merge region can extend colCount past columns size', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>5</size>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>1</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Only</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <merge><r>0</r><c>4</c><w>2</w></merge>
+        <format><width>50</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    assert.strictEqual(
+      model.tables[0].colCount,
+      7,
+      '<columns><size>5</size> but merge ending past column 6 should widen grid'
+    );
   });
 
 });

@@ -32,6 +32,7 @@ export const coreSuiteFiles: string[] = [
   'suite/editorCommands.test.js',
   'suite/resolveTemplatePreviewTargetPath.test.js',
   'suite/mxlLoaderService.test.js',
+  'suite/gridGeometryResolver.test.js',
   'suite/mxlParser.test.js',
   'suite/mxlPreviewProvider.test.js',
   'suite/mxlWebviewHtml.test.js',

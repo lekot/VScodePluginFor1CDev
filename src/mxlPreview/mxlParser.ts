@@ -1,4 +1,5 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
+import { GridGeometryResolver } from './gridGeometryResolver';
 import { MxlDiagnostic, MxlRenderCell, MxlRenderModel, MxlRenderTable } from './mxlRenderModel';
 
 const XML_PARSER_OPTIONS = {
@@ -23,6 +24,11 @@ const COLSPAN_KEYS = ['@_colspan', 'colspan', 'ColSpan', 'ШиринаОбъед
 const MAX_DIAGNOSTICS = 200;
 const MAX_TABLE_ROWS = 1000;
 const MAX_TABLE_COLS = 1000;
+
+interface DesignerColumnSectionPayload {
+  colMap: Map<number, number>;
+  declaredSize?: number;
+}
 const MAX_CELL_SPAN = 128;
 const MAX_TOTAL_CELLS_PER_TABLE = 20000;
 const MAX_TABLES_PER_DOCUMENT = 200;
@@ -710,16 +716,30 @@ export class MxlParser {
       inferredMaxCol = Math.max(inferredMaxCol, cell.col + cs);
     }
 
+    const columnSections = this.collectDesignerColumnSections(docNode);
+    const pickedColumns = this.pickDesignerColumnSection(docNode, columnSections);
+    const columnsMaxOneBased =
+      pickedColumns && pickedColumns.colMap.size > 0 ? Math.max(...pickedColumns.colMap.keys()) : undefined;
+
+    const { rowCount, colCount } = GridGeometryResolver.resolveDesignerTableGrid({
+      inferredMaxRow,
+      inferredMaxCol,
+      mergeMap,
+      columnsDeclaredSize: pickedColumns?.declaredSize,
+      columnsMaxOneBasedIndex: columnsMaxOneBased,
+      maxTableRows: MAX_TABLE_ROWS,
+      maxTableCols: MAX_TABLE_COLS,
+    });
+
     const formatCssMap = this.formatsToCss(formats, fonts);
     const formatCss = formatCssMap.length > 0
       ? formatCssMap.map((css, i) => `table.mxl-table td.mxl-f${i}{${css}}`).join('')
       : undefined;
 
-    const colCount = Math.min(inferredMaxCol, MAX_TABLE_COLS);
-    const colWidthsPx = this.buildDesignerColWidths(docNode, colCount);
+    const colWidthsPx = this.buildDesignerColWidths(docNode, colCount, pickedColumns?.colMap);
 
     const table: MxlRenderTable = {
-      rowCount: Math.min(inferredMaxRow, MAX_TABLE_ROWS),
+      rowCount,
       colCount,
       cells,
       ...(colWidthsPx !== undefined ? { colWidthsPx } : {}),
@@ -986,76 +1006,9 @@ export class MxlParser {
   }
 
   /**
-   * Prefer the <columns> section whose <id> matches the most-used <columnsID> on rows (tabular documents).
+   * Parse all <columns> sections: column format map plus optional <size> (grid width in columns).
    */
-  private pickDesignerColumnSection(
-    docNode: Record<string, unknown>,
-    sectionMap: Map<string | undefined, Map<number, number>>
-  ): Map<number, number> | undefined {
-    if (sectionMap.size === 0) {
-      return undefined;
-    }
-    const rawRowsItem = docNode['rowsItem'];
-    const rowsItems: unknown[] = Array.isArray(rawRowsItem)
-      ? rawRowsItem
-      : rawRowsItem !== undefined && rawRowsItem !== null
-        ? [rawRowsItem]
-        : [];
-    const counts = new Map<string, number>();
-    for (const item of rowsItems) {
-      const rec = this.asRecord(item);
-      const row = this.asRecord(rec?.['row']);
-      const cidRaw = row?.['columnsID'];
-      if (typeof cidRaw === 'string' && cidRaw.trim().length > 0) {
-        const cid = cidRaw.trim();
-        if (sectionMap.has(cid)) {
-          counts.set(cid, (counts.get(cid) ?? 0) + 1);
-        }
-      }
-    }
-    let bestId: string | undefined;
-    let bestN = 0;
-    for (const [id, n] of counts) {
-      if (n > bestN) {
-        bestN = n;
-        bestId = id;
-      }
-    }
-    if (bestId !== undefined) {
-      return sectionMap.get(bestId);
-    }
-    return sectionMap.get(undefined) ?? sectionMap.values().next().value;
-  }
-
-  private buildDesignerColWidths(docNode: Record<string, unknown>, colCount: number): number[] | undefined {
-    // Collect formats (1-based in XML, stored 0-based here)
-    const rawFormat = docNode['format'];
-    const formatNodes: unknown[] = Array.isArray(rawFormat)
-      ? rawFormat
-      : rawFormat !== undefined && rawFormat !== null
-        ? [rawFormat]
-        : [];
-
-    if (formatNodes.length === 0) {
-      return undefined;
-    }
-
-    const formats: Array<{ width?: number }> = formatNodes.map((f) => {
-      const rec = this.asRecord(f);
-      if (!rec) {
-        return {};
-      }
-      const rawWidth = rec['width'];
-      const width =
-        typeof rawWidth === 'number' && Number.isFinite(rawWidth)
-          ? rawWidth
-          : typeof rawWidth === 'string'
-            ? Number.parseFloat(rawWidth)
-            : NaN;
-      return { width: Number.isFinite(width) && width > 0 ? width : undefined };
-    });
-
-    // Collect columns sections: id → Map<colIndex(1-based), formatIndex(1-based)>
+  private collectDesignerColumnSections(docNode: Record<string, unknown>): Map<string | undefined, DesignerColumnSectionPayload> {
     const rawColumns = docNode['columns'];
     const columnsSections: unknown[] = Array.isArray(rawColumns)
       ? rawColumns
@@ -1063,12 +1016,7 @@ export class MxlParser {
         ? [rawColumns]
         : [];
 
-    if (columnsSections.length === 0) {
-      return undefined;
-    }
-
-    // Map: sectionId (string) or undefined (default section) → colIndex → formatIndex
-    const sectionMap = new Map<string | undefined, Map<number, number>>();
+    const sectionMap = new Map<string | undefined, DesignerColumnSectionPayload>();
 
     for (const section of columnsSections) {
       const secRec = this.asRecord(section);
@@ -1078,6 +1026,21 @@ export class MxlParser {
       const idVal = secRec['id'];
       const sectionId: string | undefined =
         typeof idVal === 'string' && idVal.trim().length > 0 ? idVal.trim() : undefined;
+
+      if (sectionMap.has(sectionId)) {
+        continue;
+      }
+
+      const rawSize = secRec['size'];
+      let declaredSize: number | undefined;
+      if (typeof rawSize === 'number' && Number.isFinite(rawSize) && rawSize > 0) {
+        declaredSize = Math.floor(rawSize);
+      } else if (typeof rawSize === 'string') {
+        const p = Number.parseInt(rawSize, 10);
+        if (Number.isFinite(p) && p > 0) {
+          declaredSize = p;
+        }
+      }
 
       const rawBase = secRec['base'];
       const base =
@@ -1133,13 +1096,94 @@ export class MxlParser {
         colMap.set(normalizedColIndex, normalizedFormatIndex);
       }
 
-      if (!sectionMap.has(sectionId)) {
-        sectionMap.set(sectionId, colMap);
-      }
+      sectionMap.set(sectionId, { colMap, ...(declaredSize !== undefined ? { declaredSize } : {}) });
     }
 
-    const pickedSection = this.pickDesignerColumnSection(docNode, sectionMap);
+    return sectionMap;
+  }
+
+  /**
+   * Prefer the <columns> section whose <id> matches the most-used <columnsID> on rows (tabular documents).
+   */
+  private pickDesignerColumnSection(
+    docNode: Record<string, unknown>,
+    sectionMap: Map<string | undefined, DesignerColumnSectionPayload>
+  ): DesignerColumnSectionPayload | undefined {
+    if (sectionMap.size === 0) {
+      return undefined;
+    }
+    const rawRowsItem = docNode['rowsItem'];
+    const rowsItems: unknown[] = Array.isArray(rawRowsItem)
+      ? rawRowsItem
+      : rawRowsItem !== undefined && rawRowsItem !== null
+        ? [rawRowsItem]
+        : [];
+    const counts = new Map<string, number>();
+    for (const item of rowsItems) {
+      const rec = this.asRecord(item);
+      const row = this.asRecord(rec?.['row']);
+      const cidRaw = row?.['columnsID'];
+      if (typeof cidRaw === 'string' && cidRaw.trim().length > 0) {
+        const cid = cidRaw.trim();
+        if (sectionMap.has(cid)) {
+          counts.set(cid, (counts.get(cid) ?? 0) + 1);
+        }
+      }
+    }
+    let bestId: string | undefined;
+    let bestN = 0;
+    for (const [id, n] of counts) {
+      if (n > bestN) {
+        bestN = n;
+        bestId = id;
+      }
+    }
+    if (bestId !== undefined) {
+      return sectionMap.get(bestId);
+    }
+    return sectionMap.get(undefined) ?? sectionMap.values().next().value;
+  }
+
+  private buildDesignerColWidths(
+    docNode: Record<string, unknown>,
+    colCount: number,
+    precomputedPickedColMap?: Map<number, number>
+  ): number[] | undefined {
+    // Collect formats (1-based in XML, stored 0-based here)
+    const rawFormat = docNode['format'];
+    const formatNodes: unknown[] = Array.isArray(rawFormat)
+      ? rawFormat
+      : rawFormat !== undefined && rawFormat !== null
+        ? [rawFormat]
+        : [];
+
+    if (formatNodes.length === 0) {
+      return undefined;
+    }
+
+    const formats: Array<{ width?: number }> = formatNodes.map((f) => {
+      const rec = this.asRecord(f);
+      if (!rec) {
+        return {};
+      }
+      const rawWidth = rec['width'];
+      const width =
+        typeof rawWidth === 'number' && Number.isFinite(rawWidth)
+          ? rawWidth
+          : typeof rawWidth === 'string'
+            ? Number.parseFloat(rawWidth)
+            : NaN;
+      return { width: Number.isFinite(width) && width > 0 ? width : undefined };
+    });
+
+    let pickedSection: Map<number, number> | undefined = precomputedPickedColMap;
     if (!pickedSection) {
+      const sectionMap = this.collectDesignerColumnSections(docNode);
+      const picked = this.pickDesignerColumnSection(docNode, sectionMap);
+      pickedSection = picked?.colMap;
+    }
+
+    if (!pickedSection || pickedSection.size === 0) {
       return undefined;
     }
 
@@ -1330,6 +1374,10 @@ export class MxlParser {
     let formatClass: string | undefined;
     const innerRecord = this.asRecord(innerC);
     if (innerRecord) {
+      const rawColspanFromInner = this.getFirstNumber(innerRecord, COLSPAN_KEYS);
+      if (rawColspanFromInner !== undefined && rawColspanFromInner > 0) {
+        colspan = this.clampSpan(rawColspanFromInner);
+      }
       const rawF = innerRecord['f'];
       const fVal =
         typeof rawF === 'number' && Number.isFinite(rawF)
