@@ -2,15 +2,18 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { MetadataType } from '../models/treeNode';
 
-function extBodyFileName(type: MetadataType.Template | MetadataType.CommonTemplate): string {
-  return type === MetadataType.CommonTemplate ? 'CommonTemplate.xml' : 'Template.xml';
+/** Body filenames: canonical under `Ext/`, alternate — same folder as metadata (`<name>/Template.xml` без `Ext/`). */
+function bodyFileNamesForType(type: MetadataType.Template | MetadataType.CommonTemplate): string[] {
+  if (type === MetadataType.Template) {
+    return ['Template.xml'];
+  }
+  return ['Template.xml', 'CommonTemplate.xml'];
 }
 
 /**
- * Resolves the on-disk path to open for MXL preview: prefer the template body under
- * `.../<name>/Ext/Template.xml` (or `Ext/CommonTemplate.xml` for common templates)
- * when the tree points at a description XML (e.g. `Templates/<name>.xml` or
- * `Templates/<name>/Template.xml`).
+ * Resolves the on-disk path to open for MXL preview when the tree points at a description XML.
+ * Tries in order: `.../<name>/Ext/<body>.xml` (канон из спеки), затем `.../<name>/<body>.xml`
+ * (вариант из реальных выгрузок / формулировки issue: не `MaketTemplate.Xml`, а `MaketTemplate/Template.xml`).
  */
 export async function resolveTemplatePreviewTargetPath(
   filePath: string,
@@ -23,7 +26,7 @@ export async function resolveTemplatePreviewTargetPath(
   const normalized = path.normalize(filePath);
   const dir = path.dirname(normalized);
   const base = path.basename(normalized);
-  const extName = extBodyFileName(type);
+  const names = bodyFileNamesForType(type);
 
   if (path.basename(dir).toLowerCase() === 'ext') {
     const b = base.toLowerCase();
@@ -36,12 +39,18 @@ export async function resolveTemplatePreviewTargetPath(
   const lower = base.toLowerCase();
 
   if (lower === 'template.xml' || lower === 'commontemplate.xml') {
-    candidates.push(path.join(dir, 'Ext', extName));
     const stemFromDescriptor = base.slice(0, -'.xml'.length);
-    candidates.push(path.join(dir, stemFromDescriptor, 'Ext', extName));
+    for (const fn of names) {
+      candidates.push(path.join(dir, 'Ext', fn));
+      candidates.push(path.join(dir, stemFromDescriptor, 'Ext', fn));
+      candidates.push(path.join(dir, stemFromDescriptor, fn));
+    }
   } else if (lower.endsWith('.xml')) {
     const stem = base.slice(0, -'.xml'.length);
-    candidates.push(path.join(dir, stem, 'Ext', extName));
+    for (const fn of names) {
+      candidates.push(path.join(dir, stem, 'Ext', fn));
+      candidates.push(path.join(dir, stem, fn));
+    }
   }
 
   for (const candidate of candidates) {

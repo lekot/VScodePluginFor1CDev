@@ -30,6 +30,16 @@ suite('resolveTemplatePreviewTargetPath', () => {
     assert.strictEqual(resolved, path.normalize(body));
   });
 
+  test('Templates/<name>.xml → .../<name>/Template.xml when body exists without Ext (issue-style layout)', async () => {
+    const body = path.join(tmpRoot, 'Templates', 'MaketTemplate', 'Template.xml');
+    await fs.mkdir(path.dirname(body), { recursive: true });
+    await fs.writeFile(body, '<mxl/>', 'utf8');
+
+    const desc = path.join(tmpRoot, 'Templates', 'MaketTemplate.xml');
+    const resolved = await resolveTemplatePreviewTargetPath(desc, MetadataType.Template);
+    assert.strictEqual(resolved, path.normalize(body));
+  });
+
   test('Templates/<name>/Template.xml → .../<name>/Ext/Template.xml when body exists', async () => {
     const body = path.join(tmpRoot, 'Templates', 'MyTpl', 'Ext', 'Template.xml');
     await fs.mkdir(path.dirname(body), { recursive: true });
@@ -62,6 +72,16 @@ suite('resolveTemplatePreviewTargetPath', () => {
 
   test('CommonTemplates/<name>.xml → .../<name>/Ext/CommonTemplate.xml when body exists', async () => {
     const body = path.join(tmpRoot, 'CommonTemplates', 'Shared', 'Ext', 'CommonTemplate.xml');
+    await fs.mkdir(path.dirname(body), { recursive: true });
+    await fs.writeFile(body, '<mxl/>', 'utf8');
+
+    const desc = path.join(tmpRoot, 'CommonTemplates', 'Shared.xml');
+    const resolved = await resolveTemplatePreviewTargetPath(desc, MetadataType.CommonTemplate);
+    assert.strictEqual(resolved, path.normalize(body));
+  });
+
+  test('CommonTemplates/<name>.xml → .../<name>/Ext/Template.xml when only Designer-style body exists', async () => {
+    const body = path.join(tmpRoot, 'CommonTemplates', 'Shared', 'Ext', 'Template.xml');
     await fs.mkdir(path.dirname(body), { recursive: true });
     await fs.writeFile(body, '<mxl/>', 'utf8');
 
