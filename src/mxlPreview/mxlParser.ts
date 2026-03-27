@@ -620,7 +620,7 @@ export class MxlParser {
     const fonts = this.parseDesignerFonts(docNode);
     const formatCssMap = this.parseDesignerFormats(docNode, fonts);
     const formatCss = formatCssMap.length > 0
-      ? formatCssMap.map((css, i) => `.mxl-f${i}{${css}}`).join('')
+      ? formatCssMap.map((css, i) => `table.mxl-table td.mxl-f${i}{${css}}`).join('')
       : undefined;
 
     const cells: MxlRenderCell[] = [];
@@ -922,11 +922,11 @@ export class MxlParser {
 
       const placement = typeof rec['textPlacement'] === 'string' ? rec['textPlacement'].trim() : '';
       if (placement === 'Wrap') {
-        declarations.push('white-space:normal;overflow-wrap:break-word');
+        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:normal');
       } else if (placement === 'Cut') {
-        declarations.push('white-space:nowrap;overflow:hidden');
+        declarations.push('white-space:nowrap;overflow:hidden;overflow-wrap:normal;word-break:normal');
       } else if (placement === 'Auto') {
-        declarations.push('white-space:normal');
+        declarations.push('white-space:normal;overflow-wrap:normal;word-break:normal');
       }
 
       return declarations.join(';');

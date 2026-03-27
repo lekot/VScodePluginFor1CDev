@@ -533,10 +533,44 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables.length, 1);
     const table = model.tables[0];
     assert.ok(table.formatCss, 'formatCss should be defined');
-    assert.ok(table.formatCss!.includes('.mxl-f0{'), 'formatCss should contain .mxl-f0{');
+    assert.ok(
+      table.formatCss!.includes('table.mxl-table td.mxl-f0{'),
+      'formatCss should use td-specific selector for placement/alignment'
+    );
+    assert.ok(table.formatCss!.includes('overflow-wrap:break-word'), 'Wrap should enable break-word');
     assert.strictEqual(table.cells.length, 1);
     assert.strictEqual(table.cells[0].formatClass, 'mxl-f0');
     assert.strictEqual(table.cells[0].text, 'Hello');
+  });
+
+  test('Designer XML: Cut and Auto textPlacement emit explicit overflow-wrap', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <font faceName="Arial" height="8" bold="false" italic="false"/>
+        <format><font>0</font><textPlacement>Cut</textPlacement></format>
+        <format><font>0</font><textPlacement>Auto</textPlacement></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>X</v8:content></v8:item></tl></c></c>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Y</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+    const css = model.tables[0].formatCss!;
+    const cutBlock = css.split('table.mxl-table td.mxl-f1{')[0];
+    const autoBlock = css.split('table.mxl-table td.mxl-f1{')[1] ?? '';
+    assert.ok(cutBlock.includes('table.mxl-table td.mxl-f0{'));
+    assert.ok(cutBlock.includes('white-space:nowrap'));
+    assert.ok(cutBlock.includes('overflow:hidden'));
+    assert.ok(cutBlock.includes('overflow-wrap:normal'));
+    assert.ok(autoBlock.includes('white-space:normal'));
+    assert.ok(autoBlock.includes('overflow-wrap:normal'));
+    assert.ok(!autoBlock.includes('overflow-wrap:break-word'));
   });
 
   test('root without required xmlns falls back to old path (MXL_TABLE_NOT_FOUND)', () => {

@@ -74,10 +74,11 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
     }
     table.mxl-table td {
       border: 1px solid var(--vscode-panel-border);
-      padding: 2px 4px;
+      padding: 3px 6px;
       vertical-align: top;
       white-space: normal;
-      overflow-wrap: break-word;
+      overflow-wrap: normal;
+      word-break: normal;
     }
     table.mxl-table td.empty {
       color: var(--vscode-descriptionForeground);
