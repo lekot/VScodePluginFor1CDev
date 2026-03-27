@@ -656,6 +656,26 @@ export class MxlParser {
     }
 
     const mergeMap = this.buildMergeMap(docNode);
+    const anchorKeys = new Set(cells.map((cell) => `${cell.row}:${cell.col}`));
+    for (const [key, span] of mergeMap.entries()) {
+      if (!anchorKeys.has(key)) {
+        const parts = key.split(':');
+        const r = Number(parts[0]);
+        const c = Number(parts[1]);
+        if (Number.isFinite(r) && Number.isFinite(c)) {
+          const rowspan = this.clampSpan(span.rowspan);
+          const colspan = this.clampSpan(span.colspan);
+          cells.push({
+            row: this.clampIndex(r, MAX_TABLE_ROWS - 1),
+            col: this.clampIndex(c, MAX_TABLE_COLS - 1),
+            text: '',
+            rowspan,
+            colspan,
+          });
+          anchorKeys.add(key);
+        }
+      }
+    }
     for (const cell of cells) {
       const key = `${cell.row}:${cell.col}`;
       const merge = mergeMap.get(key);
@@ -663,6 +683,12 @@ export class MxlParser {
         cell.colspan = this.clampSpan(merge.colspan);
         cell.rowspan = this.clampSpan(merge.rowspan);
       }
+    }
+    for (const cell of cells) {
+      const rs = Math.max(1, cell.rowspan ?? 1);
+      const cs = Math.max(1, cell.colspan ?? 1);
+      inferredMaxRow = Math.max(inferredMaxRow, cell.row + rs);
+      inferredMaxCol = Math.max(inferredMaxCol, cell.col + cs);
     }
 
     const colCount = Math.min(inferredMaxCol, MAX_TABLE_COLS);

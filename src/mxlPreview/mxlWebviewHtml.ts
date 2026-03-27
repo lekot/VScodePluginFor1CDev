@@ -310,7 +310,16 @@ function indexCells(table: MxlRenderTable): {
   const sorted = [...table.cells].sort((a, b) => {
     const aSpan = (a.rowspan ?? 1) * (a.colspan ?? 1);
     const bSpan = (b.rowspan ?? 1) * (b.colspan ?? 1);
-    return bSpan - aSpan; // larger spans first so they win
+    if (bSpan !== aSpan) {
+      return bSpan - aSpan; // larger spans first so they win
+    }
+    if (a.row !== b.row) {
+      return a.row - b.row;
+    }
+    if (a.col !== b.col) {
+      return a.col - b.col;
+    }
+    return 0;
   });
 
   sorted.forEach((cell) => {

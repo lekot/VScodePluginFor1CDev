@@ -507,6 +507,29 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables[0].colWidthsPx, undefined);
   });
 
+  test('Designer XML: merge without cell at top-left gets synthetic empty anchor', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item><v8:lang>ru</v8:lang><v8:content>Left</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <merge><r>0</r><c>5</c><w>1</w></merge>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const table = model.tables[0];
+    const at = (r: number, c: number) => table.cells.find((cell) => cell.row === r && cell.col === c);
+    assert.ok(at(0, 0));
+    assert.strictEqual(at(0, 0)!.text, 'Left');
+    const syn = at(0, 5);
+    assert.ok(syn, 'synthetic anchor at merge top-left');
+    assert.strictEqual(syn!.text, '');
+    assert.strictEqual(syn!.colspan, 2);
+    assert.strictEqual(syn!.rowspan, 1);
+  });
+
   test('Designer XML: merge section sets colspan and rowspan', () => {
     const parser = new MxlParser();
     const xml = `
