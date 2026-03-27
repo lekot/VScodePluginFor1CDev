@@ -490,6 +490,88 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(table.colWidthsPx![1], 57);
   });
 
+  test('parses column widths from legacy 1-based columns/format indexes', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>1</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>1</f></c></c></row>
+        </rowsItem>
+        <format><width>130</width></format>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].colWidthsPx?.[0], Math.round(130 * 96 / 175));
+  });
+
+  test('parses column widths when columns section uses <base>1 with 0-based index/formatIndex', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <base>1</base>
+          <columnsItem>
+            <index>0</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>1</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f></c></c>
+            <c><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+        <format><width>130</width></format>
+        <format><width>103</width></format>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables.length, 1);
+    const table = model.tables[0];
+    assert.ok(table.colWidthsPx, 'colWidthsPx should be defined');
+    assert.strictEqual(table.colWidthsPx![0], Math.round(130 * 96 / 175));
+    assert.strictEqual(table.colWidthsPx![1], Math.round(103 * 96 / 175));
+  });
+
+  test('invalid columns base falls back to legacy 1-based indexes', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <base>oops</base>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>1</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>1</f></c></c></row>
+        </rowsItem>
+        <format><width>130</width></format>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables.length, 1);
+    assert.strictEqual(model.tables[0].colWidthsPx?.[0], Math.round(130 * 96 / 175));
+  });
+
   test('colWidthsPx is undefined when no columns section present', () => {
     const parser = new MxlParser();
     const xml = `
@@ -607,6 +689,7 @@ suite('MxlParser — Designer XML format', () => {
       'formatCss should use td-specific selector for placement/alignment'
     );
     assert.ok(table.formatCss!.includes('overflow-wrap:break-word'), 'Wrap should enable break-word');
+    assert.ok(!table.formatCss!.includes('overflow-wrap:normal'), 'Wrap should not use normal (text overflows)');
     assert.strictEqual(table.cells.length, 1);
     assert.strictEqual(table.cells[0].formatClass, 'mxl-f0');
     assert.strictEqual(table.cells[0].text, 'Hello');

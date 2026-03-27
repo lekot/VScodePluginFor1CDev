@@ -69,7 +69,7 @@ suite('mxlWebviewHtml', () => {
     });
 
     assert.ok(html.includes('Table 1'));
-    assert.ok(html.includes('<table class="mxl-table">'));
+    assert.ok(html.includes('<table class="mxl-table" style="table-layout:auto">'));
     assert.ok(html.includes('<td>A1</td>'));
     assert.ok(html.includes('<td colspan="2">B1</td>'));
     assert.ok(html.includes('<td class="empty"></td>'));
@@ -149,5 +149,33 @@ suite('mxlWebviewHtml', () => {
     const tdCount = (html.match(/<td/g) ?? []).length;
     assert.strictEqual(tdCount, 3);
     assert.ok(!html.includes('class="empty"'));
+  });
+
+  test('uses fixed layout and width when colWidthsPx are present', () => {
+    const model: MxlRenderModel = {
+      version: 'v1',
+      tables: [
+        {
+          rowCount: 1,
+          colCount: 2,
+          colWidthsPx: [80, 120],
+          cells: [
+            { row: 0, col: 0, text: 'A', rowspan: 1, colspan: 1 },
+            { row: 0, col: 1, text: 'B', rowspan: 1, colspan: 1 },
+          ],
+        },
+      ],
+      diagnostics: [],
+    };
+
+    const html = buildMxlPreviewHtml({
+      webview: mockWebview,
+      filePath: 'table/file.mxl',
+      sourceFormat: 'mxl',
+      model,
+    });
+
+    assert.ok(html.includes('<colgroup><col style="width:80px"><col style="width:120px"></colgroup>'));
+    assert.ok(html.includes('<table class="mxl-table" style="table-layout:fixed;width:200px">'));
   });
 });

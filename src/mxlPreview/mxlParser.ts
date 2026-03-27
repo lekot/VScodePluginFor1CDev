@@ -886,6 +886,15 @@ export class MxlParser {
       const sectionId: string | undefined =
         typeof idVal === 'string' && idVal.trim().length > 0 ? idVal.trim() : undefined;
 
+      const rawBase = secRec['base'];
+      const base =
+        typeof rawBase === 'number' && Number.isFinite(rawBase)
+          ? rawBase
+          : typeof rawBase === 'string'
+            ? Number.parseInt(rawBase, 10)
+            : NaN;
+      const indexBaseShift = Number.isFinite(base) ? base : 0;
+
       const colMap = new Map<number, number>();
 
       const rawItems = secRec['columnsItem'];
@@ -907,7 +916,8 @@ export class MxlParser {
             : typeof rawIdx === 'string'
               ? Number.parseInt(rawIdx, 10)
               : NaN;
-        if (!Number.isFinite(colIndex) || colIndex < 1) {
+        const normalizedColIndex = colIndex + indexBaseShift;
+        if (!Number.isFinite(normalizedColIndex) || normalizedColIndex < 1) {
           continue;
         }
 
@@ -922,11 +932,12 @@ export class MxlParser {
             : typeof rawFmtIdx === 'string'
               ? Number.parseInt(rawFmtIdx, 10)
               : NaN;
-        if (!Number.isFinite(formatIndex) || formatIndex < 1) {
+        const normalizedFormatIndex = formatIndex + indexBaseShift;
+        if (!Number.isFinite(normalizedFormatIndex) || normalizedFormatIndex < 1) {
           continue;
         }
 
-        colMap.set(colIndex, formatIndex);
+        colMap.set(normalizedColIndex, normalizedFormatIndex);
       }
 
       if (!sectionMap.has(sectionId)) {

@@ -70,7 +70,6 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
     }
     table.mxl-table {
       border-collapse: collapse;
-      table-layout: fixed;
     }
     table.mxl-table td {
       border: 1px solid var(--vscode-panel-border);
@@ -289,7 +288,10 @@ function renderTable(table: MxlRenderTable): string {
   }
 
   const { html: colgroupHtml, totalWidth } = renderColgroup(table, colCount);
-  const tableStyle = totalWidth > 0 ? ` style="width:${totalWidth}px"` : '';
+  const tableLayout = totalWidth > 0 ? 'fixed' : 'auto';
+  const tableStyle = totalWidth > 0
+    ? ` style="table-layout:${tableLayout};width:${totalWidth}px"`
+    : ` style="table-layout:${tableLayout}"`;
   const formatStyleBlock = table.formatCss ? `<style>${table.formatCss}</style>` : '';
   return `${formatStyleBlock}<table class="mxl-table"${tableStyle}>${colgroupHtml}<tbody>${rows.join('')}</tbody></table>`;
 }
