@@ -690,23 +690,23 @@ suite('MxlParser — Designer XML format', () => {
     );
     assert.ok(table.formatCss!.includes('overflow-wrap:break-word'), 'Wrap should enable break-word');
     assert.ok(!table.formatCss!.includes('overflow-wrap:normal'), 'Wrap should not use normal (text overflows)');
+    assert.ok(table.formatCss!.includes('word-break:break-word'), 'Wrap should enable word-break:break-word');
+    assert.ok(table.formatCss!.includes('overflow:visible'), 'Wrap should enable overflow:visible');
     assert.strictEqual(table.cells.length, 1);
     assert.strictEqual(table.cells[0].formatClass, 'mxl-f0');
     assert.strictEqual(table.cells[0].text, 'Hello');
   });
 
-  test('Designer XML: Cut and Auto textPlacement emit explicit overflow-wrap', () => {
+  test('Designer XML: Cut textPlacement emits overflow:hidden', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
         <font faceName="Arial" height="8" bold="false" italic="false"/>
         <format><font>0</font><textPlacement>Cut</textPlacement></format>
-        <format><font>0</font><textPlacement>Auto</textPlacement></format>
         <rowsItem>
           <index>0</index>
           <row>
             <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>X</v8:content></v8:item></tl></c></c>
-            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Y</v8:content></v8:item></tl></c></c>
           </row>
         </rowsItem>
       </document>
@@ -714,15 +714,57 @@ suite('MxlParser — Designer XML format', () => {
 
     const model = parser.parse(xml);
     const css = model.tables[0].formatCss!;
-    const cutBlock = css.split('table.mxl-table td.mxl-f1{')[0];
-    const autoBlock = css.split('table.mxl-table td.mxl-f1{')[1] ?? '';
-    assert.ok(cutBlock.includes('table.mxl-table td.mxl-f0{'));
-    assert.ok(cutBlock.includes('white-space:nowrap'));
-    assert.ok(cutBlock.includes('overflow:hidden'));
-    assert.ok(cutBlock.includes('overflow-wrap:normal'));
-    assert.ok(autoBlock.includes('white-space:normal'));
-    assert.ok(autoBlock.includes('overflow-wrap:normal'));
-    assert.ok(!autoBlock.includes('overflow-wrap:break-word'));
+    assert.ok(css.includes('table.mxl-table td.mxl-f0{'));
+    assert.ok(css.includes('white-space:nowrap'));
+    assert.ok(css.includes('overflow:hidden'));
+    assert.ok(css.includes('overflow-wrap:normal'));
+    assert.ok(css.includes('word-break:normal'));
+  });
+
+  test('Designer XML: Auto textPlacement generates same CSS as Wrap', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <font faceName="Arial" height="8" bold="false" italic="false"/>
+        <format><font>0</font><textPlacement>Auto</textPlacement></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Y</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+    const css = model.tables[0].formatCss!;
+    assert.ok(css.includes('white-space:normal'));
+    assert.ok(css.includes('overflow-wrap:break-word'));
+    assert.ok(css.includes('word-break:break-word'));
+    assert.ok(css.includes('overflow:visible'));
+  });
+
+  test('Designer XML: format without textPlacement does not add wrap properties', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <font faceName="Arial" height="8" bold="false" italic="false"/>
+        <format><font>0</font><horizontalAlignment>Center</horizontalAlignment></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Test</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+    const css = model.tables[0].formatCss!;
+    assert.ok(!css.includes('overflow-wrap:break-word'));
+    assert.ok(!css.includes('word-break:break-word'));
+    assert.ok(!css.includes('overflow:visible'));
+    assert.ok(!css.includes('overflow:hidden'));
   });
 
   test('root without required xmlns falls back to old path (MXL_TABLE_NOT_FOUND)', () => {

@@ -957,6 +957,9 @@ export class MxlParser {
       if (formatIndex !== undefined) {
         const fmt = formats[formatIndex - 1];
         if (fmt && fmt.width !== undefined) {
+          // Factor 96/175: empirically chosen in commit 287657b to increase column widths.
+          // Original factor 96/254 (for unit=0.1mm) produced too narrow columns.
+          // Current factor produces widths ~45% larger than original.
           widths.push(Math.round(fmt.width * 96 / 175));
           hasAny = true;
           continue;
@@ -1062,11 +1065,11 @@ export class MxlParser {
 
       const placement = typeof rec['textPlacement'] === 'string' ? rec['textPlacement'].trim() : '';
       if (placement === 'Wrap') {
-        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:normal');
+        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:break-word;overflow:visible');
       } else if (placement === 'Cut') {
         declarations.push('white-space:nowrap;overflow:hidden;overflow-wrap:normal;word-break:normal');
       } else if (placement === 'Auto') {
-        declarations.push('white-space:normal;overflow-wrap:normal;word-break:normal');
+        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:break-word;overflow:visible');
       }
 
       return declarations.join(';');

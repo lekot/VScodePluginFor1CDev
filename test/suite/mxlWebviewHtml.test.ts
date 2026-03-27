@@ -178,4 +178,27 @@ suite('mxlWebviewHtml', () => {
     assert.ok(html.includes('<colgroup><col style="width:80px"><col style="width:120px"></colgroup>'));
     assert.ok(html.includes('<table class="mxl-table" style="table-layout:fixed;width:200px">'));
   });
+
+  test('base td CSS includes overflow:hidden', () => {
+    const model: MxlRenderModel = {
+      version: 'v1',
+      tables: [
+        {
+          rowCount: 1,
+          colCount: 1,
+          cells: [{ row: 0, col: 0, text: 'A', rowspan: 1, colspan: 1 }],
+        },
+      ],
+      diagnostics: [],
+    };
+
+    const html = buildMxlPreviewHtml({
+      webview: mockWebview,
+      filePath: 'table/file.mxl',
+      sourceFormat: 'mxl',
+      model,
+    });
+
+    assert.ok(html.includes('overflow: hidden'));
+  });
 });

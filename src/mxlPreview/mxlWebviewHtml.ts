@@ -78,6 +78,7 @@ export function buildMxlPreviewHtml(input: MxlWebviewHtmlInput): string {
       white-space: normal;
       overflow-wrap: normal;
       word-break: normal;
+      overflow: hidden;
     }
     table.mxl-table td.empty {
       color: var(--vscode-descriptionForeground);
