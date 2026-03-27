@@ -530,6 +530,29 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(syn!.rowspan, 1);
   });
 
+  test('Designer XML: inner cells inside merge fold text into anchor', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Top</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <rowsItem>
+          <index>1</index>
+          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Bottom</v8:content></v8:item></tl></c></c></row>
+        </rowsItem>
+        <merge><r>0</r><c>0</c><h>1</h></merge>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].row, 0);
+    assert.strictEqual(model.tables[0].cells[0].col, 0);
+    assert.strictEqual(model.tables[0].cells[0].rowspan, 2);
+    assert.strictEqual(model.tables[0].cells[0].text, 'Top\nBottom');
+  });
+
   test('Designer XML: merge section sets colspan and rowspan', () => {
     const parser = new MxlParser();
     const xml = `

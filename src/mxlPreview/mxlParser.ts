@@ -684,6 +684,7 @@ export class MxlParser {
         cell.rowspan = this.clampSpan(merge.rowspan);
       }
     }
+    this.coalesceDesignerCellsInsideMergeRegions(cells, mergeMap);
     for (const cell of cells) {
       const rs = Math.max(1, cell.rowspan ?? 1);
       const cs = Math.max(1, cell.colspan ?? 1);
@@ -703,6 +704,67 @@ export class MxlParser {
     };
 
     return { version: 'v1', tables: [table], diagnostics };
+  }
+
+  /**
+   * Designer XML often lists extra <c> entries inside a <merge> rectangle (e.g. row 11 col 17 inside
+   * merge anchored at row 9 col 17). The preview only draws the anchor cell — fold inner text into the
+   * anchor and remove duplicates so labels like «Сумма НДС» are not lost and do not create phantom columns.
+   */
+  private coalesceDesignerCellsInsideMergeRegions(
+    cells: MxlRenderCell[],
+    mergeMap: Map<string, { colspan: number; rowspan: number }>
+  ): void {
+    if (mergeMap.size === 0 || cells.length === 0) {
+      return;
+    }
+    const rects = Array.from(mergeMap.entries())
+      .map(([key, span]) => {
+        const parts = key.split(':');
+        const ar = Number(parts[0]);
+        const ac = Number(parts[1]);
+        if (!Number.isFinite(ar) || !Number.isFinite(ac)) {
+          return undefined;
+        }
+        return {
+          ar: this.clampIndex(ar, MAX_TABLE_ROWS - 1),
+          ac: this.clampIndex(ac, MAX_TABLE_COLS - 1),
+          rs: this.clampSpan(span.rowspan),
+          cs: this.clampSpan(span.colspan),
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== undefined);
+
+    const anchorByKey = new Map<string, MxlRenderCell>();
+    for (const cell of cells) {
+      anchorByKey.set(`${cell.row}:${cell.col}`, cell);
+    }
+
+    const toRemove = new Set<number>();
+    cells.forEach((cell, index) => {
+      for (const { ar, ac, rs, cs } of rects) {
+        if (cell.row === ar && cell.col === ac) {
+          return;
+        }
+        if (cell.row >= ar && cell.row < ar + rs && cell.col >= ac && cell.col < ac + cs) {
+          const anchor = anchorByKey.get(`${ar}:${ac}`);
+          if (anchor) {
+            const piece = cell.text.trim();
+            if (piece.length > 0) {
+              const base = anchor.text.trim();
+              anchor.text = base.length > 0 ? `${base}\n${piece}` : piece;
+            }
+            toRemove.add(index);
+          }
+          return;
+        }
+      }
+    });
+
+    const sorted = [...toRemove].sort((a, b) => b - a);
+    for (const i of sorted) {
+      cells.splice(i, 1);
+    }
   }
 
   private buildMergeMap(docNode: Record<string, unknown>): Map<string, { colspan: number; rowspan: number }> {
@@ -728,6 +790,48 @@ export class MxlParser {
       result.set(key, { colspan: w + 1, rowspan: h + 1 });
     }
     return result;
+  }
+
+  /**
+   * Prefer the <columns> section whose <id> matches the most-used <columnsID> on rows (tabular documents).
+   */
+  private pickDesignerColumnSection(
+    docNode: Record<string, unknown>,
+    sectionMap: Map<string | undefined, Map<number, number>>
+  ): Map<number, number> | undefined {
+    if (sectionMap.size === 0) {
+      return undefined;
+    }
+    const rawRowsItem = docNode['rowsItem'];
+    const rowsItems: unknown[] = Array.isArray(rawRowsItem)
+      ? rawRowsItem
+      : rawRowsItem !== undefined && rawRowsItem !== null
+        ? [rawRowsItem]
+        : [];
+    const counts = new Map<string, number>();
+    for (const item of rowsItems) {
+      const rec = this.asRecord(item);
+      const row = this.asRecord(rec?.['row']);
+      const cidRaw = row?.['columnsID'];
+      if (typeof cidRaw === 'string' && cidRaw.trim().length > 0) {
+        const cid = cidRaw.trim();
+        if (sectionMap.has(cid)) {
+          counts.set(cid, (counts.get(cid) ?? 0) + 1);
+        }
+      }
+    }
+    let bestId: string | undefined;
+    let bestN = 0;
+    for (const [id, n] of counts) {
+      if (n > bestN) {
+        bestN = n;
+        bestId = id;
+      }
+    }
+    if (bestId !== undefined) {
+      return sectionMap.get(bestId);
+    }
+    return sectionMap.get(undefined) ?? sectionMap.values().next().value;
   }
 
   private buildDesignerColWidths(docNode: Record<string, unknown>, colCount: number): number[] | undefined {
@@ -830,16 +934,15 @@ export class MxlParser {
       }
     }
 
-    // Use default section (undefined id) for all columns (simple case — no columnsID lookup needed)
-    const defaultSection = sectionMap.get(undefined) ?? sectionMap.values().next().value;
-    if (!defaultSection) {
+    const pickedSection = this.pickDesignerColumnSection(docNode, sectionMap);
+    if (!pickedSection) {
       return undefined;
     }
 
     const widths: number[] = [];
     let hasAny = false;
     for (let col = 0; col < colCount; col += 1) {
-      const formatIndex = defaultSection.get(col + 1);
+      const formatIndex = pickedSection.get(col + 1);
       if (formatIndex !== undefined) {
         const fmt = formats[formatIndex - 1];
         if (fmt && fmt.width !== undefined) {
