@@ -6,6 +6,7 @@ import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { isTabularSectionColumnsContainer } from '../../src/utils/treeNormalization';
 
 suite('MetadataTreeDataProvider Test Suite', () => {
   let provider: MetadataTreeDataProvider;
@@ -92,6 +93,69 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     assert.strictEqual(children.length, 1);
     assert.strictEqual(children[0].name, 'Catalog1');
+  });
+
+  test('empty tabular section instance: expandable tree item and «Реквизиты» on getChildren (1CVIEWER-10)', async () => {
+    const cfgPath = path.join('C:', 'cfg', 'demo');
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgPath, 'Configuration.xml'),
+      children: [],
+    };
+    const catalogs: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: rootNode,
+      children: [],
+    };
+    const cat: TreeNode = {
+      id: 'Catalogs.Cat',
+      name: 'Cat',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: catalogs,
+      children: [],
+    };
+    const tabularFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'Табличные части',
+      type: MetadataType.TabularSection,
+      properties: {},
+      parent: cat,
+      children: [],
+    };
+    const tsInstance: TreeNode = {
+      id: 'TabularSections.TS1',
+      name: 'TS1',
+      type: MetadataType.TabularSection,
+      properties: {},
+      parent: tabularFolder,
+      parentFilePath: path.join(cfgPath, 'Catalogs', 'Cat', 'Cat.xml'),
+      children: [],
+    };
+    rootNode.children = [catalogs];
+    catalogs.children = [cat];
+    cat.children = [tabularFolder];
+    tabularFolder.children = [tsInstance];
+
+    provider.setRootNode(rootNode, { configPath: cfgPath, format: ConfigFormat.Designer });
+
+    const item = provider.getTreeItem(tsInstance);
+    assert.strictEqual(
+      item.collapsibleState,
+      vscode.TreeItemCollapsibleState.Collapsed,
+      'instance with empty columns must stay expandable'
+    );
+
+    const ch = await provider.getChildren(tsInstance);
+    assert.strictEqual(ch.length, 1);
+    assert.strictEqual(ch[0].name, 'Реквизиты');
+    assert.ok(isTabularSectionColumnsContainer(ch[0]));
   });
 
   test('getChildren rebinds stale node instance after root reload', async () => {

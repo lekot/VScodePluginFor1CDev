@@ -5,6 +5,7 @@ import { getSelectedNode } from '../helpers/commandHelpers';
 import { Logger } from '../utils/logger';
 import { getFormPaths } from '../formEditor/formPaths';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
+import { resolveTemplatePreviewTargetPath } from './resolveTemplatePreviewTargetPath';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
@@ -134,6 +135,49 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const openTemplatePreviewCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.openTemplatePreview',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target) {
+        vscode.window.showWarningMessage('Выберите узел шаблона в дереве метаданных.');
+        return;
+      }
+
+      const isTemplateNode =
+        target.type === MetadataType.Template || target.type === MetadataType.CommonTemplate;
+      if (!isTemplateNode) {
+        vscode.window.showWarningMessage(
+          'Preview макета доступен только для узлов Template/CommonTemplate.'
+        );
+        return;
+      }
+
+      if (!target.filePath) {
+        vscode.window.showWarningMessage('Для выбранного макета не задан путь к файлу.');
+        return;
+      }
+
+      try {
+        const previewPath = await resolveTemplatePreviewTargetPath(
+          target.filePath,
+          target.type as MetadataType.Template | MetadataType.CommonTemplate
+        );
+        Logger.info(`Opening MXL preview: ${previewPath}`);
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(previewPath),
+          '1c-mxl-preview'
+        );
+      } catch (err) {
+        Logger.error('Failed to open MXL preview', err);
+        vscode.window.showErrorMessage(
+          `Не удалось открыть preview макета: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
   const saveRightsEditorCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.saveRightsEditor',
     async () => {
@@ -151,6 +195,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     openBslModuleCommand,
     openFormEditorCommand,
     openRightsEditorCommand,
+    openTemplatePreviewCommand,
     saveRightsEditorCommand,
   ];
 }
