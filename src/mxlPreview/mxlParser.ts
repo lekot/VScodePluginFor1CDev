@@ -28,6 +28,18 @@ const MAX_TOTAL_CELLS_PER_TABLE = 20000;
 const MAX_TABLES_PER_DOCUMENT = 200;
 const MAX_TOTAL_CELLS_PER_DOCUMENT = 100000;
 
+interface DesignerFormat {
+  fontIndex?: number;
+  horizontalAlign?: string;
+  verticalAlign?: string;
+  textPlacement?: string;
+  backgroundColor?: string;
+  leftBorder?: number;
+  rightBorder?: number;
+  topBorder?: number;
+  bottomBorder?: number;
+}
+
 export class MxlParser {
   private readonly parser = new XMLParser(XML_PARSER_OPTIONS);
 
@@ -507,6 +519,14 @@ export class MxlParser {
     return undefined;
   }
 
+  private sanitizeColor(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    return /^#[0-9A-Fa-f]{3,8}$/.test(trimmed) || /^[a-zA-Z]{3,20}$/.test(trimmed) ? trimmed : undefined;
+  }
+
   private localName(name: string): string {
     const idx = name.indexOf(':');
     const value = idx >= 0 ? name.slice(idx + 1) : name;
@@ -601,13 +621,6 @@ export class MxlParser {
       return { version: 'v1', tables: [], diagnostics };
     }
 
-    const rawVgRows = docNode['vgRows'];
-    const vgRows = typeof rawVgRows === 'number' && Number.isFinite(rawVgRows)
-      ? rawVgRows
-      : typeof rawVgRows === 'string'
-        ? Number.parseInt(rawVgRows, 10)
-        : undefined;
-
     const rawRowsItem = docNode['rowsItem'];
     const rowsItems: unknown[] = Array.isArray(rawRowsItem)
       ? rawRowsItem
@@ -625,10 +638,7 @@ export class MxlParser {
     const rowsItemsToProcess = rowsItems.length > MAX_TABLE_ROWS ? rowsItems.slice(0, MAX_TABLE_ROWS) : rowsItems;
 
     const fonts = this.parseDesignerFonts(docNode);
-    const formatCssMap = this.parseDesignerFormats(docNode, fonts);
-    const formatCss = formatCssMap.length > 0
-      ? formatCssMap.map((css, i) => `table.mxl-table td.mxl-f${i}{${css}}`).join('')
-      : undefined;
+    const formats = this.parseDesignerFormats(docNode, fonts);
 
     const cells: MxlRenderCell[] = [];
     let inferredMaxRow = 0;
@@ -641,7 +651,7 @@ export class MxlParser {
         truncated = true;
         break;
       }
-      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics, formatCssMap);
+      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics, formats.length);
       for (const cell of rowCells) {
         if (totalCells >= MAX_TOTAL_CELLS_PER_TABLE) {
           truncated = true;
@@ -653,13 +663,6 @@ export class MxlParser {
         inferredMaxCol = Math.max(inferredMaxCol, cell.col + Math.max(cell.colspan, 1));
       }
     }
-
-    const authorativeRowCount = vgRows !== undefined && Number.isFinite(vgRows) && vgRows > 0
-      ? vgRows
-      : undefined;
-    const rowCount = authorativeRowCount !== undefined
-      ? Math.max(authorativeRowCount, inferredMaxRow)
-      : inferredMaxRow;
 
     if (truncated) {
       this.warn(
@@ -699,6 +702,7 @@ export class MxlParser {
       }
     }
     this.coalesceDesignerCellsInsideMergeRegions(cells, mergeMap);
+    this.detectImplicitMerges(cells, formats, mergeMap);
     for (const cell of cells) {
       const rs = Math.max(1, cell.rowspan ?? 1);
       const cs = Math.max(1, cell.colspan ?? 1);
@@ -706,11 +710,16 @@ export class MxlParser {
       inferredMaxCol = Math.max(inferredMaxCol, cell.col + cs);
     }
 
+    const formatCssMap = this.formatsToCss(formats, fonts);
+    const formatCss = formatCssMap.length > 0
+      ? formatCssMap.map((css, i) => `table.mxl-table td.mxl-f${i}{${css}}`).join('')
+      : undefined;
+
     const colCount = Math.min(inferredMaxCol, MAX_TABLE_COLS);
     const colWidthsPx = this.buildDesignerColWidths(docNode, colCount);
 
     const table: MxlRenderTable = {
-      rowCount: Math.min(rowCount, MAX_TABLE_ROWS),
+      rowCount: Math.min(inferredMaxRow, MAX_TABLE_ROWS),
       colCount,
       cells,
       ...(colWidthsPx !== undefined ? { colWidthsPx } : {}),
@@ -804,6 +813,176 @@ export class MxlParser {
       result.set(key, { colspan: w + 1, rowspan: h + 1 });
     }
     return result;
+  }
+
+  private hasLeftBorder(format: DesignerFormat | undefined): boolean {
+    if (!format) {
+      return false;
+    }
+    const lb = format.leftBorder;
+    return lb !== undefined && lb !== 1;
+  }
+
+  private detectImplicitMerges(
+    cells: MxlRenderCell[],
+    formats: DesignerFormat[],
+    explicitMergeMap: Map<string, { colspan: number; rowspan: number }>
+  ): void {
+    const covered = new Set<string>();
+    for (const [key, span] of explicitMergeMap.entries()) {
+      const [r, c] = key.split(':').map(Number);
+      for (let dr = 0; dr < span.rowspan; dr++) {
+        for (let dc = 0; dc < span.colspan; dc++) {
+          if (dr === 0 && dc === 0) {
+            continue;
+          }
+          covered.add(`${r + dr}:${c + dc}`);
+        }
+      }
+    }
+
+    const rowMap = new Map<number, MxlRenderCell[]>();
+    for (const cell of cells) {
+      if (!rowMap.has(cell.row)) {
+        rowMap.set(cell.row, []);
+      }
+      rowMap.get(cell.row)!.push(cell);
+    }
+
+    const toRemove = new Set<string>();
+
+    for (const rowCells of rowMap.values()) {
+      rowCells.sort((a, b) => a.col - b.col);
+
+      for (let i = 0; i < rowCells.length; i++) {
+        const anchor = rowCells[i];
+        const anchorKey = `${anchor.row}:${anchor.col}`;
+
+        if (covered.has(anchorKey)) {
+          continue;
+        }
+
+        if (!anchor.text || anchor.text.trim().length === 0) {
+          continue;
+        }
+
+        if (anchor.colspan && anchor.colspan > 1) {
+          continue;
+        }
+
+        const anchorFormatIndex = this.getCellFormatIndex(anchor);
+        const anchorFormat = formats[anchorFormatIndex];
+        if (this.hasLeftBorder(anchorFormat)) {
+          continue;
+        }
+
+        let mergeCount = 0;
+        for (let j = i + 1; j < rowCells.length; j++) {
+          const candidate = rowCells[j];
+
+          if (candidate.col !== anchor.col + mergeCount + 1) {
+            break;
+          }
+
+          if (candidate.text && candidate.text.trim().length > 0) {
+            break;
+          }
+
+          const candidateFormatIndex = this.getCellFormatIndex(candidate);
+          const candidateFormat = formats[candidateFormatIndex];
+          if (this.hasLeftBorder(candidateFormat)) {
+            break;
+          }
+
+          const candidateKey = `${candidate.row}:${candidate.col}`;
+          if (covered.has(candidateKey)) {
+            break;
+          }
+
+          mergeCount++;
+        }
+
+        if (mergeCount > 0) {
+          anchor.colspan = (anchor.colspan ?? 1) + mergeCount;
+          for (let k = 1; k <= mergeCount; k++) {
+            toRemove.add(`${anchor.row}:${anchor.col + k}`);
+          }
+        }
+      }
+    }
+
+    for (let i = cells.length - 1; i >= 0; i--) {
+      const key = `${cells[i].row}:${cells[i].col}`;
+      if (toRemove.has(key)) {
+        cells.splice(i, 1);
+      }
+    }
+  }
+
+  private getCellFormatIndex(cell: MxlRenderCell): number {
+    if (cell.formatClass) {
+      const match = /mxl-f(\d+)/.exec(cell.formatClass);
+      if (match) {
+        return Number.parseInt(match[1], 10);
+      }
+    }
+    return 0;
+  }
+
+  private formatsToCss(formats: DesignerFormat[], fonts: Array<{ faceName: string; heightPt: number; bold: boolean; italic: boolean }>): string[] {
+    return formats.map((format) => {
+      const declarations: string[] = [];
+
+      if (format.fontIndex !== undefined && format.fontIndex >= 0 && format.fontIndex < fonts.length) {
+        const font = fonts[format.fontIndex];
+        declarations.push(`font-size:${font.heightPt}pt`);
+        if (font.bold) {
+          declarations.push('font-weight:bold');
+        }
+        if (font.italic) {
+          declarations.push('font-style:italic');
+        }
+        const safeFace = /^[A-Za-z0-9 \-_,']{1,60}$/.test(font.faceName) ? font.faceName : '';
+        if (safeFace) {
+          declarations.push(`font-family:${safeFace}`);
+        }
+      }
+
+      if (format.horizontalAlign === 'left') {
+        declarations.push('text-align:left');
+      } else if (format.horizontalAlign === 'right') {
+        declarations.push('text-align:right');
+      } else if (format.horizontalAlign === 'center') {
+        declarations.push('text-align:center');
+      } else if (format.horizontalAlign === 'justify') {
+        declarations.push('text-align:justify');
+      }
+
+      if (format.verticalAlign === 'top') {
+        declarations.push('vertical-align:top');
+      } else if (format.verticalAlign === 'bottom') {
+        declarations.push('vertical-align:bottom');
+      } else if (format.verticalAlign === 'center') {
+        declarations.push('vertical-align:middle');
+      }
+
+      if (format.textPlacement === 'Wrap') {
+        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:break-word;overflow:visible');
+      } else if (format.textPlacement === 'Cut') {
+        declarations.push('white-space:nowrap;overflow:hidden;overflow-wrap:normal;word-break:normal');
+      } else if (format.textPlacement === 'Auto') {
+        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:break-word;overflow:visible');
+      }
+
+      if (format.backgroundColor) {
+        const sanitized = this.sanitizeColor(format.backgroundColor);
+        if (sanitized) {
+          declarations.push(`background-color:${sanitized}`);
+        }
+      }
+
+      return declarations.join(';');
+    });
   }
 
   /**
@@ -1018,7 +1197,7 @@ export class MxlParser {
   private parseDesignerFormats(
     docNode: Record<string, unknown>,
     fonts: Array<{ faceName: string; heightPt: number; bold: boolean; italic: boolean }>
-  ): string[] {
+  ): DesignerFormat[] {
     const rawFormat = docNode['format'];
     const formatNodes: unknown[] = Array.isArray(rawFormat)
       ? rawFormat
@@ -1029,10 +1208,8 @@ export class MxlParser {
     return formatNodes.map((f) => {
       const rec = this.asRecord(f);
       if (!rec) {
-        return '';
+        return {};
       }
-
-      const declarations: string[] = [];
 
       const rawFontIdx = rec['font'];
       const fontIdxRaw =
@@ -1042,55 +1219,39 @@ export class MxlParser {
             ? Number.parseInt(rawFontIdx, 10)
             : NaN;
 
-      if (Number.isFinite(fontIdxRaw) && fontIdxRaw >= 0 && fontIdxRaw < fonts.length) {
-        const font = fonts[fontIdxRaw];
-        declarations.push(`font-size:${font.heightPt}pt`);
-        if (font.bold) {
-          declarations.push('font-weight:bold');
-        }
-        if (font.italic) {
-          declarations.push('font-style:italic');
-        }
-        const safeFace = /^[A-Za-z0-9 \-_,']{1,60}$/.test(font.faceName) ? font.faceName : '';
-        if (safeFace) {
-          declarations.push(`font-family:${safeFace}`);
-        }
-      }
+      const fontIndex = Number.isFinite(fontIdxRaw) && fontIdxRaw >= 0 && fontIdxRaw < fonts.length ? fontIdxRaw : undefined;
 
       const hAlign = typeof rec['horizontalAlignment'] === 'string' ? rec['horizontalAlignment'].trim().toLowerCase() : '';
-      if (hAlign === 'left') {
-        declarations.push('text-align:left');
-      } else if (hAlign === 'right') {
-        declarations.push('text-align:right');
-      } else if (hAlign === 'center') {
-        declarations.push('text-align:center');
-      } else if (hAlign === 'justify') {
-        declarations.push('text-align:justify');
-      }
+      const horizontalAlign = hAlign === 'left' || hAlign === 'right' || hAlign === 'center' || hAlign === 'justify' ? hAlign : undefined;
 
       const vAlign = typeof rec['verticalAlignment'] === 'string' ? rec['verticalAlignment'].trim().toLowerCase() : '';
-      if (vAlign === 'top') {
-        declarations.push('vertical-align:top');
-      } else if (vAlign === 'bottom') {
-        declarations.push('vertical-align:bottom');
-      } else if (vAlign === 'center') {
-        declarations.push('vertical-align:middle');
-      }
+      const verticalAlign = vAlign === 'top' || vAlign === 'bottom' || vAlign === 'center' ? vAlign : undefined;
 
       const placement = typeof rec['textPlacement'] === 'string' ? rec['textPlacement'].trim() : '';
-      if (placement === 'Wrap') {
-        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:break-word;overflow:visible');
-      } else if (placement === 'Cut') {
-        declarations.push('white-space:nowrap;overflow:hidden;overflow-wrap:normal;word-break:normal');
-      } else if (placement === 'Auto') {
-        declarations.push('white-space:normal;overflow-wrap:break-word;word-break:break-word;overflow:visible');
-      }
+      const textPlacement = placement === 'Wrap' || placement === 'Cut' || placement === 'Auto' ? placement : undefined;
 
-      return declarations.join(';');
+      const leftBorder = this.getFirstNumber(rec, ['leftBorder', 'LeftBorder', 'ЛеваяГраница']);
+      const rightBorder = this.getFirstNumber(rec, ['rightBorder', 'RightBorder', 'ПраваяГраница']);
+      const topBorder = this.getFirstNumber(rec, ['topBorder', 'TopBorder', 'ВерхняяГраница']);
+      const bottomBorder = this.getFirstNumber(rec, ['bottomBorder', 'BottomBorder', 'НижняяГраница']);
+
+      const backgroundColor = this.getFirstString(rec, ['backColor', 'BackColor', 'ЦветФона']);
+
+      return {
+        fontIndex,
+        horizontalAlign,
+        verticalAlign,
+        textPlacement,
+        backgroundColor,
+        leftBorder,
+        rightBorder,
+        topBorder,
+        bottomBorder,
+      };
     });
   }
 
-  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[], formatCssMap: string[]): MxlRenderCell[] {
+  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[], formatCount: number): MxlRenderCell[] {
     const record = this.asRecord(rowsItemNode);
     if (!record) {
       return [];
@@ -1125,7 +1286,7 @@ export class MxlParser {
         this.warn(diagnostics, 'MXL_CELL_INDEX_LIMIT_EXCEEDED', `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Remaining cells skipped.`);
         break;
       }
-      const result = this.parseDesignerXmlCell(outerC, row, colCursor, formatCssMap);
+      const result = this.parseDesignerXmlCell(outerC, row, colCursor, formatCount);
       cells.push(result.cell);
       colCursor = result.nextCursor;
     }
@@ -1137,7 +1298,7 @@ export class MxlParser {
     outerC: unknown,
     row: number,
     colCursor: number,
-    formatCssMap: string[]
+    formatCount: number
   ): { cell: MxlRenderCell; nextCursor: number } {
     const record = this.asRecord(outerC);
 
@@ -1176,7 +1337,7 @@ export class MxlParser {
           : typeof rawF === 'string'
             ? Number.parseInt(rawF, 10)
             : NaN;
-      if (Number.isFinite(fVal) && fVal >= 0 && fVal < formatCssMap.length) {
+      if (Number.isFinite(fVal) && fVal >= 0 && fVal < formatCount) {
         formatClass = `mxl-f${fVal}`;
       }
     }

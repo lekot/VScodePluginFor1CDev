@@ -786,18 +786,21 @@ suite('MxlParser — Designer XML format', () => {
     assert.ok(model.diagnostics.some((d) => d.code === 'MXL_TABLE_NOT_FOUND'));
   });
 
-  test('vgRows greater than inferredMaxRow fills gaps', () => {
+});
+
+suite('MxlParser — Designer format border parsing', () => {
+  const XMLNS = 'http://v8.1c.ru/8.2/data/spreadsheet';
+
+  test('format with leftBorder=0 (Solid) is parsed', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
-        <vgRows>25</vgRows>
+        <format><leftBorder>0</leftBorder></format>
         <rowsItem>
           <index>0</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
-        </rowsItem>
-        <rowsItem>
-          <index>17</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+          </row>
         </rowsItem>
       </document>
     `;
@@ -805,21 +808,20 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
 
     assert.strictEqual(model.tables.length, 1);
-    assert.strictEqual(model.tables[0].rowCount, 25);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'A');
   });
 
-  test('vgRows less than inferredMaxRow uses inferredMaxRow', () => {
+  test('format with leftBorder=1 (None) is parsed', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
-        <vgRows>10</vgRows>
+        <format><leftBorder>1</leftBorder></format>
         <rowsItem>
           <index>0</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
-        </rowsItem>
-        <rowsItem>
-          <index>17</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>B</v8:content></v8:item></tl></c></c>
+          </row>
         </rowsItem>
       </document>
     `;
@@ -827,20 +829,20 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
 
     assert.strictEqual(model.tables.length, 1);
-    assert.strictEqual(model.tables[0].rowCount, 18);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'B');
   });
 
-  test('vgRows absent falls back to inferredMaxRow', () => {
+  test('format with leftBorder=2 (custom line style) is parsed', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
+        <format><leftBorder>2</leftBorder></format>
         <rowsItem>
           <index>0</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
-        </rowsItem>
-        <rowsItem>
-          <index>17</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>C</v8:content></v8:item></tl></c></c>
+          </row>
         </rowsItem>
       </document>
     `;
@@ -848,21 +850,20 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
 
     assert.strictEqual(model.tables.length, 1);
-    assert.strictEqual(model.tables[0].rowCount, 18);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'C');
   });
 
-  test('vgRows zero falls back to inferredMaxRow', () => {
+  test('format without leftBorder is parsed (undefined)', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
-        <vgRows>0</vgRows>
+        <format><font>0</font></format>
         <rowsItem>
           <index>0</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
-        </rowsItem>
-        <rowsItem>
-          <index>17</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>D</v8:content></v8:item></tl></c></c>
+          </row>
         </rowsItem>
       </document>
     `;
@@ -870,21 +871,20 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
 
     assert.strictEqual(model.tables.length, 1);
-    assert.strictEqual(model.tables[0].rowCount, 18);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'D');
   });
 
-  test('vgRows negative falls back to inferredMaxRow', () => {
+  test('format with all four borders specified', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
-        <vgRows>-5</vgRows>
+        <format><leftBorder>0</leftBorder><rightBorder>0</rightBorder><topBorder>0</topBorder><bottomBorder>0</bottomBorder></format>
         <rowsItem>
           <index>0</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
-        </rowsItem>
-        <rowsItem>
-          <index>17</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>E</v8:content></v8:item></tl></c></c>
+          </row>
         </rowsItem>
       </document>
     `;
@@ -892,21 +892,20 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
 
     assert.strictEqual(model.tables.length, 1);
-    assert.strictEqual(model.tables[0].rowCount, 18);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'E');
   });
 
-  test('vgRows non-numeric string falls back to inferredMaxRow', () => {
+  test('format with Russian attribute names (ЛеваяГраница, ПраваяГраница)', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
-        <vgRows>abc</vgRows>
+        <format><ЛеваяГраница>0</ЛеваяГраница><ПраваяГраница>2</ПраваяГраница></format>
         <rowsItem>
           <index>0</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row0</v8:content></v8:item></tl></c></c></row>
-        </rowsItem>
-        <rowsItem>
-          <index>17</index>
-          <row><c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Row17</v8:content></v8:item></tl></c></c></row>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>F</v8:content></v8:item></tl></c></c>
+          </row>
         </rowsItem>
       </document>
     `;
@@ -914,6 +913,320 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
 
     assert.strictEqual(model.tables.length, 1);
-    assert.strictEqual(model.tables[0].rowCount, 18);
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'F');
   });
+
+  test('format with backColor generates background-color CSS', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <font faceName="Arial" height="8" bold="false" italic="false"/>
+        <format><font>0</font><backColor>#FFFFFF</backColor></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>G</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const css = model.tables[0].formatCss!;
+    assert.ok(css.includes('background-color:#FFFFFF'), 'CSS should contain background-color:#FFFFFF');
+    assert.strictEqual(model.tables[0].cells.length, 1);
+    assert.strictEqual(model.tables[0].cells[0].text, 'G');
+  });
+
+});
+
+suite('MxlParser — Implicit merge detection via borders', () => {
+  const XMLNS = 'http://v8.1c.ru/8.2/data/spreadsheet';
+
+  test('basic horizontal merge: text cell + empty cell with no left border', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 1, 'empty cell should be removed');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'A');
+    assert.strictEqual(cells[0].colspan, 2, 'should merge with empty cell');
+  });
+
+  test('no merge when anchor has left border', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format><leftBorder>0</leftBorder></format>
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'should not merge when anchor has left border');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'A');
+    assert.strictEqual(cells[0].colspan, 1);
+    assert.strictEqual(cells[1].col, 1);
+    assert.strictEqual(cells[1].colspan, 1);
+  });
+
+  test('no merge when empty cell has left border', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <format><leftBorder>0</leftBorder></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'should not merge when empty cell has left border');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'A');
+    assert.strictEqual(cells[0].colspan, 1);
+    assert.strictEqual(cells[1].col, 1);
+    assert.strictEqual(cells[1].colspan, 1);
+  });
+
+  test('merge stops at non-empty cell', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>B</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'should have 2 cells: A merged with empty, B standalone');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'A');
+    assert.strictEqual(cells[0].colspan, 2, 'A should merge with empty cell');
+    assert.strictEqual(cells[1].col, 2);
+    assert.strictEqual(cells[1].text, 'B');
+    assert.strictEqual(cells[1].colspan, 1, 'B should not merge (non-empty)');
+  });
+
+  test('explicit merge takes precedence over implicit merge', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+          </row>
+        </rowsItem>
+        <merge><r>0</r><c>0</c><w>1</w></merge>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'should have 2 cells: A with explicit merge, one empty');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'A');
+    assert.strictEqual(cells[0].colspan, 2, 'explicit merge should be preserved');
+    assert.strictEqual(cells[1].col, 2);
+    assert.strictEqual(cells[1].text, '');
+    assert.strictEqual(cells[1].colspan, 1, 'cell after explicit merge should not be implicitly merged');
+  });
+
+  test('multi-cell merge: 6 columns (row 8 cols 12-17 pattern)', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>8</index>
+          <row>
+            <c><i>12</i><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>В том числе</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 1, 'empty cells should be removed');
+    assert.strictEqual(cells[0].row, 8);
+    assert.strictEqual(cells[0].col, 12);
+    assert.strictEqual(cells[0].text, 'В том числе');
+    assert.strictEqual(cells[0].colspan, 6, 'should merge 6 columns (12-17)');
+  });
+
+  test('non-adjacent columns: no merge when column gap exists', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+            <c><i>2</i><c><f>0</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'should not merge non-adjacent columns');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'A');
+    assert.strictEqual(cells[0].colspan, 1);
+    assert.strictEqual(cells[1].col, 2);
+    assert.strictEqual(cells[1].colspan, 1);
+  });
+
+  test('empty anchor: no merge when first cell is empty', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'should not merge when anchor is empty');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, '');
+    assert.strictEqual(cells[0].colspan, 1);
+    assert.strictEqual(cells[1].col, 1);
+    assert.strictEqual(cells[1].text, '');
+    assert.strictEqual(cells[1].colspan, 1);
+  });
+
+  test('implicit merge does not intersect with covered cells from explicit merge', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Explicit</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Implicit</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f></c></c>
+          </row>
+        </rowsItem>
+        <merge><r>0</r><c>0</c><w>1</w></merge>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'should have 2 cells: explicit merge and implicit merge');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'Explicit');
+    assert.strictEqual(cells[0].colspan, 2, 'explicit merge should span 2 columns');
+    assert.strictEqual(cells[1].col, 2);
+    assert.strictEqual(cells[1].text, 'Implicit');
+    assert.strictEqual(cells[1].colspan, 2, 'implicit merge should span remaining 2 columns');
+  });
+
+  test('multiple empty cells in sequence: merge all into first text cell', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <format></format>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>0</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Header</v8:content></v8:item></tl></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+            <c><c><f>0</f></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+
+    const model = parser.parse(xml);
+
+    assert.strictEqual(model.tables.length, 1);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 1, 'all empty cells should be removed');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].text, 'Header');
+    assert.strictEqual(cells[0].colspan, 4, 'should merge all 4 columns');
+  });
+
 });
