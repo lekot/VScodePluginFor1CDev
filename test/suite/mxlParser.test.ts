@@ -276,7 +276,7 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables[0].cells[2].col, 2);
   });
 
-  test('cell with <i>2</i> gets colspan=3 and next cell is at col=3', () => {
+  test('cell with <i>2</i> is placed at column index 2; next cell continues sequentially', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
@@ -298,8 +298,8 @@ suite('MxlParser — Designer XML format', () => {
     const model = parser.parse(xml);
 
     assert.strictEqual(model.tables[0].cells.length, 2);
-    assert.strictEqual(model.tables[0].cells[0].col, 0);
-    assert.strictEqual(model.tables[0].cells[0].colspan, 3);
+    assert.strictEqual(model.tables[0].cells[0].col, 2);
+    assert.strictEqual(model.tables[0].cells[0].colspan, 1);
     assert.strictEqual(model.tables[0].cells[1].col, 3);
     assert.strictEqual(model.tables[0].cells[1].text, 'Next');
   });
@@ -367,7 +367,7 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables[0].cells.length, 0);
   });
 
-  test('cell with <i>0</i> gets colspan=1 and next cell is at col=1', () => {
+  test('cell with <i>0</i> is at column 0; next cell is at col=1', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
@@ -395,6 +395,29 @@ suite('MxlParser — Designer XML format', () => {
     assert.strictEqual(model.tables[0].cells[0].col, 0);
     assert.strictEqual(model.tables[0].cells[0].colspan, 1);
     assert.strictEqual(model.tables[0].cells[1].col, 1);
+  });
+
+  test('Designer XML: <i> is absolute column (Итого row pattern)', () => {
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>13</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Итого</v8:content></v8:item></tl></c></c>
+            <c><i>11</i><c><f>1</f><parameter>ВсегоПокупок</parameter></c></c>
+            <c><c><f>1</f><parameter>СуммаБезНДС18</parameter></c></c>
+            <c><c><f>1</f><parameter>НДС18</parameter></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const byText = (t: string) => model.tables[0].cells.find((c) => c.text === t);
+    assert.strictEqual(byText('Итого')!.col, 0);
+    assert.strictEqual(byText('ВсегоПокупок')!.col, 11);
+    assert.strictEqual(byText('СуммаБезНДС18')!.col, 12);
+    assert.strictEqual(byText('НДС18')!.col, 13);
   });
 
   test('two rowsItem elements produce cells with correct row indices', () => {

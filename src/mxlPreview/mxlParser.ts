@@ -984,8 +984,11 @@ export class MxlParser {
   ): { cell: MxlRenderCell; nextCursor: number } {
     const record = this.asRecord(outerC);
 
+    // Designer XML: optional <i> is the cell's column index (0-based), not colspan.
+    // Sequential <c> without <i> continue from the cursor after the previous cell.
     let colspan = 1;
     let innerC: unknown = undefined;
+    let colFromI: number | undefined;
 
     if (record) {
       const rawI = record['i'];
@@ -997,13 +1000,13 @@ export class MxlParser {
               ? Number.parseInt(rawI, 10)
               : NaN;
         if (Number.isFinite(iVal) && iVal >= 0) {
-          colspan = iVal + 1;
+          colFromI = this.clampIndex(iVal, MAX_TABLE_COLS - 1);
         }
       }
       innerC = record['c'];
     }
 
-    const col = this.clampIndex(colCursor, MAX_TABLE_COLS - 1);
+    const col = this.clampIndex(colFromI !== undefined ? colFromI : colCursor, MAX_TABLE_COLS - 1);
     const text = this.extractDesignerXmlText(innerC);
 
     let formatClass: string | undefined;
@@ -1022,7 +1025,7 @@ export class MxlParser {
     }
 
     const cell: MxlRenderCell = { row, col, text, rowspan: 1, colspan, style: undefined, ...(formatClass !== undefined ? { formatClass } : {}) };
-    return { cell, nextCursor: colCursor + colspan };
+    return { cell, nextCursor: col + colspan };
   }
 
   private extractDesignerXmlText(innerC: unknown): string {
