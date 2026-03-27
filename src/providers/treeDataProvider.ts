@@ -10,6 +10,7 @@ import { MESSAGES } from '../constants/messages';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 import {
   ensureR6PlaceholdersForInstanceNode,
+  ensureTabularSectionColumnsPlaceholder,
   R5_COMMON_DISK_BACKED_FOLDER_IDS,
 } from '../utils/treeNormalization';
 import { OptimisticDeleteToken } from '../types/reloadContracts';
@@ -998,13 +999,46 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return false;
   }
 
+  /**
+   * Parsers may leave a tabular section instance with no children when there are no columns yet.
+   * Without the synthetic «Реквизиты» node the item is a leaf and the user cannot add the first column.
+   * {@link MetadataParser.loadElementChildren} already fixes this for `_lazy` sections; mirror here for eager nodes.
+   */
+  private ensureTabularSectionColumnsIfNeeded(node: TreeNode): void {
+    if (
+      node.parent?.id !== 'TabularSections' ||
+      node.type !== MetadataType.TabularSection ||
+      !node.id.startsWith('TabularSections.') ||
+      node.id === 'TabularSections'
+    ) {
+      return;
+    }
+    ensureTabularSectionColumnsPlaceholder(node);
+    for (const c of node.children ?? []) {
+      if (!this.nodeCache.has(c.id)) {
+        this.buildCache(c);
+      }
+    }
+  }
+
+  /** Instance of a tabular section (under folder «Табличные части») always has at least the «Реквизиты» subtree in the UI. */
+  private isTabularSectionInstanceNode(element: TreeNode): boolean {
+    return (
+      element.parent?.id === 'TabularSections' &&
+      element.type === MetadataType.TabularSection &&
+      element.id.startsWith('TabularSections.') &&
+      element.id !== 'TabularSections'
+    );
+  }
+
   getTreeItem(element: TreeNode): vscode.TreeItem {
     try {
       // Collapsible: has children, or lazy type node, or lazy element node (load on expand)
       const hasChildren =
         (element.children && element.children.length > 0) ||
         this.isLazyTypeNode(element) ||
-        this.isLazyElementNode(element);
+        this.isLazyElementNode(element) ||
+        this.isTabularSectionInstanceNode(element);
       const collapsibleState = hasChildren
         ? element.isExpanded
           ? vscode.TreeItemCollapsibleState.Expanded
@@ -1150,6 +1184,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (ctx) {
         ensureR6PlaceholdersForInstanceNode(activeElement, { configPath: ctx.configPath, format: ctx.format });
       }
+
+      this.ensureTabularSectionColumnsIfNeeded(activeElement);
 
       const raw = activeElement.children || [];
       if (!this.hasActiveFilter()) {
