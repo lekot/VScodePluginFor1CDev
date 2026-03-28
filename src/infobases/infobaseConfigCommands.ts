@@ -15,6 +15,7 @@ import {
   type IbcmdInfobaseOperationResult,
 } from '../services/ibcmd/ibcmdInfobaseOperationResult';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
+import { getIbcmdConsoleOutputEncodingSetting } from '../services/metadataTreeSettings';
 import { runIbcmdStreaming, type IbcmdStreamCancellation } from '../services/ibcmd/IbcmdStreamingRunner';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
 
@@ -227,6 +228,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       args: buildInfobaseConfigImportArgs(prep.absoluteConfigPath, path.resolve(params.absoluteSourceDir)),
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
+      consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
       onStreamChunk: (chunk) => appendOutputDebounced(chunk),
     });
 
@@ -288,6 +290,7 @@ async function runInfobaseConfigOperation(params: {
           args: params.argsForConfigPath(prep.absoluteConfigPath),
           timeoutMs: ibcmd.getTimeoutMs(),
           cancellation: vscodeCancellation(token),
+          consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
           onStreamChunk: (chunk) => appendOutputDebounced(chunk),
         });
 

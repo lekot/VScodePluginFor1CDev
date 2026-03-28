@@ -1,5 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import type { IbcmdConsoleOutputEncoding, IbcmdRunOutcome } from './ibcmdConsoleEncodingTypes';
+import { decodeIbcmdProcessStreams } from './consoleStreamDecoder';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,12 +38,13 @@ export async function runIbcmdExecutable(
   executable: string,
   args: string[],
   timeoutMs: number,
-  execImpl: ExecFileFn = execFileAsync as ExecFileFn
-): Promise<{ stdout: string; stderr: string }> {
+  execImpl: ExecFileFn = execFileAsync as ExecFileFn,
+  consoleOutputEncoding: IbcmdConsoleOutputEncoding = 'auto',
+): Promise<IbcmdRunOutcome> {
   const { stdout, stderr } = await execImpl(executable, args, {
     timeout: timeoutMs,
     maxBuffer: IBCMD_EXEC_MAX_BUFFER,
     windowsHide: true,
   });
-  return { stdout: stdout.toString(), stderr: stderr.toString() };
+  return decodeIbcmdProcessStreams(stdout, stderr, consoleOutputEncoding);
 }

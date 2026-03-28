@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { IbcmdConsoleOutputEncoding } from './ibcmd/ibcmdConsoleEncodingTypes';
 
 /** Reads WOW design settings (`docs/WOW/infobase-manager-design.md` §5). */
 
@@ -20,6 +21,15 @@ export function getIbcmdAutoDetectSetting(): boolean {
   const cfg = vscode.workspace.getConfiguration();
   const v = cfg.get<boolean>('1cMetadataTree.ibcmd.autoDetect');
   return v !== false;
+}
+
+export function getIbcmdConsoleOutputEncodingSetting(): IbcmdConsoleOutputEncoding {
+  const cfg = vscode.workspace.getConfiguration();
+  const v = cfg.get<string>('1cMetadataTree.ibcmd.consoleOutputEncoding', 'auto');
+  if (v === 'utf8' || v === 'oem866' || v === 'windows1251' || v === 'auto') {
+    return v;
+  }
+  return 'auto';
 }
 
 export function getPlatformPathSetting(): string {

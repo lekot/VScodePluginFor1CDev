@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { EventEmitter } from 'events';
 import { spawn, type ChildProcess } from 'child_process';
 import { PassThrough } from 'stream';
+import iconv from 'iconv-lite';
 import {
   IBCMD_STREAM_RING_BUFFER_MAX_BYTES,
   runIbcmdStreaming,
@@ -41,8 +42,8 @@ function cancellable(): IbcmdStreamCancellation & { cancel: () => void } {
 
 interface ControllableSpawn {
   spawnImpl: typeof spawn;
-  pushStdout: (s: string) => void;
-  pushStderr: (s: string) => void;
+  pushStdout: (s: string | Buffer) => void;
+  pushStderr: (s: string | Buffer) => void;
   close: (code: number | null, signal: NodeJS.Signals | null) => void;
   lastChild: () => ChildProcess | undefined;
 }
@@ -71,10 +72,10 @@ function createControllableSpawn(): ControllableSpawn {
 
   return {
     spawnImpl,
-    pushStdout: (s: string) => {
+    pushStdout: (s: string | Buffer) => {
       stdoutEE.write(s);
     },
-    pushStderr: (s: string) => {
+    pushStderr: (s: string | Buffer) => {
       stderrEE.write(s);
     },
     close: (code, signal) => {
@@ -187,5 +188,97 @@ suite('IbcmdStreamingRunner', () => {
     const out = await p;
     assert.strictEqual(out.logTruncated, true);
     assert.ok(out.combinedLog.length <= 12);
+  });
+
+  test('consoleOutputEncoding utf8 merges split multibyte UTF-8 on close flush', async () => {
+    const ctrl = createControllableSpawn();
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 30_000,
+      cancellation: staticCancellation(false),
+      consoleOutputEncoding: 'utf8',
+      spawnImpl: ctrl.spawnImpl,
+    });
+    const b = Buffer.from('Я', 'utf8');
+    ctrl.pushStdout(b.subarray(0, 1));
+    ctrl.pushStdout(b.subarray(1, 2));
+    ctrl.close(0, null);
+    const out = await p;
+    assert.strictEqual(out.combinedLog, 'Я');
+  });
+
+  test('consoleOutputEncoding oem866 decodes CP866 bytes from stderr', async () => {
+    const ctrl = createControllableSpawn();
+    const chunks: Array<{ stream: 'stdout' | 'stderr'; text: string }> = [];
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 30_000,
+      cancellation: staticCancellation(false),
+      consoleOutputEncoding: 'oem866',
+      onStreamChunk: (text, stream) => chunks.push({ stream, text }),
+      spawnImpl: ctrl.spawnImpl,
+    });
+    const msg = 'Файл не найден';
+    ctrl.pushStderr(iconv.encode(msg, 'cp866'));
+    ctrl.close(0, null);
+    const out = await p;
+    assert.ok(out.combinedLog.includes(msg));
+    assert.ok(chunks.some((c) => c.stream === 'stderr' && c.text.includes(msg)));
+  });
+
+  test('consoleOutputEncoding windows1251 decodes CP1251 stdout', async () => {
+    const ctrl = createControllableSpawn();
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 30_000,
+      cancellation: staticCancellation(false),
+      consoleOutputEncoding: 'windows1251',
+      spawnImpl: ctrl.spawnImpl,
+    });
+    const line = 'Строка ошибки';
+    ctrl.pushStdout(iconv.encode(line, 'cp1251'));
+    ctrl.close(0, null);
+    const out = await p;
+    assert.strictEqual(out.combinedLog, line);
+  });
+
+  test('timeout flushes UTF-8 streaming decoder tail', async () => {
+    const ctrl = createControllableSpawn();
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 80,
+      cancellation: staticCancellation(false),
+      consoleOutputEncoding: 'utf8',
+      spawnImpl: ctrl.spawnImpl,
+    });
+    const incomplete = Buffer.from([0xf0, 0x9f, 0x98]);
+    ctrl.pushStdout(incomplete);
+    const out = await p;
+    assert.strictEqual(out.timedOut, true);
+    assert.ok(out.combinedLog.length > 0);
+  });
+
+  test('auto encoding on Windows decodes CP866 chunks', async () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const ctrl = createControllableSpawn();
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 30_000,
+      cancellation: staticCancellation(false),
+      consoleOutputEncoding: 'auto',
+      spawnImpl: ctrl.spawnImpl,
+    });
+    const pathLine = 'C:\\Users\\User\\1Cv8.1CD.cfl';
+    ctrl.pushStdout(iconv.encode(pathLine, 'cp866'));
+    ctrl.close(0, null);
+    const out = await p;
+    assert.ok(out.combinedLog.includes(pathLine));
   });
 });

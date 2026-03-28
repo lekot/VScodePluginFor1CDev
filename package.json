@@ -552,6 +552,17 @@
           "default": true,
           "description": "When true and path/env are empty, search PATH and typical 1cv8 install directories for ibcmd."
         },
+        "1cMetadataTree.ibcmd.consoleOutputEncoding": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "utf8",
+            "oem866",
+            "windows1251"
+          ],
+          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. On Windows, \"auto\" uses UTF-8 when the bytes are valid UTF-8, otherwise CP866 (typical console). Choose \"utf8\" if your platform already emits UTF-8."
+        },
         "1cMetadataTree.deploy.mode": {
           "type": "string",
           "default": "copy",
@@ -648,7 +659,8 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "fast-xml-parser": "^4.3.0"
+    "fast-xml-parser": "^4.3.0",
+    "iconv-lite": "^0.6.3"
   },
   "c8": {
     "include": [

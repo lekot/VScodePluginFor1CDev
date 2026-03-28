@@ -1,7 +1,8 @@
 import * as path from 'path';
-import { IBCMD_PATH_SETTINGS_QUERY } from './metadataTreeSettings';
+import { decodeIbcmdProcessStreams } from './ibcmd/consoleStreamDecoder';
 import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
 import { runIbcmdExecutable } from './ibcmd/IbcmdProcessRunner';
+import { getIbcmdConsoleOutputEncodingSetting, IBCMD_PATH_SETTINGS_QUERY } from './metadataTreeSettings';
 
 const LOG_MAX = 8000;
 
@@ -59,11 +60,15 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
     args.push('--force');
   }
 
+  const consoleEncoding = getIbcmdConsoleOutputEncodingSetting();
+
   try {
     const { stdout, stderr } = await runIbcmdExecutable(
       pathResult.path,
       args,
-      ibcmdService.getTimeoutMs()
+      ibcmdService.getTimeoutMs(),
+      undefined,
+      consoleEncoding,
     );
     return {
       ok: true,
@@ -89,7 +94,10 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
           : e.signal
             ? `signal=${e.signal}`
             : 'failed';
-    const details = trimLog((e.stdout ?? '').toString(), (e.stderr ?? '').toString());
+    const rawOut = e.stdout != null ? e.stdout : Buffer.alloc(0);
+    const rawErr = e.stderr != null ? e.stderr : Buffer.alloc(0);
+    const { stdout: decOut, stderr: decErr } = decodeIbcmdProcessStreams(rawOut, rawErr, consoleEncoding);
+    const details = trimLog(decOut, decErr);
     const tail = details ? `\n${details}` : e.message ? `\n${e.message}` : '';
     return {
       ok: false,

@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import type * as vscode from 'vscode';
+import type { IbcmdConsoleOutputEncoding } from './ibcmdConsoleEncodingTypes';
+import { createIbcmdStreamChunkDecoders } from './consoleStreamDecoder';
 
 /** Default ring buffer for captured stdout+stderr (design §6). */
 export const IBCMD_STREAM_RING_BUFFER_MAX_BYTES = 384 * 1024;
@@ -14,7 +16,12 @@ export interface IbcmdStreamingRunnerOptions {
   args: string[];
   timeoutMs: number;
   cancellation: IbcmdStreamCancellation;
-  /** Invoked for each decoded chunk (UTF-8). */
+  /**
+   * Raw byte decoding for stdout/stderr. Align with `1cMetadataTree.ibcmd.consoleOutputEncoding`.
+   * Default `auto`: Windows → OEM (CP866) per chunk; other platforms → UTF-8 stream decoder.
+   */
+  consoleOutputEncoding?: IbcmdConsoleOutputEncoding;
+  /** Invoked for each decoded chunk (Unicode text for the Output Channel). */
   onStreamChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void;
   ringBufferMaxBytes?: number;
   /** Injected for tests (default: `child_process.spawn`). */
@@ -144,24 +151,37 @@ export async function runIbcmdStreaming(
       return;
     }
 
-    const onData =
-      (stream: 'stdout' | 'stderr') =>
-      (chunk: Buffer | string): void => {
-        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-        ring.append(text);
-        options.onStreamChunk?.(text, stream);
-      };
+    const enc = options.consoleOutputEncoding ?? 'auto';
+    const dec = createIbcmdStreamChunkDecoders(enc);
 
-    if (typeof child.stdout?.setEncoding === 'function') {
-      child.stdout.setEncoding('utf8');
-    }
-    if (typeof child.stderr?.setEncoding === 'function') {
-      child.stderr.setEncoding('utf8');
-    }
-    child.stdout?.on('data', onData('stdout'));
-    child.stderr?.on('data', onData('stderr'));
+    const appendDecoded = (stream: 'stdout' | 'stderr', chunk: Buffer | string): void => {
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+      const text = stream === 'stdout' ? dec.decodeStdout(buf) : dec.decodeStderr(buf);
+      if (!text) {
+        return;
+      }
+      ring.append(text);
+      options.onStreamChunk?.(text, stream);
+    };
+
+    const flushDecodedStreams = (): void => {
+      const tailOut = dec.flushStdout();
+      const tailErr = dec.flushStderr();
+      if (tailOut) {
+        ring.append(tailOut);
+        options.onStreamChunk?.(tailOut, 'stdout');
+      }
+      if (tailErr) {
+        ring.append(tailErr);
+        options.onStreamChunk?.(tailErr, 'stderr');
+      }
+    };
+
+    child.stdout?.on('data', (chunk) => appendDecoded('stdout', chunk));
+    child.stderr?.on('data', (chunk) => appendDecoded('stderr', chunk));
 
     child.on('error', (err) => {
+      flushDecodedStreams();
       const e = err as NodeJS.ErrnoException;
       finish({
         exitCode: null,
@@ -177,6 +197,7 @@ export async function runIbcmdStreaming(
 
     timeoutId = setTimeout(() => {
       killTree(child);
+      flushDecodedStreams();
       const { text, truncated } = ring.state;
       finish({
         exitCode: null,
@@ -192,6 +213,7 @@ export async function runIbcmdStreaming(
       killTree(child);
       cleanupTimers();
       cancelDisp?.dispose();
+      flushDecodedStreams();
       const { text, truncated } = ring.state;
       finish({
         exitCode: null,
@@ -211,6 +233,7 @@ export async function runIbcmdStreaming(
     child.on('close', (code, signal) => {
       cleanupTimers();
       cancelDisp?.dispose();
+      flushDecodedStreams();
       const { text, truncated } = ring.state;
       const cancelled = options.cancellation.isCancellationRequested && code !== 0;
       finish({

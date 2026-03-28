@@ -8,6 +8,7 @@ import {
 import { resolveIbcmdTimeoutMs, runIbcmdExecutable, type ExecFileFn } from './IbcmdProcessRunner';
 import {
   getIbcmdAutoDetectSetting,
+  getIbcmdConsoleOutputEncodingSetting,
   getIbcmdPathSetting,
   getIbcmdTimeoutMsSetting,
 } from '../metadataTreeSettings';
@@ -61,7 +62,13 @@ export class IbcmdService {
     if (resolved.kind !== 'resolved') {
       throw Object.assign(new Error('ibcmd path not resolved'), { code: 'IBCMD_NOT_RESOLVED' });
     }
-    return runIbcmdExecutable(resolved.path, args, this.getTimeoutMs(), execImpl);
+    return runIbcmdExecutable(
+      resolved.path,
+      args,
+      this.getTimeoutMs(),
+      execImpl,
+      getIbcmdConsoleOutputEncodingSetting(),
+    );
   }
 
   /**
