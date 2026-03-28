@@ -649,7 +649,6 @@ export class MxlParser {
 
     const columnSections = this.collectDesignerColumnSections(docNode);
     const pickedColumns = this.pickDesignerColumnSection(docNode, columnSections);
-    const columnIndexBase = pickedColumns?.minIndex ?? 0;
 
     const cells: MxlRenderCell[] = [];
     let inferredMaxRow = 0;
@@ -662,7 +661,7 @@ export class MxlParser {
         truncated = true;
         break;
       }
-      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics, formats.length, columnIndexBase);
+      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics, formats.length);
       for (const cell of rowCells) {
         if (totalCells >= MAX_TOTAL_CELLS_PER_TABLE) {
           truncated = true;
@@ -874,11 +873,41 @@ export class MxlParser {
 
     const toRemove = new Set<string>();
 
+    /** Every grid slot covered by any cell's rowspan/colspan (before implicit merge). */
+    const spanOccupied = new Set<string>();
+    for (const cell of cells) {
+      const rs = Math.max(1, cell.rowspan ?? 1);
+      const cs = Math.max(1, cell.colspan ?? 1);
+      for (let r = cell.row; r < cell.row + rs; r += 1) {
+        for (let c = cell.col; c < cell.col + cs; c += 1) {
+          spanOccupied.add(`${r}:${c}`);
+        }
+      }
+    }
+
+    const findRowCellCoveringColumn = (
+      rowCells: MxlRenderCell[],
+      col: number,
+      except: MxlRenderCell
+    ): MxlRenderCell | undefined => {
+      for (const c of rowCells) {
+        if (c === except) {
+          continue;
+        }
+        const cw = Math.max(1, c.colspan ?? 1);
+        if (c.col <= col && col < c.col + cw) {
+          return c;
+        }
+      }
+      return undefined;
+    };
+
     for (const rowCells of rowMap.values()) {
       rowCells.sort((a, b) => a.col - b.col);
 
-      // Build a column→cell map for O(1) lookup, enabling gap-column traversal.
-      const colToCell = new Map<number, MxlRenderCell>(rowCells.map((c) => [c.col, c]));
+      const rightmostColInRow = Math.max(
+        ...rowCells.map((c) => c.col + Math.max(1, c.colspan ?? 1) - 1)
+      );
 
       for (let i = 0; i < rowCells.length; i++) {
         const anchor = rowCells[i];
@@ -903,46 +932,44 @@ export class MxlParser {
         }
 
         let mergeCount = 0;
-        // Iterate by column number instead of array index so gap columns
-        // (absent from rowCells) are treated as empty and merged through.
-        // Only iterate up to the last column present in this row — do not
-        // extend into the void beyond the last cell.
-        const maxColInRow = rowCells[rowCells.length - 1].col;
-        if (anchor.col >= maxColInRow) {
-          // Anchor is the last cell in the row — nothing to merge into.
+        // Walk right: true gaps (no <c> in XML), empty absorbable cells, and cells whose colspan
+        // covers a column (colToCell.get(col) is insufficient — only finds anchors at exact col).
+        if (anchor.col >= rightmostColInRow) {
           continue;
         }
-        for (let nextCol = anchor.col + 1; nextCol <= maxColInRow && nextCol < MAX_TABLE_COLS; nextCol++) {
-          const candidate = colToCell.get(nextCol);
-
-          if (candidate === undefined) {
-            // Gap column — not emitted by Designer XML, treat as empty.
-            mergeCount++;
+        let nextCol = anchor.col + 1;
+        while (nextCol <= rightmostColInRow && nextCol < MAX_TABLE_COLS) {
+          const covering = findRowCellCoveringColumn(rowCells, nextCol, anchor);
+          if (covering) {
+            if (covering.text && covering.text.trim().length > 0) {
+              break;
+            }
+            const candidateFormatIndex = this.getCellFormatIndex(covering);
+            const candidateFormat = formats[candidateFormatIndex];
+            if (this.hasLeftBorder(candidateFormat)) {
+              break;
+            }
+            const candidateKey = `${covering.row}:${covering.col}`;
+            if (covered.has(candidateKey)) {
+              break;
+            }
+            // Do not absorb a cell that is itself an explicit merge anchor.
+            if (explicitMergeMap.has(candidateKey)) {
+              break;
+            }
+            const cw = Math.max(1, covering.colspan ?? 1);
+            mergeCount += cw;
+            nextCol = covering.col + cw;
             continue;
           }
 
-          if (candidate.text && candidate.text.trim().length > 0) {
+          // No same-row cell covers this column: either XML gap or slot filled only by rowspan above.
+          if (spanOccupied.has(`${anchor.row}:${nextCol}`)) {
             break;
           }
-
-          const candidateFormatIndex = this.getCellFormatIndex(candidate);
-          const candidateFormat = formats[candidateFormatIndex];
-          if (this.hasLeftBorder(candidateFormat)) {
-            break;
-          }
-
-          const candidateKey = `${candidate.row}:${candidate.col}`;
-          if (covered.has(candidateKey)) {
-            break;
-          }
-
-          // Do not absorb a cell that is itself an explicit merge anchor —
-          // it has its own colspan/rowspan that must be preserved.
-          if (explicitMergeMap.has(candidateKey)) {
-            break;
-          }
-
-          mergeCount++;        }
+          mergeCount++;
+          nextCol++;
+        }
 
         if (mergeCount > 0) {
           anchor.colspan = (anchor.colspan ?? 1) + mergeCount;
@@ -1322,7 +1349,7 @@ export class MxlParser {
     });
   }
 
-  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[], formatCount: number, columnIndexBase: number): MxlRenderCell[] {
+  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[], formatCount: number): MxlRenderCell[] {
     const record = this.asRecord(rowsItemNode);
     if (!record) {
       return [];
@@ -1357,7 +1384,7 @@ export class MxlParser {
         this.warn(diagnostics, 'MXL_CELL_INDEX_LIMIT_EXCEEDED', `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Remaining cells skipped.`);
         break;
       }
-      const result = this.parseDesignerXmlCell(outerC, row, colCursor, formatCount, columnIndexBase);
+      const result = this.parseDesignerXmlCell(outerC, row, colCursor, formatCount);
       cells.push(result.cell);
       colCursor = result.nextCursor;
     }
@@ -1369,12 +1396,12 @@ export class MxlParser {
     outerC: unknown,
     row: number,
     colCursor: number,
-    formatCount: number,
-    columnIndexBase: number
+    formatCount: number
   ): { cell: MxlRenderCell; nextCursor: number } {
     const record = this.asRecord(outerC);
 
-    // Designer XML: optional <i> is the cell's column index (0-based), not colspan.
+    // Designer XML: optional <i> is the 0-based sheet column index (same coordinate system as <merge> c).
+    // It is not tied to <columns><columnsItem><index> (those are format assignments, often 1-based in the schema).
     // Sequential <c> without <i> continue from the cursor after the previous cell.
     let colspan = 1;
     let innerC: unknown = undefined;
@@ -1390,7 +1417,7 @@ export class MxlParser {
               ? Number.parseInt(rawI, 10)
               : NaN;
         if (Number.isFinite(iVal) && iVal >= 0) {
-          colFromI = this.clampIndex(iVal - columnIndexBase, MAX_TABLE_COLS - 1);
+          colFromI = this.clampIndex(iVal, MAX_TABLE_COLS - 1);
         }
       }
       innerC = record['c'];
