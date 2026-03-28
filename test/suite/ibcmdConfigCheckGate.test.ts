@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runIbcmdConfigCheckGate } from '../../src/services/ibcmdConfigCheckGate';
+import { resetIbcmdServiceSingletonForTests } from '../../src/infobaseManager/ibcmd/ibcmdServiceSingleton';
+import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 const suiteOrSkip = process.platform === 'win32' ? suite.skip : suite;
 
@@ -19,6 +21,8 @@ suiteOrSkip('ibcmdConfigCheckGate', () => {
   let tempDir: string;
 
   setup(() => {
+    resetVscodeTestState();
+    resetIbcmdServiceSingletonForTests();
     savedEnv = {};
     for (const key of envKeys) {
       savedEnv[key] = process.env[key];
@@ -28,6 +32,7 @@ suiteOrSkip('ibcmdConfigCheckGate', () => {
   });
 
   teardown(() => {
+    resetVscodeTestState();
     for (const key of envKeys) {
       const value = savedEnv[key];
       if (value === undefined) {
@@ -41,14 +46,20 @@ suiteOrSkip('ibcmdConfigCheckGate', () => {
     }
   });
 
-  test('fails when ibcmd path is missing', async () => {
+  test('fails when ibcmd path from env points to a missing file', async () => {
+    process.env.IBCMD_PATH = path.join(tempDir, 'no-such-ibcmd');
     const result = await runIbcmdConfigCheckGate();
     assert.strictEqual(result.ok, false);
-    assert.ok(result.message.includes('IBCMD_PATH is not set'));
+    assert.strictEqual(result.code, 'IBCMD_NOT_FOUND');
+    assert.ok(result.message.includes('IBCMD_PATH'));
+    assert.ok(result.message.includes('1cInfobaseManager.ibcmdPath'));
   });
 
   test('fails when YAML config path is missing', async () => {
-    process.env.IBCMD_PATH = '/tmp/ibcmd';
+    const scriptPath = path.join(tempDir, 'stub-ibcmd.sh');
+    fs.writeFileSync(scriptPath, '#!/usr/bin/env bash\nexit 0\n', 'utf-8');
+    fs.chmodSync(scriptPath, 0o755);
+    process.env.IBCMD_PATH = scriptPath;
     const result = await runIbcmdConfigCheckGate();
     assert.strictEqual(result.ok, false);
     assert.ok(result.message.includes('IBCMD_INFOBASE_CONFIG is not set'));
@@ -192,14 +203,31 @@ exit 2
     assert.ok(result.message.includes('auth ok'));
   });
 
-  test('fails when ibcmd binary cannot be executed', async () => {
+  test('fails when ibcmd binary from env does not exist (before config check)', async () => {
     process.env.IBCMD_PATH = path.join(tempDir, 'missing-ibcmd-binary');
     process.env.IBCMD_INFOBASE_CONFIG = path.join(tempDir, 'ib.yml');
     fs.writeFileSync(process.env.IBCMD_INFOBASE_CONFIG, 'kind: fake\n', 'utf-8');
 
     const result = await runIbcmdConfigCheckGate();
     assert.strictEqual(result.ok, false);
-    assert.ok(result.message.includes('ibcmd config check failed'));
-    assert.ok(result.message.includes('failed'));
+    assert.strictEqual(result.code, 'IBCMD_NOT_FOUND');
+    assert.ok(result.message.includes('does not exist'));
+  });
+
+  test('resolves ibcmd from workspace 1cInfobaseManager.ibcmdPath when IBCMD_PATH is unset', async () => {
+    const scriptPath = path.join(tempDir, 'ws-settings-ibcmd.sh');
+    fs.writeFileSync(
+      scriptPath,
+      '#!/usr/bin/env bash\nif [ \"$1\" = \"infobase\" ] && [ \"$2\" = \"config\" ] && [ \"$3\" = \"check\" ]; then\n  echo \"ws ok\"\n  exit 0\nfi\necho \"bad args\" >&2\nexit 2\n',
+      'utf-8'
+    );
+    fs.chmodSync(scriptPath, 0o755);
+    vscodeTestState.workspaceConfig['1cInfobaseManager.ibcmdPath'] = scriptPath;
+    process.env.IBCMD_INFOBASE_CONFIG = path.join(tempDir, 'ib-ws.yml');
+    fs.writeFileSync(process.env.IBCMD_INFOBASE_CONFIG, 'kind: fake\n', 'utf-8');
+
+    const result = await runIbcmdConfigCheckGate();
+    assert.strictEqual(result.ok, true);
+    assert.ok(result.message.includes('ws ok'));
   });
 });

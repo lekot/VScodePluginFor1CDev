@@ -81,12 +81,34 @@ const ViewColumn = {
   Nine: 9,
 } as const;
 
+/** Mutable hooks for core tests (workspace keys, dialog results, command log). */
+export const vscodeTestState = {
+  workspaceConfig: {} as Record<string, unknown>,
+  /** When set, `showInformationMessage` returns this instead of `undefined`. */
+  informationMessageResult: undefined as string | undefined,
+  executedCommands: [] as unknown[][],
+};
+
+export function resetVscodeTestState(): void {
+  vscodeTestState.workspaceConfig = {};
+  vscodeTestState.informationMessageResult = undefined;
+  vscodeTestState.executedCommands = [];
+}
+
 const windowStub = {
   createWebviewPanel: (): never => {
     throw new Error('vscode.window.createWebviewPanel: override in test');
   },
   showErrorMessage: async (): Promise<undefined> => undefined,
-  showInformationMessage: async (): Promise<undefined> => undefined,
+  showInformationMessage: async (
+    _message: string,
+    ...items: string[]
+  ): Promise<string | undefined> => {
+    if (vscodeTestState.informationMessageResult !== undefined) {
+      return vscodeTestState.informationMessageResult;
+    }
+    return undefined;
+  },
   showWarningMessage: async (
     _message: string,
     _options?: unknown,
@@ -97,7 +119,12 @@ const windowStub = {
 
 const workspaceStub = {
   getConfiguration: () => ({
-    get: <T>(_section: string, defaultValue?: T) => defaultValue as T,
+    get: <T>(section: string, defaultValue?: T) => {
+      if (Object.prototype.hasOwnProperty.call(vscodeTestState.workspaceConfig, section)) {
+        return vscodeTestState.workspaceConfig[section] as T;
+      }
+      return defaultValue as T;
+    },
   }),
 };
 
@@ -106,7 +133,10 @@ const commandsStub = {
   registerCommand: (_id: string, _callback?: unknown): { dispose: () => void } => ({
     dispose: () => undefined,
   }),
-  executeCommand: async (..._args: unknown[]): Promise<unknown> => undefined,
+  executeCommand: async (...args: unknown[]): Promise<unknown> => {
+    vscodeTestState.executedCommands.push(args);
+    return undefined;
+  },
 };
 
 const vscodeStub = {

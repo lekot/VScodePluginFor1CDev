@@ -173,6 +173,11 @@
         "command": "1c-metadata-tree.removeFromSubsystemComposition",
         "title": "Удалить объект из состава подсистемы",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
+        "title": "CDT 41: Configure ibcmd…",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [

@@ -10,6 +10,7 @@ import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { registerAllCommands } from '../commands';
+import { registerIbcmdInfobaseHooks } from '../infobaseManager/ibcmd/registerIbcmdInfobaseHooks';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
 
 /**
@@ -79,6 +80,8 @@ export function registerExtensionWorkspace(
       supportsMultipleEditorsPerDocument: true,
     })
   );
+
+  registerIbcmdInfobaseHooks(context);
 
   const commandDisposables = registerAllCommands({ context, state, lifecycle });
   context.subscriptions.push(...commandDisposables);
