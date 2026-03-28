@@ -12,6 +12,7 @@ import {
 import {
   interpretIbcmdInfobaseOutcome,
   type IbcmdInfobaseConfigOpKind,
+  type IbcmdInfobaseOperationResult,
 } from '../services/ibcmd/ibcmdInfobaseOperationResult';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { runIbcmdStreaming, type IbcmdStreamCancellation } from '../services/ibcmd/IbcmdStreamingRunner';
@@ -43,6 +44,16 @@ function getOutputChannel(): vscode.OutputChannel {
     outputChannel = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
   }
   return outputChannel;
+}
+
+/** Для WOW §2D: открыть канал вывода ibcmd после раскатки. */
+export function showIbcmdInfobaseOutputChannel(): void {
+  getOutputChannel().show(true);
+}
+
+/** Строка в канал Infobase (ibcmd) без показа панели — итог по шагу раскатки и т.п. */
+export function appendIbcmdOutputLine(line: string): void {
+  getOutputChannel().appendLine(line);
 }
 
 function appendOutputDebounced(chunk: string): void {
@@ -170,6 +181,70 @@ async function ensureStorage(
     return undefined;
   }
   return storage;
+}
+
+/**
+ * Загрузка конфигурации из фиксированного каталога выгрузки (WOW §2D DeployService).
+ * Без модальных диалогов — результат для агрегирования в отчёте.
+ */
+export async function runInfobaseConfigImportFromDirectory(params: {
+  storage: InfobaseStorageService;
+  entry: InfobaseEntry;
+  absoluteSourceDir: string;
+  token: vscode.CancellationToken;
+  /** Подзаголовок в канале вывода (например «раскатка»). */
+  logContext?: string;
+}): Promise<IbcmdInfobaseOperationResult> {
+  const ibcmd = getIbcmdService();
+  const pathResult = ibcmd.resolveExecutablePath();
+  if (pathResult.kind !== 'resolved') {
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage:
+        'Исполняемый файл ibcmd не найден. Укажите путь в настройках или переменную IBCMD_PATH.',
+      logExcerpt: '',
+    };
+  }
+
+  const prep = await prepareIbcmdConfigYaml(params.entry, (id) => params.storage.readPasswordSecret(id));
+  if (!prep.ok) {
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage: prep.userMessage,
+      logExcerpt: '',
+    };
+  }
+
+  const ch = getOutputChannel();
+  const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
+  ch.appendLine(`[import${ctx}] ${params.entry.name} (${new Date().toISOString()})\n`);
+
+  try {
+    const outcome = await runIbcmdStreaming({
+      executablePath: pathResult.path,
+      args: buildInfobaseConfigImportArgs(prep.absoluteConfigPath, path.resolve(params.absoluteSourceDir)),
+      timeoutMs: ibcmd.getTimeoutMs(),
+      cancellation: vscodeCancellation(params.token),
+      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+    });
+
+    flushOutputChannel();
+
+    if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
+      ibcmd.invalidatePathCache();
+    }
+
+    if (outcome.logTruncated) {
+      ch.appendLine(TRUNCATION_WARNING);
+    }
+
+    return interpretIbcmdInfobaseOutcome('import', outcome);
+  } finally {
+    flushOutputChannel();
+    await prep.dispose();
+  }
 }
 
 async function runInfobaseConfigOperation(params: {

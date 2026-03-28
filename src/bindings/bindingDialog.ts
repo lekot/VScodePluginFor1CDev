@@ -8,7 +8,7 @@ import { normalizeConfigRelativePath } from './bindingPathUtils';
 import type { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { Logger } from '../utils/logger';
-import { openBindingDialogForConfigurationFromTree } from './bindingCommands';
+import { openBindingDialogForConfigurationFromTree, runDeployForConfigurationFromTree } from './bindingCommands';
 
 const VIEW_TYPE = '1c-binding-dialog';
 
@@ -671,6 +671,12 @@ export function registerBindingDialogCommands(
     out.push(
       vscode.commands.registerCommand('1c-metadata-tree.bindings.openDialogForConfiguration', async (arg: unknown) => {
         await openBindingDialogForConfigurationFromTree(arg, state, dialog, treeDataProvider);
+      }),
+      vscode.commands.registerCommand('1c-metadata-tree.config.deploy', async (arg: unknown) => {
+        await runDeployForConfigurationFromTree(arg, state, treeDataProvider);
+      }),
+      vscode.commands.registerCommand('1c-metadata-tree.config.deployMultiple', async (arg: unknown) => {
+        await runDeployForConfigurationFromTree(arg, state, treeDataProvider);
       }),
     );
   }

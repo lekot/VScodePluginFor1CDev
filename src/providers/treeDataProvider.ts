@@ -1085,6 +1085,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
       }
 
+      const bindingDeco = this.lookupConfigurationBindingDecoration(element);
+      // WOW §2D: контекст для «Раскатать в базу/базы» (viewItem when в package.json).
+      if (element.type === MetadataType.Configuration) {
+        let cv = 'Configuration';
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          cv += ' bindingBound';
+          // Дизайн §12.5: подпись/иконка от флага массовой раскатки, не от числа баз в списке.
+          const many = bindingDeco.massDeployment === true;
+          cv += many ? ' deployMany' : ' deployOne';
+        }
+        treeItem.contextValue = cv;
+      }
+
       // Set tooltip: name, type, path (additional_req.md п.14)
       const synonym = element.properties.synonym as string | undefined;
       let tooltipText =
@@ -1096,7 +1109,6 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (q && !this.searchUseRegex && this.nodeMatchesSearch(element, q)) {
         tooltipText += `\nНайдено: "${q}"`;
       }
-      const bindingDeco = this.lookupConfigurationBindingDecoration(element);
       if (element.type === MetadataType.Configuration) {
         if (bindingDeco && bindingDeco.boundCount > 0) {
           const mass = bindingDeco.massDeployment ? '\nМассовая раскатка: да' : '';

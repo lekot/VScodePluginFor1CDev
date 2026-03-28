@@ -68,6 +68,7 @@ export const coreSuiteFiles: string[] = [
   'suite/bindingDialog.test.js',
   'suite/bindingConfigurationTree.test.js',
   'suite/bindingTreeDecorations.test.js',
+  'suite/deployService.test.js',
   'suite/bindingStorage.test.js',
   'suite/infobaseCommands.test.js',
   'suite/infobaseConfigCommands.test.js',

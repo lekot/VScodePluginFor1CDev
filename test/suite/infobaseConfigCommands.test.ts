@@ -1,9 +1,33 @@
 import * as assert from 'assert';
-import { serializeInfobaseConfigIbcmdOp } from '../../src/infobases/infobaseConfigCommands';
+import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
+import {
+  appendIbcmdOutputLine,
+  serializeInfobaseConfigIbcmdOp,
+} from '../../src/infobases/infobaseConfigCommands';
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+suite('infobaseConfigCommands appendIbcmdOutputLine', () => {
+  teardown(() => {
+    resetVscodeTestState();
+  });
+
+  test('writes line to stub output channel', () => {
+    appendIbcmdOutputLine('[тест] строка');
+    assert.ok(vscodeTestState.outputChannelLines.some((l) => l === '[тест] строка'));
+  });
+
+  test('appends multiple lines in order', () => {
+    appendIbcmdOutputLine('[тест] a');
+    appendIbcmdOutputLine('[тест] b');
+    assert.deepStrictEqual(
+      vscodeTestState.outputChannelLines.filter((l) => l.startsWith('[тест]')),
+      ['[тест] a', '[тест] b'],
+    );
+  });
+});
 
 suite('infobaseConfigCommands serializeInfobaseConfigIbcmdOp', () => {
   test('serializes concurrent callers: second runs after first completes', async () => {

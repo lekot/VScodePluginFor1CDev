@@ -256,6 +256,18 @@
         "title": "Привязать базы…",
         "category": "CDT 41",
         "icon": "$(link)"
+      },
+      {
+        "command": "1c-metadata-tree.config.deploy",
+        "title": "Раскатать в базу…",
+        "category": "CDT 41",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "1c-metadata-tree.config.deployMultiple",
+        "title": "Раскатать в базы…",
+        "category": "CDT 41",
+        "icon": "$(run-all)"
       }
     ],
     "customEditors": [
@@ -292,6 +304,14 @@
       "commandPalette": [
         {
           "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.config.deploy",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployMultiple",
           "when": "false"
         }
       ],
@@ -335,8 +355,18 @@
       "view/item/context": [
         {
           "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
-          "when": "view == 1c-metadata-tree && viewItem == 'Configuration'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
           "group": "infobase@0"
+        },
+        {
+          "command": "1c-metadata-tree.config.deploy",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound.*deployOne/",
+          "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployMultiple",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound.*deployMany/",
+          "group": "infobase@1"
         },
         {
           "command": "1c-metadata-tree.openXML",

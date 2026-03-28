@@ -115,6 +115,13 @@ const ViewColumn = {
   Nine: 9,
 } as const;
 
+/** Минимальный enum для `withProgress` / WOW §2D раскатка. */
+const ProgressLocation = {
+  SourceControl: 1,
+  Window: 10,
+  Notification: 15,
+} as const;
+
 /** Mutable hooks for core tests (workspace keys, dialog results, command log). */
 export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
@@ -148,25 +155,11 @@ export const vscodeTestState = {
   mockWorkspaceFolders: [] as Array<{ name: string; index: number; uri: { fsPath: string; scheme: string } }>,
   onDidSaveDocumentListeners: [] as Array<(e: { uri: { fsPath: string } }) => void>,
   onDidChangeWorkspaceFoldersListeners: [] as Array<(e: unknown) => void>,
+  /** Собранные строки `OutputChannel.appendLine` (ibcmd / раскатка). */
+  outputChannelLines: [] as string[],
+  /** Собранные фрагменты `OutputChannel.append`. */
+  outputChannelChunks: [] as string[],
 };
-
-export function resetVscodeTestState(): void {
-  vscodeTestState.workspaceConfig = {};
-  vscodeTestState.informationMessageResult = undefined;
-  vscodeTestState.executedCommands = [];
-  vscodeTestState.warningLog = [];
-  vscodeTestState.errorLog = [];
-  vscodeTestState.informationLog = [];
-  vscodeTestState.quickPickQueue = [];
-  vscodeTestState.openDialogQueue = [];
-  vscodeTestState.inputBoxQueue = [];
-  vscodeTestState.warningMessageReturnQueue = [];
-  vscodeTestState.openExternalLog = [];
-  vscodeTestState.openExternalResult = true;
-  vscodeTestState.mockWorkspaceFolders = [];
-  vscodeTestState.onDidSaveDocumentListeners = [];
-  vscodeTestState.onDidChangeWorkspaceFoldersListeners = [];
-}
 
 /** Для тестов синхронизации привязок (сохранение `.vscode/infobase-bindings.json`). */
 export function fireWorkspaceDidSaveDocument(fsPath: string): void {
@@ -239,7 +232,30 @@ const windowStub = {
     }
     return undefined;
   },
+  withProgress: async <R>(
+    _options: { location?: unknown; title?: string; cancellable?: boolean },
+    task: (
+      progress: { report: (value: { message?: string; increment?: number }) => void },
+      token: { isCancellationRequested: boolean; onCancellationRequested: () => { dispose: () => void } },
+    ) => Thenable<R>,
+  ): Promise<R> => {
+    const token = {
+      isCancellationRequested: false,
+      onCancellationRequested: () => ({ dispose: () => undefined }),
+    };
+    return await task({ report: () => undefined }, token);
+  },
   setStatusBarMessage: (): { dispose: () => void } => ({ dispose: () => undefined }),
+  createOutputChannel: (_name: string) => ({
+    appendLine: (s: string) => {
+      vscodeTestState.outputChannelLines.push(s);
+    },
+    append: (s: string) => {
+      vscodeTestState.outputChannelChunks.push(s);
+    },
+    show: (_preserveFocus?: boolean) => undefined,
+    dispose: () => undefined,
+  }),
 };
 
 const workspaceStub = {
@@ -289,6 +305,43 @@ const workspaceStub = {
   },
 };
 
+/**
+ * `bindingDialog` tests replace `workspaceFolders` via `Object.defineProperty`, which hides
+ * the stub getter tied to `vscodeTestState.mockWorkspaceFolders`. Restore it on each reset.
+ */
+/** Сброс подмены `workspaceFolders` (см. bindingDialog tests / `defineProperty`). */
+export function restoreVscodeWorkspaceFoldersGetter(): void {
+  Reflect.deleteProperty(workspaceStub, 'workspaceFolders');
+  Object.defineProperty(workspaceStub, 'workspaceFolders', {
+    configurable: true,
+    enumerable: true,
+    get(): typeof vscodeTestState.mockWorkspaceFolders {
+      return vscodeTestState.mockWorkspaceFolders;
+    },
+  });
+}
+
+export function resetVscodeTestState(): void {
+  vscodeTestState.workspaceConfig = {};
+  vscodeTestState.informationMessageResult = undefined;
+  vscodeTestState.executedCommands = [];
+  vscodeTestState.warningLog = [];
+  vscodeTestState.errorLog = [];
+  vscodeTestState.informationLog = [];
+  vscodeTestState.quickPickQueue = [];
+  vscodeTestState.openDialogQueue = [];
+  vscodeTestState.inputBoxQueue = [];
+  vscodeTestState.warningMessageReturnQueue = [];
+  vscodeTestState.openExternalLog = [];
+  vscodeTestState.openExternalResult = true;
+  vscodeTestState.mockWorkspaceFolders = [];
+  vscodeTestState.onDidSaveDocumentListeners = [];
+  vscodeTestState.onDidChangeWorkspaceFoldersListeners = [];
+  vscodeTestState.outputChannelLines = [];
+  vscodeTestState.outputChannelChunks = [];
+  restoreVscodeWorkspaceFoldersGetter();
+}
+
 /** Shared by core tests; `import * as vscode` binds getters to these objects. */
 const commandsStub = {
   registerCommand: (_id: string, _callback?: unknown): { dispose: () => void } => ({
@@ -327,6 +380,7 @@ const vscodeStub = {
   EventEmitter: VSCodeEventEmitter,
   ExtensionMode,
   ViewColumn,
+  ProgressLocation,
   commands: commandsStub,
   env: envStub,
   Disposable,
