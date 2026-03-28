@@ -1,3 +1,4 @@
+import * as path from 'path';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import { INFOBASE_STORAGE_MAX_ENTRIES } from './constants';
 
@@ -56,6 +57,94 @@ export function validateInfobaseEntry(entry: InfobaseEntry): void {
   }
 }
 
+/** Normalized path for duplicate checks (Windows drive letter lowercased, slashes unified). */
+export function normalizeFsPathForCompare(p: string): string {
+  const t = p.trim();
+  if (!t) {
+    return '';
+  }
+  let n = path.normalize(t).replace(/\\/g, '/').toLowerCase();
+  while (n.length > 1 && n.endsWith('/')) {
+    n = n.slice(0, -1);
+  }
+  return n;
+}
+
+/**
+ * Stable key for “same physical infobase” detection (plan §1D #14).
+ * Empty string if the entry has no comparable target yet (should not happen after {@link validateInfobaseEntry}).
+ */
+export function infobaseDuplicateTargetKey(entry: InfobaseEntry): string {
+  if (entry.type === 'file') {
+    const fp = entry.filePath?.trim();
+    if (fp) {
+      return `file:path:${normalizeFsPathForCompare(fp)}`;
+    }
+    const yaml = entry.ibcmdConfigYamlPath?.trim();
+    if (yaml) {
+      return `file:yaml:${normalizeFsPathForCompare(yaml)}`;
+    }
+    return '';
+  }
+  if (entry.type === 'server') {
+    const s = entry.server?.trim().toLowerCase() ?? '';
+    const d = entry.database?.trim().toLowerCase() ?? '';
+    return `server:${s}|${d}`;
+  }
+  if (entry.type === 'web') {
+    const u = entry.webUrl?.trim() ?? '';
+    try {
+      const url = new URL(u);
+      const pathname = url.pathname.replace(/\/+$/, '') || '/';
+      return `web:${url.protocol}//${url.host.toLowerCase()}${pathname}${url.search}`;
+    } catch {
+      return `web:raw:${u.toLowerCase()}`;
+    }
+  }
+  return '';
+}
+
+function validateDuplicateTargets(entries: InfobaseEntry[]): void {
+  const keyToId = new Map<string, string>();
+  for (const e of entries) {
+    const k = infobaseDuplicateTargetKey(e);
+    if (!k) {
+      continue;
+    }
+    const existingId = keyToId.get(k);
+    if (existingId !== undefined && existingId !== e.id) {
+      throw new InfobaseValidationError(
+        `Дублируется расположение базы (тот же целевой объект, что у записи id ${existingId}).`,
+      );
+    }
+    keyToId.set(k, e.id);
+  }
+}
+
+/**
+ * Ensures {@link candidate} does not share a target key with any row in {@link existing} (excluding {@link excludeId}).
+ */
+export function assertNoConflictingInfobaseTarget(
+  candidate: InfobaseEntry,
+  existing: InfobaseEntry[],
+  excludeId?: string,
+): void {
+  const key = infobaseDuplicateTargetKey(candidate);
+  if (!key) {
+    return;
+  }
+  for (const e of existing) {
+    if (excludeId !== undefined && e.id === excludeId) {
+      continue;
+    }
+    if (infobaseDuplicateTargetKey(e) === key) {
+      throw new InfobaseValidationError(
+        `Такая база уже есть в списке («${e.name}»). Укажите другой каталог, сервер или URL.`,
+      );
+    }
+  }
+}
+
 /**
  * Validates a full list before persistence: caps, duplicates, per-entry rules.
  */
@@ -73,4 +162,5 @@ export function validateInfobaseEntryList(entries: InfobaseEntry[]): void {
     }
     seen.add(e.id);
   }
+  validateDuplicateTargets(entries);
 }

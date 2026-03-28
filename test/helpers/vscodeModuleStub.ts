@@ -91,19 +91,42 @@ export const vscodeTestState = {
   /** When set, `showInformationMessage` returns this instead of `undefined`. */
   informationMessageResult: undefined as string | undefined,
   executedCommands: [] as unknown[][],
+  /** Captured messages (Infobase Manager / dialog tests). */
+  warningLog: [] as string[],
+  errorLog: [] as string[],
+  /** Sequential return values for `showQuickPick` (shifted each call). */
+  quickPickQueue: [] as unknown[],
+  /** Sequential results for `showOpenDialog` (shifted each call). */
+  openDialogQueue: [] as { fsPath: string; scheme: string }[][],
+  /** Sequential results for `showInputBox` (shifted each call). */
+  inputBoxQueue: [] as (string | undefined)[],
+  /**
+   * Optional per-call return values for `showWarningMessage` (shifted each call).
+   * Use `undefined` to simulate dismiss / cancel. When empty, stub keeps legacy behavior.
+   */
+  warningMessageReturnQueue: [] as (string | undefined)[],
 };
 
 export function resetVscodeTestState(): void {
   vscodeTestState.workspaceConfig = {};
   vscodeTestState.informationMessageResult = undefined;
   vscodeTestState.executedCommands = [];
+  vscodeTestState.warningLog = [];
+  vscodeTestState.errorLog = [];
+  vscodeTestState.quickPickQueue = [];
+  vscodeTestState.openDialogQueue = [];
+  vscodeTestState.inputBoxQueue = [];
+  vscodeTestState.warningMessageReturnQueue = [];
 }
 
 const windowStub = {
   createWebviewPanel: (): never => {
     throw new Error('vscode.window.createWebviewPanel: override in test');
   },
-  showErrorMessage: async (): Promise<undefined> => undefined,
+  showErrorMessage: async (message: string): Promise<undefined> => {
+    vscodeTestState.errorLog.push(message);
+    return undefined;
+  },
   showInformationMessage: async (
     _message: string,
     ...items: string[]
@@ -118,10 +141,14 @@ const windowStub = {
    * Uses `informationMessageResult`: when set to a string, that button is chosen; when `undefined`, simulates dismiss.
    */
   showWarningMessage: async (
-    _message: string,
+    message: string,
     arg2?: unknown,
     ...rest: string[]
   ): Promise<string | undefined> => {
+    vscodeTestState.warningLog.push(message);
+    if (vscodeTestState.warningMessageReturnQueue.length > 0) {
+      return vscodeTestState.warningMessageReturnQueue.shift();
+    }
     if (vscodeTestState.informationMessageResult !== undefined) {
       return vscodeTestState.informationMessageResult;
     }
@@ -129,6 +156,24 @@ const windowStub = {
       return undefined;
     }
     return Promise.resolve(rest[0]);
+  },
+  showQuickPick: async (_items: unknown, _options?: unknown): Promise<unknown> => {
+    if (vscodeTestState.quickPickQueue.length > 0) {
+      return vscodeTestState.quickPickQueue.shift();
+    }
+    return undefined;
+  },
+  showOpenDialog: async (_options?: unknown): Promise<{ fsPath: string; scheme: string }[] | undefined> => {
+    if (vscodeTestState.openDialogQueue.length > 0) {
+      return vscodeTestState.openDialogQueue.shift();
+    }
+    return undefined;
+  },
+  showInputBox: async (_options?: unknown): Promise<string | undefined> => {
+    if (vscodeTestState.inputBoxQueue.length > 0) {
+      return vscodeTestState.inputBoxQueue.shift();
+    }
+    return undefined;
   },
   setStatusBarMessage: (): { dispose: () => void } => ({ dispose: () => undefined }),
 };

@@ -108,6 +108,13 @@ export class InfobaseStorageService {
   }
 
   /**
+   * Persists password for a server infobase (ibcmd). Call after {@link upsert} when {@link InfobaseEntry.hasStoredPassword} is true.
+   */
+  async writePasswordSecret(entryId: string, password: string): Promise<void> {
+    await this.secretStorage.store(infobasePasswordSecretKey(entryId), password);
+  }
+
+  /**
    * Removes an entry and deletes its password secret (idempotent).
    */
   async remove(id: string): Promise<void> {

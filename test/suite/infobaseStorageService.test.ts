@@ -12,6 +12,9 @@ import { migrateInfobaseEntry, migrateStorageRoot } from '../../src/infobases/in
 import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import {
   InfobaseValidationError,
+  assertNoConflictingInfobaseTarget,
+  infobaseDuplicateTargetKey,
+  normalizeFsPathForCompare,
   validateInfobaseEntry,
   validateInfobaseEntryList,
 } from '../../src/infobases/infobaseValidator';
@@ -111,17 +114,18 @@ class ThrowingGetMemento implements Memento {
 
 function makeEntry(overrides: Partial<InfobaseEntry> = {}): InfobaseEntry {
   const now = new Date().toISOString();
-  return {
-    id: randomUUID(),
+  const id = overrides.id ?? randomUUID();
+  const base: InfobaseEntry = {
+    id,
     name: 'Demo',
     type: 'file',
-    filePath: 'C:/tmp',
-    ibcmdConfigYamlPath: 'C:/tmp/ib.yaml',
+    filePath: `C:/tmp/${id}`,
+    ibcmdConfigYamlPath: `C:/tmp/${id}/ib.yaml`,
     hasStoredPassword: false,
     createdAt: now,
     lastUsedAt: now,
-    ...overrides,
   };
+  return { ...base, ...overrides };
 }
 
 suite('infobaseConstants', () => {
@@ -229,9 +233,9 @@ suite('infobaseValidator', () => {
     assert.throws(() => validateInfobaseEntry(makeEntry({ id: '   ' })), InfobaseValidationError);
   });
 
-  test('validateInfobaseEntry rejects wrong type', () => {
+  test('validateInfobaseEntry rejects unsupported type string', () => {
     assert.throws(
-      () => validateInfobaseEntry(makeEntry({ type: 'server' as InfobaseEntry['type'] })),
+      () => validateInfobaseEntry({ ...makeEntry(), type: 'bogus' as unknown as InfobaseEntry['type'] }),
       InfobaseValidationError,
     );
   });
@@ -249,6 +253,63 @@ suite('infobaseValidator', () => {
         ),
       InfobaseValidationError,
     );
+  });
+
+  test('validateInfobaseEntry accepts file with yaml only (no filePath)', () => {
+    assert.doesNotThrow(() =>
+      validateInfobaseEntry(
+        makeEntry({ filePath: undefined, ibcmdConfigYamlPath: 'C:/cfg/only.yaml' }),
+      ),
+    );
+  });
+
+  test('validateInfobaseEntry rejects server without server or database', () => {
+    assert.throws(
+      () =>
+        validateInfobaseEntry(
+          makeEntry({
+            type: 'server',
+            filePath: undefined,
+            ibcmdConfigYamlPath: undefined,
+            server: '',
+            database: 'db',
+          }),
+        ),
+      InfobaseValidationError,
+    );
+    assert.throws(
+      () =>
+        validateInfobaseEntry(
+          makeEntry({
+            type: 'server',
+            filePath: undefined,
+            ibcmdConfigYamlPath: undefined,
+            server: 'srv',
+            database: '  ',
+          }),
+        ),
+      InfobaseValidationError,
+    );
+  });
+
+  test('validateInfobaseEntry rejects web without webUrl', () => {
+    assert.throws(
+      () =>
+        validateInfobaseEntry(
+          makeEntry({
+            type: 'web',
+            filePath: undefined,
+            ibcmdConfigYamlPath: undefined,
+            webUrl: '',
+          }),
+        ),
+      InfobaseValidationError,
+    );
+  });
+
+  test('validateInfobaseEntry accepts valid UUID v4', () => {
+    const id = randomUUID();
+    assert.doesNotThrow(() => validateInfobaseEntry(makeEntry({ id })));
   });
 
   test('validateInfobaseEntry rejects empty createdAt', () => {
@@ -269,11 +330,165 @@ suite('infobaseValidator', () => {
         makeEntry({
           name: `E${i}`,
           ibcmdConfigYamlPath: `/p/${i}.yaml`,
-          filePath: `/p`,
+          filePath: `/p/${i}`,
         }),
       );
     }
     assert.doesNotThrow(() => validateInfobaseEntryList(list));
+  });
+
+  test('validateInfobaseEntryList rejects duplicate file path', () => {
+    const a = makeEntry({ name: 'A', filePath: 'C:/same', ibcmdConfigYamlPath: '/x/a.yaml' });
+    const b = makeEntry({ name: 'B', filePath: 'c:\\same\\', ibcmdConfigYamlPath: '/x/b.yaml' });
+    assert.throws(() => validateInfobaseEntryList([a, b]), InfobaseValidationError);
+  });
+
+  test('validateInfobaseEntryList rejects more than max entries', () => {
+    const list: InfobaseEntry[] = [];
+    for (let i = 0; i < INFOBASE_STORAGE_MAX_ENTRIES + 1; i += 1) {
+      list.push(
+        makeEntry({
+          name: `E${i}`,
+          ibcmdConfigYamlPath: `/p/${i}.yaml`,
+          filePath: `/p/${i}`,
+        }),
+      );
+    }
+    assert.throws(() => validateInfobaseEntryList(list), InfobaseValidationError);
+  });
+
+  test('validateInfobaseEntryList rejects duplicate yaml-only targets', () => {
+    const a = makeEntry({
+      name: 'A',
+      filePath: undefined,
+      ibcmdConfigYamlPath: 'D:/shared/ib.yaml',
+    });
+    const b = makeEntry({
+      name: 'B',
+      filePath: undefined,
+      ibcmdConfigYamlPath: 'd:\\shared\\ib.yaml',
+    });
+    assert.throws(() => validateInfobaseEntryList([a, b]), InfobaseValidationError);
+  });
+
+  test('validateInfobaseEntryList rejects duplicate server target', () => {
+    const a = makeEntry({
+      type: 'server',
+      name: 'A',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 'Srv',
+      database: 'db',
+    });
+    const b = makeEntry({
+      type: 'server',
+      name: 'B',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 'srv',
+      database: 'DB',
+    });
+    assert.throws(() => validateInfobaseEntryList([a, b]), InfobaseValidationError);
+  });
+
+  test('assertNoConflictingInfobaseTarget rejects duplicate file path', () => {
+    const existing = makeEntry({ name: 'First', filePath: 'D:/bases/a' });
+    const candidate = makeEntry({ name: 'Second', filePath: 'd:\\bases\\a\\' });
+    assert.throws(
+      () => assertNoConflictingInfobaseTarget(candidate, [existing]),
+      (err: unknown) =>
+        err instanceof InfobaseValidationError && (err.message as string).includes('First'),
+    );
+  });
+
+  test('assertNoConflictingInfobaseTarget allows same id when excludeId matches (edit)', () => {
+    const e = makeEntry({ name: 'Same', filePath: 'C:/one' });
+    assert.doesNotThrow(() => assertNoConflictingInfobaseTarget(e, [e], e.id));
+  });
+
+  test('assertNoConflictingInfobaseTarget still conflicts when excludeId is different', () => {
+    const a = makeEntry({ name: 'A', filePath: 'E:/dup' });
+    const b = makeEntry({ name: 'B', filePath: 'e:/dup' });
+    assert.throws(
+      () => assertNoConflictingInfobaseTarget(b, [a], randomUUID()),
+      InfobaseValidationError,
+    );
+  });
+
+  test('assertNoConflictingInfobaseTarget no-op when duplicate key is empty', () => {
+    const incomplete = {
+      ...makeEntry({ filePath: undefined, ibcmdConfigYamlPath: undefined }),
+      type: 'file' as const,
+    };
+    assert.doesNotThrow(() => assertNoConflictingInfobaseTarget(incomplete, []));
+  });
+
+  test('assertNoConflictingInfobaseTarget rejects duplicate web URL (normalized)', () => {
+    const a = makeEntry({
+      type: 'web',
+      name: 'A',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      webUrl: 'https://host/path/',
+    });
+    const b = makeEntry({
+      type: 'web',
+      name: 'B',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      webUrl: 'https://host/path',
+    });
+    assert.throws(() => assertNoConflictingInfobaseTarget(b, [a]), InfobaseValidationError);
+  });
+
+  test('infobaseDuplicateTargetKey distinguishes file path vs yaml-only', () => {
+    const byPath = makeEntry({ name: 'P', filePath: 'C:/ib', ibcmdConfigYamlPath: 'C:/other.yaml' });
+    const byYaml = makeEntry({
+      name: 'Y',
+      filePath: undefined,
+      ibcmdConfigYamlPath: 'C:/only.yaml',
+    });
+    assert.notStrictEqual(infobaseDuplicateTargetKey(byPath), infobaseDuplicateTargetKey(byYaml));
+  });
+
+  test('infobaseDuplicateTargetKey normalizes web URL query and host case', () => {
+    const a = makeEntry({
+      type: 'web',
+      name: 'A',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      webUrl: 'https://HOST/base?q=1',
+    });
+    const b = makeEntry({
+      type: 'web',
+      name: 'B',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      webUrl: 'https://host/base/?q=1',
+    });
+    assert.strictEqual(infobaseDuplicateTargetKey(a), infobaseDuplicateTargetKey(b));
+  });
+
+  test('infobaseDuplicateTargetKey uses raw fallback for invalid web URL', () => {
+    const e = makeEntry({
+      type: 'web',
+      name: 'W',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      webUrl: 'not a valid url',
+    });
+    assert.ok(infobaseDuplicateTargetKey(e).startsWith('web:raw:'));
+  });
+});
+
+suite('normalizeFsPathForCompare', () => {
+  test('empty and whitespace', () => {
+    assert.strictEqual(normalizeFsPathForCompare(''), '');
+    assert.strictEqual(normalizeFsPathForCompare('   '), '');
+  });
+
+  test('unifies slashes and trailing separators', () => {
+    assert.strictEqual(normalizeFsPathForCompare('C:\\a\\b\\'), normalizeFsPathForCompare('c:/a/b'));
   });
 });
 
@@ -356,7 +571,7 @@ suite('InfobaseStorageService', () => {
         makeEntry({
           name: `E${i}`,
           ibcmdConfigYamlPath: `/p/${i}.yaml`,
-          filePath: '/p',
+          filePath: `/p/${i}`,
         }),
       );
     }
