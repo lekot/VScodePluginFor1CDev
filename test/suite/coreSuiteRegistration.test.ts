@@ -16,6 +16,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/ibcmdMatrixAdapter.test.js',
   'suite/ibcmdCliScript.test.js',
   'suite/ibcmdReportPaths.test.js',
+  'suite/infobaseStorageService.test.js',
   'suite/formCommandEngineFeatureFlag.test.js',
   'suite/formPaths.test.js',
   'suite/xmlChildObjects.test.js',

@@ -8,6 +8,7 @@ import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { TreeNode } from '../models/treeNode';
+import { InfobaseStorageService } from '../infobaseManager/infobaseStorageService';
 
 /**
  * Holds extension-wide mutable references (providers, tree view, reload coordinator).
@@ -24,9 +25,11 @@ export class ExtensionState {
   extensionContext: vscode.ExtensionContext | undefined;
   metadataWatchers: MetadataWatcherService[] = [];
   reloadCoordinator: ReloadCoordinatorService | null = null;
+  infobaseStorage: InfobaseStorageService | null = null;
 
   init(context: vscode.ExtensionContext): void {
     this.extensionContext = context;
+    this.infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
   }
 
   dispose(): void {
@@ -36,5 +39,6 @@ export class ExtensionState {
     this.metadataWatchers = [];
     this.reloadCoordinator?.dispose();
     this.reloadCoordinator = null;
+    this.infobaseStorage = null;
   }
 }

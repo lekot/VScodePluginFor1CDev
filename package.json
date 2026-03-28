@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.29.4",
+  "version": "0.29.6",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -327,6 +327,21 @@
           "type": "boolean",
           "default": true,
           "description": "Use compact rights write in Rights Editor: only output <right> when true for simple rights; keep and update only <value> for rights with restrictionByCondition."
+        },
+        "1cInfobaseManager.ibcmdPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ibcmd executable. When empty, the IBCMD_PATH environment variable is used (same as matrix / e2e)."
+        },
+        "1cInfobaseManager.platformBinPath": {
+          "type": "string",
+          "default": "",
+          "description": "Directory containing 1cv8.exe or full path to the platform binary for launching 1C:Enterprise / Designer. Empty means auto-detect when that feature is implemented."
+        },
+        "1cInfobaseManager.ibcmdTimeoutMs": {
+          "type": "number",
+          "default": 0,
+          "description": "Default timeout in milliseconds for ibcmd operations. Zero or negative values use the built-in default (600000 ms), consistent with IBCMD_TIMEOUT_MS / ibcmd gate."
         }
       }
     },
