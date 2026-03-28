@@ -16,6 +16,8 @@ import {
   resolveLaunchExecutable,
   spawnPlatformProcess,
 } from '../services/platformLauncher';
+import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
+import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
 
 type InfobaseTypePick = InfobaseEntryType;
 
@@ -65,6 +67,137 @@ function defaultNameFromFsPath(fsPath: string): string {
 /**
  * WOW Infobase Manager — add / edit / remove catalog entries (plan §1D #11–16, design UC-03 / UC-10).
  */
+function formatIbcmdCreateFailureMessage(err: unknown): string {
+  const e = err as NodeJS.ErrnoException & { stderr?: string; stdout?: string; code?: string | number };
+  const chunk = (e.stderr ?? e.stdout ?? e.message ?? String(err)).trim();
+  const trimmed = chunk.length > 800 ? `${chunk.slice(0, 800)}…` : chunk;
+  return trimmed ? `Не удалось создать базу: ${trimmed}` : 'Не удалось создать базу (ibcmd).';
+}
+
+/**
+ * WOW Infobase Manager §3A #46–48: команда «Создать базу» — файловая ИБ через `ibcmd infobase create`, запись в каталог, уведомление.
+ * Серверная / веб — отдельные подзадачи §3B / §3C.
+ */
+export async function runCreateInfobase(
+  storage: InfobaseStorageService | null,
+  options?: { onCatalogChanged?: () => void },
+): Promise<void> {
+  const s = await ensureStorageReady(storage);
+  if (!s) {
+    return;
+  }
+  const existing = await loadAll(s);
+  if (existing.length >= INFOBASE_STORAGE_MAX_ENTRIES) {
+    void vscode.window.showWarningMessage(
+      `Достигнут лимит баз (${INFOBASE_STORAGE_MAX_ENTRIES}). Удалите запись, чтобы добавить новую.`,
+    );
+    return;
+  }
+
+  const kind = await pickInfobaseType();
+  if (!kind) {
+    return;
+  }
+  if (kind === 'server') {
+    void vscode.window.showInformationMessage(
+      'Создание серверной базы через ibcmd (кластер, СУБД) — в WOW §3B. Пока добавьте существующую базу.',
+    );
+    return;
+  }
+  if (kind === 'web') {
+    void vscode.window.showInformationMessage(
+      'Веб-клиент в список добавляется без ibcmd — используйте «Добавить существующую базу» (WOW §3C).',
+    );
+    return;
+  }
+
+  try {
+    await createNewFileInfobaseWithIbcmd(s, existing, options?.onCatalogChanged);
+  } catch (err) {
+    if (err instanceof InfobaseValidationError) {
+      void vscode.window.showErrorMessage(err.message);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function createNewFileInfobaseWithIbcmd(
+  storage: InfobaseStorageService,
+  existing: InfobaseEntry[],
+  onCatalogChanged?: () => void,
+): Promise<void> {
+  const folders = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: 'Выбрать каталог',
+    title: 'Каталог новой файловой информационной базы',
+  });
+  const folder = folders?.[0];
+  if (!folder) {
+    return;
+  }
+  const fsPath = path.resolve(folder.fsPath);
+
+  const name =
+    (await vscode.window.showInputBox({
+      title: 'Имя базы в списке',
+      value: defaultNameFromFsPath(fsPath),
+      validateInput: (v) => (v?.trim() ? null : 'Введите непустое имя'),
+    }))?.trim() ?? '';
+  if (!name) {
+    return;
+  }
+
+  const id = randomUUID();
+  const entry: InfobaseEntry = {
+    id,
+    name,
+    type: 'file',
+    filePath: fsPath,
+    hasStoredPassword: false,
+    createdAt: nowIso(),
+  };
+  validateInfobaseEntry(entry);
+  assertNoConflictingInfobaseTarget(entry, existing);
+
+  const ibcmd = getIbcmdService();
+  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+    await showIbcmdNotFoundDialog();
+    return;
+  }
+
+  let failureMessage: string | undefined;
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Создание информационной базы (ibcmd)...',
+      cancellable: false,
+    },
+    async () => {
+      try {
+        await ibcmd.runInfobaseCreateFileDb(fsPath);
+      } catch (e) {
+        const err = e as NodeJS.ErrnoException & { code?: string | number };
+        if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+          ibcmd.invalidatePathCache();
+        }
+        failureMessage = formatIbcmdCreateFailureMessage(e);
+      }
+    },
+  );
+
+  if (failureMessage) {
+    void vscode.window.showErrorMessage(failureMessage);
+    return;
+  }
+
+  await storage.upsert(entry);
+  onCatalogChanged?.();
+  void vscode.window.showInformationMessage(`База «${name}» создана.`);
+}
+
 export async function runAddExistingInfobase(storage: InfobaseStorageService | null): Promise<void> {
   const s = await ensureStorageReady(storage);
   if (!s) {

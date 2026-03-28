@@ -4,6 +4,7 @@ import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseTreeEntry, InfobaseTreeNode } from './infobaseTreeProvider';
 import {
   runAddExistingInfobase,
+  runCreateInfobase,
   runEditInfobase,
   runOpenDesigner,
   runOpenEnterprise,
@@ -60,7 +61,7 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
       refresh();
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobases.create', async () => {
-      void vscode.window.showInformationMessage(`Создать базу: ${STUB}`);
+      await runCreateInfobase(state.infobaseStorage, { onCatalogChanged: refresh });
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobases.add', async () => {
       await runAddExistingInfobase(state.infobaseStorage);

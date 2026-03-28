@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import {
   createDefaultPathResolverDeps,
   resolveIbcmdPath,
@@ -61,5 +62,13 @@ export class IbcmdService {
       throw Object.assign(new Error('ibcmd path not resolved'), { code: 'IBCMD_NOT_RESOLVED' });
     }
     return runIbcmdExecutable(resolved.path, args, this.getTimeoutMs(), execImpl);
+  }
+
+  /**
+   * WOW plan §3A #47 — файловая ИБ: `ibcmd infobase create --db-path=<abs>` (см. docs/WOW/ibcmd-api-reference.md).
+   */
+  async runInfobaseCreateFileDb(dbPath: string, execImpl?: ExecFileFn): Promise<{ stdout: string; stderr: string }> {
+    const abs = path.resolve(dbPath);
+    return this.run(['infobase', 'create', `--db-path=${abs}`], execImpl);
   }
 }

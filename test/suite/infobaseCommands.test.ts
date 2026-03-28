@@ -1,13 +1,18 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type { Memento, SecretStorage } from 'vscode';
 import * as vscode from 'vscode';
 import { INFOBASE_STORAGE_MAX_ENTRIES } from '../../src/infobases/constants';
 import {
   runAddExistingInfobase,
+  runCreateInfobase,
   runEditInfobase,
   runRemoveInfobase,
 } from '../../src/infobases/infobaseCommands';
+import { getIbcmdService, resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
 import { BindingManager } from '../../src/bindings/bindingManager';
 import { InfobaseManager } from '../../src/infobases/infobaseManager';
 import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
@@ -83,6 +88,266 @@ function makeEntry(overrides: Partial<InfobaseEntry> = {}): InfobaseEntry {
   };
   return { ...base, ...overrides };
 }
+
+function stubInfobaseCreate(
+  impl: (dbPath: string) => Promise<{ stdout: string; stderr: string }>,
+): () => void {
+  const svc = getIbcmdService();
+  const original = svc.runInfobaseCreateFileDb.bind(svc);
+  (svc as { runInfobaseCreateFileDb: typeof original }).runInfobaseCreateFileDb = async (dbPath: string) =>
+    impl(dbPath);
+  return () => {
+    (svc as { runInfobaseCreateFileDb: typeof original }).runInfobaseCreateFileDb = original;
+  };
+}
+
+suite('infobaseCommands runCreateInfobase', () => {
+  let memento: MapMemento;
+  let secrets: MapSecretStorage;
+  let service: InfobaseStorageService;
+  let tempDir: string;
+  let savedIbcmdPath: string | undefined;
+  let restoreCreate: (() => void) | undefined;
+
+  setup(() => {
+    resetVscodeTestState();
+    resetIbcmdServiceSingletonForTests();
+    savedIbcmdPath = process.env.IBCMD_PATH;
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-create-'));
+    const exe = path.join(tempDir, 'stub-ibcmd');
+    fs.writeFileSync(exe, '');
+    process.env.IBCMD_PATH = exe;
+    memento = new MapMemento();
+    secrets = new MapSecretStorage();
+    service = new InfobaseStorageService(memento, secrets);
+    restoreCreate = undefined;
+  });
+
+  teardown(() => {
+    if (restoreCreate) {
+      restoreCreate();
+      restoreCreate = undefined;
+    }
+    resetIbcmdServiceSingletonForTests();
+    if (savedIbcmdPath === undefined) {
+      delete process.env.IBCMD_PATH;
+    } else {
+      process.env.IBCMD_PATH = savedIbcmdPath;
+    }
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+    resetVscodeTestState();
+  });
+
+  test('shows error when storage is null', async () => {
+    await runCreateInfobase(null);
+    assert.strictEqual(vscodeTestState.errorLog.length, 1);
+    assert.ok(vscodeTestState.errorLog[0].includes('не инициализировано'));
+  });
+
+  test('shows warning when catalog is at max capacity', async () => {
+    const maxed: InfobaseStorageService = {
+      load: async () =>
+        Array.from({ length: INFOBASE_STORAGE_MAX_ENTRIES }, (_, i) =>
+          makeEntry({
+            name: `e${i}`,
+            filePath: `C:/cap/${i}`,
+            ibcmdConfigYamlPath: `C:/cap/${i}/c.yaml`,
+          }),
+        ),
+      upsert: async () => assert.fail('upsert must not run when full'),
+    } as unknown as InfobaseStorageService;
+
+    await runCreateInfobase(maxed);
+    assert.strictEqual(vscodeTestState.warningLog.length, 1);
+    assert.ok(vscodeTestState.warningLog[0].includes('лимит'));
+  });
+
+  test('returns early when user cancels type quick pick', async () => {
+    vscodeTestState.quickPickQueue.push(undefined);
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('server type shows §3B stub and does not change catalog', async () => {
+    vscodeTestState.quickPickQueue.push({ label: 'srv', type: 'server' as const });
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+    assert.ok(vscodeTestState.informationLog.some((m) => m.includes('§3B')));
+  });
+
+  test('web type shows §3C stub and does not change catalog', async () => {
+    vscodeTestState.quickPickQueue.push({ label: 'web', type: 'web' as const });
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+    assert.ok(vscodeTestState.informationLog.some((m) => m.includes('§3C')));
+  });
+
+  test('creates file infobase: ibcmd success, catalog upsert, success notification', async () => {
+    restoreCreate = stubInfobaseCreate(async (dbPath) => {
+      assert.strictEqual(dbPath, path.resolve(path.join(tempDir, 'newib')));
+      return { stdout: 'ok', stderr: '' };
+    });
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'newib'), scheme: 'file' }]);
+    vscodeTestState.inputBoxQueue.push('ListedCreated');
+    await runCreateInfobase(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].name, 'ListedCreated');
+    assert.strictEqual(list[0].type, 'file');
+    assert.strictEqual(list[0].filePath, path.resolve(path.join(tempDir, 'newib')));
+    assert.ok(vscodeTestState.informationLog.some((m) => m.includes('База «ListedCreated» создана')));
+  });
+
+  test('shows ibcmd not found and does not upsert when path unresolved', async () => {
+    resetIbcmdServiceSingletonForTests();
+    delete process.env.IBCMD_PATH;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = path.join(tempDir, 'missing-ibcmd-exe');
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'newdb'), scheme: 'file' }]);
+    vscodeTestState.inputBoxQueue.push('NewDb');
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+    assert.ok(vscodeTestState.warningLog.some((m) => m.includes('ibcmd не найден')));
+  });
+
+  test('duplicate file path shows validation error and does not call create stub', async () => {
+    const dupDir = path.join(tempDir, 'dup');
+    await service.saveAll([
+      makeEntry({
+        name: 'First',
+        filePath: dupDir,
+        ibcmdConfigYamlPath: path.join(dupDir, 'y.yaml'),
+      }),
+    ]);
+    let createCalls = 0;
+    restoreCreate = stubInfobaseCreate(async () => {
+      createCalls += 1;
+      return { stdout: '', stderr: '' };
+    });
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: dupDir, scheme: 'file' }]);
+    vscodeTestState.inputBoxQueue.push('Second');
+    await runCreateInfobase(service);
+    assert.strictEqual(createCalls, 0);
+    assert.strictEqual((await service.load()).length, 1);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('уже есть')));
+  });
+
+  test('ibcmd failure shows error with stderr excerpt', async () => {
+    restoreCreate = stubInfobaseCreate(async () => {
+      throw Object.assign(new Error('fail'), { stderr: 'ibcmd failed here' });
+    });
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'faildb'), scheme: 'file' }]);
+    vscodeTestState.inputBoxQueue.push('FailName');
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('ibcmd failed here')));
+  });
+
+  test('ibcmd failure uses stdout when stderr property is absent', async () => {
+    restoreCreate = stubInfobaseCreate(async () => {
+      throw Object.assign(new Error('x'), { stdout: 'only on stdout' });
+    });
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'stdouterr'), scheme: 'file' }]);
+    vscodeTestState.inputBoxQueue.push('OutName');
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('only on stdout')));
+  });
+
+  test('long ibcmd stderr is truncated in error message', async () => {
+    const long = 'e'.repeat(900);
+    restoreCreate = stubInfobaseCreate(async () => {
+      throw Object.assign(new Error('x'), { stderr: long });
+    });
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'longerr'), scheme: 'file' }]);
+    vscodeTestState.inputBoxQueue.push('LongErr');
+    await runCreateInfobase(service);
+    const msg = vscodeTestState.errorLog.find((m) => m.includes('Не удалось создать'));
+    assert.ok(msg);
+    assert.ok(msg!.includes('…'));
+    assert.ok(msg!.length < long.length);
+  });
+
+  test('invalidates ibcmd path cache when create fails with ENOENT', async () => {
+    const svc = getIbcmdService();
+    let invalidateCalls = 0;
+    const origInvalidate = svc.invalidatePathCache.bind(svc);
+    svc.invalidatePathCache = () => {
+      invalidateCalls += 1;
+      origInvalidate();
+    };
+    restoreCreate = stubInfobaseCreate(async () => {
+      throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' as const });
+    });
+    try {
+      vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+      vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'enodb'), scheme: 'file' }]);
+      vscodeTestState.inputBoxQueue.push('Eno');
+      await runCreateInfobase(service);
+      assert.strictEqual(invalidateCalls, 1);
+      assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось создать')));
+    } finally {
+      svc.invalidatePathCache = origInvalidate;
+    }
+  });
+
+  test('invalidates path cache on ENOTDIR like ENOENT', async () => {
+    const svc = getIbcmdService();
+    let invalidateCalls = 0;
+    const origInvalidate = svc.invalidatePathCache.bind(svc);
+    svc.invalidatePathCache = () => {
+      invalidateCalls += 1;
+      origInvalidate();
+    };
+    restoreCreate = stubInfobaseCreate(async () => {
+      throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' as const });
+    });
+    try {
+      vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+      vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'enotdir'), scheme: 'file' }]);
+      vscodeTestState.inputBoxQueue.push('Enotdir');
+      await runCreateInfobase(service);
+      assert.strictEqual(invalidateCalls, 1);
+    } finally {
+      svc.invalidatePathCache = origInvalidate;
+    }
+  });
+
+  test('returns early when folder dialog dismissed', async () => {
+    restoreCreate = stubInfobaseCreate(async () => assert.fail('create must not run'));
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([]);
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('returns early when name input cancelled', async () => {
+    restoreCreate = stubInfobaseCreate(async () => assert.fail('create must not run'));
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'x'), scheme: 'file' }]);
+    await runCreateInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('generic ibcmd failure without stderr falls back to default message', async () => {
+    restoreCreate = stubInfobaseCreate(async () => {
+      throw Object.assign(new Error(''), { message: '' });
+    });
+    vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'gen'), scheme: 'file' }]);
+    vscodeTestState.inputBoxQueue.push('G');
+    await runCreateInfobase(service);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось создать базу (ibcmd).')));
+  });
+});
 
 suite('infobaseCommands runAddExistingInfobase', () => {
   let memento: MapMemento;
@@ -447,6 +712,57 @@ suite('registerInfobaseTreeCommands', () => {
     assert.strictEqual(calls, 1);
   });
 
+  test('create command refreshes tree after successful file infobase create', async () => {
+    resetIbcmdServiceSingletonForTests();
+    const td = fs.mkdtempSync(path.join(os.tmpdir(), 'ib-reg-create-'));
+    const savedPath = process.env.IBCMD_PATH;
+    try {
+      const exe = path.join(td, 'ibcmd');
+      fs.writeFileSync(exe, '');
+      process.env.IBCMD_PATH = exe;
+
+      const storage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
+      let refreshCalls = 0;
+      const state = {
+        infobaseStorage: storage,
+        infobaseTreeProvider: { refresh: () => (refreshCalls += 1) },
+      } as unknown as ExtensionState;
+
+      const handlers = new Map<string, () => Promise<void>>();
+      (vscode.commands as any).registerCommand = (id: string, fn: () => Promise<void>) => {
+        handlers.set(id, fn);
+        return { dispose: () => undefined };
+      };
+
+      const svc = getIbcmdService();
+      const origCreate = svc.runInfobaseCreateFileDb.bind(svc);
+      (svc as { runInfobaseCreateFileDb: typeof origCreate }).runInfobaseCreateFileDb = async () => ({
+        stdout: '',
+        stderr: '',
+      });
+
+      registerInfobaseTreeCommands(state);
+      vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
+      vscodeTestState.openDialogQueue.push([{ fsPath: path.join(td, 'newib'), scheme: 'file' }]);
+      vscodeTestState.inputBoxQueue.push('FromCommand');
+
+      await handlers.get('1c-metadata-tree.infobases.create')?.();
+
+      (svc as { runInfobaseCreateFileDb: typeof origCreate }).runInfobaseCreateFileDb = origCreate;
+      assert.strictEqual(refreshCalls, 1);
+      assert.strictEqual((await storage.load()).length, 1);
+      assert.strictEqual((await storage.load())[0].name, 'FromCommand');
+    } finally {
+      if (savedPath === undefined) {
+        delete process.env.IBCMD_PATH;
+      } else {
+        process.env.IBCMD_PATH = savedPath;
+      }
+      resetIbcmdServiceSingletonForTests();
+      fs.rmSync(td, { recursive: true, force: true });
+    }
+  });
+
   test('remove with non-entry arg shows warning', async () => {
     const storage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
     const infobaseManager = new InfobaseManager(storage, new BindingManager());
@@ -481,6 +797,23 @@ suite('registerInfobaseTreeCommands', () => {
 
     registerInfobaseTreeCommands(state);
     await handlers.get('1c-metadata-tree.infobases.add')?.();
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
+  });
+
+  test('create command with null storage shows error', async () => {
+    const state = {
+      infobaseStorage: null,
+      infobaseTreeProvider: null,
+    } as unknown as ExtensionState;
+
+    const handlers = new Map<string, () => Promise<void>>();
+    (vscode.commands as any).registerCommand = (id: string, fn: () => Promise<void>) => {
+      handlers.set(id, fn);
+      return { dispose: () => undefined };
+    };
+
+    registerInfobaseTreeCommands(state);
+    await handlers.get('1c-metadata-tree.infobases.create')?.();
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
   });
 

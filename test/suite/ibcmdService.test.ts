@@ -110,6 +110,18 @@ suite('IbcmdService', () => {
     }
   });
 
+  test('runInfobaseCreateFileDb throws IBCMD_NOT_RESOLVED when path cannot be resolved', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = path.join(tempDir, 'missing-for-create');
+    const svc = new IbcmdService();
+    try {
+      await svc.runInfobaseCreateFileDb(path.join(tempDir, 'some-db'));
+      assert.fail('expected throw');
+    } catch (e: unknown) {
+      const err = e as { code?: string };
+      assert.strictEqual(err.code, 'IBCMD_NOT_RESOLVED');
+    }
+  });
+
   test('run delegates to exec implementation with resolved path', async () => {
     const exe = path.join(tempDir, 'run-ibcmd');
     fs.writeFileSync(exe, '', 'utf-8');
@@ -125,5 +137,22 @@ suite('IbcmdService', () => {
     assert.strictEqual(out.stdout, 'done');
     assert.strictEqual(seen[0], exe);
     assert.deepStrictEqual(seen.slice(1), ['infobase', 'info']);
+  });
+
+  test('runInfobaseCreateFileDb passes resolved absolute path to infobase create', async () => {
+    const exe = path.join(tempDir, 'ibcmd-infobase-create');
+    fs.writeFileSync(exe, '', 'utf-8');
+    process.env.IBCMD_PATH = exe;
+    const svc = new IbcmdService();
+    const seen: string[] = [];
+    const execImpl: ExecFileFn = async (file, args) => {
+      seen.push(file, ...args);
+      return { stdout: '', stderr: '' };
+    };
+    const rel = path.join('rel-segment', 'db-folder');
+    const absExpected = path.resolve(rel);
+    await svc.runInfobaseCreateFileDb(rel, execImpl);
+    assert.strictEqual(seen[0], exe);
+    assert.deepStrictEqual(seen.slice(1), ['infobase', 'create', `--db-path=${absExpected}`]);
   });
 });
