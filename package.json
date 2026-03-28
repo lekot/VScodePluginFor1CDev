@@ -244,6 +244,12 @@
         "title": "Удалить из списка",
         "category": "CDT 41",
         "icon": "$(trash)"
+      },
+      {
+        "command": "1c-metadata-tree.bindings.openDialog",
+        "title": "Infobase Manager: привязка баз к конфигурации…",
+        "category": "CDT 41",
+        "icon": "$(link)"
       }
     ],
     "customEditors": [

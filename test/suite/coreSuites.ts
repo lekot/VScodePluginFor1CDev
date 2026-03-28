@@ -65,6 +65,7 @@ export const coreSuiteFiles: string[] = [
   'suite/infobaseStorageService.test.js',
   'suite/infobaseManager.test.js',
   'suite/bindingManager.test.js',
+  'suite/bindingDialog.test.js',
   'suite/bindingStorage.test.js',
   'suite/infobaseCommands.test.js',
   'suite/infobaseConfigCommands.test.js',

@@ -124,6 +124,8 @@ export const vscodeTestState = {
   /** Captured messages (Infobase Manager / dialog tests). */
   warningLog: [] as string[],
   errorLog: [] as string[],
+  /** Captured `showInformationMessage` primary text (core tests). */
+  informationLog: [] as string[],
   /** Sequential return values for `showQuickPick` (shifted each call). */
   quickPickQueue: [] as unknown[],
   /** Sequential results for `showOpenDialog` (shifted each call). */
@@ -147,6 +149,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.executedCommands = [];
   vscodeTestState.warningLog = [];
   vscodeTestState.errorLog = [];
+  vscodeTestState.informationLog = [];
   vscodeTestState.quickPickQueue = [];
   vscodeTestState.openDialogQueue = [];
   vscodeTestState.inputBoxQueue = [];
@@ -164,9 +167,10 @@ const windowStub = {
     return undefined;
   },
   showInformationMessage: async (
-    _message: string,
+    message: string,
     ..._items: string[]
   ): Promise<string | undefined> => {
+    vscodeTestState.informationLog.push(message);
     if (vscodeTestState.informationMessageResult !== undefined) {
       return vscodeTestState.informationMessageResult;
     }
@@ -243,6 +247,17 @@ const envStub = {
   },
 };
 
+/** Минимальная реализация для `BindingDialogPanel.dispose` и др. */
+const Disposable = {
+  from: (...disposables: Array<{ dispose: () => void } | undefined>): { dispose: () => void } => ({
+    dispose: () => {
+      for (const d of disposables) {
+        d?.dispose();
+      }
+    },
+  }),
+};
+
 const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
@@ -254,6 +269,7 @@ const vscodeStub = {
   ViewColumn,
   commands: commandsStub,
   env: envStub,
+  Disposable,
   window: windowStub,
   workspace: workspaceStub,
 };
