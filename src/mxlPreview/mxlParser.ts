@@ -28,6 +28,7 @@ const MAX_TABLE_COLS = 1000;
 interface DesignerColumnSectionPayload {
   colMap: Map<number, number>;
   declaredSize?: number;
+  minIndex?: number;
 }
 const MAX_CELL_SPAN = 128;
 const MAX_TOTAL_CELLS_PER_TABLE = 20000;
@@ -646,6 +647,10 @@ export class MxlParser {
     const fonts = this.parseDesignerFonts(docNode);
     const formats = this.parseDesignerFormats(docNode, fonts);
 
+    const columnSections = this.collectDesignerColumnSections(docNode);
+    const pickedColumns = this.pickDesignerColumnSection(docNode, columnSections);
+    const columnIndexBase = pickedColumns?.minIndex ?? 0;
+
     const cells: MxlRenderCell[] = [];
     let inferredMaxRow = 0;
     let inferredMaxCol = 0;
@@ -657,7 +662,7 @@ export class MxlParser {
         truncated = true;
         break;
       }
-      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics, formats.length);
+      const rowCells = this.parseDesignerXmlRow(rowsItem, diagnostics, formats.length, columnIndexBase);
       for (const cell of rowCells) {
         if (totalCells >= MAX_TOTAL_CELLS_PER_TABLE) {
           truncated = true;
@@ -716,8 +721,6 @@ export class MxlParser {
       inferredMaxCol = Math.max(inferredMaxCol, cell.col + cs);
     }
 
-    const columnSections = this.collectDesignerColumnSections(docNode);
-    const pickedColumns = this.pickDesignerColumnSection(docNode, columnSections);
     const columnsMaxOneBased =
       pickedColumns && pickedColumns.colMap.size > 0 ? Math.max(...pickedColumns.colMap.keys()) : undefined;
 
@@ -874,6 +877,9 @@ export class MxlParser {
     for (const rowCells of rowMap.values()) {
       rowCells.sort((a, b) => a.col - b.col);
 
+      // Build a column→cell map for O(1) lookup, enabling gap-column traversal.
+      const colToCell = new Map<number, MxlRenderCell>(rowCells.map((c) => [c.col, c]));
+
       for (let i = 0; i < rowCells.length; i++) {
         const anchor = rowCells[i];
         const anchorKey = `${anchor.row}:${anchor.col}`;
@@ -897,11 +903,22 @@ export class MxlParser {
         }
 
         let mergeCount = 0;
-        for (let j = i + 1; j < rowCells.length; j++) {
-          const candidate = rowCells[j];
+        // Iterate by column number instead of array index so gap columns
+        // (absent from rowCells) are treated as empty and merged through.
+        // Only iterate up to the last column present in this row — do not
+        // extend into the void beyond the last cell.
+        const maxColInRow = rowCells[rowCells.length - 1].col;
+        if (anchor.col >= maxColInRow) {
+          // Anchor is the last cell in the row — nothing to merge into.
+          continue;
+        }
+        for (let nextCol = anchor.col + 1; nextCol <= maxColInRow && nextCol < MAX_TABLE_COLS; nextCol++) {
+          const candidate = colToCell.get(nextCol);
 
-          if (candidate.col !== anchor.col + mergeCount + 1) {
-            break;
+          if (candidate === undefined) {
+            // Gap column — not emitted by Designer XML, treat as empty.
+            mergeCount++;
+            continue;
           }
 
           if (candidate.text && candidate.text.trim().length > 0) {
@@ -919,8 +936,13 @@ export class MxlParser {
             break;
           }
 
-          mergeCount++;
-        }
+          // Do not absorb a cell that is itself an explicit merge anchor —
+          // it has its own colspan/rowspan that must be preserved.
+          if (explicitMergeMap.has(candidateKey)) {
+            break;
+          }
+
+          mergeCount++;        }
 
         if (mergeCount > 0) {
           anchor.colspan = (anchor.colspan ?? 1) + mergeCount;
@@ -1052,6 +1074,7 @@ export class MxlParser {
       const indexBaseShift = Number.isFinite(base) ? base : 0;
 
       const colMap = new Map<number, number>();
+      const rawIndexValues: number[] = [];
 
       const rawItems = secRec['columnsItem'];
       const items: unknown[] = Array.isArray(rawItems)
@@ -1072,6 +1095,9 @@ export class MxlParser {
             : typeof rawIdx === 'string'
               ? Number.parseInt(rawIdx, 10)
               : NaN;
+        if (Number.isFinite(colIndex)) {
+          rawIndexValues.push(colIndex);
+        }
         const normalizedColIndex = colIndex + indexBaseShift;
         if (!Number.isFinite(normalizedColIndex) || normalizedColIndex < 1) {
           continue;
@@ -1096,7 +1122,8 @@ export class MxlParser {
         colMap.set(normalizedColIndex, normalizedFormatIndex);
       }
 
-      sectionMap.set(sectionId, { colMap, ...(declaredSize !== undefined ? { declaredSize } : {}) });
+      const minIndex = rawIndexValues.length > 0 ? Math.min(...rawIndexValues) : 0;
+      sectionMap.set(sectionId, { colMap, ...(declaredSize !== undefined ? { declaredSize } : {}), minIndex });
     }
 
     return sectionMap;
@@ -1295,7 +1322,7 @@ export class MxlParser {
     });
   }
 
-  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[], formatCount: number): MxlRenderCell[] {
+  private parseDesignerXmlRow(rowsItemNode: unknown, diagnostics: MxlDiagnostic[], formatCount: number, columnIndexBase: number): MxlRenderCell[] {
     const record = this.asRecord(rowsItemNode);
     if (!record) {
       return [];
@@ -1330,7 +1357,7 @@ export class MxlParser {
         this.warn(diagnostics, 'MXL_CELL_INDEX_LIMIT_EXCEEDED', `Column index exceeds safe limit (${MAX_TABLE_COLS - 1}). Remaining cells skipped.`);
         break;
       }
-      const result = this.parseDesignerXmlCell(outerC, row, colCursor, formatCount);
+      const result = this.parseDesignerXmlCell(outerC, row, colCursor, formatCount, columnIndexBase);
       cells.push(result.cell);
       colCursor = result.nextCursor;
     }
@@ -1342,7 +1369,8 @@ export class MxlParser {
     outerC: unknown,
     row: number,
     colCursor: number,
-    formatCount: number
+    formatCount: number,
+    columnIndexBase: number
   ): { cell: MxlRenderCell; nextCursor: number } {
     const record = this.asRecord(outerC);
 
@@ -1362,7 +1390,7 @@ export class MxlParser {
               ? Number.parseInt(rawI, 10)
               : NaN;
         if (Number.isFinite(iVal) && iVal >= 0) {
-          colFromI = this.clampIndex(iVal, MAX_TABLE_COLS - 1);
+          colFromI = this.clampIndex(iVal - columnIndexBase, MAX_TABLE_COLS - 1);
         }
       }
       innerC = record['c'];

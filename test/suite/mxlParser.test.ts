@@ -916,6 +916,503 @@ suite('MxlParser — Designer XML format', () => {
     );
   });
 
+  // ── Bug condition exploration tests ──────────────────────────────────────────
+  // These tests MUST FAIL on unfixed code — failure confirms the bug exists.
+  // isBugCondition: minIndex >= 1 AND iVal IS PRESENT AND iVal >= minIndex
+  // Expected behavior after fix: colFromI = iVal - columnIndexBase (where columnIndexBase = minIndex)
+
+  test('BUG CONDITION: 1-based single cell — <i>1</i> should land at col=0', () => {
+    // Unfixed: col=1 (iVal used directly). Fixed: col=0 (iVal - columnIndexBase = 1 - 1 = 0).
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>3</size>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>2</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>3</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><i>1</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format><width>50</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const cell = model.tables[0].cells.find((c) => c.text === 'A');
+    assert.ok(cell, 'cell A should exist');
+    assert.strictEqual(cell!.col, 0, 'col should be 0 (iVal=1 minus columnIndexBase=1)');
+  });
+
+  test('BUG CONDITION: 1-based last cell — <i>17</i> in 17-column file should land at col=16', () => {
+    // Unfixed: col=17 (out of range). Fixed: col=16 (iVal - columnIndexBase = 17 - 1 = 16).
+    const parser = new MxlParser();
+    const colItems = Array.from({ length: 17 }, (_, k) =>
+      `<columnsItem><index>${k + 1}</index><column><formatIndex>0</formatIndex></column></columnsItem>`
+    ).join('\n          ');
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>17</size>
+          ${colItems}
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><i>17</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Last</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format><width>50</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const cell = model.tables[0].cells.find((c) => c.text === 'Last');
+    assert.ok(cell, 'cell Last should exist');
+    assert.strictEqual(cell!.col, 16, 'col should be 16 (iVal=17 minus columnIndexBase=1)');
+  });
+
+  test('BUG CONDITION: 1-based mid-row cell — <i>15</i> should land at col=14', () => {
+    // Unfixed: col=15. Fixed: col=14 (iVal - columnIndexBase = 15 - 1 = 14).
+    const parser = new MxlParser();
+    const colItems = Array.from({ length: 17 }, (_, k) =>
+      `<columnsItem><index>${k + 1}</index><column><formatIndex>0</formatIndex></column></columnsItem>`
+    ).join('\n          ');
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>17</size>
+          ${colItems}
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><i>15</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Mid</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format><width>50</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const cell = model.tables[0].cells.find((c) => c.text === 'Mid');
+    assert.ok(cell, 'cell Mid should exist');
+    assert.strictEqual(cell!.col, 14, 'col should be 14 (iVal=15 minus columnIndexBase=1)');
+  });
+
+  // ── Preservation tests ───────────────────────────────────────────────────────
+  // These tests MUST PASS on unfixed code — they confirm baseline behavior to preserve.
+  // Non-bug condition: isBugCondition returns false when minIndex = 0 OR when cell has no <i>.
+  // Validates: Requirements 3.1, 3.2, 3.3
+
+  test('PRESERVATION: 0-based file — <i>0</i> → col=0, <i>2</i> → col=2 (no offset applied)', () => {
+    // 0-based file: columnsItem indices start at 0 → columnIndexBase=0 → no offset.
+    // On unfixed code: iVal used directly, which is already correct for 0-based files.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>3</size>
+          <columnsItem>
+            <index>0</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>2</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><i>0</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>First</v8:content></v8:item></tl></c></c>
+            <c><i>2</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Third</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format><width>50</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const first = model.tables[0].cells.find((c) => c.text === 'First');
+    const third = model.tables[0].cells.find((c) => c.text === 'Third');
+    assert.ok(first, 'cell First should exist');
+    assert.ok(third, 'cell Third should exist');
+    assert.strictEqual(first!.col, 0, '0-based <i>0</i> → col=0');
+    assert.strictEqual(third!.col, 2, '0-based <i>2</i> → col=2');
+  });
+
+  test('PRESERVATION: no-<i> cells get sequential cursor positions (cols 0, 1, 2)', () => {
+    // Cells without <i> always use the sequential cursor — unaffected by columnIndexBase.
+    // On unfixed code: cursor-based positioning is correct and must remain unchanged.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>X</v8:content></v8:item></tl></c></c>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Y</v8:content></v8:item></tl></c></c>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Z</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 3);
+    assert.strictEqual(cells[0].col, 0, 'first cursor cell → col=0');
+    assert.strictEqual(cells[1].col, 1, 'second cursor cell → col=1');
+    assert.strictEqual(cells[2].col, 2, 'third cursor cell → col=2');
+  });
+
+  test('PRESERVATION: mixed row — 0-based <i> cells and cursor cells all at correct positions', () => {
+    // 0-based file with a mix of explicit <i> and cursor cells.
+    // On unfixed code: 0-based <i> values are used directly (correct), cursor advances from last col.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>5</size>
+          <columnsItem>
+            <index>0</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>2</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>3</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>4</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><i>0</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Explicit0</v8:content></v8:item></tl></c></c>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Cursor1</v8:content></v8:item></tl></c></c>
+            <c><i>3</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Explicit3</v8:content></v8:item></tl></c></c>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Cursor4</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format><width>50</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const byText = (t: string) => model.tables[0].cells.find((c) => c.text === t);
+    assert.ok(byText('Explicit0'), 'Explicit0 cell should exist');
+    assert.ok(byText('Cursor1'), 'Cursor1 cell should exist');
+    assert.ok(byText('Explicit3'), 'Explicit3 cell should exist');
+    assert.ok(byText('Cursor4'), 'Cursor4 cell should exist');
+    assert.strictEqual(byText('Explicit0')!.col, 0, '0-based <i>0</i> → col=0');
+    assert.strictEqual(byText('Cursor1')!.col, 1, 'cursor after col=0 → col=1');
+    assert.strictEqual(byText('Explicit3')!.col, 3, '0-based <i>3</i> → col=3');
+    assert.strictEqual(byText('Cursor4')!.col, 4, 'cursor after col=3 → col=4');
+  });
+
+  // ── Bug condition exploration tests ──────────────────────────────────────────
+  // These tests MUST FAIL on unfixed code — failure confirms the bug exists.
+  // isBugCondition: minIndex >= 1 AND iVal IS PRESENT AND iVal >= minIndex
+  // Expected behavior after fix: colFromI = iVal - columnIndexBase (where columnIndexBase = minIndex)
+
+  test('BUG CONDITION: cursor after 1-based <i>3</i> should start at col=3', () => {
+    // Unfixed: cursor cell lands at col=4 (cursor = 3+1=4 after iVal=3 used directly).
+    // Fixed: cursor cell lands at col=3 (cursor = (3-1)+1=3 after iVal - columnIndexBase = 2).
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <columns>
+          <size>5</size>
+          <columnsItem>
+            <index>1</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>2</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>3</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>4</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+          <columnsItem>
+            <index>5</index>
+            <column><formatIndex>0</formatIndex></column>
+          </columnsItem>
+        </columns>
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><i>3</i><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Explicit</v8:content></v8:item></tl></c></c>
+            <c><c><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Cursor</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format><width>50</width></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const cursorCell = model.tables[0].cells.find((c) => c.text === 'Cursor');
+    assert.ok(cursorCell, 'cursor cell should exist');
+    assert.strictEqual(cursorCell!.col, 3, 'cursor cell col should be 3 (after explicit cell at col=2, cursor advances to 3)');
+  });
+
+  // ── Bug condition exploration tests (implicit merge gap) ──────────────────────
+  // These tests MUST FAIL on unfixed code — failure confirms the bug exists.
+  // Bug: detectImplicitMerges breaks at the first gap column (absent from cells array).
+  // Expected behavior after fix: anchor colspan extends through gap columns.
+  // Validates: Requirements 1.1, 1.2
+
+  test('BUG CONDITION (gap): single gap — anchor col=0 text, col=1 absent, col=2 present empty → colspan=3', () => {
+    // Unfixed: colspan=1 (loop breaks at gap col=1 because candidate.col=2 !== anchor.col+1=1).
+    // Fixed: colspan=3 (gap col=1 treated as empty, merges through to col=2).
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Hello</v8:content></v8:item></tl></c></c>
+            <c><i>2</i><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Hello');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.row, 0);
+    assert.strictEqual(anchor!.col, 0);
+    assert.strictEqual(anchor!.colspan, 3, 'anchor should span 3 cols (col=0 + gap col=1 + empty col=2)');
+  });
+
+  test('BUG CONDITION (gap): multiple gaps — anchor col=0 text, cols 1-5 absent, col=6 present empty → colspan=7', () => {
+    // Unfixed: colspan=1 (loop breaks at gap col=1).
+    // Fixed: colspan=7 (gap cols 1-5 treated as empty, merges through to col=6).
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Hello</v8:content></v8:item></tl></c></c>
+            <c><i>6</i><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Hello');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.row, 0);
+    assert.strictEqual(anchor!.col, 0);
+    assert.strictEqual(anchor!.colspan, 7, 'anchor should span 7 cols (col=0 + gap cols 1-5 + empty col=6)');
+  });
+
+  test('BUG CONDITION (gap): gap then text stop — anchor col=0 text, col=1 absent, col=2 has text → colspan=2', () => {
+    // Unfixed: colspan=1 (loop breaks at gap col=1 before reaching text at col=2).
+    // Fixed: colspan=2 (gap col=1 merged, stops before text at col=2).
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Hello</v8:content></v8:item></tl></c></c>
+            <c><i>2</i><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>World</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Hello');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.row, 0);
+    assert.strictEqual(anchor!.col, 0);
+    assert.strictEqual(anchor!.colspan, 2, 'anchor should span 2 cols (col=0 + gap col=1, stops before text at col=2)');
+  });
+
+  test('BUG CONDITION (gap): gap then border stop — anchor col=0 text, col=1 absent, col=2 has left border → colspan=2', () => {
+    // Unfixed: colspan=1 (loop breaks at gap col=1 before reaching border at col=2).
+    // Fixed: colspan=2 (gap col=1 merged, stops before left-border cell at col=2).
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Hello</v8:content></v8:item></tl></c></c>
+            <c><i>2</i><c><f>2</f></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+        <format><leftBorder>0</leftBorder></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Hello');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.row, 0);
+    assert.strictEqual(anchor!.col, 0);
+    assert.strictEqual(anchor!.colspan, 2, 'anchor should span 2 cols (col=0 + gap col=1, stops before left-border at col=2)');
+  });
+
+  // ── Preservation tests (implicit merge gap) ───────────────────────────────────
+  // These tests MUST PASS on unfixed code — they confirm baseline behavior to preserve.
+  // Non-bug condition: all columns contiguous (no gaps between anchor and next present cell).
+  // Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.6
+
+  test('PRESERVATION (gap): contiguous empty cells — anchor col=0 text, cols 1-3 empty, col=4 text → colspan=4', () => {
+    // No gap: all columns present. Unfixed and fixed both produce colspan=4.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Anchor</v8:content></v8:item></tl></c></c>
+            <c><c><f>1</f></c></c>
+            <c><c><f>1</f></c></c>
+            <c><c><f>1</f></c></c>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Stop</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Anchor');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.colspan, 4, 'anchor should span 4 cols (cols 0-3, stops before text at col=4)');
+  });
+
+  test('PRESERVATION (gap): stop at text (no gap) — anchor col=0 text, col=1 text → colspan=1', () => {
+    // No gap: adjacent text cell stops merge immediately.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Anchor</v8:content></v8:item></tl></c></c>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Text</v8:content></v8:item></tl></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Anchor');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.colspan, 1, 'anchor should not merge when adjacent cell has text');
+  });
+
+  test('PRESERVATION (gap): stop at border (no gap) — anchor col=0 text, col=1 empty, col=2 left-border → colspan=2', () => {
+    // No gap: empty cell merged, stops at left-border cell.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Anchor</v8:content></v8:item></tl></c></c>
+            <c><c><f>1</f></c></c>
+            <c><c><f>2</f></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+        <format><leftBorder>0</leftBorder></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Anchor');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.colspan, 2, 'anchor should span 2 cols (col=0 + empty col=1, stops before left-border at col=2)');
+  });
+
+  test('PRESERVATION (gap): no-text anchor skipped — anchor col=0 empty text, col=1 empty → colspan=1', () => {
+    // No gap: anchor has no text, so no implicit merge is initiated.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c><f>1</f></c></c>
+            <c><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const cells = model.tables[0].cells;
+    assert.strictEqual(cells.length, 2, 'both cells should remain (no merge)');
+    assert.strictEqual(cells[0].col, 0);
+    assert.strictEqual(cells[0].colspan, 1, 'empty anchor should not merge');
+    assert.strictEqual(cells[1].col, 1);
+    assert.strictEqual(cells[1].colspan, 1);
+  });
+
+  test('PRESERVATION (gap): explicit colspan anchor skipped — anchor col=0 text with colspan=2, col=2 empty → colspan=2', () => {
+    // No gap: anchor already has explicit colspan=2, so no additional implicit merge.
+    const parser = new MxlParser();
+    const xml = `
+      <document xmlns="${XMLNS}">
+        <rowsItem>
+          <index>0</index>
+          <row>
+            <c><c ColSpan="2"><f>1</f><tl><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Anchor</v8:content></v8:item></tl></c></c>
+            <c><c><f>1</f></c></c>
+          </row>
+        </rowsItem>
+        <format></format>
+        <format></format>
+      </document>
+    `;
+    const model = parser.parse(xml);
+    const anchor = model.tables[0].cells.find((c) => c.text === 'Anchor');
+    assert.ok(anchor, 'anchor cell should exist');
+    assert.strictEqual(anchor!.col, 0);
+    assert.strictEqual(anchor!.colspan, 2, 'explicit colspan=2 anchor should not get additional implicit merge');
+  });
+
 });
 
 suite('MxlParser — Designer format border parsing', () => {
@@ -1246,7 +1743,7 @@ suite('MxlParser — Implicit merge detection via borders', () => {
     assert.strictEqual(cells[0].colspan, 6, 'should merge 6 columns (12-17)');
   });
 
-  test('non-adjacent columns: no merge when column gap exists', () => {
+  test('non-adjacent columns: gap column is treated as empty and merged through', () => {
     const parser = new MxlParser();
     const xml = `
       <document xmlns="${XMLNS}">
@@ -1265,12 +1762,11 @@ suite('MxlParser — Implicit merge detection via borders', () => {
 
     assert.strictEqual(model.tables.length, 1);
     const cells = model.tables[0].cells;
-    assert.strictEqual(cells.length, 2, 'should not merge non-adjacent columns');
+    // Gap column (col=1) is absent from cells — treated as empty and merged through.
+    assert.strictEqual(cells.length, 1, 'empty cell at col=2 should be removed after merge');
     assert.strictEqual(cells[0].col, 0);
     assert.strictEqual(cells[0].text, 'A');
-    assert.strictEqual(cells[0].colspan, 1);
-    assert.strictEqual(cells[1].col, 2);
-    assert.strictEqual(cells[1].colspan, 1);
+    assert.strictEqual(cells[0].colspan, 3, 'should merge through gap col=1 and empty col=2');
   });
 
   test('empty anchor: no merge when first cell is empty', () => {
