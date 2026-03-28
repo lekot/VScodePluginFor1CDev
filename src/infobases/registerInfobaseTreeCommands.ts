@@ -3,6 +3,11 @@ import type { ExtensionState } from '../state/extensionState';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseTreeEntry, InfobaseTreeNode } from './infobaseTreeProvider';
 import { runAddExistingInfobase, runEditInfobase, runRemoveInfobase } from './infobaseCommands';
+import {
+  runInfobaseConfigCheck,
+  runInfobaseConfigExport,
+  runInfobaseConfigImport,
+} from './infobaseConfigCommands';
 
 const STUB =
   'Команда будет реализована в задачах управления базами (загрузка конфигурации, запуск платформы и т.д.).';
@@ -37,7 +42,7 @@ async function resolveCatalogEntry(
 }
 
 /**
- * Registers Infobase Manager tree commands (WOW design §7). Catalog CRUD: plan §1D; остальное — заглушки до 1E–1F.
+ * Registers Infobase Manager tree commands (WOW design §7). Catalog CRUD: §1D; import/export/check конфигурации (ibcmd, progress, Output Channel): §1E через {@link infobaseConfigCommands}; остальное — заглушки до 1F.
  */
 export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disposable[] {
   const refresh = () => {
@@ -67,9 +72,30 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.openEnterprise', stub('Открыть в Предприятии')),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.openDesigner', stub('Открыть Конфигуратор')),
-    vscode.commands.registerCommand('1c-metadata-tree.infobase.configImport', stub('Загрузить конфигурацию')),
-    vscode.commands.registerCommand('1c-metadata-tree.infobase.configExport', stub('Выгрузить конфигурацию')),
-    vscode.commands.registerCommand('1c-metadata-tree.infobase.configCheck', stub('Проверить конфигурацию')),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.configImport', async (arg?: unknown) => {
+      const node = requireEntry(arg, 'Загрузить конфигурацию');
+      if (!node) {
+        return;
+      }
+      const entry = await resolveCatalogEntry(state, node);
+      await runInfobaseConfigImport(state.infobaseStorage, entry);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.configExport', async (arg?: unknown) => {
+      const node = requireEntry(arg, 'Выгрузить конфигурацию');
+      if (!node) {
+        return;
+      }
+      const entry = await resolveCatalogEntry(state, node);
+      await runInfobaseConfigExport(state.infobaseStorage, entry);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.configCheck', async (arg?: unknown) => {
+      const node = requireEntry(arg, 'Проверить конфигурацию');
+      if (!node) {
+        return;
+      }
+      const entry = await resolveCatalogEntry(state, node);
+      await runInfobaseConfigCheck(state.infobaseStorage, entry);
+    }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.edit', async (arg?: unknown) => {
       const node = requireEntry(arg, 'Редактировать базу');
       if (!node) {

@@ -114,6 +114,11 @@ export class InfobaseStorageService {
     await this.secretStorage.store(infobasePasswordSecretKey(entryId), password);
   }
 
+  async readPasswordSecret(entryId: string): Promise<string | undefined> {
+    const v = await this.secretStorage.get(infobasePasswordSecretKey(entryId));
+    return v ?? undefined;
+  }
+
   /**
    * Removes an entry and deletes its password secret (idempotent).
    */
