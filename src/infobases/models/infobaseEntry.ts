@@ -35,7 +35,7 @@ export interface InfobaseEntry {
   createdAt: string;
   lastUsedAt?: string;
 
-  /** ibcmd `--config` when not derived from {@link filePath} alone (legacy / non-standard layout). */
+  /** ibcmd `--config` when not derived from {@link filePath} alone (non-standard layout). */
   ibcmdConfigYamlPath?: string;
 }
 

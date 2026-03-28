@@ -42,19 +42,12 @@ suite('IbcmdService', () => {
 
   test('getTimeoutMs uses workspace 1cMetadataTree.ibcmd.timeout when positive', () => {
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 88_000;
-    vscodeTestState.workspaceConfig['1cInfobaseManager.ibcmdTimeoutMs'] = 99_000;
     const svc = new IbcmdService();
     assert.strictEqual(svc.getTimeoutMs(), 88_000);
   });
 
-  test('getTimeoutMs falls back to deprecated 1cInfobaseManager.ibcmdTimeoutMs when new timeout unset', () => {
-    vscodeTestState.workspaceConfig['1cInfobaseManager.ibcmdTimeoutMs'] = 99_000;
-    const svc = new IbcmdService();
-    assert.strictEqual(svc.getTimeoutMs(), 99_000);
-  });
-
   test('getTimeoutMs uses IBCMD_TIMEOUT_MS when workspace timeouts are zero or absent', () => {
-    vscodeTestState.workspaceConfig['1cInfobaseManager.ibcmdTimeoutMs'] = 0;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 0;
     process.env.IBCMD_TIMEOUT_MS = '15000';
     const svc = new IbcmdService();
     assert.strictEqual(svc.getTimeoutMs(), 15_000);
@@ -102,18 +95,6 @@ suite('IbcmdService', () => {
     assert.strictEqual(svc.resolveExecutablePath().kind, 'resolved');
     svc.invalidatePathCache();
     assert.strictEqual(svc.resolveExecutablePath().kind, 'resolved');
-  });
-
-  test('resolveExecutablePath uses deprecated ibcmdPath when new path empty', () => {
-    const exe = path.join(tempDir, 'legacy-ibcmd');
-    fs.writeFileSync(exe, '', 'utf-8');
-    vscodeTestState.workspaceConfig['1cInfobaseManager.ibcmdPath'] = exe;
-    const svc = new IbcmdService();
-    const r = svc.resolveExecutablePath();
-    assert.strictEqual(r.kind, 'resolved');
-    if (r.kind === 'resolved') {
-      assert.strictEqual(r.path, exe);
-    }
   });
 
   test('run throws with code IBCMD_NOT_RESOLVED when path cannot be resolved', async () => {

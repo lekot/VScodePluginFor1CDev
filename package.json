@@ -361,21 +361,6 @@
             "block"
           ],
           "description": "Deploy mode (WOW Phase 2): copy — from project copy; block — lock editors."
-        },
-        "1cInfobaseManager.ibcmdPath": {
-          "type": "string",
-          "default": "",
-          "description": "Deprecated: use 1cMetadataTree.ibcmd.path. Path to ibcmd; used only when the new setting is empty."
-        },
-        "1cInfobaseManager.platformBinPath": {
-          "type": "string",
-          "default": "",
-          "description": "Deprecated: use 1cMetadataTree.platform.path. Platform binary path; used only when the new setting is empty."
-        },
-        "1cInfobaseManager.ibcmdTimeoutMs": {
-          "type": "number",
-          "default": 0,
-          "description": "Deprecated: use 1cMetadataTree.ibcmd.timeout. When zero, the new setting (or env/built-in default) applies."
         }
       }
     },

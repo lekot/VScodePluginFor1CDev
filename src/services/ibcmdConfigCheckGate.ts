@@ -20,7 +20,7 @@ function notFoundResult(hint: string): IbcmdConfigCheckResult {
   return {
     ok: false,
     code: 'IBCMD_NOT_FOUND',
-    message: `ibcmd executable not found. Set ${IBCMD_PATH_SETTINGS_QUERY} in Settings (or deprecated 1cInfobaseManager.ibcmdPath) or IBCMD_PATH in the environment. ${hint} Command: "CDT 41: Configure ibcmd…".`,
+    message: `ibcmd executable not found. Set ${IBCMD_PATH_SETTINGS_QUERY} in Settings or IBCMD_PATH in the environment. ${hint} Command: "CDT 41: Configure ibcmd…".`,
   };
 }
 

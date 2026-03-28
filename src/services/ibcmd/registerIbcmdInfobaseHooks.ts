@@ -12,7 +12,7 @@ export function registerIbcmdInfobaseHooks(context: vscode.ExtensionContext): vo
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('1cMetadataTree') || e.affectsConfiguration('1cInfobaseManager')) {
+      if (e.affectsConfiguration('1cMetadataTree')) {
         svc.invalidatePathCache();
       }
     })

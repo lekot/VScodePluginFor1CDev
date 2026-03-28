@@ -1,14 +1,10 @@
 import * as assert from 'assert';
 import { randomUUID } from 'crypto';
-import * as path from 'path';
 import type { Memento, SecretStorage } from 'vscode';
 import * as vscode from 'vscode';
 import {
-  infobaseLegacyPasswordSecretKey,
   infobasePasswordSecretKey,
   INFOBASE_GLOBAL_STATE_KEY,
-  INFOBASE_LEGACY_GLOBAL_STATE_KEY,
-  INFOBASE_LEGACY_PASSWORD_SECRET_PREFIX,
   INFOBASE_PASSWORD_SECRET_PREFIX,
   INFOBASE_STORAGE_MAX_ENTRIES,
 } from '../../src/infobases/constants';
@@ -136,13 +132,6 @@ suite('infobaseConstants', () => {
       `${INFOBASE_PASSWORD_SECRET_PREFIX}${id}`,
     );
   });
-
-  test('infobaseLegacyPasswordSecretKey uses legacy prefix', () => {
-    assert.strictEqual(
-      infobaseLegacyPasswordSecretKey('x'),
-      `${INFOBASE_LEGACY_PASSWORD_SECRET_PREFIX}x`,
-    );
-  });
 });
 
 suite('infobaseMigration', () => {
@@ -183,114 +172,29 @@ suite('infobaseMigration', () => {
     assert.strictEqual(r.entries[0].id, goodId);
   });
 
-  test('migrateInfobaseEntry rejects non-file legacy kind', () => {
-    assert.strictEqual(
-      migrateInfobaseEntry({
-        id: randomUUID(),
-        schemaVersion: 1,
-        displayName: 'x',
-        kind: 'server',
-        ibcmdConfigYamlPath: '/p.yaml',
-      }),
-      null,
-    );
-  });
-
-  test('migrateInfobaseEntry trims legacy id, displayName, and yaml path', () => {
-    const id = randomUUID();
-    const m = migrateInfobaseEntry({
-      id: `  ${id}  `,
-      schemaVersion: 1,
-      displayName: '  Name  ',
-      groupLabel: 'g',
-      kind: 'file',
-      ibcmdConfigYamlPath: '  /p.yaml  ',
-      hasStoredPassword: false,
-      sortOrder: 0,
-    });
-    assert.ok(m);
-    assert.strictEqual(m!.id, id);
-    assert.strictEqual(m!.name, 'Name');
-    assert.strictEqual(m!.ibcmdConfigYamlPath, '/p.yaml');
-    assert.strictEqual(m!.filePath, path.dirname('/p.yaml'));
-  });
-
-  test('migrateInfobaseEntry defaults hasStoredPassword and timestamps for legacy', () => {
-    const id = randomUUID();
-    const m = migrateInfobaseEntry({
-      id,
-      schemaVersion: 1,
-      displayName: 'x',
-      groupLabel: '',
-      kind: 'file',
-      ibcmdConfigYamlPath: '/p.yaml',
-    });
-    assert.ok(m);
-    assert.strictEqual(m!.hasStoredPassword, false);
-    assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(m!.createdAt));
-  });
-
-  test('migrateInfobaseEntry maps legacy ibcmdUser to user', () => {
-    const id = randomUUID();
-    const m = migrateInfobaseEntry({
-      id,
-      schemaVersion: 1,
-      displayName: 'x',
-      groupLabel: '',
-      kind: 'file',
-      ibcmdConfigYamlPath: '/p.yaml',
-      ibcmdUser: '  admin  ',
-    });
-    assert.ok(m);
-    assert.strictEqual(m!.user, 'admin');
-  });
-
-  test('migrateInfobaseEntry drops empty optional user for legacy', () => {
-    const id = randomUUID();
-    const m = migrateInfobaseEntry({
-      id,
-      schemaVersion: 1,
-      displayName: 'x',
-      groupLabel: '',
-      kind: 'file',
-      ibcmdConfigYamlPath: '/p.yaml',
-      ibcmdUser: '   ',
-    });
-    assert.ok(m);
-    assert.strictEqual(m!.user, undefined);
-  });
-
   test('migrateStorageRoot returns empty for non-object', () => {
     const r = migrateStorageRoot('x');
     assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
   });
 
-  test('migrateStorageRoot migrates legacy v1 entries', () => {
+  test('migrateStorageRoot returns empty for rootSchemaVersion other than 2', () => {
     const id = randomUUID();
     const raw = {
       rootSchemaVersion: 1,
       entries: [
         {
           id,
-          schemaVersion: 1,
-          displayName: 'A',
-          groupLabel: 'g',
-          kind: 'file',
+          name: 'A',
+          type: 'file',
+          filePath: '/x',
           ibcmdConfigYamlPath: '/x/y.yaml',
-          hasStoredPassword: true,
-          sortOrder: 2,
+          hasStoredPassword: false,
           createdAt: '2020-01-01T00:00:00.000Z',
-          updatedAt: '2020-01-02T00:00:00.000Z',
         },
       ],
     };
     const r = migrateStorageRoot(raw);
-    assert.strictEqual(r.rootSchemaVersion, 2);
-    assert.strictEqual(r.entries.length, 1);
-    assert.strictEqual(r.entries[0].id, id);
-    assert.strictEqual(r.entries[0].name, 'A');
-    assert.strictEqual(r.entries[0].type, 'file');
-    assert.strictEqual(r.entries[0].ibcmdConfigYamlPath, '/x/y.yaml');
+    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
   });
 
   test('migrateInfobaseEntry drops invalid rows', () => {
@@ -483,38 +387,6 @@ suite('InfobaseStorageService', () => {
     await assert.rejects(() => service.upsert(bad), InfobaseValidationError);
   });
 
-  test('migrates legacy globalState and password secret on first load', async () => {
-    const id = randomUUID();
-    const legacyEntry = {
-      id,
-      schemaVersion: 1,
-      displayName: 'Legacy',
-      groupLabel: '',
-      kind: 'file',
-      ibcmdConfigYamlPath: 'C:/bases/cfg/ib.yml',
-      hasStoredPassword: true,
-      sortOrder: 0,
-      createdAt: '2020-01-01T00:00:00.000Z',
-      updatedAt: '2020-01-02T00:00:00.000Z',
-    };
-    await memento.update(INFOBASE_LEGACY_GLOBAL_STATE_KEY, {
-      rootSchemaVersion: 1,
-      entries: [legacyEntry],
-    });
-    await secrets.store(infobaseLegacyPasswordSecretKey(id), 'secret-value');
-
-    const loaded = await service.load();
-    assert.strictEqual(loaded.length, 1);
-    assert.strictEqual(loaded[0].name, 'Legacy');
-    assert.strictEqual(loaded[0].ibcmdConfigYamlPath, 'C:/bases/cfg/ib.yml');
-    assert.strictEqual(loaded[0].filePath, path.dirname('C:/bases/cfg/ib.yml'));
-
-    const newRoot = memento.get(INFOBASE_GLOBAL_STATE_KEY) as { rootSchemaVersion: number };
-    assert.strictEqual(newRoot.rootSchemaVersion, 2);
-    assert.strictEqual(memento.get(INFOBASE_LEGACY_GLOBAL_STATE_KEY), undefined);
-    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(id)), 'secret-value');
-    assert.strictEqual(await secrets.get(infobaseLegacyPasswordSecretKey(id)), undefined);
-  });
 });
 
 suite('ExtensionState infobase wiring', () => {
