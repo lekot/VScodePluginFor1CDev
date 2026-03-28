@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { InfobaseTreeDataProvider, type InfobaseTreeNode } from '../infobases/infobaseTreeProvider';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
@@ -26,6 +27,8 @@ export class ExtensionState {
   metadataWatchers: MetadataWatcherService[] = [];
   reloadCoordinator: ReloadCoordinatorService | null = null;
   infobaseStorage: InfobaseStorageService | null = null;
+  infobaseTreeProvider: InfobaseTreeDataProvider | null = null;
+  infobaseTreeView: vscode.TreeView<InfobaseTreeNode> | null = null;
 
   init(context: vscode.ExtensionContext): void {
     this.extensionContext = context;
@@ -39,6 +42,9 @@ export class ExtensionState {
     this.metadataWatchers = [];
     this.reloadCoordinator?.dispose();
     this.reloadCoordinator = null;
+    this.infobaseTreeProvider = null;
+    this.infobaseTreeView = null;
+    this.infobaseStorage?.dispose();
     this.infobaseStorage = null;
   }
 }

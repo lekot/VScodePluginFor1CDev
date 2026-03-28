@@ -1,4 +1,4 @@
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import type { InfobaseEntry, InfobaseStorageRoot } from './models/infobaseEntry';
 import { Logger } from '../utils/logger';
 import { INFOBASE_GLOBAL_STATE_KEY, infobasePasswordSecretKey } from './constants';
@@ -24,10 +24,22 @@ export class InfobaseStorageService {
   /** Entries in last persisted order (not necessarily sorted). */
   private storedEntries: InfobaseEntry[] | null = null;
 
+  private readonly _onDidChangeCatalog = new vscode.EventEmitter<void>();
+  /** Fires after catalog mutations ({@link saveAll}, {@link upsert}, {@link remove}). */
+  readonly onDidChangeCatalog = this._onDidChangeCatalog.event;
+
   constructor(
     private readonly globalState: vscode.Memento,
     private readonly secretStorage: vscode.SecretStorage,
   ) {}
+
+  dispose(): void {
+    this._onDidChangeCatalog.dispose();
+  }
+
+  private fireCatalogChanged(): void {
+    this._onDidChangeCatalog.fire();
+  }
 
   private readRootFromMemento(): InfobaseStorageRoot {
     try {
@@ -76,6 +88,7 @@ export class InfobaseStorageService {
       entries,
     });
     this.storedEntries = [...entries];
+    this.fireCatalogChanged();
   }
 
   /**
@@ -109,6 +122,7 @@ export class InfobaseStorageService {
       entries: filtered,
     });
     this.storedEntries = filtered;
+    this.fireCatalogChanged();
   }
 
   private async syncSecrets(previous: InfobaseEntry[], next: InfobaseEntry[]): Promise<void> {

@@ -178,6 +178,72 @@
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
         "title": "CDT 41: Configure ibcmd…",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.refresh",
+        "title": "Infobase Manager: обновить список",
+        "category": "CDT 41",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.create",
+        "title": "Infobase Manager: создать базу",
+        "category": "CDT 41",
+        "icon": "$(add)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.add",
+        "title": "Infobase Manager: добавить существующую",
+        "category": "CDT 41",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.importV8i",
+        "title": "Infobase Manager: импорт из .v8i",
+        "category": "CDT 41",
+        "icon": "$(file)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.openEnterprise",
+        "title": "Открыть в 1С:Предприятие",
+        "category": "CDT 41",
+        "icon": "$(play)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.openDesigner",
+        "title": "Открыть Конфигуратор",
+        "category": "CDT 41",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.configImport",
+        "title": "Загрузить конфигурацию…",
+        "category": "CDT 41",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.configExport",
+        "title": "Выгрузить конфигурацию…",
+        "category": "CDT 41",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.configCheck",
+        "title": "Проверить конфигурацию",
+        "category": "CDT 41",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.edit",
+        "title": "Редактировать…",
+        "category": "CDT 41",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.remove",
+        "title": "Удалить из списка",
+        "category": "CDT 41",
+        "icon": "$(trash)"
       }
     ],
     "customEditors": [
@@ -226,6 +292,26 @@
           "command": "1c-metadata-tree.clearSearch",
           "when": "view == 1c-metadata-tree",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.refresh",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.create",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.add",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@3"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.importV8i",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -313,6 +399,61 @@
           "command": "1c-metadata-tree.clearSubsystemFilter",
           "when": "view == 1c-metadata-tree && subsystemFilterActive",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openEnterprise",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openDesigner",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configImport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "inline@3"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configExport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "inline@4"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openEnterprise",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openDesigner",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configImport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@3"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configExport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@4"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configCheck",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@5"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.edit",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@6"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.remove",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@7"
         }
       ]
     },
@@ -321,6 +462,11 @@
         {
           "id": "1c-metadata-tree",
           "name": "CDT 41",
+          "when": "1c-metadata-tree:enabled"
+        },
+        {
+          "id": "1c-infobase-manager",
+          "name": "Infobase Manager",
           "when": "1c-metadata-tree:enabled"
         }
       ]

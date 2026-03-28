@@ -58,6 +58,10 @@ class VSCodeEventEmitter<T> {
       l(data);
     }
   }
+
+  dispose(): void {
+    this.listeners = [];
+  }
 }
 
 /** Enough for `RolesRightsEditorProvider` and rights editor integration tests under runCore. */
@@ -109,11 +113,23 @@ const windowStub = {
     }
     return undefined;
   },
+  /**
+   * Matches VS Code overloads: (msg, ...items) or (msg, options, ...items).
+   * Uses `informationMessageResult`: when set to a string, that button is chosen; when `undefined`, simulates dismiss.
+   */
   showWarningMessage: async (
     _message: string,
-    _options?: unknown,
-    ...items: string[]
-  ): Promise<string | undefined> => Promise.resolve(items[0]),
+    arg2?: unknown,
+    ...rest: string[]
+  ): Promise<string | undefined> => {
+    if (vscodeTestState.informationMessageResult !== undefined) {
+      return vscodeTestState.informationMessageResult;
+    }
+    if (typeof arg2 === 'string') {
+      return undefined;
+    }
+    return Promise.resolve(rest[0]);
+  },
   setStatusBarMessage: (): { dispose: () => void } => ({ dispose: () => undefined }),
 };
 

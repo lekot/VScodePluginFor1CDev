@@ -11,7 +11,27 @@ import { MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { registerAllCommands } from '../commands';
 import { registerIbcmdInfobaseHooks } from '../services/ibcmdService';
+import { INFOBASE_TREE_VIEW_ID, InfobaseTreeDataProvider } from '../infobases/infobaseTreeProvider';
+import { registerInfobaseTreeCommands } from '../infobases/registerInfobaseTreeCommands';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
+
+/** Empty-catalog hint (WOW design UC-01 / plan §1C). */
+async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
+  const storage = state.infobaseStorage;
+  const view = state.infobaseTreeView;
+  if (!storage || !view) {
+    return;
+  }
+  try {
+    const entries = await storage.load();
+    view.message =
+      entries.length === 0
+        ? 'Нет баз в списке. Создайте, добавьте существующую или импортируйте из .v8i — кнопки на панели вида.'
+        : undefined;
+  } catch {
+    view.message = 'Не удалось загрузить список информационных баз.';
+  }
+}
 
 /**
  * Tree view, providers, reload coordinator, command registration, selection wiring.
@@ -82,6 +102,24 @@ export function registerExtensionWorkspace(
   );
 
   registerIbcmdInfobaseHooks(context);
+
+  if (state.infobaseStorage) {
+    const infobaseTreeProvider = new InfobaseTreeDataProvider(state.infobaseStorage);
+    state.infobaseTreeProvider = infobaseTreeProvider;
+    state.infobaseTreeView = vscode.window.createTreeView(INFOBASE_TREE_VIEW_ID, {
+      treeDataProvider: infobaseTreeProvider,
+      showCollapseAll: true,
+    });
+    context.subscriptions.push(state.infobaseTreeView);
+    void syncInfobaseTreeViewMessage(state);
+    context.subscriptions.push(
+      state.infobaseStorage.onDidChangeCatalog(() => {
+        infobaseTreeProvider.refresh();
+        void syncInfobaseTreeViewMessage(state);
+      }),
+    );
+    context.subscriptions.push(...registerInfobaseTreeCommands(state));
+  }
 
   const commandDisposables = registerAllCommands({ context, state, lifecycle });
   context.subscriptions.push(...commandDisposables);
