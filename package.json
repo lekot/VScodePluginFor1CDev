@@ -487,7 +487,7 @@
         "1cMetadataTree.platform.path": {
           "type": "string",
           "default": "",
-          "description": "Directory containing 1cv8.exe or full path to the platform binary for launching 1C:Enterprise / Designer. Empty means auto-detect when that feature is implemented."
+          "description": "Directory containing 1cv8.exe, full path to 1cv8.exe / 1cv8c.exe, or empty for auto-detect (standard install dirs and PATH)."
         },
         "1cMetadataTree.ibcmd.timeout": {
           "type": "number",

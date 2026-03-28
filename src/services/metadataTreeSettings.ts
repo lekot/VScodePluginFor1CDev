@@ -29,3 +29,6 @@ export function getPlatformPathSetting(): string {
 
 /** Settings query for "open settings" UX (primary key). */
 export const IBCMD_PATH_SETTINGS_QUERY = '1cMetadataTree.ibcmd.path';
+
+/** Platform / 1cv8 path (WOW Infobase Manager §1F). */
+export const PLATFORM_PATH_SETTINGS_QUERY = '1cMetadataTree.platform.path';

@@ -105,6 +105,10 @@ export const vscodeTestState = {
    * Use `undefined` to simulate dismiss / cancel. When empty, stub keeps legacy behavior.
    */
   warningMessageReturnQueue: [] as (string | undefined)[],
+  /** URIs passed to `vscode.env.openExternal` (WOW platform / web infobase tests). */
+  openExternalLog: [] as string[],
+  /** When false, `openExternal` resolves to false. Default true. */
+  openExternalResult: true,
 };
 
 export function resetVscodeTestState(): void {
@@ -117,6 +121,8 @@ export function resetVscodeTestState(): void {
   vscodeTestState.openDialogQueue = [];
   vscodeTestState.inputBoxQueue = [];
   vscodeTestState.warningMessageReturnQueue = [];
+  vscodeTestState.openExternalLog = [];
+  vscodeTestState.openExternalResult = true;
 }
 
 const windowStub = {
@@ -200,6 +206,13 @@ const commandsStub = {
   },
 };
 
+const envStub = {
+  openExternal: async (target: { toString(): string }): Promise<boolean> => {
+    vscodeTestState.openExternalLog.push(target.toString());
+    return Boolean(vscodeTestState.openExternalResult);
+  },
+};
+
 const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
@@ -209,6 +222,7 @@ const vscodeStub = {
   ExtensionMode,
   ViewColumn,
   commands: commandsStub,
+  env: envStub,
   window: windowStub,
   workspace: workspaceStub,
 };
