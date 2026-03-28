@@ -33,6 +33,8 @@ export class ExtensionState {
   infobaseManager: InfobaseManager | null = null;
   infobaseTreeProvider: InfobaseTreeDataProvider | null = null;
   infobaseTreeView: vscode.TreeView<InfobaseTreeNode> | null = null;
+  /** Обновление бейджей/tooltip привязок на узле Configuration (§2C); выставляется в extensionWorkspaceSetup. */
+  refreshBindingTreeDecorations: (() => Promise<void>) | null = null;
 
   init(context: vscode.ExtensionContext): void {
     this.extensionContext = context;
@@ -50,6 +52,7 @@ export class ExtensionState {
     this.reloadCoordinator = null;
     this.infobaseTreeProvider = null;
     this.infobaseTreeView = null;
+    this.refreshBindingTreeDecorations = null;
     this.infobaseStorage?.dispose();
     this.infobaseStorage = null;
     this.bindingManager = null;

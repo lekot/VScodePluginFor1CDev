@@ -141,6 +141,13 @@ export const vscodeTestState = {
   openExternalLog: [] as string[],
   /** When false, `openExternal` resolves to false. Default true. */
   openExternalResult: true,
+  /**
+   * Имитирует `vscode.workspace.getWorkspaceFolder` / multi-root (WOW §2C, tree binding lookup).
+   * Пустой массив → папка не найдена, но вызов не падает.
+   */
+  mockWorkspaceFolders: [] as Array<{ name: string; index: number; uri: { fsPath: string; scheme: string } }>,
+  onDidSaveDocumentListeners: [] as Array<(e: { uri: { fsPath: string } }) => void>,
+  onDidChangeWorkspaceFoldersListeners: [] as Array<(e: unknown) => void>,
 };
 
 export function resetVscodeTestState(): void {
@@ -156,6 +163,23 @@ export function resetVscodeTestState(): void {
   vscodeTestState.warningMessageReturnQueue = [];
   vscodeTestState.openExternalLog = [];
   vscodeTestState.openExternalResult = true;
+  vscodeTestState.mockWorkspaceFolders = [];
+  vscodeTestState.onDidSaveDocumentListeners = [];
+  vscodeTestState.onDidChangeWorkspaceFoldersListeners = [];
+}
+
+/** Для тестов синхронизации привязок (сохранение `.vscode/infobase-bindings.json`). */
+export function fireWorkspaceDidSaveDocument(fsPath: string): void {
+  const doc = { uri: Uri.file(fsPath) };
+  for (const l of [...vscodeTestState.onDidSaveDocumentListeners]) {
+    l(doc);
+  }
+}
+
+export function fireWorkspaceFoldersChanged(): void {
+  for (const l of [...vscodeTestState.onDidChangeWorkspaceFoldersListeners]) {
+    l({});
+  }
 }
 
 const windowStub = {
@@ -227,6 +251,42 @@ const workspaceStub = {
       return defaultValue as T;
     },
   }),
+  get workspaceFolders(): typeof vscodeTestState.mockWorkspaceFolders {
+    return vscodeTestState.mockWorkspaceFolders;
+  },
+  getWorkspaceFolders: () => vscodeTestState.mockWorkspaceFolders,
+  getWorkspaceFolder: (uri: { fsPath: string }) => {
+    const u = path.normalize(uri.fsPath);
+    for (const f of vscodeTestState.mockWorkspaceFolders) {
+      const w = path.normalize(f.uri.fsPath);
+      if (u === w || u.startsWith(w + path.sep)) {
+        return f;
+      }
+    }
+    return undefined;
+  },
+  onDidSaveTextDocument: (listener: (e: { uri: { fsPath: string } }) => void) => {
+    vscodeTestState.onDidSaveDocumentListeners.push(listener);
+    return {
+      dispose: () => {
+        const i = vscodeTestState.onDidSaveDocumentListeners.indexOf(listener);
+        if (i >= 0) {
+          vscodeTestState.onDidSaveDocumentListeners.splice(i, 1);
+        }
+      },
+    };
+  },
+  onDidChangeWorkspaceFolders: (listener: (e: unknown) => void) => {
+    vscodeTestState.onDidChangeWorkspaceFoldersListeners.push(listener);
+    return {
+      dispose: () => {
+        const i = vscodeTestState.onDidChangeWorkspaceFoldersListeners.indexOf(listener);
+        if (i >= 0) {
+          vscodeTestState.onDidChangeWorkspaceFoldersListeners.splice(i, 1);
+        }
+      },
+    };
+  },
 };
 
 /** Shared by core tests; `import * as vscode` binds getters to these objects. */

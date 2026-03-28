@@ -250,6 +250,12 @@
         "title": "Infobase Manager: привязка баз к конфигурации…",
         "category": "CDT 41",
         "icon": "$(link)"
+      },
+      {
+        "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+        "title": "Привязать базы…",
+        "category": "CDT 41",
+        "icon": "$(link)"
       }
     ],
     "customEditors": [
@@ -283,6 +289,12 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "1c-metadata-tree.refresh",
@@ -321,6 +333,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem == 'Configuration'",
+          "group": "infobase@0"
+        },
         {
           "command": "1c-metadata-tree.openXML",
           "when": "view == 1c-metadata-tree",

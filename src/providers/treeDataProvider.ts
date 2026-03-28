@@ -17,6 +17,8 @@ import { OptimisticDeleteToken } from '../types/reloadContracts';
 import { TOP_LEVEL_TYPES } from '../services/elementOperations';
 import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
 import { expectedTreeNodeIdForCompositionRef } from '../services/subsystemCompositionRefResolver';
+import type { ConfigurationBindingDecoration } from '../bindings/bindingDecorationTypes';
+import { bindingKey, normalizeConfigRelativePath } from '../bindings/bindingPathUtils';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -82,6 +84,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private searchHistory: string[] = [];
   private filterAncestorOrVisibleIds: Set<string> | null = null;
   private messageUpdater: ((message: string | undefined) => void) | null = null;
+  /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
+  private configurationBindingDecorations = new Map<string, ConfigurationBindingDecoration>();
 
   constructor(_context: vscode.ExtensionContext) {
     void _context;
@@ -90,6 +94,32 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   setMessageUpdater(updater: (message: string | undefined) => void): void {
     this.messageUpdater = updater;
+  }
+
+  /**
+   * Обновляет кэш привязок ИБ для бейджа/tooltip на узле Configuration (WOW §2C).
+   */
+  setConfigurationBindingDecorations(map: ReadonlyMap<string, ConfigurationBindingDecoration>): void {
+    this.configurationBindingDecorations = new Map(map);
+  }
+
+  private lookupConfigurationBindingDecoration(element: TreeNode): ConfigurationBindingDecoration | undefined {
+    if (element.type !== MetadataType.Configuration) {
+      return undefined;
+    }
+    const configDir = this.getConfigPathForNode(element);
+    if (!configDir) {
+      return undefined;
+    }
+    const configXmlFs = path.join(configDir, 'Configuration.xml');
+    const uri = vscode.Uri.file(configXmlFs);
+    const wf = vscode.workspace.getWorkspaceFolder(uri);
+    if (!wf) {
+      return undefined;
+    }
+    const rel = path.relative(wf.uri.fsPath, configXmlFs).replace(/\\/g, '/');
+    const key = bindingKey(wf.name, normalizeConfigRelativePath(rel));
+    return this.configurationBindingDecorations.get(key);
   }
 
   /** Display form of search query: *query* for plain substring search, else as-is (additional_req.md п.2). */
@@ -1066,11 +1096,28 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (q && !this.searchUseRegex && this.nodeMatchesSearch(element, q)) {
         tooltipText += `\nНайдено: "${q}"`;
       }
+      const bindingDeco = this.lookupConfigurationBindingDecoration(element);
+      if (element.type === MetadataType.Configuration) {
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          const mass = bindingDeco.massDeployment ? '\nМассовая раскатка: да' : '';
+          tooltipText += `\n\nПривязка ИБ: ${bindingDeco.boundCount} баз(ы).${mass}\n${bindingDeco.namesPreview}`;
+        } else {
+          tooltipText +=
+            '\n\nПривязка ИБ: не настроена. Контекстное меню узла → «Привязать базы…».';
+        }
+      }
       treeItem.tooltip = tooltipText;
 
-      // Set description (shown next to the label)
+      // Set description (shown next to the label); для Configuration — бейдж числа привязок (§2C)
+      const descParts: string[] = [];
       if (synonym) {
-        treeItem.description = synonym;
+        descParts.push(synonym);
+      }
+      if (element.type === MetadataType.Configuration && bindingDeco && bindingDeco.boundCount > 0) {
+        descParts.push(`🔗${bindingDeco.boundCount}`);
+      }
+      if (descParts.length > 0) {
+        treeItem.description = descParts.join(' · ');
       }
 
       // Set icon based on metadata type

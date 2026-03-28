@@ -14,6 +14,7 @@ import { registerIbcmdInfobaseHooks } from '../services/ibcmdService';
 import { INFOBASE_TREE_VIEW_ID, InfobaseTreeDataProvider } from '../infobases/infobaseTreeProvider';
 import { registerInfobaseTreeCommands } from '../infobases/registerInfobaseTreeCommands';
 import { registerBindingDialogCommands } from '../bindings/bindingDialog';
+import { rebuildBindingDecorationsForTree, registerBindingDecorationSync } from '../bindings/bindingTreeDecorations';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
 
 /** Empty-catalog hint (WOW design UC-01 / plan §1C). */
@@ -120,7 +121,10 @@ export function registerExtensionWorkspace(
       }),
     );
     context.subscriptions.push(...registerInfobaseTreeCommands(state));
-    context.subscriptions.push(...registerBindingDialogCommands(context, state));
+    state.refreshBindingTreeDecorations = () => rebuildBindingDecorationsForTree(state);
+    context.subscriptions.push(...registerBindingDialogCommands(context, state, state.treeDataProvider));
+    context.subscriptions.push(registerBindingDecorationSync(state));
+    void rebuildBindingDecorationsForTree(state);
   }
 
   const commandDisposables = registerAllCommands({ context, state, lifecycle });

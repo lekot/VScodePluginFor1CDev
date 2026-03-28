@@ -6,7 +6,9 @@ import * as vscode from 'vscode';
 import type { ConfigurationBinding } from './models/configurationBinding';
 import { normalizeConfigRelativePath } from './bindingPathUtils';
 import type { ExtensionState } from '../state/extensionState';
+import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { Logger } from '../utils/logger';
+import { openBindingDialogForConfigurationFromTree } from './bindingCommands';
 
 const VIEW_TYPE = '1c-binding-dialog';
 
@@ -574,6 +576,7 @@ export class BindingDialogPanel {
         try {
           await deps.bindingManager.upsert(next);
           void vscode.window.showInformationMessage('Привязка сохранена в .vscode/infobase-bindings.json.');
+          void this.state.refreshBindingTreeDecorations?.();
         } catch (e) {
           Logger.error('bindingDialog: save failed', e);
           void vscode.window.showErrorMessage(`Не удалось сохранить привязку: ${e instanceof Error ? e.message : String(e)}`);
@@ -653,12 +656,24 @@ export async function runOpenBindingDialog(state: ExtensionState, panel: Binding
   await panel.show(folder.name, normalizeConfigRelativePath(configPath));
 }
 
-export function registerBindingDialogCommands(context: vscode.ExtensionContext, state: ExtensionState): vscode.Disposable[] {
+export function registerBindingDialogCommands(
+  context: vscode.ExtensionContext,
+  state: ExtensionState,
+  treeDataProvider?: MetadataTreeDataProvider | null,
+): vscode.Disposable[] {
   const dialog = new BindingDialogPanel(context, state);
-  return [
+  const out: vscode.Disposable[] = [
     vscode.commands.registerCommand('1c-metadata-tree.bindings.openDialog', async () => {
       await runOpenBindingDialog(state, dialog);
     }),
-    { dispose: () => dialog.dispose() },
   ];
+  if (treeDataProvider) {
+    out.push(
+      vscode.commands.registerCommand('1c-metadata-tree.bindings.openDialogForConfiguration', async (arg: unknown) => {
+        await openBindingDialogForConfigurationFromTree(arg, state, dialog, treeDataProvider);
+      }),
+    );
+  }
+  out.push({ dispose: () => dialog.dispose() });
+  return out;
 }
