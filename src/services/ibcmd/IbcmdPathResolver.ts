@@ -10,10 +10,9 @@ function joinForPlatform(platform: NodeJS.Platform, ...segments: string[]): stri
  * Resolves the ibcmd executable path without importing `vscode` (testable via dependency injection).
  *
  * Priority:
- * 1. Non-empty `1cInfobaseManager.ibcmdPath` from settings (passed as `settingsPath`) after trim — must exist on disk.
+ * 1. Non-empty settings path (`settingsPath`) after trim — must exist on disk.
  * 2. Non-empty `IBCMD_PATH` from env (`envIbcmdPath`) after trim — must exist on disk.
- * 3. Auto-discovery: `where ibcmd` (Windows) / `which ibcmd` (Unix), then typical install roots
- *    (`%ProgramFiles%`/x86/W6432 + `1cv8/<ver>/bin`, `/opt/1cv8/.../bin`) up to two directory levels under `1cv8`.
+ * 3. When `autoDetect` is true: `where ibcmd` / `which ibcmd`, then typical install roots.
  */
 export type IbcmdPathResolveResult =
   | { kind: 'resolved'; path: string }
@@ -142,8 +141,11 @@ export function resolveIbcmdPath(input: {
   settingsPath: string | undefined;
   envIbcmdPath: string | undefined;
   deps: IbcmdPathResolverDeps;
+  /** When false, skip PATH and install-dir discovery after settings + env. Default true. */
+  autoDetect?: boolean;
 }): IbcmdPathResolveResult {
   const { settingsPath, envIbcmdPath, deps } = input;
+  const autoDetect = input.autoDetect !== false;
   const exeName = deps.platform === 'win32' ? 'ibcmd.exe' : 'ibcmd';
 
   const s1 = settingsPath?.trim();
@@ -165,6 +167,13 @@ export function resolveIbcmdPath(input: {
     return {
       kind: 'notFound',
       hint: `IBCMD_PATH is set but the file does not exist: ${s2}`,
+    };
+  }
+
+  if (!autoDetect) {
+    return {
+      kind: 'notFound',
+      hint: 'Auto-detect is disabled (1cMetadataTree.ibcmd.autoDetect). Set 1cMetadataTree.ibcmd.path or IBCMD_PATH.',
     };
   }
 

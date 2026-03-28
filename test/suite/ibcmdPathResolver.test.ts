@@ -5,7 +5,7 @@ const W = path.win32;
 import {
   resolveIbcmdPath,
   type IbcmdPathResolverDeps,
-} from '../../src/infobaseManager/ibcmd/IbcmdPathResolver';
+} from '../../src/services/ibcmd/IbcmdPathResolver';
 
 suite('ibcmdPathResolver', () => {
   function makeDeps(over: Partial<IbcmdPathResolverDeps> & Pick<IbcmdPathResolverDeps, 'existsSync'>): IbcmdPathResolverDeps {
@@ -89,14 +89,22 @@ suite('ibcmdPathResolver', () => {
     }
   });
 
-  test('returns notFound when settings and env empty and no discovery', () => {
+  test('returns notFound when settings and env empty and autoDetect is false', () => {
     const deps = makeDeps({
       existsSync: () => false,
       env: {},
       findOnSystemPath: () => null,
     });
-    const r = resolveIbcmdPath({ settingsPath: undefined, envIbcmdPath: undefined, deps });
+    const r = resolveIbcmdPath({
+      settingsPath: undefined,
+      envIbcmdPath: undefined,
+      deps,
+      autoDetect: false,
+    });
     assert.strictEqual(r.kind, 'notFound');
+    if (r.kind === 'notFound') {
+      assert.ok(r.hint.includes('Auto-detect is disabled'));
+    }
   });
 
   test('uses findOnSystemPath when settings and env empty', () => {

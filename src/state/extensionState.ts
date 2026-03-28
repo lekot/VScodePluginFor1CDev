@@ -8,7 +8,7 @@ import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { TreeNode } from '../models/treeNode';
-import { InfobaseStorageService } from '../infobaseManager/infobaseStorageService';
+import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 
 /**
  * Holds extension-wide mutable references (providers, tree view, reload coordinator).

@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import {
   getIbcmdService,
   resetIbcmdServiceSingletonForTests,
-} from '../../src/infobaseManager/ibcmd/ibcmdServiceSingleton';
+} from '../../src/services/ibcmd/ibcmdServiceSingleton';
 
 suite('ibcmdServiceSingleton', () => {
   teardown(() => {

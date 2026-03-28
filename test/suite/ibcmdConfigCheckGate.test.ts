@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runIbcmdConfigCheckGate } from '../../src/services/ibcmdConfigCheckGate';
-import { resetIbcmdServiceSingletonForTests } from '../../src/infobaseManager/ibcmd/ibcmdServiceSingleton';
+import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 const suiteOrSkip = process.platform === 'win32' ? suite.skip : suite;
@@ -52,7 +52,7 @@ suiteOrSkip('ibcmdConfigCheckGate', () => {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.code, 'IBCMD_NOT_FOUND');
     assert.ok(result.message.includes('IBCMD_PATH'));
-    assert.ok(result.message.includes('1cInfobaseManager.ibcmdPath'));
+    assert.ok(result.message.includes('1cMetadataTree.ibcmd.path'));
   });
 
   test('fails when YAML config path is missing', async () => {
@@ -214,7 +214,7 @@ exit 2
     assert.ok(result.message.includes('does not exist'));
   });
 
-  test('resolves ibcmd from workspace 1cInfobaseManager.ibcmdPath when IBCMD_PATH is unset', async () => {
+  test('resolves ibcmd from workspace 1cMetadataTree.ibcmd.path when IBCMD_PATH is unset', async () => {
     const scriptPath = path.join(tempDir, 'ws-settings-ibcmd.sh');
     fs.writeFileSync(
       scriptPath,
@@ -222,7 +222,7 @@ exit 2
       'utf-8'
     );
     fs.chmodSync(scriptPath, 0o755);
-    vscodeTestState.workspaceConfig['1cInfobaseManager.ibcmdPath'] = scriptPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = scriptPath;
     process.env.IBCMD_INFOBASE_CONFIG = path.join(tempDir, 'ib-ws.yml');
     fs.writeFileSync(process.env.IBCMD_INFOBASE_CONFIG, 'kind: fake\n', 'utf-8');
 

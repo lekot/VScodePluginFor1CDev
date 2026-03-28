@@ -333,20 +333,49 @@
           "default": true,
           "description": "Use compact rights write in Rights Editor: only output <right> when true for simple rights; keep and update only <value> for rights with restrictionByCondition."
         },
-        "1cInfobaseManager.ibcmdPath": {
+        "1cMetadataTree.ibcmd.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the ibcmd executable. When empty, the IBCMD_PATH environment variable is used (same as matrix / e2e)."
+          "description": "Path to the ibcmd executable (WOW Infobase Manager). When empty, IBCMD_PATH or auto-detect is used (same as matrix / e2e)."
         },
-        "1cInfobaseManager.platformBinPath": {
+        "1cMetadataTree.platform.path": {
           "type": "string",
           "default": "",
           "description": "Directory containing 1cv8.exe or full path to the platform binary for launching 1C:Enterprise / Designer. Empty means auto-detect when that feature is implemented."
         },
+        "1cMetadataTree.ibcmd.timeout": {
+          "type": "number",
+          "default": 600000,
+          "description": "Timeout in milliseconds for ibcmd operations. Zero or negative values fall back to IBCMD_TIMEOUT_MS or built-in default (600000 ms)."
+        },
+        "1cMetadataTree.ibcmd.autoDetect": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true and path/env are empty, search PATH and typical 1cv8 install directories for ibcmd."
+        },
+        "1cMetadataTree.deploy.mode": {
+          "type": "string",
+          "default": "copy",
+          "enum": [
+            "copy",
+            "block"
+          ],
+          "description": "Deploy mode (WOW Phase 2): copy — from project copy; block — lock editors."
+        },
+        "1cInfobaseManager.ibcmdPath": {
+          "type": "string",
+          "default": "",
+          "description": "Deprecated: use 1cMetadataTree.ibcmd.path. Path to ibcmd; used only when the new setting is empty."
+        },
+        "1cInfobaseManager.platformBinPath": {
+          "type": "string",
+          "default": "",
+          "description": "Deprecated: use 1cMetadataTree.platform.path. Platform binary path; used only when the new setting is empty."
+        },
         "1cInfobaseManager.ibcmdTimeoutMs": {
           "type": "number",
           "default": 0,
-          "description": "Default timeout in milliseconds for ibcmd operations. Zero or negative values use the built-in default (600000 ms), consistent with IBCMD_TIMEOUT_MS / ibcmd gate."
+          "description": "Deprecated: use 1cMetadataTree.ibcmd.timeout. When zero, the new setting (or env/built-in default) applies."
         }
       }
     },

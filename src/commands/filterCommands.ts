@@ -10,7 +10,7 @@ import {
   readSubsystemCompositionRefsFromFile,
 } from '../services/subsystemCompositionFileUpdater';
 import { runIbcmdConfigCheckGate, type IbcmdConfigCheckResult } from '../services/ibcmdConfigCheckGate';
-import { IBCMD_SETUP_COMMAND } from '../infobaseManager/ibcmd/registerIbcmdInfobaseHooks';
+import { IBCMD_SETUP_COMMAND } from '../services/ibcmdService';
 
 type RegisterFilterCommandsDeps = {
   state: ExtensionState;

@@ -1,21 +1,25 @@
 import * as assert from 'assert';
 import { randomUUID } from 'crypto';
+import * as path from 'path';
 import type { Memento, SecretStorage } from 'vscode';
 import * as vscode from 'vscode';
 import {
+  infobaseLegacyPasswordSecretKey,
   infobasePasswordSecretKey,
-  INFOBASE_MANAGER_GLOBAL_STATE_KEY,
+  INFOBASE_GLOBAL_STATE_KEY,
+  INFOBASE_LEGACY_GLOBAL_STATE_KEY,
+  INFOBASE_LEGACY_PASSWORD_SECRET_PREFIX,
   INFOBASE_PASSWORD_SECRET_PREFIX,
   INFOBASE_STORAGE_MAX_ENTRIES,
-} from '../../src/infobaseManager/constants';
-import { migrateInfobaseEntry, migrateStorageRoot } from '../../src/infobaseManager/infobaseMigration';
-import { InfobaseStorageService } from '../../src/infobaseManager/infobaseStorageService';
+} from '../../src/infobases/constants';
+import { migrateInfobaseEntry, migrateStorageRoot } from '../../src/infobases/infobaseMigration';
+import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import {
   InfobaseValidationError,
   validateInfobaseEntry,
   validateInfobaseEntryList,
-} from '../../src/infobaseManager/infobaseValidator';
-import type { InfobaseEntry } from '../../src/models/infobaseEntry';
+} from '../../src/infobases/infobaseValidator';
+import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import { ExtensionState } from '../../src/state/extensionState';
 
 type SecretStorageChangeEvent = { key: string };
@@ -53,7 +57,11 @@ class MapMemento implements Memento {
   }
 
   update(key: string, value: unknown): Thenable<void> {
-    this.map.set(key, value);
+    if (value === undefined) {
+      this.map.delete(key);
+    } else {
+      this.map.set(key, value);
+    }
     return Promise.resolve();
   }
 }
@@ -94,7 +102,7 @@ class ThrowingGetMemento implements Memento {
   get<T>(_key: string): T | undefined;
   get<T>(_key: string, defaultValue: T): T;
   get<T>(key: string, defaultValue?: T): T | undefined {
-    if (key === INFOBASE_MANAGER_GLOBAL_STATE_KEY) {
+    if (key === INFOBASE_GLOBAL_STATE_KEY) {
       throw new Error('globalState.get failed');
     }
     return defaultValue as T | undefined;
@@ -109,15 +117,13 @@ function makeEntry(overrides: Partial<InfobaseEntry> = {}): InfobaseEntry {
   const now = new Date().toISOString();
   return {
     id: randomUUID(),
-    schemaVersion: 1,
-    displayName: 'Demo',
-    groupLabel: '',
-    kind: 'file',
+    name: 'Demo',
+    type: 'file',
+    filePath: 'C:/tmp',
     ibcmdConfigYamlPath: 'C:/tmp/ib.yaml',
     hasStoredPassword: false,
-    sortOrder: 0,
     createdAt: now,
-    updatedAt: now,
+    lastUsedAt: now,
     ...overrides,
   };
 }
@@ -130,42 +136,46 @@ suite('infobaseConstants', () => {
       `${INFOBASE_PASSWORD_SECRET_PREFIX}${id}`,
     );
   });
+
+  test('infobaseLegacyPasswordSecretKey uses legacy prefix', () => {
+    assert.strictEqual(
+      infobaseLegacyPasswordSecretKey('x'),
+      `${INFOBASE_LEGACY_PASSWORD_SECRET_PREFIX}x`,
+    );
+  });
 });
 
 suite('infobaseMigration', () => {
   test('migrateStorageRoot returns empty for null and undefined', () => {
-    assert.deepStrictEqual(migrateStorageRoot(null), { rootSchemaVersion: 1, entries: [] });
-    assert.deepStrictEqual(migrateStorageRoot(undefined), { rootSchemaVersion: 1, entries: [] });
+    assert.deepStrictEqual(migrateStorageRoot(null), { rootSchemaVersion: 2, entries: [] });
+    assert.deepStrictEqual(migrateStorageRoot(undefined), { rootSchemaVersion: 2, entries: [] });
   });
 
   test('migrateStorageRoot returns empty for wrong rootSchemaVersion', () => {
-    const r = migrateStorageRoot({ rootSchemaVersion: 2, entries: [] });
-    assert.deepStrictEqual(r, { rootSchemaVersion: 1, entries: [] });
+    const r = migrateStorageRoot({ rootSchemaVersion: 9, entries: [] });
+    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
   });
 
   test('migrateStorageRoot returns empty when entries is not an array', () => {
-    const r = migrateStorageRoot({ rootSchemaVersion: 1, entries: {} });
-    assert.deepStrictEqual(r, { rootSchemaVersion: 1, entries: [] });
+    const r = migrateStorageRoot({ rootSchemaVersion: 2, entries: {} });
+    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
   });
 
   test('migrateStorageRoot filters out invalid array items', () => {
     const goodId = randomUUID();
     const raw = {
-      rootSchemaVersion: 1,
+      rootSchemaVersion: 2,
       entries: [
         {
           id: goodId,
-          schemaVersion: 1,
-          displayName: 'OK',
-          groupLabel: '',
-          kind: 'file',
+          name: 'OK',
+          type: 'file',
+          filePath: '/data',
           ibcmdConfigYamlPath: '/ok.yaml',
           hasStoredPassword: false,
-          sortOrder: 0,
           createdAt: '2020-01-01T00:00:00.000Z',
-          updatedAt: '2020-01-02T00:00:00.000Z',
         },
-        { id: '', schemaVersion: 1, displayName: 'bad', kind: 'file', ibcmdConfigYamlPath: '/x.yaml' },
+        { id: '', name: 'bad', type: 'file', filePath: '/x', hasStoredPassword: false, createdAt: 'x' },
       ],
     };
     const r = migrateStorageRoot(raw);
@@ -173,7 +183,7 @@ suite('infobaseMigration', () => {
     assert.strictEqual(r.entries[0].id, goodId);
   });
 
-  test('migrateInfobaseEntry rejects non-file kind', () => {
+  test('migrateInfobaseEntry rejects non-file legacy kind', () => {
     assert.strictEqual(
       migrateInfobaseEntry({
         id: randomUUID(),
@@ -186,7 +196,7 @@ suite('infobaseMigration', () => {
     );
   });
 
-  test('migrateInfobaseEntry trims id, displayName, and yaml path', () => {
+  test('migrateInfobaseEntry trims legacy id, displayName, and yaml path', () => {
     const id = randomUUID();
     const m = migrateInfobaseEntry({
       id: `  ${id}  `,
@@ -200,11 +210,12 @@ suite('infobaseMigration', () => {
     });
     assert.ok(m);
     assert.strictEqual(m!.id, id);
-    assert.strictEqual(m!.displayName, 'Name');
+    assert.strictEqual(m!.name, 'Name');
     assert.strictEqual(m!.ibcmdConfigYamlPath, '/p.yaml');
+    assert.strictEqual(m!.filePath, path.dirname('/p.yaml'));
   });
 
-  test('migrateInfobaseEntry defaults hasStoredPassword, sortOrder, timestamps', () => {
+  test('migrateInfobaseEntry defaults hasStoredPassword and timestamps for legacy', () => {
     const id = randomUUID();
     const m = migrateInfobaseEntry({
       id,
@@ -216,12 +227,10 @@ suite('infobaseMigration', () => {
     });
     assert.ok(m);
     assert.strictEqual(m!.hasStoredPassword, false);
-    assert.strictEqual(m!.sortOrder, 0);
     assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(m!.createdAt));
-    assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(m!.updatedAt));
   });
 
-  test('migrateInfobaseEntry preserves optional ibcmdUser and metadataWorkspacePath', () => {
+  test('migrateInfobaseEntry maps legacy ibcmdUser to user', () => {
     const id = randomUUID();
     const m = migrateInfobaseEntry({
       id,
@@ -231,14 +240,12 @@ suite('infobaseMigration', () => {
       kind: 'file',
       ibcmdConfigYamlPath: '/p.yaml',
       ibcmdUser: '  admin  ',
-      metadataWorkspacePath: '  /ws  ',
     });
     assert.ok(m);
-    assert.strictEqual(m!.ibcmdUser, 'admin');
-    assert.strictEqual(m!.metadataWorkspacePath, '/ws');
+    assert.strictEqual(m!.user, 'admin');
   });
 
-  test('migrateInfobaseEntry drops empty optional string fields', () => {
+  test('migrateInfobaseEntry drops empty optional user for legacy', () => {
     const id = randomUUID();
     const m = migrateInfobaseEntry({
       id,
@@ -248,19 +255,17 @@ suite('infobaseMigration', () => {
       kind: 'file',
       ibcmdConfigYamlPath: '/p.yaml',
       ibcmdUser: '   ',
-      metadataWorkspacePath: '',
     });
     assert.ok(m);
-    assert.strictEqual(m!.ibcmdUser, undefined);
-    assert.strictEqual(m!.metadataWorkspacePath, undefined);
+    assert.strictEqual(m!.user, undefined);
   });
 
   test('migrateStorageRoot returns empty for non-object', () => {
     const r = migrateStorageRoot('x');
-    assert.deepStrictEqual(r, { rootSchemaVersion: 1, entries: [] });
+    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
   });
 
-  test('migrateStorageRoot keeps valid v1 entries', () => {
+  test('migrateStorageRoot migrates legacy v1 entries', () => {
     const id = randomUUID();
     const raw = {
       rootSchemaVersion: 1,
@@ -280,9 +285,12 @@ suite('infobaseMigration', () => {
       ],
     };
     const r = migrateStorageRoot(raw);
+    assert.strictEqual(r.rootSchemaVersion, 2);
     assert.strictEqual(r.entries.length, 1);
     assert.strictEqual(r.entries[0].id, id);
-    assert.strictEqual(r.entries[0].displayName, 'A');
+    assert.strictEqual(r.entries[0].name, 'A');
+    assert.strictEqual(r.entries[0].type, 'file');
+    assert.strictEqual(r.entries[0].ibcmdConfigYamlPath, '/x/y.yaml');
   });
 
   test('migrateInfobaseEntry drops invalid rows', () => {
@@ -317,49 +325,36 @@ suite('infobaseValidator', () => {
     assert.throws(() => validateInfobaseEntry(makeEntry({ id: '   ' })), InfobaseValidationError);
   });
 
-  test('validateInfobaseEntry rejects wrong schemaVersion and kind', () => {
+  test('validateInfobaseEntry rejects wrong type', () => {
     assert.throws(
-      () => validateInfobaseEntry(makeEntry({ schemaVersion: 2 as 1 })),
-      InfobaseValidationError,
-    );
-    assert.throws(
-      () => validateInfobaseEntry(makeEntry({ kind: 'server' as 'file' })),
+      () => validateInfobaseEntry(makeEntry({ type: 'server' as InfobaseEntry['type'] })),
       InfobaseValidationError,
     );
   });
 
-  test('validateInfobaseEntry rejects empty displayName and yaml path', () => {
-    assert.throws(() => validateInfobaseEntry(makeEntry({ displayName: '' })), InfobaseValidationError);
+  test('validateInfobaseEntry rejects empty name', () => {
+    assert.throws(() => validateInfobaseEntry(makeEntry({ name: '' })), InfobaseValidationError);
+    assert.throws(() => validateInfobaseEntry(makeEntry({ name: '  ' })), InfobaseValidationError);
+  });
+
+  test('validateInfobaseEntry rejects file without filePath and yaml', () => {
     assert.throws(
-      () => validateInfobaseEntry(makeEntry({ displayName: '  ' })),
-      InfobaseValidationError,
-    );
-    assert.throws(
-      () => validateInfobaseEntry(makeEntry({ ibcmdConfigYamlPath: '' })),
+      () =>
+        validateInfobaseEntry(
+          makeEntry({ filePath: undefined, ibcmdConfigYamlPath: undefined }),
+        ),
       InfobaseValidationError,
     );
   });
 
-  test('validateInfobaseEntry rejects non-integer sortOrder', () => {
-    assert.throws(
-      () => validateInfobaseEntry(makeEntry({ sortOrder: 1.5 })),
-      InfobaseValidationError,
-    );
-    assert.throws(
-      () => validateInfobaseEntry(makeEntry({ sortOrder: NaN })),
-      InfobaseValidationError,
-    );
-  });
-
-  test('validateInfobaseEntry rejects empty createdAt or updatedAt', () => {
+  test('validateInfobaseEntry rejects empty createdAt', () => {
     assert.throws(() => validateInfobaseEntry(makeEntry({ createdAt: '' })), InfobaseValidationError);
-    assert.throws(() => validateInfobaseEntry(makeEntry({ updatedAt: '' })), InfobaseValidationError);
   });
 
   test('validateInfobaseEntryList rejects duplicates', () => {
     const id = randomUUID();
-    const a = makeEntry({ id, displayName: 'A' });
-    const b = makeEntry({ id, displayName: 'B' });
+    const a = makeEntry({ id, name: 'A' });
+    const b = makeEntry({ id, name: 'B' });
     assert.throws(() => validateInfobaseEntryList([a, b]), InfobaseValidationError);
   });
 
@@ -368,8 +363,9 @@ suite('infobaseValidator', () => {
     for (let i = 0; i < INFOBASE_STORAGE_MAX_ENTRIES; i += 1) {
       list.push(
         makeEntry({
-          displayName: `E${i}`,
+          name: `E${i}`,
           ibcmdConfigYamlPath: `/p/${i}.yaml`,
+          filePath: `/p`,
         }),
       );
     }
@@ -388,37 +384,35 @@ suite('InfobaseStorageService', () => {
     service = new InfobaseStorageService(memento, secrets);
   });
 
-  test('load returns empty then sorted by group, sortOrder, displayName', async () => {
+  test('load returns empty then sorted by type then name', async () => {
     assert.deepStrictEqual(await service.load(), []);
-    const e1 = makeEntry({ groupLabel: 'B', sortOrder: 0, displayName: 'z' });
-    const e2 = makeEntry({ groupLabel: 'A', sortOrder: 1, displayName: 'a' });
-    const e3 = makeEntry({ groupLabel: 'A', sortOrder: 0, displayName: 'b' });
-    await service.saveAll([e1, e2, e3]);
+    const e1 = makeEntry({ name: 'z' });
+    const e2 = makeEntry({ name: 'a' });
+    await service.saveAll([e1, e2]);
     const loaded = await service.load();
-    assert.strictEqual(loaded[0].id, e3.id);
-    assert.strictEqual(loaded[1].id, e2.id);
-    assert.strictEqual(loaded[2].id, e1.id);
+    assert.strictEqual(loaded[0].id, e2.id);
+    assert.strictEqual(loaded[1].id, e1.id);
   });
 
-  test('saveAll persists under global state key', async () => {
+  test('saveAll persists under design global state key with rootSchemaVersion 2', async () => {
     const e = makeEntry();
     await service.saveAll([e]);
-    const stored = memento.get(INFOBASE_MANAGER_GLOBAL_STATE_KEY) as {
+    const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as {
       rootSchemaVersion: number;
       entries: InfobaseEntry[];
     };
-    assert.strictEqual(stored.rootSchemaVersion, 1);
+    assert.strictEqual(stored.rootSchemaVersion, 2);
     assert.strictEqual(stored.entries.length, 1);
     assert.strictEqual(stored.entries[0].id, e.id);
   });
 
   test('upsert merges by id', async () => {
-    const e = makeEntry({ displayName: 'Old' });
+    const e = makeEntry({ name: 'Old' });
     await service.saveAll([e]);
-    const updated = { ...e, displayName: 'New', updatedAt: new Date().toISOString() };
+    const updated = { ...e, name: 'New', lastUsedAt: new Date().toISOString() };
     await service.upsert(updated);
     const one = await service.getById(e.id);
-    assert.strictEqual(one?.displayName, 'New');
+    assert.strictEqual(one?.name, 'New');
   });
 
   test('remove deletes password secret', async () => {
@@ -456,8 +450,9 @@ suite('InfobaseStorageService', () => {
     for (let i = 0; i < INFOBASE_STORAGE_MAX_ENTRIES + 1; i += 1) {
       list.push(
         makeEntry({
-          displayName: `E${i}`,
+          name: `E${i}`,
           ibcmdConfigYamlPath: `/p/${i}.yaml`,
+          filePath: '/p',
         }),
       );
     }
@@ -488,13 +483,37 @@ suite('InfobaseStorageService', () => {
     await assert.rejects(() => service.upsert(bad), InfobaseValidationError);
   });
 
-  test('group sort uses trimmed groupLabel for ordering', async () => {
-    const a = makeEntry({ groupLabel: '  Z  ', displayName: 'a' });
-    const b = makeEntry({ groupLabel: 'Y', displayName: 'b' });
-    await service.saveAll([a, b]);
+  test('migrates legacy globalState and password secret on first load', async () => {
+    const id = randomUUID();
+    const legacyEntry = {
+      id,
+      schemaVersion: 1,
+      displayName: 'Legacy',
+      groupLabel: '',
+      kind: 'file',
+      ibcmdConfigYamlPath: 'C:/bases/cfg/ib.yml',
+      hasStoredPassword: true,
+      sortOrder: 0,
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-02T00:00:00.000Z',
+    };
+    await memento.update(INFOBASE_LEGACY_GLOBAL_STATE_KEY, {
+      rootSchemaVersion: 1,
+      entries: [legacyEntry],
+    });
+    await secrets.store(infobaseLegacyPasswordSecretKey(id), 'secret-value');
+
     const loaded = await service.load();
-    assert.strictEqual(loaded[0].id, b.id);
-    assert.strictEqual(loaded[1].id, a.id);
+    assert.strictEqual(loaded.length, 1);
+    assert.strictEqual(loaded[0].name, 'Legacy');
+    assert.strictEqual(loaded[0].ibcmdConfigYamlPath, 'C:/bases/cfg/ib.yml');
+    assert.strictEqual(loaded[0].filePath, path.dirname('C:/bases/cfg/ib.yml'));
+
+    const newRoot = memento.get(INFOBASE_GLOBAL_STATE_KEY) as { rootSchemaVersion: number };
+    assert.strictEqual(newRoot.rootSchemaVersion, 2);
+    assert.strictEqual(memento.get(INFOBASE_LEGACY_GLOBAL_STATE_KEY), undefined);
+    assert.strictEqual(await secrets.get(infobasePasswordSecretKey(id)), 'secret-value');
+    assert.strictEqual(await secrets.get(infobaseLegacyPasswordSecretKey(id)), undefined);
   });
 });
 
@@ -521,7 +540,7 @@ suite('ExtensionState infobase wiring', () => {
 
     const e = makeEntry();
     await ib.saveAll([e]);
-    const stored = memento.get(INFOBASE_MANAGER_GLOBAL_STATE_KEY) as { entries: InfobaseEntry[] };
+    const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as { entries: InfobaseEntry[] };
     assert.strictEqual(stored.entries.length, 1);
 
     state.dispose();

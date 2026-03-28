@@ -1,5 +1,4 @@
-import type { InfobaseEntry } from '../models/infobaseEntry';
-import { SUPPORTED_INFOBASE_ENTRY_SCHEMA_VERSION } from '../models/infobaseEntry';
+import type { InfobaseEntry } from './models/infobaseEntry';
 import { INFOBASE_STORAGE_MAX_ENTRIES } from './constants';
 
 /** Optional UUID v4 check (recommended for new records). */
@@ -21,27 +20,39 @@ export function validateInfobaseEntry(entry: InfobaseEntry): void {
   if (!UUID_V4_RE.test(id)) {
     throw new InfobaseValidationError('Infobase entry id must be a UUID v4.');
   }
-  if (entry.schemaVersion !== SUPPORTED_INFOBASE_ENTRY_SCHEMA_VERSION) {
-    throw new InfobaseValidationError(`Unsupported entry schemaVersion: ${entry.schemaVersion}.`);
+  const name = entry.name?.trim() ?? '';
+  if (!name) {
+    throw new InfobaseValidationError('name must be non-empty.');
   }
-  if (entry.kind !== 'file') {
-    throw new InfobaseValidationError(`Unsupported infobase kind: ${entry.kind}.`);
+  const t = entry.type;
+  if (t !== 'file' && t !== 'server' && t !== 'web') {
+    throw new InfobaseValidationError(`Unsupported infobase type: ${String(t)}.`);
   }
-  const displayName = entry.displayName?.trim() ?? '';
-  if (!displayName) {
-    throw new InfobaseValidationError('displayName must be non-empty.');
+  if (t === 'file') {
+    const fp = entry.filePath?.trim() ?? '';
+    const yaml = entry.ibcmdConfigYamlPath?.trim() ?? '';
+    if (!fp && !yaml) {
+      throw new InfobaseValidationError(
+        'file infobase requires filePath and/or ibcmdConfigYamlPath (at least one).',
+      );
+    }
   }
-  const yamlPath = entry.ibcmdConfigYamlPath?.trim() ?? '';
-  if (!yamlPath) {
-    throw new InfobaseValidationError('ibcmdConfigYamlPath must be non-empty.');
+  if (t === 'server') {
+    const s = entry.server?.trim() ?? '';
+    const d = entry.database?.trim() ?? '';
+    if (!s || !d) {
+      throw new InfobaseValidationError('server infobase requires server and database.');
+    }
   }
-  if (typeof entry.sortOrder !== 'number' || !Number.isInteger(entry.sortOrder)) {
-    throw new InfobaseValidationError('sortOrder must be an integer.');
+  if (t === 'web') {
+    const u = entry.webUrl?.trim() ?? '';
+    if (!u) {
+      throw new InfobaseValidationError('web infobase requires webUrl.');
+    }
   }
   const createdAt = entry.createdAt?.trim() ?? '';
-  const updatedAt = entry.updatedAt?.trim() ?? '';
-  if (!createdAt || !updatedAt) {
-    throw new InfobaseValidationError('createdAt and updatedAt must be non-empty ISO strings.');
+  if (!createdAt) {
+    throw new InfobaseValidationError('createdAt must be a non-empty ISO string.');
   }
 }
 

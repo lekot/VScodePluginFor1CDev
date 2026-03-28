@@ -1,6 +1,7 @@
 import * as path from 'path';
-import { getIbcmdService } from '../infobaseManager/ibcmd/ibcmdServiceSingleton';
-import { runIbcmdExecutable } from '../infobaseManager/ibcmd/IbcmdProcessRunner';
+import { IBCMD_PATH_SETTINGS_QUERY } from './metadataTreeSettings';
+import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
+import { runIbcmdExecutable } from './ibcmd/IbcmdProcessRunner';
 
 const LOG_MAX = 8000;
 
@@ -19,7 +20,7 @@ function notFoundResult(hint: string): IbcmdConfigCheckResult {
   return {
     ok: false,
     code: 'IBCMD_NOT_FOUND',
-    message: `ibcmd executable not found. Set 1cInfobaseManager.ibcmdPath in Settings or IBCMD_PATH in the environment. ${hint} Command: "CDT 41: Configure ibcmd…".`,
+    message: `ibcmd executable not found. Set ${IBCMD_PATH_SETTINGS_QUERY} in Settings (or deprecated 1cInfobaseManager.ibcmdPath) or IBCMD_PATH in the environment. ${hint} Command: "CDT 41: Configure ibcmd…".`,
   };
 }
 

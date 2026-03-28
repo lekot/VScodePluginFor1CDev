@@ -4,7 +4,7 @@ import {
   resolveIbcmdTimeoutMs,
   runIbcmdExecutable,
   type ExecFileFn,
-} from '../../src/infobaseManager/ibcmd/IbcmdProcessRunner';
+} from '../../src/services/ibcmd/IbcmdProcessRunner';
 
 suite('ibcmdProcessRunner', () => {
   suite('resolveIbcmdTimeoutMs', () => {

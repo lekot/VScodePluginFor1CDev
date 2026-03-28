@@ -10,7 +10,7 @@ import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { registerAllCommands } from '../commands';
-import { registerIbcmdInfobaseHooks } from '../infobaseManager/ibcmd/registerIbcmdInfobaseHooks';
+import { registerIbcmdInfobaseHooks } from '../services/ibcmdService';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
 
 /**

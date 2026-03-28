@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { showIbcmdNotFoundDialog } from '../../src/infobaseManager/ibcmd/showIbcmdNotFoundDialog';
+import { showIbcmdNotFoundDialog } from '../../src/services/ibcmd/showIbcmdNotFoundDialog';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 suite('showIbcmdNotFoundDialog', () => {
@@ -17,7 +17,7 @@ suite('showIbcmdNotFoundDialog', () => {
     assert.ok(
       vscodeTestState.executedCommands.some(
         (args) =>
-          args[0] === 'workbench.action.openSettings' && args[1] === '1cInfobaseManager.ibcmdPath'
+          args[0] === 'workbench.action.openSettings' && args[1] === '1cMetadataTree.ibcmd.path'
       ),
       `expected openSettings command, got: ${JSON.stringify(vscodeTestState.executedCommands)}`
     );

@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import * as fs from 'fs';
 import {
   createDefaultPathResolverDeps,
@@ -6,6 +5,11 @@ import {
   type IbcmdPathResolveResult,
 } from './IbcmdPathResolver';
 import { resolveIbcmdTimeoutMs, runIbcmdExecutable, type ExecFileFn } from './IbcmdProcessRunner';
+import {
+  getIbcmdAutoDetectSetting,
+  getIbcmdPathSetting,
+  getIbcmdTimeoutMsSetting,
+} from '../metadataTreeSettings';
 
 /**
  * Facade: cached ibcmd path (successful resolve only) + unified process execution.
@@ -17,11 +21,12 @@ export class IbcmdService {
     this.cachedExecutablePath = null;
   }
 
-  private readSettings(): { ibcmdPath: string; ibcmdTimeoutMs: number } {
-    const cfg = vscode.workspace.getConfiguration();
-    const ibcmdPath = cfg.get<string>('1cInfobaseManager.ibcmdPath') ?? '';
-    const ibcmdTimeoutMs = cfg.get<number>('1cInfobaseManager.ibcmdTimeoutMs', 0);
-    return { ibcmdPath, ibcmdTimeoutMs };
+  private readSettings(): { ibcmdPath: string; ibcmdTimeoutMs: number; autoDetect: boolean } {
+    return {
+      ibcmdPath: getIbcmdPathSetting(),
+      ibcmdTimeoutMs: getIbcmdTimeoutMsSetting(),
+      autoDetect: getIbcmdAutoDetectSetting(),
+    };
   }
 
   /**
@@ -32,11 +37,12 @@ export class IbcmdService {
       return { kind: 'resolved', path: this.cachedExecutablePath };
     }
     this.cachedExecutablePath = null;
-    const { ibcmdPath } = this.readSettings();
+    const { ibcmdPath, autoDetect } = this.readSettings();
     const result = resolveIbcmdPath({
       settingsPath: ibcmdPath,
       envIbcmdPath: process.env.IBCMD_PATH,
       deps: createDefaultPathResolverDeps(),
+      autoDetect,
     });
     if (result.kind === 'resolved') {
       this.cachedExecutablePath = result.path;
