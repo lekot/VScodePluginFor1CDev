@@ -125,12 +125,16 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
       await runEditInfobase(state.infobaseStorage, entry);
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.remove', async (arg?: unknown) => {
+      if (!state.infobaseManager) {
+        void vscode.window.showErrorMessage('Infobase Manager: хранилище не инициализировано.');
+        return;
+      }
       const node = requireEntry(arg, 'Удалить из списка');
       if (!node) {
         return;
       }
       const entry = await resolveCatalogEntry(state, node);
-      await runRemoveInfobase(state.infobaseStorage, entry);
+      await runRemoveInfobase(state.infobaseManager, entry);
     }),
   ];
 }

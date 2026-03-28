@@ -2,6 +2,7 @@
  * Minimal `vscode` API surface for Node `runCore` when suites load `MetadataTreeDataProvider`
  * (matrix e2e and any future core test that imports `src/providers/treeDataProvider`).
  */
+import * as path from 'path';
 import Module = require('module');
 
 const TreeItemCollapsibleState = {
@@ -20,8 +21,37 @@ class TreeItem {
   }
 }
 
+/** Достаточно для `instanceof` в `bindingStorage` и in-memory FS в тестах привязок. */
+class FileSystemError extends Error {
+  readonly code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = 'FileSystemError';
+    this.code = code;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+
+  static FileNotFound(messageOrUri?: string | { fsPath: string }): FileSystemError {
+    let text = 'File not found';
+    if (typeof messageOrUri === 'string') {
+      text = messageOrUri;
+    } else if (messageOrUri && typeof messageOrUri.fsPath === 'string') {
+      text = messageOrUri.fsPath;
+    }
+    return new FileSystemError(text, 'FileNotFound');
+  }
+}
+
 const Uri = {
   file: (fsPath: string) => ({ fsPath, scheme: 'file' as const }),
+  joinPath: (base: { fsPath: string; scheme: string }, ...pathSegments: string[]) => {
+    const joined = path.join(base.fsPath, ...pathSegments);
+    return {
+      fsPath: joined,
+      scheme: base.scheme,
+      toString: () => `file:///${joined.replace(/\\/g, '/')}`,
+    };
+  },
   // Minimal subset used by core tests:
   // - parse('file:///tmp/x') for equality checks via `toString()`
   // - `fsPath` extraction is best-effort and only for `file://` URIs.
@@ -135,7 +165,7 @@ const windowStub = {
   },
   showInformationMessage: async (
     _message: string,
-    ...items: string[]
+    ..._items: string[]
   ): Promise<string | undefined> => {
     if (vscodeTestState.informationMessageResult !== undefined) {
       return vscodeTestState.informationMessageResult;
@@ -217,6 +247,7 @@ const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
   Uri,
+  FileSystemError,
   ThemeIcon,
   EventEmitter: VSCodeEventEmitter,
   ExtensionMode,

@@ -2,6 +2,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import type { InfobaseEntry, InfobaseEntryType } from './models/infobaseEntry';
+import type { InfobaseManager } from './infobaseManager';
 import { InfobaseStorageService } from './infobaseStorageService';
 import {
   InfobaseValidationError,
@@ -42,6 +43,14 @@ async function ensureStorageReady(storage: InfobaseStorageService | null): Promi
     return undefined;
   }
   return storage;
+}
+
+async function ensureInfobaseManagerReady(manager: InfobaseManager | null): Promise<InfobaseManager | undefined> {
+  if (!manager) {
+    void vscode.window.showErrorMessage('Infobase Manager: хранилище не инициализировано.');
+    return undefined;
+  }
+  return manager;
 }
 
 async function loadAll(storage: InfobaseStorageService): Promise<InfobaseEntry[]> {
@@ -234,12 +243,12 @@ async function addWebInfobase(storage: InfobaseStorageService, existing: Infobas
 }
 
 export async function runRemoveInfobase(
-  storage: InfobaseStorageService | null,
+  manager: InfobaseManager | null,
   entry: InfobaseEntry | undefined,
 ): Promise<void> {
-  const s = await ensureStorageReady(storage);
-  if (!s || !entry) {
-    if (s && !entry) {
+  const m = await ensureInfobaseManagerReady(manager);
+  if (!m || !entry) {
+    if (m && !entry) {
       void vscode.window.showWarningMessage('Удаление: выберите базу в дереве Infobase Manager.');
     }
     return;
@@ -252,7 +261,7 @@ export async function runRemoveInfobase(
   if (confirm !== 'Удалить') {
     return;
   }
-  await s.remove(entry.id);
+  await m.removeCatalogEntry(entry.id);
   void vscode.window.showInformationMessage(`База «${entry.name}» удалена из списка.`);
 }
 

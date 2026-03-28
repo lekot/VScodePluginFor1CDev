@@ -9,6 +9,8 @@ import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { TreeNode } from '../models/treeNode';
+import { BindingManager } from '../bindings/bindingManager';
+import { InfobaseManager } from '../infobases/infobaseManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 
 /**
@@ -27,12 +29,16 @@ export class ExtensionState {
   metadataWatchers: MetadataWatcherService[] = [];
   reloadCoordinator: ReloadCoordinatorService | null = null;
   infobaseStorage: InfobaseStorageService | null = null;
+  bindingManager: BindingManager | null = null;
+  infobaseManager: InfobaseManager | null = null;
   infobaseTreeProvider: InfobaseTreeDataProvider | null = null;
   infobaseTreeView: vscode.TreeView<InfobaseTreeNode> | null = null;
 
   init(context: vscode.ExtensionContext): void {
     this.extensionContext = context;
     this.infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
+    this.bindingManager = new BindingManager();
+    this.infobaseManager = new InfobaseManager(this.infobaseStorage, this.bindingManager);
   }
 
   dispose(): void {
@@ -46,5 +52,7 @@ export class ExtensionState {
     this.infobaseTreeView = null;
     this.infobaseStorage?.dispose();
     this.infobaseStorage = null;
+    this.bindingManager = null;
+    this.infobaseManager = null;
   }
 }

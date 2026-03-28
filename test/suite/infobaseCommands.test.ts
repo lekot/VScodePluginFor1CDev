@@ -8,6 +8,8 @@ import {
   runEditInfobase,
   runRemoveInfobase,
 } from '../../src/infobases/infobaseCommands';
+import { BindingManager } from '../../src/bindings/bindingManager';
+import { InfobaseManager } from '../../src/infobases/infobaseManager';
 import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import { registerInfobaseTreeCommands } from '../../src/infobases/registerInfobaseTreeCommands';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
@@ -240,10 +242,12 @@ suite('infobaseCommands runAddExistingInfobase', () => {
 
 suite('infobaseCommands runRemoveInfobase', () => {
   let service: InfobaseStorageService;
+  let manager: InfobaseManager;
 
   setup(() => {
     resetVscodeTestState();
     service = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
+    manager = new InfobaseManager(service, new BindingManager());
   });
 
   teardown(() => {
@@ -257,7 +261,7 @@ suite('infobaseCommands runRemoveInfobase', () => {
   });
 
   test('warns when entry is missing but storage exists', async () => {
-    await runRemoveInfobase(service, undefined);
+    await runRemoveInfobase(manager, undefined);
     assert.ok(vscodeTestState.warningLog.some((m) => m.includes('выберите базу')));
   });
 
@@ -265,14 +269,14 @@ suite('infobaseCommands runRemoveInfobase', () => {
     const e = makeEntry({ name: 'Keep' });
     await service.saveAll([e]);
     vscodeTestState.warningMessageReturnQueue.push(undefined);
-    await runRemoveInfobase(service, e);
+    await runRemoveInfobase(manager, e);
     assert.strictEqual((await service.load()).length, 1);
   });
 
   test('removes after confirm', async () => {
     const e = makeEntry({ name: 'Gone' });
     await service.saveAll([e]);
-    await runRemoveInfobase(service, e);
+    await runRemoveInfobase(manager, e);
     assert.deepStrictEqual(await service.load(), []);
   });
 });
@@ -444,8 +448,11 @@ suite('registerInfobaseTreeCommands', () => {
   });
 
   test('remove with non-entry arg shows warning', async () => {
+    const storage = new InfobaseStorageService(new MapMemento(), new MapSecretStorage());
+    const infobaseManager = new InfobaseManager(storage, new BindingManager());
     const state = {
-      infobaseStorage: new InfobaseStorageService(new MapMemento(), new MapSecretStorage()),
+      infobaseStorage: storage,
+      infobaseManager,
       infobaseTreeProvider: null,
     } as unknown as ExtensionState;
 
