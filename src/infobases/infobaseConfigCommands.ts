@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseStorageService } from './infobaseStorageService';
-import { prepareIbcmdConfigYaml } from './ibcmdConfigPathResolver';
+import { IB_FILE_IBCMD_WEB_UNSUPPORTED_RU, prepareIbcmdConfigYaml } from './ibcmdConfigPathResolver';
 import {
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
@@ -329,9 +329,7 @@ async function runInfobaseConfigOperation(params: {
 
 function assertFileOrServer(entry: InfobaseEntry): boolean {
   if (entry.type === 'web') {
-    void vscode.window.showWarningMessage(
-      'Операции import/export/check через ibcmd не поддерживаются для веб-базы. Используйте файловую или серверную запись.',
-    );
+    void vscode.window.showWarningMessage(IB_FILE_IBCMD_WEB_UNSUPPORTED_RU);
     return false;
   }
   return true;

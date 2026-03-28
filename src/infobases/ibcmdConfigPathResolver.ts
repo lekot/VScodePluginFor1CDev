@@ -4,7 +4,8 @@ import * as path from 'path';
 import { randomBytes } from 'crypto';
 import type { InfobaseEntry } from './models/infobaseEntry';
 
-const WEB_UNSUPPORTED =
+/** Единый RU-текст CDT 41: ibcmd недоступен для веб-записи каталога. */
+export const IB_FILE_IBCMD_WEB_UNSUPPORTED_RU =
   'Операции import/export/check через ibcmd не поддерживаются для веб-базы. Используйте файловую или серверную запись.';
 
 const MISSING_CONNECTION =
@@ -12,6 +13,33 @@ const MISSING_CONNECTION =
 
 const EXPLICIT_YAML_MISSING = (p: string) =>
   `Файл конфигурации ibcmd не найден: ${p}. Проверьте поле YAML в свойствах базы.`;
+
+function ibFileDataPathNotFoundMessage(abs: string): string {
+  return (
+    `Путь к данным файловой информационной базы не найден: ${abs}. ` +
+    'Проверьте каталог на диске (для standalone-сервера — наличие db-data и файлов ИБ, например 1Cv8.1CD) и совпадение пути в свойствах базы или строки file в YAML для ibcmd. ibcmd не запускался.'
+  );
+}
+
+/**
+ * Извлекает скаляр `file:` из фрагмента YAML конфигурации ibcmd (как у {@link buildFileInfobaseYamlContent}).
+ * Не полноценный парсер YAML: при неоднозначном содержимом возвращает undefined — проверка пути пропускается.
+ */
+function tryParseInfobaseFileScalarFromYaml(content: string): string | undefined {
+  const dq = content.match(/^\s*file:\s*"((?:\\.|[^"\\])*)"\s*(?:#.*)?$/m);
+  if (dq?.[1] !== undefined) {
+    return dq[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  const sq = content.match(/^\s*file:\s*'([^']*)'\s*(?:#.*)?$/m);
+  if (sq?.[1] !== undefined) {
+    return sq[1];
+  }
+  const uq = content.match(/^\s*file:\s+([^#\r\n]+?)\s*(?:#.*)?$/m);
+  if (uq?.[1] !== undefined) {
+    return uq[1].trim().replace(/^["']|["']$/g, '');
+  }
+  return undefined;
+}
 
 /** Escape a scalar for double-quoted YAML (minimal subset for ibcmd paths and names). */
 export function yamlDoubleQuotedScalar(value: string): string {
@@ -56,7 +84,12 @@ export function buildServerInfobaseYamlContent(opts: {
   return `${lines.join('\n')}\n`;
 }
 
-export type PrepareYamlFailureCode = 'WEB_NOT_SUPPORTED' | 'MISSING_PARAMS' | 'YAML_NOT_FOUND';
+export type PrepareYamlFailureCode =
+  | 'WEB_NOT_SUPPORTED'
+  | 'MISSING_PARAMS'
+  | 'YAML_NOT_FOUND'
+  /** Разрешённый путь к данным файловой ИБ отсутствует на диске; каталоги ИБ не создаём. */
+  | 'IB_FILE_DATA_PATH_NOT_FOUND';
 
 export interface PrepareYamlFailure {
   ok: false;
@@ -98,7 +131,7 @@ export async function prepareIbcmdConfigYaml(
   readPassword: (entryId: string) => Promise<string | undefined>,
 ): Promise<PrepareIbcmdYamlResult> {
   if (entry.type === 'web') {
-    return { ok: false, code: 'WEB_NOT_SUPPORTED', userMessage: WEB_UNSUPPORTED };
+    return { ok: false, code: 'WEB_NOT_SUPPORTED', userMessage: IB_FILE_IBCMD_WEB_UNSUPPORTED_RU };
   }
 
   const explicitYaml = entry.ibcmdConfigYamlPath?.trim();
@@ -110,6 +143,22 @@ export async function prepareIbcmdConfigYaml(
         code: 'YAML_NOT_FOUND',
         userMessage: EXPLICIT_YAML_MISSING(abs),
       };
+    }
+    try {
+      const body = await fs.promises.readFile(abs, 'utf8');
+      const fileScalar = tryParseInfobaseFileScalarFromYaml(body);
+      if (fileScalar !== undefined) {
+        const dataAbs = path.resolve(fileScalar);
+        if (!fs.existsSync(dataAbs)) {
+          return {
+            ok: false,
+            code: 'IB_FILE_DATA_PATH_NOT_FOUND',
+            userMessage: ibFileDataPathNotFoundMessage(dataAbs),
+          };
+        }
+      }
+    } catch {
+      /* не удалось прочитать YAML для проверки file: — поведение как раньше, ibcmd сам диагностирует */
     }
     return {
       ok: true,
@@ -123,6 +172,14 @@ export async function prepareIbcmdConfigYaml(
     const fp = entry.filePath?.trim();
     if (!fp) {
       return { ok: false, code: 'MISSING_PARAMS', userMessage: MISSING_CONNECTION };
+    }
+    const dataAbs = path.resolve(fp);
+    if (!fs.existsSync(dataAbs)) {
+      return {
+        ok: false,
+        code: 'IB_FILE_DATA_PATH_NOT_FOUND',
+        userMessage: ibFileDataPathNotFoundMessage(dataAbs),
+      };
     }
     let password: string | undefined;
     if (entry.hasStoredPassword) {

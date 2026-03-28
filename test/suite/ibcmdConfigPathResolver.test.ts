@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  IB_FILE_IBCMD_WEB_UNSUPPORTED_RU,
   buildFileInfobaseYamlContent,
   buildServerInfobaseYamlContent,
   prepareIbcmdConfigYaml,
@@ -71,13 +72,16 @@ suite('ibcmdConfigPathResolver', () => {
       assert.strictEqual(r.ok, false);
       if (!r.ok) {
         assert.strictEqual(r.code, 'WEB_NOT_SUPPORTED');
+        assert.strictEqual(r.userMessage, IB_FILE_IBCMD_WEB_UNSUPPORTED_RU);
       }
     });
 
-    test('explicit ibcmdConfigYamlPath wins when file exists', async () => {
+    test('explicit ibcmdConfigYamlPath wins when file exists and file: points at existing data path', async () => {
       const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibyaml-'));
+      const dataDir = await fs.promises.mkdtemp(path.join(dir, 'data-'));
       const yamlPath = path.join(dir, 'conn.yaml');
-      await fs.promises.writeFile(yamlPath, 'infobase:\n  file: "/x"\n', 'utf8');
+      const body = `infobase:\n  file: ${yamlDoubleQuotedScalar(path.resolve(dataDir))}\n`;
+      await fs.promises.writeFile(yamlPath, body, 'utf8');
       try {
         const r = await prepareIbcmdConfigYaml(
           baseEntry({
@@ -90,6 +94,61 @@ suite('ibcmdConfigPathResolver', () => {
         if (r.ok) {
           assert.strictEqual(r.absoluteConfigPath, path.resolve(yamlPath));
           assert.strictEqual(r.isTemporary, false);
+          await r.dispose();
+        }
+      } finally {
+        await fs.promises.rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('explicit yaml: file: points to missing path → IB_FILE_DATA_PATH_NOT_FOUND (standalone/db-data style)', async () => {
+      const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibyaml-miss-'));
+      const yamlPath = path.join(dir, 'conn.yaml');
+      const ghost = path.join(dir, 'nope', '1Cv8.1CD.cfl');
+      const body = `infobase:\n  file: ${yamlDoubleQuotedScalar(ghost)}\n`;
+      await fs.promises.writeFile(yamlPath, body, 'utf8');
+      try {
+        const r = await prepareIbcmdConfigYaml(baseEntry({ ibcmdConfigYamlPath: yamlPath }), async () => undefined);
+        assert.strictEqual(r.ok, false);
+        if (!r.ok) {
+          assert.strictEqual(r.code, 'IB_FILE_DATA_PATH_NOT_FOUND');
+          assert.ok(r.userMessage.includes(path.resolve(ghost)));
+          assert.ok(r.userMessage.includes('ibcmd не запускался'));
+          assert.ok(r.userMessage.includes('db-data'));
+        }
+      } finally {
+        await fs.promises.rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('explicit yaml: single-quoted file: missing path → IB_FILE_DATA_PATH_NOT_FOUND', async () => {
+      const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibyaml-sq-'));
+      const yamlPath = path.join(dir, 'conn.yaml');
+      const ghost = path.join(dir, 'missing.1cd');
+      await fs.promises.writeFile(yamlPath, `infobase:\n  file: '${ghost}'\n`, 'utf8');
+      try {
+        const r = await prepareIbcmdConfigYaml(baseEntry({ ibcmdConfigYamlPath: yamlPath }), async () => undefined);
+        assert.strictEqual(r.ok, false);
+        if (!r.ok) {
+          assert.strictEqual(r.code, 'IB_FILE_DATA_PATH_NOT_FOUND');
+        }
+      } finally {
+        await fs.promises.rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('explicit yaml: server entry only (no file:) → ok without file data check', async () => {
+      const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibyaml-srv-'));
+      const yamlPath = path.join(dir, 'srv.yaml');
+      await fs.promises.writeFile(
+        yamlPath,
+        'infobase:\n  server: "srv"\n  ref: "db1"\n',
+        'utf8',
+      );
+      try {
+        const r = await prepareIbcmdConfigYaml(baseEntry({ ibcmdConfigYamlPath: yamlPath }), async () => undefined);
+        assert.strictEqual(r.ok, true);
+        if (r.ok) {
           await r.dispose();
         }
       } finally {
@@ -110,17 +169,33 @@ suite('ibcmdConfigPathResolver', () => {
     });
 
     test('file entry: temp yaml created and removed on dispose', async () => {
-      const r = await prepareIbcmdConfigYaml(baseEntry({ filePath: path.join(os.tmpdir(), 'ib') }), async () => undefined);
-      assert.strictEqual(r.ok, true);
-      if (!r.ok) {
-        return;
+      const dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibcmd-file-'));
+      try {
+        const r = await prepareIbcmdConfigYaml(baseEntry({ filePath: dataDir }), async () => undefined);
+        assert.strictEqual(r.ok, true);
+        if (!r.ok) {
+          return;
+        }
+        assert.strictEqual(r.isTemporary, true);
+        assert.ok(fs.existsSync(r.absoluteConfigPath));
+        const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
+        assert.ok(body.includes('infobase:'));
+        await r.dispose();
+        assert.ok(!fs.existsSync(r.absoluteConfigPath));
+      } finally {
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
       }
-      assert.strictEqual(r.isTemporary, true);
-      assert.ok(fs.existsSync(r.absoluteConfigPath));
-      const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
-      assert.ok(body.includes('infobase:'));
-      await r.dispose();
-      assert.ok(!fs.existsSync(r.absoluteConfigPath));
+    });
+
+    test('file entry: data path does not exist → IB_FILE_DATA_PATH_NOT_FOUND', async () => {
+      const missing = path.join(os.tmpdir(), `ib-missing-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      const r = await prepareIbcmdConfigYaml(baseEntry({ filePath: missing }), async () => undefined);
+      assert.strictEqual(r.ok, false);
+      if (!r.ok) {
+        assert.strictEqual(r.code, 'IB_FILE_DATA_PATH_NOT_FOUND');
+        assert.ok(r.userMessage.includes(path.resolve(missing)));
+        assert.ok(r.userMessage.includes('ibcmd не запускался'));
+      }
     });
 
     test('file entry without path → MISSING_PARAMS', async () => {
@@ -176,17 +251,22 @@ suite('ibcmdConfigPathResolver', () => {
     });
 
     test('file entry: hasStoredPassword false → readPassword not required, no password line', async () => {
-      const r = await prepareIbcmdConfigYaml(
-        baseEntry({ filePath: path.join(os.tmpdir(), 'ib-nopw'), hasStoredPassword: false }),
-        async () => assert.fail('readPassword must not be called'),
-      );
-      assert.strictEqual(r.ok, true);
-      if (!r.ok) {
-        return;
+      const dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ib-nopw-'));
+      try {
+        const r = await prepareIbcmdConfigYaml(
+          baseEntry({ filePath: dataDir, hasStoredPassword: false }),
+          async () => assert.fail('readPassword must not be called'),
+        );
+        assert.strictEqual(r.ok, true);
+        if (!r.ok) {
+          return;
+        }
+        const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
+        assert.strictEqual(textLooksLikeYamlPasswordLine(body), false);
+        await r.dispose();
+      } finally {
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
       }
-      const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
-      assert.strictEqual(textLooksLikeYamlPasswordLine(body), false);
-      await r.dispose();
     });
   });
 });
