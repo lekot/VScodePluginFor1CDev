@@ -485,6 +485,149 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     assert.ok(!vscodeTestState.outputChannelLines.some((l) => l.includes('[раскатка] Итого:')));
   });
 
+  test('confirm deploy dialog mentions copy mode (temporary snapshot)', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'copy';
+    resetIbcmdServiceSingletonForTests();
+
+    const wsRoot = fixtureSmallMatrixRoot();
+    vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
+    vscodeTestState.warningMessageReturnQueue = [undefined];
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-dlg-copy-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+    const state = {
+      bindingManager: {
+        async get() {
+          return {
+            workspaceFolder: 'MyWs',
+            configRelativePath: 'Configuration.xml',
+            infobaseIds: ['ib1'],
+            massDeployment: false,
+          };
+        },
+      },
+      infobaseStorage: {
+        async load() {
+          return [
+            {
+              id: 'ib1',
+              name: 'N',
+              type: 'file',
+              filePath: ibPath,
+              hasStoredPassword: false,
+              createdAt: '2020-01-01T00:00:00.000Z',
+            },
+          ];
+        },
+        async readPasswordSecret(): Promise<string | undefined> {
+          return undefined;
+        },
+      },
+    } as unknown as ExtensionState;
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    const msg = vscodeTestState.warningLog.find((m) => m.includes('ibcmd config import'));
+    assert.ok(msg?.includes('deploy.mode = copy'), msg);
+    assert.ok(msg?.includes('временной копии'), msg);
+  });
+
+  test('confirm deploy dialog describes block + readonly when VS Code 1.88+', async () => {
+    vscodeTestState.vscodeVersion = '1.90.0';
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    resetIbcmdServiceSingletonForTests();
+
+    const wsRoot = fixtureSmallMatrixRoot();
+    vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
+    vscodeTestState.warningMessageReturnQueue = [undefined];
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-dlg-block-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+    const state = {
+      bindingManager: {
+        async get() {
+          return {
+            workspaceFolder: 'MyWs',
+            configRelativePath: 'Configuration.xml',
+            infobaseIds: ['ib1'],
+            massDeployment: false,
+          };
+        },
+      },
+      infobaseStorage: {
+        async load() {
+          return [
+            {
+              id: 'ib1',
+              name: 'N',
+              type: 'file',
+              filePath: ibPath,
+              hasStoredPassword: false,
+              createdAt: '2020-01-01T00:00:00.000Z',
+            },
+          ];
+        },
+        async readPasswordSecret(): Promise<string | undefined> {
+          return undefined;
+        },
+      },
+    } as unknown as ExtensionState;
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    const msg = vscodeTestState.warningLog.find((m) => m.includes('ibcmd config import'));
+    assert.ok(msg?.includes('deploy.mode = block'), msg);
+    assert.ok(msg?.includes('только просмотр'), msg);
+  });
+
+  test('confirm deploy dialog warns on block mode without VS Code 1.88+', async () => {
+    vscodeTestState.vscodeVersion = '1.87.0';
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    resetIbcmdServiceSingletonForTests();
+
+    const wsRoot = fixtureSmallMatrixRoot();
+    vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
+    vscodeTestState.warningMessageReturnQueue = [undefined];
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-dlg-blockold-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+    const state = {
+      bindingManager: {
+        async get() {
+          return {
+            workspaceFolder: 'MyWs',
+            configRelativePath: 'Configuration.xml',
+            infobaseIds: ['ib1'],
+            massDeployment: false,
+          };
+        },
+      },
+      infobaseStorage: {
+        async load() {
+          return [
+            {
+              id: 'ib1',
+              name: 'N',
+              type: 'file',
+              filePath: ibPath,
+              hasStoredPassword: false,
+              createdAt: '2020-01-01T00:00:00.000Z',
+            },
+          ];
+        },
+        async readPasswordSecret(): Promise<string | undefined> {
+          return undefined;
+        },
+      },
+    } as unknown as ExtensionState;
+    await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
+    const msg = vscodeTestState.warningLog.find((m) => m.includes('ibcmd config import'));
+    assert.ok(msg?.includes('1.88+'), msg);
+    assert.ok(msg?.includes('без readonly'), msg);
+  });
+
   test('отмена подтверждения не запускает раскатку', async () => {
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;

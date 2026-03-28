@@ -159,6 +159,16 @@ export const vscodeTestState = {
   outputChannelLines: [] as string[],
   /** Собранные фрагменты `OutputChannel.append`. */
   outputChannelChunks: [] as string[],
+  /**
+   * Подмена `vscode.version` (WOW deploy §2E: `vscodeSupportsDeployReadonlyLock`).
+   * `undefined` → пустая строка в геттере (как отсутствие semver в стабе).
+   */
+  vscodeVersion: undefined as string | undefined,
+  /**
+   * Когда true, `workspace.getConfiguration(...).update('readonlyInclude', …)` бросает
+   * (имитация отказа настроек workspace folder — WOW §2E block).
+   */
+  filesReadonlyIncludeUpdateThrows: false,
 };
 
 /** Для тестов синхронизации привязок (сохранение `.vscode/infobase-bindings.json`). */
@@ -259,12 +269,22 @@ const windowStub = {
 };
 
 const workspaceStub = {
-  getConfiguration: () => ({
+  getConfiguration: (_section?: string, _scope?: unknown) => ({
     get: <T>(section: string, defaultValue?: T) => {
       if (Object.prototype.hasOwnProperty.call(vscodeTestState.workspaceConfig, section)) {
         return vscodeTestState.workspaceConfig[section] as T;
       }
       return defaultValue as T;
+    },
+    update: async (key: string, value: unknown, _target?: unknown): Promise<void> => {
+      if (key === 'readonlyInclude' && vscodeTestState.filesReadonlyIncludeUpdateThrows) {
+        throw new Error('readonlyInclude update denied (test stub)');
+      }
+      if (value === undefined) {
+        Reflect.deleteProperty(vscodeTestState.workspaceConfig, key);
+      } else {
+        vscodeTestState.workspaceConfig[key] = value;
+      }
     },
   }),
   get workspaceFolders(): typeof vscodeTestState.mockWorkspaceFolders {
@@ -323,6 +343,8 @@ export function restoreVscodeWorkspaceFoldersGetter(): void {
 
 export function resetVscodeTestState(): void {
   vscodeTestState.workspaceConfig = {};
+  vscodeTestState.vscodeVersion = undefined;
+  vscodeTestState.filesReadonlyIncludeUpdateThrows = false;
   vscodeTestState.informationMessageResult = undefined;
   vscodeTestState.executedCommands = [];
   vscodeTestState.warningLog = [];
@@ -371,10 +393,20 @@ const Disposable = {
   }),
 };
 
+const ConfigurationTarget = {
+  Global: 1,
+  Workspace: 2,
+  WorkspaceFolder: 3,
+} as const;
+
 const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
   Uri,
+  ConfigurationTarget,
+  get version(): string {
+    return vscodeTestState.vscodeVersion ?? '';
+  },
   FileSystemError,
   ThemeIcon,
   EventEmitter: VSCodeEventEmitter,

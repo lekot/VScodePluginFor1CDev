@@ -8,7 +8,12 @@ import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type { ExtensionState } from '../state/extensionState';
 import { normalizeConfigRelativePath } from './bindingPathUtils';
-import { DeployService, listDeployTargetLabels } from './deployService';
+import {
+  DeployService,
+  listDeployTargetLabels,
+  readDeployMode,
+  vscodeSupportsDeployReadonlyLock,
+} from './deployService';
 import { showIbcmdInfobaseOutputChannel } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
@@ -118,8 +123,15 @@ export async function runDeployForConfigurationFromTree(
   }
 
   const lines = preview.length > 0 ? `\n\n${preview.join('\n')}` : '';
+  const deployMode = readDeployMode();
+  const deployModeNotice =
+    deployMode === 'block'
+      ? vscodeSupportsDeployReadonlyLock()
+        ? '\n\nРежим 1cMetadataTree.deploy.mode = block: редактирование дерева выгрузки конфигурации будет заблокировано (только просмотр) на время раскатки.'
+        : '\n\nРежим block выбран в настройках, но блокировка через files.readonlyInclude недоступна (нужен VS Code 1.88+). Раскатка продолжится без readonly.'
+      : '\n\nРежим 1cMetadataTree.deploy.mode = copy: раскатка выполняется из временной копии папки с Configuration.xml; редактирование в workspace не блокируется.';
   const ok = await vscode.window.showWarningMessage(
-    `Конфигурация в выбранных информационных базах будет перезаписана (ibcmd config import). Продолжить?${lines}`,
+    `Конфигурация в выбранных информационных базах будет перезаписана (ibcmd config import). Продолжить?${deployModeNotice}${lines}`,
     { modal: true },
     'Продолжить',
   );

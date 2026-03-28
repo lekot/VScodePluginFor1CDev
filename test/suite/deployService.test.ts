@@ -4,10 +4,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import {
+  configurationTreeReadonlyGlob,
   DeployService,
   listDeployTargetLabels,
+  readDeployMode,
   resolveConfigurationXmlDirectory,
   resolveDeployTargetsForBinding,
+  vscodeSupportsDeployReadonlyLock,
 } from '../../src/bindings/deployService';
 import type { ConfigurationBinding } from '../../src/bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
@@ -55,6 +58,97 @@ const mockStorage = {
     return undefined;
   },
 } as unknown as InfobaseStorageService;
+
+suite('deployService readDeployMode', () => {
+  setup(() => {
+    resetVscodeTestState();
+  });
+  teardown(() => {
+    resetVscodeTestState();
+  });
+
+  test('defaults to copy when setting absent', () => {
+    assert.strictEqual(readDeployMode(), 'copy');
+  });
+
+  test('returns block when deploy.mode is block', () => {
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    assert.strictEqual(readDeployMode(), 'block');
+  });
+
+  test('unknown value falls back to copy', () => {
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'mirror';
+    assert.strictEqual(readDeployMode(), 'copy');
+  });
+
+  test('explicit copy setting returns copy', () => {
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'copy';
+    assert.strictEqual(readDeployMode(), 'copy');
+  });
+});
+
+suite('deployService vscodeSupportsDeployReadonlyLock', () => {
+  setup(() => {
+    resetVscodeTestState();
+  });
+  teardown(() => {
+    resetVscodeTestState();
+  });
+
+  test('false when version empty (stub / unknown)', () => {
+    vscodeTestState.vscodeVersion = undefined;
+    assert.strictEqual(vscodeSupportsDeployReadonlyLock(), false);
+  });
+
+  test('false below 1.88', () => {
+    vscodeTestState.vscodeVersion = '1.87.2';
+    assert.strictEqual(vscodeSupportsDeployReadonlyLock(), false);
+  });
+
+  test('true at 1.88.0', () => {
+    vscodeTestState.vscodeVersion = '1.88.0';
+    assert.strictEqual(vscodeSupportsDeployReadonlyLock(), true);
+  });
+
+  test('true for 2.x', () => {
+    vscodeTestState.vscodeVersion = '2.0.0';
+    assert.strictEqual(vscodeSupportsDeployReadonlyLock(), true);
+  });
+
+  test('true for two-part semver 1.88 (no patch)', () => {
+    vscodeTestState.vscodeVersion = '1.88';
+    assert.strictEqual(vscodeSupportsDeployReadonlyLock(), true);
+  });
+
+  test('false when version string does not start with major.minor digits', () => {
+    vscodeTestState.vscodeVersion = 'dev-insiders';
+    assert.strictEqual(vscodeSupportsDeployReadonlyLock(), false);
+  });
+});
+
+suite('deployService configurationTreeReadonlyGlob', () => {
+  test('root Configuration.xml maps to **', () => {
+    assert.strictEqual(configurationTreeReadonlyGlob('Configuration.xml'), '**');
+  });
+
+  test('nested path maps to directory glob', () => {
+    assert.strictEqual(
+      configurationTreeReadonlyGlob('export/dump/Configuration.xml'),
+      'export/dump/**',
+    );
+  });
+
+  test('normalizes backslashes', () => {
+    assert.strictEqual(configurationTreeReadonlyGlob('src\\cfg\\Configuration.xml'), 'src/cfg/**');
+  });
+
+  test('strips leading ./ before building nested glob', () => {
+    assert.strictEqual(
+      configurationTreeReadonlyGlob('./export/dump/Configuration.xml'),
+      'export/dump/**',
+    );
+  });
+});
 
 suite('deployService resolveConfigurationXmlDirectory', () => {
   test('rejects empty relative path', () => {
@@ -478,5 +572,150 @@ suite('DeployService.deployBinding', () => {
       token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
     });
     assert.deepStrictEqual(increments, [50, 50]);
+  });
+
+  test('copy mode logs snapshot line and completes (fake ibcmd)', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 8000;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'copy';
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-copy-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+
+    const svc = new DeployService();
+    const root = fixtureSmallRoot();
+    await svc.deployBinding({
+      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+      workspaceFolderRoot: root,
+      storage: mockStorage,
+      catalog: [fileEntry('ib1', 'One', ibPath)],
+      progress: { report: () => undefined },
+      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+    });
+    assert.ok(
+      vscodeTestState.outputChannelLines.some((l) => l.includes('Режим copy') && l.includes('снимок')),
+    );
+  });
+
+  test('block mode without VS 1.88+ logs fallback and skips readonlyInclude', async () => {
+    vscodeTestState.vscodeVersion = '1.87.0';
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 8000;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    vscodeTestState.workspaceConfig.readonlyInclude = { 'keep/**': true };
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-block-old-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+
+    const svc = new DeployService();
+    const root = fixtureSmallRoot();
+    await svc.deployBinding({
+      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+      workspaceFolderRoot: root,
+      storage: mockStorage,
+      catalog: [fileEntry('ib1', 'One', ibPath)],
+      progress: { report: () => undefined },
+      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+    });
+    assert.ok(
+      vscodeTestState.outputChannelLines.some(
+        (l) => l.includes('Режим block') && l.includes('недоступна'),
+      ),
+    );
+    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+  });
+
+  test('block mode when readonlyInclude update throws logs fallback and leaves prior map', async () => {
+    vscodeTestState.vscodeVersion = '1.90.0';
+    vscodeTestState.filesReadonlyIncludeUpdateThrows = true;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 8000;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    vscodeTestState.workspaceConfig.readonlyInclude = { 'keep/**': true };
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-block-updthrow-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+
+    const svc = new DeployService();
+    const root = fixtureSmallRoot();
+    await svc.deployBinding({
+      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+      workspaceFolderRoot: root,
+      storage: mockStorage,
+      catalog: [fileEntry('ib1', 'One', ibPath)],
+      progress: { report: () => undefined },
+      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+    });
+    assert.ok(
+      vscodeTestState.outputChannelLines.some(
+        (l) => l.includes('Режим block') && l.includes('недоступна'),
+      ),
+    );
+    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+  });
+
+  test('block mode on 1.88+ merges readonlyInclude and restores after deploy', async () => {
+    vscodeTestState.vscodeVersion = '1.90.0';
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 8000;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    vscodeTestState.workspaceConfig.readonlyInclude = { 'keep/**': true };
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-block-new-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+
+    const svc = new DeployService();
+    const root = fixtureSmallRoot();
+    await svc.deployBinding({
+      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+      workspaceFolderRoot: root,
+      storage: mockStorage,
+      catalog: [fileEntry('ib1', 'One', ibPath)],
+      progress: { report: () => undefined },
+      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+    });
+    assert.ok(
+      vscodeTestState.outputChannelLines.some(
+        (l) => l.includes('Режим block') && l.includes('readonlyInclude'),
+      ),
+    );
+    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+  });
+
+  test('block mode does not log copy snapshot line', async () => {
+    vscodeTestState.vscodeVersion = '1.90.0';
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 8000;
+    vscodeTestState.workspaceConfig['deploy.mode'] = 'block';
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-nocopylog-'));
+    const ibPath = path.join(work, 'p.1cd');
+    fs.writeFileSync(ibPath, '');
+
+    const svc = new DeployService();
+    const root = fixtureSmallRoot();
+    await svc.deployBinding({
+      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+      workspaceFolderRoot: root,
+      storage: mockStorage,
+      catalog: [fileEntry('ib1', 'One', ibPath)],
+      progress: { report: () => undefined },
+      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+    });
+    assert.ok(!vscodeTestState.outputChannelLines.some((l) => l.includes('Режим copy')));
   });
 });

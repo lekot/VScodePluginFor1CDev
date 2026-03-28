@@ -1,10 +1,13 @@
 /**
  * WOW plan §2D #39–42 — последовательная раскатка выгрузки в привязанные ИБ (ibcmd config import).
+ * WOW plan §2E #44–45 — режимы раскатки: copy (снимок во временный каталог), block (readonly дерева конфигурации).
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { normalizeConfigRelativePath } from './bindingPathUtils';
 import type { ConfigurationBinding } from './models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
@@ -36,6 +39,74 @@ export interface DeployRunSummary {
 
 export interface DeployProgressSink {
   report(value: { message?: string; increment?: number }): void;
+}
+
+export type DeployMode = 'copy' | 'block';
+
+/** Режим из настроек `1cMetadataTree.deploy.mode` (по умолчанию copy, дизайн §16.5). */
+export function readDeployMode(): DeployMode {
+  const v = vscode.workspace.getConfiguration('1cMetadataTree').get<string>('deploy.mode', 'copy');
+  return v === 'block' ? 'block' : 'copy';
+}
+
+/**
+ * VS Code 1.88+: `files.readonlyInclude` для временной блокировки редактирования (дизайн §16.5).
+ */
+export function vscodeSupportsDeployReadonlyLock(): boolean {
+  const m = /^(\d+)\.(\d+)/.exec(vscode.version);
+  if (!m) {
+    return false;
+  }
+  const major = parseInt(m[1]!, 10);
+  const minor = parseInt(m[2]!, 10);
+  return major > 1 || (major === 1 && minor >= 88);
+}
+
+/**
+ * Glob относительно корня workspace folder: дерево выгрузки (папка с Configuration.xml).
+ * Если Configuration.xml в корне папки — `**` (вся папка workspace).
+ */
+export function configurationTreeReadonlyGlob(configRelativePath: string): string {
+  const norm = normalizeConfigRelativePath(configRelativePath);
+  const dir = path.posix.dirname(norm);
+  if (!dir || dir === '.') {
+    return '**';
+  }
+  return `${dir}/**`;
+}
+
+async function applyReadonlyIncludeForDeploy(
+  workspaceFolderRoot: string,
+  globPattern: string,
+): Promise<{ dispose: () => Promise<void> } | undefined> {
+  if (!vscodeSupportsDeployReadonlyLock()) {
+    return undefined;
+  }
+  const scope = vscode.Uri.file(workspaceFolderRoot);
+  const cfg = vscode.workspace.getConfiguration('files', scope);
+  const before = cfg.get<Record<string, boolean> | undefined>('readonlyInclude');
+  const merged: Record<string, boolean> = { ...(before ?? {}), [globPattern]: true };
+  try {
+    await cfg.update('readonlyInclude', merged, vscode.ConfigurationTarget.WorkspaceFolder);
+  } catch {
+    return undefined;
+  }
+  return {
+    async dispose() {
+      try {
+        await cfg.update('readonlyInclude', before, vscode.ConfigurationTarget.WorkspaceFolder);
+      } catch {
+        /* не мешаем завершению раскатки */
+      }
+    },
+  };
+}
+
+function createConfigurationSnapshot(sourceDir: string): string {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-snap-'));
+  const dest = path.join(parent, 'cfg');
+  fs.cpSync(sourceDir, dest, { recursive: true });
+  return dest;
 }
 
 /**
@@ -178,8 +249,6 @@ export class DeployService {
 
     const { entries, skipped } = resolveDeployTargetsForBinding(params.binding, catalogById);
     const results: DeployItemResult[] = [...skipped];
-    let cancelledMidChain = false;
-
     const total = entries.length;
     if (total === 0) {
       const s = summarizeDeployRun(results, false);
@@ -187,82 +256,140 @@ export class DeployService {
       return s;
     }
 
-    const increment = total > 0 ? 100 / total : 0;
+    const mode = readDeployMode();
+    const readonlyGlob = configurationTreeReadonlyGlob(params.binding.configRelativePath);
+    const readonlyGuard =
+      mode === 'block'
+        ? await applyReadonlyIncludeForDeploy(params.workspaceFolderRoot, readonlyGlob)
+        : undefined;
 
-    for (let i = 0; i < entries.length; i++) {
-      if (params.token.isCancellationRequested) {
-        cancelledMidChain = true;
-        for (let j = i; j < entries.length; j++) {
-          const e = entries[j]!;
-          results.push({
-            infobaseId: e.id,
-            name: e.name,
-            status: 'skipped',
-            message: 'Пропущено: отмена пользователя.',
-          });
-        }
-        break;
-      }
-
-      const entry = entries[i]!;
-      params.progress.report({
-        message: `Раскатка: ${entry.name} (${i + 1}/${total})`,
-        increment,
-      });
-
-      const interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-        runInfobaseConfigImportFromDirectory({
-          storage: params.storage,
-          entry,
-          absoluteSourceDir: resolved.sourceDir,
-          token: params.token,
-          logContext: 'раскатка',
-        }),
-      );
-
-      if (interpreted.status === 'cancelled') {
-        cancelledMidChain = true;
-        appendIbcmdOutputLine(`[раскатка] ${entry.name}: отменено — ${interpreted.userMessage}`);
-        results.push({
-          infobaseId: entry.id,
-          name: entry.name,
-          status: 'skipped',
-          message: interpreted.userMessage,
-        });
-        for (let j = i + 1; j < entries.length; j++) {
-          const e = entries[j]!;
-          results.push({
-            infobaseId: e.id,
-            name: e.name,
-            status: 'skipped',
-            message: 'Пропущено: отмена.',
-          });
-        }
-        break;
-      }
-
-      if (interpreted.status === 'success') {
-        appendIbcmdOutputLine(`[раскатка] ${entry.name}: успех — ${interpreted.userMessage}`);
-        results.push({
-          infobaseId: entry.id,
-          name: entry.name,
-          status: 'success',
-          message: interpreted.userMessage,
-        });
+    if (mode === 'block') {
+      if (readonlyGuard) {
+        appendIbcmdOutputLine(
+          '[раскатка] Режим block: для дерева конфигурации включён только просмотр (files.readonlyInclude) до конца раскатки.',
+        );
       } else {
-        appendIbcmdOutputLine(`[раскатка] ${entry.name}: ошибка — ${interpreted.userMessage}`);
-        results.push({
-          infobaseId: entry.id,
-          name: entry.name,
-          status: 'error',
-          message: interpreted.userMessage,
-        });
+        appendIbcmdOutputLine(
+          '[раскатка] Режим block: блокировка через настройки редактора недоступна (нужен VS Code 1.88+). Раскатка продолжится без readonly.',
+        );
       }
     }
 
-    const s = summarizeDeployRun(results, cancelledMidChain);
-    appendDeployRunSummaryLine(s);
-    return s;
+    let snapshotDir: string | undefined;
+    let sourceDir = resolved.sourceDir;
+
+    try {
+      if (mode === 'copy') {
+        appendIbcmdOutputLine('[раскатка] Режим copy: создаётся снимок папки конфигурации во временный каталог…');
+        try {
+          snapshotDir = createConfigurationSnapshot(resolved.sourceDir);
+          sourceDir = snapshotDir;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const s = summarizeDeployRun(
+            [
+              {
+                infobaseId: '',
+                name: '',
+                status: 'error',
+                message: `Не удалось создать копию выгрузки для раскатки: ${msg}`,
+              },
+            ],
+            false,
+          );
+          appendDeployRunSummaryLine(s);
+          return s;
+        }
+      }
+
+      let cancelledMidChain = false;
+      const increment = total > 0 ? 100 / total : 0;
+
+      for (let i = 0; i < entries.length; i++) {
+        if (params.token.isCancellationRequested) {
+          cancelledMidChain = true;
+          for (let j = i; j < entries.length; j++) {
+            const e = entries[j]!;
+            results.push({
+              infobaseId: e.id,
+              name: e.name,
+              status: 'skipped',
+              message: 'Пропущено: отмена пользователя.',
+            });
+          }
+          break;
+        }
+
+        const entry = entries[i]!;
+        params.progress.report({
+          message: `Раскатка: ${entry.name} (${i + 1}/${total})`,
+          increment,
+        });
+
+        const interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+          runInfobaseConfigImportFromDirectory({
+            storage: params.storage,
+            entry,
+            absoluteSourceDir: sourceDir,
+            token: params.token,
+            logContext: 'раскатка',
+          }),
+        );
+
+        if (interpreted.status === 'cancelled') {
+          cancelledMidChain = true;
+          appendIbcmdOutputLine(`[раскатка] ${entry.name}: отменено — ${interpreted.userMessage}`);
+          results.push({
+            infobaseId: entry.id,
+            name: entry.name,
+            status: 'skipped',
+            message: interpreted.userMessage,
+          });
+          for (let j = i + 1; j < entries.length; j++) {
+            const e = entries[j]!;
+            results.push({
+              infobaseId: e.id,
+              name: e.name,
+              status: 'skipped',
+              message: 'Пропущено: отмена.',
+            });
+          }
+          break;
+        }
+
+        if (interpreted.status === 'success') {
+          appendIbcmdOutputLine(`[раскатка] ${entry.name}: успех — ${interpreted.userMessage}`);
+          results.push({
+            infobaseId: entry.id,
+            name: entry.name,
+            status: 'success',
+            message: interpreted.userMessage,
+          });
+        } else {
+          appendIbcmdOutputLine(`[раскатка] ${entry.name}: ошибка — ${interpreted.userMessage}`);
+          results.push({
+            infobaseId: entry.id,
+            name: entry.name,
+            status: 'error',
+            message: interpreted.userMessage,
+          });
+        }
+      }
+
+      const s = summarizeDeployRun(results, cancelledMidChain);
+      appendDeployRunSummaryLine(s);
+      return s;
+    } finally {
+      if (snapshotDir) {
+        const parent = path.dirname(snapshotDir);
+        try {
+          fs.rmSync(parent, { recursive: true, force: true });
+        } catch {
+          /* временный каталог не критичен */
+        }
+      }
+      await readonlyGuard?.dispose();
+    }
   }
 }
 
