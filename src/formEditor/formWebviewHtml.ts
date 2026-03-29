@@ -5,15 +5,28 @@
 
 import * as vscode from 'vscode';
 
+function hostThemeFromColorKind(kind: vscode.ColorThemeKind): 'light' | 'dark' {
+  return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
+    ? 'light'
+    : 'dark';
+}
+
 /**
  * Returns the complete HTML string for the form editor webview,
  * including all CSS and client-side JavaScript.
  * CSP: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'
+ *
+ * @param hostColorThemeKind VS Code UI theme so `data-theme-mode=auto` can set `color-scheme` and
+ * native `<select>` options to match the host (avoids white-on-white in dark VS Code).
  */
-export function getWebviewHtml(webview: vscode.Webview): string {
+export function getWebviewHtml(
+  webview: vscode.Webview,
+  hostColorThemeKind: vscode.ColorThemeKind = vscode.ColorThemeKind.Dark
+): string {
   void webview;
+  const hostTheme = hostThemeFromColorKind(hostColorThemeKind);
   return `<!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-vscode-theme="${hostTheme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -29,16 +42,12 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --fe-radius-sm: 4px;
       --fe-radius-md: 8px;
       --fe-radius-btn: 8px;
-      --fe-border-subtle: color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
-      --fe-border-strong: color-mix(in srgb, var(--vscode-panel-border) 95%, var(--vscode-foreground) 5%);
-      --fe-surface-muted: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-list-hoverBackground) 10%);
-      --fe-focus-ring: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 85%, transparent);
-      --fe-hover-bg: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-focusBorder) 18%);
-      --fe-hover-bg-strong: color-mix(in srgb, var(--vscode-editor-background) 74%, var(--vscode-focusBorder) 26%);
-      --fe-selected-bg: color-mix(in srgb, var(--vscode-editor-background) 70%, var(--vscode-focusBorder) 30%);
-      --fe-selected-fg: var(--vscode-foreground);
-      --fe-card-bg: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background) 10%);
     }
+    /**
+     * Theme-derived tokens live on body (not :root): VS Code sets --vscode-* on the webview
+     * host; forced Light/Dark only override them on body. If --fe-* stayed on :root, they would
+     * keep resolving the host html palette and “active” rows / inputs in Light looked black.
+     */
     body {
       margin: 0;
       font-family: var(--vscode-font-family);
@@ -51,8 +60,18 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       overflow: hidden;
       --tree-width: 280px;
       --preview-height: 300px;
+      --fe-border-subtle: color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
+      --fe-border-strong: color-mix(in srgb, var(--vscode-panel-border) 95%, var(--vscode-foreground) 5%);
+      --fe-surface-muted: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-list-hoverBackground) 10%);
+      --fe-focus-ring: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 85%, transparent);
+      --fe-hover-bg: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-focusBorder) 18%);
+      --fe-hover-bg-strong: color-mix(in srgb, var(--vscode-editor-background) 74%, var(--vscode-focusBorder) 26%);
+      --fe-selected-bg: color-mix(in srgb, var(--vscode-editor-background) 70%, var(--vscode-focusBorder) 30%);
+      --fe-selected-fg: var(--vscode-foreground);
+      --fe-card-bg: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background) 10%);
     }
     body[data-theme-mode='light'] {
+      color-scheme: light;
       --vscode-editor-background: #f3f5f8;
       --vscode-sideBar-background: #ffffff;
       --vscode-editorWidget-background: #f8fafc;
@@ -79,6 +98,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --vscode-badge-foreground: #1f2937;
     }
     body[data-theme-mode='dark'] {
+      color-scheme: dark;
       --vscode-editor-background: #111827;
       --vscode-sideBar-background: #1f2937;
       --vscode-editorWidget-background: #273244;
@@ -105,22 +125,64 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --vscode-badge-foreground: #e5e7eb;
     }
     body[data-theme-mode='light'] .zone-right-upper {
-      background: #ffffff;
+      background: var(--vscode-sideBar-background);
     }
     body[data-theme-mode='light'] .fe-table-wrap {
-      background: #ffffff;
+      background: var(--vscode-editor-background);
     }
     body[data-theme-mode='light'] .fe-table th {
-      background: #f3f6fb;
-      color: #4b5563;
+      background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-list-hoverBackground) 12%);
+      color: var(--vscode-descriptionForeground);
     }
     body[data-theme-mode='light'] .right-panel-tabs button.active,
     body[data-theme-mode='light'] .left-zone-tabs button.active {
-      background: color-mix(in srgb, #dbeafe 80%, #ffffff 20%);
-      color: #1f2937;
+      background: var(--vscode-list-activeSelectionBackground);
+      color: var(--vscode-list-activeSelectionForeground);
     }
     body[data-theme-mode='dark'] .zone-right-upper {
       background: color-mix(in srgb, var(--vscode-sideBar-background) 82%, var(--vscode-editor-background) 18%);
+    }
+    body[data-theme-mode='light'] {
+      scrollbar-color: color-mix(in srgb, var(--vscode-panel-border) 55%, var(--vscode-descriptionForeground) 45%) var(--vscode-editor-background);
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar,
+    body[data-theme-mode='light'] *::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar-track,
+    body[data-theme-mode='light'] *::-webkit-scrollbar-track {
+      background: var(--vscode-editor-background);
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar-thumb,
+    body[data-theme-mode='light'] *::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--vscode-panel-border) 50%, var(--vscode-descriptionForeground) 50%);
+      border-radius: 5px;
+      border: 2px solid var(--vscode-editor-background);
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar-thumb:hover,
+    body[data-theme-mode='light'] *::-webkit-scrollbar-thumb:hover {
+      background: color-mix(in srgb, var(--vscode-descriptionForeground) 40%, var(--vscode-panel-border) 60%);
+    }
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] {
+      color-scheme: light;
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] {
+      color-scheme: dark;
+    }
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select {
+      color-scheme: light;
+    }
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select option {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select {
+      color-scheme: dark;
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select option {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
     }
     .fe-toolbar {
       flex-shrink: 0;
@@ -138,23 +200,29 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .fe-theme-select {
       height: 24px;
       padding: 0 6px;
-      border: 1px solid var(--fe-border-subtle);
+      border: 1px solid var(--vscode-input-border);
       border-radius: var(--fe-radius-md);
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      color-scheme: light;
     }
     .fe-theme-select:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    body[data-theme-mode='light'] .fe-theme-select {
+      color-scheme: light;
+    }
+    body[data-theme-mode='light'] .fe-theme-select option {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+    }
     body[data-theme-mode='dark'] .fe-theme-select {
       color-scheme: dark;
       background: color-mix(in srgb, var(--vscode-input-background) 88%, var(--vscode-editor-background) 12%);
-      border-color: color-mix(in srgb, var(--vscode-input-border) 80%, var(--vscode-focusBorder) 20%);
+      border-color: var(--vscode-input-border);
     }
     body[data-theme-mode='dark'] .fe-theme-select option {
-      background: var(--vscode-sideBar-background);
-      color: var(--vscode-foreground);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
     }
     .fe-toolbar-btn {
       display: inline-flex;
@@ -2271,6 +2339,11 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     }
     window.addEventListener('message', function(event) {
       var msg = event.data;
+      if (msg && msg.type === 'hostColorTheme' && typeof msg.kind === 'number') {
+        var lt = (msg.kind === 1 || msg.kind === 4);
+        document.documentElement.setAttribute('data-vscode-theme', lt ? 'light' : 'dark');
+        return;
+      }
       if (msg.type === 'formData') {
         formModel = msg.formModel;
         formXmlPath = msg.formXmlPath || '';

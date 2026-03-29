@@ -52,7 +52,13 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     webviewPanel: vscode.WebviewPanel
   ): Promise<void> {
     webviewPanel.webview.options = { enableScripts: true };
-    webviewPanel.webview.html = getWebviewHtml(webviewPanel.webview);
+    webviewPanel.webview.html = getWebviewHtml(
+      webviewPanel.webview,
+      vscode.window.activeColorTheme.kind
+    );
+    const themeSubscription = vscode.window.onDidChangeActiveColorTheme((e) => {
+      webviewPanel.webview.postMessage({ type: 'hostColorTheme', kind: e.kind });
+    });
     const ctx: MessageHandlerContext = {
       document,
       webviewPanel,
@@ -78,6 +84,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     const onMessage = createSerializedMessageHandler(ctx);
     webviewPanel.webview.onDidReceiveMessage(onMessage);
     webviewPanel.onDidDispose(() => {
+      themeSubscription.dispose();
       void this.handlePanelDispose(document.uri);
     });
   }
