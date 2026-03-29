@@ -65,9 +65,57 @@ suite('ibcmdProcessRunner', () => {
       assert.strictEqual(out.stderr, 'err');
     });
 
-    test('with --config= in argv passes child env without IBCMD_INFOBASE_CONFIG', async () => {
-      const prev = process.env.IBCMD_INFOBASE_CONFIG;
+    test('with --db-path= in argv passes child env without IBCMD default-connection env vars', async () => {
+      const prevCfg = process.env.IBCMD_INFOBASE_CONFIG;
+      const prevUser = process.env.IBCMD_USER;
+      const prevPwd = process.env.IBCMD_PASSWORD;
       process.env.IBCMD_INFOBASE_CONFIG = 'C:\\other-infobase.yml';
+      process.env.IBCMD_USER = 'u1';
+      process.env.IBCMD_PASSWORD = 'p1';
+      try {
+        const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
+        const execImpl: ExecFileFn = async (_file, _args, options) => {
+          calls.push({ env: options.env });
+          return { stdout: '', stderr: '' };
+        };
+        await runIbcmdExecutable(
+          '/x',
+          ['infobase', 'config', 'check', '--db-path=C:\\ib', '--data=C:\\d'],
+          1,
+          execImpl,
+        );
+        assert.strictEqual(calls.length, 1);
+        assert.ok(calls[0].env, 'execFile should receive explicit env');
+        assert.strictEqual(calls[0].env!.IBCMD_INFOBASE_CONFIG, undefined);
+        assert.strictEqual(calls[0].env!.IBCMD_USER, undefined);
+        assert.strictEqual(calls[0].env!.IBCMD_PASSWORD, undefined);
+        assert.strictEqual(process.env.IBCMD_INFOBASE_CONFIG, 'C:\\other-infobase.yml');
+      } finally {
+        if (prevCfg === undefined) {
+          delete process.env.IBCMD_INFOBASE_CONFIG;
+        } else {
+          process.env.IBCMD_INFOBASE_CONFIG = prevCfg;
+        }
+        if (prevUser === undefined) {
+          delete process.env.IBCMD_USER;
+        } else {
+          process.env.IBCMD_USER = prevUser;
+        }
+        if (prevPwd === undefined) {
+          delete process.env.IBCMD_PASSWORD;
+        } else {
+          process.env.IBCMD_PASSWORD = prevPwd;
+        }
+      }
+    });
+
+    test('with --config= in argv passes child env without IBCMD default-connection env vars', async () => {
+      const prevCfg = process.env.IBCMD_INFOBASE_CONFIG;
+      const prevUser = process.env.IBCMD_USER;
+      const prevPwd = process.env.IBCMD_PASSWORD;
+      process.env.IBCMD_INFOBASE_CONFIG = 'C:\\other-infobase.yml';
+      process.env.IBCMD_USER = 'u1';
+      process.env.IBCMD_PASSWORD = 'p1';
       try {
         const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
         const execImpl: ExecFileFn = async (_file, _args, options) => {
@@ -78,12 +126,24 @@ suite('ibcmdProcessRunner', () => {
         assert.strictEqual(calls.length, 1);
         assert.ok(calls[0].env, 'execFile should receive explicit env');
         assert.strictEqual(calls[0].env!.IBCMD_INFOBASE_CONFIG, undefined);
+        assert.strictEqual(calls[0].env!.IBCMD_USER, undefined);
+        assert.strictEqual(calls[0].env!.IBCMD_PASSWORD, undefined);
         assert.strictEqual(process.env.IBCMD_INFOBASE_CONFIG, 'C:\\other-infobase.yml');
       } finally {
-        if (prev === undefined) {
+        if (prevCfg === undefined) {
           delete process.env.IBCMD_INFOBASE_CONFIG;
         } else {
-          process.env.IBCMD_INFOBASE_CONFIG = prev;
+          process.env.IBCMD_INFOBASE_CONFIG = prevCfg;
+        }
+        if (prevUser === undefined) {
+          delete process.env.IBCMD_USER;
+        } else {
+          process.env.IBCMD_USER = prevUser;
+        }
+        if (prevPwd === undefined) {
+          delete process.env.IBCMD_PASSWORD;
+        } else {
+          process.env.IBCMD_PASSWORD = prevPwd;
         }
       }
     });

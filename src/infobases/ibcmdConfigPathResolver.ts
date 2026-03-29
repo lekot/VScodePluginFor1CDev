@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
 import type { InfobaseEntry } from './models/infobaseEntry';
+import { createIbcmdOfflineServerDataDir } from '../services/ibcmd/ibcmdOfflineDataDir';
 
 /** Единый RU-текст CDT 41: ibcmd недоступен для веб-записи каталога. */
 export const IB_FILE_IBCMD_WEB_UNSUPPORTED_RU =
@@ -66,6 +67,109 @@ export function resolvePathForIbcmdYamlFileField(filePath: string): string {
   }
 }
 
+/**
+ * Scalar for YAML `infobase.file` on Windows: forward slashes avoid ambiguous backslash escapes in
+ * double-quoted YAML (`\U…`) and match vendor examples that use `C:/…` style paths.
+ */
+export function formatFilePathForIbcmdYamlScalar(resolvedAbsPath: string): string {
+  if (process.platform !== 'win32') {
+    return resolvedAbsPath;
+  }
+  return resolvedAbsPath.replace(/\\/g, '/');
+}
+
+/**
+ * When a path already exists on disk, expand Windows 8.3 segments (`Users\2BA0~1` → long `Users\…`).
+ * Same inode as the short form — not a wrong user or broken encoding; short names are optional NTFS aliases.
+ * Used so logs and `absoluteConfigPath` match what `realpathSync.native` gives ibcmd.
+ */
+export function resolveExistingPathToLongOnWin32(absPath: string): string {
+  const t = absPath.trim();
+  if (process.platform !== 'win32' || !t) {
+    return t;
+  }
+  try {
+    if (fs.existsSync(t)) {
+      return fs.realpathSync.native(t);
+    }
+  } catch {
+    /* keep logical path */
+  }
+  return t;
+}
+
+function find1Cv8Dot1CDFileInDirectory(dirAbs: string): string | undefined {
+  try {
+    const exact = path.join(dirAbs, '1Cv8.1CD');
+    if (fs.existsSync(exact)) {
+      const st = fs.statSync(exact);
+      if (st.isFile()) {
+        return exact;
+      }
+    }
+    if (process.platform === 'win32') {
+      for (const name of fs.readdirSync(dirAbs)) {
+        if (!/^1cv8\.1cd$/i.test(name)) {
+          continue;
+        }
+        const full = path.join(dirAbs, name);
+        if (fs.statSync(full).isFile()) {
+          return full;
+        }
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Resolves a path that may be a file-IB **catalog folder** or a direct `1Cv8.1CD` path — for **existence
+ * checks** in {@link prepareIbcmdConfigYaml} (explicit user YAML). Do **not** use this for the scalar written
+ * into **generated** temp YAML: vendor docs and several `ibcmd` builds expect `infobase.file` to be the
+ * **directory**; pointing at `…\\1Cv8.1CD` can make the CLI ignore the block and fall back to the default
+ * standalone-server layout (`…\\standalone-server\\db-data\\…`).
+ */
+export function prefer1Cv8Dot1CDDataPathIfPresent(resolvedAbsPath: string): string {
+  const p = resolvedAbsPath.trim();
+  if (!p || !fs.existsSync(p)) {
+    return p;
+  }
+  try {
+    const st = fs.statSync(p);
+    const base = path.basename(p);
+    if (st.isFile()) {
+      if (/^1cv8\.1cd$/i.test(base)) {
+        try {
+          return fs.realpathSync.native(p);
+        } catch {
+          return p;
+        }
+      }
+      return p;
+    }
+    if (st.isDirectory()) {
+      const oneCd = find1Cv8Dot1CDFileInDirectory(p);
+      if (oneCd) {
+        try {
+          return fs.realpathSync.native(oneCd);
+        } catch {
+          return oneCd;
+        }
+      }
+      try {
+        return fs.realpathSync.native(p);
+      } catch {
+        return p;
+      }
+    }
+  } catch {
+    return p;
+  }
+  return p;
+}
+
 /** Strip password scalars from YAML text for safe diagnostics (Output channel). */
 export function redactIbcmdYamlPasswordLines(body: string): string {
   return body.replace(/^\s*password:\s*.+$/gm, '  password: <redacted>');
@@ -76,7 +180,12 @@ export function buildFileInfobaseYamlContent(opts: {
   user?: string;
   password?: string;
 }): string {
-  const lines = ['infobase:', `  file: ${yamlDoubleQuotedScalar(resolvePathForIbcmdYamlFileField(opts.filePath))}`];
+  const resolvedFile = resolvePathForIbcmdYamlFileField(opts.filePath);
+  // Windows ibcmd has been observed to ignore `file:` when the scalar used `/` (forward slashes);
+  // vendor samples use backslashes with YAML escaping — {@link yamlDoubleQuotedScalar} doubles `\`.
+  const fileScalar =
+    process.platform === 'win32' ? resolvedFile : formatFilePathForIbcmdYamlScalar(resolvedFile);
+  const lines = ['infobase:', `  file: ${yamlDoubleQuotedScalar(fileScalar)}`];
   const u = opts.user?.trim();
   if (u) {
     lines.push(`  user: ${yamlDoubleQuotedScalar(u)}`);
@@ -121,39 +230,58 @@ export interface PrepareYamlFailure {
   userMessage: string;
 }
 
-/** Successful result of {@link prepareIbcmdConfigYaml} (narrowed). */
+/** YAML `--config` + каталог `--data` (ibcmdrunner). */
 export interface PreparedIbcmdYaml {
   ok: true;
-  /** Absolute path passed to `--config=`. */
+  kind: 'yaml';
+  /** Absolute path passed to `--config=` (on Windows, long form after `realpath` when the file exists — no `2BA0~1` in logs). */
   absoluteConfigPath: string;
-  /** When true, {@link dispose} deletes a temp file under os.tmpdir(). */
+  /** Каталог данных автономного сервера для `--data=`. */
+  offlineDataDir: string;
+  /** When true, {@link dispose} deletes the temp YAML under os.tmpdir(). */
   isTemporary: boolean;
   dispose: () => Promise<void>;
 }
 
-export type PrepareIbcmdYamlResult = PreparedIbcmdYaml | PrepareYamlFailure;
+/** Файловая ИБ: `--db-path` + `--data` без YAML (надёжно из spawn; см. ibcmdrunner). */
+export interface PreparedIbcmdFileDb {
+  ok: true;
+  kind: 'fileDb';
+  /** Каталог файловой ИБ для `--db-path=`. */
+  dbCatalogPath: string;
+  offlineDataDir: string;
+  dispose: () => Promise<void>;
+}
+
+export type PrepareIbcmdYamlResult = PreparedIbcmdYaml | PreparedIbcmdFileDb | PrepareYamlFailure;
 
 async function writeTempYaml(entryId: string, body: string): Promise<{ path: string; dispose: () => Promise<void> }> {
   const suffix = randomBytes(8).toString('hex');
   const tmp = path.join(os.tmpdir(), `1cviewer-ibcmd-${entryId}-${suffix}.yaml`);
   // UTF-8 without BOM: some ibcmd builds mis-parse a leading BOM so `infobase` is not recognized. Cyrillic paths remain valid in UTF-8.
   await fs.promises.writeFile(tmp, body, { encoding: 'utf8' });
+  const logical = path.resolve(tmp);
+  const canonical = resolveExistingPathToLongOnWin32(logical);
   const dispose = async (): Promise<void> => {
     try {
-      await fs.promises.unlink(tmp);
+      await fs.promises.unlink(canonical);
     } catch {
-      /* ignore */
+      try {
+        await fs.promises.unlink(logical);
+      } catch {
+        /* ignore */
+      }
     }
   };
-  return { path: path.resolve(tmp), dispose };
+  return { path: canonical, dispose };
 }
 
 /**
- * Временный `--config` для файловой ИБ из каталога в записи каталога (без `ibcmd server config init`).
+ * Файловая ИБ из записи каталога: `--db-path` + `--data` (как vanessa-runner / ibcmdrunner), без временного YAML.
  */
-async function prepareFileInfobaseTempYamlIfPossible(
+async function prepareFileInfobaseDirectIbcmd(
   entry: InfobaseEntry,
-  readPassword: (entryId: string) => Promise<string | undefined>,
+  _readPassword: (entryId: string) => Promise<string | undefined>,
 ): Promise<PrepareIbcmdYamlResult> {
   const fp = entry.filePath?.trim();
   if (!fp) {
@@ -167,21 +295,13 @@ async function prepareFileInfobaseTempYamlIfPossible(
       userMessage: ibFileDataPathNotFoundMessage(dataAbs),
     };
   }
-  let password: string | undefined;
-  if (entry.hasStoredPassword) {
-    password = (await readPassword(entry.id)) ?? undefined;
-  }
-  const body = buildFileInfobaseYamlContent({
-    filePath: fp,
-    user: entry.user,
-    password,
-  });
-  const { path: tmpPath, dispose } = await writeTempYaml(entry.id, body);
+  const dataHandle = await createIbcmdOfflineServerDataDir(entry.id);
   return {
     ok: true,
-    absoluteConfigPath: tmpPath,
-    isTemporary: true,
-    dispose,
+    kind: 'fileDb',
+    dbCatalogPath: dataAbs,
+    offlineDataDir: dataHandle.path,
+    dispose: dataHandle.dispose,
   };
 }
 
@@ -201,9 +321,9 @@ export async function prepareIbcmdConfigYaml(
   if (explicitYaml) {
     const abs = path.resolve(explicitYaml);
     if (!fs.existsSync(abs)) {
-      /** Явный YAML отсутствует — для файловой ИБ с валидным каталогом данных строим временный YAML (прозрачно для пользователя). */
+      /** Явный YAML отсутствует — для файловой ИБ с валидным каталогом данных подключаемся через `--db-path`. */
       if (entry.type === 'file') {
-        const fb = await prepareFileInfobaseTempYamlIfPossible(entry, readPassword);
+        const fb = await prepareFileInfobaseDirectIbcmd(entry, readPassword);
         if (fb.ok) {
           return fb;
         }
@@ -222,27 +342,39 @@ export async function prepareIbcmdConfigYaml(
       const fileScalar = tryParseInfobaseFileScalarFromYaml(body);
       if (fileScalar !== undefined) {
         const dataAbs = resolvePathForIbcmdYamlFileField(fileScalar);
-        if (!fs.existsSync(dataAbs)) {
+        const dataCheck = prefer1Cv8Dot1CDDataPathIfPresent(dataAbs);
+        if (!fs.existsSync(dataCheck)) {
           return {
             ok: false,
             code: 'IB_FILE_DATA_PATH_NOT_FOUND',
-            userMessage: ibFileDataPathNotFoundMessage(dataAbs),
+            userMessage: ibFileDataPathNotFoundMessage(dataCheck),
           };
         }
+        const dataHandle = await createIbcmdOfflineServerDataDir(entry.id);
+        return {
+          ok: true,
+          kind: 'fileDb',
+          dbCatalogPath: resolvePathForIbcmdYamlFileField(fileScalar),
+          offlineDataDir: dataHandle.path,
+          dispose: dataHandle.dispose,
+        };
       }
     } catch {
-      /* не удалось прочитать YAML для проверки file: — поведение как раньше, ibcmd сам диагностирует */
+      /* не удалось прочитать YAML для проверки file: — ниже: YAML для server/ref */
     }
+    const dataHandleExplicit = await createIbcmdOfflineServerDataDir(entry.id);
     return {
       ok: true,
-      absoluteConfigPath: abs,
+      kind: 'yaml',
+      absoluteConfigPath: resolveExistingPathToLongOnWin32(abs),
+      offlineDataDir: dataHandleExplicit.path,
       isTemporary: false,
-      dispose: async () => {},
+      dispose: dataHandleExplicit.dispose,
     };
   }
 
   if (entry.type === 'file') {
-    return prepareFileInfobaseTempYamlIfPossible(entry, readPassword);
+    return prepareFileInfobaseDirectIbcmd(entry, readPassword);
   }
 
   if (entry.type === 'server') {
@@ -261,12 +393,18 @@ export async function prepareIbcmdConfigYaml(
       user: entry.user,
       password,
     });
-    const { path: tmpPath, dispose } = await writeTempYaml(entry.id, body);
+    const dataHandle = await createIbcmdOfflineServerDataDir(entry.id);
+    const { path: tmpPath, dispose: disposeYaml } = await writeTempYaml(entry.id, body);
     return {
       ok: true,
+      kind: 'yaml',
       absoluteConfigPath: tmpPath,
+      offlineDataDir: dataHandle.path,
       isTemporary: true,
-      dispose,
+      dispose: async (): Promise<void> => {
+        await disposeYaml();
+        await dataHandle.dispose();
+      },
     };
   }
 

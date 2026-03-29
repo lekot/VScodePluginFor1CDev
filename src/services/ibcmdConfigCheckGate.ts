@@ -3,6 +3,9 @@ import { decodeIbcmdProcessStreams } from './ibcmd/consoleStreamDecoder';
 import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
 import { runIbcmdExecutable } from './ibcmd/IbcmdProcessRunner';
 import { getIbcmdConsoleOutputEncodingSetting, IBCMD_PATH_SETTINGS_QUERY } from './metadataTreeSettings';
+import { getIbcmdYamlInfobaseConfigUnsupportedMessage } from './ibcmd/ibcmdVersionSupport';
+import { createIbcmdOfflineServerDataDir } from './ibcmd/ibcmdOfflineDataDir';
+import { buildInfobaseConfigCheckArgs } from './ibcmd/ibcmdInfobaseConfigArgs';
 
 const LOG_MAX = 8000;
 
@@ -38,6 +41,11 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
     return notFoundResult(pathResult.hint);
   }
 
+  const yamlUnsupported = await getIbcmdYamlInfobaseConfigUnsupportedMessage(pathResult.path);
+  if (yamlUnsupported) {
+    return { ok: false, message: yamlUnsupported };
+  }
+
   const configPath = process.env.IBCMD_INFOBASE_CONFIG?.trim();
   if (!configPath) {
     return {
@@ -47,22 +55,31 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
     };
   }
 
-  const args = ['infobase', 'config', 'check', `--config=${path.resolve(configPath)}`];
-  const user = process.env.IBCMD_USER?.trim();
-  const password = process.env.IBCMD_PASSWORD?.trim();
-  if (user) {
-    args.push(`--user=${user}`);
-  }
-  if (password) {
-    args.push(`--password=${password}`);
-  }
-  if (process.env.IBCMD_CONFIG_CHECK_FORCE?.trim() === '1') {
-    args.push('--force');
-  }
-
   const consoleEncoding = getIbcmdConsoleOutputEncodingSetting();
 
+  const dataHandle = await createIbcmdOfflineServerDataDir('ibcmd-gate');
   try {
+    const user = process.env.IBCMD_USER?.trim();
+    const password = process.env.IBCMD_PASSWORD?.trim();
+    const creds =
+      user || password
+        ? {
+            user: user || undefined,
+            password: password ?? undefined,
+          }
+        : undefined;
+    const args = buildInfobaseConfigCheckArgs(
+      {
+        kind: 'yaml',
+        absoluteConfigPath: path.resolve(configPath),
+        offlineDataDir: dataHandle.path,
+      },
+      {
+        credentials: creds,
+        force: process.env.IBCMD_CONFIG_CHECK_FORCE?.trim() === '1',
+      },
+    );
+
     const { stdout, stderr } = await runIbcmdExecutable(
       pathResult.path,
       args,
@@ -103,5 +120,7 @@ export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult>
       ok: false,
       message: `ibcmd config check failed (${code}).${tail}`,
     };
+  } finally {
+    await dataHandle.dispose();
   }
 }

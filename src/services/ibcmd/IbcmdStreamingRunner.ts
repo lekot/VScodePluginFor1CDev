@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import type * as vscode from 'vscode';
 import type { IbcmdConsoleOutputEncoding } from './ibcmdConsoleEncodingTypes';
 import { createIbcmdStreamChunkDecoders } from './consoleStreamDecoder';
-import { envForIbcmdExplicitConfigSpawn } from './ibcmdSpawnEnv';
+import { envForIbcmdExplicitConfigSpawn, ibcmdArgvImpliesExplicitOfflineConnection } from './ibcmdSpawnEnv';
 
 /** Default ring buffer for captured stdout+stderr (design §6). */
 export const IBCMD_STREAM_RING_BUFFER_MAX_BYTES = 384 * 1024;
@@ -120,7 +120,9 @@ export async function runIbcmdStreaming(
 
     try {
       child = spawnFn(options.executablePath, options.args, {
-        env: envForIbcmdExplicitConfigSpawn(),
+        ...(ibcmdArgvImpliesExplicitOfflineConnection(options.args)
+          ? { env: envForIbcmdExplicitConfigSpawn() }
+          : {}),
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });

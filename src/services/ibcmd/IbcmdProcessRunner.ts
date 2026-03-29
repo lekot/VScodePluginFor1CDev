@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { IbcmdConsoleOutputEncoding, IbcmdRunOutcome } from './ibcmdConsoleEncodingTypes';
 import { decodeIbcmdProcessStreams } from './consoleStreamDecoder';
-import { envForIbcmdExplicitConfigSpawn } from './ibcmdSpawnEnv';
+import { envForIbcmdExplicitConfigSpawn, ibcmdArgvImpliesExplicitOfflineConnection } from './ibcmdSpawnEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,7 +37,7 @@ export function resolveIbcmdTimeoutMs(settingsTimeoutMs: number | undefined, env
 }
 
 function spawnEnvForIbcmdArgs(args: readonly string[]): { env: NodeJS.ProcessEnv } | Record<string, never> {
-  if (args.some((a) => typeof a === 'string' && a.startsWith('--config='))) {
+  if (ibcmdArgvImpliesExplicitOfflineConnection(args)) {
     return { env: envForIbcmdExplicitConfigSpawn() };
   }
   return {};

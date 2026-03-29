@@ -219,12 +219,17 @@ function modeToken(mode: PlatformLaunchMode): string {
   return mode === 'designer' ? 'DESIGNER' : 'ENTERPRISE';
 }
 
-/** `/F"path"` for Windows file infobase; POSIX-safe quoting. */
-function fileConnectionArg(filePath: string, platform: NodeJS.Platform): string {
+/**
+ * File infobase path for `1cv8` / `1cv8c` argv.
+ * On Windows, a **single** token `/F"C:\Users\…"` is misparsed on some builds (path collapses to `C:\`,
+ * then the platform looks for `C:\1Cv8.1CD`). Use **two** argv elements: `/F` and the directory path;
+ * Node `spawn` quotes the path when needed.
+ */
+function fileConnectionArgv(filePath: string, platform: NodeJS.Platform): string[] {
   const normalized =
     platform === 'win32' ? path.win32.resolve(filePath).replace(/\//g, '\\') : path.posix.resolve(filePath);
   const safe = normalized.replace(/"/g, '');
-  return `/F"${safe}"`;
+  return ['/F', safe];
 }
 
 function ibNameArg(name: string, platform: NodeJS.Platform): string {
@@ -262,7 +267,7 @@ export function buildLaunchArgs(
     if (!fp?.trim()) {
       throw new Error('Infobase filePath is empty');
     }
-    args.push(fileConnectionArg(fp, platform));
+    args.push(...fileConnectionArgv(fp, platform));
   } else if (entry.type === 'server') {
     const srv = entry.server?.trim();
     const db = entry.database?.trim();

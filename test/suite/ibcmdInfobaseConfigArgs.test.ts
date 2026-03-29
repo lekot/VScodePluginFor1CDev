@@ -6,8 +6,11 @@ import {
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
   buildInfobaseConfigImportArgs,
+  ibcmdOfflineConnectionFromPrepared,
   resolveIbcmdCliPathForWindowsSpawn,
 } from '../../src/services/ibcmd/ibcmdInfobaseConfigArgs';
+
+const DATA = '/tmp/ibcmd-data';
 
 suite('ibcmdInfobaseConfigArgs', () => {
   test('resolveIbcmdCliPathForWindowsSpawn: non-existent path unchanged', () => {
@@ -31,17 +34,26 @@ suite('ibcmdInfobaseConfigArgs', () => {
     }
   });
 
-  test('buildInfobaseConfigCheckArgs matches ibcmd-api-reference shape', () => {
-    const cfg = 'C:\\tmp\\conn.yaml';
-    const args = buildInfobaseConfigCheckArgs(cfg);
-    assert.deepStrictEqual(args, ['infobase', 'config', 'check', `--config=${cfg}`]);
+  test('ibcmdOfflineConnectionFromPrepared: yaml', () => {
+    const c = ibcmdOfflineConnectionFromPrepared({
+      ok: true,
+      kind: 'yaml',
+      absoluteConfigPath: '/a.yaml',
+      offlineDataDir: DATA,
+      isTemporary: false,
+      dispose: async () => {},
+    });
+    assert.strictEqual(c.kind, 'yaml');
+    if (c.kind === 'yaml') {
+      assert.strictEqual(c.absoluteConfigPath, '/a.yaml');
+    }
   });
 
-  test('buildInfobaseConfigCheckArgs adds force and credentials when set', () => {
-    const args = buildInfobaseConfigCheckArgs('/x/y.yaml', {
-      force: true,
-      credentials: { user: 'Admin', password: 'p' },
-    });
+  test('buildInfobaseConfigCheckArgs: yaml + data + force', () => {
+    const args = buildInfobaseConfigCheckArgs(
+      { kind: 'yaml', absoluteConfigPath: '/x/y.yaml', offlineDataDir: DATA },
+      { force: true, credentials: { user: 'Admin', password: 'p' } },
+    );
     assert.deepStrictEqual(args, [
       'infobase',
       'config',
@@ -49,88 +61,84 @@ suite('ibcmdInfobaseConfigArgs', () => {
       '--config=/x/y.yaml',
       '--user=Admin',
       '--password=p',
+      `--data=${DATA}`,
       '--force',
     ]);
   });
 
-  test('buildInfobaseConfigImportArgs: config then optional flags then source path', () => {
-    const cfg = '/abs/conn.yaml';
-    const src = '/project/ERP';
-    const args = buildInfobaseConfigImportArgs(cfg, src);
-    assert.deepStrictEqual(args, ['infobase', 'config', 'import', `--config=${cfg}`, src]);
+  test('buildInfobaseConfigCheckArgs: fileDb', () => {
+    const args = buildInfobaseConfigCheckArgs({
+      kind: 'fileDb',
+      dbCatalogPath: 'C:\\Bases\\X',
+      offlineDataDir: DATA,
+    });
+    assert.ok(args.includes('--db-path=C:\\Bases\\X'));
+    assert.ok(args.includes(`--data=${DATA}`));
   });
 
-  test('buildInfobaseConfigExportArgs: config and out', () => {
-    const cfg = 'D:\\a.yaml';
-    const out = 'D:\\out\\cfg';
-    const args = buildInfobaseConfigExportArgs(cfg, out);
+  test('buildInfobaseConfigImportArgs: yaml connection', () => {
+    const args = buildInfobaseConfigImportArgs(
+      { kind: 'yaml', absoluteConfigPath: '/abs/conn.yaml', offlineDataDir: DATA },
+      '/project/ERP',
+    );
     assert.deepStrictEqual(args, [
       'infobase',
       'config',
-      'export',
-      `--config=${cfg}`,
-      `--out=${out}`,
+      'import',
+      '--config=/abs/conn.yaml',
+      `--data=${DATA}`,
+      '/project/ERP',
     ]);
   });
 
+  test('buildInfobaseConfigImportArgs: fileDb + extension + credentials', () => {
+    const args = buildInfobaseConfigImportArgs(
+      { kind: 'fileDb', dbCatalogPath: '/ib', offlineDataDir: DATA },
+      '/src',
+      { extension: 'Ext1', credentials: { user: ' U ', password: 'x' } },
+    );
+    assert.ok(args.includes('--db-path=/ib'));
+    assert.ok(args.includes('--user=U'));
+    assert.ok(args.includes('--password=x'));
+    assert.ok(args.includes('--extension=Ext1'));
+    assert.strictEqual(args[args.length - 1], '/src');
+    assert.ok(!args.includes('-F'));
+  });
+
+  test('buildInfobaseConfigExportArgs: positional out dir', () => {
+    const args = buildInfobaseConfigExportArgs(
+      { kind: 'yaml', absoluteConfigPath: 'D:\\a.yaml', offlineDataDir: DATA },
+      'D:\\out\\cfg',
+    );
+    assert.ok(args.includes('--config=D:\\a.yaml'));
+    assert.ok(args.includes(`--data=${DATA}`));
+    assert.strictEqual(args[args.length - 1], 'D:\\out\\cfg');
+    assert.ok(!args.some((a) => a.startsWith('--out=')));
+  });
+
   test('buildInfobaseConfigExportArgs optional extension and format', () => {
-    const args = buildInfobaseConfigExportArgs('/c.yaml', '/o', {
-      extension: 'Ext1',
-      format: 'xml',
-    });
+    const args = buildInfobaseConfigExportArgs(
+      { kind: 'yaml', absoluteConfigPath: '/c.yaml', offlineDataDir: DATA },
+      '/o',
+      {
+        extension: 'Ext1',
+        format: 'xml',
+      },
+    );
     assert.ok(args.includes('--extension=Ext1'));
     assert.ok(args.includes('--format=xml'));
   });
 
-  test('catalog path: no password in argv when credentials omitted (YAML carries secrets)', () => {
-    const args = buildInfobaseConfigImportArgs('/cfg.yaml', '/src');
-    const joined = args.join(' ');
-    assert.ok(!joined.includes('password'));
-    assert.ok(!joined.includes('secret'));
-  });
-
-  test('buildInfobaseConfigImportArgs: credentials and force before source path', () => {
-    const args = buildInfobaseConfigImportArgs('/c.yaml', '/src', {
-      credentials: { user: ' U ', password: 'x' },
-      force: true,
-    });
-    const iSrc = args.indexOf('/src');
-    assert.ok(args.includes('--user=U'));
-    assert.ok(args.includes('--password=x'));
-    assert.ok(args.includes('-F'));
-    assert.ok(iSrc > args.indexOf('-F'));
-  });
-
-  test('buildInfobaseConfigImportArgs: blank user trim → no --user', () => {
-    const args = buildInfobaseConfigImportArgs('/c.yaml', '/src', {
-      credentials: { user: '   ', password: 'p' },
-    });
-    assert.ok(!args.some((a) => a.startsWith('--user=')));
-    assert.ok(args.includes('--password=p'));
-  });
-
-  test('buildInfobaseConfigImportArgs: empty password string → omitted', () => {
-    const args = buildInfobaseConfigImportArgs('/c.yaml', '/src', {
-      credentials: { user: 'Admin', password: '' },
-    });
-    assert.ok(args.includes('--user=Admin'));
-    assert.ok(!args.some((a) => a.startsWith('--password=')));
-  });
-
-  test('buildInfobaseConfigExportArgs: optional credentials', () => {
-    const args = buildInfobaseConfigExportArgs('/c.yaml', '/out', {
-      credentials: { user: 'U', password: 'pw' },
-    });
-    assert.ok(args.includes('--user=U'));
-    assert.ok(args.includes('--password=pw'));
-  });
-
-  test('buildInfobaseConfigExportArgs: blank extension/format trimmed → omitted', () => {
-    const args = buildInfobaseConfigExportArgs('/c.yaml', '/o', {
-      extension: '  ',
-      format: '\t',
-    });
-    assert.ok(!args.some((a) => a.startsWith('--extension=')));
-    assert.ok(!args.some((a) => a.startsWith('--format=')));
+  test('import: paths with spaces in db-path', () => {
+    const args = buildInfobaseConfigImportArgs(
+      {
+        kind: 'fileDb',
+        dbCatalogPath: 'C:\\Test IB\\base',
+        offlineDataDir: DATA,
+      },
+      'D:\\My Dump\\ERP',
+    );
+    assert.ok(args.some((a) => a.startsWith('--db-path=')));
+    assert.strictEqual(args[args.length - 1], 'D:\\My Dump\\ERP');
   });
 });

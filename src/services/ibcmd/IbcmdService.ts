@@ -12,6 +12,7 @@ import {
   getIbcmdPathSetting,
   getIbcmdTimeoutMsSetting,
 } from '../metadataTreeSettings';
+import { invalidateIbcmdVersionQueryCache } from './ibcmdVersionSupport';
 
 /**
  * Facade: cached ibcmd path (successful resolve only) + unified process execution.
@@ -21,6 +22,7 @@ export class IbcmdService {
 
   invalidatePathCache(): void {
     this.cachedExecutablePath = null;
+    invalidateIbcmdVersionQueryCache();
   }
 
   private readSettings(): { ibcmdPath: string; ibcmdTimeoutMs: number; autoDetect: boolean } {

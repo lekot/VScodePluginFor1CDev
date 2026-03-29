@@ -1,20 +1,21 @@
 /**
  * CLI argument builders for `ibcmd infobase config` (import / export / check).
  *
- * ADR (§1E): For Infobase Manager catalog operations, credentials are written into
- * generated YAML by `ibcmdConfigPathResolver.prepareIbcmdConfigYaml` so they are not duplicated in
- * process argv. Optional `--user` / `--password` here mirror {@link runIbcmdConfigCheckGate}
- * for callers that keep creds outside YAML (e.g. env-driven gate).
+ * Сверка с `ibcmdrunner` (vanessa-runner): offline-режим требует **`--data=<каталог данных АС>`**;
+ * для **файловой** ИБ подключение задаётся **`--db-path=<каталог ИБ>`**, а не только YAML `--config`
+ * (на Windows spawn без оболочки `--config` с `infobase.file` часто не применяется — симптом `…/db-data/1Cv8.1CD.cfl`).
+ *
+ * Экспорт: каталог назначения — **последний позиционный** аргумент (как в ibcmdrunner), не `--out=`.
  *
  * @see docs/WOW/ibcmd-api-reference.md
  */
 
 import * as fs from 'fs';
+import type { PreparedIbcmdFileDb, PreparedIbcmdYaml } from '../../infobases/ibcmdConfigPathResolver';
 
 /**
  * On Windows, `os.tmpdir()` / `path.resolve` may yield 8.3 short components (e.g. `2BA0~1`).
- * ibcmd has been observed to mis-associate `--config` with the wrong infobase when the config path
- * is short-form; expand via `realpathSync.native` for existing paths.
+ * ibcmd has been observed to mis-associate paths when the path is short-form; expand via `realpathSync.native` for existing paths.
  */
 export function resolveIbcmdCliPathForWindowsSpawn(absPath: string): string {
   const t = absPath.trim();
@@ -36,6 +37,29 @@ export interface IbcmdConfigCliCredentials {
   password?: string;
 }
 
+/** Подключение к ИБ для offline ibcmd (порядок аргументов как в ibcmdrunner). */
+export type IbcmdOfflineConnection =
+  | { kind: 'fileDb'; dbCatalogPath: string; offlineDataDir: string }
+  | { kind: 'yaml'; absoluteConfigPath: string; offlineDataDir: string };
+
+/** Свести результат {@link prepareIbcmdConfigYaml} к аргументам подключения ibcmd. */
+export function ibcmdOfflineConnectionFromPrepared(
+  prep: PreparedIbcmdYaml | PreparedIbcmdFileDb,
+): IbcmdOfflineConnection {
+  if (prep.kind === 'fileDb') {
+    return {
+      kind: 'fileDb',
+      dbCatalogPath: prep.dbCatalogPath,
+      offlineDataDir: prep.offlineDataDir,
+    };
+  }
+  return {
+    kind: 'yaml',
+    absoluteConfigPath: prep.absoluteConfigPath,
+    offlineDataDir: prep.offlineDataDir,
+  };
+}
+
 function appendCredentials(args: string[], creds?: IbcmdConfigCliCredentials): void {
   if (!creds) {
     return;
@@ -50,32 +74,45 @@ function appendCredentials(args: string[], creds?: IbcmdConfigCliCredentials): v
   }
 }
 
+/** Как `ibcmdrunner.ДобавитьОбщиеПараметрыИБ`: подключение → учётка → `--data`. */
+function appendConnectionAuthData(
+  args: string[],
+  connection: IbcmdOfflineConnection,
+  creds?: IbcmdConfigCliCredentials,
+): void {
+  if (connection.kind === 'fileDb') {
+    args.push(`--db-path=${resolveIbcmdCliPathForWindowsSpawn(connection.dbCatalogPath)}`);
+  } else {
+    args.push(`--config=${resolveIbcmdCliPathForWindowsSpawn(connection.absoluteConfigPath)}`);
+  }
+  appendCredentials(args, creds);
+  args.push(`--data=${resolveIbcmdCliPathForWindowsSpawn(connection.offlineDataDir)}`);
+}
+
 export function buildInfobaseConfigCheckArgs(
-  absoluteConfigPath: string,
+  connection: IbcmdOfflineConnection,
   options?: { credentials?: IbcmdConfigCliCredentials; force?: boolean },
 ): string[] {
-  const cfg = resolveIbcmdCliPathForWindowsSpawn(absoluteConfigPath);
-  const args = ['infobase', 'config', 'check', `--config=${cfg}`];
-  appendCredentials(args, options?.credentials);
+  const args = ['infobase', 'config', 'check'];
+  appendConnectionAuthData(args, connection, options?.credentials);
   if (options?.force) {
     args.push('--force');
   }
   return args;
 }
 
+/**
+ * Импорт из каталога выгрузки. Флаги принудительной загрузки (`-F` / `--force`) на ряде сборок 8.3.27
+ * для `config import` дают «Ошибка разбора параметра» — не передаём (как `ibcmdrunner.ЗагрузитьКонфигурациюИзФайлов`).
+ */
 export function buildInfobaseConfigImportArgs(
-  absoluteConfigPath: string,
+  connection: IbcmdOfflineConnection,
   sourcePath: string,
-  options?: { credentials?: IbcmdConfigCliCredentials; force?: boolean; extension?: string },
+  options?: { credentials?: IbcmdConfigCliCredentials; extension?: string },
 ): string[] {
-  const cfg = resolveIbcmdCliPathForWindowsSpawn(absoluteConfigPath);
   const src = resolveIbcmdCliPathForWindowsSpawn(sourcePath);
-  const args = ['infobase', 'config', 'import', `--config=${cfg}`];
-  appendCredentials(args, options?.credentials);
-  if (options?.force) {
-    // Short form: some ibcmd builds reject `--force` on `config import` (exit 2 + parse error) while accepting `-F`.
-    args.push('-F');
-  }
+  const args = ['infobase', 'config', 'import'];
+  appendConnectionAuthData(args, connection, options?.credentials);
   const ext = options?.extension?.trim();
   if (ext) {
     args.push(`--extension=${ext}`);
@@ -85,14 +122,13 @@ export function buildInfobaseConfigImportArgs(
 }
 
 export function buildInfobaseConfigExportArgs(
-  absoluteConfigPath: string,
+  connection: IbcmdOfflineConnection,
   outPath: string,
   options?: { credentials?: IbcmdConfigCliCredentials; extension?: string; format?: string },
 ): string[] {
-  const cfg = resolveIbcmdCliPathForWindowsSpawn(absoluteConfigPath);
   const out = resolveIbcmdCliPathForWindowsSpawn(outPath);
-  const args = ['infobase', 'config', 'export', `--config=${cfg}`, `--out=${out}`];
-  appendCredentials(args, options?.credentials);
+  const args = ['infobase', 'config', 'export'];
+  appendConnectionAuthData(args, connection, options?.credentials);
   const ext = options?.extension?.trim();
   if (ext) {
     args.push(`--extension=${ext}`);
@@ -101,5 +137,6 @@ export function buildInfobaseConfigExportArgs(
   if (fmt) {
     args.push(`--format=${fmt}`);
   }
+  args.push(out);
   return args;
 }

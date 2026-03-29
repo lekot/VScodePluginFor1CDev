@@ -14,12 +14,13 @@ import {
   serializeInfobaseConfigIbcmdOp,
   showIbcmdInfobaseOutputChannel,
 } from '../infobases/infobaseConfigCommands';
-import { buildInfobaseConfigExportArgs } from './ibcmd/ibcmdInfobaseConfigArgs';
+import { buildInfobaseConfigExportArgs, ibcmdOfflineConnectionFromPrepared } from './ibcmd/ibcmdInfobaseConfigArgs';
 import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
 import { runIbcmdStreaming } from './ibcmd/IbcmdStreamingRunner';
 import { interpretIbcmdInfobaseOutcome } from './ibcmd/ibcmdInfobaseOperationResult';
 import { getIbcmdConsoleOutputEncodingSetting } from './metadataTreeSettings';
 import { showIbcmdNotFoundDialog } from './ibcmd/showIbcmdNotFoundDialog';
+import { getIbcmdYamlInfobaseConfigUnsupportedMessage } from './ibcmd/ibcmdVersionSupport';
 
 function vscodeCancellation(token: vscode.CancellationToken): {
   isCancellationRequested: boolean;
@@ -47,13 +48,21 @@ async function exportInfobaseConfigToDir(params: {
     };
   }
 
+  const yamlUnsupported = await getIbcmdYamlInfobaseConfigUnsupportedMessage(pathResult.path);
+  if (yamlUnsupported) {
+    return { ok: false, message: yamlUnsupported };
+  }
+
   const prep = await prepareIbcmdConfigYaml(params.entry, (id) => params.storage.readPasswordSecret(id));
   if (!prep.ok) {
     return { ok: false, message: prep.userMessage };
   }
 
   try {
-    const args = buildInfobaseConfigExportArgs(prep.absoluteConfigPath, path.resolve(params.outDir));
+    const args = buildInfobaseConfigExportArgs(
+      ibcmdOfflineConnectionFromPrepared(prep),
+      path.resolve(params.outDir),
+    );
     const outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,
       args,

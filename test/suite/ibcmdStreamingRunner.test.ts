@@ -300,9 +300,76 @@ suite('IbcmdStreamingRunner', () => {
     assert.ok(out.combinedLog.includes(pathLine));
   });
 
-  test('spawn strips IBCMD_INFOBASE_CONFIG from child env for explicit --config', async () => {
-    const prev = process.env.IBCMD_INFOBASE_CONFIG;
+  test('spawn strips IBCMD_* default-connection vars from child env for explicit --db-path', async () => {
+    const prevCfg = process.env.IBCMD_INFOBASE_CONFIG;
+    const prevUser = process.env.IBCMD_USER;
+    const prevPwd = process.env.IBCMD_PASSWORD;
     process.env.IBCMD_INFOBASE_CONFIG = 'C:\\wrong-infobase.yml';
+    process.env.IBCMD_USER = 'envUser';
+    process.env.IBCMD_PASSWORD = 'envPwd';
+    let childEnv: NodeJS.ProcessEnv | undefined;
+    try {
+      const spawnImpl = ((_command: string, _args: readonly string[], options: SpawnOptions): ChildProcess => {
+        childEnv = options.env;
+        const stdoutEE = new PassThrough();
+        const stderrEE = new PassThrough();
+        const c = new EventEmitter() as ChildProcess;
+        (c as unknown as { stdout: PassThrough }).stdout = stdoutEE;
+        (c as unknown as { stderr: PassThrough }).stderr = stderrEE;
+        (c as unknown as { killed: boolean }).killed = false;
+        (c as unknown as { exitCode: number | null }).exitCode = null;
+        (c as unknown as { kill: (sig?: NodeJS.Signals) => boolean }).kill = () => true;
+        setImmediate(() => c.emit('close', 0, null));
+        return c;
+      }) as typeof spawn;
+
+      const out = await runIbcmdStreaming({
+        executablePath: '/ibcmd',
+        args: [
+          'infobase',
+          'config',
+          'import',
+          '--db-path=C:\\Bases\\X',
+          '--data=C:\\tmp\\d',
+          '/src',
+        ],
+        timeoutMs: 5000,
+        cancellation: staticCancellation(false),
+        spawnImpl,
+      });
+      assert.strictEqual(out.exitCode, 0);
+      assert.ok(childEnv);
+      assert.strictEqual(childEnv!.IBCMD_INFOBASE_CONFIG, undefined);
+      assert.strictEqual(childEnv!.IBCMD_USER, undefined);
+      assert.strictEqual(childEnv!.IBCMD_PASSWORD, undefined);
+      assert.strictEqual(process.env.IBCMD_INFOBASE_CONFIG, 'C:\\wrong-infobase.yml');
+      assert.strictEqual(process.env.IBCMD_USER, 'envUser');
+    } finally {
+      if (prevCfg === undefined) {
+        delete process.env.IBCMD_INFOBASE_CONFIG;
+      } else {
+        process.env.IBCMD_INFOBASE_CONFIG = prevCfg;
+      }
+      if (prevUser === undefined) {
+        delete process.env.IBCMD_USER;
+      } else {
+        process.env.IBCMD_USER = prevUser;
+      }
+      if (prevPwd === undefined) {
+        delete process.env.IBCMD_PASSWORD;
+      } else {
+        process.env.IBCMD_PASSWORD = prevPwd;
+      }
+    }
+  });
+
+  test('spawn strips IBCMD_* default-connection vars from child env for explicit --config', async () => {
+    const prevCfg = process.env.IBCMD_INFOBASE_CONFIG;
+    const prevUser = process.env.IBCMD_USER;
+    const prevPwd = process.env.IBCMD_PASSWORD;
+    process.env.IBCMD_INFOBASE_CONFIG = 'C:\\wrong-infobase.yml';
+    process.env.IBCMD_USER = 'envUser';
+    process.env.IBCMD_PASSWORD = 'envPwd';
     let childEnv: NodeJS.ProcessEnv | undefined;
     try {
       const spawnImpl = ((_command: string, _args: readonly string[], options: SpawnOptions): ChildProcess => {
@@ -329,12 +396,25 @@ suite('IbcmdStreamingRunner', () => {
       assert.strictEqual(out.exitCode, 0);
       assert.ok(childEnv);
       assert.strictEqual(childEnv!.IBCMD_INFOBASE_CONFIG, undefined);
+      assert.strictEqual(childEnv!.IBCMD_USER, undefined);
+      assert.strictEqual(childEnv!.IBCMD_PASSWORD, undefined);
       assert.strictEqual(process.env.IBCMD_INFOBASE_CONFIG, 'C:\\wrong-infobase.yml');
+      assert.strictEqual(process.env.IBCMD_USER, 'envUser');
     } finally {
-      if (prev === undefined) {
+      if (prevCfg === undefined) {
         delete process.env.IBCMD_INFOBASE_CONFIG;
       } else {
-        process.env.IBCMD_INFOBASE_CONFIG = prev;
+        process.env.IBCMD_INFOBASE_CONFIG = prevCfg;
+      }
+      if (prevUser === undefined) {
+        delete process.env.IBCMD_USER;
+      } else {
+        process.env.IBCMD_USER = prevUser;
+      }
+      if (prevPwd === undefined) {
+        delete process.env.IBCMD_PASSWORD;
+      } else {
+        process.env.IBCMD_PASSWORD = prevPwd;
       }
     }
   });

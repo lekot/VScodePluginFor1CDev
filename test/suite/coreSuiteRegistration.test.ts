@@ -15,6 +15,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/ibcmdConfigCheckGate.test.js',
   'suite/ibcmdConfigPathResolver.test.js',
   'suite/ibcmdInfobaseConfigArgs.test.js',
+  'suite/ibcmdVersionSupport.test.js',
   'suite/ibcmdInfobaseOperationResult.test.js',
   'suite/ibcmdStreamingRunner.test.js',
   'suite/ibcmdMatrixAdapter.test.js',

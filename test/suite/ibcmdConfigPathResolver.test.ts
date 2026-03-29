@@ -6,7 +6,11 @@ import {
   IB_FILE_IBCMD_WEB_UNSUPPORTED_RU,
   buildFileInfobaseYamlContent,
   buildServerInfobaseYamlContent,
+  formatFilePathForIbcmdYamlScalar,
+  resolvePathForIbcmdYamlFileField,
+  prefer1Cv8Dot1CDDataPathIfPresent,
   prepareIbcmdConfigYaml,
+  resolveExistingPathToLongOnWin32,
   redactIbcmdYamlPasswordLines,
   textLooksLikeYamlPasswordLine,
   yamlDoubleQuotedScalar,
@@ -52,6 +56,70 @@ suite('ibcmdConfigPathResolver', () => {
     });
   });
 
+  suite('resolveExistingPathToLongOnWin32', () => {
+    test('non-win32 returns path unchanged', () => {
+      if (process.platform === 'win32') {
+        return;
+      }
+      assert.strictEqual(resolveExistingPathToLongOnWin32('/tmp/x'), '/tmp/x');
+    });
+
+    test('win32: existing file path is absolute and stable', function () {
+      if (process.platform !== 'win32') {
+        this.skip();
+      }
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-longcfg-'));
+      const f = path.join(dir, 'c.yaml');
+      fs.writeFileSync(f, 'infobase:\n  file: "x"\n', 'utf8');
+      try {
+        const r = resolveExistingPathToLongOnWin32(path.resolve(f));
+        assert.ok(path.isAbsolute(r));
+        assert.ok(fs.existsSync(r));
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  suite('formatFilePathForIbcmdYamlScalar', () => {
+    test('win32 maps backslashes to slashes; other platforms unchanged', () => {
+      if (process.platform === 'win32') {
+        assert.strictEqual(formatFilePathForIbcmdYamlScalar(String.raw`C:\Users\x\y`), 'C:/Users/x/y');
+      } else {
+        assert.strictEqual(formatFilePathForIbcmdYamlScalar('/a/b\\c'), '/a/b\\c');
+      }
+    });
+  });
+
+  suite('prefer1Cv8Dot1CDDataPathIfPresent', () => {
+    test('returns input when path does not exist', () => {
+      assert.strictEqual(prefer1Cv8Dot1CDDataPathIfPresent('/nope/not-here-xyz'), '/nope/not-here-xyz');
+    });
+
+    test('directory with 1Cv8.1CD file → resolved path to that file', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-1cd-'));
+      fs.writeFileSync(path.join(dir, '1Cv8.1CD'), Buffer.alloc(0));
+      try {
+        const r = prefer1Cv8Dot1CDDataPathIfPresent(path.resolve(dir));
+        assert.ok(/1cv8\.1cd$/i.test(r));
+        assert.ok(fs.existsSync(r));
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('directory without 1Cv8.1CD → still the directory', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-nocd-'));
+      try {
+        const r = prefer1Cv8Dot1CDDataPathIfPresent(path.resolve(dir));
+        assert.ok(fs.existsSync(r));
+        assert.ok(fs.statSync(r).isDirectory());
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   suite('buildFileInfobaseYamlContent', () => {
     test('file line uses resolved path style via caller', () => {
       const y = buildFileInfobaseYamlContent({ filePath: '/tmp/x' });
@@ -63,6 +131,19 @@ suite('ibcmdConfigPathResolver', () => {
     test('password line is detectable for log hygiene tests', () => {
       const y = buildFileInfobaseYamlContent({ filePath: '/x', password: 'secret' });
       assert.ok(textLooksLikeYamlPasswordLine(y));
+    });
+
+    test('when catalog folder contains 1Cv8.1CD, file: scalar is still the directory (ibcmd expects catalog path)', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibyaml-1cd-'));
+      fs.writeFileSync(path.join(dir, '1Cv8.1CD'), Buffer.alloc(0));
+      try {
+        const y = buildFileInfobaseYamlContent({ filePath: dir });
+        assert.ok(y.includes('file:'));
+        assert.ok(y.includes(path.basename(dir)));
+        assert.ok(!/file:\s*"[^"]*1Cv8\.1CD/i.test(y) && !/file:\s*"[^"]*1cv8\.1cd/i.test(y));
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -103,8 +184,9 @@ suite('ibcmdConfigPathResolver', () => {
         );
         assert.strictEqual(r.ok, true);
         if (r.ok) {
-          assert.strictEqual(r.absoluteConfigPath, path.resolve(yamlPath));
-          assert.strictEqual(r.isTemporary, false);
+          assert.strictEqual(r.kind, 'fileDb');
+          assert.strictEqual(r.dbCatalogPath, resolvePathForIbcmdYamlFileField(path.resolve(dataDir)));
+          assert.ok(fs.existsSync(r.offlineDataDir));
           await r.dispose();
         }
       } finally {
@@ -160,6 +242,12 @@ suite('ibcmdConfigPathResolver', () => {
         const r = await prepareIbcmdConfigYaml(baseEntry({ ibcmdConfigYamlPath: yamlPath }), async () => undefined);
         assert.strictEqual(r.ok, true);
         if (r.ok) {
+          assert.strictEqual(r.kind, 'yaml');
+          assert.strictEqual(
+            r.absoluteConfigPath,
+            resolveExistingPathToLongOnWin32(path.resolve(yamlPath)),
+          );
+          assert.ok(fs.existsSync(r.offlineDataDir));
           await r.dispose();
         }
       } finally {
@@ -185,7 +273,7 @@ suite('ibcmdConfigPathResolver', () => {
       }
     });
 
-    test('explicit yaml missing but file data path exists → temporary YAML (no ibcmd init)', async () => {
+    test('explicit yaml missing but file data path exists → fileDb (--db-path), no temp YAML', async () => {
       const dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibyaml-fallback-'));
       const missingYaml = path.join(dataDir, 'gone.yaml');
       try {
@@ -198,20 +286,17 @@ suite('ibcmdConfigPathResolver', () => {
         );
         assert.strictEqual(r.ok, true);
         if (r.ok) {
-          assert.strictEqual(r.isTemporary, true);
-          assert.ok(fs.existsSync(r.absoluteConfigPath));
-          const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
-          assert.ok(body.includes('infobase:'));
-          assert.ok(body.includes('file:'));
+          assert.strictEqual(r.kind, 'fileDb');
+          assert.strictEqual(r.dbCatalogPath, resolvePathForIbcmdYamlFileField(dataDir));
+          assert.ok(fs.existsSync(r.offlineDataDir));
           await r.dispose();
-          assert.ok(!fs.existsSync(r.absoluteConfigPath));
         }
       } finally {
         await fs.promises.rm(dataDir, { recursive: true, force: true });
       }
     });
 
-    test('file entry: temp yaml created and removed on dispose', async () => {
+    test('file entry: fileDb + offline data dir disposed', async () => {
       const dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibcmd-file-'));
       try {
         const r = await prepareIbcmdConfigYaml(baseEntry({ filePath: dataDir }), async () => undefined);
@@ -219,12 +304,12 @@ suite('ibcmdConfigPathResolver', () => {
         if (!r.ok) {
           return;
         }
-        assert.strictEqual(r.isTemporary, true);
-        assert.ok(fs.existsSync(r.absoluteConfigPath));
-        const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
-        assert.ok(body.includes('infobase:'));
+        assert.strictEqual(r.kind, 'fileDb');
+        assert.strictEqual(r.dbCatalogPath, resolvePathForIbcmdYamlFileField(dataDir));
+        const dataPath = r.offlineDataDir;
+        assert.ok(fs.existsSync(dataPath));
         await r.dispose();
-        assert.ok(!fs.existsSync(r.absoluteConfigPath));
+        assert.ok(!fs.existsSync(dataPath));
       } finally {
         await fs.promises.rm(dataDir, { recursive: true, force: true });
       }
@@ -265,6 +350,7 @@ suite('ibcmdConfigPathResolver', () => {
       if (!r.ok) {
         return;
       }
+      assert.strictEqual(r.kind, 'yaml');
       const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
       assert.ok(body.includes('S3cr3t!'));
       // User-facing error paths should not embed file content; this is only file body.
@@ -304,8 +390,7 @@ suite('ibcmdConfigPathResolver', () => {
         if (!r.ok) {
           return;
         }
-        const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
-        assert.strictEqual(textLooksLikeYamlPasswordLine(body), false);
+        assert.strictEqual(r.kind, 'fileDb');
         await r.dispose();
       } finally {
         await fs.promises.rm(dataDir, { recursive: true, force: true });

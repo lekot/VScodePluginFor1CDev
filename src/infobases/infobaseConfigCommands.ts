@@ -5,20 +5,24 @@ import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseStorageService } from './infobaseStorageService';
 import {
   IB_FILE_IBCMD_WEB_UNSUPPORTED_RU,
+  type PreparedIbcmdFileDb,
   type PreparedIbcmdYaml,
   prepareIbcmdConfigYaml,
   redactIbcmdYamlPasswordLines,
   resolvePathForIbcmdYamlFileField,
   tryParseInfobaseFileScalarFromYaml,
 } from './ibcmdConfigPathResolver';
+
+type PreparedIbcmdConnectionOk = PreparedIbcmdYaml | PreparedIbcmdFileDb;
 import {
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
   buildInfobaseConfigImportArgs,
+  ibcmdOfflineConnectionFromPrepared,
+  type IbcmdConfigCliCredentials,
 } from '../services/ibcmd/ibcmdInfobaseConfigArgs';
 import {
   interpretIbcmdInfobaseOutcome,
-  isIbcmdForceParameterRejectedLog,
   type IbcmdInfobaseConfigOpKind,
   type IbcmdInfobaseOperationResult,
 } from '../services/ibcmd/ibcmdInfobaseOperationResult';
@@ -29,6 +33,7 @@ import {
 } from '../services/metadataTreeSettings';
 import { runIbcmdStreaming, type IbcmdStreamCancellation } from '../services/ibcmd/IbcmdStreamingRunner';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
+import { getIbcmdYamlInfobaseConfigUnsupportedMessage } from '../services/ibcmd/ibcmdVersionSupport';
 
 const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
@@ -105,13 +110,18 @@ function vscodeCancellation(token: vscode.CancellationToken): IbcmdStreamCancell
   };
 }
 
-/** Путь --config и предупреждение о расхождении file: в явном YAML с каталогом в записи каталога. */
+/** Параметры подключения ibcmd (как ibcmdrunner: `--db-path`/`--config` + `--data`). */
 function appendIbcmdResolvedConfigChannelLines(
   ch: vscode.OutputChannel,
-  prep: PreparedIbcmdYaml,
+  prep: PreparedIbcmdConnectionOk,
   entry: InfobaseEntry,
 ): void {
-  const configKind = prep.isTemporary ? 'временный YAML (из каталога)' : 'файл на диске';
+  ch.appendLine(`[ibcmd] --data (каталог данных автономного сервера): ${prep.offlineDataDir}`);
+  if (prep.kind === 'fileDb') {
+    ch.appendLine(`[ibcmd] --db-path (файловая ИБ): ${prep.dbCatalogPath}`);
+    return;
+  }
+  const configKind = prep.isTemporary ? 'временный YAML' : 'файл на диске';
   ch.appendLine(`[ibcmd] --config: ${prep.absoluteConfigPath} (${configKind})`);
   if (prep.isTemporary && entry.type === 'file' && entry.filePath?.trim()) {
     try {
@@ -135,7 +145,7 @@ function appendIbcmdResolvedConfigChannelLines(
         const fromCatalog = resolvePathForIbcmdYamlFileField(entry.filePath.trim());
         if (fromYaml.toLowerCase() !== fromCatalog.toLowerCase()) {
           ch.appendLine(
-            `[ibcmd] Внимание: в явном YAML поле file: указывает другой каталог, чем «каталог базы» в записи. ibcmd использует путь из YAML. YAML → ${fromYaml} | запись → ${fromCatalog}`,
+            `[ibcmd] Внимание: в явном YAML поле file: указывает другой каталог, чем «каталог базы» в записи. Используется путь из YAML. YAML → ${fromYaml} | запись → ${fromCatalog}`,
           );
         }
       }
@@ -263,6 +273,16 @@ export async function runInfobaseConfigImportFromDirectory(params: {
     };
   }
 
+  const yamlUnsupported = await getIbcmdYamlInfobaseConfigUnsupportedMessage(pathResult.path);
+  if (yamlUnsupported) {
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage: yamlUnsupported,
+      logExcerpt: '',
+    };
+  }
+
   const prep = await prepareIbcmdConfigYaml(params.entry, (id) => params.storage.readPasswordSecret(id));
   if (!prep.ok) {
     return {
@@ -279,30 +299,49 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
   const resolvedSourceDir = path.resolve(params.absoluteSourceDir);
-  const importOpts = {
+  let importCredentials: IbcmdConfigCliCredentials | undefined;
+  const entryUser = params.entry.user?.trim();
+  let entryPassword: string | undefined;
+  if (params.entry.hasStoredPassword) {
+    entryPassword = (await params.storage.readPasswordSecret(params.entry.id)) ?? undefined;
+  }
+  if (entryUser || (entryPassword !== undefined && entryPassword.length > 0)) {
+    importCredentials = { user: entryUser || undefined, password: entryPassword };
+  }
+  const connection = ibcmdOfflineConnectionFromPrepared(prep);
+  const importArgs = buildInfobaseConfigImportArgs(connection, resolvedSourceDir, {
     extension: params.ibcmdExtensionName?.trim() || undefined,
-    force: params.force === true,
-  };
-  let importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, importOpts);
-  if (getIbcmdImportDiagnosticsSetting()) {
-    const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';
-    ch.appendLine(`[import diag] --config: ${prep.absoluteConfigPath} (${kind})`);
+    credentials: importCredentials,
+  });
+  if (params.force === true) {
     ch.appendLine(
-      `[import diag] каталог выгрузки конфигурации — последний аргумент ibcmd, не поле YAML: ${resolvedSourceDir}`,
+      '[ibcmd] Примечание: для `infobase config import` флаг принудительной загрузки не передаётся (как в vanessa-runner / ibcmdrunner); на 8.3.27 `-F`/`--force` даёт ошибку разбора параметров.',
     );
-    try {
-      const raw = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
-      ch.appendLine('[import diag] тело --config (пароль скрыт):');
-      ch.appendLine(redactIbcmdYamlPasswordLines(raw).trimEnd());
-    } catch (e) {
-      ch.appendLine(`[import diag] не удалось прочитать --config: ${(e as Error).message}`);
+  }
+  if (getIbcmdImportDiagnosticsSetting()) {
+    if (prep.kind === 'yaml') {
+      const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';
+      ch.appendLine(`[import diag] --config: ${prep.absoluteConfigPath} (${kind})`);
+      try {
+        const raw = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
+        ch.appendLine('[import diag] тело --config (пароль скрыт):');
+        ch.appendLine(redactIbcmdYamlPasswordLines(raw).trimEnd());
+      } catch (e) {
+        ch.appendLine(`[import diag] не удалось прочитать --config: ${(e as Error).message}`);
+      }
+    } else {
+      ch.appendLine(`[import diag] режим fileDb: --db-path=${prep.dbCatalogPath}`);
     }
+    ch.appendLine(`[import diag] --data: ${prep.offlineDataDir}`);
+    ch.appendLine(
+      `[import diag] каталог выгрузки конфигурации — последний позиционный аргумент ibcmd: ${resolvedSourceDir}`,
+    );
     ch.appendLine(`[import diag] argv (после Win long-path): ${importArgs.join(' ')}`);
     ch.appendLine('');
   }
 
   try {
-    let outcome = await runIbcmdStreaming({
+    const outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,
       args: importArgs,
       timeoutMs: ibcmd.getTimeoutMs(),
@@ -321,44 +360,6 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       ch.appendLine(TRUNCATION_WARNING);
     }
 
-    // Повтор без -F при любом exit 2, если запрошен force: часть сборок ibcmd отклоняет -F с кодом 2;
-    // усечённый combinedLog может не содержать строку «разбора параметра» — без повтора пользователь
-    // увидит ложное «база заблокирована». Лишний вызов при реальной блокировке даёт тот же итоговый код 2.
-    const shouldRetryImportWithoutForce =
-      params.force === true &&
-      !outcome.cancelled &&
-      !outcome.timedOut &&
-      !outcome.spawnErrorCode &&
-      outcome.exitCode === 2;
-
-    if (shouldRetryImportWithoutForce) {
-      const reason = isIbcmdForceParameterRejectedLog(outcome.combinedLog)
-        ? 'ibcmd отклонил флаг принудительной загрузки при разборе параметров.'
-        : outcome.logTruncated
-          ? 'код выхода 2 при -F и усечённом журнале — повтор без флага (исключение ложной «блокировки»).'
-          : 'код выхода 2 при принудительной загрузке — повтор без -F.';
-      ch.appendLine(`[ibcmd] Повтор без -F: ${reason}`);
-      importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, {
-        ...importOpts,
-        force: false,
-      });
-      outcome = await runIbcmdStreaming({
-        executablePath: pathResult.path,
-        args: importArgs,
-        timeoutMs: ibcmd.getTimeoutMs(),
-        cancellation: vscodeCancellation(params.token),
-        consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-        onStreamChunk: (chunk) => appendOutputDebounced(chunk),
-      });
-      flushOutputChannel();
-      if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
-        ibcmd.invalidatePathCache();
-      }
-      if (outcome.logTruncated) {
-        ch.appendLine(TRUNCATION_WARNING);
-      }
-    }
-
     return interpretIbcmdInfobaseOutcome('import', outcome);
   } finally {
     flushOutputChannel();
@@ -371,12 +372,18 @@ async function runInfobaseConfigOperation(params: {
   entry: InfobaseEntry;
   storage: InfobaseStorageService;
   progressTitle: string;
-  argsForConfigPath: (absConfigPath: string) => string[];
+  buildArgsFromPrep: (prep: PreparedIbcmdConnectionOk) => string[];
 }): Promise<void> {
   const ibcmd = getIbcmdService();
   const pathResult = ibcmd.resolveExecutablePath();
   if (pathResult.kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
+    return;
+  }
+
+  const yamlUnsupported = await getIbcmdYamlInfobaseConfigUnsupportedMessage(pathResult.path);
+  if (yamlUnsupported) {
+    void vscode.window.showErrorMessage(yamlUnsupported);
     return;
   }
 
@@ -405,7 +412,7 @@ async function runInfobaseConfigOperation(params: {
       async (_progress, token) => {
         const outcome = await runIbcmdStreaming({
           executablePath: pathResult.path,
-          args: params.argsForConfigPath(prep.absoluteConfigPath),
+          args: params.buildArgsFromPrep(prep),
           timeoutMs: ibcmd.getTimeoutMs(),
           cancellation: vscodeCancellation(token),
           consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
@@ -486,7 +493,8 @@ export async function runInfobaseConfigImport(
       entry,
       storage: s,
       progressTitle: `Загрузка конфигурации: ${entry.name}`,
-      argsForConfigPath: (cfg) => buildInfobaseConfigImportArgs(cfg, path.resolve(source)),
+      buildArgsFromPrep: (p) =>
+        buildInfobaseConfigImportArgs(ibcmdOfflineConnectionFromPrepared(p), path.resolve(source)),
     });
   });
 }
@@ -520,7 +528,8 @@ export async function runInfobaseConfigExport(
       entry,
       storage: s,
       progressTitle: `Выгрузка конфигурации: ${entry.name}`,
-      argsForConfigPath: (cfg) => buildInfobaseConfigExportArgs(cfg, absOut),
+      buildArgsFromPrep: (p) =>
+        buildInfobaseConfigExportArgs(ibcmdOfflineConnectionFromPrepared(p), absOut),
     });
   });
 }
@@ -546,7 +555,7 @@ export async function runInfobaseConfigCheck(
       entry,
       storage: s,
       progressTitle: `Проверка конфигурации: ${entry.name}`,
-      argsForConfigPath: (cfg) => buildInfobaseConfigCheckArgs(cfg),
+      buildArgsFromPrep: (p) => buildInfobaseConfigCheckArgs(ibcmdOfflineConnectionFromPrepared(p)),
     });
   });
 }

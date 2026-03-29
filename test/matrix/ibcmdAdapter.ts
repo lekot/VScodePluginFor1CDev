@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 
@@ -21,10 +22,10 @@ const DEFAULT_TIMEOUT_MS = 600_000;
  * - `IBCMD_TIMEOUT_MS` — optional subprocess timeout (default 600000).
  *
  * **Command** (1C 8.3.27+ standalone server admin utility, KB: infobase `config import` from files):
- * `ibcmd infobase config import --config=<YAML> [--user=...] [--password=...] <absoluteWorkDir>`
+ * `ibcmd infobase config import --config=<YAML> [--user=...] [--password=...] --data=<temp> <absoluteWorkDir>`
  * where `absoluteWorkDir` is the Designer tree root (contains `Configuration.xml`).
  *
- * **Config check** (see design §6.6): `runIbcmdConfigCheck` — `ibcmd infobase config check --config=<YAML> ...`
+ * **Config check** (see design §6.6): `runIbcmdConfigCheck` — `ibcmd infobase config check --config=<YAML> ... --data=<temp>`
  * (same env contract as import; typically run after a successful import in the matrix report).
  * Optional: `IBCMD_CONFIG_CHECK_FORCE=1` → append `--force`.
  */
@@ -64,6 +65,7 @@ export async function runIbcmdConfigCheck(): Promise<{
     };
   }
 
+  const offlineDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'matrix-ibcmd-check-'));
   const args = ['infobase', 'config', 'check', `--config=${path.resolve(configPath)}`];
   const user = process.env.IBCMD_USER?.trim();
   const password = process.env.IBCMD_PASSWORD?.trim();
@@ -73,6 +75,7 @@ export async function runIbcmdConfigCheck(): Promise<{
   if (password) {
     args.push(`--password=${password}`);
   }
+  args.push(`--data=${offlineDataDir}`);
   if (process.env.IBCMD_CONFIG_CHECK_FORCE?.trim() === '1') {
     args.push('--force');
   }
@@ -123,6 +126,12 @@ export async function runIbcmdConfigCheck(): Promise<{
       exitCode,
       logSnippet: combined.slice(0, LOG_MAX),
     };
+  } finally {
+    try {
+      fs.rmSync(offlineDataDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -170,6 +179,7 @@ export async function runIbcmdOnWorkDir(
     };
   }
 
+  const offlineDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'matrix-ibcmd-import-'));
   const args = ['infobase', 'config', 'import', `--config=${path.resolve(configPath)}`];
   const user = process.env.IBCMD_USER?.trim();
   const password = process.env.IBCMD_PASSWORD?.trim();
@@ -179,6 +189,7 @@ export async function runIbcmdOnWorkDir(
   if (password) {
     args.push(`--password=${password}`);
   }
+  args.push(`--data=${offlineDataDir}`);
   args.push(root);
 
   const timeoutMs = parseInt(process.env.IBCMD_TIMEOUT_MS ?? '', 10);
@@ -227,5 +238,11 @@ export async function runIbcmdOnWorkDir(
       exitCode,
       logSnippet: combined.slice(0, LOG_MAX),
     };
+  } finally {
+    try {
+      fs.rmSync(offlineDataDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
 }

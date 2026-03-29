@@ -14,7 +14,7 @@ suite('platformLauncher buildLaunchArgs', () => {
       createdAt: 'x',
     };
     const args = buildLaunchArgs(entry, 'enterprise', 'win32');
-    assert.deepStrictEqual(args, ['ENTERPRISE', String.raw`/F"C:\Bases\Demo"`]);
+    assert.deepStrictEqual(args, ['ENTERPRISE', '/F', String.raw`C:\Bases\Demo`]);
   });
 
   test('file + designer', () => {
@@ -28,8 +28,8 @@ suite('platformLauncher buildLaunchArgs', () => {
     };
     const args = buildLaunchArgs(entry, 'designer', 'linux');
     assert.strictEqual(args[0], 'DESIGNER');
-    assert.ok(args[1].startsWith('/F"'));
-    assert.ok(args[1].includes('tmp'));
+    assert.strictEqual(args[1], '/F');
+    assert.ok(args[2].includes('tmp'));
   });
 
   test('server + credentials', () => {
@@ -105,7 +105,8 @@ suite('platformLauncher buildLaunchArgs', () => {
       createdAt: 'x',
     };
     const args = buildLaunchArgs(entry, 'enterprise', 'win32');
-    assert.ok(!args[1].includes('"name'), args[1]);
+    assert.strictEqual(args[1], '/F');
+    assert.ok(!args[2].includes('"'), args[2]);
   });
 
   test('user without password omits /P', () => {

@@ -66,6 +66,23 @@ suite('ibcmdInfobaseOperationResult', () => {
     );
   });
 
+  test('isIbcmdForceParameterRejectedLog: RU + -F (как в части сборок ibcmd)', () => {
+    assert.strictEqual(isIbcmdForceParameterRejectedLog('Ошибка разбора параметра: -F'), true);
+  });
+
+  test('import exit 1 + RU parse -F → CLI parse message (не «база заблокирована»)', () => {
+    const r = interpretIbcmdInfobaseOutcome(
+      'import',
+      baseRaw({
+        exitCode: 1,
+        combinedLog: 'Ошибка разбора параметра: -F\n',
+      }),
+    );
+    assert.strictEqual(r.exitCode, 1);
+    assert.ok(!r.userMessage.includes('заблокирована'));
+    assert.ok(r.userMessage.includes('разборе командной строки'));
+  });
+
   test('isIbcmdForceParameterRejectedLog: EN Parameter parsing + -F', () => {
     assert.strictEqual(isIbcmdForceParameterRejectedLog('Parameter parsing failed: -F'), true);
   });
