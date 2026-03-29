@@ -72,6 +72,7 @@ export const coreSuiteFiles: string[] = [
   'suite/deployService.test.js',
   'suite/bindingStorage.test.js',
   'suite/infobaseCommands.test.js',
+  'suite/v8iParser.test.js',
   'suite/infobaseConfigCommands.test.js',
   'suite/infobaseTreeProvider.test.js',
   'suite/platformDetector.test.js',

@@ -6,6 +6,7 @@ import {
   runAddExistingInfobase,
   runCreateInfobase,
   runEditInfobase,
+  runImportV8i,
   runOpenDesigner,
   runOpenEnterprise,
   runRemoveInfobase,
@@ -15,9 +16,6 @@ import {
   runInfobaseConfigExport,
   runInfobaseConfigImport,
 } from './infobaseConfigCommands';
-
-const STUB =
-  'Команда будет реализована в задачах управления базами (загрузка конфигурации, запуск платформы и т.д.).';
 
 function isEntryNode(node: unknown): node is InfobaseTreeEntry {
   return (
@@ -67,7 +65,7 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
       await runAddExistingInfobase(state.infobaseStorage);
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobases.importV8i', async () => {
-      void vscode.window.showInformationMessage(`Импорт из .v8i: ${STUB}`);
+      await runImportV8i(state.infobaseStorage, { onCatalogChanged: refresh });
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.openEnterprise', async (arg?: unknown) => {
       if (!state.infobaseStorage) {

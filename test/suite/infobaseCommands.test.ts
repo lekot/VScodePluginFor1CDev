@@ -10,8 +10,10 @@ import {
   runAddExistingInfobase,
   runCreateInfobase,
   runEditInfobase,
+  runImportV8i,
   runRemoveInfobase,
 } from '../../src/infobases/infobaseCommands';
+import { parseV8iContent } from '../../src/infobases/v8iParser';
 import { getIbcmdService, resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
 import { BindingManager } from '../../src/bindings/bindingManager';
 import { InfobaseManager } from '../../src/infobases/infobaseManager';
@@ -1136,6 +1138,23 @@ suite('registerInfobaseTreeCommands', () => {
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
   });
 
+  test('importV8i command with null storage shows error', async () => {
+    const state = {
+      infobaseStorage: null,
+      infobaseTreeProvider: null,
+    } as unknown as ExtensionState;
+
+    const handlers = new Map<string, () => Promise<void>>();
+    (vscode.commands as any).registerCommand = (id: string, fn: () => Promise<void>) => {
+      handlers.set(id, fn);
+      return { dispose: () => undefined };
+    };
+
+    registerInfobaseTreeCommands(state);
+    await handlers.get('1c-metadata-tree.infobases.importV8i')?.();
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
+  });
+
   test('edit command resolves entry from storage before runEditInfobase', async () => {
     const memento = new MapMemento();
     const secrets = new MapSecretStorage();
@@ -1171,4 +1190,241 @@ suite('registerInfobaseTreeCommands', () => {
     assert.strictEqual(one?.filePath, 'C:/good');
   });
   /* eslint-enable @typescript-eslint/no-explicit-any */
+});
+
+suite('infobaseCommands runImportV8i', () => {
+  let memento: MapMemento;
+  let secrets: MapSecretStorage;
+  let service: InfobaseStorageService;
+  let tempDir: string;
+
+  function quickPickFromEntries(text: string) {
+    const { entries } = parseV8iContent(text);
+    return entries.map((e) => ({
+      label: e.name,
+      description: '',
+      detail: '',
+      picked: true as const,
+      v8i: e,
+    }));
+  }
+
+  setup(() => {
+    resetVscodeTestState();
+    memento = new MapMemento();
+    secrets = new MapSecretStorage();
+    service = new InfobaseStorageService(memento, secrets);
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'v8i-import-'));
+  });
+
+  teardown(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+    resetVscodeTestState();
+  });
+
+  test('shows error when storage is null', async () => {
+    await runImportV8i(null);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('не инициализировано')));
+  });
+
+  test('shows warning when catalog is full', async () => {
+    const entries = Array.from({ length: INFOBASE_STORAGE_MAX_ENTRIES }, (_, i) =>
+      makeEntry({
+        name: `e${i}`,
+        filePath: `C:/cap/${i}`,
+        ibcmdConfigYamlPath: `C:/cap/${i}/c.yaml`,
+      }),
+    );
+    await service.saveAll(entries);
+    await runImportV8i(service);
+    assert.ok(vscodeTestState.warningLog.some((m) => m.includes('лимит')));
+  });
+
+  test('returns when open dialog cancelled', async () => {
+    vscodeTestState.openDialogQueue.push([]);
+    await runImportV8i(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('imports selected file base from v8i file', async () => {
+    const p = path.join(tempDir, 'list.v8i');
+    const body = '[MyBase]\nConnect=File="C:/imported/ib";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    let refreshed = 0;
+    await runImportV8i(service, { onCatalogChanged: () => (refreshed += 1) });
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].name, 'MyBase');
+    assert.strictEqual(list[0].type, 'file');
+    assert.strictEqual(list[0].filePath, path.resolve('C:/imported/ib'));
+    assert.strictEqual(refreshed, 1);
+    assert.ok(vscodeTestState.informationLog.some((m) => m.includes('Импорт .v8i')));
+  });
+
+  test('returns when quick pick dismissed', async () => {
+    const p = path.join(tempDir, 'q.v8i');
+    fs.writeFileSync(p, '[A]\nConnect=File="C:/a";\n', 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(undefined);
+    await runImportV8i(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('returns when quick pick empty array', async () => {
+    const p = path.join(tempDir, 'e.v8i');
+    fs.writeFileSync(p, '[A]\nConnect=File="C:/a";\n', 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push([]);
+    await runImportV8i(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('error when selection exceeds remaining slots', async () => {
+    const p = path.join(tempDir, 'two.v8i');
+    const body = '[A]\nConnect=File="C:/a";\n[B]\nConnect=File="C:/b";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    const almost = INFOBASE_STORAGE_MAX_ENTRIES - 1;
+    await service.saveAll(
+      Array.from({ length: almost }, (_, i) =>
+        makeEntry({
+          name: `x${i}`,
+          filePath: `C:/x/${i}`,
+          ibcmdConfigYamlPath: `C:/x/${i}/y.yaml`,
+        }),
+      ),
+    );
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    await runImportV8i(service);
+    assert.strictEqual((await service.load()).length, almost);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Можно добавить не более 1')));
+  });
+
+  test('showErrorMessage when file read fails', async () => {
+    vscodeTestState.openDialogQueue.push([{ fsPath: path.join(tempDir, 'missing.v8i'), scheme: 'file' }]);
+    await runImportV8i(service);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось прочитать')));
+  });
+
+  test('error when nothing valid to import', async () => {
+    const p = path.join(tempDir, 'bad.v8i');
+    fs.writeFileSync(p, '[X]\nConnect=;\n', 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    await runImportV8i(service);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('нечего добавить')));
+  });
+
+  test('warning on partial parse errors then imports valid', async () => {
+    const p = path.join(tempDir, 'mix.v8i');
+    const body = '[Bad]\nNope=1\n[Good]\nConnect=File="C:/good";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(fs.readFileSync(p, 'utf8')));
+    await runImportV8i(service);
+    assert.ok(vscodeTestState.warningLog.some((m) => m.includes('пропущено записей')));
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].name, 'Good');
+  });
+
+  test('password modal dismiss cancels import', async () => {
+    const p = path.join(tempDir, 'pwd.v8i');
+    const body = '[S]\nConnect=Srvr="cl";Ref="db";Pwd="secret";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    vscodeTestState.warningMessageReturnQueue.push(undefined);
+    await runImportV8i(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('server with password stores secret when user confirms', async () => {
+    const p = path.join(tempDir, 'pw2.v8i');
+    const body = '[S]\nConnect=Srvr="cl";Ref="db";Pwd="secret";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    await runImportV8i(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].hasStoredPassword, true);
+    const key = `1cMetadataTree.infobase.password.${list[0].id}`;
+    assert.strictEqual(await secrets.get(key), 'secret');
+  });
+
+  test('skips duplicate target with validation warning', async () => {
+    const dup = 'C:/same/ib';
+    await service.saveAll([
+      makeEntry({ name: 'Existing', filePath: dup, ibcmdConfigYamlPath: `${dup}/y.yaml` }),
+    ]);
+    const p = path.join(tempDir, 'dup.v8i');
+    const body = `[New]\nConnect=File="${dup}";\n`;
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    await runImportV8i(service);
+    assert.strictEqual((await service.load()).length, 1);
+    assert.ok(vscodeTestState.warningLog.some((m) => m.includes('не импортирована')));
+  });
+
+  test('imports web base without password modal', async () => {
+    const p = path.join(tempDir, 'web.v8i');
+    const body = '[W]\nConnect=ws="https://app.example/h";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    await runImportV8i(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].type, 'web');
+    assert.strictEqual(list[0].webUrl, 'https://app.example/h');
+    assert.ok(vscodeTestState.informationLog.some((m) => m.includes('Импорт .v8i')));
+    assert.strictEqual(vscodeTestState.warningMessageReturnQueue.length, 0);
+  });
+
+  test('server with empty Pwd imports without modal', async () => {
+    const p = path.join(tempDir, 'srv-empty-pwd.v8i');
+    const body = '[S]\nConnect=Srvr="cl";Ref="db";Pwd="";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    await runImportV8i(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].type, 'server');
+    assert.strictEqual(list[0].hasStoredPassword, false);
+    assert.strictEqual(await secrets.get(`1cMetadataTree.infobase.password.${list[0].id}`), undefined);
+  });
+
+  test('imports multiple file bases in one pass', async () => {
+    const p = path.join(tempDir, 'multi.v8i');
+    const body = '[A]\nConnect=File="C:/m/a";\n[B]\nConnect=File="C:/m/b";\n';
+    fs.writeFileSync(p, body, 'utf8');
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(body));
+    await runImportV8i(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 2);
+    const names = new Set(list.map((e) => e.name));
+    assert.ok(names.has('A'));
+    assert.ok(names.has('B'));
+  });
+
+  test('reads UTF-16 LE .v8i from disk', async () => {
+    const p = path.join(tempDir, 'u16.v8i');
+    const inner = '[U16]\nConnect=File="C:/utf16ib";\n';
+    const buf = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(inner, 'utf16le')]);
+    fs.writeFileSync(p, buf);
+    vscodeTestState.openDialogQueue.push([{ fsPath: p, scheme: 'file' }]);
+    vscodeTestState.quickPickQueue.push(quickPickFromEntries(inner));
+    await runImportV8i(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].name, 'U16');
+    assert.strictEqual(list[0].filePath, path.resolve('C:/utf16ib'));
+  });
 });
