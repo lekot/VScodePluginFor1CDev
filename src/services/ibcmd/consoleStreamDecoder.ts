@@ -71,8 +71,8 @@ export interface IbcmdStreamChunkDecoders {
 /**
  * Per-chunk decoding for spawn streams. CP866 / windows-1251 are single-byte; UTF-8 uses TextDecoder `{ stream: true }` per stream.
  *
- * On Windows, `auto` uses CP866 per chunk (same as typical `cmd` / Russian ibcmd stderr). Piped UTF-8 from ibcmd → set `utf8` explicitly.
- * Non-Windows `auto` uses UTF-8 streaming.
+ * `auto` uses **UTF-8 streaming** on all platforms: piped ibcmd often emits UTF-8 `[INFO] …` lines; decoding those chunks as CP866
+ * produced mojibake in the Output channel. For legacy OEM-only ibcmd, set `oem866` (or `windows1251`) in settings.
  * `utf16le` uses UTF-16 LE streaming (e.g. some wide-character pipes / tools on Windows).
  */
 export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding): IbcmdStreamChunkDecoders {
@@ -101,8 +101,7 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
     };
   }
 
-  const useUtf8Streaming = mode === 'utf8' || (mode === 'auto' && process.platform !== 'win32');
-  if (useUtf8Streaming) {
+  if (mode === 'utf8' || mode === 'auto') {
     const dOut = new TextDecoder('utf-8', { fatal: false });
     const dErr = new TextDecoder('utf-8', { fatal: false });
     return {
@@ -113,6 +112,6 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
     };
   }
 
-  // auto + win32 → OEM866 (matches most ibcmd builds on RU Windows)
-  return singleByte('cp866');
+  const _exhaustive: never = mode;
+  throw new Error(`Unexpected ibcmd consoleOutputEncoding: ${String(_exhaustive)}`);
 }

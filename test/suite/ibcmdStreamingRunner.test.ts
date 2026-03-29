@@ -280,7 +280,7 @@ suite('IbcmdStreamingRunner', () => {
     assert.ok(out.combinedLog.length > 0);
   });
 
-  test('auto encoding on Windows decodes CP866 chunks', async () => {
+  test('auto encoding on Windows decodes UTF-8 chunks (piped ibcmd)', async () => {
     if (process.platform !== 'win32') {
       return;
     }
@@ -293,11 +293,11 @@ suite('IbcmdStreamingRunner', () => {
       consoleOutputEncoding: 'auto',
       spawnImpl: ctrl.spawnImpl,
     });
-    const pathLine = 'C:\\Users\\User\\1Cv8.1CD.cfl';
-    ctrl.pushStdout(iconv.encode(pathLine, 'cp866'));
+    const line = 'Импорт конфигурации из XML успешно завершен';
+    ctrl.pushStdout(Buffer.from(line, 'utf8'));
     ctrl.close(0, null);
     const out = await p;
-    assert.ok(out.combinedLog.includes(pathLine));
+    assert.ok(out.combinedLog.includes(line));
   });
 
   test('spawn strips IBCMD_* default-connection vars from child env for explicit --db-path', async () => {

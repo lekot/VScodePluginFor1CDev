@@ -1,6 +1,6 @@
 /**
- * Console output from ibcmd / 1C platform on Windows is often OEM (e.g. CP866), not UTF-8.
- * After {@link decodeIbcmdProcessStreams}, strings are normalized for UI (JavaScript UTF-16, logical UTF-8 text for the channel).
+ * ibcmd may emit OEM (CP866) or UTF-8 depending on build and pipe. Spawn streaming `auto` assumes UTF-8; pick `oem866` / `windows1251`
+ * when needed. After {@link decodeIbcmdProcessStreams}, strings are normalized for UI (JavaScript UTF-16).
  */
 
 /** Values for `1cMetadataTree.ibcmd.consoleOutputEncoding`. */

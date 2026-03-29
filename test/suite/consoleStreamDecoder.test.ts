@@ -100,21 +100,18 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     assert.strictEqual(win.decodeStderr(b2), 'Y');
   });
 
-  test('auto on Windows uses per-chunk CP866', () => {
+  test('auto uses UTF-8 streaming decoder (all platforms)', () => {
+    const dec = createIbcmdStreamChunkDecoders('auto');
+    const buf = Buffer.from('Импорт конфигурации из XML', 'utf8');
+    assert.strictEqual(dec.decodeStdout(buf), 'Импорт конфигурации из XML');
+  });
+
+  test('oem866 on Windows decodes CP866 chunks', () => {
     if (process.platform !== 'win32') {
       return;
     }
-    const dec = createIbcmdStreamChunkDecoders('auto');
+    const dec = createIbcmdStreamChunkDecoders('oem866');
     const raw = iconv.encode('Путь не найден', 'cp866');
     assert.strictEqual(dec.decodeStderr(raw), 'Путь не найден');
-  });
-
-  test('auto uses UTF-8 streaming decoder on non-Windows', () => {
-    if (process.platform === 'win32') {
-      return;
-    }
-    const dec = createIbcmdStreamChunkDecoders('auto');
-    const buf = Buffer.from('unicode тест', 'utf8');
-    assert.strictEqual(dec.decodeStdout(buf), 'unicode тест');
   });
 });

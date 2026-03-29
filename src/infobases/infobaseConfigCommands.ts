@@ -258,8 +258,6 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   logContext?: string;
   /** WOW Phase 4 #64 — `ibcmd --extension` при загрузке выгрузки расширения. */
   ibcmdExtensionName?: string;
-  /** Раскатка: перезапись конфигурации в ИБ (`ibcmd … import -F`). */
-  force?: boolean;
 }): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
   const pathResult = ibcmd.resolveExecutablePath();
@@ -313,11 +311,6 @@ export async function runInfobaseConfigImportFromDirectory(params: {
     extension: params.ibcmdExtensionName?.trim() || undefined,
     credentials: importCredentials,
   });
-  if (params.force === true) {
-    ch.appendLine(
-      '[ibcmd] Примечание: для `infobase config import` флаг принудительной загрузки не передаётся (как в vanessa-runner / ibcmdrunner); на 8.3.27 `-F`/`--force` даёт ошибку разбора параметров.',
-    );
-  }
   if (getIbcmdImportDiagnosticsSetting()) {
     if (prep.kind === 'yaml') {
       const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';

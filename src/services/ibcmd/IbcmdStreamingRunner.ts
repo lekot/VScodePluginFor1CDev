@@ -19,7 +19,7 @@ export interface IbcmdStreamingRunnerOptions {
   cancellation: IbcmdStreamCancellation;
   /**
    * Raw byte decoding for stdout/stderr. Align with `1cMetadataTree.ibcmd.consoleOutputEncoding`.
-   * Default `auto`: Windows → OEM (CP866) per chunk; other platforms → UTF-8 stream decoder.
+   * Default `auto`: UTF-8 stream decoder (piped ibcmd). Use `oem866` if output is OEM-only.
    */
   consoleOutputEncoding?: IbcmdConsoleOutputEncoding;
   /** Invoked for each decoded chunk (Unicode text for the Output Channel). */
