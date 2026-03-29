@@ -321,16 +321,23 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       ch.appendLine(TRUNCATION_WARNING);
     }
 
-    if (
+    // Повтор без -F при любом exit 2, если запрошен force: часть сборок ibcmd отклоняет -F с кодом 2;
+    // усечённый combinedLog может не содержать строку «разбора параметра» — без повтора пользователь
+    // увидит ложное «база заблокирована». Лишний вызов при реальной блокировке даёт тот же итоговый код 2.
+    const shouldRetryImportWithoutForce =
       params.force === true &&
       !outcome.cancelled &&
       !outcome.timedOut &&
       !outcome.spawnErrorCode &&
-      isIbcmdForceParameterRejectedLog(outcome.combinedLog)
-    ) {
-      ch.appendLine(
-        '[ibcmd] Повтор без -F: ibcmd отклонил флаг принудительной загрузки при разборе параметров.',
-      );
+      outcome.exitCode === 2;
+
+    if (shouldRetryImportWithoutForce) {
+      const reason = isIbcmdForceParameterRejectedLog(outcome.combinedLog)
+        ? 'ibcmd отклонил флаг принудительной загрузки при разборе параметров.'
+        : outcome.logTruncated
+          ? 'код выхода 2 при -F и усечённом журнале — повтор без флага (исключение ложной «блокировки»).'
+          : 'код выхода 2 при принудительной загрузке — повтор без -F.';
+      ch.appendLine(`[ibcmd] Повтор без -F: ${reason}`);
       importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, {
         ...importOpts,
         force: false,
