@@ -25,7 +25,7 @@ function ibFileDataPathNotFoundMessage(abs: string): string {
  * Извлекает скаляр `file:` из фрагмента YAML конфигурации ibcmd (как у {@link buildFileInfobaseYamlContent}).
  * Не полноценный парсер YAML: при неоднозначном содержимом возвращает undefined — проверка пути пропускается.
  */
-function tryParseInfobaseFileScalarFromYaml(content: string): string | undefined {
+export function tryParseInfobaseFileScalarFromYaml(content: string): string | undefined {
   const dq = content.match(/^\s*file:\s*"((?:\\.|[^"\\])*)"\s*(?:#.*)?$/m);
   if (dq?.[1] !== undefined) {
     return dq[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
@@ -47,12 +47,36 @@ export function yamlDoubleQuotedScalar(value: string): string {
   return `"${escaped}"`;
 }
 
+/**
+ * Absolute path for `infobase.file` in generated ibcmd YAML (and existence checks).
+ * Resolves to a logical absolute path, then `fs.realpathSync.native` so junctions/symlinks match
+ * the path ibcmd will use (avoids «в каталоге Documents», а ibcmd ругается на `AppData\…`).
+ * If realpath fails (нет цели), остаётся логический путь.
+ */
+export function resolvePathForIbcmdYamlFileField(filePath: string): string {
+  const t = filePath.trim();
+  const logical =
+    process.platform === 'win32'
+      ? path.win32.normalize(path.win32.resolve(t))
+      : path.resolve(t);
+  try {
+    return fs.realpathSync.native(logical);
+  } catch {
+    return logical;
+  }
+}
+
+/** Strip password scalars from YAML text for safe diagnostics (Output channel). */
+export function redactIbcmdYamlPasswordLines(body: string): string {
+  return body.replace(/^\s*password:\s*.+$/gm, '  password: <redacted>');
+}
+
 export function buildFileInfobaseYamlContent(opts: {
   filePath: string;
   user?: string;
   password?: string;
 }): string {
-  const lines = ['infobase:', `  file: ${yamlDoubleQuotedScalar(path.resolve(opts.filePath))}`];
+  const lines = ['infobase:', `  file: ${yamlDoubleQuotedScalar(resolvePathForIbcmdYamlFileField(opts.filePath))}`];
   const u = opts.user?.trim();
   if (u) {
     lines.push(`  user: ${yamlDoubleQuotedScalar(u)}`);
@@ -97,6 +121,7 @@ export interface PrepareYamlFailure {
   userMessage: string;
 }
 
+/** Successful result of {@link prepareIbcmdConfigYaml} (narrowed). */
 export interface PreparedIbcmdYaml {
   ok: true;
   /** Absolute path passed to `--config=`. */
@@ -111,7 +136,9 @@ export type PrepareIbcmdYamlResult = PreparedIbcmdYaml | PrepareYamlFailure;
 async function writeTempYaml(entryId: string, body: string): Promise<{ path: string; dispose: () => Promise<void> }> {
   const suffix = randomBytes(8).toString('hex');
   const tmp = path.join(os.tmpdir(), `1cviewer-ibcmd-${entryId}-${suffix}.yaml`);
-  await fs.promises.writeFile(tmp, body, { encoding: 'utf8' });
+  // UTF-8 BOM helps Windows tools (including some 1C builds) detect encoding for paths with Cyrillic in YAML.
+  const payload = process.platform === 'win32' ? `\ufeff${body}` : body;
+  await fs.promises.writeFile(tmp, payload, { encoding: 'utf8' });
   const dispose = async (): Promise<void> => {
     try {
       await fs.promises.unlink(tmp);
@@ -148,7 +175,7 @@ export async function prepareIbcmdConfigYaml(
       const body = await fs.promises.readFile(abs, 'utf8');
       const fileScalar = tryParseInfobaseFileScalarFromYaml(body);
       if (fileScalar !== undefined) {
-        const dataAbs = path.resolve(fileScalar);
+        const dataAbs = resolvePathForIbcmdYamlFileField(fileScalar);
         if (!fs.existsSync(dataAbs)) {
           return {
             ok: false,
@@ -173,7 +200,7 @@ export async function prepareIbcmdConfigYaml(
     if (!fp) {
       return { ok: false, code: 'MISSING_PARAMS', userMessage: MISSING_CONNECTION };
     }
-    const dataAbs = path.resolve(fp);
+    const dataAbs = resolvePathForIbcmdYamlFileField(fp);
     if (!fs.existsSync(dataAbs)) {
       return {
         ok: false,

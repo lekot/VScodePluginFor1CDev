@@ -7,6 +7,7 @@ import {
   buildFileInfobaseYamlContent,
   buildServerInfobaseYamlContent,
   prepareIbcmdConfigYaml,
+  redactIbcmdYamlPasswordLines,
   textLooksLikeYamlPasswordLine,
   yamlDoubleQuotedScalar,
 } from '../../src/infobases/ibcmdConfigPathResolver';
@@ -38,6 +39,16 @@ suite('ibcmdConfigPathResolver', () => {
   suite('textLooksLikeYamlPasswordLine', () => {
     test('false when no password key', () => {
       assert.strictEqual(textLooksLikeYamlPasswordLine('infobase:\n  file: "x"\n'), false);
+    });
+  });
+
+  suite('redactIbcmdYamlPasswordLines', () => {
+    test('masks password scalar lines', () => {
+      const raw = 'infobase:\n  file: "C:\\\\b"\n  password: "secret"\n';
+      const out = redactIbcmdYamlPasswordLines(raw);
+      assert.ok(!out.includes('secret'));
+      assert.ok(out.includes('<redacted>'));
+      assert.ok(out.includes('file:'));
     });
   });
 

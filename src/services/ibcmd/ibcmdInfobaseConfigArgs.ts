@@ -9,6 +9,28 @@
  * @see docs/WOW/ibcmd-api-reference.md
  */
 
+import * as fs from 'fs';
+
+/**
+ * On Windows, `os.tmpdir()` / `path.resolve` may yield 8.3 short components (e.g. `2BA0~1`).
+ * ibcmd has been observed to mis-associate `--config` with the wrong infobase when the config path
+ * is short-form; expand via `realpathSync.native` for existing paths.
+ */
+export function resolveIbcmdCliPathForWindowsSpawn(absPath: string): string {
+  const t = absPath.trim();
+  if (process.platform !== 'win32' || !t) {
+    return t;
+  }
+  try {
+    if (fs.existsSync(t)) {
+      return fs.realpathSync.native(t);
+    }
+  } catch {
+    /* keep logical path */
+  }
+  return t;
+}
+
 export interface IbcmdConfigCliCredentials {
   user?: string;
   password?: string;
@@ -32,7 +54,8 @@ export function buildInfobaseConfigCheckArgs(
   absoluteConfigPath: string,
   options?: { credentials?: IbcmdConfigCliCredentials; force?: boolean },
 ): string[] {
-  const args = ['infobase', 'config', 'check', `--config=${absoluteConfigPath}`];
+  const cfg = resolveIbcmdCliPathForWindowsSpawn(absoluteConfigPath);
+  const args = ['infobase', 'config', 'check', `--config=${cfg}`];
   appendCredentials(args, options?.credentials);
   if (options?.force) {
     args.push('--force');
@@ -45,12 +68,14 @@ export function buildInfobaseConfigImportArgs(
   sourcePath: string,
   options?: { credentials?: IbcmdConfigCliCredentials; force?: boolean },
 ): string[] {
-  const args = ['infobase', 'config', 'import', `--config=${absoluteConfigPath}`];
+  const cfg = resolveIbcmdCliPathForWindowsSpawn(absoluteConfigPath);
+  const src = resolveIbcmdCliPathForWindowsSpawn(sourcePath);
+  const args = ['infobase', 'config', 'import', `--config=${cfg}`];
   appendCredentials(args, options?.credentials);
   if (options?.force) {
     args.push('--force');
   }
-  args.push(sourcePath);
+  args.push(src);
   return args;
 }
 
@@ -59,7 +84,9 @@ export function buildInfobaseConfigExportArgs(
   outPath: string,
   options?: { credentials?: IbcmdConfigCliCredentials; extension?: string; format?: string },
 ): string[] {
-  const args = ['infobase', 'config', 'export', `--config=${absoluteConfigPath}`, `--out=${outPath}`];
+  const cfg = resolveIbcmdCliPathForWindowsSpawn(absoluteConfigPath);
+  const out = resolveIbcmdCliPathForWindowsSpawn(outPath);
+  const args = ['infobase', 'config', 'export', `--config=${cfg}`, `--out=${out}`];
   appendCredentials(args, options?.credentials);
   const ext = options?.extension?.trim();
   if (ext) {

@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.30.2",
+  "version": "0.30.7",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -561,7 +561,12 @@
             "oem866",
             "windows1251"
           ],
-          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. On Windows, \"auto\" uses UTF-8 when the bytes are valid UTF-8, otherwise CP866 (typical console). Choose \"utf8\" if your platform already emits UTF-8."
+          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. On Windows, \"auto\" decodes streams as CP866 (typical Russian console / ibcmd). If Cyrillic is still wrong, try \"windows1251\". If ibcmd clearly emits UTF-8 in the pipe, use \"utf8\". On Linux/macOS, \"auto\" uses UTF-8 streaming."
+        },
+        "1cMetadataTree.ibcmd.importDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log ibcmd config import diagnostics to \"CDT 41: Infobase (ibcmd)\": --config path, redacted YAML body (target infobase), and configuration dump directory passed as the last CLI argument (not stored in YAML). Use when debugging deploy / YAML path issues."
         },
         "1cMetadataTree.deploy.mode": {
           "type": "string",

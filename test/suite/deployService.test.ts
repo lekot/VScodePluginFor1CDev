@@ -59,6 +59,14 @@ const mockStorage = {
   },
 } as unknown as InfobaseStorageService;
 
+function rmDirQuiet(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+}
+
 suite('deployService readDeployMode', () => {
   setup(() => {
     resetVscodeTestState();
@@ -169,10 +177,14 @@ suite('deployService resolveConfigurationXmlDirectory', () => {
 
   test('rejects missing Configuration.xml', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-cfg-'));
-    const r = resolveConfigurationXmlDirectory(dir, 'Configuration.xml');
-    assert.strictEqual(r.ok, false);
-    if (!r.ok) {
-      assert.ok(r.message.includes('не найден'));
+    try {
+      const r = resolveConfigurationXmlDirectory(dir, 'Configuration.xml');
+      assert.strictEqual(r.ok, false);
+      if (!r.ok) {
+        assert.ok(r.message.includes('не найден'));
+      }
+    } finally {
+      rmDirQuiet(dir);
     }
   });
 
@@ -195,16 +207,20 @@ suite('deployService resolveConfigurationXmlDirectory', () => {
 
   test('resolves nested relative path to Configuration.xml', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-nested-'));
-    const nested = path.join(root, 'export', 'dump');
-    fs.mkdirSync(nested, { recursive: true });
-    const xmlPath = path.join(nested, 'Configuration.xml');
-    fs.writeFileSync(xmlPath, '<empty/>');
-    const rel = path.join('export', 'dump', 'Configuration.xml').replace(/\\/g, '/');
-    const r = resolveConfigurationXmlDirectory(root, rel);
-    assert.strictEqual(r.ok, true);
-    if (r.ok) {
-      assert.strictEqual(path.normalize(r.sourceDir), path.normalize(nested));
-      assert.strictEqual(path.normalize(r.configXml), path.normalize(xmlPath));
+    try {
+      const nested = path.join(root, 'export', 'dump');
+      fs.mkdirSync(nested, { recursive: true });
+      const xmlPath = path.join(nested, 'Configuration.xml');
+      fs.writeFileSync(xmlPath, '<empty/>');
+      const rel = path.join('export', 'dump', 'Configuration.xml').replace(/\\/g, '/');
+      const r = resolveConfigurationXmlDirectory(root, rel);
+      assert.strictEqual(r.ok, true);
+      if (r.ok) {
+        assert.strictEqual(path.normalize(r.sourceDir), path.normalize(nested));
+        assert.strictEqual(path.normalize(r.configXml), path.normalize(xmlPath));
+      }
+    } finally {
+      rmDirQuiet(root);
     }
   });
 });
@@ -338,52 +354,61 @@ suite('DeployService.deployBinding', () => {
 
   test('returns configuration error without calling ibcmd when xml path invalid', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-miss-'));
-    const svc = new DeployService();
-    const progress: { messages: string[]; increments: number[] } = { messages: [], increments: [] };
-    const summary = await svc.deployBinding({
-      binding: baseBinding({ configRelativePath: 'Configuration.xml' }),
-      workspaceFolderRoot: dir,
-      storage: mockStorage,
-      catalog: [fileEntry('f1', 'A', path.join(dir, 'x.1cd'))],
-      progress: {
-        report(v) {
-          if (v.message) {
-            progress.messages.push(v.message);
-          }
-          if (v.increment !== undefined) {
-            progress.increments.push(v.increment);
-          }
+    try {
+      const svc = new DeployService();
+      const progress: { messages: string[]; increments: number[] } = { messages: [], increments: [] };
+      const summary = await svc.deployBinding({
+        binding: baseBinding({ configRelativePath: 'Configuration.xml' }),
+        workspaceFolderRoot: dir,
+        storage: mockStorage,
+        catalog: [fileEntry('f1', 'A', path.join(dir, 'x.1cd'))],
+        progress: {
+          report(v) {
+            if (v.message) {
+              progress.messages.push(v.message);
+            }
+            if (v.increment !== undefined) {
+              progress.increments.push(v.increment);
+            }
+          },
         },
-      },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.strictEqual(summary.errorCount, 1);
-    assert.strictEqual(summary.successCount, 0);
-    assert.strictEqual(summary.results[0]!.status, 'error');
-    assert.strictEqual(progress.messages.length, 0);
-    const tail = vscodeTestState.outputChannelLines.filter((l) => l.includes('[раскатка]'));
-    assert.ok(tail.some((l) => l.includes('Итого:')));
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.strictEqual(summary.errorCount, 1);
+      assert.strictEqual(summary.successCount, 0);
+      assert.strictEqual(summary.results[0]!.status, 'error');
+      assert.strictEqual(progress.messages.length, 0);
+      const tail = vscodeTestState.outputChannelLines.filter((l) => l.includes('[раскатка]'));
+      assert.ok(tail.some((l) => l.includes('Итого:')));
+    } finally {
+      rmDirQuiet(dir);
+    }
   });
 
   test('returns error when ibcmd executable cannot be resolved', async () => {
-    const missing = path.join(fs.mkdtempSync(path.join(os.tmpdir(), '1cv-ibcmd-miss-')), 'ibcmd-absent');
-    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = missing;
-    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
-    resetIbcmdServiceSingletonForTests();
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-ibcmd-miss-'));
+    const missing = path.join(parent, 'ibcmd-absent');
+    try {
+      vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = missing;
+      vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+      resetIbcmdServiceSingletonForTests();
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    const summary = await svc.deployBinding({
-      binding: baseBinding(),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('f1', 'A', path.join(root, 'dummy.1cd'))],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.strictEqual(summary.errorCount, 1);
-    assert.ok(summary.results[0]!.message.includes('ibcmd'));
-    assert.ok(vscodeTestState.outputChannelLines.some((l) => l.includes('Итого:')));
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      const summary = await svc.deployBinding({
+        binding: baseBinding(),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('f1', 'A', path.join(root, 'dummy.1cd'))],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.strictEqual(summary.errorCount, 1);
+      assert.ok(summary.results[0]!.message.includes('ibcmd'));
+      assert.ok(vscodeTestState.outputChannelLines.some((l) => l.includes('Итого:')));
+    } finally {
+      rmDirQuiet(parent);
+    }
   });
 
   test('all-web binding yields only skips and zero imports', async () => {
@@ -418,30 +443,34 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-chain-'));
-    const ibPath = path.join(work, 'placeholder.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'placeholder.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    const summary = await svc.deployBinding({
-      binding: baseBinding({
-        infobaseIds: ['a', 'b'],
-        massDeployment: true,
-      }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.strictEqual(summary.successCount, 0);
-    assert.strictEqual(summary.errorCount, 2);
-    assert.strictEqual(summary.results.filter((r) => r.name === 'Alpha' && r.status === 'error').length, 1);
-    assert.strictEqual(summary.results.filter((r) => r.name === 'Beta' && r.status === 'error').length, 1);
-    const lines = vscodeTestState.outputChannelLines.filter((l) => l.startsWith('[раскатка]'));
-    assert.ok(lines.some((l) => l.includes('Alpha') && l.includes('ошибка')));
-    assert.ok(lines.some((l) => l.includes('Beta') && l.includes('ошибка')));
-    assert.ok(lines.some((l) => l.includes('Итого:') && l.includes('ошибк')));
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      const summary = await svc.deployBinding({
+        binding: baseBinding({
+          infobaseIds: ['a', 'b'],
+          massDeployment: true,
+        }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.strictEqual(summary.successCount, 0);
+      assert.strictEqual(summary.errorCount, 2);
+      assert.strictEqual(summary.results.filter((r) => r.name === 'Alpha' && r.status === 'error').length, 1);
+      assert.strictEqual(summary.results.filter((r) => r.name === 'Beta' && r.status === 'error').length, 1);
+      const lines = vscodeTestState.outputChannelLines.filter((l) => l.startsWith('[раскатка]'));
+      assert.ok(lines.some((l) => l.includes('Alpha') && l.includes('ошибка')));
+      assert.ok(lines.some((l) => l.includes('Beta') && l.includes('ошибка')));
+      assert.ok(lines.some((l) => l.includes('Итого:') && l.includes('ошибк')));
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('cancellation before run writes Итого with mid-chain tail', async () => {
@@ -450,24 +479,28 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-cancel-tail-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    await svc.deployBinding({
-      binding: baseBinding({
-        infobaseIds: ['a', 'b'],
-        massDeployment: true,
-      }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: true, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    const itogo = vscodeTestState.outputChannelLines.find((l) => l.includes('[раскатка] Итого:'));
-    assert.ok(itogo?.includes('Часть баз пропущена'));
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      await svc.deployBinding({
+        binding: baseBinding({
+          infobaseIds: ['a', 'b'],
+          massDeployment: true,
+        }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: true, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      const itogo = vscodeTestState.outputChannelLines.find((l) => l.includes('[раскатка] Итого:'));
+      assert.ok(itogo?.includes('Часть баз пропущена'));
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('cancellation before run skips all targets and sets cancelledMidChain', async () => {
@@ -476,27 +509,31 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-cancel-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    const summary = await svc.deployBinding({
-      binding: baseBinding({
-        infobaseIds: ['a', 'b'],
-        massDeployment: true,
-      }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: true, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.strictEqual(summary.cancelledMidChain, true);
-    assert.strictEqual(summary.successCount, 0);
-    assert.strictEqual(summary.errorCount, 0);
-    assert.strictEqual(summary.skippedCount, 2);
-    assert.ok(summary.results.every((r) => r.status === 'skipped'));
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      const summary = await svc.deployBinding({
+        binding: baseBinding({
+          infobaseIds: ['a', 'b'],
+          massDeployment: true,
+        }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: true, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.strictEqual(summary.cancelledMidChain, true);
+      assert.strictEqual(summary.successCount, 0);
+      assert.strictEqual(summary.errorCount, 0);
+      assert.strictEqual(summary.skippedCount, 2);
+      assert.ok(summary.results.every((r) => r.status === 'skipped'));
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('empty infobaseIds with valid xml: zero totals and Итого line', async () => {
@@ -551,27 +588,31 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-prog-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    const increments: number[] = [];
-    await svc.deployBinding({
-      binding: baseBinding({ infobaseIds: ['a', 'b'], massDeployment: true }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
-      progress: {
-        report(v) {
-          if (v.increment !== undefined) {
-            increments.push(v.increment);
-          }
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      const increments: number[] = [];
+      await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['a', 'b'], massDeployment: true }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
+        progress: {
+          report(v) {
+            if (v.increment !== undefined) {
+              increments.push(v.increment);
+            }
+          },
         },
-      },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.deepStrictEqual(increments, [50, 50]);
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.deepStrictEqual(increments, [50, 50]);
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('copy mode logs snapshot line and completes (fake ibcmd)', async () => {
@@ -582,22 +623,26 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-copy-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    await svc.deployBinding({
-      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('ib1', 'One', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.ok(
-      vscodeTestState.outputChannelLines.some((l) => l.includes('Режим copy') && l.includes('снимок')),
-    );
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('ib1', 'One', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.ok(
+        vscodeTestState.outputChannelLines.some((l) => l.includes('Режим copy') && l.includes('снимок')),
+      );
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('block mode without VS 1.88+ logs fallback and skips readonlyInclude', async () => {
@@ -610,25 +655,29 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-block-old-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    await svc.deployBinding({
-      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('ib1', 'One', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.ok(
-      vscodeTestState.outputChannelLines.some(
-        (l) => l.includes('Режим block') && l.includes('недоступна'),
-      ),
-    );
-    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('ib1', 'One', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.ok(
+        vscodeTestState.outputChannelLines.some(
+          (l) => l.includes('Режим block') && l.includes('недоступна'),
+        ),
+      );
+      assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('block mode when readonlyInclude update throws logs fallback and leaves prior map', async () => {
@@ -642,25 +691,29 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-block-updthrow-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    await svc.deployBinding({
-      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('ib1', 'One', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.ok(
-      vscodeTestState.outputChannelLines.some(
-        (l) => l.includes('Режим block') && l.includes('недоступна'),
-      ),
-    );
-    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('ib1', 'One', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.ok(
+        vscodeTestState.outputChannelLines.some(
+          (l) => l.includes('Режим block') && l.includes('недоступна'),
+        ),
+      );
+      assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('block mode on 1.88+ merges readonlyInclude and restores after deploy', async () => {
@@ -673,25 +726,29 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-block-new-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    await svc.deployBinding({
-      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('ib1', 'One', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.ok(
-      vscodeTestState.outputChannelLines.some(
-        (l) => l.includes('Режим block') && l.includes('readonlyInclude'),
-      ),
-    );
-    assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('ib1', 'One', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.ok(
+        vscodeTestState.outputChannelLines.some(
+          (l) => l.includes('Режим block') && l.includes('readonlyInclude'),
+        ),
+      );
+      assert.deepStrictEqual(vscodeTestState.workspaceConfig.readonlyInclude, { 'keep/**': true });
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 
   test('block mode does not log copy snapshot line', async () => {
@@ -703,19 +760,23 @@ suite('DeployService.deployBinding', () => {
     resetIbcmdServiceSingletonForTests();
 
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-nocopylog-'));
-    const ibPath = path.join(work, 'p.1cd');
-    fs.writeFileSync(ibPath, '');
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
 
-    const svc = new DeployService();
-    const root = fixtureSmallRoot();
-    await svc.deployBinding({
-      binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
-      workspaceFolderRoot: root,
-      storage: mockStorage,
-      catalog: [fileEntry('ib1', 'One', ibPath)],
-      progress: { report: () => undefined },
-      token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
-    });
-    assert.ok(!vscodeTestState.outputChannelLines.some((l) => l.includes('Режим copy')));
+      const svc = new DeployService();
+      const root = fixtureSmallRoot();
+      await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['ib1'], massDeployment: false }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('ib1', 'One', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.ok(!vscodeTestState.outputChannelLines.some((l) => l.includes('Режим copy')));
+    } finally {
+      rmDirQuiet(work);
+    }
   });
 });

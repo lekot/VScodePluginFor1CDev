@@ -93,7 +93,7 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     assert.strictEqual(dec.decodeStderr(raw), 'Путь не найден');
   });
 
-  test('auto on non-Windows uses UTF-8 streaming decoder', () => {
+  test('auto uses UTF-8 streaming decoder on non-Windows', () => {
     if (process.platform === 'win32') {
       return;
     }

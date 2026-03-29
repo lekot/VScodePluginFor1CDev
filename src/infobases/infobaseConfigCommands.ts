@@ -3,7 +3,14 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseStorageService } from './infobaseStorageService';
-import { IB_FILE_IBCMD_WEB_UNSUPPORTED_RU, prepareIbcmdConfigYaml } from './ibcmdConfigPathResolver';
+import {
+  IB_FILE_IBCMD_WEB_UNSUPPORTED_RU,
+  type PreparedIbcmdYaml,
+  prepareIbcmdConfigYaml,
+  redactIbcmdYamlPasswordLines,
+  resolvePathForIbcmdYamlFileField,
+  tryParseInfobaseFileScalarFromYaml,
+} from './ibcmdConfigPathResolver';
 import {
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
@@ -15,7 +22,10 @@ import {
   type IbcmdInfobaseOperationResult,
 } from '../services/ibcmd/ibcmdInfobaseOperationResult';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
-import { getIbcmdConsoleOutputEncodingSetting } from '../services/metadataTreeSettings';
+import {
+  getIbcmdConsoleOutputEncodingSetting,
+  getIbcmdImportDiagnosticsSetting,
+} from '../services/metadataTreeSettings';
 import { runIbcmdStreaming, type IbcmdStreamCancellation } from '../services/ibcmd/IbcmdStreamingRunner';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
 
@@ -92,6 +102,46 @@ function vscodeCancellation(token: vscode.CancellationToken): IbcmdStreamCancell
     isCancellationRequested: token.isCancellationRequested,
     onCancellationRequested: (listener) => token.onCancellationRequested(listener),
   };
+}
+
+/** Путь --config и предупреждение о расхождении file: в явном YAML с каталогом в записи каталога. */
+function appendIbcmdResolvedConfigChannelLines(
+  ch: vscode.OutputChannel,
+  prep: PreparedIbcmdYaml,
+  entry: InfobaseEntry,
+): void {
+  const configKind = prep.isTemporary ? 'временный YAML (из каталога)' : 'файл на диске';
+  ch.appendLine(`[ibcmd] --config: ${prep.absoluteConfigPath} (${configKind})`);
+  if (prep.isTemporary && entry.type === 'file' && entry.filePath?.trim()) {
+    try {
+      const body = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
+      const fileScalar = tryParseInfobaseFileScalarFromYaml(body);
+      if (fileScalar !== undefined) {
+        ch.appendLine(
+          `[ibcmd] в сгенерированном YAML поле infobase.file (после resolve+realpath): ${resolvePathForIbcmdYamlFileField(fileScalar)}`,
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!prep.isTemporary && entry.type === 'file' && entry.filePath?.trim()) {
+    try {
+      const body = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
+      const fileScalar = tryParseInfobaseFileScalarFromYaml(body);
+      if (fileScalar !== undefined) {
+        const fromYaml = resolvePathForIbcmdYamlFileField(fileScalar);
+        const fromCatalog = resolvePathForIbcmdYamlFileField(entry.filePath.trim());
+        if (fromYaml.toLowerCase() !== fromCatalog.toLowerCase()) {
+          ch.appendLine(
+            `[ibcmd] Внимание: в явном YAML поле file: указывает другой каталог, чем «каталог базы» в записи. ibcmd использует путь из YAML. YAML → ${fromYaml} | запись → ${fromCatalog}`,
+          );
+        }
+      }
+    } catch {
+      /* не мешаем операции */
+    }
+  }
 }
 
 function findWorkspaceConfigurationRoot(): string | undefined {
@@ -221,11 +271,31 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   const ch = getOutputChannel();
   const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
   ch.appendLine(`[import${ctx}] ${params.entry.name} (${new Date().toISOString()})\n`);
+  appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
+
+  const resolvedSourceDir = path.resolve(params.absoluteSourceDir);
+  const importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir);
+  if (getIbcmdImportDiagnosticsSetting()) {
+    const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';
+    ch.appendLine(`[import diag] --config: ${prep.absoluteConfigPath} (${kind})`);
+    ch.appendLine(
+      `[import diag] каталог выгрузки конфигурации — последний аргумент ibcmd, не поле YAML: ${resolvedSourceDir}`,
+    );
+    try {
+      const raw = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
+      ch.appendLine('[import diag] тело --config (пароль скрыт):');
+      ch.appendLine(redactIbcmdYamlPasswordLines(raw).trimEnd());
+    } catch (e) {
+      ch.appendLine(`[import diag] не удалось прочитать --config: ${(e as Error).message}`);
+    }
+    ch.appendLine(`[import diag] argv (после Win long-path): ${importArgs.join(' ')}`);
+    ch.appendLine('');
+  }
 
   try {
     const outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,
-      args: buildInfobaseConfigImportArgs(prep.absoluteConfigPath, path.resolve(params.absoluteSourceDir)),
+      args: importArgs,
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
@@ -276,6 +346,7 @@ async function runInfobaseConfigOperation(params: {
   const ch = getOutputChannel();
   const header = `[${params.op}] ${params.entry.name} (${new Date().toISOString()})\n`;
   ch.appendLine(header);
+  appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
   try {
     await vscode.window.withProgress(

@@ -68,7 +68,9 @@ export interface IbcmdStreamChunkDecoders {
 
 /**
  * Per-chunk decoding for spawn streams. CP866 / windows-1251 are single-byte; UTF-8 uses TextDecoder `{ stream: true }` per stream.
- * For `auto` on Windows, stream chunks as CP866 (same default as design ADR-2); use setting `utf8` if ibcmd already emits UTF-8.
+ *
+ * On Windows, `auto` uses CP866 per chunk (same as typical `cmd` / Russian ibcmd stderr). Piped UTF-8 from ibcmd → set `utf8` explicitly.
+ * Non-Windows `auto` uses UTF-8 streaming.
  */
 export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding): IbcmdStreamChunkDecoders {
   const singleByte = (enc: 'cp866' | 'cp1251') => ({
@@ -97,6 +99,6 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
     };
   }
 
-  // auto + win32
+  // auto + win32 → OEM866 (matches most ibcmd builds on RU Windows)
   return singleByte('cp866');
 }

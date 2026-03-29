@@ -32,6 +32,12 @@ export function getIbcmdConsoleOutputEncodingSetting(): IbcmdConsoleOutputEncodi
   return 'auto';
 }
 
+/** When true, log ibcmd import diagnostics (YAML path, redacted YAML body, source tree path) to Infobase output channel. */
+export function getIbcmdImportDiagnosticsSetting(): boolean {
+  const cfg = vscode.workspace.getConfiguration();
+  return cfg.get<boolean>('1cMetadataTree.ibcmd.importDiagnostics') === true;
+}
+
 export function getPlatformPathSetting(): string {
   const cfg = vscode.workspace.getConfiguration();
   return (cfg.get<string>('1cMetadataTree.platform.path') ?? '').trim();

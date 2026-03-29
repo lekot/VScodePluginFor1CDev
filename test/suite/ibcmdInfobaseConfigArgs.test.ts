@@ -1,11 +1,36 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
   buildInfobaseConfigImportArgs,
+  resolveIbcmdCliPathForWindowsSpawn,
 } from '../../src/services/ibcmd/ibcmdInfobaseConfigArgs';
 
 suite('ibcmdInfobaseConfigArgs', () => {
+  test('resolveIbcmdCliPathForWindowsSpawn: non-existent path unchanged', () => {
+    const p = path.join(os.tmpdir(), `ibcmd-arg-missing-${Date.now()}.yaml`);
+    assert.strictEqual(resolveIbcmdCliPathForWindowsSpawn(p), p);
+  });
+
+  test('resolveIbcmdCliPathForWindowsSpawn: existing file returns absolute realpath on win32', function () {
+    if (process.platform !== 'win32') {
+      this.skip();
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibcmd-long-'));
+    const f = path.join(dir, 'x.yaml');
+    fs.writeFileSync(f, 'x', 'utf8');
+    try {
+      const r = resolveIbcmdCliPathForWindowsSpawn(f);
+      assert.ok(path.isAbsolute(r));
+      assert.ok(fs.existsSync(r));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('buildInfobaseConfigCheckArgs matches ibcmd-api-reference shape', () => {
     const cfg = 'C:\\tmp\\conn.yaml';
     const args = buildInfobaseConfigCheckArgs(cfg);
