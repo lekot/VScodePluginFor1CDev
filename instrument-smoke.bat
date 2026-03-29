@@ -27,6 +27,14 @@ REM
 REM  Пропустить окно VS Code:
 REM    set SKIP_VSCODE_SMOKE=1
 REM
+REM  Опционально — полная раскатка DeployService + реальный ibcmd (не в CI по умолчанию):
+REM    suite/smoke/deployBindingRealIbcmd.smoke.test.js
+REM    set SMOKE_DEPLOY_BINDING=1
+REM    Откройте workspace = корень репозитория (SMOKE_WORKSPACE / аргумент runSmoke), иначе нет FormatSamples/empty_conf/Configuration.xml.
+REM    set SMOKE_DEPLOY_INFOBASE_PATH=...   (каталог файловой ИБ; по умолчанию C:\Users\Максим\Documents\Infobase11)
+REM    set SMOKE_DEPLOY_IBCMD_YAML=...      (если задан и файл существует — ibcmdConfigYamlPath у записи каталога)
+REM    ibcmd: IBCMD_PATH или настройки расширения, как для остального smoke.
+REM
 REM  Свой каталог выгрузки вместо копии empty_conf:
 REM    set MATRIX_WORK_DIR=C:\копия\конфигурации
 REM ============================================================================

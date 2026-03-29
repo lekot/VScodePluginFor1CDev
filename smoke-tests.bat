@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul 2>&1
+REM Opt-in real ibcmd deploy smoke: SMOKE_DEPLOY_BINDING=1, workspace=repo root, SMOKE_DEPLOY_INFOBASE_PATH / SMOKE_DEPLOY_IBCMD_YAML — см. instrument-smoke.bat.
 call "%~dp0cleanup-1cviewer-temp.bat"
 echo Running smoke tests...
 echo Compiling extension ^(tsconfig.json^)...
