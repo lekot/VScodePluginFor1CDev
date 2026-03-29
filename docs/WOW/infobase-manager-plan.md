@@ -125,6 +125,7 @@
 | 40 | Последовательная раскатка с progress per-база | `deployService.ts` | M |
 | 41 | Обработка ошибок: продолжение на следующую базу | `deployService.ts` | S |
 | 42 | Итоговый отчёт (N успешно, M ошибок) | `deployService.ts` | S |
+| 42b | Потоковый вывод ibcmd, Output Channel, аргументы import | `infobases/infobaseConfigCommands.ts` (+ `ibcmd/`) | M |
 | 43 | Команда «Раскатать в базу/базы» (динамический текст) | `bindingCommands.ts` | S |
 
 ### 2E: Режимы раскатки (L-задачи, ~8ч)
@@ -203,7 +204,7 @@
 | 61 | Экспорт списка в .v8i | `infobaseCommands.ts` | S |
 | 62 | Сравнение конфигураций между базами | `services/configCompareService.ts` | L |
 | 63 | Интеграция с git (автозагрузка после pull) | `services/gitIntegration.ts` | L |
-| 64 | Полная поддержка расширений (отдельные биндинги) | `bindings/` | L |
+| 64 | Расширения: довести UX/сценарии сверх уже реализованной привязки узла расширения | `bindings/` | L |
 
 **Итого Phase 4:** 5 задач, ~18ч
 

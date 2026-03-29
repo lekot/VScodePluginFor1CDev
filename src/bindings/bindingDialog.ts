@@ -28,7 +28,7 @@ function defaultBinding(
     workspaceFolder,
     configRelativePath,
     infobaseIds: [],
-    massDeployment: false,
+    massDeployment: true,
     ibcmdExtensionName: ibcmdExtensionName?.trim() || undefined,
   };
 }

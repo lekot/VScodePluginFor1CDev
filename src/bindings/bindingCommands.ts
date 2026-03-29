@@ -14,6 +14,7 @@ import {
   DeployService,
   listDeployTargetLabels,
   readDeployMode,
+  resolveDeployTargetsForBinding,
   vscodeSupportsDeployReadonlyLock,
 } from './deployService';
 import { showIbcmdInfobaseOutputChannel } from '../infobases/infobaseConfigCommands';
@@ -200,11 +201,18 @@ export async function runDeployForConfigurationFromTree(
     return;
   }
 
+  const catalogById = new Map(catalog.map((e) => [e.id, e] as const));
+  const { entries: deployEntries } = resolveDeployTargetsForBinding(binding, catalogById);
+  const progressTitle =
+    deployEntries.length === 1
+      ? 'Раскатка конфигурации в привязанную базу'
+      : 'Раскатка конфигурации в привязанные базы';
+
   const deployService = new DeployService();
   const summary = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: 'Раскатка конфигурации в привязанные базы',
+      title: progressTitle,
       cancellable: true,
     },
     async (progress, token) =>
@@ -228,9 +236,9 @@ export async function runDeployForConfigurationFromTree(
   }
   const msg = `Раскатка завершена: ${parts.join(', ')}.${tail}`;
   const showOut = 'Показать вывод';
-  const fullyClean =
-    summary.errorCount === 0 && summary.skippedCount === 0 && !summary.cancelledMidChain;
-  if (summary.successCount > 0 && fullyClean) {
+  /** Ошибок и отмены нет; ожидаемые пропуски (веб, нет в каталоге) не понижают уровень до warning. */
+  const noErrorsOrCancel = summary.errorCount === 0 && !summary.cancelledMidChain;
+  if (summary.successCount > 0 && noErrorsOrCancel) {
     const r = await vscode.window.showInformationMessage(msg, showOut);
     if (r === showOut) {
       showIbcmdInfobaseOutputChannel();

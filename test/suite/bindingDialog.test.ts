@@ -640,6 +640,10 @@ suite('BindingDialogPanel', () => {
 
     const dlg = new BindingDialogPanel(context, state);
     await dlg.show(folder.name, 'c.xml');
+    assert.ok(
+      panel.webview.html.includes('"massDeployment":true'),
+      'новая привязка: массовая раскатка по умолчанию включена (WOW §12.3)',
+    );
 
     await simulateWebviewMessage({ type: 'addCreate' });
     await simulateWebviewMessage({ type: 'addExisting' });
