@@ -432,18 +432,21 @@ async function runInfobaseConfigOperation(params: {
 
         const interpreted = interpretIbcmdInfobaseOutcome(params.op, outcome);
         const showOutput = 'Показать вывод';
+        // Не await: иначе ProgressLocation.Notification крутится, пока пользователь не закроет toast.
         if (interpreted.status === 'success') {
-          const r = await vscode.window.showInformationMessage(interpreted.userMessage, showOutput);
-          if (r === showOutput) {
-            ch.show(true);
-          }
+          void vscode.window.showInformationMessage(interpreted.userMessage, showOutput).then((r) => {
+            if (r === showOutput) {
+              ch.show(true);
+            }
+          });
         } else if (interpreted.status === 'cancelled') {
           void vscode.window.showWarningMessage(interpreted.userMessage);
         } else {
-          const r = await vscode.window.showErrorMessage(interpreted.userMessage, showOutput);
-          if (r === showOutput) {
-            ch.show(true);
-          }
+          void vscode.window.showErrorMessage(interpreted.userMessage, showOutput).then((r) => {
+            if (r === showOutput) {
+              ch.show(true);
+            }
+          });
         }
       },
     );
