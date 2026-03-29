@@ -170,19 +170,41 @@ export function getWebviewHtml(
     html[data-vscode-theme='dark'] body[data-theme-mode='auto'] {
       color-scheme: dark;
     }
+    /**
+     * Auto: host webview tokens are often low-contrast on native <select> popups; use explicit
+     * WCAG-friendly pairs so list items stay readable (Windows/Chromium ignore some option rules).
+     */
     html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select {
       color-scheme: light;
+      background-color: #ffffff;
+      color: #111827;
+      border-color: #475569;
+      font-weight: 500;
+      accent-color: #2563eb;
     }
     html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select option {
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
+      background-color: #ffffff;
+      color: #111827;
+    }
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select option:checked {
+      background-color: #dbeafe;
+      color: #0f172a;
     }
     html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select {
       color-scheme: dark;
+      background-color: #0f172a;
+      color: #f9fafb;
+      border-color: #94a3b8;
+      font-weight: 500;
+      accent-color: #38bdf8;
     }
     html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select option {
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
+      background-color: #0f172a;
+      color: #f9fafb;
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select option:checked {
+      background-color: #1e3a5f;
+      color: #f8fafc;
     }
     .fe-toolbar {
       flex-shrink: 0;
@@ -934,7 +956,11 @@ export function getWebviewHtml(
     var selectedRequisiteFullPath = null;
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
     function isRealElement(it) { var t = it.tag; return t && t !== ':@' && !String(t).startsWith('@'); }
-    function getItemTitle(item) {
+    /**
+     * Single entry for preview label from Title + fallbacks (ADR-2 hook). localeHint reserved for multilang (block C).
+     */
+    function resolvePreviewTitle(item, localeHint) {
+      void localeHint;
       if (!item) return '';
       var props = item.properties;
       if (props && props['Title'] != null) {
@@ -1042,6 +1068,29 @@ export function getWebviewHtml(
         shouldIndentChildren: !!shouldIndentChildren,
         containerClassHints: hints
       };
+    }
+    /** Ordered Page children under a Pages node; activePageId defaults to first (tabs UI in block 2). */
+    function buildTabsState(pagesNode) {
+      var kids = pagesNode && pagesNode.childItems ? pagesNode.childItems : [];
+      var pages = kids.filter(function(it) { return it && it.tag === 'Page'; });
+      var pageOrderIds = pages.map(function(p) {
+        return p.id != null ? String(p.id) : (p.name != null ? String(p.name) : '');
+      });
+      var activePageId = pageOrderIds.length && pageOrderIds[0] !== '' ? pageOrderIds[0] : null;
+      return { pages: pages, pageOrderIds: pageOrderIds, activePageId: activePageId };
+    }
+    /** CSS class string for preview-children wrapper (parity with previous inline assembly). */
+    function layoutContainerStyle(meta) {
+      var tag = meta && meta.tag != null ? String(meta.tag) : '';
+      var orientation = meta && meta.orientation ? meta.orientation : 'vertical';
+      var childClasses = ['preview-children', 'preview-children-' + orientation];
+      if (meta && meta.shouldIndentChildren) childClasses.push('preview-children-indented');
+      if (tag === 'AutoCommandBar') childClasses.push('preview-buttons-container');
+      var hints = meta && meta.containerClassHints ? meta.containerClassHints : [];
+      for (var hi = 0; hi < hints.length; hi++) {
+        childClasses.push('preview-' + String(hints[hi]).replace(/[^a-z0-9_-]/gi, '-'));
+      }
+      return childClasses.join(' ');
     }
     function getPreviewDropIndex(children, evt, orientation) {
       var horizontal = orientation === 'horizontal';
@@ -1280,7 +1329,7 @@ export function getWebviewHtml(
     }
 
     function createPreviewControl(item, tag) {
-      var label = getItemTitle(item) || (item.name || tag) + '';
+      var label = resolvePreviewTitle(item) || (item.name || tag) + '';
       var wrap = document.createElement('div');
       wrap.className = 'preview-control-wrap';
       if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'FormattedDocumentField' || tag === 'ValueList') {
@@ -1364,7 +1413,7 @@ export function getWebviewHtml(
         var tableCols = (item.childItems || []).filter(function(it) { return isRealElement(it); });
         tableCols.forEach(function(colItem) {
           var th = document.createElement('th');
-          th.textContent = getItemTitle(colItem) || (colItem.name || colItem.tag) || '\u2014';
+          th.textContent = resolvePreviewTitle(colItem) || (colItem.name || colItem.tag) || '\u2014';
           th.dataset.id = colItem.id || colItem.name || '';
           th.setAttribute('data-id', th.dataset.id);
           headTr.appendChild(th);
@@ -1515,15 +1564,13 @@ export function getWebviewHtml(
           }
         } else if (isContainer && item.childItems && item.childItems.length && controlWrap._mockupChildContainer) {
           var childWrap = controlWrap._mockupChildContainer;
-          var childClasses = ['preview-children', 'preview-children-' + (layoutMeta ? layoutMeta.orientation : 'vertical')];
-          if (layoutMeta && layoutMeta.shouldIndentChildren) childClasses.push('preview-children-indented');
-          if (tag === 'AutoCommandBar') childClasses.push('preview-buttons-container');
-          if (layoutMeta && layoutMeta.containerClassHints && layoutMeta.containerClassHints.length) {
-            layoutMeta.containerClassHints.forEach(function(hint) {
-              childClasses.push('preview-' + String(hint).replace(/[^a-z0-9_-]/gi, '-'));
-            });
-          }
-          childWrap.className = childClasses.join(' ');
+          if (tag === 'Pages') { void buildTabsState(item); }
+          childWrap.className = layoutContainerStyle({
+            tag: tag,
+            orientation: layoutMeta.orientation,
+            shouldIndentChildren: layoutMeta.shouldIndentChildren,
+            containerClassHints: layoutMeta.containerClassHints
+          });
           renderPreview(item.childItems, childWrap);
         }
       });

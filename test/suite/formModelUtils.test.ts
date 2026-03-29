@@ -15,6 +15,7 @@ import {
   getAttributeTypeString,
   requisiteTypeToTag,
   createIdGenerator,
+  getContainerLayoutPreviewMeta,
 } from '../../src/formEditor/formModelUtils';
 import type { FormModel, FormChildItem, FormAttribute } from '../../src/formEditor/formModel';
 
@@ -36,6 +37,11 @@ function makeModel(overrides: Partial<FormModel> = {}): FormModel {
 /** Build a leaf FormChildItem. */
 function makeItem(id: string, name: string, children: FormChildItem[] = []): FormChildItem {
   return { tag: 'InputField', id, name, properties: {}, childItems: children };
+}
+
+/** Minimal child item for layout-preview meta (fixtures aligned with form property aliases). */
+function makeLayoutItem(tag: string, properties: Record<string, unknown> = {}): FormChildItem {
+  return { tag, id: '1', name: 'fixture', properties, childItems: [] };
 }
 
 /** Collect all ids from a FormChildItem tree. */
@@ -365,6 +371,129 @@ suite('formModelUtils — unit tests', () => {
     test('starts from 1 on empty model', () => {
       const gen = createIdGenerator(makeModel());
       assert.strictEqual(gen(), '1');
+    });
+  });
+
+  // getContainerLayoutPreviewMeta — preview layout metadata (1CVIEWER-36 Block 1)
+  suite('getContainerLayoutPreviewMeta', () => {
+    test('undefined item: vertical, no indent, base container hints only', () => {
+      const meta = getContainerLayoutPreviewMeta(undefined);
+      assert.strictEqual(meta.orientation, 'vertical');
+      assert.strictEqual(meta.shouldIndentChildren, false);
+      assert.deepStrictEqual(meta.containerClassHints, ['container', 'container-vertical']);
+    });
+
+    test('plain InputField: vertical, no indent, tag hint', () => {
+      const meta = getContainerLayoutPreviewMeta(makeLayoutItem('InputField'));
+      assert.strictEqual(meta.orientation, 'vertical');
+      assert.strictEqual(meta.shouldIndentChildren, false);
+      assert.ok(meta.containerClassHints.includes('container-inputfield'));
+      assert.ok(meta.containerClassHints.includes('container-vertical'));
+      assert.ok(!meta.containerClassHints.includes('container-indent'));
+    });
+
+    test('Group + Group horizontal → horizontal orientation', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { Group: 'HorizontalIfPossible' })
+      );
+      assert.strictEqual(meta.orientation, 'horizontal');
+    });
+
+    test('LayoutOrientation alias (namespaced key)', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { 'v8:LayoutOrientation': 'Vertical' })
+      );
+      assert.strictEqual(meta.orientation, 'vertical');
+    });
+
+    test('ChildrenLayout row → horizontal', () => {
+      const meta = getContainerLayoutPreviewMeta(makeLayoutItem('Group', { ChildrenLayout: 'row' }));
+      assert.strictEqual(meta.orientation, 'horizontal');
+    });
+
+    test('Russian orientation alias: Ориентация vertical', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { Ориентация: 'Вертикальная' })
+      );
+      assert.strictEqual(meta.orientation, 'vertical');
+    });
+
+    test('Russian horizontal: слеванаправо', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { Расположение: 'СлеваНаправо' })
+      );
+      assert.strictEqual(meta.orientation, 'horizontal');
+    });
+
+    test('unknown orientation string falls back to vertical', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { Orientation: 'MagicValue' })
+      );
+      assert.strictEqual(meta.orientation, 'vertical');
+    });
+
+    test('UsualGroup defaults to indent children', () => {
+      const meta = getContainerLayoutPreviewMeta(makeLayoutItem('UsualGroup'));
+      assert.strictEqual(meta.shouldIndentChildren, true);
+      assert.ok(meta.containerClassHints.includes('container-indent'));
+    });
+
+    test('Page defaults to indent + container-page hint', () => {
+      const meta = getContainerLayoutPreviewMeta(makeLayoutItem('Page'));
+      assert.strictEqual(meta.shouldIndentChildren, true);
+      assert.ok(meta.containerClassHints.includes('container-page'));
+    });
+
+    test('Pages gets container-page but not default indent (tag not in baseIndent list)', () => {
+      const meta = getContainerLayoutPreviewMeta(makeLayoutItem('Pages'));
+      assert.strictEqual(meta.shouldIndentChildren, false);
+      assert.ok(meta.containerClassHints.includes('container-page'));
+    });
+
+    test('explicit IndentChildren false overrides Page default', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('Page', { IndentChildren: 'false' })
+      );
+      assert.strictEqual(meta.shouldIndentChildren, false);
+      assert.ok(!meta.containerClassHints.includes('container-indent'));
+    });
+
+    test('explicit ShouldIndentChildren yes on InputField', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('InputField', { ShouldIndentChildren: 'Да' })
+      );
+      assert.strictEqual(meta.shouldIndentChildren, true);
+      assert.ok(meta.containerClassHints.includes('container-indent'));
+    });
+
+    test('Russian indent off: Вложенность нет', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { Вложенность: 'нет' })
+      );
+      assert.strictEqual(meta.shouldIndentChildren, false);
+    });
+
+    test('AutoCommandBar adds container-buttons', () => {
+      const meta = getContainerLayoutPreviewMeta(makeLayoutItem('AutoCommandBar'));
+      assert.ok(meta.containerClassHints.includes('container-buttons'));
+    });
+
+    test('property value nested #text (scalar extraction)', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('Group', { Group: { '#text': 'horizontal' } })
+      );
+      assert.strictEqual(meta.orientation, 'horizontal');
+    });
+
+    test('empty properties object same as missing keys', () => {
+      const a = getContainerLayoutPreviewMeta(makeLayoutItem('Button', {}));
+      const b = getContainerLayoutPreviewMeta(makeLayoutItem('Button'));
+      assert.deepStrictEqual(a, b);
+    });
+
+    test('CollapsibleGroup defaults indent like Group family', () => {
+      const meta = getContainerLayoutPreviewMeta(makeLayoutItem('CollapsibleGroup'));
+      assert.strictEqual(meta.shouldIndentChildren, true);
     });
   });
 });

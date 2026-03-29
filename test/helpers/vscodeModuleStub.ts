@@ -115,6 +115,14 @@ const ViewColumn = {
   Nine: 9,
 } as const;
 
+/** Matches vscode.ColorThemeKind numeric values — used by formWebviewHtml under runCore. */
+const ColorThemeKind = {
+  Light: 1,
+  Dark: 2,
+  HighContrast: 3,
+  HighContrastLight: 4,
+} as const;
+
 /** Минимальный enum для `withProgress` / WOW §2D раскатка. */
 const ProgressLocation = {
   SourceControl: 1,
@@ -431,6 +439,7 @@ const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
   Uri,
+  ColorThemeKind,
   ConfigurationTarget,
   get version(): string {
     return vscodeTestState.vscodeVersion ?? '';
