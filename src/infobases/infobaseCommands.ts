@@ -16,6 +16,7 @@ import {
   resolveLaunchExecutable,
   spawnPlatformProcess,
 } from '../services/platformLauncher';
+import { formatServerConnectionString, parseServerConnectionString } from './models/connectionString';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
 
@@ -100,7 +101,7 @@ export async function runCreateInfobase(
   }
   if (kind === 'server') {
     void vscode.window.showInformationMessage(
-      'Создание серверной базы через ibcmd (кластер, СУБД) — в WOW §3B. Пока добавьте существующую базу.',
+      'Новую серверную ИБ создают в кластере 1С (администрирование кластера, СУБД). В список расширения добавьте уже существующую базу — в том числе строкой Srvr=…;Ref=… (команда «Добавить существующую»).',
     );
     return;
   }
@@ -272,12 +273,131 @@ async function addFileInfobase(storage: InfobaseStorageService, existing: Infoba
   void vscode.window.showInformationMessage(`База «${name}» добавлена в список.`);
 }
 
+/** WOW §3B #49 — выбор способа ввода параметров серверной ИБ (добавление и редактирование). */
+const SERVER_INPUT_MODE_ITEMS: {
+  label: string;
+  description: string;
+  mode: 'connectionString' | 'fields';
+}[] = [
+  {
+    label: '$(symbol-string) Строка Srvr=…;Ref=…',
+    description: 'Как в .v8i / списке баз 1С (можно вставить целиком)',
+    mode: 'connectionString',
+  },
+  {
+    label: '$(list-flat) По полям',
+    description: 'Сервер, имя базы, пользователь и пароль отдельными шагами',
+    mode: 'fields',
+  },
+];
+
 async function addServerInfobase(storage: InfobaseStorageService, existing: InfobaseEntry[]): Promise<void> {
+  const modePick = await vscode.window.showQuickPick(SERVER_INPUT_MODE_ITEMS, {
+    title: 'Серверная база: способ ввода',
+    placeHolder: 'Строка подключения или по шагам',
+  });
+  if (!modePick) {
+    return;
+  }
+  if (modePick.mode === 'connectionString') {
+    await addServerInfobaseFromConnectionString(storage, existing);
+    return;
+  }
+  await addServerInfobaseByFields(storage, existing);
+}
+
+async function addServerInfobaseFromConnectionString(
+  storage: InfobaseStorageService,
+  existing: InfobaseEntry[],
+): Promise<void> {
+  const raw =
+    (await vscode.window.showInputBox({
+      title: 'Строка подключения серверной ИБ',
+      prompt: 'Например Srvr="server1c";Ref="Demo_UT"; (допускается префикс Connect=)',
+      placeHolder: 'Srvr="…";Ref="…";',
+      ignoreFocusOut: true,
+      validateInput: (v) => {
+        const t = v?.trim() ?? '';
+        if (!t) {
+          return 'Введите строку с Srvr и Ref';
+        }
+        const r = parseServerConnectionString(t);
+        return r.ok ? null : r.error;
+      },
+    }))?.trim() ?? '';
+  if (!raw) {
+    return;
+  }
+  const parsed = parseServerConnectionString(raw);
+  if (!parsed.ok) {
+    return;
+  }
+
+  let user = parsed.user ?? '';
+  if (!user) {
+    user =
+      (await vscode.window.showInputBox({
+        title: 'Пользователь (необязательно)',
+        prompt: 'В строке не указан Usr= — задайте вручную или оставьте пустым',
+      }))?.trim() ?? '';
+  }
+
+  let extraPassword: string | undefined;
+  if (!parsed.pwdKeyPresent) {
+    extraPassword = await vscode.window.showInputBox({
+      title: 'Пароль (необязательно)',
+      prompt: 'В строке нет Pwd= — при необходимости введите пароль (сохранится в SecretStorage)',
+      password: true,
+      ignoreFocusOut: true,
+    });
+  }
+
+  let hasStoredPassword = false;
+  if (parsed.pwdKeyPresent) {
+    hasStoredPassword = !!parsed.password;
+  } else if (typeof extraPassword === 'string' && extraPassword.length > 0) {
+    hasStoredPassword = true;
+  }
+
+  const name =
+    (await vscode.window.showInputBox({
+      title: 'Имя базы в списке',
+      value: parsed.ref,
+      validateInput: (v) => (v?.trim() ? null : 'Введите непустое имя'),
+    }))?.trim() ?? '';
+  if (!name) {
+    return;
+  }
+
+  const id = randomUUID();
+  const entry: InfobaseEntry = {
+    id,
+    name,
+    type: 'server',
+    server: parsed.server,
+    database: parsed.ref,
+    user: user || undefined,
+    hasStoredPassword,
+    createdAt: nowIso(),
+  };
+  validateInfobaseEntry(entry);
+  assertNoConflictingInfobaseTarget(entry, existing);
+  await storage.upsert(entry);
+  if (parsed.pwdKeyPresent && parsed.password) {
+    await storage.writePasswordSecret(id, parsed.password);
+  } else if (hasStoredPassword && typeof extraPassword === 'string' && extraPassword.length > 0) {
+    await storage.writePasswordSecret(id, extraPassword);
+  }
+  void vscode.window.showInformationMessage(`База «${name}» добавлена в список.`);
+}
+
+async function addServerInfobaseByFields(storage: InfobaseStorageService, existing: InfobaseEntry[]): Promise<void> {
   const server =
     (await vscode.window.showInputBox({
       title: 'Сервер 1С',
       prompt: 'Имя кластера или адрес сервера (как в строке подключения)',
       validateInput: (v) => (v?.trim() ? null : 'Укажите сервер'),
+      ignoreFocusOut: true,
     }))?.trim() ?? '';
   if (!server) {
     return;
@@ -286,11 +406,14 @@ async function addServerInfobase(storage: InfobaseStorageService, existing: Info
     (await vscode.window.showInputBox({
       title: 'Имя информационной базы',
       validateInput: (v) => (v?.trim() ? null : 'Укажите имя базы на сервере'),
+      ignoreFocusOut: true,
     }))?.trim() ?? '';
   if (!database) {
     return;
   }
-  const user = (await vscode.window.showInputBox({ title: 'Пользователь (необязательно)' }))?.trim() ?? '';
+  const user =
+    (await vscode.window.showInputBox({ title: 'Пользователь (необязательно)', ignoreFocusOut: true }))?.trim() ??
+    '';
   const password = await vscode.window.showInputBox({
     title: 'Пароль (необязательно)',
     password: true,
@@ -494,7 +617,8 @@ async function editFileInfobase(
   void vscode.window.showInformationMessage(`База «${name}» обновлена.`);
 }
 
-async function editServerInfobase(
+/** WOW §3B #49 — правка серверной ИБ по полям (симметрично {@link addServerInfobaseByFields}). */
+async function editServerInfobaseByFields(
   storage: InfobaseStorageService,
   entry: InfobaseEntry,
   existing: InfobaseEntry[],
@@ -508,31 +632,40 @@ async function editServerInfobase(
   if (!name) {
     return;
   }
+
   const server =
     (await vscode.window.showInputBox({
       title: 'Сервер 1С',
+      prompt: 'Имя кластера или адрес сервера (как в строке подключения)',
       value: entry.server ?? '',
       validateInput: (v) => (v?.trim() ? null : 'Укажите сервер'),
+      ignoreFocusOut: true,
     }))?.trim() ?? '';
   if (!server) {
     return;
   }
+
   const database =
     (await vscode.window.showInputBox({
       title: 'Имя информационной базы',
       value: entry.database ?? '',
-      validateInput: (v) => (v?.trim() ? null : 'Укажите имя базы'),
+      validateInput: (v) => (v?.trim() ? null : 'Укажите имя базы на сервере'),
+      ignoreFocusOut: true,
     }))?.trim() ?? '';
   if (!database) {
     return;
   }
+
   const user =
     (await vscode.window.showInputBox({
       title: 'Пользователь (необязательно)',
       value: entry.user ?? '',
+      ignoreFocusOut: true,
     }))?.trim() ?? '';
 
-  const pwdHint = entry.hasStoredPassword ? 'Пароль сохранён. Пусто — не менять, «-» — удалить.' : 'Пароль (необязательно)';
+  const pwdHint = entry.hasStoredPassword
+    ? 'Пароль в SecretStorage. Пусто — не менять, «-» — удалить сохранённый пароль.'
+    : 'Пароль (необязательно), сохранится в SecretStorage';
   const passwordReply = await vscode.window.showInputBox({
     title: 'Пароль',
     prompt: pwdHint,
@@ -564,6 +697,108 @@ async function editServerInfobase(
   await storage.upsert(next);
 
   if (passwordReply.length > 0 && passwordReply !== '-') {
+    await storage.writePasswordSecret(entry.id, passwordReply);
+  }
+  void vscode.window.showInformationMessage(`База «${name}» обновлена.`);
+}
+
+async function editServerInfobase(
+  storage: InfobaseStorageService,
+  entry: InfobaseEntry,
+  existing: InfobaseEntry[],
+): Promise<void> {
+  const modePick = await vscode.window.showQuickPick(SERVER_INPUT_MODE_ITEMS, {
+    title: 'Серверная база: способ редактирования',
+    placeHolder: 'Строка подключения или по шагам',
+  });
+  if (!modePick) {
+    return;
+  }
+  if (modePick.mode === 'fields') {
+    await editServerInfobaseByFields(storage, entry, existing);
+    return;
+  }
+
+  const name =
+    (await vscode.window.showInputBox({
+      title: 'Имя базы',
+      value: entry.name,
+      validateInput: (v) => (v?.trim() ? null : 'Введите непустое имя'),
+    }))?.trim() ?? '';
+  if (!name) {
+    return;
+  }
+
+  const connDefault = formatServerConnectionString({
+    server: entry.server ?? '',
+    ref: entry.database ?? '',
+    user: entry.user,
+  });
+  const connLine =
+    (await vscode.window.showInputBox({
+      title: 'Подключение (Srvr=…;Ref=…)',
+      prompt:
+        'Можно добавить Usr= и Pwd= в строку: при смене пароля через строку он сохранится в SecretStorage; Pwd="" — сбросить сохранённый пароль.',
+      value: connDefault,
+      ignoreFocusOut: true,
+      validateInput: (v) => {
+        const r = parseServerConnectionString(v.trim());
+        return r.ok ? null : r.error;
+      },
+    }))?.trim() ?? '';
+  if (!connLine) {
+    return;
+  }
+  const parsed = parseServerConnectionString(connLine);
+  if (!parsed.ok) {
+    return;
+  }
+
+  let hasStoredPassword = entry.hasStoredPassword;
+  if (parsed.pwdKeyPresent) {
+    hasStoredPassword = !!parsed.password;
+  }
+
+  const pwdHint = entry.hasStoredPassword
+    ? 'Пароль сохранён. Пусто — не менять, «-» — удалить.'
+    : 'Пароль (необязательно)';
+  let passwordReply = '';
+  if (!parsed.pwdKeyPresent) {
+    const reply = await vscode.window.showInputBox({
+      title: 'Пароль',
+      prompt: pwdHint,
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (reply === undefined) {
+      return;
+    }
+    passwordReply = reply;
+    if (passwordReply === '-') {
+      hasStoredPassword = false;
+    } else if (passwordReply.length > 0) {
+      hasStoredPassword = true;
+    }
+  }
+
+  const next: InfobaseEntry = {
+    ...entry,
+    name,
+    server: parsed.server,
+    database: parsed.ref,
+    user: parsed.user,
+    hasStoredPassword,
+    lastUsedAt: entry.lastUsedAt,
+  };
+  validateInfobaseEntry(next);
+  assertNoConflictingInfobaseTarget(next, existing, entry.id);
+  await storage.upsert(next);
+
+  if (parsed.pwdKeyPresent) {
+    if (parsed.password) {
+      await storage.writePasswordSecret(entry.id, parsed.password);
+    }
+  } else if (passwordReply.length > 0 && passwordReply !== '-') {
     await storage.writePasswordSecret(entry.id, passwordReply);
   }
   void vscode.window.showInformationMessage(`База «${name}» обновлена.`);

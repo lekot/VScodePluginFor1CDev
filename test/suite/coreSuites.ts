@@ -26,6 +26,7 @@ export const coreSuiteFiles: string[] = [
   'suite/dataProcessorOperations.test.js',
   'suite/diagnosticsSummary.test.js',
   'suite/configHelpers.test.js',
+  'suite/connectionString.test.js',
   'suite/commandHelpers.test.js',
   'suite/optimisticNodeBuilder.test.js',
   'suite/elementCommands.test.js',

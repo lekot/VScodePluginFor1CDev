@@ -15,6 +15,7 @@
 | [infobase-manager-wireframes.md](./infobase-manager-wireframes.md) | UI/UX wireframes: панель, диалоги, уведомления |
 | [ibcmd-api-reference.md](./ibcmd-api-reference.md) | Справочник команд ibcmd для реализации |
 | [v8i-format-spec.md](./v8i-format-spec.md) | Спецификация формата .v8i с парсером |
+| [infobase-server-dbms-rights.md](./infobase-server-dbms-rights.md) | Серверная ИБ: права в СУБД и ответственность администратора (WOW §3B) |
 
 ## Ключевые возможности
 

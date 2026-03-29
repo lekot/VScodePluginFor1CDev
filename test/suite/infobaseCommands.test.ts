@@ -74,6 +74,10 @@ class MapSecretStorage implements SecretStorage {
   }
 }
 
+/** §3B: первый шаг при добавлении/редактировании серверной ИБ — выбор «строка / по полям». */
+const SERVER_INPUT_FIELDS_MODE = { label: 'fields', mode: 'fields' as const };
+const SERVER_INPUT_CONNECTION_STRING_MODE = { label: 'conn', mode: 'connectionString' as const };
+
 function makeEntry(overrides: Partial<InfobaseEntry> = {}): InfobaseEntry {
   const now = new Date().toISOString();
   const id = overrides.id ?? randomUUID();
@@ -170,11 +174,15 @@ suite('infobaseCommands runCreateInfobase', () => {
     assert.deepStrictEqual(await service.load(), []);
   });
 
-  test('server type shows §3B stub and does not change catalog', async () => {
+  test('server type shows stub and does not change catalog', async () => {
     vscodeTestState.quickPickQueue.push({ label: 'srv', type: 'server' as const });
     await runCreateInfobase(service);
     assert.deepStrictEqual(await service.load(), []);
-    assert.ok(vscodeTestState.informationLog.some((m) => m.includes('§3B')));
+    assert.ok(
+      vscodeTestState.informationLog.some(
+        (m) => m.includes('Добавить существующую') && m.includes('Srvr'),
+      ),
+    );
   });
 
   test('web type shows §3C stub and does not change catalog', async () => {
@@ -422,7 +430,10 @@ suite('infobaseCommands runAddExistingInfobase', () => {
   });
 
   test('adds server infobase and stores password when provided', async () => {
-    vscodeTestState.quickPickQueue.push({ label: 'srv', type: 'server' as const });
+    vscodeTestState.quickPickQueue.push(
+      { label: 'srv', type: 'server' as const },
+      SERVER_INPUT_FIELDS_MODE,
+    );
     vscodeTestState.inputBoxQueue.push('cluster.local', 'db1', '', 'secret', 'SrvTitle');
     await runAddExistingInfobase(service);
     const list = await service.load();
@@ -446,7 +457,10 @@ suite('infobaseCommands runAddExistingInfobase', () => {
         database: 'D',
       }),
     ]);
-    vscodeTestState.quickPickQueue.push({ label: 'srv', type: 'server' as const });
+    vscodeTestState.quickPickQueue.push(
+      { label: 'srv', type: 'server' as const },
+      SERVER_INPUT_FIELDS_MODE,
+    );
     vscodeTestState.inputBoxQueue.push('s', 'd', '', undefined, 'B');
     await runAddExistingInfobase(service);
     assert.strictEqual((await service.load()).length, 1);
@@ -495,13 +509,85 @@ suite('infobaseCommands runAddExistingInfobase', () => {
   });
 
   test('add server: no password does not write secret', async () => {
-    vscodeTestState.quickPickQueue.push({ label: 'srv', type: 'server' as const });
+    vscodeTestState.quickPickQueue.push(
+      { label: 'srv', type: 'server' as const },
+      SERVER_INPUT_FIELDS_MODE,
+    );
     vscodeTestState.inputBoxQueue.push('srv1', 'db1', '', undefined, 'NoPwd');
     await runAddExistingInfobase(service);
     const list = await service.load();
     assert.strictEqual(list.length, 1);
     assert.strictEqual(list[0].hasStoredPassword, false);
     assert.strictEqual(await secrets.get(`1cMetadataTree.infobase.password.${list[0].id}`), undefined);
+  });
+
+  test('add server: cancel at server input mode does not add entry', async () => {
+    vscodeTestState.quickPickQueue.push({ label: 'srv', type: 'server' as const }, undefined);
+    await runAddExistingInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('add server via connection string with Pwd stores secret', async () => {
+    vscodeTestState.quickPickQueue.push(
+      { label: 'srv', type: 'server' as const },
+      SERVER_INPUT_CONNECTION_STRING_MODE,
+    );
+    vscodeTestState.inputBoxQueue.push('Srvr="cs-srv";Ref="cs-ref";Usr="u";Pwd="cs-secret";', 'ListedCs');
+    await runAddExistingInfobase(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].type, 'server');
+    assert.strictEqual(list[0].server, 'cs-srv');
+    assert.strictEqual(list[0].database, 'cs-ref');
+    assert.strictEqual(list[0].user, 'u');
+    assert.strictEqual(list[0].hasStoredPassword, true);
+    const stored = await secrets.get(`1cMetadataTree.infobase.password.${list[0].id}`);
+    assert.strictEqual(stored, 'cs-secret');
+  });
+
+  test('add server via connection string without Pwd asks user and optional password', async () => {
+    vscodeTestState.quickPickQueue.push(
+      { label: 'srv', type: 'server' as const },
+      SERVER_INPUT_CONNECTION_STRING_MODE,
+    );
+    vscodeTestState.inputBoxQueue.push('Srvr="line-srv";Ref="line-ref";', 'line-user', 'line-pwd', 'LineName');
+    await runAddExistingInfobase(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].server, 'line-srv');
+    assert.strictEqual(list[0].database, 'line-ref');
+    assert.strictEqual(list[0].user, 'line-user');
+    assert.strictEqual(list[0].hasStoredPassword, true);
+    assert.strictEqual(
+      await secrets.get(`1cMetadataTree.infobase.password.${list[0].id}`),
+      'line-pwd',
+    );
+  });
+
+  test('add server via connection string rejects invalid line', async () => {
+    vscodeTestState.quickPickQueue.push(
+      { label: 'srv', type: 'server' as const },
+      SERVER_INPUT_CONNECTION_STRING_MODE,
+    );
+    vscodeTestState.inputBoxQueue.push('Srvr="only";');
+    await runAddExistingInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+  });
+
+  test('add server via connection string with empty Pwd key: no secret, hasStoredPassword false', async () => {
+    vscodeTestState.quickPickQueue.push(
+      { label: 'srv', type: 'server' as const },
+      SERVER_INPUT_CONNECTION_STRING_MODE,
+    );
+    vscodeTestState.inputBoxQueue.push('Srvr="ep";Ref="er";Pwd="";', '', 'EmptyPwdName');
+    await runAddExistingInfobase(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].hasStoredPassword, false);
+    assert.strictEqual(
+      await secrets.get(`1cMetadataTree.infobase.password.${list[0].id}`),
+      undefined,
+    );
   });
 });
 
@@ -603,6 +689,7 @@ suite('infobaseCommands runEditInfobase', () => {
     await service.saveAll([e]);
     const key = `1cMetadataTree.infobase.password.${e.id}`;
     await secrets.store(key, 'old-secret');
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_FIELDS_MODE);
     vscodeTestState.inputBoxQueue.push('S', 'cl', 'db', '', '-');
     await runEditInfobase(service, e);
     const one = await service.getById(e.id);
@@ -649,6 +736,173 @@ suite('infobaseCommands runEditInfobase', () => {
     await runEditInfobase(service, e);
     const one = await service.getById(e.id);
     assert.strictEqual(one?.name, 'W2');
+  });
+
+  test('edit server: cancel at input mode leaves entry unchanged', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'Keep',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 's0',
+      database: 'd0',
+    });
+    await service.saveAll([e]);
+    vscodeTestState.quickPickQueue.push(undefined);
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.name, 'Keep');
+    assert.strictEqual(one?.server, 's0');
+    assert.strictEqual(one?.database, 'd0');
+  });
+
+  test('edit server fields: cancel password step does not upsert', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'N',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 's1',
+      database: 'd1',
+    });
+    await service.saveAll([e]);
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_FIELDS_MODE);
+    vscodeTestState.inputBoxQueue.push('N2', 's2', 'd2', '', undefined);
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.name, 'N');
+    assert.strictEqual(one?.server, 's1');
+    assert.strictEqual(one?.database, 'd1');
+  });
+
+  test('edit server via connection string updates cluster and database', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'Srv',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 'old',
+      database: 'odb',
+      user: 'u0',
+      hasStoredPassword: false,
+    });
+    await service.saveAll([e]);
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_CONNECTION_STRING_MODE);
+    vscodeTestState.inputBoxQueue.push(
+      'Srv2',
+      'Srvr="newcl";Ref="ndb";Usr="u1";',
+      '',
+    );
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.name, 'Srv2');
+    assert.strictEqual(one?.server, 'newcl');
+    assert.strictEqual(one?.database, 'ndb');
+    assert.strictEqual(one?.user, 'u1');
+  });
+
+  test('edit server via connection string with Pwd updates secret', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'P',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 's',
+      database: 'd',
+      hasStoredPassword: false,
+    });
+    await service.saveAll([e]);
+    const key = `1cMetadataTree.infobase.password.${e.id}`;
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_CONNECTION_STRING_MODE);
+    vscodeTestState.inputBoxQueue.push('P', 'Srvr="s";Ref="d";Pwd="newpw";');
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.hasStoredPassword, true);
+    assert.strictEqual(await secrets.get(key), 'newpw');
+  });
+
+  test('edit server fields: empty password keeps hasStoredPassword and existing secret', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'KeepPwd',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 'cl',
+      database: 'db',
+      hasStoredPassword: true,
+    });
+    await service.saveAll([e]);
+    const key = `1cMetadataTree.infobase.password.${e.id}`;
+    await secrets.store(key, 'unchanged');
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_FIELDS_MODE);
+    vscodeTestState.inputBoxQueue.push('KeepPwd', 'cl', 'db', '', '');
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.hasStoredPassword, true);
+    assert.strictEqual(await secrets.get(key), 'unchanged');
+  });
+
+  test('edit server fields: new non-empty password writes secret', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'SetPwd',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 's',
+      database: 'd',
+      hasStoredPassword: false,
+    });
+    await service.saveAll([e]);
+    const key = `1cMetadataTree.infobase.password.${e.id}`;
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_FIELDS_MODE);
+    vscodeTestState.inputBoxQueue.push('SetPwd', 's', 'd', '', 'fresh-secret');
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.hasStoredPassword, true);
+    assert.strictEqual(await secrets.get(key), 'fresh-secret');
+  });
+
+  test('edit server connection string: cancel optional password step leaves entry unchanged', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'NoChange',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 'orig',
+      database: 'odb',
+      user: 'u0',
+      hasStoredPassword: false,
+    });
+    await service.saveAll([e]);
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_CONNECTION_STRING_MODE);
+    vscodeTestState.inputBoxQueue.push('NoChange', 'Srvr="new";Ref="ndb";Usr="u1";', undefined);
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.name, 'NoChange');
+    assert.strictEqual(one?.server, 'orig');
+    assert.strictEqual(one?.database, 'odb');
+    assert.strictEqual(one?.user, 'u0');
+  });
+
+  test('edit server connection string: Pwd="" clears hasStoredPassword and secret', async () => {
+    const e = makeEntry({
+      type: 'server',
+      name: 'Clr',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      server: 's',
+      database: 'd',
+      hasStoredPassword: true,
+    });
+    await service.saveAll([e]);
+    const key = `1cMetadataTree.infobase.password.${e.id}`;
+    await secrets.store(key, 'will-clear');
+    vscodeTestState.quickPickQueue.push(SERVER_INPUT_CONNECTION_STRING_MODE);
+    vscodeTestState.inputBoxQueue.push('Clr', 'Srvr="s";Ref="d";Pwd="";');
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.hasStoredPassword, false);
+    assert.strictEqual(await secrets.get(key), undefined);
   });
 });
 

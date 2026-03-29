@@ -294,9 +294,10 @@ suite('InfobaseTreeDataProvider', () => {
         user: 'u1',
       }),
     }).tooltip as string;
-    assert.ok(srvTip.includes('Сервер: host'));
-    assert.ok(srvTip.includes('База: db'));
-    assert.ok(srvTip.includes('Пользователь: u1'));
+    assert.ok(srvTip.includes('SrvIb'));
+    assert.ok(srvTip.includes('Srvr="host"'));
+    assert.ok(srvTip.includes('Ref="db"'));
+    assert.ok(srvTip.includes('Usr="u1"'));
     const webTip = p.getTreeItem({
       kind: 'entry',
       entry: entry({ id: '3', name: 'WebIb', type: 'web', webUrl: 'https://a/b' }),

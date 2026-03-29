@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { InfobaseEntry, InfobaseEntryType } from './models/infobaseEntry';
+import { formatServerConnectionString } from './models/connectionString';
 import { InfobaseStorageService } from './infobaseStorageService';
 import { Logger } from '../utils/logger';
 
@@ -76,14 +77,18 @@ function entryTooltip(entry: InfobaseEntry): string {
       lines.push(`YAML ibcmd: ${entry.ibcmdConfigYamlPath}`);
     }
   } else if (entry.type === 'server') {
-    if (entry.server) {
-      lines.push(`Сервер: ${entry.server}`);
-    }
-    if (entry.database) {
-      lines.push(`База: ${entry.database}`);
-    }
-    if (entry.user) {
-      lines.push(`Пользователь: ${entry.user}`);
+    if (entry.server && entry.database) {
+      lines.push(formatServerConnectionString({ server: entry.server, ref: entry.database, user: entry.user }));
+    } else {
+      if (entry.server) {
+        lines.push(`Сервер: ${entry.server}`);
+      }
+      if (entry.database) {
+        lines.push(`База: ${entry.database}`);
+      }
+      if (entry.user) {
+        lines.push(`Пользователь: ${entry.user}`);
+      }
     }
   } else if (entry.type === 'web' && entry.webUrl) {
     lines.push(`URL: ${entry.webUrl}`);

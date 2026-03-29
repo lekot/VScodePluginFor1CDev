@@ -19,6 +19,7 @@ function sortEntries(entries: InfobaseEntry[]): InfobaseEntry[] {
 
 /**
  * Reads/writes the global infobase catalog in `globalState`, keeps passwords in `SecretStorage`.
+ * WOW Infobase Manager §3B #51 (план: «infobaseStorage») — пароли серверных ИБ не в `globalState`.
  */
 export class InfobaseStorageService {
   /** Entries in last persisted order (not necessarily sorted). */
