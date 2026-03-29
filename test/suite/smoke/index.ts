@@ -18,6 +18,8 @@ export function run(): Promise<void> {
 
   return new Promise((resolve, reject) => {
     const testFiles = glob.sync('**/*.test.js', { cwd: testsRoot });
+    // Deterministic order (Windows glob differs): deployBindingRealIbcmd before smoke.test.js.
+    testFiles.sort((a, b) => a.localeCompare(b, 'en'));
     testFiles.forEach((file) => mocha.addFile(path.resolve(testsRoot, file)));
     const discoveredSuites = testFiles.map((file) => `suite/smoke/${file.replace(/\\/g, '/')}`).sort();
     const executedSuitesSet = new Set<string>();
