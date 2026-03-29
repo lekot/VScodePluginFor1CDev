@@ -1,6 +1,11 @@
-import type { InfobaseEntry, InfobaseLaunchSettings, InfobaseStorageRoot } from './models/infobaseEntry';
+import type {
+  InfobaseEntry,
+  InfobaseFolder,
+  InfobaseLaunchSettings,
+  InfobaseStorageRoot,
+} from './models/infobaseEntry';
 
-const CURRENT_ROOT_SCHEMA = 2 as const;
+const CURRENT_ROOT_SCHEMA = 3 as const;
 
 function isRecord(x: unknown): x is Record<string, unknown> {
   return x !== null && typeof x === 'object';
@@ -74,6 +79,9 @@ export function migrateDesignEntry(raw: unknown): InfobaseEntry | null {
     launchSettingsOut = undefined;
   }
 
+  const folderId =
+    typeof o.folderId === 'string' && o.folderId.trim().length > 0 ? o.folderId.trim() : undefined;
+
   return {
     id,
     name,
@@ -88,6 +96,7 @@ export function migrateDesignEntry(raw: unknown): InfobaseEntry | null {
     createdAt,
     lastUsedAt,
     ibcmdConfigYamlPath,
+    folderId,
   };
 }
 
@@ -104,21 +113,35 @@ export function migrateInfobaseEntry(raw: unknown): InfobaseEntry | null {
   return null;
 }
 
+function migrateFolder(raw: unknown): InfobaseFolder | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+  const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+  if (!id || !name) {
+    return null;
+  }
+  const parentId =
+    typeof raw.parentId === 'string' && raw.parentId.trim().length > 0 ? raw.parentId.trim() : undefined;
+  return { id, name, parentId };
+}
+
 /**
- * Parses unknown memento payload into {@link InfobaseStorageRoot} (v2).
- * Only {@link CURRENT_ROOT_SCHEMA} is accepted; anything else yields an empty catalog.
+ * Parses unknown memento payload into {@link InfobaseStorageRoot} (v3).
+ * Принимает v2 (только entries) и v3 (entries + folders); иное — пустой каталог.
  */
 export function migrateStorageRoot(raw: unknown): InfobaseStorageRoot {
   if (raw === null || raw === undefined) {
-    return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries: [] };
+    return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries: [], folders: [] };
   }
   if (!isRecord(raw)) {
-    return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries: [] };
+    return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries: [], folders: [] };
   }
   const ver = raw.rootSchemaVersion;
   const entriesRaw = raw.entries;
-  if (ver !== CURRENT_ROOT_SCHEMA || !Array.isArray(entriesRaw)) {
-    return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries: [] };
+  if ((ver !== 2 && ver !== 3) || !Array.isArray(entriesRaw)) {
+    return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries: [], folders: [] };
   }
   const entries: InfobaseEntry[] = [];
   for (const item of entriesRaw) {
@@ -127,5 +150,14 @@ export function migrateStorageRoot(raw: unknown): InfobaseStorageRoot {
       entries.push(migrated);
     }
   }
-  return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries };
+  const folders: InfobaseFolder[] = [];
+  if (ver === 3 && Array.isArray(raw.folders)) {
+    for (const item of raw.folders) {
+      const f = migrateFolder(item);
+      if (f) {
+        folders.push(f);
+      }
+    }
+  }
+  return { rootSchemaVersion: CURRENT_ROOT_SCHEMA, entries, folders };
 }

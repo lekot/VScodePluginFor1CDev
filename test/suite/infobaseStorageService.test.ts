@@ -8,7 +8,7 @@ import {
   INFOBASE_PASSWORD_SECRET_PREFIX,
   INFOBASE_STORAGE_MAX_ENTRIES,
 } from '../../src/infobases/constants';
-import { migrateInfobaseEntry, migrateStorageRoot } from '../../src/infobases/infobaseMigration';
+import { migrateDesignEntry, migrateInfobaseEntry, migrateStorageRoot } from '../../src/infobases/infobaseMigration';
 import { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import {
   InfobaseValidationError,
@@ -16,9 +16,11 @@ import {
   infobaseDuplicateTargetKey,
   normalizeFsPathForCompare,
   validateInfobaseEntry,
+  validateInfobaseCatalog,
   validateInfobaseEntryList,
+  validateInfobaseFolders,
 } from '../../src/infobases/infobaseValidator';
-import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
+import type { InfobaseEntry, InfobaseFolder } from '../../src/infobases/models/infobaseEntry';
 import { ExtensionState } from '../../src/state/extensionState';
 
 type SecretStorageChangeEvent = { key: string };
@@ -140,18 +142,18 @@ suite('infobaseConstants', () => {
 
 suite('infobaseMigration', () => {
   test('migrateStorageRoot returns empty for null and undefined', () => {
-    assert.deepStrictEqual(migrateStorageRoot(null), { rootSchemaVersion: 2, entries: [] });
-    assert.deepStrictEqual(migrateStorageRoot(undefined), { rootSchemaVersion: 2, entries: [] });
+    assert.deepStrictEqual(migrateStorageRoot(null), { rootSchemaVersion: 3, entries: [], folders: [] });
+    assert.deepStrictEqual(migrateStorageRoot(undefined), { rootSchemaVersion: 3, entries: [], folders: [] });
   });
 
   test('migrateStorageRoot returns empty for wrong rootSchemaVersion', () => {
     const r = migrateStorageRoot({ rootSchemaVersion: 9, entries: [] });
-    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
+    assert.deepStrictEqual(r, { rootSchemaVersion: 3, entries: [], folders: [] });
   });
 
   test('migrateStorageRoot returns empty when entries is not an array', () => {
     const r = migrateStorageRoot({ rootSchemaVersion: 2, entries: {} });
-    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
+    assert.deepStrictEqual(r, { rootSchemaVersion: 3, entries: [], folders: [] });
   });
 
   test('migrateStorageRoot filters out invalid array items', () => {
@@ -172,13 +174,15 @@ suite('infobaseMigration', () => {
       ],
     };
     const r = migrateStorageRoot(raw);
+    assert.strictEqual(r.rootSchemaVersion, 3);
+    assert.deepStrictEqual(r.folders, []);
     assert.strictEqual(r.entries.length, 1);
     assert.strictEqual(r.entries[0].id, goodId);
   });
 
   test('migrateStorageRoot returns empty for non-object', () => {
     const r = migrateStorageRoot('x');
-    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
+    assert.deepStrictEqual(r, { rootSchemaVersion: 3, entries: [], folders: [] });
   });
 
   test('migrateStorageRoot returns empty for rootSchemaVersion other than 2', () => {
@@ -198,7 +202,76 @@ suite('infobaseMigration', () => {
       ],
     };
     const r = migrateStorageRoot(raw);
-    assert.deepStrictEqual(r, { rootSchemaVersion: 2, entries: [] });
+    assert.deepStrictEqual(r, { rootSchemaVersion: 3, entries: [], folders: [] });
+  });
+
+  test('migrateStorageRoot v2 payload becomes v3 with folders empty', () => {
+    const id = randomUUID();
+    const raw = {
+      rootSchemaVersion: 2,
+      entries: [
+        {
+          id,
+          name: 'A',
+          type: 'file',
+          filePath: '/x',
+          ibcmdConfigYamlPath: '/x/y.yaml',
+          hasStoredPassword: false,
+          createdAt: '2020-01-01T00:00:00.000Z',
+        },
+      ],
+    };
+    const r = migrateStorageRoot(raw);
+    assert.strictEqual(r.rootSchemaVersion, 3);
+    assert.deepStrictEqual(r.folders, []);
+    assert.strictEqual(r.entries.length, 1);
+    assert.strictEqual(r.entries[0].id, id);
+  });
+
+  test('migrateStorageRoot v2 ignores folders property (only v3 persists folders)', () => {
+    const fid = randomUUID();
+    const raw = {
+      rootSchemaVersion: 2,
+      entries: [],
+      folders: [{ id: fid, name: 'Ghost' }],
+    };
+    const r = migrateStorageRoot(raw);
+    assert.deepStrictEqual(r.folders, []);
+  });
+
+  test('migrateStorageRoot v3 keeps folders and drops invalid folder rows', () => {
+    const fid = randomUUID();
+    const raw = {
+      rootSchemaVersion: 3,
+      entries: [],
+      folders: [
+        { id: fid, name: 'OK' },
+        { id: '', name: 'bad' },
+        { id: randomUUID(), name: '   ' },
+      ],
+    };
+    const r = migrateStorageRoot(raw);
+    assert.ok(r.folders);
+    assert.strictEqual(r.folders.length, 1);
+    assert.strictEqual(r.folders[0].id, fid);
+  });
+
+  test('migrateDesignEntry preserves folderId when valid', () => {
+    const id = randomUUID();
+    const fid = randomUUID();
+    const row = {
+      id,
+      name: 'N',
+      type: 'file',
+      filePath: '/p',
+      ibcmdConfigYamlPath: '/p/y.yaml',
+      hasStoredPassword: false,
+      createdAt: '2020-01-01T00:00:00.000Z',
+      folderId: `  ${fid}  `,
+    };
+    const m = migrateDesignEntry(row);
+    assert.ok(m);
+    assert.strictEqual(m!.folderId, fid);
   });
 
   test('migrateInfobaseEntry drops invalid rows', () => {
@@ -479,6 +552,42 @@ suite('infobaseValidator', () => {
     });
     assert.ok(infobaseDuplicateTargetKey(e).startsWith('web:raw:'));
   });
+
+  test('validateInfobaseFolders rejects duplicate folder id', () => {
+    const id = randomUUID();
+    assert.throws(
+      () =>
+        validateInfobaseFolders([
+          { id, name: 'A' },
+          { id, name: 'B' },
+        ]),
+      InfobaseValidationError,
+    );
+  });
+
+  test('validateInfobaseFolders rejects folder as its own parent', () => {
+    const id = randomUUID();
+    assert.throws(() => validateInfobaseFolders([{ id, name: 'X', parentId: id }]), InfobaseValidationError);
+  });
+
+  test('validateInfobaseFolders rejects missing parent id', () => {
+    const id = randomUUID();
+    assert.throws(
+      () => validateInfobaseFolders([{ id, name: 'X', parentId: randomUUID() }]),
+      InfobaseValidationError,
+    );
+  });
+
+  test('validateInfobaseFolders accepts nested chain', () => {
+    const root = randomUUID();
+    const child = randomUUID();
+    assert.doesNotThrow(() =>
+      validateInfobaseFolders([
+        { id: root, name: 'R' },
+        { id: child, name: 'C', parentId: root },
+      ]),
+    );
+  });
 });
 
 suite('normalizeFsPathForCompare', () => {
@@ -513,14 +622,16 @@ suite('InfobaseStorageService', () => {
     assert.strictEqual(loaded[1].id, e1.id);
   });
 
-  test('saveAll persists under design global state key with rootSchemaVersion 2', async () => {
+  test('saveAll persists under design global state key with rootSchemaVersion 3 and folders', async () => {
     const e = makeEntry();
     await service.saveAll([e]);
     const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as {
       rootSchemaVersion: number;
       entries: InfobaseEntry[];
+      folders: InfobaseFolder[];
     };
-    assert.strictEqual(stored.rootSchemaVersion, 2);
+    assert.strictEqual(stored.rootSchemaVersion, 3);
+    assert.deepStrictEqual(stored.folders, []);
     assert.strictEqual(stored.entries.length, 1);
     assert.strictEqual(stored.entries[0].id, e.id);
   });
@@ -602,7 +713,105 @@ suite('InfobaseStorageService', () => {
     await assert.rejects(() => service.upsert(bad), InfobaseValidationError);
   });
 
+  test('loadFolders returns empty when no folders saved', async () => {
+    assert.deepStrictEqual(await service.loadFolders(), []);
+    await service.saveAll([makeEntry()]);
+    assert.deepStrictEqual(await service.loadFolders(), []);
+  });
+
+  test('saveFolders persists and loadFolders sorts by name case-insensitively', async () => {
+    const f1: InfobaseFolder = { id: randomUUID(), name: 'beta' };
+    const f2: InfobaseFolder = { id: randomUUID(), name: 'Alpha' };
+    await service.saveFolders([f1, f2]);
+    const loaded = await service.loadFolders();
+    assert.strictEqual(loaded.length, 2);
+    assert.strictEqual(loaded[0].name, 'Alpha');
+    assert.strictEqual(loaded[1].name, 'beta');
+    const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as { rootSchemaVersion: number; folders: InfobaseFolder[] };
+    assert.strictEqual(stored.rootSchemaVersion, 3);
+    assert.strictEqual(stored.folders.length, 2);
+  });
+
+  test('saveAll keeps existing folders when updating entries only', async () => {
+    const f: InfobaseFolder = { id: randomUUID(), name: 'F' };
+    await service.saveFolders([f]);
+    const e = makeEntry();
+    await service.saveAll([e]);
+    const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as { folders: InfobaseFolder[]; entries: InfobaseEntry[] };
+    assert.strictEqual(stored.folders.length, 1);
+    assert.strictEqual(stored.entries.length, 1);
+  });
+
+  test('saveAll rejects entry with unknown folderId', async () => {
+    const e = makeEntry({ folderId: randomUUID() });
+    await assert.rejects(() => service.saveAll([e]), InfobaseValidationError);
+  });
+
+  test('remove keeps folder list intact', async () => {
+    const f: InfobaseFolder = { id: randomUUID(), name: 'F' };
+    await service.saveFolders([f]);
+    const e = makeEntry();
+    await service.saveAll([e]);
+    await service.remove(e.id);
+    assert.deepStrictEqual(await service.loadFolders(), [f]);
+  });
+
+  test('onDidChangeCatalog fires after saveFolders', async () => {
+    let n = 0;
+    const sub = service.onDidChangeCatalog(() => {
+      n += 1;
+    });
+    await service.saveFolders([{ id: randomUUID(), name: 'X' }]);
+    sub.dispose();
+    assert.strictEqual(n, 1);
+  });
+
+  test('saveFolders rejects folder parent cycle', async () => {
+    const a = randomUUID();
+    const b = randomUUID();
+    await assert.rejects(
+      () =>
+        service.saveFolders([
+          { id: a, name: 'A', parentId: b },
+          { id: b, name: 'B', parentId: a },
+        ]),
+      InfobaseValidationError,
+    );
+  });
+
+  test('loadFolders returns empty when globalState.get throws', async () => {
+    const broken = new ThrowingGetMemento();
+    const s = new InfobaseStorageService(broken, secrets);
+    assert.deepStrictEqual(await s.loadFolders(), []);
+  });
+
+  test('saveAll accepts entry with folderId when folder exists', async () => {
+    const fid = randomUUID();
+    await service.saveFolders([{ id: fid, name: 'Box' }]);
+    const e = makeEntry({ folderId: fid });
+    await service.saveAll([e]);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.folderId, fid);
+  });
 });
+
+suite('validateInfobaseCatalog (Phase 4 folders)', () => {
+  test('rejects folder parent cycle', () => {
+    const a = randomUUID();
+    const b = randomUUID();
+    const folders: InfobaseFolder[] = [
+      { id: a, name: 'A', parentId: b },
+      { id: b, name: 'B', parentId: a },
+    ];
+    assert.throws(() => validateInfobaseCatalog([], folders), InfobaseValidationError);
+  });
+
+  test('rejects entry folderId not in folders list', () => {
+    const e = makeEntry({ folderId: randomUUID() });
+    assert.throws(() => validateInfobaseCatalog([e], []), InfobaseValidationError);
+  });
+});
+
 
 suite('ExtensionState infobase wiring', () => {
   test('starts with infobaseStorage null', () => {
@@ -627,7 +836,13 @@ suite('ExtensionState infobase wiring', () => {
 
     const e = makeEntry();
     await ib.saveAll([e]);
-    const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as { entries: InfobaseEntry[] };
+    const stored = memento.get(INFOBASE_GLOBAL_STATE_KEY) as {
+      rootSchemaVersion: number;
+      entries: InfobaseEntry[];
+      folders: InfobaseFolder[];
+    };
+    assert.strictEqual(stored.rootSchemaVersion, 3);
+    assert.deepStrictEqual(stored.folders, []);
     assert.strictEqual(stored.entries.length, 1);
 
     state.dispose();

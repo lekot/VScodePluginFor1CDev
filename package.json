@@ -204,6 +204,18 @@
         "icon": "$(file)"
       },
       {
+        "command": "1c-metadata-tree.infobases.exportV8i",
+        "title": "Infobase Manager: экспорт в .v8i",
+        "category": "CDT 41",
+        "icon": "$(export)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.newFolder",
+        "title": "Infobase Manager: новая папка",
+        "category": "CDT 41",
+        "icon": "$(new-folder)"
+      },
+      {
         "command": "1c-metadata-tree.infobase.openEnterprise",
         "title": "Открыть в 1С:Предприятие",
         "category": "CDT 41",
@@ -232,6 +244,30 @@
         "title": "Проверить конфигурацию",
         "category": "CDT 41",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.compareConfig",
+        "title": "Сравнить конфигурацию с другой базой…",
+        "category": "CDT 41",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.moveToFolder",
+        "title": "Переместить в папку…",
+        "category": "CDT 41",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.deleteFolder",
+        "title": "Удалить папку",
+        "category": "CDT 41",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.renameFolder",
+        "title": "Переименовать папку…",
+        "category": "CDT 41",
+        "icon": "$(edit)"
       },
       {
         "command": "1c-metadata-tree.infobase.edit",
@@ -350,6 +386,16 @@
           "command": "1c-metadata-tree.infobases.importV8i",
           "when": "view == 1c-infobase-manager",
           "group": "navigation@4"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.exportV8i",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@5"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.newFolder",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [
@@ -359,13 +405,28 @@
           "group": "infobase@0"
         },
         {
+          "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot/",
+          "group": "infobase@0"
+        },
+        {
           "command": "1c-metadata-tree.config.deploy",
           "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound.*deployOne/",
           "group": "infobase@1"
         },
         {
+          "command": "1c-metadata-tree.config.deploy",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot.*bindingBound.*deployOne/",
+          "group": "infobase@1"
+        },
+        {
           "command": "1c-metadata-tree.config.deployMultiple",
           "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound.*deployMany/",
+          "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployMultiple",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot.*bindingBound.*deployMany/",
           "group": "infobase@1"
         },
         {
@@ -499,6 +560,16 @@
           "group": "infobase@5"
         },
         {
+          "command": "1c-metadata-tree.infobase.compareConfig",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@5b"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.moveToFolder",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@5c"
+        },
+        {
           "command": "1c-metadata-tree.infobase.edit",
           "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
           "group": "infobase@6"
@@ -507,6 +578,26 @@
           "command": "1c-metadata-tree.infobase.remove",
           "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
           "group": "infobase@7"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.newFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFoldersRoot'",
+          "group": "infobaseFolder@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.newFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
+          "group": "infobaseFolder@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.renameFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
+          "group": "infobaseFolder@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.deleteFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
+          "group": "infobaseFolder@3"
         }
       ]
     },
@@ -568,6 +659,16 @@
           "type": "boolean",
           "default": false,
           "description": "Log ibcmd config import diagnostics to \"CDT 41: Infobase (ibcmd)\": --config path, redacted YAML body (target infobase), and configuration dump directory passed as the last CLI argument (not stored in YAML). Use when debugging deploy / YAML path issues."
+        },
+        "1cMetadataTree.git.reloadMetadataOnHeadChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "WOW Phase 4: when the built-in Git extension reports a new HEAD commit in a workspace repository, reload the CDT 41 metadata tree (useful after git pull or checkout)."
+        },
+        "1cMetadataTree.git.refreshInfobaseManagerOnHeadChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "WOW Phase 4: when Git HEAD changes in a workspace repository, refresh the Infobase Manager tree and binding decorations (e.g. after pull when .vscode/infobase-bindings.json changed)."
         },
         "1cMetadataTree.deploy.mode": {
           "type": "string",

@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
@@ -18,7 +19,11 @@ import { TOP_LEVEL_TYPES } from '../services/elementOperations';
 import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
 import { expectedTreeNodeIdForCompositionRef } from '../services/subsystemCompositionRefResolver';
 import type { ConfigurationBindingDecoration } from '../bindings/bindingDecorationTypes';
-import { bindingKey, normalizeConfigRelativePath } from '../bindings/bindingPathUtils';
+import {
+  bindingKey,
+  detectIbcmdExtensionNameFromConfigRelativePath,
+  normalizeConfigRelativePath,
+} from '../bindings/bindingPathUtils';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -104,22 +109,68 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private lookupConfigurationBindingDecoration(element: TreeNode): ConfigurationBindingDecoration | undefined {
-    if (element.type !== MetadataType.Configuration) {
-      return undefined;
+    if (element.type === MetadataType.Configuration) {
+      const configDir = this.getConfigPathForNode(element);
+      if (!configDir) {
+        return undefined;
+      }
+      const configXmlFs = path.join(configDir, 'Configuration.xml');
+      const uri = vscode.Uri.file(configXmlFs);
+      const wf = vscode.workspace.getWorkspaceFolder(uri);
+      if (!wf) {
+        return undefined;
+      }
+      const rel = path.relative(wf.uri.fsPath, configXmlFs).replace(/\\/g, '/');
+      const norm = normalizeConfigRelativePath(rel);
+      const ext = detectIbcmdExtensionNameFromConfigRelativePath(norm);
+      const key = bindingKey(wf.name, norm, ext);
+      return this.configurationBindingDecorations.get(key);
     }
-    const configDir = this.getConfigPathForNode(element);
-    if (!configDir) {
-      return undefined;
+    if (element.type === MetadataType.Extension) {
+      const props = element.properties as Record<string, unknown> | undefined;
+      if (props?.isExtension !== true || !element.filePath?.trim()) {
+        return undefined;
+      }
+      const configXmlFs = path.join(element.filePath.trim(), 'Configuration.xml');
+      try {
+        if (!fs.existsSync(configXmlFs)) {
+          return undefined;
+        }
+      } catch {
+        return undefined;
+      }
+      const uri = vscode.Uri.file(configXmlFs);
+      const wf = vscode.workspace.getWorkspaceFolder(uri);
+      if (!wf) {
+        return undefined;
+      }
+      const rel = path.relative(wf.uri.fsPath, configXmlFs).replace(/\\/g, '/');
+      const norm = normalizeConfigRelativePath(rel);
+      const ext = detectIbcmdExtensionNameFromConfigRelativePath(norm);
+      const key = bindingKey(wf.name, norm, ext);
+      return this.configurationBindingDecorations.get(key);
     }
-    const configXmlFs = path.join(configDir, 'Configuration.xml');
-    const uri = vscode.Uri.file(configXmlFs);
-    const wf = vscode.workspace.getWorkspaceFolder(uri);
-    if (!wf) {
-      return undefined;
+    return undefined;
+  }
+
+  /** WOW Phase 4 #64 — папка выгрузки расширения с отдельным Configuration.xml. */
+  private isExtensionInfobaseBindingRoot(element: TreeNode): boolean {
+    if (element.type !== MetadataType.Extension) {
+      return false;
     }
-    const rel = path.relative(wf.uri.fsPath, configXmlFs).replace(/\\/g, '/');
-    const key = bindingKey(wf.name, normalizeConfigRelativePath(rel));
-    return this.configurationBindingDecorations.get(key);
+    const props = element.properties as Record<string, unknown> | undefined;
+    if (props?.isExtension !== true) {
+      return false;
+    }
+    const dir = element.filePath?.trim();
+    if (!dir) {
+      return false;
+    }
+    try {
+      return fs.existsSync(path.join(dir, 'Configuration.xml'));
+    } catch {
+      return false;
+    }
   }
 
   /** Display form of search query: *query* for plain substring search, else as-is (additional_req.md п.2). */
@@ -1096,6 +1147,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           cv += many ? ' deployMany' : ' deployOne';
         }
         treeItem.contextValue = cv;
+      } else if (this.isExtensionInfobaseBindingRoot(element)) {
+        let cv = 'Extension extensionBindingRoot';
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          cv += ' bindingBound';
+          const many = bindingDeco.massDeployment === true;
+          cv += many ? ' deployMany' : ' deployOne';
+        }
+        treeItem.contextValue = cv;
       }
 
       // Set tooltip: name, type, path (additional_req.md п.14)
@@ -1117,6 +1176,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           tooltipText +=
             '\n\nПривязка ИБ: не настроена. Контекстное меню узла → «Привязать базы…».';
         }
+      } else if (this.isExtensionInfobaseBindingRoot(element)) {
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          const mass = bindingDeco.massDeployment ? '\nМассовая раскатка: да' : '';
+          tooltipText += `\n\nПривязка ИБ (расширение): ${bindingDeco.boundCount} баз(ы).${mass}\n${bindingDeco.namesPreview}`;
+        } else {
+          tooltipText += '\n\nПривязка ИБ расширения: не настроена. Контекстное меню → «Привязать базы…».';
+        }
       }
       treeItem.tooltip = tooltipText;
 
@@ -1125,7 +1191,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (synonym) {
         descParts.push(synonym);
       }
-      if (element.type === MetadataType.Configuration && bindingDeco && bindingDeco.boundCount > 0) {
+      if (
+        (element.type === MetadataType.Configuration || this.isExtensionInfobaseBindingRoot(element)) &&
+        bindingDeco &&
+        bindingDeco.boundCount > 0
+      ) {
         descParts.push(`🔗${bindingDeco.boundCount}`);
       }
       if (descParts.length > 0) {
@@ -1144,6 +1214,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         if (configDir != null) {
           treeItem.resourceUri = vscode.Uri.file(path.join(configDir, 'Configuration.xml'));
         }
+      } else if (this.isExtensionInfobaseBindingRoot(element) && element.filePath?.trim()) {
+        treeItem.resourceUri = vscode.Uri.file(path.join(element.filePath.trim(), 'Configuration.xml'));
       } else if (element.filePath) {
         if (element.type === MetadataType.Form) {
           const { formXmlPath } = getFormPaths(element.filePath);

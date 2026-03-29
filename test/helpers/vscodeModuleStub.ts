@@ -361,6 +361,7 @@ export function restoreVscodeWorkspaceFoldersGetter(): void {
 }
 
 export function resetVscodeTestState(): void {
+  vscodeExtensionsTestState.getExtensionImpl = null;
   vscodeTestState.workspaceConfig = {};
   vscodeTestState.vscodeVersion = undefined;
   vscodeTestState.filesReadonlyIncludeUpdateThrows = false;
@@ -419,6 +420,13 @@ const ConfigurationTarget = {
   WorkspaceFolder: 3,
 } as const;
 
+/** Optional override for suites that exercise `vscode.extensions.getExtension` (e.g. git integration). */
+export const vscodeExtensionsTestState: {
+  getExtensionImpl: (<T>(_id: string) => { activate(): Promise<unknown> } | undefined) | null;
+} = {
+  getExtensionImpl: null,
+};
+
 const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
@@ -438,6 +446,15 @@ const vscodeStub = {
   Disposable,
   window: windowStub,
   workspace: workspaceStub,
+  extensions: {
+    getExtension: <T>(id: string): { activate(): Promise<unknown>; exports: T } | undefined => {
+      const impl = vscodeExtensionsTestState.getExtensionImpl;
+      if (impl) {
+        return impl(id) as { activate(): Promise<unknown>; exports: T } | undefined;
+      }
+      return undefined;
+    },
+  },
 };
 
 let installed = false;

@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import type { InfobaseEntry, InfobaseStorageRoot } from './models/infobaseEntry';
+import type { InfobaseEntry, InfobaseFolder, InfobaseStorageRoot } from './models/infobaseEntry';
 import { Logger } from '../utils/logger';
 import { INFOBASE_GLOBAL_STATE_KEY, infobasePasswordSecretKey } from './constants';
 import { migrateStorageRoot } from './infobaseMigration';
-import { validateInfobaseEntry, validateInfobaseEntryList } from './infobaseValidator';
+import { validateInfobaseCatalog, validateInfobaseEntry } from './infobaseValidator';
 
 function sortEntries(entries: InfobaseEntry[]): InfobaseEntry[] {
   const order = (t: InfobaseEntry['type']) => (t === 'file' ? 0 : t === 'server' ? 1 : 2);
@@ -24,6 +24,7 @@ function sortEntries(entries: InfobaseEntry[]): InfobaseEntry[] {
 export class InfobaseStorageService {
   /** Entries in last persisted order (not necessarily sorted). */
   private storedEntries: InfobaseEntry[] | null = null;
+  private storedFolders: InfobaseFolder[] | null = null;
 
   private readonly _onDidChangeCatalog = new vscode.EventEmitter<void>();
   /** Fires after catalog mutations ({@link saveAll}, {@link upsert}, {@link remove}). */
@@ -51,7 +52,7 @@ export class InfobaseStorageService {
       return migrateStorageRoot(undefined);
     } catch (err) {
       Logger.warn(`InfobaseStorageService: failed to read globalState key ${INFOBASE_GLOBAL_STATE_KEY}`, err);
-      return { rootSchemaVersion: 2, entries: [] };
+      return { rootSchemaVersion: 3, entries: [], folders: [] };
     }
   }
 
@@ -61,7 +62,18 @@ export class InfobaseStorageService {
     }
     const root = this.readRootFromMemento();
     this.storedEntries = [...root.entries];
+    this.storedFolders = [...(root.folders ?? [])];
     return this.storedEntries;
+  }
+
+  private getStoredOrReadFolders(): InfobaseFolder[] {
+    if (this.storedFolders) {
+      return this.storedFolders;
+    }
+    const root = this.readRootFromMemento();
+    this.storedEntries = [...root.entries];
+    this.storedFolders = [...(root.folders ?? [])];
+    return this.storedFolders;
   }
 
   /**
@@ -70,6 +82,30 @@ export class InfobaseStorageService {
   async load(): Promise<InfobaseEntry[]> {
     const entries = this.getStoredOrRead();
     return sortEntries(entries);
+  }
+
+  /**
+   * WOW Phase 4 #60 — пользовательские папки в дереве баз.
+   */
+  async loadFolders(): Promise<InfobaseFolder[]> {
+    const folders = this.getStoredOrReadFolders();
+    return [...folders].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }
+
+  /**
+   * WOW Phase 4 #60 — заменить только дерево папок (записи баз не трогаются).
+   */
+  async saveFolders(folders: InfobaseFolder[]): Promise<void> {
+    const entries = [...this.getStoredOrRead()];
+    validateInfobaseCatalog(entries, folders);
+    await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+      rootSchemaVersion: 3,
+      entries,
+      folders,
+    } satisfies InfobaseStorageRoot);
+    this.storedEntries = entries;
+    this.storedFolders = [...folders];
+    this.fireCatalogChanged();
   }
 
   async getById(id: string): Promise<InfobaseEntry | undefined> {
@@ -81,14 +117,17 @@ export class InfobaseStorageService {
    * Replaces the entire list. Removes secrets for dropped ids; clears password secret when `hasStoredPassword` is false.
    */
   async saveAll(entries: InfobaseEntry[]): Promise<void> {
-    validateInfobaseEntryList(entries);
+    const folders = this.getStoredOrReadFolders();
+    validateInfobaseCatalog(entries, folders);
     const previous = this.readRootFromMemento().entries;
     await this.syncSecrets(previous, entries);
     await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
-      rootSchemaVersion: 2,
+      rootSchemaVersion: 3,
       entries,
-    });
+      folders,
+    } satisfies InfobaseStorageRoot);
     this.storedEntries = [...entries];
+    this.storedFolders = [...folders];
     this.fireCatalogChanged();
   }
 
@@ -104,7 +143,6 @@ export class InfobaseStorageService {
     } else {
       current.push(entry);
     }
-    validateInfobaseEntryList(current);
     await this.saveAll(current);
   }
 
@@ -130,11 +168,14 @@ export class InfobaseStorageService {
     if (filtered.length === current.length) {
       return;
     }
+    const folders = this.getStoredOrReadFolders();
     await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
-      rootSchemaVersion: 2,
+      rootSchemaVersion: 3,
       entries: filtered,
-    });
+      folders,
+    } satisfies InfobaseStorageRoot);
     this.storedEntries = filtered;
+    this.storedFolders = [...folders];
     this.fireCatalogChanged();
   }
 

@@ -37,10 +37,23 @@ export interface InfobaseEntry {
 
   /** ibcmd `--config` when not derived from {@link filePath} alone (non-standard layout). */
   ibcmdConfigYamlPath?: string;
+
+  /** WOW Phase 4 #60 — пользовательская папка в дереве Infobase Manager (id из {@link InfobaseFolder}). */
+  folderId?: string;
+}
+
+/** WOW Phase 4 #60 — папка для группировки баз в дереве. */
+export interface InfobaseFolder {
+  id: string;
+  name: string;
+  /** Родительская папка; без поля — верхний уровень в «Папки». */
+  parentId?: string;
 }
 
 /** Root persisted in `globalState` under {@link INFOBASE_GLOBAL_STATE_KEY}. */
 export interface InfobaseStorageRoot {
-  rootSchemaVersion: 2;
+  rootSchemaVersion: 2 | 3;
   entries: InfobaseEntry[];
+  /** WOW Phase 4 #60; только для {@link rootSchemaVersion} 3+. */
+  folders?: InfobaseFolder[];
 }

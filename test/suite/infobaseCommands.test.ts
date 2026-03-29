@@ -999,12 +999,18 @@ suite('registerInfobaseTreeCommands', () => {
     } as unknown as ExtensionState;
 
     const d = registerInfobaseTreeCommands(state);
-    assert.strictEqual(d.length, 11);
+    assert.strictEqual(d.length, 17);
     assert.deepStrictEqual(ids, [
       '1c-metadata-tree.infobases.refresh',
       '1c-metadata-tree.infobases.create',
       '1c-metadata-tree.infobases.add',
       '1c-metadata-tree.infobases.importV8i',
+      '1c-metadata-tree.infobases.exportV8i',
+      '1c-metadata-tree.infobases.newFolder',
+      '1c-metadata-tree.infobase.deleteFolder',
+      '1c-metadata-tree.infobase.renameFolder',
+      '1c-metadata-tree.infobase.moveToFolder',
+      '1c-metadata-tree.infobase.compareConfig',
       '1c-metadata-tree.infobase.openEnterprise',
       '1c-metadata-tree.infobase.openDesigner',
       '1c-metadata-tree.infobase.configImport',

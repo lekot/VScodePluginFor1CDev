@@ -1,13 +1,15 @@
 /**
  * WOW plan §2C #36 — команды привязки баз из дерева CDT 41 (узел Configuration).
+ * WOW Phase 4 #64 — отдельные привязки для выгрузки расширения (Configuration.xml в папке расширения).
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type { ExtensionState } from '../state/extensionState';
-import { normalizeConfigRelativePath } from './bindingPathUtils';
+import { detectIbcmdExtensionNameFromConfigRelativePath, normalizeConfigRelativePath } from './bindingPathUtils';
 import {
   DeployService,
   listDeployTargetLabels,
@@ -20,7 +22,11 @@ import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDial
 
 /** Минимальный контракт панели диалога (избегаем циклического импорта с bindingDialog). */
 export interface BindingDialogLike {
-  show(workspaceFolderName: string, configRelativePath: string): Promise<void>;
+  show(
+    workspaceFolderName: string,
+    configRelativePath: string,
+    ibcmdExtensionName?: string,
+  ): Promise<void>;
 }
 
 export function resolveBindingTargetForConfigurationTreeNode(
@@ -47,6 +53,51 @@ export function resolveBindingTargetForConfigurationTreeNode(
   };
 }
 
+function resolveBindingTargetForExtensionRootTreeNode(
+  node: TreeNode,
+): { workspaceFolderName: string; configRelativePath: string; ibcmdExtensionName?: string } | undefined {
+  if (node.type !== MetadataType.Extension) {
+    return undefined;
+  }
+  const props = node.properties as Record<string, unknown> | undefined;
+  if (props?.isExtension !== true) {
+    return undefined;
+  }
+  const dir = node.filePath?.trim();
+  if (!dir) {
+    return undefined;
+  }
+  const configXmlFs = path.join(dir, 'Configuration.xml');
+  if (!fs.existsSync(configXmlFs)) {
+    return undefined;
+  }
+  const uri = vscode.Uri.file(configXmlFs);
+  const wf = vscode.workspace.getWorkspaceFolder(uri);
+  if (!wf) {
+    return undefined;
+  }
+  const rel = path.relative(wf.uri.fsPath, configXmlFs).replace(/\\/g, '/');
+  const configRelativePath = normalizeConfigRelativePath(rel);
+  const ibcmdExtensionName = detectIbcmdExtensionNameFromConfigRelativePath(configRelativePath);
+  return { workspaceFolderName: wf.name, configRelativePath, ibcmdExtensionName };
+}
+
+/** Узел «Конфигурация» или корень выгрузки расширения с Configuration.xml. */
+export function resolveBindingTargetFromMetadataTreeNode(
+  node: TreeNode,
+  tree: MetadataTreeDataProvider,
+): { workspaceFolderName: string; configRelativePath: string; ibcmdExtensionName?: string } | undefined {
+  if (node.type === MetadataType.Configuration) {
+    const t = resolveBindingTargetForConfigurationTreeNode(node, tree);
+    if (!t) {
+      return undefined;
+    }
+    const ibcmdExtensionName = detectIbcmdExtensionNameFromConfigRelativePath(t.configRelativePath);
+    return { ...t, ibcmdExtensionName };
+  }
+  return resolveBindingTargetForExtensionRootTreeNode(node);
+}
+
 export async function openBindingDialogForConfigurationFromTree(
   arg: unknown,
   state: ExtensionState,
@@ -58,19 +109,19 @@ export async function openBindingDialogForConfigurationFromTree(
     return;
   }
   const node = arg as TreeNode | undefined;
-  if (!node || node.type !== MetadataType.Configuration) {
-    void vscode.window.showErrorMessage('Выберите узел «Конфигурация» в дереве метаданных.');
+  if (!node) {
+    void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
     return;
   }
   const active = treeDataProvider.resolveNodeForUi(node);
-  const target = resolveBindingTargetForConfigurationTreeNode(active, treeDataProvider);
+  const target = resolveBindingTargetFromMetadataTreeNode(active, treeDataProvider);
   if (!target) {
     void vscode.window.showErrorMessage(
-      'Не удалось сопоставить конфигурацию с папкой workspace. Убедитесь, что выгрузка открыта из многокорневого workspace.',
+      'Не удалось сопоставить выгрузку с workspace. Выберите «Конфигурацию» или папку расширения, где есть Configuration.xml.',
     );
     return;
   }
-  await panel.show(target.workspaceFolderName, target.configRelativePath);
+  await panel.show(target.workspaceFolderName, target.configRelativePath, target.ibcmdExtensionName);
 }
 
 /**
@@ -86,20 +137,24 @@ export async function runDeployForConfigurationFromTree(
     return;
   }
   const node = arg as TreeNode | undefined;
-  if (!node || node.type !== MetadataType.Configuration) {
-    void vscode.window.showErrorMessage('Выберите узел «Конфигурация» в дереве метаданных.');
+  if (!node) {
+    void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
     return;
   }
   const active = treeDataProvider.resolveNodeForUi(node);
-  const target = resolveBindingTargetForConfigurationTreeNode(active, treeDataProvider);
+  const target = resolveBindingTargetFromMetadataTreeNode(active, treeDataProvider);
   if (!target) {
     void vscode.window.showErrorMessage(
-      'Не удалось сопоставить конфигурацию с папкой workspace. Убедитесь, что выгрузка открыта из workspace.',
+      'Не удалось сопоставить выгрузку с workspace. Выберите «Конфигурацию» или папку расширения с Configuration.xml.',
     );
     return;
   }
 
-  const binding = await state.bindingManager.get(target.workspaceFolderName, target.configRelativePath);
+  const binding = await state.bindingManager.get(
+    target.workspaceFolderName,
+    target.configRelativePath,
+    target.ibcmdExtensionName,
+  );
   if (!binding || binding.infobaseIds.length === 0) {
     void vscode.window.showWarningMessage(
       'Для этой конфигурации нет привязанных баз. Сначала выполните «Привязать базы…».',

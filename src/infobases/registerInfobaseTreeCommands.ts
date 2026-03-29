@@ -4,9 +4,15 @@ import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseTreeEntry, InfobaseTreeNode } from './infobaseTreeProvider';
 import {
   runAddExistingInfobase,
+  runCompareInfobaseWithOther,
   runCreateInfobase,
+  runDeleteInfobaseFolder,
   runEditInfobase,
+  runExportInfobasesV8i,
   runImportV8i,
+  runMoveInfobaseToFolder,
+  runNewInfobaseFolder,
+  runRenameInfobaseFolder,
   runOpenDesigner,
   runOpenEnterprise,
   runRemoveInfobase,
@@ -66,6 +72,29 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobases.importV8i', async () => {
       await runImportV8i(state.infobaseStorage, { onCatalogChanged: refresh });
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobases.exportV8i', async () => {
+      await runExportInfobasesV8i(state.infobaseStorage, { onCatalogChanged: refresh });
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobases.newFolder', async (arg?: unknown) => {
+      await runNewInfobaseFolder(state.infobaseStorage, arg, { onCatalogChanged: refresh });
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.deleteFolder', async (arg?: unknown) => {
+      await runDeleteInfobaseFolder(state.infobaseStorage, arg, { onCatalogChanged: refresh });
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.renameFolder', async (arg?: unknown) => {
+      await runRenameInfobaseFolder(state.infobaseStorage, arg, { onCatalogChanged: refresh });
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.moveToFolder', async (arg?: unknown) => {
+      await runMoveInfobaseToFolder(state.infobaseStorage, arg, { onCatalogChanged: refresh });
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.compareConfig', async (arg?: unknown) => {
+      const node = requireEntry(arg, 'Сравнить конфигурацию');
+      if (!node) {
+        return;
+      }
+      const entry = await resolveCatalogEntry(state, node);
+      await runCompareInfobaseWithOther(state.infobaseStorage, entry);
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.openEnterprise', async (arg?: unknown) => {
       if (!state.infobaseStorage) {

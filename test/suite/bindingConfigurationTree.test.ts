@@ -113,7 +113,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
     } as unknown as ExtensionState;
     const panel = { show: async () => undefined };
     await openBindingDialogForConfigurationFromTree(undefined, state, panel, tree);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Конфигурация')));
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Выберите узел в дереве метаданных')));
   });
 
   test('openBindingDialogForConfigurationFromTree shows error when bindingManager is missing', async () => {
@@ -155,7 +155,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
     } as unknown as ExtensionState;
     const panel = { show: async () => undefined };
     await openBindingDialogForConfigurationFromTree(undefined, state, panel, tree);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Конфигурация')));
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Выберите узел в дереве метаданных')));
   });
 
   test('openBindingDialogForConfigurationFromTree shows error for wrong node type', async () => {
@@ -175,7 +175,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
     };
     await openBindingDialogForConfigurationFromTree(cat, state, panel, tree);
     assert.strictEqual(showCalls, 0);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Конфигурация')));
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось сопоставить выгрузку с workspace')));
   });
 
   test('openBindingDialogForConfigurationFromTree shows error when workspace mapping fails', async () => {
@@ -196,7 +196,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
     };
     await openBindingDialogForConfigurationFromTree(node, state, panel, tree);
     assert.strictEqual(showCalls, 0);
-    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('многокорневого workspace')));
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось сопоставить выгрузку с workspace')));
   });
 
   test('openBindingDialogForConfigurationFromTree calls panel.show with resolved target', async () => {

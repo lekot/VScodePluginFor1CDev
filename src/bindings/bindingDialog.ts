@@ -4,7 +4,10 @@
 
 import * as vscode from 'vscode';
 import type { ConfigurationBinding } from './models/configurationBinding';
-import { normalizeConfigRelativePath } from './bindingPathUtils';
+import {
+  detectIbcmdExtensionNameFromConfigRelativePath,
+  normalizeConfigRelativePath,
+} from './bindingPathUtils';
 import type { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { Logger } from '../utils/logger';
@@ -16,12 +19,17 @@ function escapeJsonForScript(json: string): string {
   return json.replace(/<\/script>/gi, '<\\/script>');
 }
 
-function defaultBinding(workspaceFolder: string, configRelativePath: string): ConfigurationBinding {
+function defaultBinding(
+  workspaceFolder: string,
+  configRelativePath: string,
+  ibcmdExtensionName?: string,
+): ConfigurationBinding {
   return {
     workspaceFolder,
     configRelativePath,
     infobaseIds: [],
     massDeployment: false,
+    ibcmdExtensionName: ibcmdExtensionName?.trim() || undefined,
   };
 }
 
@@ -85,6 +93,7 @@ export function getBindingDialogHtml(
     configRelativePath: string;
     rows: BindingRowView[];
     massDeployment: boolean;
+    ibcmdExtensionName?: string;
   },
 ): string {
   const initialJson = escapeJsonForScript(JSON.stringify(initial));
@@ -268,7 +277,11 @@ export function getBindingDialogHtml(
     const massWrap = document.getElementById('massWrap');
 
     function renderContext() {
-      ctxEl.textContent = state.workspaceFolder + ' · ' + state.configRelativePath;
+      let t = state.workspaceFolder + ' · ' + state.configRelativePath;
+      if (state.ibcmdExtensionName) {
+        t += ' · расширение: ' + state.ibcmdExtensionName;
+      }
+      ctxEl.textContent = t;
     }
 
     function setMassVisual(on) {
@@ -448,6 +461,8 @@ export class BindingDialogPanel {
   private catalogDisposable: vscode.Disposable | undefined;
   private workspaceFolderName = '';
   private configRelativePath = '';
+  /** WOW Phase 4 #64 — имя расширения для ibcmd и ключа привязки. */
+  private ibcmdExtensionName = '';
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -472,7 +487,11 @@ export class BindingDialogPanel {
     return { bindingManager, storage };
   }
 
-  async show(workspaceFolderName: string, configRelativePath: string): Promise<void> {
+  async show(
+    workspaceFolderName: string,
+    configRelativePath: string,
+    ibcmdExtensionName?: string,
+  ): Promise<void> {
     const deps = this.assertDeps();
     if (!deps) {
       void vscode.window.showErrorMessage('Привязки недоступны: хранилище не инициализировано.');
@@ -481,6 +500,7 @@ export class BindingDialogPanel {
 
     this.workspaceFolderName = workspaceFolderName;
     this.configRelativePath = configRelativePath;
+    this.ibcmdExtensionName = (ibcmdExtensionName ?? '').trim();
 
     if (!this.panel) {
       this.panelDisposables = [];
@@ -536,9 +556,10 @@ export class BindingDialogPanel {
     if (!this.panel) {
       return;
     }
+    const ext = this.ibcmdExtensionName.trim() || undefined;
     const binding =
-      (await bindingManager.get(this.workspaceFolderName, this.configRelativePath)) ??
-      defaultBinding(this.workspaceFolderName, this.configRelativePath);
+      (await bindingManager.get(this.workspaceFolderName, this.configRelativePath, ext)) ??
+      defaultBinding(this.workspaceFolderName, this.configRelativePath, ext);
     const entries = await storage.load();
     const labelMap = buildLabelMap(entries.map((e) => ({ id: e.id, name: e.name })));
     const rows = rowsFromBinding(binding.infobaseIds, labelMap);
@@ -547,6 +568,7 @@ export class BindingDialogPanel {
       configRelativePath: binding.configRelativePath,
       rows,
       massDeployment: binding.massDeployment,
+      ibcmdExtensionName: binding.ibcmdExtensionName ?? ext,
     });
   }
 
@@ -572,6 +594,7 @@ export class BindingDialogPanel {
           configRelativePath: this.configRelativePath,
           infobaseIds: msg.infobaseIds,
           massDeployment: msg.massDeployment,
+          ibcmdExtensionName: this.ibcmdExtensionName.trim() || undefined,
         };
         try {
           await deps.bindingManager.upsert(next);
@@ -653,7 +676,9 @@ export async function runOpenBindingDialog(state: ExtensionState, panel: Binding
   if (configPath === undefined) {
     return;
   }
-  await panel.show(folder.name, normalizeConfigRelativePath(configPath));
+  const norm = normalizeConfigRelativePath(configPath);
+  const ext = detectIbcmdExtensionNameFromConfigRelativePath(norm);
+  await panel.show(folder.name, norm, ext);
 }
 
 export function registerBindingDialogCommands(

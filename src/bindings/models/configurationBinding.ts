@@ -21,4 +21,10 @@ export interface ConfigurationBinding {
 
   /** Массовая раскатка во все привязанные базы. */
   massDeployment: boolean;
+
+  /**
+   * WOW Phase 4 #64 — имя расширения для `ibcmd config import --extension=…` (выгрузка расширения).
+   * Без поля или пустая строка — основная конфигурация.
+   */
+  ibcmdExtensionName?: string;
 }

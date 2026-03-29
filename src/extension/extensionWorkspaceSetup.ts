@@ -16,6 +16,7 @@ import { registerInfobaseTreeCommands } from '../infobases/registerInfobaseTreeC
 import { registerBindingDialogCommands } from '../bindings/bindingDialog';
 import { rebuildBindingDecorationsForTree, registerBindingDecorationSync } from '../bindings/bindingTreeDecorations';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
+import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
 
 /** Empty-catalog hint (WOW design UC-01 / plan §1C). */
 async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
@@ -129,6 +130,18 @@ export function registerExtensionWorkspace(
 
   const commandDisposables = registerAllCommands({ context, state, lifecycle });
   context.subscriptions.push(...commandDisposables);
+
+  const infobaseTreeForGitRefresh = state.infobaseTreeProvider;
+  registerGitPhase4HeadChangeHandlers(context, {
+    onReloadMetadataTree: () => lifecycle.loadMetadataTree(),
+    onRefreshInfobaseManager: infobaseTreeForGitRefresh
+      ? () => {
+          infobaseTreeForGitRefresh.refresh();
+          void rebuildBindingDecorationsForTree(state);
+          void syncInfobaseTreeViewMessage(state);
+        }
+      : undefined,
+  });
 
   const treeSelectionDisposable = state.treeView.onDidChangeSelection(async (e) => {
     if (e.selection.length > 0) {

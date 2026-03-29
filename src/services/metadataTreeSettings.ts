@@ -38,6 +38,18 @@ export function getIbcmdImportDiagnosticsSetting(): boolean {
   return cfg.get<boolean>('1cMetadataTree.ibcmd.importDiagnostics') === true;
 }
 
+/** WOW Phase 4 #63 — перезагрузка дерева метаданных при смене HEAD в git (pull/checkout). */
+export function getGitReloadMetadataOnHeadChangeSetting(): boolean {
+  const cfg = vscode.workspace.getConfiguration();
+  return cfg.get<boolean>('1cMetadataTree.git.reloadMetadataOnHeadChange') !== false;
+}
+
+/** WOW Phase 4 #63 — обновление Infobase Manager (дерево, бейджи привязок) после pull/checkout. */
+export function getGitRefreshInfobaseManagerOnHeadChangeSetting(): boolean {
+  const cfg = vscode.workspace.getConfiguration();
+  return cfg.get<boolean>('1cMetadataTree.git.refreshInfobaseManagerOnHeadChange') !== false;
+}
+
 export function getPlatformPathSetting(): string {
   const cfg = vscode.workspace.getConfiguration();
   return (cfg.get<string>('1cMetadataTree.platform.path') ?? '').trim();

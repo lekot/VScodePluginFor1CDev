@@ -333,6 +333,7 @@ export class DeployService {
             absoluteSourceDir: sourceDir,
             token: params.token,
             logContext: 'раскатка',
+            ibcmdExtensionName: params.binding.ibcmdExtensionName,
           }),
         );
 

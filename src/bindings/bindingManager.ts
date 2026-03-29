@@ -23,6 +23,8 @@ function validateBindingInput(b: ConfigurationBinding): void {
 function normalizeBinding(b: ConfigurationBinding): ConfigurationBinding {
   const workspaceFolder = b.workspaceFolder.trim();
   const configRelativePath = normalizeConfigRelativePath(b.configRelativePath);
+  const extRaw = typeof b.ibcmdExtensionName === 'string' ? b.ibcmdExtensionName.trim() : '';
+  const ibcmdExtensionName = extRaw.length > 0 ? extRaw : undefined;
   const seen = new Set<string>();
   const infobaseIds: string[] = [];
   for (const id of b.infobaseIds) {
@@ -38,6 +40,7 @@ function normalizeBinding(b: ConfigurationBinding): ConfigurationBinding {
     configRelativePath,
     infobaseIds,
     massDeployment: b.massDeployment === true,
+    ibcmdExtensionName,
   };
 }
 
@@ -71,15 +74,23 @@ export class BindingManager {
     return out;
   }
 
-  async get(workspaceFolderName: string, configRelativePath: string): Promise<ConfigurationBinding | undefined> {
+  async get(
+    workspaceFolderName: string,
+    configRelativePath: string,
+    ibcmdExtensionName?: string,
+  ): Promise<ConfigurationBinding | undefined> {
     const folder = this.resolveFolder(workspaceFolderName);
     if (!folder) {
       return undefined;
     }
     const norm = normalizeConfigRelativePath(configRelativePath);
+    const ext = (ibcmdExtensionName ?? '').trim();
     const list = await readBindingsForFolder(this.fsApi, folder);
     return list.find(
-      (b) => b.workspaceFolder === workspaceFolderName && normalizeConfigRelativePath(b.configRelativePath) === norm,
+      (b) =>
+        b.workspaceFolder === workspaceFolderName &&
+        normalizeConfigRelativePath(b.configRelativePath) === norm &&
+        (b.ibcmdExtensionName ?? '').trim() === ext,
     );
   }
 
@@ -94,26 +105,30 @@ export class BindingManager {
       throw new Error(`Workspace folder not found: "${next.workspaceFolder}"`);
     }
     const list = await readBindingsForFolder(this.fsApi, folder);
-    const key = bindingKey(next.workspaceFolder, next.configRelativePath);
+    const key = bindingKey(next.workspaceFolder, next.configRelativePath, next.ibcmdExtensionName);
     const mapped = new Map<string, ConfigurationBinding>();
     for (const b of list) {
-      const k = bindingKey(b.workspaceFolder, b.configRelativePath);
+      const k = bindingKey(b.workspaceFolder, b.configRelativePath, b.ibcmdExtensionName);
       mapped.set(k, normalizeBinding(b));
     }
     mapped.set(key, next);
     await writeBindingsForFolder(this.fsApi, folder, [...mapped.values()]);
   }
 
-  async delete(workspaceFolderName: string, configRelativePath: string): Promise<boolean> {
+  async delete(
+    workspaceFolderName: string,
+    configRelativePath: string,
+    ibcmdExtensionName?: string,
+  ): Promise<boolean> {
     const folder = this.resolveFolder(workspaceFolderName);
     if (!folder) {
       return false;
     }
     const norm = normalizeConfigRelativePath(configRelativePath);
     const list = await readBindingsForFolder(this.fsApi, folder);
-    const targetKey = bindingKey(workspaceFolderName, norm);
+    const targetKey = bindingKey(workspaceFolderName, norm, ibcmdExtensionName);
     const filtered = list.filter(
-      (b) => bindingKey(b.workspaceFolder, b.configRelativePath) !== targetKey,
+      (b) => bindingKey(b.workspaceFolder, b.configRelativePath, b.ibcmdExtensionName) !== targetKey,
     );
     if (filtered.length === list.length) {
       return false;

@@ -35,6 +35,8 @@ export function parseBindingsFileJson(text: string): InfobaseBindingsFileRoot {
       const infobaseIds = Array.isArray(idsRaw)
         ? idsRaw.filter((x): x is string => typeof x === 'string' && x.length > 0)
         : [];
+      const extRaw = typeof b.ibcmdExtensionName === 'string' ? b.ibcmdExtensionName.trim() : '';
+      const ibcmdExtensionName = extRaw.length > 0 ? extRaw : undefined;
       if (!workspaceFolder || !configRelativePath) {
         continue;
       }
@@ -43,6 +45,7 @@ export function parseBindingsFileJson(text: string): InfobaseBindingsFileRoot {
         configRelativePath,
         infobaseIds,
         massDeployment,
+        ibcmdExtensionName,
       });
     }
     return { schemaVersion: 1, bindings };
@@ -60,6 +63,7 @@ export function serializeBindingsFileJson(root: InfobaseBindingsFileRoot): strin
       configRelativePath: b.configRelativePath,
       infobaseIds: [...b.infobaseIds],
       massDeployment: b.massDeployment,
+      ...(b.ibcmdExtensionName?.trim() ? { ibcmdExtensionName: b.ibcmdExtensionName.trim() } : {}),
     })),
   };
   return `${JSON.stringify(payload, null, 2)}\n`;

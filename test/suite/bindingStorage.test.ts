@@ -43,7 +43,53 @@ suite('bindingFileCodec', () => {
     };
     const text = serializeBindingsFileJson(root);
     const back = parseBindingsFileJson(text);
+    // parse may attach explicit `ibcmdExtensionName: undefined`; JSON round-trip aligns keys.
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(back)), JSON.parse(JSON.stringify(root)));
+    assert.strictEqual(back.bindings[0].ibcmdExtensionName, undefined);
+  });
+
+  test('round-trip preserves ibcmdExtensionName (Phase 4 #64)', () => {
+    const root = {
+      schemaVersion: 1 as const,
+      bindings: [
+        {
+          workspaceFolder: 'proj',
+          configRelativePath: 'src/Configuration.xml',
+          infobaseIds: ['x'],
+          massDeployment: false,
+          ibcmdExtensionName: 'MyExtension',
+        },
+      ],
+    };
+    const back = parseBindingsFileJson(serializeBindingsFileJson(root));
     assert.deepStrictEqual(back, root);
+  });
+
+  test('parse drops empty ibcmdExtensionName and trims', () => {
+    const parsed = parseBindingsFileJson(
+      JSON.stringify({
+        schemaVersion: 1,
+        bindings: [
+          {
+            workspaceFolder: 'w',
+            configRelativePath: 'c.xml',
+            infobaseIds: [],
+            massDeployment: false,
+            ibcmdExtensionName: '  ',
+          },
+          {
+            workspaceFolder: 'w2',
+            configRelativePath: 'd.xml',
+            infobaseIds: [],
+            massDeployment: false,
+            ibcmdExtensionName: '  ExtName  ',
+          },
+        ],
+      }),
+    );
+    assert.strictEqual(parsed.bindings.length, 2);
+    assert.strictEqual(parsed.bindings[0].ibcmdExtensionName, undefined);
+    assert.strictEqual(parsed.bindings[1].ibcmdExtensionName, 'ExtName');
   });
 
   test('drops invalid entries and keeps valid', () => {
@@ -163,6 +209,8 @@ suite('bindingStorage read/write', () => {
     ];
     await writeBindingsForFolder(fs, folder, bindings);
     const back = await readBindingsForFolder(fs, folder);
-    assert.deepStrictEqual(back, bindings);
+    assert.strictEqual(back.length, 1);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(back)), JSON.parse(JSON.stringify(bindings)));
+    assert.strictEqual(back[0].ibcmdExtensionName, undefined);
   });
 });

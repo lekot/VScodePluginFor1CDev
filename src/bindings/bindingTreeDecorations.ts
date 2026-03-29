@@ -27,7 +27,7 @@ export async function rebuildBindingDecorationsForTree(state: ExtensionState): P
     const idToName = new Map(entries.map((e) => [e.id, e.name] as const));
     const map = new Map<string, ConfigurationBindingDecoration>();
     for (const b of bindings) {
-      const key = bindingKey(b.workspaceFolder, b.configRelativePath);
+      const key = bindingKey(b.workspaceFolder, b.configRelativePath, b.ibcmdExtensionName);
       const names = b.infobaseIds.map((id) => idToName.get(id) ?? id);
       const maxNames = 6;
       const shown = names.slice(0, maxNames);

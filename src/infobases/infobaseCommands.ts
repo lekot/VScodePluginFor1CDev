@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
-import type { InfobaseEntry, InfobaseEntryType } from './models/infobaseEntry';
+import type { InfobaseEntry, InfobaseEntryType, InfobaseFolder } from './models/infobaseEntry';
 import type { InfobaseManager } from './infobaseManager';
 import { InfobaseStorageService } from './infobaseStorageService';
 import {
@@ -27,6 +27,8 @@ import {
 } from './v8iParser';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
+import { buildV8iFileContent } from './v8iBuilder';
+import { runCompareInfobaseConfigurations } from '../services/configCompareService';
 
 type InfobaseTypePick = InfobaseEntryType;
 
@@ -1149,4 +1151,232 @@ export async function runOpenDesigner(
   } catch (err) {
     void vscode.window.showErrorMessage(`Запуск Конфигуратора: ${(err as Error).message}`);
   }
+}
+
+function isTreeFolderArg(arg: unknown): arg is { kind: 'folder'; folder: InfobaseFolder } {
+  return (
+    !!arg &&
+    typeof arg === 'object' &&
+    (arg as { kind?: unknown }).kind === 'folder' &&
+    typeof (arg as { folder?: unknown }).folder === 'object' &&
+    typeof (arg as { folder: { id?: unknown } }).folder.id === 'string'
+  );
+}
+
+function isTreeEntryArg(arg: unknown): arg is { kind: 'entry'; entry: InfobaseEntry } {
+  return (
+    !!arg &&
+    typeof arg === 'object' &&
+    (arg as { kind?: unknown }).kind === 'entry' &&
+    typeof (arg as { entry?: unknown }).entry === 'object'
+  );
+}
+
+/** WOW Phase 4 #60 — новая папка (опционально вложенная, если вызов с узла папки). */
+export async function runNewInfobaseFolder(
+  storage: InfobaseStorageService | null,
+  arg: unknown,
+  options?: { onCatalogChanged?: () => void },
+): Promise<void> {
+  const s = await ensureStorageReady(storage);
+  if (!s) {
+    return;
+  }
+  const parentId = isTreeFolderArg(arg) ? arg.folder.id : undefined;
+  const name = await vscode.window.showInputBox({
+    title: 'Новая папка в Infobase Manager',
+    prompt: parentId ? 'Имя вложенной папки' : 'Имя папки',
+    validateInput: (v) => (v.trim() ? undefined : 'Введите непустое имя'),
+  });
+  if (!name?.trim()) {
+    return;
+  }
+  const folders = await s.loadFolders();
+  const id = randomUUID();
+  await s.saveFolders([...folders, { id, name: name.trim(), parentId }]);
+  options?.onCatalogChanged?.();
+}
+
+/** WOW Phase 4 #60 — переименовать папку. */
+export async function runRenameInfobaseFolder(
+  storage: InfobaseStorageService | null,
+  arg: unknown,
+  options?: { onCatalogChanged?: () => void },
+): Promise<void> {
+  const s = await ensureStorageReady(storage);
+  if (!s || !isTreeFolderArg(arg)) {
+    if (s && !isTreeFolderArg(arg)) {
+      void vscode.window.showWarningMessage('Переименование: выберите папку в дереве Infobase Manager.');
+    }
+    return;
+  }
+  const folder = arg.folder;
+  const name =
+    (await vscode.window.showInputBox({
+      title: 'Имя папки',
+      value: folder.name,
+      validateInput: (v) => (v?.trim() ? null : 'Введите непустое имя'),
+    }))?.trim() ?? '';
+  if (!name || name === folder.name) {
+    return;
+  }
+  const folders = await s.loadFolders();
+  const next = folders.map((f) => (f.id === folder.id ? { ...f, name } : f));
+  await s.saveFolders(next);
+  options?.onCatalogChanged?.();
+}
+
+/** WOW Phase 4 #60 — удалить пустую папку. */
+export async function runDeleteInfobaseFolder(
+  storage: InfobaseStorageService | null,
+  arg: unknown,
+  options?: { onCatalogChanged?: () => void },
+): Promise<void> {
+  const s = await ensureStorageReady(storage);
+  if (!s || !isTreeFolderArg(arg)) {
+    if (s && !isTreeFolderArg(arg)) {
+      void vscode.window.showWarningMessage('Удаление папки: выберите папку в дереве Infobase Manager.');
+    }
+    return;
+  }
+  const folder = arg.folder;
+  const [entries, folders] = await Promise.all([s.load(), s.loadFolders()]);
+  if (entries.some((e) => e.folderId === folder.id)) {
+    void vscode.window.showWarningMessage('В папке есть информационные базы. Сначала переместите их.');
+    return;
+  }
+  if (folders.some((f) => f.parentId === folder.id)) {
+    void vscode.window.showWarningMessage('В папке есть вложенные папки. Сначала удалите их.');
+    return;
+  }
+  const ok = await vscode.window.showWarningMessage(
+    `Удалить папку «${folder.name}»?`,
+    { modal: true },
+    'Удалить',
+  );
+  if (ok !== 'Удалить') {
+    return;
+  }
+  await s.saveFolders(folders.filter((f) => f.id !== folder.id));
+  options?.onCatalogChanged?.();
+}
+
+/** WOW Phase 4 #60 — переместить базу в другую папку или в группу по типу. */
+export async function runMoveInfobaseToFolder(
+  storage: InfobaseStorageService | null,
+  arg: unknown,
+  options?: { onCatalogChanged?: () => void },
+): Promise<void> {
+  const s = await ensureStorageReady(storage);
+  if (!s || !isTreeEntryArg(arg)) {
+    if (s && !isTreeEntryArg(arg)) {
+      void vscode.window.showWarningMessage('Перемещение: выберите базу в дереве Infobase Manager.');
+    }
+    return;
+  }
+  const entry = arg.entry;
+  const folders = await s.loadFolders();
+  type PickT = vscode.QuickPickItem & { folderId?: string };
+  const items: PickT[] = [
+    { label: '$(circle-slash) Без папки (в группу по типу)', folderId: '', alwaysShow: true },
+    ...folders.map((f) => ({
+      label: `$(folder) ${f.name}`,
+      description: f.id,
+      folderId: f.id,
+    })),
+  ];
+  const picked = await vscode.window.showQuickPick<PickT>(items, {
+    title: `Папка для «${entry.name}»`,
+    placeHolder: 'Куда поместить базу',
+  });
+  if (!picked) {
+    return;
+  }
+  const nextFolder = picked.folderId?.trim() ?? '';
+  const all = await s.load();
+  const nextEntry: InfobaseEntry = {
+    ...entry,
+    folderId: nextFolder.length > 0 ? nextFolder : undefined,
+  };
+  const nextList = all.map((e) => (e.id === entry.id ? nextEntry : e));
+  await s.saveAll(nextList);
+  options?.onCatalogChanged?.();
+}
+
+/** WOW Phase 4 #61 — экспорт выбранных баз в файл `.v8i`. */
+export async function runExportInfobasesV8i(
+  storage: InfobaseStorageService | null,
+  options?: { onCatalogChanged?: () => void },
+): Promise<void> {
+  void options;
+  const s = await ensureStorageReady(storage);
+  if (!s) {
+    return;
+  }
+  const [entries, folders] = await Promise.all([s.load(), s.loadFolders()]);
+  if (entries.length === 0) {
+    void vscode.window.showInformationMessage('Нет баз для экспорта.');
+    return;
+  }
+  type P = vscode.QuickPickItem & { entry: InfobaseEntry };
+  const picked = await vscode.window.showQuickPick<P>(
+    entries.map((e) => ({ label: e.name, description: e.type, picked: true, entry: e })),
+    {
+      title: 'Экспорт в .v8i — выберите базы',
+      canPickMany: true,
+      matchOnDescription: true,
+    },
+  );
+  if (!picked || picked.length === 0) {
+    return;
+  }
+  const uri = await vscode.window.showSaveDialog({
+    title: 'Сохранить список баз как .v8i',
+    filters: { 'Список баз 1С (*.v8i)': ['v8i'] },
+    defaultUri: vscode.Uri.file('infobases.v8i'),
+  });
+  if (!uri) {
+    return;
+  }
+  const selected = picked.map((p) => p.entry);
+  const body = buildV8iFileContent(selected, folders);
+  try {
+    await fs.promises.writeFile(uri.fsPath, `\ufeff${body}`, 'utf8');
+    void vscode.window.showInformationMessage(`Экспортировано баз: ${selected.length}.`);
+  } catch (e) {
+    void vscode.window.showErrorMessage(`Не удалось записать файл: ${(e as Error).message}`);
+  }
+}
+
+/** WOW Phase 4 #62 — сравнить выгрузку конфигурации с другой базой. */
+export async function runCompareInfobaseWithOther(
+  storage: InfobaseStorageService | null,
+  entry: InfobaseEntry | undefined,
+): Promise<void> {
+  const s = await ensureStorageReady(storage);
+  if (!s || !entry) {
+    if (s && !entry) {
+      void vscode.window.showWarningMessage('Сравнение: выберите первую базу в дереве Infobase Manager.');
+    }
+    return;
+  }
+  if (entry.type === 'web') {
+    void vscode.window.showWarningMessage('Сравнение конфигураций недоступно для веб-базы.');
+    return;
+  }
+  const all = await s.load();
+  const others = all.filter((e) => e.id !== entry.id && e.type !== 'web');
+  if (others.length === 0) {
+    void vscode.window.showInformationMessage('Нет второй файловой или серверной базы для сравнения.');
+    return;
+  }
+  type Q = vscode.QuickPickItem & { target: InfobaseEntry };
+  const picked = await vscode.window.showQuickPick<Q>(
+    others.map((e) => ({ label: e.name, description: e.type, target: e })),
+    { title: `Сравнить с базой «${entry.name}»`, placeHolder: 'Вторая база' },
+  );
+  if (!picked) {
+    return;
+  }
+  await runCompareInfobaseConfigurations({ storage: s, entryA: entry, entryB: picked.target });
 }

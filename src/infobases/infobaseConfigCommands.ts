@@ -245,6 +245,8 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   token: vscode.CancellationToken;
   /** Подзаголовок в канале вывода (например «раскатка»). */
   logContext?: string;
+  /** WOW Phase 4 #64 — `ibcmd --extension` при загрузке выгрузки расширения. */
+  ibcmdExtensionName?: string;
 }): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
   const pathResult = ibcmd.resolveExecutablePath();
@@ -274,7 +276,9 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
   const resolvedSourceDir = path.resolve(params.absoluteSourceDir);
-  const importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir);
+  const importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, {
+    extension: params.ibcmdExtensionName?.trim() || undefined,
+  });
   if (getIbcmdImportDiagnosticsSetting()) {
     const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';
     ch.appendLine(`[import diag] --config: ${prep.absoluteConfigPath} (${kind})`);

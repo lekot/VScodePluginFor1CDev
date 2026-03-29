@@ -1,5 +1,5 @@
 import * as path from 'path';
-import type { InfobaseEntry } from './models/infobaseEntry';
+import type { InfobaseEntry, InfobaseFolder } from './models/infobaseEntry';
 import { INFOBASE_STORAGE_MAX_ENTRIES } from './constants';
 
 /** Optional UUID v4 check (recommended for new records). */
@@ -163,4 +163,74 @@ export function validateInfobaseEntryList(entries: InfobaseEntry[]): void {
     seen.add(e.id);
   }
   validateDuplicateTargets(entries);
+}
+
+const MAX_FOLDERS = 500;
+
+/**
+ * WOW Phase 4 #60 — папки: уникальные id, валидные parentId, без циклов.
+ */
+export function validateInfobaseFolders(folders: InfobaseFolder[]): void {
+  if (folders.length > MAX_FOLDERS) {
+    throw new InfobaseValidationError(`At most ${MAX_FOLDERS} infobase folders are allowed.`);
+  }
+  const seen = new Set<string>();
+  const byId = new Map<string, InfobaseFolder>();
+  for (const f of folders) {
+    const id = f.id?.trim() ?? '';
+    if (!id) {
+      throw new InfobaseValidationError('Infobase folder id is empty.');
+    }
+    if (!UUID_V4_RE.test(id)) {
+      throw new InfobaseValidationError('Infobase folder id must be a UUID v4.');
+    }
+    const name = f.name?.trim() ?? '';
+    if (!name) {
+      throw new InfobaseValidationError('Infobase folder name must be non-empty.');
+    }
+    if (seen.has(id)) {
+      throw new InfobaseValidationError(`Duplicate infobase folder id: ${id}.`);
+    }
+    seen.add(id);
+    byId.set(id, f);
+  }
+  for (const f of folders) {
+    if (f.parentId) {
+      const p = f.parentId.trim();
+      if (p === f.id) {
+        throw new InfobaseValidationError('Infobase folder cannot be its own parent.');
+      }
+      if (!byId.has(p)) {
+        throw new InfobaseValidationError(`Infobase folder parent not found: ${p}.`);
+      }
+    }
+  }
+  for (const f of folders) {
+    const chain = new Set<string>();
+    let cur: string | undefined = f.id;
+    for (let depth = 0; depth < folders.length + 2; depth++) {
+      if (cur === undefined) {
+        break;
+      }
+      if (chain.has(cur)) {
+        throw new InfobaseValidationError('Infobase folder parent chain has a cycle.');
+      }
+      chain.add(cur);
+      const node = byId.get(cur);
+      cur = node?.parentId?.trim() || undefined;
+    }
+  }
+}
+
+/** Каталог баз + папки (WOW Phase 4 #60). */
+export function validateInfobaseCatalog(entries: InfobaseEntry[], folders: InfobaseFolder[]): void {
+  validateInfobaseFolders(folders);
+  validateInfobaseEntryList(entries);
+  const folderIds = new Set(folders.map((f) => f.id));
+  for (const e of entries) {
+    const fid = e.folderId?.trim();
+    if (fid && !folderIds.has(fid)) {
+      throw new InfobaseValidationError(`Infobase entry references unknown folder id: ${fid}.`);
+    }
+  }
 }

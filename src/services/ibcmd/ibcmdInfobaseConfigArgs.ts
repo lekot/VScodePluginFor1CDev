@@ -66,7 +66,7 @@ export function buildInfobaseConfigCheckArgs(
 export function buildInfobaseConfigImportArgs(
   absoluteConfigPath: string,
   sourcePath: string,
-  options?: { credentials?: IbcmdConfigCliCredentials; force?: boolean },
+  options?: { credentials?: IbcmdConfigCliCredentials; force?: boolean; extension?: string },
 ): string[] {
   const cfg = resolveIbcmdCliPathForWindowsSpawn(absoluteConfigPath);
   const src = resolveIbcmdCliPathForWindowsSpawn(sourcePath);
@@ -74,6 +74,10 @@ export function buildInfobaseConfigImportArgs(
   appendCredentials(args, options?.credentials);
   if (options?.force) {
     args.push('--force');
+  }
+  const ext = options?.extension?.trim();
+  if (ext) {
+    args.push(`--extension=${ext}`);
   }
   args.push(src);
   return args;
