@@ -34,6 +34,7 @@ import {
 import { runIbcmdStreaming, type IbcmdStreamCancellation } from '../services/ibcmd/IbcmdStreamingRunner';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
 import { getIbcmdYamlInfobaseConfigUnsupportedMessage } from '../services/ibcmd/ibcmdVersionSupport';
+import { emptyDirectoryContents } from './ibcmdExportTargetDir';
 
 const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
@@ -216,7 +217,10 @@ async function pickExportOutDirectory(): Promise<string | undefined> {
   return dirs?.[0]?.fsPath;
 }
 
-async function confirmOverwriteIfNonEmpty(dir: string): Promise<boolean> {
+/**
+ * ibcmd `config export` требует пустой каталог; при согласии пользователя очищаем содержимое выбранной папки.
+ */
+async function confirmAndPrepareExportOutDirectory(dir: string): Promise<boolean> {
   let entries: string[] = [];
   try {
     entries = await fs.promises.readdir(dir);
@@ -227,12 +231,16 @@ async function confirmOverwriteIfNonEmpty(dir: string): Promise<boolean> {
     return true;
   }
   const pick = await vscode.window.showWarningMessage(
-    `Папка не пуста (${entries.length} элементов). ibcmd может перезаписать файлы. Продолжить?`,
+    `Папка не пуста (${entries.length} элементов). Для выгрузки ibcmd нужен пустой каталог — всё содержимое папки будет удалено. Продолжить?`,
     { modal: true },
     'Продолжить',
     'Отмена',
   );
-  return pick === 'Продолжить';
+  if (pick !== 'Продолжить') {
+    return false;
+  }
+  await emptyDirectoryContents(dir);
+  return true;
 }
 
 async function ensureStorage(
@@ -513,7 +521,7 @@ export async function runInfobaseConfigExport(
       return;
     }
     const absOut = path.resolve(outDir);
-    if (!(await confirmOverwriteIfNonEmpty(absOut))) {
+    if (!(await confirmAndPrepareExportOutDirectory(absOut))) {
       return;
     }
     await runInfobaseConfigOperation({

@@ -14,6 +14,7 @@
 | [infobase-manager-use-cases.md](./infobase-manager-use-cases.md) | Детальные Use-Cases и User Journeys |
 | [infobase-manager-wireframes.md](./infobase-manager-wireframes.md) | UI/UX wireframes: панель, диалоги, уведомления |
 | [ibcmd-api-reference.md](./ibcmd-api-reference.md) | Справочник команд ibcmd для реализации |
+| [ibcmd-cdt41-principles.md](./ibcmd-cdt41-principles.md) | **Норматив CDT 41:** offline `--data`, `--db-path`, порядок argv, export/import, кодировка (YouTrack: 1cviewer-12) |
 | [v8i-format-spec.md](./v8i-format-spec.md) | Спецификация формата .v8i с парсером |
 | [infobase-server-dbms-rights.md](./infobase-server-dbms-rights.md) | Серверная ИБ: права в СУБД и ответственность администратора (WOW §3B) |
 

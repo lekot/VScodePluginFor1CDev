@@ -2,6 +2,8 @@
 
 > Справочник команд ibcmd, используемых в Infobase Manager
 
+**Интеграция в расширении:** фактические argv, `--data`, `--db-path`, export в пустой каталог и т.д. описаны в [ibcmd-cdt41-principles.md](./ibcmd-cdt41-principles.md) (норматив; YouTrack **1cviewer-12**). Ниже — обзор CLI; расхождения с поведением сборки проверять по `ibcmd /?` и принципам CDT 41.
+
 ## Общая информация
 
 **ibcmd** — утилита командной строки автономного сервера 1С:Предприятие.  
@@ -143,16 +145,24 @@ ibcmd infobase config import \
 
 ### 2.2 Экспорт конфигурации (выгрузка из базы)
 
+В offline-режиме обычно задаются **`--data`** и подключение (**`--config`** и/или **`--db-path`** — см. [ibcmd-cdt41-principles.md](./ibcmd-cdt41-principles.md)). Каталог выгрузки XML — **последний позиционный** аргумент (как в ibcmdrunner); на ряде сборок **`--out=`** даёт ошибку разбора.
+
+**Требование платформы:** каталог назначения **должен быть пустым**; иначе ошибка «каталог не пуст». В CDT 41 при подтверждении пользователем содержимое выбранной папки очищается перед запуском ibcmd.
+
 ```bash
-ibcmd infobase config export --config=<yaml> --out=<path> [options]
+ibcmd infobase config export --config=<yaml> --data=<dataDir> [options] <out-dir>
+# или файловая ИБ:
+ibcmd infobase config export --db-path=<ibDir> --data=<dataDir> [options] <out-dir>
 ```
 
-**Параметры:**
+**Параметры (типовые):**
 
 | Параметр | Описание | Обязательный |
 |----------|----------|--------------|
-| `--config` | YAML-конфиг подключения | Да |
-| `--out` | Путь для выгрузки | Да |
+| `--config` | YAML-конфиг подключения | Одно из подключений |
+| `--db-path` | Каталог файловой ИБ | Часто надёжнее для file-ИБ |
+| `--data` | Каталог данных автономного сервера | Да (offline в CDT 41) |
+| `<out-dir>` | Пустой каталог выгрузки XML | Да (позиционно) |
 | `--extension` | Имя расширения | Нет |
 | `--format` | Формат выгрузки (xml, edt) | Нет |
 
@@ -161,7 +171,8 @@ ibcmd infobase config export --config=<yaml> --out=<path> [options]
 ```bash
 ibcmd infobase config export \
   --config=connection.yaml \
-  --out="C:\Export\ERP_Config"
+  --data=C:\Temp\ibcmd-as-data \
+  "C:\Export\ERP_Config"
 ```
 
 ---

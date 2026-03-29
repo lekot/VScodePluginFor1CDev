@@ -83,6 +83,7 @@ export const coreSuiteFiles: string[] = [
   'suite/platformLauncherResolve.test.js',
   'suite/ibcmdConfigCheckGate.test.js',
   'suite/ibcmdConfigPathResolver.test.js',
+  'suite/ibcmdExportTargetDir.test.js',
   'suite/consoleStreamDecoder.test.js',
   'suite/ibcmdInfobaseConfigArgs.test.js',
   'suite/ibcmdVersionSupport.test.js',
