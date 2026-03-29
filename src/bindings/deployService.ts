@@ -334,6 +334,7 @@ export class DeployService {
             token: params.token,
             logContext: 'раскатка',
             ibcmdExtensionName: params.binding.ibcmdExtensionName,
+            force: true,
           }),
         );
 

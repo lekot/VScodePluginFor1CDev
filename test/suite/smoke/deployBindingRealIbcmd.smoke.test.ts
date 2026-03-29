@@ -10,6 +10,11 @@ import { InfobaseStorageService } from '../../../src/infobases/infobaseStorageSe
 import type { InfobaseEntry } from '../../../src/infobases/models/infobaseEntry';
 import { getIbcmdService, resetIbcmdServiceSingletonForTests } from '../../../src/services/ibcmd/ibcmdServiceSingleton';
 
+/**
+ * Opt-in: `SMOKE_DEPLOY_BINDING=1`, workspace = корень репо (нужен `FormatSamples/empty_conf/Configuration.xml`).
+ * Каталог ИБ: `SMOKE_DEPLOY_INFOBASE_PATH` или путь по умолчанию ниже.
+ * `SMOKE_DEPLOY_IBCMD_YAML` — опционально явный `--config`; иначе, как в продукте, временный YAML из `filePath` записи.
+ */
 const CONFIG_RELATIVE = 'FormatSamples/empty_conf/Configuration.xml';
 
 /** Default file-IB folder (Windows); override with `SMOKE_DEPLOY_INFOBASE_PATH`. */

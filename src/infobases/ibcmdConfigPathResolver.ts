@@ -150,6 +150,43 @@ async function writeTempYaml(entryId: string, body: string): Promise<{ path: str
 }
 
 /**
+ * Временный `--config` для файловой ИБ из каталога в записи каталога (без `ibcmd server config init`).
+ */
+async function prepareFileInfobaseTempYamlIfPossible(
+  entry: InfobaseEntry,
+  readPassword: (entryId: string) => Promise<string | undefined>,
+): Promise<PrepareIbcmdYamlResult> {
+  const fp = entry.filePath?.trim();
+  if (!fp) {
+    return { ok: false, code: 'MISSING_PARAMS', userMessage: MISSING_CONNECTION };
+  }
+  const dataAbs = resolvePathForIbcmdYamlFileField(fp);
+  if (!fs.existsSync(dataAbs)) {
+    return {
+      ok: false,
+      code: 'IB_FILE_DATA_PATH_NOT_FOUND',
+      userMessage: ibFileDataPathNotFoundMessage(dataAbs),
+    };
+  }
+  let password: string | undefined;
+  if (entry.hasStoredPassword) {
+    password = (await readPassword(entry.id)) ?? undefined;
+  }
+  const body = buildFileInfobaseYamlContent({
+    filePath: fp,
+    user: entry.user,
+    password,
+  });
+  const { path: tmpPath, dispose } = await writeTempYaml(entry.id, body);
+  return {
+    ok: true,
+    absoluteConfigPath: tmpPath,
+    isTemporary: true,
+    dispose,
+  };
+}
+
+/**
  * Resolves `--config` for ibcmd: explicit YAML, or generated temp YAML for file/server entries.
  * Caller must always `await dispose()` in `finally` when `ok` (including non-temporary: no-op).
  */
@@ -165,6 +202,16 @@ export async function prepareIbcmdConfigYaml(
   if (explicitYaml) {
     const abs = path.resolve(explicitYaml);
     if (!fs.existsSync(abs)) {
+      /** Явный YAML отсутствует — для файловой ИБ с валидным каталогом данных строим временный YAML (прозрачно для пользователя). */
+      if (entry.type === 'file') {
+        const fb = await prepareFileInfobaseTempYamlIfPossible(entry, readPassword);
+        if (fb.ok) {
+          return fb;
+        }
+        if (!fb.ok && fb.code === 'IB_FILE_DATA_PATH_NOT_FOUND') {
+          return fb;
+        }
+      }
       return {
         ok: false,
         code: 'YAML_NOT_FOUND',
@@ -196,34 +243,7 @@ export async function prepareIbcmdConfigYaml(
   }
 
   if (entry.type === 'file') {
-    const fp = entry.filePath?.trim();
-    if (!fp) {
-      return { ok: false, code: 'MISSING_PARAMS', userMessage: MISSING_CONNECTION };
-    }
-    const dataAbs = resolvePathForIbcmdYamlFileField(fp);
-    if (!fs.existsSync(dataAbs)) {
-      return {
-        ok: false,
-        code: 'IB_FILE_DATA_PATH_NOT_FOUND',
-        userMessage: ibFileDataPathNotFoundMessage(dataAbs),
-      };
-    }
-    let password: string | undefined;
-    if (entry.hasStoredPassword) {
-      password = (await readPassword(entry.id)) ?? undefined;
-    }
-    const body = buildFileInfobaseYamlContent({
-      filePath: fp,
-      user: entry.user,
-      password,
-    });
-    const { path: tmpPath, dispose } = await writeTempYaml(entry.id, body);
-    return {
-      ok: true,
-      absoluteConfigPath: tmpPath,
-      isTemporary: true,
-      dispose,
-    };
+    return prepareFileInfobaseTempYamlIfPossible(entry, readPassword);
   }
 
   if (entry.type === 'server') {

@@ -247,6 +247,8 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   logContext?: string;
   /** WOW Phase 4 #64 — `ibcmd --extension` при загрузке выгрузки расширения. */
   ibcmdExtensionName?: string;
+  /** Раскатка: перезапись конфигурации в ИБ (`ibcmd … import --force`). */
+  force?: boolean;
 }): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
   const pathResult = ibcmd.resolveExecutablePath();
@@ -278,6 +280,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   const resolvedSourceDir = path.resolve(params.absoluteSourceDir);
   const importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, {
     extension: params.ibcmdExtensionName?.trim() || undefined,
+    force: params.force === true,
   });
   if (getIbcmdImportDiagnosticsSetting()) {
     const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';

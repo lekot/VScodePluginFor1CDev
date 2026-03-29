@@ -179,6 +179,32 @@ suite('ibcmdConfigPathResolver', () => {
       }
     });
 
+    test('explicit yaml missing but file data path exists → temporary YAML (no ibcmd init)', async () => {
+      const dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibyaml-fallback-'));
+      const missingYaml = path.join(dataDir, 'gone.yaml');
+      try {
+        const r = await prepareIbcmdConfigYaml(
+          baseEntry({
+            ibcmdConfigYamlPath: missingYaml,
+            filePath: dataDir,
+          }),
+          async () => undefined,
+        );
+        assert.strictEqual(r.ok, true);
+        if (r.ok) {
+          assert.strictEqual(r.isTemporary, true);
+          assert.ok(fs.existsSync(r.absoluteConfigPath));
+          const body = await fs.promises.readFile(r.absoluteConfigPath, 'utf8');
+          assert.ok(body.includes('infobase:'));
+          assert.ok(body.includes('file:'));
+          await r.dispose();
+          assert.ok(!fs.existsSync(r.absoluteConfigPath));
+        }
+      } finally {
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
+      }
+    });
+
     test('file entry: temp yaml created and removed on dispose', async () => {
       const dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ibcmd-file-'));
       try {
