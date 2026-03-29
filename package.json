@@ -558,10 +558,11 @@
           "enum": [
             "auto",
             "utf8",
+            "utf16le",
             "oem866",
             "windows1251"
           ],
-          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. On Windows, \"auto\" decodes streams as CP866 (typical Russian console / ibcmd). If Cyrillic is still wrong, try \"windows1251\". If ibcmd clearly emits UTF-8 in the pipe, use \"utf8\". On Linux/macOS, \"auto\" uses UTF-8 streaming."
+          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. On Windows, \"auto\" decodes streams as CP866 (typical Russian console / ibcmd). If Cyrillic is still wrong, try \"windows1251\". If ibcmd clearly emits UTF-8 in the pipe, use \"utf8\". For UTF-16 LE output (wide-character pipe / some tools), use \"utf16le\". On Linux/macOS, \"auto\" uses UTF-8 streaming."
         },
         "1cMetadataTree.ibcmd.importDiagnostics": {
           "type": "boolean",

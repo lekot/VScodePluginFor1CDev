@@ -26,7 +26,7 @@ export function getIbcmdAutoDetectSetting(): boolean {
 export function getIbcmdConsoleOutputEncodingSetting(): IbcmdConsoleOutputEncoding {
   const cfg = vscode.workspace.getConfiguration();
   const v = cfg.get<string>('1cMetadataTree.ibcmd.consoleOutputEncoding', 'auto');
-  if (v === 'utf8' || v === 'oem866' || v === 'windows1251' || v === 'auto') {
+  if (v === 'utf8' || v === 'utf16le' || v === 'oem866' || v === 'windows1251' || v === 'auto') {
     return v;
   }
   return 'auto';

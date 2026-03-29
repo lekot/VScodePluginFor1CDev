@@ -22,9 +22,15 @@ suite('consoleStreamDecoder decodeConsoleStream', () => {
     assert.strictEqual(decodeConsoleStream(raw, 'windows1251'), 'Сообщение');
   });
 
+  test('utf16le mode decodes UTF-16 LE bytes', () => {
+    const buf = Buffer.from('Путь UTF-16', 'utf16le');
+    assert.strictEqual(decodeConsoleStream(buf, 'utf16le'), 'Путь UTF-16');
+  });
+
   test('empty buffer yields empty string for all modes', () => {
     const empty = Buffer.alloc(0);
     assert.strictEqual(decodeConsoleStream(empty, 'utf8'), '');
+    assert.strictEqual(decodeConsoleStream(empty, 'utf16le'), '');
     assert.strictEqual(decodeConsoleStream(empty, 'oem866'), '');
     assert.strictEqual(decodeConsoleStream(empty, 'auto'), '');
   });
@@ -68,6 +74,16 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     const dec2 = createIbcmdStreamChunkDecoders('utf8');
     dec2.decodeStderr(part);
     assert.ok(dec2.flushStderr().length > 0);
+  });
+
+  test('utf16le mode merges BMP character split across stdout chunks', () => {
+    const dec = createIbcmdStreamChunkDecoders('utf16le');
+    const full = Buffer.from('я', 'utf16le');
+    assert.strictEqual(full.length, 2);
+    const a = dec.decodeStdout(full.subarray(0, 1));
+    const b = dec.decodeStdout(full.subarray(1, 2));
+    assert.strictEqual(a + b, 'я');
+    assert.strictEqual(dec.flushStdout(), '');
   });
 
   test('oem866 and windows1251 have independent stdout/stderr decoders (same bytes)', () => {

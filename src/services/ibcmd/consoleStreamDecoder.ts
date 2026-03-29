@@ -36,6 +36,8 @@ export function decodeConsoleStream(raw: Buffer, mode: IbcmdConsoleOutputEncodin
   switch (mode) {
     case 'utf8':
       return raw.toString('utf8');
+    case 'utf16le':
+      return raw.toString('utf16le');
     case 'oem866':
       return iconv.decode(raw, 'cp866');
     case 'windows1251':
@@ -71,6 +73,7 @@ export interface IbcmdStreamChunkDecoders {
  *
  * On Windows, `auto` uses CP866 per chunk (same as typical `cmd` / Russian ibcmd stderr). Piped UTF-8 from ibcmd → set `utf8` explicitly.
  * Non-Windows `auto` uses UTF-8 streaming.
+ * `utf16le` uses UTF-16 LE streaming (e.g. some wide-character pipes / tools on Windows).
  */
 export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding): IbcmdStreamChunkDecoders {
   const singleByte = (enc: 'cp866' | 'cp1251') => ({
@@ -85,6 +88,17 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
   }
   if (mode === 'windows1251') {
     return singleByte('cp1251');
+  }
+
+  if (mode === 'utf16le') {
+    const dOut = new TextDecoder('utf-16le', { fatal: false });
+    const dErr = new TextDecoder('utf-16le', { fatal: false });
+    return {
+      decodeStdout: (chunk: Buffer) => dOut.decode(chunk, { stream: true }),
+      decodeStderr: (chunk: Buffer) => dErr.decode(chunk, { stream: true }),
+      flushStdout: () => dOut.decode(),
+      flushStderr: () => dErr.decode(),
+    };
   }
 
   const useUtf8Streaming = mode === 'utf8' || (mode === 'auto' && process.platform !== 'win32');

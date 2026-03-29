@@ -208,6 +208,24 @@ suite('IbcmdStreamingRunner', () => {
     assert.strictEqual(out.combinedLog, 'Я');
   });
 
+  test('consoleOutputEncoding utf16le merges split UTF-16 LE code units on stdout', async () => {
+    const ctrl = createControllableSpawn();
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 30_000,
+      cancellation: staticCancellation(false),
+      consoleOutputEncoding: 'utf16le',
+      spawnImpl: ctrl.spawnImpl,
+    });
+    const b = Buffer.from('Я', 'utf16le');
+    ctrl.pushStdout(b.subarray(0, 1));
+    ctrl.pushStdout(b.subarray(1, 2));
+    ctrl.close(0, null);
+    const out = await p;
+    assert.strictEqual(out.combinedLog, 'Я');
+  });
+
   test('consoleOutputEncoding oem866 decodes CP866 bytes from stderr', async () => {
     const ctrl = createControllableSpawn();
     const chunks: Array<{ stream: 'stdout' | 'stderr'; text: string }> = [];

@@ -4,7 +4,7 @@
  */
 
 /** Values for `1cMetadataTree.ibcmd.consoleOutputEncoding`. */
-export type IbcmdConsoleOutputEncoding = 'auto' | 'utf8' | 'oem866' | 'windows1251';
+export type IbcmdConsoleOutputEncoding = 'auto' | 'utf8' | 'utf16le' | 'oem866' | 'windows1251';
 
 /**
  * Result of a finished ibcmd process (execFile or post-decode streaming aggregation).
@@ -18,6 +18,7 @@ export interface IbcmdRunOutcome {
 /** Design doc discriminated union (for helpers / future APIs). */
 export type IbcmdStreamEncodingMode =
   | { kind: 'utf8' }
+  | { kind: 'utf16le' }
   | { kind: 'oem'; codePage: number }
   | { kind: 'windows'; codePage: number }
   | { kind: 'auto' };
@@ -26,6 +27,8 @@ export function encodingModeFromSetting(setting: IbcmdConsoleOutputEncoding): Ib
   switch (setting) {
     case 'utf8':
       return { kind: 'utf8' };
+    case 'utf16le':
+      return { kind: 'utf16le' };
     case 'oem866':
       return { kind: 'oem', codePage: 866 };
     case 'windows1251':
