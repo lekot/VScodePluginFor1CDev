@@ -140,6 +140,11 @@ export const vscodeTestState = {
   /** Sequential results for `showInputBox` (shifted each call). */
   inputBoxQueue: [] as (string | undefined)[],
   /**
+   * When `showInputBox` is called with `validateInput`, invalid queued values are skipped
+   * (next queue value is tried), and each failure is recorded here — Infobase URL validation (WOW §3C).
+   */
+  inputBoxValidationFailures: [] as { attempted: string; message: string }[],
+  /**
    * Optional per-call return values for `showWarningMessage` (shifted each call).
    * Use `undefined` to simulate dismiss / cancel. When empty, stub keeps legacy behavior.
    */
@@ -236,9 +241,23 @@ const windowStub = {
     }
     return undefined;
   },
-  showInputBox: async (_options?: unknown): Promise<string | undefined> => {
-    if (vscodeTestState.inputBoxQueue.length > 0) {
-      return vscodeTestState.inputBoxQueue.shift();
+  showInputBox: async (options?: { validateInput?: (v: string) => string | null | undefined }): Promise<
+    string | undefined
+  > => {
+    const validate = options?.validateInput;
+    while (vscodeTestState.inputBoxQueue.length > 0) {
+      const v = vscodeTestState.inputBoxQueue.shift();
+      if (v === undefined) {
+        return undefined;
+      }
+      if (validate) {
+        const err = validate(v);
+        if (err) {
+          vscodeTestState.inputBoxValidationFailures.push({ attempted: v, message: err });
+          continue;
+        }
+      }
+      return v;
     }
     return undefined;
   },
@@ -353,6 +372,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.quickPickQueue = [];
   vscodeTestState.openDialogQueue = [];
   vscodeTestState.inputBoxQueue = [];
+  vscodeTestState.inputBoxValidationFailures = [];
   vscodeTestState.warningMessageReturnQueue = [];
   vscodeTestState.openExternalLog = [];
   vscodeTestState.openExternalResult = true;

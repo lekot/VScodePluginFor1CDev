@@ -477,6 +477,52 @@ suite('infobaseCommands runAddExistingInfobase', () => {
     assert.strictEqual(list[0].webUrl, 'https://host/app/');
   });
 
+  /** WOW §3C #53 — validateWebClientUrlInput: только http(s), разбор через URL. */
+  test('add web: URL step skips empty, bad parse, non-http scheme until valid https', async () => {
+    vscodeTestState.quickPickQueue.push({ label: 'web', type: 'web' as const });
+    vscodeTestState.inputBoxQueue.push(
+      '   ',
+      'not a url at all',
+      'ftp://files.example/pub',
+      'https://host/app/',
+      'WebName',
+    );
+    await runAddExistingInfobase(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].webUrl, 'https://host/app/');
+    assert.deepStrictEqual(
+      vscodeTestState.inputBoxValidationFailures.map((x) => x.message),
+      [
+        'Введите URL',
+        'Некорректный URL',
+        'Используйте адрес с протоколом http:// или https://',
+      ],
+    );
+  });
+
+  test('add web: accepts http URL and trims whitespace', async () => {
+    vscodeTestState.quickPickQueue.push({ label: 'web', type: 'web' as const });
+    vscodeTestState.inputBoxQueue.push('  http://intranet.local/base/  ', 'HttpWeb');
+    await runAddExistingInfobase(service);
+    const list = await service.load();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].webUrl, 'http://intranet.local/base/');
+    assert.strictEqual(vscodeTestState.inputBoxValidationFailures.length, 0);
+  });
+
+  test('add web: only invalid URL values in queue does not upsert', async () => {
+    vscodeTestState.quickPickQueue.push({ label: 'web', type: 'web' as const });
+    vscodeTestState.inputBoxQueue.push('javascript:alert(1)');
+    await runAddExistingInfobase(service);
+    assert.deepStrictEqual(await service.load(), []);
+    assert.ok(
+      vscodeTestState.inputBoxValidationFailures.some((x) =>
+        x.message.includes('http://') && x.message.includes('https://'),
+      ),
+    );
+  });
+
   test('add file: returns early when folder dialog is dismissed (empty result)', async () => {
     vscodeTestState.quickPickQueue.push({ label: 'file', type: 'file' as const });
     vscodeTestState.openDialogQueue.push([]);
@@ -736,6 +782,25 @@ suite('infobaseCommands runEditInfobase', () => {
     await runEditInfobase(service, e);
     const one = await service.getById(e.id);
     assert.strictEqual(one?.name, 'W2');
+  });
+
+  test('edit web: invalid URL attempts abort before upsert (name and URL unchanged)', async () => {
+    const e = makeEntry({
+      type: 'web',
+      name: 'Keep',
+      filePath: undefined,
+      ibcmdConfigYamlPath: undefined,
+      webUrl: 'https://stable/url',
+    });
+    await service.saveAll([e]);
+    vscodeTestState.inputBoxQueue.push('Keep', 'file:///C:/secret');
+    await runEditInfobase(service, e);
+    const one = await service.getById(e.id);
+    assert.strictEqual(one?.name, 'Keep');
+    assert.strictEqual(one?.webUrl, 'https://stable/url');
+    assert.ok(
+      vscodeTestState.inputBoxValidationFailures.some((x) => x.attempted === 'file:///C:/secret'),
+    );
   });
 
   test('edit server: cancel at input mode leaves entry unchanged', async () => {

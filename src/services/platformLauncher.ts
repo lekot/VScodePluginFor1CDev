@@ -23,6 +23,34 @@ function defaultPreferredBitness(): PlatformBitness {
   return os.arch() === 'x64' || os.arch() === 'arm64' ? '64' : '32';
 }
 
+/** Если в настройках указан толстый клиент, подменяем на 1cv8c рядом (WOW §3C #55 — веб по /WS). */
+function coerceSettingsPathToThinClient(
+  fromSettings: string,
+  deps: ReturnType<typeof createDefaultPlatformDetectorDeps>,
+): string | undefined {
+  const base = path.basename(fromSettings);
+  const lower = base.toLowerCase();
+  const dir = path.dirname(fromSettings);
+  if (deps.platform === 'win32') {
+    if (lower === '1cv8c.exe') {
+      return fromSettings;
+    }
+    if (lower === '1cv8.exe') {
+      const thin = path.join(dir, '1cv8c.exe');
+      return deps.existsSync(thin) ? thin : undefined;
+    }
+  } else {
+    if (lower === '1cv8c') {
+      return fromSettings;
+    }
+    if (lower === '1cv8') {
+      const thin = path.join(dir, '1cv8c');
+      return deps.existsSync(thin) ? thin : undefined;
+    }
+  }
+  return undefined;
+}
+
 function tryResolveSettingsPlatformPath(raw: string, deps: ReturnType<typeof createDefaultPlatformDetectorDeps>): string | null {
   const t = raw.trim();
   if (!t) {
@@ -140,6 +168,16 @@ export async function resolveLaunchExecutable(
         return undefined;
       }
     }
+    if (entry.type === 'web' && entry.launchSettings?.clientType === 'thin') {
+      const thin = coerceSettingsPathToThinClient(fromSettings, deps);
+      if (thin) {
+        return thin;
+      }
+      await openSettingsHint(
+        'Для запуска веб-базы в тонком клиенте укажите в настройках путь к 1cv8c (или к каталогу bin, где есть 1cv8c).',
+      );
+      return undefined;
+    }
     return fromSettings;
   }
   if (settingsRaw.trim()) {
@@ -252,6 +290,55 @@ export async function openWebInfobaseInBrowser(webUrl: string): Promise<boolean>
     return false;
   }
   return vscode.env.openExternal(vscode.Uri.parse(u));
+}
+
+/**
+ * Аргументы командной строки для тонкого клиента: подключение к опубликованной веб-базе (WOW §3C #55).
+ * См. документацию платформы 1С: режим ENTERPRISE и ключ `/WS` с URL публикации.
+ */
+export function buildWebInfobaseEnterpriseArgs(webUrl: string): string[] {
+  const u = webUrl.trim();
+  if (!u) {
+    throw new Error('Web URL is empty');
+  }
+  const safe = u.replace(/"/g, '');
+  return [modeToken('enterprise'), `/WS"${safe}"`];
+}
+
+/**
+ * Запуск веб-базы через 1cv8c с ключом `/WS` (в отличие от {@link openWebInfobaseInBrowser}).
+ */
+export async function launchWebInfobaseThinClient(
+  entry: InfobaseEntry,
+  options?: ResolveLaunchExecutableOptions,
+): Promise<boolean> {
+  const url = entry.webUrl?.trim() ?? '';
+  if (!url || entry.type !== 'web') {
+    return false;
+  }
+  const exe = await resolveLaunchExecutable(entry, 'enterprise', options);
+  if (!exe) {
+    return false;
+  }
+  const deps = createDefaultPlatformDetectorDeps();
+  const thin = coerceSettingsPathToThinClient(exe, deps);
+  const launchExe = thin ?? exe;
+  const base = path.basename(launchExe).toLowerCase();
+  const okThin = deps.platform === 'win32' ? base === '1cv8c.exe' : base === '1cv8c';
+  if (!okThin) {
+    await openSettingsHint(
+      'Для веб-базы в тонком клиенте нужен исполняемый файл 1cv8c. Укажите путь к платформе в настройках.',
+    );
+    return false;
+  }
+  try {
+    const args = buildWebInfobaseEnterpriseArgs(url);
+    spawnPlatformProcess(launchExe, args);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Запуск тонкого клиента (веб): ${(err as Error).message}`);
+    return false;
+  }
+  return true;
 }
 
 /**

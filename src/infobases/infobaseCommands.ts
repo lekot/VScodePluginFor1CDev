@@ -12,6 +12,7 @@ import {
 import { INFOBASE_STORAGE_MAX_ENTRIES } from './constants';
 import {
   buildLaunchArgs,
+  launchWebInfobaseThinClient,
   openWebInfobaseInBrowser,
   resolveLaunchExecutable,
   spawnPlatformProcess,
@@ -274,6 +275,43 @@ async function addFileInfobase(storage: InfobaseStorageService, existing: Infoba
 }
 
 /** WOW §3B #49 — выбор способа ввода параметров серверной ИБ (добавление и редактирование). */
+/** WOW §3C #53–55 — способ открытия записи типа web (браузер или 1cv8c /WS). */
+const WEB_LAUNCH_MODE_ITEMS: {
+  label: string;
+  description: string;
+  clientType: 'web' | 'thin';
+}[] = [
+  {
+    label: '$(globe) Браузер',
+    description: 'Системный браузер по URL публикации',
+    clientType: 'web',
+  },
+  {
+    label: '$(vm) Тонкий клиент (1cv8c)',
+    description: 'Платформа 1С: ENTERPRISE /WS…',
+    clientType: 'thin',
+  },
+];
+
+/** WOW §3C #53 — URL публикации веб-клиента: только http(s), парсинг как у {@link URL}. */
+function validateWebClientUrlInput(raw: string): string | null {
+  const t = raw?.trim() ?? '';
+  if (!t) {
+    return 'Введите URL';
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(t);
+  } catch {
+    return 'Некорректный URL';
+  }
+  const scheme = parsed.protocol.replace(/:$/, '').toLowerCase();
+  if (scheme !== 'http' && scheme !== 'https') {
+    return 'Используйте адрес с протоколом http:// или https://';
+  }
+  return null;
+}
+
 const SERVER_INPUT_MODE_ITEMS: {
   label: string;
   description: string;
@@ -455,20 +493,10 @@ async function addWebInfobase(storage: InfobaseStorageService, existing: Infobas
   const webUrl =
     (await vscode.window.showInputBox({
       title: 'URL веб-клиента',
-      prompt: 'Например https://host/base',
-      validateInput: (v) => {
-        const t = v?.trim() ?? '';
-        if (!t) {
-          return 'Введите URL';
-        }
-        try {
-          // eslint-disable-next-line no-new
-          new URL(t);
-          return null;
-        } catch {
-          return 'Некорректный URL';
-        }
-      },
+      prompt: 'Адрес публикации 1С (https://сервер/имя_базы или http://…)',
+      placeHolder: 'https://server.example.com/demo_ut',
+      ignoreFocusOut: true,
+      validateInput: (v) => validateWebClientUrlInput(v ?? ''),
     }))?.trim() ?? '';
   if (!webUrl) {
     return;
@@ -477,11 +505,19 @@ async function addWebInfobase(storage: InfobaseStorageService, existing: Infobas
   const name =
     (await vscode.window.showInputBox({
       title: 'Имя базы в списке',
+      ignoreFocusOut: true,
       validateInput: (v) => (v?.trim() ? null : 'Введите непустое имя'),
     }))?.trim() ?? '';
   if (!name) {
     return;
   }
+
+  const launchPick = await vscode.window.showQuickPick(WEB_LAUNCH_MODE_ITEMS, {
+    title: 'Способ запуска веб-базы',
+    placeHolder: 'Браузер (по умолчанию) или тонкий клиент',
+  });
+  const launchSettings =
+    launchPick?.clientType === 'thin' ? { clientType: 'thin' as const } : { clientType: 'web' as const };
 
   const id = randomUUID();
   const entry: InfobaseEntry = {
@@ -490,6 +526,7 @@ async function addWebInfobase(storage: InfobaseStorageService, existing: Infobas
     type: 'web',
     webUrl,
     hasStoredPassword: false,
+    launchSettings,
     createdAt: nowIso(),
   };
   validateInfobaseEntry(entry);
@@ -813,6 +850,7 @@ async function editWebInfobase(
     (await vscode.window.showInputBox({
       title: 'Имя базы',
       value: entry.name,
+      ignoreFocusOut: true,
       validateInput: (v) => (v?.trim() ? null : 'Введите непустое имя'),
     }))?.trim() ?? '';
   if (!name) {
@@ -821,23 +859,22 @@ async function editWebInfobase(
   const webUrl =
     (await vscode.window.showInputBox({
       title: 'URL веб-клиента',
+      prompt: 'Адрес публикации 1С (веб-клиент или /WS для тонкого)',
       value: entry.webUrl ?? '',
-      validateInput: (v) => {
-        const t = v?.trim() ?? '';
-        if (!t) {
-          return 'Введите URL';
-        }
-        try {
-          // eslint-disable-next-line no-new
-          new URL(t);
-          return null;
-        } catch {
-          return 'Некорректный URL';
-        }
-      },
+      ignoreFocusOut: true,
+      validateInput: (v) => validateWebClientUrlInput(v ?? ''),
     }))?.trim() ?? '';
   if (!webUrl) {
     return;
+  }
+
+  const launchPick = await vscode.window.showQuickPick(WEB_LAUNCH_MODE_ITEMS, {
+    title: 'Способ запуска веб-базы',
+    placeHolder: 'Esc — оставить текущий способ запуска',
+  });
+  let nextLaunchSettings = entry.launchSettings;
+  if (launchPick) {
+    nextLaunchSettings = { ...entry.launchSettings, clientType: launchPick.clientType };
   }
 
   const next: InfobaseEntry = {
@@ -845,6 +882,7 @@ async function editWebInfobase(
     name,
     webUrl,
     lastUsedAt: entry.lastUsedAt,
+    launchSettings: nextLaunchSettings,
   };
   validateInfobaseEntry(next);
   assertNoConflictingInfobaseTarget(next, existing, entry.id);
@@ -873,6 +911,19 @@ export async function runOpenEnterprise(
     const url = entry.webUrl?.trim() ?? '';
     if (!url) {
       void vscode.window.showErrorMessage('У веб-базы не задан URL.');
+      return;
+    }
+    if (entry.launchSettings?.clientType === 'thick') {
+      void vscode.window.showWarningMessage(
+        'Для веб-базы толстый клиент не используется. Команда «Редактировать…» — выберите браузер или тонкий клиент (WOW §3C).',
+      );
+      return;
+    }
+    if (entry.launchSettings?.clientType === 'thin') {
+      const ok = await launchWebInfobaseThinClient(entry);
+      if (ok) {
+        await touchLastUsed(s, entry);
+      }
       return;
     }
     const ok = await openWebInfobaseInBrowser(url);

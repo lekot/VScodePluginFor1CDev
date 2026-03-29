@@ -92,6 +92,14 @@ function entryTooltip(entry: InfobaseEntry): string {
     }
   } else if (entry.type === 'web' && entry.webUrl) {
     lines.push(`URL: ${entry.webUrl}`);
+    const c = entry.launchSettings?.clientType;
+    if (c === 'thin') {
+      lines.push('Запуск: тонкий клиент (1cv8c, /WS)');
+    } else if (c === 'thick') {
+      lines.push('Запуск: толстый клиент (не рекомендуется для веб-URL)');
+    } else {
+      lines.push('Запуск: браузер');
+    }
   }
   return lines.join('\n');
 }
