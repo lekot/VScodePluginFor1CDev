@@ -97,8 +97,8 @@ suite('ibcmdInfobaseConfigArgs', () => {
     const iSrc = args.indexOf('/src');
     assert.ok(args.includes('--user=U'));
     assert.ok(args.includes('--password=x'));
-    assert.ok(args.includes('--force'));
-    assert.ok(iSrc > args.indexOf('--force'));
+    assert.ok(args.includes('-F'));
+    assert.ok(iSrc > args.indexOf('-F'));
   });
 
   test('buildInfobaseConfigImportArgs: blank user trim → no --user', () => {

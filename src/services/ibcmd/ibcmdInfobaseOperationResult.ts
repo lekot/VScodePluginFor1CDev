@@ -28,7 +28,33 @@ const IMPORT_EXIT_MESSAGES: Record<number, string> = {
 
 const GENERIC_NONZERO = 'Ошибка выполнения операции (см. вывод ibcmd).';
 
+/** Shown when log indicates CLI rejected force / similar (not IB lock). */
+const IMPORT_FORCE_PARAM_PARSE_MSG =
+  'Ошибка ibcmd: параметр принудительной загрузки отклонён при разборе командной строки (это не блокировка базы). См. вывод в канале.';
+
 const CANCELLED_MSG = 'Операция отменена.';
+
+/**
+ * True when ibcmd output suggests the process failed parsing a force-related flag (`--force`, `-F`).
+ * Used to avoid mapping exit code 2 to «база заблокирована» and to retry import without `-F`.
+ */
+export function isIbcmdForceParameterRejectedLog(log: string): boolean {
+  const t = log.trim();
+  if (!t) {
+    return false;
+  }
+  const lower = t.toLowerCase();
+  const mentionsForce =
+    lower.includes('--force') ||
+    /\bforce\b/.test(lower) ||
+    /(?:^|[\s:])-f(?:\s|$|:)/i.test(t);
+  if (!mentionsForce) {
+    return false;
+  }
+  const ru = lower.includes('разбора параметра') || lower.includes('разбор параметра');
+  const en = lower.includes('parameter parsing') || lower.includes('invalid parameter');
+  return ru || en;
+}
 
 function mapImportExit(exitCode: number): string {
   return IMPORT_EXIT_MESSAGES[exitCode] ?? GENERIC_NONZERO;
@@ -98,12 +124,15 @@ export function interpretIbcmdInfobaseOutcome(
     };
   }
 
-  if (op === 'import' && typeof code === 'number') {
+  if (op === 'import' && typeof code === 'number' && code !== 0) {
+    const userMessage = isIbcmdForceParameterRejectedLog(logExcerpt)
+      ? IMPORT_FORCE_PARAM_PARSE_MSG
+      : mapImportExit(code);
     return {
       status: 'error',
       exitCode: code,
       signal: raw.signal ?? undefined,
-      userMessage: mapImportExit(code),
+      userMessage,
       logExcerpt,
       logTruncated,
     };

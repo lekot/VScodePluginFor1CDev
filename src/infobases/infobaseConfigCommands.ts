@@ -18,6 +18,7 @@ import {
 } from '../services/ibcmd/ibcmdInfobaseConfigArgs';
 import {
   interpretIbcmdInfobaseOutcome,
+  isIbcmdForceParameterRejectedLog,
   type IbcmdInfobaseConfigOpKind,
   type IbcmdInfobaseOperationResult,
 } from '../services/ibcmd/ibcmdInfobaseOperationResult';
@@ -247,7 +248,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   logContext?: string;
   /** WOW Phase 4 #64 — `ibcmd --extension` при загрузке выгрузки расширения. */
   ibcmdExtensionName?: string;
-  /** Раскатка: перезапись конфигурации в ИБ (`ibcmd … import --force`). */
+  /** Раскатка: перезапись конфигурации в ИБ (`ibcmd … import -F`). */
   force?: boolean;
 }): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
@@ -278,10 +279,11 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
   const resolvedSourceDir = path.resolve(params.absoluteSourceDir);
-  const importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, {
+  const importOpts = {
     extension: params.ibcmdExtensionName?.trim() || undefined,
     force: params.force === true,
-  });
+  };
+  let importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, importOpts);
   if (getIbcmdImportDiagnosticsSetting()) {
     const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';
     ch.appendLine(`[import diag] --config: ${prep.absoluteConfigPath} (${kind})`);
@@ -300,7 +302,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   }
 
   try {
-    const outcome = await runIbcmdStreaming({
+    let outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,
       args: importArgs,
       timeoutMs: ibcmd.getTimeoutMs(),
@@ -317,6 +319,37 @@ export async function runInfobaseConfigImportFromDirectory(params: {
 
     if (outcome.logTruncated) {
       ch.appendLine(TRUNCATION_WARNING);
+    }
+
+    if (
+      params.force === true &&
+      !outcome.cancelled &&
+      !outcome.timedOut &&
+      !outcome.spawnErrorCode &&
+      isIbcmdForceParameterRejectedLog(outcome.combinedLog)
+    ) {
+      ch.appendLine(
+        '[ibcmd] Повтор без -F: ibcmd отклонил флаг принудительной загрузки при разборе параметров.',
+      );
+      importArgs = buildInfobaseConfigImportArgs(prep.absoluteConfigPath, resolvedSourceDir, {
+        ...importOpts,
+        force: false,
+      });
+      outcome = await runIbcmdStreaming({
+        executablePath: pathResult.path,
+        args: importArgs,
+        timeoutMs: ibcmd.getTimeoutMs(),
+        cancellation: vscodeCancellation(params.token),
+        consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+        onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      });
+      flushOutputChannel();
+      if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
+        ibcmd.invalidatePathCache();
+      }
+      if (outcome.logTruncated) {
+        ch.appendLine(TRUNCATION_WARNING);
+      }
     }
 
     return interpretIbcmdInfobaseOutcome('import', outcome);

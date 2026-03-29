@@ -1,5 +1,8 @@
 import * as assert from 'assert';
-import { interpretIbcmdInfobaseOutcome } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
+import {
+  interpretIbcmdInfobaseOutcome,
+  isIbcmdForceParameterRejectedLog,
+} from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
 import type { IbcmdStreamingRawOutcome } from '../../src/services/ibcmd/IbcmdStreamingRunner';
 
 function baseRaw(over: Partial<IbcmdStreamingRawOutcome> = {}): IbcmdStreamingRawOutcome {
@@ -27,6 +30,48 @@ suite('ibcmdInfobaseOperationResult', () => {
     assert.strictEqual(r.status, 'error');
     assert.strictEqual(r.exitCode, 2);
     assert.ok(r.userMessage.includes('заблокирована'));
+  });
+
+  test('import exit 2 + force-flag parse log → not locked (CLI parse)', () => {
+    const r = interpretIbcmdInfobaseOutcome(
+      'import',
+      baseRaw({
+        exitCode: 2,
+        combinedLog: 'Ошибка разбора параметра: --force\n',
+      }),
+    );
+    assert.strictEqual(r.status, 'error');
+    assert.strictEqual(r.exitCode, 2);
+    assert.ok(!r.userMessage.includes('заблокирована'));
+    assert.ok(r.userMessage.includes('разборе командной строки'));
+  });
+
+  test('import exit 1 + English Invalid parameter --force → CLI parse message', () => {
+    const r = interpretIbcmdInfobaseOutcome(
+      'import',
+      baseRaw({
+        exitCode: 1,
+        combinedLog: 'Invalid parameter: --force',
+      }),
+    );
+    assert.strictEqual(r.exitCode, 1);
+    assert.ok(!r.userMessage.includes('заблокирована'));
+    assert.ok(r.userMessage.includes('разборе командной строки'));
+  });
+
+  test('isIbcmdForceParameterRejectedLog: RU + --force', () => {
+    assert.strictEqual(
+      isIbcmdForceParameterRejectedLog('Ошибка разбора параметра: --force'),
+      true,
+    );
+  });
+
+  test('isIbcmdForceParameterRejectedLog: EN Parameter parsing + -F', () => {
+    assert.strictEqual(isIbcmdForceParameterRejectedLog('Parameter parsing failed: -F'), true);
+  });
+
+  test('isIbcmdForceParameterRejectedLog: exit-2 lock text without parse → false', () => {
+    assert.strictEqual(isIbcmdForceParameterRejectedLog('База занята другим процессом'), false);
   });
 
   test('import exit 3 → connection message', () => {

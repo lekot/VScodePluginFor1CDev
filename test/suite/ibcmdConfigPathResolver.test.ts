@@ -169,8 +169,14 @@ suite('ibcmdConfigPathResolver', () => {
 
     test('explicit yaml missing → YAML_NOT_FOUND', async () => {
       const missing = path.join(os.tmpdir(), `missing-${Date.now()}.yaml`);
+      // Server entry: file-type would try temp YAML from filePath and can return IB_FILE_DATA_PATH_NOT_FOUND first.
       const r = await prepareIbcmdConfigYaml(
-        baseEntry({ ibcmdConfigYamlPath: missing }),
+        baseEntry({
+          type: 'server',
+          server: 'srv',
+          database: 'db1',
+          ibcmdConfigYamlPath: missing,
+        }),
         async () => undefined,
       );
       assert.strictEqual(r.ok, false);

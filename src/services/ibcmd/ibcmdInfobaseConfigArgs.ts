@@ -73,7 +73,8 @@ export function buildInfobaseConfigImportArgs(
   const args = ['infobase', 'config', 'import', `--config=${cfg}`];
   appendCredentials(args, options?.credentials);
   if (options?.force) {
-    args.push('--force');
+    // Short form: some ibcmd builds reject `--force` on `config import` (exit 2 + parse error) while accepting `-F`.
+    args.push('-F');
   }
   const ext = options?.extension?.trim();
   if (ext) {
