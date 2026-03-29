@@ -136,9 +136,8 @@ export type PrepareIbcmdYamlResult = PreparedIbcmdYaml | PrepareYamlFailure;
 async function writeTempYaml(entryId: string, body: string): Promise<{ path: string; dispose: () => Promise<void> }> {
   const suffix = randomBytes(8).toString('hex');
   const tmp = path.join(os.tmpdir(), `1cviewer-ibcmd-${entryId}-${suffix}.yaml`);
-  // UTF-8 BOM helps Windows tools (including some 1C builds) detect encoding for paths with Cyrillic in YAML.
-  const payload = process.platform === 'win32' ? `\ufeff${body}` : body;
-  await fs.promises.writeFile(tmp, payload, { encoding: 'utf8' });
+  // UTF-8 without BOM: some ibcmd builds mis-parse a leading BOM so `infobase` is not recognized. Cyrillic paths remain valid in UTF-8.
+  await fs.promises.writeFile(tmp, body, { encoding: 'utf8' });
   const dispose = async (): Promise<void> => {
     try {
       await fs.promises.unlink(tmp);

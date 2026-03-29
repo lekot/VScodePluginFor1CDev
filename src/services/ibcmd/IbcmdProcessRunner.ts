@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { IbcmdConsoleOutputEncoding, IbcmdRunOutcome } from './ibcmdConsoleEncodingTypes';
 import { decodeIbcmdProcessStreams } from './consoleStreamDecoder';
+import { envForIbcmdExplicitConfigSpawn } from './ibcmdSpawnEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,7 +18,8 @@ export type ExecFileFn = (
     timeout: number;
     maxBuffer: number;
     windowsHide: boolean;
-  }
+    env?: NodeJS.ProcessEnv;
+  },
 ) => Promise<{ stdout: string | Buffer; stderr: string | Buffer }>;
 
 /**
@@ -34,6 +36,13 @@ export function resolveIbcmdTimeoutMs(settingsTimeoutMs: number | undefined, env
   return DEFAULT_TIMEOUT_MS;
 }
 
+function spawnEnvForIbcmdArgs(args: readonly string[]): { env: NodeJS.ProcessEnv } | Record<string, never> {
+  if (args.some((a) => typeof a === 'string' && a.startsWith('--config='))) {
+    return { env: envForIbcmdExplicitConfigSpawn() };
+  }
+  return {};
+}
+
 export async function runIbcmdExecutable(
   executable: string,
   args: string[],
@@ -42,6 +51,7 @@ export async function runIbcmdExecutable(
   consoleOutputEncoding: IbcmdConsoleOutputEncoding = 'auto',
 ): Promise<IbcmdRunOutcome> {
   const { stdout, stderr } = await execImpl(executable, args, {
+    ...spawnEnvForIbcmdArgs(args),
     timeout: timeoutMs,
     maxBuffer: IBCMD_EXEC_MAX_BUFFER,
     windowsHide: true,

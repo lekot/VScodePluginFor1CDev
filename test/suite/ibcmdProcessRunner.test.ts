@@ -64,5 +64,28 @@ suite('ibcmdProcessRunner', () => {
       assert.strictEqual(out.stdout, 'out');
       assert.strictEqual(out.stderr, 'err');
     });
+
+    test('with --config= in argv passes child env without IBCMD_INFOBASE_CONFIG', async () => {
+      const prev = process.env.IBCMD_INFOBASE_CONFIG;
+      process.env.IBCMD_INFOBASE_CONFIG = 'C:\\other-infobase.yml';
+      try {
+        const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
+        const execImpl: ExecFileFn = async (_file, _args, options) => {
+          calls.push({ env: options.env });
+          return { stdout: '', stderr: '' };
+        };
+        await runIbcmdExecutable('/x', ['infobase', 'config', 'check', '--config=C:\\me.yml'], 1, execImpl);
+        assert.strictEqual(calls.length, 1);
+        assert.ok(calls[0].env, 'execFile should receive explicit env');
+        assert.strictEqual(calls[0].env!.IBCMD_INFOBASE_CONFIG, undefined);
+        assert.strictEqual(process.env.IBCMD_INFOBASE_CONFIG, 'C:\\other-infobase.yml');
+      } finally {
+        if (prev === undefined) {
+          delete process.env.IBCMD_INFOBASE_CONFIG;
+        } else {
+          process.env.IBCMD_INFOBASE_CONFIG = prev;
+        }
+      }
+    });
   });
 });

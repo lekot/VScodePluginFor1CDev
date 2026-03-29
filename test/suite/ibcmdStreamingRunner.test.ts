@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { EventEmitter } from 'events';
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { PassThrough } from 'stream';
 import iconv from 'iconv-lite';
 import {
@@ -298,5 +298,44 @@ suite('IbcmdStreamingRunner', () => {
     ctrl.close(0, null);
     const out = await p;
     assert.ok(out.combinedLog.includes(pathLine));
+  });
+
+  test('spawn strips IBCMD_INFOBASE_CONFIG from child env for explicit --config', async () => {
+    const prev = process.env.IBCMD_INFOBASE_CONFIG;
+    process.env.IBCMD_INFOBASE_CONFIG = 'C:\\wrong-infobase.yml';
+    let childEnv: NodeJS.ProcessEnv | undefined;
+    try {
+      const spawnImpl = ((_command: string, _args: readonly string[], options: SpawnOptions): ChildProcess => {
+        childEnv = options.env;
+        const stdoutEE = new PassThrough();
+        const stderrEE = new PassThrough();
+        const c = new EventEmitter() as ChildProcess;
+        (c as unknown as { stdout: PassThrough }).stdout = stdoutEE;
+        (c as unknown as { stderr: PassThrough }).stderr = stderrEE;
+        (c as unknown as { killed: boolean }).killed = false;
+        (c as unknown as { exitCode: number | null }).exitCode = null;
+        (c as unknown as { kill: (sig?: NodeJS.Signals) => boolean }).kill = () => true;
+        setImmediate(() => c.emit('close', 0, null));
+        return c;
+      }) as typeof spawn;
+
+      const out = await runIbcmdStreaming({
+        executablePath: '/ibcmd',
+        args: ['infobase', 'config', 'import', '--config=/tmp/a.yaml', '/src'],
+        timeoutMs: 5000,
+        cancellation: staticCancellation(false),
+        spawnImpl,
+      });
+      assert.strictEqual(out.exitCode, 0);
+      assert.ok(childEnv);
+      assert.strictEqual(childEnv!.IBCMD_INFOBASE_CONFIG, undefined);
+      assert.strictEqual(process.env.IBCMD_INFOBASE_CONFIG, 'C:\\wrong-infobase.yml');
+    } finally {
+      if (prev === undefined) {
+        delete process.env.IBCMD_INFOBASE_CONFIG;
+      } else {
+        process.env.IBCMD_INFOBASE_CONFIG = prev;
+      }
+    }
   });
 });
