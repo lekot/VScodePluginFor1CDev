@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
@@ -17,6 +18,12 @@ import { OptimisticDeleteToken } from '../types/reloadContracts';
 import { TOP_LEVEL_TYPES } from '../services/elementOperations';
 import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
 import { expectedTreeNodeIdForCompositionRef } from '../services/subsystemCompositionRefResolver';
+import type { ConfigurationBindingDecoration } from '../bindings/bindingDecorationTypes';
+import {
+  bindingKey,
+  detectIbcmdExtensionNameFromConfigRelativePath,
+  normalizeConfigRelativePath,
+} from '../bindings/bindingPathUtils';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -82,6 +89,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private searchHistory: string[] = [];
   private filterAncestorOrVisibleIds: Set<string> | null = null;
   private messageUpdater: ((message: string | undefined) => void) | null = null;
+  /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
+  private configurationBindingDecorations = new Map<string, ConfigurationBindingDecoration>();
 
   constructor(_context: vscode.ExtensionContext) {
     void _context;
@@ -90,6 +99,78 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   setMessageUpdater(updater: (message: string | undefined) => void): void {
     this.messageUpdater = updater;
+  }
+
+  /**
+   * Обновляет кэш привязок ИБ для бейджа/tooltip на узле Configuration (WOW §2C).
+   */
+  setConfigurationBindingDecorations(map: ReadonlyMap<string, ConfigurationBindingDecoration>): void {
+    this.configurationBindingDecorations = new Map(map);
+  }
+
+  private lookupConfigurationBindingDecoration(element: TreeNode): ConfigurationBindingDecoration | undefined {
+    if (element.type === MetadataType.Configuration) {
+      const configDir = this.getConfigPathForNode(element);
+      if (!configDir) {
+        return undefined;
+      }
+      const configXmlFs = path.join(configDir, 'Configuration.xml');
+      const uri = vscode.Uri.file(configXmlFs);
+      const wf = vscode.workspace.getWorkspaceFolder(uri);
+      if (!wf) {
+        return undefined;
+      }
+      const rel = path.relative(wf.uri.fsPath, configXmlFs).replace(/\\/g, '/');
+      const norm = normalizeConfigRelativePath(rel);
+      const ext = detectIbcmdExtensionNameFromConfigRelativePath(norm);
+      const key = bindingKey(wf.name, norm, ext);
+      return this.configurationBindingDecorations.get(key);
+    }
+    if (element.type === MetadataType.Extension) {
+      const props = element.properties as Record<string, unknown> | undefined;
+      if (props?.isExtension !== true || !element.filePath?.trim()) {
+        return undefined;
+      }
+      const configXmlFs = path.join(element.filePath.trim(), 'Configuration.xml');
+      try {
+        if (!fs.existsSync(configXmlFs)) {
+          return undefined;
+        }
+      } catch {
+        return undefined;
+      }
+      const uri = vscode.Uri.file(configXmlFs);
+      const wf = vscode.workspace.getWorkspaceFolder(uri);
+      if (!wf) {
+        return undefined;
+      }
+      const rel = path.relative(wf.uri.fsPath, configXmlFs).replace(/\\/g, '/');
+      const norm = normalizeConfigRelativePath(rel);
+      const ext = detectIbcmdExtensionNameFromConfigRelativePath(norm);
+      const key = bindingKey(wf.name, norm, ext);
+      return this.configurationBindingDecorations.get(key);
+    }
+    return undefined;
+  }
+
+  /** WOW Phase 4 #64 — папка выгрузки расширения с отдельным Configuration.xml. */
+  private isExtensionInfobaseBindingRoot(element: TreeNode): boolean {
+    if (element.type !== MetadataType.Extension) {
+      return false;
+    }
+    const props = element.properties as Record<string, unknown> | undefined;
+    if (props?.isExtension !== true) {
+      return false;
+    }
+    const dir = element.filePath?.trim();
+    if (!dir) {
+      return false;
+    }
+    try {
+      return fs.existsSync(path.join(dir, 'Configuration.xml'));
+    } catch {
+      return false;
+    }
   }
 
   /** Display form of search query: *query* for plain substring search, else as-is (additional_req.md п.2). */
@@ -1055,6 +1136,27 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
       }
 
+      const bindingDeco = this.lookupConfigurationBindingDecoration(element);
+      // WOW §2D: контекст для «Раскатать в базу/базы» (viewItem when в package.json).
+      if (element.type === MetadataType.Configuration) {
+        let cv = 'Configuration';
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          cv += ' bindingBound';
+          // Дизайн §12.5: подпись/иконка от флага массовой раскатки, не от числа баз в списке.
+          const many = bindingDeco.massDeployment === true;
+          cv += many ? ' deployMany' : ' deployOne';
+        }
+        treeItem.contextValue = cv;
+      } else if (this.isExtensionInfobaseBindingRoot(element)) {
+        let cv = 'Extension extensionBindingRoot';
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          cv += ' bindingBound';
+          const many = bindingDeco.massDeployment === true;
+          cv += many ? ' deployMany' : ' deployOne';
+        }
+        treeItem.contextValue = cv;
+      }
+
       // Set tooltip: name, type, path (additional_req.md п.14)
       const synonym = element.properties.synonym as string | undefined;
       let tooltipText =
@@ -1066,11 +1168,38 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (q && !this.searchUseRegex && this.nodeMatchesSearch(element, q)) {
         tooltipText += `\nНайдено: "${q}"`;
       }
+      if (element.type === MetadataType.Configuration) {
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          const mass = bindingDeco.massDeployment ? '\nМассовая раскатка: да' : '';
+          tooltipText += `\n\nПривязка ИБ: ${bindingDeco.boundCount} баз(ы).${mass}\n${bindingDeco.namesPreview}`;
+        } else {
+          tooltipText +=
+            '\n\nПривязка ИБ: не настроена. Контекстное меню узла → «Привязать базы…».';
+        }
+      } else if (this.isExtensionInfobaseBindingRoot(element)) {
+        if (bindingDeco && bindingDeco.boundCount > 0) {
+          const mass = bindingDeco.massDeployment ? '\nМассовая раскатка: да' : '';
+          tooltipText += `\n\nПривязка ИБ (расширение): ${bindingDeco.boundCount} баз(ы).${mass}\n${bindingDeco.namesPreview}`;
+        } else {
+          tooltipText += '\n\nПривязка ИБ расширения: не настроена. Контекстное меню → «Привязать базы…».';
+        }
+      }
       treeItem.tooltip = tooltipText;
 
-      // Set description (shown next to the label)
+      // Set description (shown next to the label); для Configuration — бейдж числа привязок (§2C)
+      const descParts: string[] = [];
       if (synonym) {
-        treeItem.description = synonym;
+        descParts.push(synonym);
+      }
+      if (
+        (element.type === MetadataType.Configuration || this.isExtensionInfobaseBindingRoot(element)) &&
+        bindingDeco &&
+        bindingDeco.boundCount > 0
+      ) {
+        descParts.push(`🔗${bindingDeco.boundCount}`);
+      }
+      if (descParts.length > 0) {
+        treeItem.description = descParts.join(' · ');
       }
 
       // Set icon based on metadata type
@@ -1085,6 +1214,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         if (configDir != null) {
           treeItem.resourceUri = vscode.Uri.file(path.join(configDir, 'Configuration.xml'));
         }
+      } else if (this.isExtensionInfobaseBindingRoot(element) && element.filePath?.trim()) {
+        treeItem.resourceUri = vscode.Uri.file(path.join(element.filePath.trim(), 'Configuration.xml'));
       } else if (element.filePath) {
         if (element.type === MetadataType.Form) {
           const { formXmlPath } = getFormPaths(element.filePath);

@@ -3,6 +3,7 @@
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const mode = process.argv[2];
@@ -28,6 +29,7 @@ if (!fs.existsSync(config)) {
   process.exit(1);
 }
 
+const offlineDataDir = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-ibcmd-cli-data-'));
 const args = ['infobase', 'config', mode === 'check' ? 'check' : 'import', `--config=${path.resolve(config)}`];
 const user = process.env.IBCMD_USER?.trim();
 const password = process.env.IBCMD_PASSWORD?.trim();
@@ -37,6 +39,7 @@ if (user) {
 if (password) {
   args.push(`--password=${password}`);
 }
+args.push(`--data=${offlineDataDir}`);
 
 if (mode === 'check') {
   if (process.env.IBCMD_CONFIG_CHECK_FORCE?.trim() === '1') {
@@ -62,6 +65,11 @@ const reportDir = reportDirRaw ? path.resolve(reportDirRaw) : path.resolve('.ibc
 const reportPath = path.join(reportDir, `${mode}-last.log`);
 
 const r = spawnSync(ibcmd, args, { encoding: 'utf8', shell: false });
+try {
+  fs.rmSync(offlineDataDir, { recursive: true, force: true });
+} catch {
+  /* ignore */
+}
 const stdout = (r.stdout ?? '').toString();
 const stderr = (r.stderr ?? '').toString();
 const exitCode = typeof r.status === 'number' ? r.status : 1;

@@ -10,7 +10,31 @@ import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
 import { MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { registerAllCommands } from '../commands';
+import { registerIbcmdInfobaseHooks } from '../services/ibcmdService';
+import { INFOBASE_TREE_VIEW_ID, InfobaseTreeDataProvider } from '../infobases/infobaseTreeProvider';
+import { registerInfobaseTreeCommands } from '../infobases/registerInfobaseTreeCommands';
+import { registerBindingDialogCommands } from '../bindings/bindingDialog';
+import { rebuildBindingDecorationsForTree, registerBindingDecorationSync } from '../bindings/bindingTreeDecorations';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
+import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
+
+/** Empty-catalog hint (WOW design UC-01 / plan §1C). */
+async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
+  const storage = state.infobaseStorage;
+  const view = state.infobaseTreeView;
+  if (!storage || !view) {
+    return;
+  }
+  try {
+    const entries = await storage.load();
+    view.message =
+      entries.length === 0
+        ? 'Нет баз в списке. Создайте, добавьте существующую или импортируйте из .v8i — кнопки на панели вида.'
+        : undefined;
+  } catch {
+    view.message = 'Не удалось загрузить список информационных баз.';
+  }
+}
 
 /**
  * Tree view, providers, reload coordinator, command registration, selection wiring.
@@ -80,8 +104,44 @@ export function registerExtensionWorkspace(
     })
   );
 
+  registerIbcmdInfobaseHooks(context);
+
+  if (state.infobaseStorage) {
+    const infobaseTreeProvider = new InfobaseTreeDataProvider(state.infobaseStorage);
+    state.infobaseTreeProvider = infobaseTreeProvider;
+    state.infobaseTreeView = vscode.window.createTreeView(INFOBASE_TREE_VIEW_ID, {
+      treeDataProvider: infobaseTreeProvider,
+      showCollapseAll: true,
+    });
+    context.subscriptions.push(state.infobaseTreeView);
+    void syncInfobaseTreeViewMessage(state);
+    context.subscriptions.push(
+      state.infobaseStorage.onDidChangeCatalog(() => {
+        infobaseTreeProvider.refresh();
+        void syncInfobaseTreeViewMessage(state);
+      }),
+    );
+    context.subscriptions.push(...registerInfobaseTreeCommands(state));
+    state.refreshBindingTreeDecorations = () => rebuildBindingDecorationsForTree(state);
+    context.subscriptions.push(...registerBindingDialogCommands(context, state, state.treeDataProvider));
+    context.subscriptions.push(registerBindingDecorationSync(state));
+    void rebuildBindingDecorationsForTree(state);
+  }
+
   const commandDisposables = registerAllCommands({ context, state, lifecycle });
   context.subscriptions.push(...commandDisposables);
+
+  const infobaseTreeForGitRefresh = state.infobaseTreeProvider;
+  registerGitPhase4HeadChangeHandlers(context, {
+    onReloadMetadataTree: () => lifecycle.loadMetadataTree(),
+    onRefreshInfobaseManager: infobaseTreeForGitRefresh
+      ? () => {
+          infobaseTreeForGitRefresh.refresh();
+          void rebuildBindingDecorationsForTree(state);
+          void syncInfobaseTreeViewMessage(state);
+        }
+      : undefined,
+  });
 
   const treeSelectionDisposable = state.treeView.onDidChangeSelection(async (e) => {
     if (e.selection.length > 0) {

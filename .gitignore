@@ -25,6 +25,9 @@ docs/analytics/*
 !docs/plans/
 docs/plans/*
 !docs/plans/issue-bsl-common-module-tree-plan.md
+# WOW — общий пакет дизайна Infobase Manager (остальной docs/ по-прежнему локальный)
+!docs/WOW/
+!docs/WOW/**
 suite-reports/
 AGENTS.md
 # Specs (tracked only on branch local-specs, not pushed to origin)
@@ -43,3 +46,4 @@ ibcmd-local.sh
 .ibcmd-reports/
 suite-report-core.json
 /shcntx_help_db_path.txt
+/scripts/read-cursor-infobase-entry.py

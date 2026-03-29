@@ -1,0 +1,196 @@
+import * as vscode from 'vscode';
+import type { InfobaseEntry, InfobaseFolder, InfobaseStorageRoot } from './models/infobaseEntry';
+import { Logger } from '../utils/logger';
+import { INFOBASE_GLOBAL_STATE_KEY, infobasePasswordSecretKey } from './constants';
+import { migrateStorageRoot } from './infobaseMigration';
+import { validateInfobaseCatalog, validateInfobaseEntry } from './infobaseValidator';
+
+function sortEntries(entries: InfobaseEntry[]): InfobaseEntry[] {
+  const order = (t: InfobaseEntry['type']) => (t === 'file' ? 0 : t === 'server' ? 1 : 2);
+  return [...entries].sort((a, b) => {
+    const ta = order(a.type);
+    const tb = order(b.type);
+    if (ta !== tb) {
+      return ta - tb;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
+ * Reads/writes the global infobase catalog in `globalState`, keeps passwords in `SecretStorage`.
+ * WOW Infobase Manager §3B #51 (план: «infobaseStorage») — пароли серверных ИБ не в `globalState`.
+ */
+export class InfobaseStorageService {
+  /** Entries in last persisted order (not necessarily sorted). */
+  private storedEntries: InfobaseEntry[] | null = null;
+  private storedFolders: InfobaseFolder[] | null = null;
+
+  private readonly _onDidChangeCatalog = new vscode.EventEmitter<void>();
+  /** Fires after catalog mutations ({@link saveAll}, {@link upsert}, {@link remove}). */
+  readonly onDidChangeCatalog = this._onDidChangeCatalog.event;
+
+  constructor(
+    private readonly globalState: vscode.Memento,
+    private readonly secretStorage: vscode.SecretStorage,
+  ) {}
+
+  dispose(): void {
+    this._onDidChangeCatalog.dispose();
+  }
+
+  private fireCatalogChanged(): void {
+    this._onDidChangeCatalog.fire();
+  }
+
+  private readRootFromMemento(): InfobaseStorageRoot {
+    try {
+      const raw = this.globalState.get(INFOBASE_GLOBAL_STATE_KEY);
+      if (raw !== undefined && raw !== null) {
+        return migrateStorageRoot(raw);
+      }
+      return migrateStorageRoot(undefined);
+    } catch (err) {
+      Logger.warn(`InfobaseStorageService: failed to read globalState key ${INFOBASE_GLOBAL_STATE_KEY}`, err);
+      return { rootSchemaVersion: 3, entries: [], folders: [] };
+    }
+  }
+
+  private getStoredOrRead(): InfobaseEntry[] {
+    if (this.storedEntries) {
+      return this.storedEntries;
+    }
+    const root = this.readRootFromMemento();
+    this.storedEntries = [...root.entries];
+    this.storedFolders = [...(root.folders ?? [])];
+    return this.storedEntries;
+  }
+
+  private getStoredOrReadFolders(): InfobaseFolder[] {
+    if (this.storedFolders) {
+      return this.storedFolders;
+    }
+    const root = this.readRootFromMemento();
+    this.storedEntries = [...root.entries];
+    this.storedFolders = [...(root.folders ?? [])];
+    return this.storedFolders;
+  }
+
+  /**
+   * Loads entries, applies migration, returns a list sorted by type then name.
+   */
+  async load(): Promise<InfobaseEntry[]> {
+    const entries = this.getStoredOrRead();
+    return sortEntries(entries);
+  }
+
+  /**
+   * WOW Phase 4 #60 — пользовательские папки в дереве баз.
+   */
+  async loadFolders(): Promise<InfobaseFolder[]> {
+    const folders = this.getStoredOrReadFolders();
+    return [...folders].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }
+
+  /**
+   * WOW Phase 4 #60 — заменить только дерево папок (записи баз не трогаются).
+   */
+  async saveFolders(folders: InfobaseFolder[]): Promise<void> {
+    const entries = [...this.getStoredOrRead()];
+    validateInfobaseCatalog(entries, folders);
+    await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+      rootSchemaVersion: 3,
+      entries,
+      folders,
+    } satisfies InfobaseStorageRoot);
+    this.storedEntries = entries;
+    this.storedFolders = [...folders];
+    this.fireCatalogChanged();
+  }
+
+  async getById(id: string): Promise<InfobaseEntry | undefined> {
+    const list = await this.load();
+    return list.find((e) => e.id === id);
+  }
+
+  /**
+   * Replaces the entire list. Removes secrets for dropped ids; clears password secret when `hasStoredPassword` is false.
+   */
+  async saveAll(entries: InfobaseEntry[]): Promise<void> {
+    const folders = this.getStoredOrReadFolders();
+    validateInfobaseCatalog(entries, folders);
+    const previous = this.readRootFromMemento().entries;
+    await this.syncSecrets(previous, entries);
+    await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+      rootSchemaVersion: 3,
+      entries,
+      folders,
+    } satisfies InfobaseStorageRoot);
+    this.storedEntries = [...entries];
+    this.storedFolders = [...folders];
+    this.fireCatalogChanged();
+  }
+
+  /**
+   * Inserts or updates one entry by `id`.
+   */
+  async upsert(entry: InfobaseEntry): Promise<void> {
+    validateInfobaseEntry(entry);
+    const current = [...this.getStoredOrRead()];
+    const idx = current.findIndex((e) => e.id === entry.id);
+    if (idx >= 0) {
+      current[idx] = entry;
+    } else {
+      current.push(entry);
+    }
+    await this.saveAll(current);
+  }
+
+  /**
+   * Persists password for a server infobase (ibcmd). Call after {@link upsert} when {@link InfobaseEntry.hasStoredPassword} is true.
+   */
+  async writePasswordSecret(entryId: string, password: string): Promise<void> {
+    await this.secretStorage.store(infobasePasswordSecretKey(entryId), password);
+  }
+
+  async readPasswordSecret(entryId: string): Promise<string | undefined> {
+    const v = await this.secretStorage.get(infobasePasswordSecretKey(entryId));
+    return v ?? undefined;
+  }
+
+  /**
+   * Removes an entry and deletes its password secret (idempotent).
+   */
+  async remove(id: string): Promise<void> {
+    await this.secretStorage.delete(infobasePasswordSecretKey(id));
+    const current = [...this.getStoredOrRead()];
+    const filtered = current.filter((e) => e.id !== id);
+    if (filtered.length === current.length) {
+      return;
+    }
+    const folders = this.getStoredOrReadFolders();
+    await this.globalState.update(INFOBASE_GLOBAL_STATE_KEY, {
+      rootSchemaVersion: 3,
+      entries: filtered,
+      folders,
+    } satisfies InfobaseStorageRoot);
+    this.storedEntries = filtered;
+    this.storedFolders = [...folders];
+    this.fireCatalogChanged();
+  }
+
+  private async syncSecrets(previous: InfobaseEntry[], next: InfobaseEntry[]): Promise<void> {
+    const prevIds = new Set(previous.map((e) => e.id));
+    const nextIds = new Set(next.map((e) => e.id));
+    for (const pid of prevIds) {
+      if (!nextIds.has(pid)) {
+        await this.secretStorage.delete(infobasePasswordSecretKey(pid));
+      }
+    }
+    for (const e of next) {
+      if (!e.hasStoredPassword) {
+        await this.secretStorage.delete(infobasePasswordSecretKey(e.id));
+      }
+    }
+  }
+}

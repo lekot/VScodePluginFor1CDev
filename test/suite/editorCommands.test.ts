@@ -8,13 +8,19 @@ import { MetadataType } from '../../src/models/treeNode';
 
 suite('editorCommands', () => {
   const defaultRegisterCommand = vscode.commands.registerCommand.bind(vscode.commands);
+  const defaultShowWarningMessage = vscode.window.showWarningMessage.bind(vscode.window);
+  const defaultExecuteCommand = vscode.commands.executeCommand.bind(vscode.commands);
 
   setup(() => {
     (vscode.commands as any).registerCommand = defaultRegisterCommand;
+    (vscode.commands as any).executeCommand = defaultExecuteCommand;
+    (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
   });
 
   teardown(() => {
     (vscode.commands as any).registerCommand = defaultRegisterCommand;
+    (vscode.commands as any).executeCommand = defaultExecuteCommand;
+    (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
   });
 
   test('registers seven editor-related command handlers', () => {

@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.30.0",
+  "version": "0.32.3",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -173,6 +173,137 @@
         "command": "1c-metadata-tree.removeFromSubsystemComposition",
         "title": "Удалить объект из состава подсистемы",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
+        "title": "CDT 41: Configure ibcmd…",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.refresh",
+        "title": "Infobase Manager: обновить список",
+        "category": "CDT 41",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.create",
+        "title": "Infobase Manager: создать базу",
+        "category": "CDT 41",
+        "icon": "$(add)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.add",
+        "title": "Infobase Manager: добавить существующую",
+        "category": "CDT 41",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.importV8i",
+        "title": "Infobase Manager: импорт из .v8i",
+        "category": "CDT 41",
+        "icon": "$(file)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.exportV8i",
+        "title": "Infobase Manager: экспорт в .v8i",
+        "category": "CDT 41",
+        "icon": "$(export)"
+      },
+      {
+        "command": "1c-metadata-tree.infobases.newFolder",
+        "title": "Infobase Manager: новая папка",
+        "category": "CDT 41",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.openEnterprise",
+        "title": "Открыть в 1С:Предприятие",
+        "category": "CDT 41",
+        "icon": "$(play)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.openDesigner",
+        "title": "Открыть Конфигуратор",
+        "category": "CDT 41",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.configImport",
+        "title": "Загрузить конфигурацию…",
+        "category": "CDT 41",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.configExport",
+        "title": "Выгрузить конфигурацию…",
+        "category": "CDT 41",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.configCheck",
+        "title": "Проверить конфигурацию",
+        "category": "CDT 41",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.compareConfig",
+        "title": "Сравнить конфигурацию с другой базой…",
+        "category": "CDT 41",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.moveToFolder",
+        "title": "Переместить в папку…",
+        "category": "CDT 41",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.deleteFolder",
+        "title": "Удалить папку",
+        "category": "CDT 41",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.renameFolder",
+        "title": "Переименовать папку…",
+        "category": "CDT 41",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.edit",
+        "title": "Редактировать…",
+        "category": "CDT 41",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.remove",
+        "title": "Удалить из списка",
+        "category": "CDT 41",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "1c-metadata-tree.bindings.openDialog",
+        "title": "Infobase Manager: привязка баз к конфигурации…",
+        "category": "CDT 41",
+        "icon": "$(link)"
+      },
+      {
+        "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+        "title": "Привязать базы…",
+        "category": "CDT 41",
+        "icon": "$(link)"
+      },
+      {
+        "command": "1c-metadata-tree.config.deploy",
+        "title": "Раскатать в базу…",
+        "category": "CDT 41",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "1c-metadata-tree.config.deployMultiple",
+        "title": "Раскатать в базы…",
+        "category": "CDT 41",
+        "icon": "$(run-all)"
       }
     ],
     "customEditors": [
@@ -206,6 +337,20 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.config.deploy",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployMultiple",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "1c-metadata-tree.refresh",
@@ -221,9 +366,69 @@
           "command": "1c-metadata-tree.clearSearch",
           "when": "view == 1c-metadata-tree",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.refresh",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.create",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.add",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@3"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.importV8i",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@4"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.exportV8i",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@5"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.newFolder",
+          "when": "view == 1c-infobase-manager",
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [
+        {
+          "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
+          "group": "infobase@0"
+        },
+        {
+          "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot/",
+          "group": "infobase@0"
+        },
+        {
+          "command": "1c-metadata-tree.config.deploy",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound.*deployOne/",
+          "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.config.deploy",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot.*bindingBound.*deployOne/",
+          "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployMultiple",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound.*deployMany/",
+          "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployMultiple",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot.*bindingBound.*deployMany/",
+          "group": "infobase@1"
+        },
         {
           "command": "1c-metadata-tree.openXML",
           "when": "view == 1c-metadata-tree",
@@ -308,6 +513,91 @@
           "command": "1c-metadata-tree.clearSubsystemFilter",
           "when": "view == 1c-metadata-tree && subsystemFilterActive",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openEnterprise",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openDesigner",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configImport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "inline@3"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configExport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "inline@4"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openEnterprise",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.openDesigner",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configImport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@3"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configExport",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@4"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.configCheck",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@5"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.compareConfig",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server)$/",
+          "group": "infobase@5b"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.moveToFolder",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@5c"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.edit",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@6"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.remove",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@7"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.newFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFoldersRoot'",
+          "group": "infobaseFolder@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobases.newFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
+          "group": "infobaseFolder@1"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.renameFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
+          "group": "infobaseFolder@2"
+        },
+        {
+          "command": "1c-metadata-tree.infobase.deleteFolder",
+          "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
+          "group": "infobaseFolder@3"
         }
       ]
     },
@@ -316,6 +606,11 @@
         {
           "id": "1c-metadata-tree",
           "name": "CDT 41",
+          "when": "1c-metadata-tree:enabled"
+        },
+        {
+          "id": "1c-infobase-manager",
+          "name": "Infobase Manager",
           "when": "1c-metadata-tree:enabled"
         }
       ]
@@ -327,6 +622,62 @@
           "type": "boolean",
           "default": true,
           "description": "Use compact rights write in Rights Editor: only output <right> when true for simple rights; keep and update only <value> for rights with restrictionByCondition."
+        },
+        "1cMetadataTree.ibcmd.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ibcmd executable (WOW Infobase Manager). When empty, IBCMD_PATH or auto-detect is used (same as matrix / e2e)."
+        },
+        "1cMetadataTree.platform.path": {
+          "type": "string",
+          "default": "",
+          "description": "Directory containing 1cv8.exe, full path to 1cv8.exe / 1cv8c.exe, or empty for auto-detect (standard install dirs and PATH)."
+        },
+        "1cMetadataTree.ibcmd.timeout": {
+          "type": "number",
+          "default": 600000,
+          "description": "Timeout in milliseconds for ibcmd operations. Zero or negative values fall back to IBCMD_TIMEOUT_MS or built-in default (600000 ms)."
+        },
+        "1cMetadataTree.ibcmd.autoDetect": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true and path/env are empty, search PATH and typical 1cv8 install directories for ibcmd."
+        },
+        "1cMetadataTree.ibcmd.consoleOutputEncoding": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "utf8",
+            "utf16le",
+            "oem866",
+            "windows1251"
+          ],
+          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. \"auto\" uses UTF-8 streaming (typical piped ibcmd [INFO] lines). If text is garbled, try \"oem866\" (legacy Russian console) or \"windows1251\". For UTF-16 LE output, use \"utf16le\"."
+        },
+        "1cMetadataTree.ibcmd.importDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log ibcmd config import diagnostics to \"CDT 41: Infobase (ibcmd)\": --config path, redacted YAML body (target infobase), and configuration dump directory passed as the last CLI argument (not stored in YAML). Use when debugging deploy / YAML path issues."
+        },
+        "1cMetadataTree.git.reloadMetadataOnHeadChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "WOW Phase 4: when the built-in Git extension reports a new HEAD commit in a workspace repository, reload the CDT 41 metadata tree (useful after git pull or checkout)."
+        },
+        "1cMetadataTree.git.refreshInfobaseManagerOnHeadChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "WOW Phase 4: when Git HEAD changes in a workspace repository, refresh the Infobase Manager tree and binding decorations (e.g. after pull when .vscode/infobase-bindings.json changed)."
+        },
+        "1cMetadataTree.deploy.mode": {
+          "type": "string",
+          "default": "copy",
+          "enum": [
+            "copy",
+            "block"
+          ],
+          "description": "Deploy mode (WOW Phase 2): copy — from project copy; block — lock editors."
         }
       }
     },
@@ -415,7 +766,8 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "fast-xml-parser": "^4.3.0"
+    "fast-xml-parser": "^4.3.0",
+    "iconv-lite": "^0.6.3"
   },
   "c8": {
     "include": [

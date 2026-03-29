@@ -9,13 +9,39 @@ import {
   applySubsystemCompositionFileUpdate,
   readSubsystemCompositionRefsFromFile,
 } from '../services/subsystemCompositionFileUpdater';
-import { runIbcmdConfigCheckGate } from '../services/ibcmdConfigCheckGate';
+import { runIbcmdConfigCheckGate, type IbcmdConfigCheckResult } from '../services/ibcmdConfigCheckGate';
+import { IBCMD_SETUP_COMMAND } from '../services/ibcmdService';
 
 type RegisterFilterCommandsDeps = {
   state: ExtensionState;
   loadMetadataTree: () => Promise<void>;
   invalidateTreeCacheOnly: (configPath: string) => Promise<void>;
 };
+
+const IBCMD_NOT_FOUND_TOAST_COOLDOWN_MS = 2500;
+let lastIbcmdNotFoundToastAt = 0;
+
+async function showSubsystemCompositionIbcmdGateFailure(gate: IbcmdConfigCheckResult): Promise<void> {
+  if (gate.code === 'IBCMD_NOT_FOUND') {
+    const now = Date.now();
+    if (now - lastIbcmdNotFoundToastAt < IBCMD_NOT_FOUND_TOAST_COOLDOWN_MS) {
+      return;
+    }
+    lastIbcmdNotFoundToastAt = now;
+    const configure = 'Настроить ibcmd';
+    const picked = await vscode.window.showErrorMessage(
+      'Проверка ibcmd обязательна перед изменением состава подсистем: исполняемый файл не найден.',
+      configure
+    );
+    if (picked === configure) {
+      await vscode.commands.executeCommand(IBCMD_SETUP_COMMAND);
+    }
+    return;
+  }
+  vscode.window.showErrorMessage(
+    `Проверка валидности конфигурации (ibcmd) обязательна перед изменением состава подсистем: ${gate.message}`
+  );
+}
 
 export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode.Disposable[] {
   const { state, loadMetadataTree, invalidateTreeCacheOnly } = deps;
@@ -116,9 +142,7 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
       try {
         const gate = await runIbcmdConfigCheckGate();
         if (!gate.ok) {
-          vscode.window.showErrorMessage(
-            `Проверка валидности конфигурации (ibcmd) обязательна перед изменением состава подсистем: ${gate.message}`
-          );
+          await showSubsystemCompositionIbcmdGateFailure(gate);
           return;
         }
         const { rejected } = await applySubsystemCompositionFileUpdate(target.filePath, {
@@ -176,9 +200,7 @@ export function registerFilterCommands(deps: RegisterFilterCommandsDeps): vscode
       try {
         const gate = await runIbcmdConfigCheckGate();
         if (!gate.ok) {
-          vscode.window.showErrorMessage(
-            `Проверка валидности конфигурации (ibcmd) обязательна перед изменением состава подсистем: ${gate.message}`
-          );
+          await showSubsystemCompositionIbcmdGateFailure(gate);
           return;
         }
         await applySubsystemCompositionFileUpdate(target.filePath, {

@@ -143,8 +143,9 @@ suite('FormCommandEngine iteration-1', () => {
 
   test('save clears dirty flag and writes on explicit save', async () => {
     process.env.FORM_COMMAND_ENGINE_ENABLED = 'true';
+    let tempDir: string | undefined;
     try {
-      const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-engine-save-'));
+      tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-engine-save-'));
       const formPath = path.join(tempDir, 'Form.xml');
       const uri = vscode.Uri.file(formPath);
       const key = uri.toString();
@@ -169,6 +170,9 @@ suite('FormCommandEngine iteration-1', () => {
       assert.ok(written.includes('<Form'));
     } finally {
       delete process.env.FORM_COMMAND_ENGINE_ENABLED;
+      if (tempDir !== undefined) {
+        await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
   });
 });
