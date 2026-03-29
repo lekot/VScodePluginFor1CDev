@@ -7,6 +7,7 @@
 import * as path from 'path';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import { parseServerConnectionString } from './models/connectionString';
+import { normalizeFsPathForCompare } from './infobaseValidator';
 
 export type V8iConnectParsed =
   | { kind: 'file'; filePath: string; user?: string }
@@ -242,6 +243,28 @@ export function formatV8iEntryPreview(entry: V8iParsedEntry): string {
   return p.webUrl;
 }
 
+/**
+ * Путь каталога ИБ из `.v8i` для поля {@link InfobaseEntry.filePath}.
+ * На Windows — полный `path.resolve`. На POSIX пути вида `C:/...` и UNC не должны
+ * превращаться в `cwd/C:/...`, иначе {@link infobaseDuplicateTargetKey} не совпадёт
+ * с уже сохранёнными записями (CI Linux). См. `infobaseDuplicateTargetKey`.
+ */
+export function filePathFromV8iForInfobase(raw: string): string {
+  const t = raw.trim();
+  if (!t) {
+    return t;
+  }
+  const winDrive = /^[A-Za-z]:[/\\]/.test(t);
+  const unc = /^\\\\[^\\/]+[/\\]/.test(t);
+  if (process.platform === 'win32') {
+    return path.resolve(t);
+  }
+  if (winDrive || unc) {
+    return normalizeFsPathForCompare(t);
+  }
+  return path.resolve(t);
+}
+
 /** Преобразование успешно разобранной записи `.v8i` в черновик {@link InfobaseEntry} (без `id` / `createdAt`). */
 export function v8iParsedEntryToInfobaseDraft(entry: V8iParsedEntry): Omit<InfobaseEntry, 'id' | 'createdAt'> {
   const p = entry.parsed;
@@ -249,7 +272,7 @@ export function v8iParsedEntryToInfobaseDraft(entry: V8iParsedEntry): Omit<Infob
     return {
       name: entry.name,
       type: 'file',
-      filePath: path.resolve(p.filePath),
+      filePath: filePathFromV8iForInfobase(p.filePath),
       hasStoredPassword: false,
     };
   }

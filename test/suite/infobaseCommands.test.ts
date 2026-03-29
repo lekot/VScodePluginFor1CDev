@@ -13,6 +13,7 @@ import {
   runImportV8i,
   runRemoveInfobase,
 } from '../../src/infobases/infobaseCommands';
+import { normalizeFsPathForCompare } from '../../src/infobases/infobaseValidator';
 import { parseV8iContent } from '../../src/infobases/v8iParser';
 import { getIbcmdService, resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
 import { BindingManager } from '../../src/bindings/bindingManager';
@@ -1266,7 +1267,10 @@ suite('infobaseCommands runImportV8i', () => {
     assert.strictEqual(list.length, 1);
     assert.strictEqual(list[0].name, 'MyBase');
     assert.strictEqual(list[0].type, 'file');
-    assert.strictEqual(list[0].filePath, path.resolve('C:/imported/ib'));
+    assert.strictEqual(
+      normalizeFsPathForCompare(list[0].filePath ?? ''),
+      normalizeFsPathForCompare('C:/imported/ib'),
+    );
     assert.strictEqual(refreshed, 1);
     assert.ok(vscodeTestState.informationLog.some((m) => m.includes('Импорт .v8i')));
   });
@@ -1431,6 +1435,9 @@ suite('infobaseCommands runImportV8i', () => {
     const list = await service.load();
     assert.strictEqual(list.length, 1);
     assert.strictEqual(list[0].name, 'U16');
-    assert.strictEqual(list[0].filePath, path.resolve('C:/utf16ib'));
+    assert.strictEqual(
+      normalizeFsPathForCompare(list[0].filePath ?? ''),
+      normalizeFsPathForCompare('C:/utf16ib'),
+    );
   });
 });
