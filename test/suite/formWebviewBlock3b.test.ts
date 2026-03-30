@@ -32,6 +32,10 @@ suite('form webview Block 3B — groups & alignment (1CVIEWER-36)', () => {
       html.includes("'ThroughAlign', 'throughAlign', 'СквозноеВыравнивание'"),
       'ThroughAlign aliases'
     );
+    assert.ok(
+      html.includes('var flexBox = layoutPreviewFlexBoxJs(orientation, gh, gv, throughAlign);'),
+      'flex mapping is computed only inside non-Pages branch'
+    );
   });
 
   test('JS: spacing → gap via applyPreviewContainerLayout', () => {
@@ -55,5 +59,24 @@ suite('form webview Block 3B — groups & alignment (1CVIEWER-36)', () => {
     assert.ok(html.includes('function normalizeSpacingKindJs(raw)'), 'spacing kind');
     assert.ok(html.includes('function normalizeChildItemsWidthJs(raw)'), 'ChildItemsWidth kind');
     assert.ok(html.includes('function normalizeThroughAlignJs(raw)'), 'ThroughAlign kind');
+    assert.ok(
+      html.includes("if (v.indexOf('dont') >= 0 || v.indexOf('неиспользов') >= 0 || v === 'no') return 'dontuse';"),
+      'dont-use branch is checked explicitly'
+    );
+    assert.ok(
+      html.includes("if (v.indexOf('use') >= 0 || v === 'yes' || v === 'да') return 'use';"),
+      'use branch is separate and lower priority'
+    );
+  });
+
+  test('CSS/JS: Pages root keeps dedicated shell semantics', () => {
+    assert.ok(
+      html.includes('.preview-pages-outer.preview-container-pages-root'),
+      'Pages root has dedicated shell class for non-group layout'
+    );
+    assert.ok(
+      html.includes("if (isPagesRoot) hints.push('container-pages-root');"),
+      'Pages root hint is emitted by container meta'
+    );
   });
 });

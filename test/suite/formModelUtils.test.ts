@@ -628,6 +628,72 @@ suite('formModelUtils — unit tests', () => {
       assert.strictEqual(meta.horizontalSpacing, 'half');
       assert.strictEqual(meta.throughAlign, 'dontuse');
     });
+
+    test('invalid object values do not crash and normalize to empty kinds', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', {
+          ThroughAlign: { Unknown: 'x' },
+          ChildItemsWidth: { Unknown: 'y' },
+          HorizontalSpacing: { Unknown: 'z' },
+        })
+      );
+      assert.strictEqual(meta.throughAlign, '');
+      assert.strictEqual(meta.childItemsWidth, '');
+      assert.strictEqual(meta.horizontalSpacing, '');
+      assert.ok(!meta.containerClassHints.includes('throughalign-use'));
+      assert.ok(!meta.containerClassHints.some((h) => h.startsWith('ciwidth-')));
+    });
+
+    test('ThroughAlign: DontUse token has priority over nested use-substring', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { ThroughAlign: 'DontUse' })
+      );
+      assert.strictEqual(meta.throughAlign, 'dontuse');
+      assert.ok(!meta.containerClassHints.includes('throughalign-use'));
+    });
+
+    test('spacing and through-align aliases accept non-string scalar values', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', {
+          HorizontalSpacing: true,
+          VerticalSpacing: 0,
+          ThroughAlign: true,
+        })
+      );
+      // Unknown scalar tokens must normalize safely without exceptions.
+      assert.strictEqual(meta.horizontalSpacing, 'single');
+      assert.strictEqual(meta.verticalSpacing, 'single');
+      assert.strictEqual(meta.throughAlign, '');
+      assert.ok(!meta.containerClassHints.includes('throughalign-use'));
+    });
+
+    test('Pages root still allows explicit indent override while keeping layout props ignored', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('Pages', {
+          IndentChildren: 'true',
+          ThroughAlign: 'Use',
+          ChildItemsWidth: 'Equal',
+        })
+      );
+      assert.strictEqual(meta.shouldIndentChildren, true);
+      assert.strictEqual(meta.throughAlign, '');
+      assert.strictEqual(meta.childItemsWidth, '');
+      assert.ok(meta.containerClassHints.includes('container-indent'));
+      assert.ok(!meta.containerClassHints.includes('throughalign-use'));
+      assert.ok(!meta.containerClassHints.includes('ciwidth-equal'));
+    });
+
+    test('generic HorizontalAlign/VerticalAlign aliases are used for flex mapping', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('Group', {
+          Group: 'HorizontalIfPossible',
+          HorizontalAlign: 'Right',
+          VerticalAlign: 'Top',
+        })
+      );
+      assert.strictEqual(meta.flexJustifyContent, 'flex-end');
+      assert.strictEqual(meta.flexAlignItems, 'flex-start');
+    });
   });
 
   suite('layoutPreviewFlexBox (parity with webview)', () => {
