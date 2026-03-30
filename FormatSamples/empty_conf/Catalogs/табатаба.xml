@@ -1,462 +1,462 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
-  <Catalog uuid="bda95d59-ed54-4e85-b36a-48578f29736e">
-    <InternalInfo>
-      <xr:GeneratedType name="CatalogObject.табатаба" category="Object">
-        <xr:TypeId>3a204cba-6ad0-4595-9222-aaa6d0f7e31c</xr:TypeId>
-        <xr:ValueId>2c584031-fea5-492e-b68d-92d2490f54d1</xr:ValueId>
-      </xr:GeneratedType>
-      <xr:GeneratedType name="CatalogRef.табатаба" category="Ref">
-        <xr:TypeId>87228760-1019-4bca-9746-faa56229acb2</xr:TypeId>
-        <xr:ValueId>126acfb3-ba04-4cce-a20f-98db3822d139</xr:ValueId>
-      </xr:GeneratedType>
-      <xr:GeneratedType name="CatalogSelection.табатаба" category="Selection">
-        <xr:TypeId>23c3a665-0c10-4e71-acf1-bab562c1f250</xr:TypeId>
-        <xr:ValueId>75c0b109-edd5-48b4-a096-fffdd9801282</xr:ValueId>
-      </xr:GeneratedType>
-      <xr:GeneratedType name="CatalogList.табатаба" category="List">
-        <xr:TypeId>a73d9195-1daa-4de4-9cf9-82d83cf224d4</xr:TypeId>
-        <xr:ValueId>d3824356-7b98-4e52-94eb-c71fc153c510</xr:ValueId>
-      </xr:GeneratedType>
-      <xr:GeneratedType name="CatalogManager.табатаба" category="Manager">
-        <xr:TypeId>785d86e5-ddbe-4ee0-8efc-1d959d0e8555</xr:TypeId>
-        <xr:ValueId>decaf74e-9741-45d7-b270-432d88f025ae</xr:ValueId>
-      </xr:GeneratedType>
-    </InternalInfo>
-    <Properties>
-      <Name>табатаба</Name>
-      <Synonym>
-        <v8:item>
-          <v8:lang>ru</v8:lang>
-          <v8:content>табатаба</v8:content>
-        </v8:item>
-      </Synonym>
-      <Comment/>
-      <Hierarchical>false</Hierarchical>
-      <HierarchyType>HierarchyFoldersAndItems</HierarchyType>
-      <LimitLevelCount>false</LimitLevelCount>
-      <LevelCount>2</LevelCount>
-      <FoldersOnTop>true</FoldersOnTop>
-      <UseStandardCommands>false</UseStandardCommands>
-      <Owners/>
-      <SubordinationUse>ToItems</SubordinationUse>
-      <CodeLength>0</CodeLength>
-      <DescriptionLength>100</DescriptionLength>
-      <CodeType>String</CodeType>
-      <CodeAllowedLength>Fixed</CodeAllowedLength>
-      <CodeSeries>WholeCatalog</CodeSeries>
-      <CheckUnique>false</CheckUnique>
-      <Autonumbering>false</Autonumbering>
-      <DefaultPresentation>AsDescription</DefaultPresentation>
-      <StandardAttributes>
-        <xr:StandardAttribute name="PredefinedDataName">
-          <xr:LinkByType/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:nil="true"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="Predefined">
-          <xr:LinkByType/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:nil="true"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="Ref">
-          <xr:LinkByType/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:nil="true"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="DeletionMark">
-          <xr:LinkByType/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:nil="true"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="IsFolder">
-          <xr:LinkByType/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:nil="true"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="Owner">
-          <xr:LinkByType/>
-          <xr:FillChecking>ShowError</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>true</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>Deny</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:nil="true"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="Parent">
-          <xr:LinkByType/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>true</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:nil="true"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="Description">
-          <xr:LinkByType/>
-          <xr:FillChecking>ShowError</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:type="xs:string"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-        <xr:StandardAttribute name="Code">
-          <xr:LinkByType/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:MultiLine>false</xr:MultiLine>
-          <xr:FillFromFillingValue>false</xr:FillFromFillingValue>
-          <xr:CreateOnInput>Auto</xr:CreateOnInput>
-          <xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
-          <xr:MaxValue xsi:nil="true"/>
-          <xr:ToolTip/>
-          <xr:ExtendedEdit>false</xr:ExtendedEdit>
-          <xr:Format/>
-          <xr:ChoiceForm/>
-          <xr:QuickChoice>Auto</xr:QuickChoice>
-          <xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
-          <xr:EditFormat/>
-          <xr:PasswordMode>false</xr:PasswordMode>
-          <xr:DataHistory>Use</xr:DataHistory>
-          <xr:MarkNegatives>false</xr:MarkNegatives>
-          <xr:MinValue xsi:nil="true"/>
-          <xr:Synonym/>
-          <xr:Comment/>
-          <xr:FullTextSearch>Use</xr:FullTextSearch>
-          <xr:ChoiceParameterLinks/>
-          <xr:FillValue xsi:type="xs:string"/>
-          <xr:Mask/>
-          <xr:ChoiceParameters/>
-        </xr:StandardAttribute>
-      </StandardAttributes>
-      <Characteristics/>
-      <PredefinedDataUpdate>Auto</PredefinedDataUpdate>
-      <EditType>InDialog</EditType>
-      <QuickChoice>true</QuickChoice>
-      <ChoiceMode>BothWays</ChoiceMode>
-      <InputByString>
-        <xr:Field>Catalog.табатаба.StandardAttribute.Description</xr:Field>
-      </InputByString>
-      <SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>
-      <FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
-      <ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>
-      <DefaultObjectForm/>
-      <DefaultFolderForm/>
-      <DefaultListForm/>
-      <DefaultChoiceForm/>
-      <DefaultFolderChoiceForm/>
-      <AuxiliaryObjectForm/>
-      <AuxiliaryFolderForm/>
-      <AuxiliaryListForm/>
-      <AuxiliaryChoiceForm/>
-      <AuxiliaryFolderChoiceForm/>
-      <IncludeHelpInContents>false</IncludeHelpInContents>
-      <BasedOn/>
-      <DataLockFields/>
-      <DataLockControlMode>Automatic</DataLockControlMode>
-      <FullTextSearch>Use</FullTextSearch>
-      <ObjectPresentation/>
-      <ExtendedObjectPresentation/>
-      <ListPresentation>
-        <v8:item>
-          <v8:lang>ru</v8:lang>
-          <v8:content>табатаба</v8:content>
-        </v8:item>
-      </ListPresentation>
-      <ExtendedListPresentation>
-        <v8:item>
-          <v8:lang>ru</v8:lang>
-          <v8:content>табатаба</v8:content>
-        </v8:item>
-      </ExtendedListPresentation>
-      <Explanation/>
-      <CreateOnInput>DontUse</CreateOnInput>
-      <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
-      <DataHistory>DontUse</DataHistory>
-      <UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>
-      <ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>
-    </Properties>
-    <ChildObjects>
-      <Attribute uuid="ece86fc1-ad1a-4ee4-b08d-e7b102d077c8">
-        <Properties>
-          <Name>рекв2</Name>
-          <Synonym>
-            <v8:item>
-              <v8:lang>ru</v8:lang>
-              <v8:content>рекв2</v8:content>
-            </v8:item>
-          </Synonym>
-          <Comment/>
-          <Type>
-            <v8:Type>xs:string</v8:Type>
-            <v8:StringQualifiers>
-              <v8:Length>50</v8:Length>
-              <v8:AllowedLength>Variable</v8:AllowedLength>
-            </v8:StringQualifiers>
-          </Type>
-          <PasswordMode>false</PasswordMode>
-          <Format/>
-          <EditFormat/>
-          <ToolTip/>
-          <MarkNegatives>false</MarkNegatives>
-          <Mask/>
-          <MultiLine>false</MultiLine>
-          <ExtendedEdit>false</ExtendedEdit>
-          <MinValue xsi:nil="true"/>
-          <MaxValue xsi:nil="true"/>
-          <FillFromFillingValue>true</FillFromFillingValue>
-          <FillValue xsi:nil="true"/>
-          <FillChecking>ShowError</FillChecking>
-          <ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>
-          <ChoiceParameterLinks/>
-          <ChoiceParameters/>
-          <QuickChoice>Auto</QuickChoice>
-          <CreateOnInput>Auto</CreateOnInput>
-          <ChoiceForm/>
-          <LinkByType/>
-          <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
-          <Use>ForItem</Use>
-          <Indexing>DontIndex</Indexing>
-          <FullTextSearch>Use</FullTextSearch>
-          <DataHistory>Use</DataHistory>
-        </Properties>
-      </Attribute>
-      <Attribute uuid="acb6bee9-ec7e-4f61-8118-83e09da7c0ca">
-        <Properties>
-          <Name>рекв3</Name>
-          <Synonym>
-            <v8:item>
-              <v8:lang>ru</v8:lang>
-              <v8:content>рекв3</v8:content>
-            </v8:item>
-          </Synonym>
-          <Comment/>
-          <Type>
-            <v8:Type>xs:string</v8:Type>
-            <v8:StringQualifiers>
-              <v8:Length>50</v8:Length>
-              <v8:AllowedLength>Variable</v8:AllowedLength>
-            </v8:StringQualifiers>
-          </Type>
-          <PasswordMode>false</PasswordMode>
-          <Format/>
-          <EditFormat/>
-          <ToolTip/>
-          <MarkNegatives>false</MarkNegatives>
-          <Mask/>
-          <MultiLine>false</MultiLine>
-          <ExtendedEdit>false</ExtendedEdit>
-          <MinValue xsi:nil="true"/>
-          <MaxValue xsi:nil="true"/>
-          <FillFromFillingValue>true</FillFromFillingValue>
-          <FillValue xsi:nil="true"/>
-          <FillChecking>ShowError</FillChecking>
-          <ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>
-          <ChoiceParameterLinks/>
-          <ChoiceParameters/>
-          <QuickChoice>Auto</QuickChoice>
-          <CreateOnInput>Auto</CreateOnInput>
-          <ChoiceForm/>
-          <LinkByType/>
-          <ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
-          <Use>ForItem</Use>
-          <Indexing>DontIndex</Indexing>
-          <FullTextSearch>Use</FullTextSearch>
-          <DataHistory>Use</DataHistory>
-        </Properties>
-      </Attribute>
-      <TabularSection uuid="57f658b1-230d-4717-ac2e-9381fea44750">
-        <InternalInfo>
-          <xr:GeneratedType name="CatalogTabularSection.табатаба.таб2" category="TabularSection">
-            <xr:TypeId>82f3ab68-794d-4e7c-bb29-f74704263c29</xr:TypeId>
-            <xr:ValueId>e5629c56-2dce-457d-8a41-7d43ae3282b4</xr:ValueId>
-          </xr:GeneratedType>
-          <xr:GeneratedType name="CatalogTabularSectionRow.табатаба.таб2" category="TabularSectionRow">
-            <xr:TypeId>c0d0e977-f3d5-4a7c-a015-39a7914b4070</xr:TypeId>
-            <xr:ValueId>4be37998-273b-495d-afaa-78e3c45aac99</xr:ValueId>
-          </xr:GeneratedType>
-        </InternalInfo>
-        <Properties>
-          <Name>таб2</Name>
-          <Synonym>
-            <v8:item>
-              <v8:lang>ru</v8:lang>
-              <v8:content>таб2</v8:content>
-            </v8:item>
-          </Synonym>
-          <Comment/>
-          <ToolTip/>
-          <FillChecking>DontCheck</FillChecking>
-          <Use>ForItem</Use>
-          <LineNumberLength>9</LineNumberLength>
-        </Properties>
-        <ChildObjects/>
-      </TabularSection>
-      <Form>MyForm</Form>
-    </ChildObjects>
-  </Catalog>
+	<Catalog uuid="bda95d59-ed54-4e85-b36a-48578f29736e">
+		<InternalInfo>
+			<xr:GeneratedType name="CatalogObject.табатаба" category="Object">
+				<xr:TypeId>3a204cba-6ad0-4595-9222-aaa6d0f7e31c</xr:TypeId>
+				<xr:ValueId>2c584031-fea5-492e-b68d-92d2490f54d1</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogRef.табатаба" category="Ref">
+				<xr:TypeId>87228760-1019-4bca-9746-faa56229acb2</xr:TypeId>
+				<xr:ValueId>126acfb3-ba04-4cce-a20f-98db3822d139</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogSelection.табатаба" category="Selection">
+				<xr:TypeId>23c3a665-0c10-4e71-acf1-bab562c1f250</xr:TypeId>
+				<xr:ValueId>75c0b109-edd5-48b4-a096-fffdd9801282</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogList.табатаба" category="List">
+				<xr:TypeId>a73d9195-1daa-4de4-9cf9-82d83cf224d4</xr:TypeId>
+				<xr:ValueId>d3824356-7b98-4e52-94eb-c71fc153c510</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogManager.табатаба" category="Manager">
+				<xr:TypeId>785d86e5-ddbe-4ee0-8efc-1d959d0e8555</xr:TypeId>
+				<xr:ValueId>decaf74e-9741-45d7-b270-432d88f025ae</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>табатаба</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>табатаба</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+			<Hierarchical>false</Hierarchical>
+			<HierarchyType>HierarchyFoldersAndItems</HierarchyType>
+			<LimitLevelCount>false</LimitLevelCount>
+			<LevelCount>2</LevelCount>
+			<FoldersOnTop>true</FoldersOnTop>
+			<UseStandardCommands>false</UseStandardCommands>
+			<Owners/>
+			<SubordinationUse>ToItems</SubordinationUse>
+			<CodeLength>0</CodeLength>
+			<DescriptionLength>100</DescriptionLength>
+			<CodeType>String</CodeType>
+			<CodeAllowedLength>Fixed</CodeAllowedLength>
+			<CodeSeries>WholeCatalog</CodeSeries>
+			<CheckUnique>false</CheckUnique>
+			<Autonumbering>false</Autonumbering>
+			<DefaultPresentation>AsDescription</DefaultPresentation>
+			<StandardAttributes>
+				<xr:StandardAttribute name="PredefinedDataName">
+					<xr:LinkByType/>
+					<xr:FillChecking>DontCheck</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:nil="true"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="Predefined">
+					<xr:LinkByType/>
+					<xr:FillChecking>DontCheck</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:nil="true"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="Ref">
+					<xr:LinkByType/>
+					<xr:FillChecking>DontCheck</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:nil="true"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="DeletionMark">
+					<xr:LinkByType/>
+					<xr:FillChecking>DontCheck</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:nil="true"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="IsFolder">
+					<xr:LinkByType/>
+					<xr:FillChecking>DontCheck</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:nil="true"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="Owner">
+					<xr:LinkByType/>
+					<xr:FillChecking>ShowError</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>true</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>Deny</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:nil="true"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="Parent">
+					<xr:LinkByType/>
+					<xr:FillChecking>DontCheck</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>true</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:nil="true"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="Description">
+					<xr:LinkByType/>
+					<xr:FillChecking>ShowError</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:type="xs:string"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+				<xr:StandardAttribute name="Code">
+					<xr:LinkByType/>
+					<xr:FillChecking>DontCheck</xr:FillChecking>
+					<xr:MultiLine>false</xr:MultiLine>
+					<xr:FillFromFillingValue>false</xr:FillFromFillingValue>
+					<xr:CreateOnInput>Auto</xr:CreateOnInput>
+					<xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>
+					<xr:MaxValue xsi:nil="true"/>
+					<xr:ToolTip/>
+					<xr:ExtendedEdit>false</xr:ExtendedEdit>
+					<xr:Format/>
+					<xr:ChoiceForm/>
+					<xr:QuickChoice>Auto</xr:QuickChoice>
+					<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput>
+					<xr:EditFormat/>
+					<xr:PasswordMode>false</xr:PasswordMode>
+					<xr:DataHistory>Use</xr:DataHistory>
+					<xr:MarkNegatives>false</xr:MarkNegatives>
+					<xr:MinValue xsi:nil="true"/>
+					<xr:Synonym/>
+					<xr:Comment/>
+					<xr:FullTextSearch>Use</xr:FullTextSearch>
+					<xr:ChoiceParameterLinks/>
+					<xr:FillValue xsi:type="xs:string"/>
+					<xr:Mask/>
+					<xr:ChoiceParameters/>
+				</xr:StandardAttribute>
+			</StandardAttributes>
+			<Characteristics/>
+			<PredefinedDataUpdate>Auto</PredefinedDataUpdate>
+			<EditType>InDialog</EditType>
+			<QuickChoice>true</QuickChoice>
+			<ChoiceMode>BothWays</ChoiceMode>
+			<InputByString>
+				<xr:Field>Catalog.табатаба.StandardAttribute.Description</xr:Field>
+			</InputByString>
+			<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>
+			<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>
+			<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>
+			<DefaultObjectForm/>
+			<DefaultFolderForm/>
+			<DefaultListForm/>
+			<DefaultChoiceForm/>
+			<DefaultFolderChoiceForm/>
+			<AuxiliaryObjectForm/>
+			<AuxiliaryFolderForm/>
+			<AuxiliaryListForm/>
+			<AuxiliaryChoiceForm/>
+			<AuxiliaryFolderChoiceForm/>
+			<IncludeHelpInContents>false</IncludeHelpInContents>
+			<BasedOn/>
+			<DataLockFields/>
+			<DataLockControlMode>Automatic</DataLockControlMode>
+			<FullTextSearch>Use</FullTextSearch>
+			<ObjectPresentation/>
+			<ExtendedObjectPresentation/>
+			<ListPresentation>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>табатаба</v8:content>
+				</v8:item>
+			</ListPresentation>
+			<ExtendedListPresentation>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>табатаба</v8:content>
+				</v8:item>
+			</ExtendedListPresentation>
+			<Explanation/>
+			<CreateOnInput>DontUse</CreateOnInput>
+			<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+			<DataHistory>DontUse</DataHistory>
+			<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>
+			<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="ece86fc1-ad1a-4ee4-b08d-e7b102d077c8">
+				<Properties>
+					<Name>рекв2</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>рекв2</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>50</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+					<PasswordMode>false</PasswordMode>
+					<Format/>
+					<EditFormat/>
+					<ToolTip/>
+					<MarkNegatives>false</MarkNegatives>
+					<Mask/>
+					<MultiLine>false</MultiLine>
+					<ExtendedEdit>false</ExtendedEdit>
+					<MinValue xsi:nil="true"/>
+					<MaxValue xsi:nil="true"/>
+					<FillFromFillingValue>true</FillFromFillingValue>
+					<FillValue xsi:nil="true"/>
+					<FillChecking>ShowError</FillChecking>
+					<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>
+					<ChoiceParameterLinks/>
+					<ChoiceParameters/>
+					<QuickChoice>Auto</QuickChoice>
+					<CreateOnInput>Auto</CreateOnInput>
+					<ChoiceForm/>
+					<LinkByType/>
+					<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+					<Use>ForItem</Use>
+					<Indexing>DontIndex</Indexing>
+					<FullTextSearch>Use</FullTextSearch>
+					<DataHistory>Use</DataHistory>
+				</Properties>
+			</Attribute>
+			<Attribute uuid="acb6bee9-ec7e-4f61-8118-83e09da7c0ca">
+				<Properties>
+					<Name>рекв3</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>рекв3</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>50</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+					<PasswordMode>false</PasswordMode>
+					<Format/>
+					<EditFormat/>
+					<ToolTip/>
+					<MarkNegatives>false</MarkNegatives>
+					<Mask/>
+					<MultiLine>false</MultiLine>
+					<ExtendedEdit>false</ExtendedEdit>
+					<MinValue xsi:nil="true"/>
+					<MaxValue xsi:nil="true"/>
+					<FillFromFillingValue>true</FillFromFillingValue>
+					<FillValue xsi:nil="true"/>
+					<FillChecking>ShowError</FillChecking>
+					<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>
+					<ChoiceParameterLinks/>
+					<ChoiceParameters/>
+					<QuickChoice>Auto</QuickChoice>
+					<CreateOnInput>Auto</CreateOnInput>
+					<ChoiceForm/>
+					<LinkByType/>
+					<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+					<Use>ForItem</Use>
+					<Indexing>DontIndex</Indexing>
+					<FullTextSearch>Use</FullTextSearch>
+					<DataHistory>Use</DataHistory>
+				</Properties>
+			</Attribute>
+			<TabularSection uuid="57f658b1-230d-4717-ac2e-9381fea44750">
+				<InternalInfo>
+					<xr:GeneratedType name="CatalogTabularSection.табатаба.таб2" category="TabularSection">
+						<xr:TypeId>82f3ab68-794d-4e7c-bb29-f74704263c29</xr:TypeId>
+						<xr:ValueId>e5629c56-2dce-457d-8a41-7d43ae3282b4</xr:ValueId>
+					</xr:GeneratedType>
+					<xr:GeneratedType name="CatalogTabularSectionRow.табатаба.таб2" category="TabularSectionRow">
+						<xr:TypeId>c0d0e977-f3d5-4a7c-a015-39a7914b4070</xr:TypeId>
+						<xr:ValueId>4be37998-273b-495d-afaa-78e3c45aac99</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>таб2</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>таб2</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<ToolTip/>
+					<FillChecking>DontCheck</FillChecking>
+					<Use>ForItem</Use>
+					<LineNumberLength>9</LineNumberLength>
+				</Properties>
+				<ChildObjects/>
+			</TabularSection>
+			<Form>MyForm</Form>
+		</ChildObjects>
+	</Catalog>
 </MetaDataObject>

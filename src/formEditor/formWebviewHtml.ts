@@ -626,6 +626,86 @@ export function getWebviewHtml(
     .preview-page-title { font-weight: 700; font-size: 0.92em; margin-bottom: 4px; color: var(--vscode-foreground); padding-bottom: 2px; border-bottom: 1px solid var(--vscode-panel-border); }
     .preview-group-block { margin-left: 0; margin-bottom: var(--fe-spacing-xs); }
     .preview-group-title { font-weight: 600; font-size: 0.88em; margin-bottom: 6px; color: var(--vscode-descriptionForeground); }
+    /* Pages: tab strip (ADR-1 / block 2); TabsOnTop | TabsOnBottom from PagesRepresentation */
+    .preview-pages-outer {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    .preview-pages-outer.TabsOnTop { flex-direction: column; }
+    .preview-pages-outer.TabsOnBottom { flex-direction: column; }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tablist { order: 2; }
+    .preview-pages-outer.TabsOnBottom .preview-pages-panel-wrap { order: 1; }
+    .preview-pages-tablist {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 2px;
+      padding: 0 0 4px 0;
+      margin: 0 0 6px 0;
+      border-bottom: 1px solid var(--fe-border-strong);
+      list-style: none;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tablist {
+      margin: 6px 0 0 0;
+      padding: 4px 0 0 0;
+      border-bottom: none;
+      border-top: 1px solid var(--fe-border-strong);
+      align-items: flex-start;
+    }
+    .preview-pages-tab {
+      margin: 0;
+      padding: 5px 10px;
+      font: inherit;
+      font-size: 0.88em;
+      font-weight: 500;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      border: 1px solid transparent;
+      border-bottom: none;
+      border-radius: var(--fe-radius-sm) var(--fe-radius-sm) 0 0;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tab {
+      border-radius: 0 0 var(--fe-radius-sm) var(--fe-radius-sm);
+      border-top: none;
+      border-bottom: 1px solid transparent;
+    }
+    .preview-pages-tab:hover {
+      color: var(--vscode-foreground);
+      background: var(--fe-hover-bg);
+    }
+    .preview-pages-tab[aria-selected='true'] {
+      color: var(--vscode-foreground);
+      font-weight: 600;
+      background: color-mix(in srgb, var(--vscode-tab-activeBackground, transparent) 65%, var(--vscode-editor-background) 35%);
+      border-color: var(--fe-border-subtle);
+      border-bottom-color: transparent;
+      box-shadow: 0 1px 0 0 var(--vscode-editor-background);
+    }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tab[aria-selected='true'] {
+      border-top-color: transparent;
+      border-bottom-color: var(--fe-border-subtle);
+      box-shadow: 0 -1px 0 0 var(--vscode-editor-background);
+    }
+    .preview-pages-tab:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+    .preview-pages-panel-wrap {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
     .preview-children.preview-buttons-container { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-sm); align-items: center; margin-left: 0; }
     .empty-state { text-align: center; padding: var(--fe-spacing-lg); color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 var(--fe-spacing-sm) 0; font-size: 1em; color: var(--vscode-foreground); opacity: 0.9; }
@@ -952,6 +1032,8 @@ export function getWebviewHtml(
     var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
     var FORM_ROOT_ID = '__form_root__';
     var expandedIds = new Set();
+    /** Per-Pages active tab: key = Pages item id or name (stable within preview session). */
+    var activePageIdByPagesKey = Object.create(null);
     var requisiteExpandedPaths = new Set();
     var selectedRequisiteFullPath = null;
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
@@ -1069,21 +1151,146 @@ export function getWebviewHtml(
         containerClassHints: hints
       };
     }
-    /** Ordered Page children under a Pages node; activePageId defaults to first (tabs UI in block 2). */
+    function getFormItemKey(it) {
+      if (!it) return '';
+      return it.id != null ? String(it.id) : (it.name != null ? String(it.name) : '');
+    }
+    function safePreviewDomIdPart(s) {
+      return String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+    /** Maps PagesRepresentation to CSS class TabsOnTop | TabsOnBottom (design ADR-1). */
+    function getPagesRepresentationClass(item) {
+      var props = item && item.properties;
+      var raw = getLayoutPropertyValueByAliases(props, [
+        'PagesRepresentation',
+        'pagesRepresentation',
+        'ПредставлениеСтраниц'
+      ]);
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (v.indexOf('bottom') >= 0 || v.indexOf('низ') >= 0 || v.indexOf('внизу') >= 0) return 'TabsOnBottom';
+      return 'TabsOnTop';
+    }
+    /** Ordered Page children under Pages; activePageId stored per Pages key (id||name). */
     function buildTabsState(pagesNode) {
+      var pagesKey = getFormItemKey(pagesNode);
       var kids = pagesNode && pagesNode.childItems ? pagesNode.childItems : [];
       var pages = kids.filter(function(it) { return it && it.tag === 'Page'; });
-      var pageOrderIds = pages.map(function(p) {
-        return p.id != null ? String(p.id) : (p.name != null ? String(p.name) : '');
+      var pageOrderIds = pages.map(function(p) { return getFormItemKey(p); }).filter(function(k) { return k !== ''; });
+      var stored = pagesKey ? activePageIdByPagesKey[pagesKey] : undefined;
+      var activePageId = stored != null && stored !== '' ? String(stored) : null;
+      if (activePageId && pageOrderIds.indexOf(activePageId) < 0) activePageId = null;
+      if (!activePageId && pageOrderIds.length) activePageId = pageOrderIds[0];
+      if (!pageOrderIds.length) {
+        delete activePageIdByPagesKey[pagesKey];
+      } else if (activePageId != null) {
+        activePageIdByPagesKey[pagesKey] = activePageId;
+      }
+      return { pages: pages, pageOrderIds: pageOrderIds, activePageId: activePageId, pagesKey: pagesKey };
+    }
+    function findPageById(pages, pageId) {
+      for (var i = 0; i < pages.length; i++) {
+        if (getFormItemKey(pages[i]) === pageId) return pages[i];
+      }
+      return null;
+    }
+    function renderPagesInPreview(pagesNode, outerEl, pagesLayoutMeta) {
+      outerEl.textContent = '';
+      var repClass = getPagesRepresentationClass(pagesNode);
+      outerEl.className = layoutContainerStyle(
+        { tag: 'Pages', orientation: pagesLayoutMeta.orientation, shouldIndentChildren: pagesLayoutMeta.shouldIndentChildren, containerClassHints: pagesLayoutMeta.containerClassHints },
+        { skipPreviewChildren: true, previewChildrenAlias: 'preview-pages-outer' }
+      ) + ' ' + repClass;
+      var tabsState = buildTabsState(pagesNode);
+      var tablist = document.createElement('div');
+      tablist.className = 'preview-pages-tablist';
+      tablist.setAttribute('role', 'tablist');
+      var panelWrap = document.createElement('div');
+      panelWrap.className = 'preview-pages-panel-wrap';
+      var pagesKey = tabsState.pagesKey;
+      var activeId = tabsState.activePageId;
+      tabsState.pages.forEach(function(pageItem, idx) {
+        var pid = getFormItemKey(pageItem);
+        if (!pid) return;
+        var tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'preview-pages-tab';
+        tab.setAttribute('role', 'tab');
+        var sid = safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(pid);
+        tab.id = 'preview-tab-' + sid;
+        tab.setAttribute('aria-controls', 'preview-panel-' + sid);
+        tab.setAttribute('data-pages-key', pagesKey);
+        tab.setAttribute('data-page-id', pid);
+        tab.setAttribute('aria-selected', pid === activeId ? 'true' : 'false');
+        tab.setAttribute('tabindex', pid === activeId ? '0' : '-1');
+        var tabLabel = resolvePreviewTitle(pageItem) || pageItem.name || ('Страница ' + (idx + 1));
+        tab.textContent = tabLabel;
+        tab.addEventListener('click', function(ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (String(activePageIdByPagesKey[pagesKey]) === String(pid)) return;
+          activePageIdByPagesKey[pagesKey] = pid;
+          var root = document.getElementById('preview-form');
+          if (formModel && formModel.childItemsRoot && root) renderPreview(formModel.childItemsRoot, root);
+        });
+        tablist.appendChild(tab);
       });
-      var activePageId = pageOrderIds.length && pageOrderIds[0] !== '' ? pageOrderIds[0] : null;
-      return { pages: pages, pageOrderIds: pageOrderIds, activePageId: activePageId };
+      var panel = document.createElement('div');
+      panel.className = 'preview-pages-active-panel';
+      panel.setAttribute('role', 'tabpanel');
+      var activePage = activeId ? findPageById(tabsState.pages, activeId) : null;
+      if (activePage && activePage.childItems && activePage.childItems.length) {
+        var pageInnerMeta = getContainerLayoutMeta(activePage);
+        panel.className += ' ' + layoutContainerStyle({
+          tag: 'Page',
+          orientation: pageInnerMeta.orientation,
+          shouldIndentChildren: pageInnerMeta.shouldIndentChildren,
+          containerClassHints: pageInnerMeta.containerClassHints
+        });
+        var aid = safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(activeId);
+        panel.id = 'preview-panel-' + aid;
+        panel.setAttribute('aria-labelledby', 'preview-tab-' + aid);
+        renderPreview(activePage.childItems, panel);
+      } else {
+        var eid = activeId ? safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(activeId) : safePreviewDomIdPart(pagesKey) + '-empty';
+        panel.id = 'preview-panel-' + eid;
+        if (activeId) panel.setAttribute('aria-labelledby', 'preview-tab-' + safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(activeId));
+        if (!tabsState.pages.length) {
+          panel.textContent = 'Нет страниц';
+          panel.className += ' preview-empty-state';
+        } else if (activePage && (!activePage.childItems || !activePage.childItems.length)) {
+          panel.textContent = '';
+        }
+      }
+      panelWrap.appendChild(panel);
+      var otherKids = (pagesNode.childItems || []).filter(function(it) { return it && it.tag !== 'Page'; });
+      outerEl.appendChild(tablist);
+      outerEl.appendChild(panelWrap);
+      if (otherKids.length) {
+        var extra = document.createElement('div');
+        extra.className = 'preview-pages-nonpage-children';
+        var om = getContainerLayoutMeta(pagesNode);
+        extra.className += ' ' + layoutContainerStyle({
+          tag: 'Pages',
+          orientation: om.orientation,
+          shouldIndentChildren: om.shouldIndentChildren,
+          containerClassHints: om.containerClassHints
+        });
+        renderPreview(otherKids, extra);
+        outerEl.appendChild(extra);
+      }
     }
     /** CSS class string for preview-children wrapper (parity with previous inline assembly). */
-    function layoutContainerStyle(meta) {
+    function layoutContainerStyle(meta, opts) {
+      opts = opts || {};
       var tag = meta && meta.tag != null ? String(meta.tag) : '';
       var orientation = meta && meta.orientation ? meta.orientation : 'vertical';
-      var childClasses = ['preview-children', 'preview-children-' + orientation];
+      var childClasses = [];
+      if (opts.previewChildrenAlias) {
+        childClasses.push(opts.previewChildrenAlias);
+      } else if (!opts.skipPreviewChildren) {
+        childClasses.push('preview-children');
+      }
+      childClasses.push('preview-children-' + orientation);
       if (meta && meta.shouldIndentChildren) childClasses.push('preview-children-indented');
       if (tag === 'AutoCommandBar') childClasses.push('preview-buttons-container');
       var hints = meta && meta.containerClassHints ? meta.containerClassHints : [];
@@ -1562,16 +1769,19 @@ export function getWebviewHtml(
               });
             })(ths[ti]);
           }
-        } else if (isContainer && item.childItems && item.childItems.length && controlWrap._mockupChildContainer) {
+        } else if (isContainer && controlWrap._mockupChildContainer && ((item.childItems && item.childItems.length) || tag === 'Pages')) {
           var childWrap = controlWrap._mockupChildContainer;
-          if (tag === 'Pages') { void buildTabsState(item); }
-          childWrap.className = layoutContainerStyle({
-            tag: tag,
-            orientation: layoutMeta.orientation,
-            shouldIndentChildren: layoutMeta.shouldIndentChildren,
-            containerClassHints: layoutMeta.containerClassHints
-          });
-          renderPreview(item.childItems, childWrap);
+          if (tag === 'Pages') {
+            renderPagesInPreview(item, childWrap, layoutMeta);
+          } else {
+            childWrap.className = layoutContainerStyle({
+              tag: tag,
+              orientation: layoutMeta.orientation,
+              shouldIndentChildren: layoutMeta.shouldIndentChildren,
+              containerClassHints: layoutMeta.containerClassHints
+            });
+            renderPreview(item.childItems, childWrap);
+          }
         }
       });
     }

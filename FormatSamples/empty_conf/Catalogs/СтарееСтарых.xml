@@ -341,18 +341,19 @@
 			<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>
 		</Properties>
 		<ChildObjects>
-			<Attribute uuid="3f340069-7896-4d36-b910-318c7f3eb9ce">
+			<Attribute uuid="616d6d92-fc8a-4856-aa4b-d26110775a29">
 				<Properties>
-					<Name>рекв555</Name>
+					<Name>чекчек</Name>
 					<Synonym>
 						<v8:item>
 							<v8:lang>ru</v8:lang>
-							<v8:content>рекв555</v8:content>
+							<v8:content>чекчек</v8:content>
 						</v8:item>
 					</Synonym>
 					<Comment/>
 					<Type>
 						<v8:Type>xs:string</v8:Type>
+						<v8:Type>cfg:CatalogRef.Справочник55</v8:Type>
 						<v8:StringQualifiers>
 							<v8:Length>50</v8:Length>
 							<v8:AllowedLength>Variable</v8:AllowedLength>
