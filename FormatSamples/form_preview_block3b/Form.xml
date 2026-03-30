@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Manual preview check for 1CVIEWER-71 (Block 3B): spacing, align, ChildItemsWidth, ThroughAlign; Pages vs horizontal UsualGroup -->
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.17">
+  <ChildItems>
+    <Pages name="СтраницыПроверка" id="100">
+      <PagesRepresentation>TabsOnTop</PagesRepresentation>
+      <!-- Intentional Horizontal on Pages root must NOT turn the tab strip into a horizontal row (see getContainerLayoutMeta Pages branch). -->
+      <Group>Horizontal</Group>
+      <ChildItems>
+        <Page name="Стр1" id="101">
+          <Title>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Группы</v8:content>
+            </v8:item>
+          </Title>
+          <ChildItemsWidth>Equal</ChildItemsWidth>
+          <ChildItems>
+            <UsualGroup name="СтрокаПолей" id="102">
+              <Group>Horizontal</Group>
+              <HorizontalSpacing>Double</HorizontalSpacing>
+              <VerticalSpacing>Half</VerticalSpacing>
+              <ChildItemsWidth>LeftWidest</ChildItemsWidth>
+              <ThroughAlign>Use</ThroughAlign>
+              <GroupHorizontalAlign>Center</GroupHorizontalAlign>
+              <GroupVerticalAlign>Center</GroupVerticalAlign>
+              <ChildItems>
+                <InputField name="ЛевыйШирокий" id="103">
+                  <DataPath>РеквизитА</DataPath>
+                </InputField>
+                <InputField name="ПравыйУзкий" id="104">
+                  <DataPath>РеквизитБ</DataPath>
+                </InputField>
+              </ChildItems>
+            </UsualGroup>
+            <UsualGroup name="ВыровнятьВправо" id="105">
+              <Group>Horizontal</Group>
+              <HorizontalSpacing>Single</HorizontalSpacing>
+              <ChildItemsWidth>RightWidest</ChildItemsWidth>
+              <GroupHorizontalAlign>Right</GroupHorizontalAlign>
+              <ThroughAlign>DontUse</ThroughAlign>
+              <ChildItems>
+                <InputField name="A" id="106">
+                  <DataPath>РеквизитВ</DataPath>
+                </InputField>
+                <InputField name="B" id="107">
+                  <DataPath>РеквизитГ</DataPath>
+                </InputField>
+              </ChildItems>
+            </UsualGroup>
+          </ChildItems>
+        </Page>
+        <Page name="Стр2" id="108">
+          <Title>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Вторая вкладка</v8:content>
+            </v8:item>
+          </Title>
+          <ChildItems>
+            <LabelDecoration name="Метка" id="109">
+              <Title>Вертикальный блок на странице 2</Title>
+            </LabelDecoration>
+          </ChildItems>
+        </Page>
+      </ChildItems>
+    </Pages>
+  </ChildItems>
+  <Attributes>
+    <Attribute name="РеквизитА" id="1">
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Attribute>
+    <Attribute name="РеквизитБ" id="2">
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Attribute>
+    <Attribute name="РеквизитВ" id="3">
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Attribute>
+    <Attribute name="РеквизитГ" id="4">
+      <Type>
+        <v8:Type>xs:string</v8:Type>
+      </Type>
+    </Attribute>
+  </Attributes>
+</Form>

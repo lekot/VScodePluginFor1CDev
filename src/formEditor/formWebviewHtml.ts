@@ -581,6 +581,16 @@ export function getWebviewHtml(
     .preview-children.preview-children-vertical { flex-direction: column; }
     .preview-children.preview-children-horizontal { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: var(--fe-spacing-sm); }
     .preview-children.preview-children-horizontal > .preview-item { flex: 1 1 220px; min-width: 180px; width: auto; }
+    /* Block 3B: ChildItemsWidth / ThroughAlign (UsualGroup horizontal — preview approximation) */
+    .preview-children.preview-ciwidth-equal.preview-children-horizontal > .preview-item { flex: 1 1 0; min-width: 0; width: auto; }
+    .preview-children.preview-ciwidth-leftwidest.preview-children-horizontal > .preview-item:first-child { flex: 2 1 260px; min-width: 140px; }
+    .preview-children.preview-ciwidth-leftwidest.preview-children-horizontal > .preview-item:not(:first-child) { flex: 1 1 120px; min-width: 100px; width: auto; }
+    .preview-children.preview-ciwidth-rightwidest.preview-children-horizontal > .preview-item:last-child { flex: 2 1 260px; min-width: 140px; }
+    .preview-children.preview-ciwidth-rightwidest.preview-children-horizontal > .preview-item:not(:last-child) { flex: 1 1 120px; min-width: 100px; width: auto; }
+    .preview-children.preview-throughalign-use.preview-children-horizontal { align-items: stretch; }
+    .preview-children.preview-throughalign-use.preview-children-vertical > .preview-item { align-self: stretch; }
+    /* Pages root: column of tabs + panel, never a horizontal “group of pages” */
+    .preview-pages-outer.preview-container-pages-root { display: flex; flex-direction: column; align-items: stretch; width: 100%; }
     .preview-children.preview-children-indented { margin-left: 10px; }
     .preview-children.preview-container-page,
     .preview-children.preview-container-pages {
@@ -1110,10 +1120,91 @@ export function getWebviewHtml(
       if (v.indexOf('vertical') >= 0 || v.indexOf('vert') >= 0 || v === 'column' || v.indexOf('topbottom') >= 0 || v.indexOf('вертикал') >= 0 || v.indexOf('сверхувниз') >= 0) return 'vertical';
       return null;
     }
+    function normalizeSpacingKindJs(raw) {
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (!v) return '';
+      if (v.indexOf('double') >= 0 || v.indexOf('двойн') >= 0) return 'double';
+      if (v.indexOf('half') >= 0 || v.indexOf('половин') >= 0) return 'half';
+      return 'single';
+    }
+    function normalizeChildItemsWidthJs(raw) {
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (!v) return '';
+      if (v === 'equal' || v.indexOf('равн') >= 0) return 'equal';
+      if (v.indexOf('left') >= 0 && v.indexOf('wide') >= 0) return 'leftwidest';
+      if (v.indexOf('right') >= 0 && v.indexOf('wide') >= 0) return 'rightwidest';
+      if (v === 'leftwidest') return 'leftwidest';
+      if (v === 'rightwidest') return 'rightwidest';
+      return '';
+    }
+    function normalizeThroughAlignJs(raw) {
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (!v) return '';
+      if (v.indexOf('dont') >= 0 || v.indexOf('неиспользов') >= 0 || v === 'no') return 'dontuse';
+      if (v.indexOf('use') >= 0 || v === 'yes' || v === 'да') return 'use';
+      return '';
+    }
+    function groupHToFlexJs(raw) {
+      var s = String(raw || '');
+      var v = s.toLowerCase();
+      if (!s.trim()) return '';
+      if (v.indexOf('center') >= 0 || v.indexOf('центр') >= 0) return 'center';
+      if (v.indexOf('right') >= 0 || v.indexOf('конец') >= 0 || v.indexOf('прав') >= 0) return 'flex-end';
+      if (v.indexOf('left') >= 0 || v.indexOf('начал') >= 0 || v.indexOf('лев') >= 0) return 'flex-start';
+      return '';
+    }
+    function groupVToFlexJs(raw) {
+      var s = String(raw || '');
+      var v = s.toLowerCase();
+      if (!s.trim()) return '';
+      if (v.indexOf('center') >= 0 || v.indexOf('центр') >= 0) return 'center';
+      if (v.indexOf('bottom') >= 0 || v.indexOf('низ') >= 0) return 'flex-end';
+      if (v.indexOf('top') >= 0 || v.indexOf('верх') >= 0) return 'flex-start';
+      return '';
+    }
+    function layoutPreviewFlexBoxJs(orientation, gh, gv, throughAlign) {
+      var h = groupHToFlexJs(gh);
+      var v = groupVToFlexJs(gv);
+      var flexJustifyContent = '';
+      var flexAlignItems = '';
+      if (orientation === 'horizontal') {
+        flexJustifyContent = h;
+        flexAlignItems = v;
+      } else {
+        flexJustifyContent = v;
+        flexAlignItems = h;
+      }
+      if (throughAlign === 'use') flexAlignItems = 'stretch';
+      return { flexJustifyContent: flexJustifyContent, flexAlignItems: flexAlignItems };
+    }
+    function spacingKindToPxJs(k) {
+      if (!k) return null;
+      if (k === 'half') return 4;
+      if (k === 'double') return 16;
+      return 8;
+    }
+    function applyPreviewContainerLayout(el, meta) {
+      if (!el || !meta) return;
+      if (meta.verticalSpacing) {
+        var r = spacingKindToPxJs(meta.verticalSpacing);
+        if (r != null) el.style.rowGap = r + 'px';
+      } else {
+        el.style.rowGap = '';
+      }
+      if (meta.horizontalSpacing) {
+        var c = spacingKindToPxJs(meta.horizontalSpacing);
+        if (c != null) el.style.columnGap = c + 'px';
+      } else {
+        el.style.columnGap = '';
+      }
+      el.style.justifyContent = meta.flexJustifyContent || '';
+      el.style.alignItems = meta.flexAlignItems || '';
+    }
     function getContainerLayoutMeta(item) {
       var tag = String((item && item.tag) || '');
       var props = item ? item.properties : null;
-      var rawOrientation = getLayoutPropertyValueByAliases(props, [
+      var isPagesRoot = tag === 'Pages';
+      var rawOrientation = isPagesRoot ? '' : getLayoutPropertyValueByAliases(props, [
         'Group',
         'groups',
         'GroupOrientation',
@@ -1126,7 +1217,7 @@ export function getWebviewHtml(
         'Ориентация',
         'Группировка'
       ]);
-      var orientation = normalizeContainerOrientation(rawOrientation) || 'vertical';
+      var orientation = isPagesRoot ? 'vertical' : (normalizeContainerOrientation(rawOrientation) || 'vertical');
       var rawIndent = getLayoutPropertyValueByAliases(props, [
         'IndentChildren',
         'ShouldIndentChildren',
@@ -1145,10 +1236,53 @@ export function getWebviewHtml(
       if (tag) hints.push('container-' + tag.toLowerCase());
       if (tag === 'AutoCommandBar') hints.push('container-buttons');
       if (tag === 'Page' || tag === 'Pages') hints.push('container-page');
+      if (isPagesRoot) hints.push('container-pages-root');
+      var horizontalSpacing = '';
+      var verticalSpacing = '';
+      var childItemsWidth = '';
+      var throughAlign = '';
+      var flexJustifyContent = '';
+      var flexAlignItems = '';
+      if (!isPagesRoot) {
+        horizontalSpacing = normalizeSpacingKindJs(getLayoutPropertyValueByAliases(props, [
+          'HorizontalSpacing', 'horizontalSpacing', 'ГоризонтальныйИнтервал', 'ИнтервалГоризонтальный'
+        ]));
+        verticalSpacing = normalizeSpacingKindJs(getLayoutPropertyValueByAliases(props, [
+          'VerticalSpacing', 'verticalSpacing', 'ВертикальныйИнтервал', 'ИнтервалВертикальный'
+        ]));
+        childItemsWidth = normalizeChildItemsWidthJs(getLayoutPropertyValueByAliases(props, [
+          'ChildItemsWidth', 'childItemsWidth', 'ШиринаДочернихЭлементов'
+        ]));
+        throughAlign = normalizeThroughAlignJs(getLayoutPropertyValueByAliases(props, [
+          'ThroughAlign', 'throughAlign', 'СквозноеВыравнивание'
+        ]));
+        if (childItemsWidth === 'equal') hints.push('ciwidth-equal');
+        else if (childItemsWidth === 'leftwidest') hints.push('ciwidth-leftwidest');
+        else if (childItemsWidth === 'rightwidest') hints.push('ciwidth-rightwidest');
+        if (throughAlign === 'use') hints.push('throughalign-use');
+        var gh = getLayoutPropertyValueByAliases(props, [
+          'GroupHorizontalAlign', 'groupHorizontalAlign', 'HorizontalAlign', 'horizontalAlign',
+          'ГоризонтальноеВыравниваниеГруппы', 'ГоризонтальноеВыравнивание'
+        ]);
+        var gv = getLayoutPropertyValueByAliases(props, [
+          'GroupVerticalAlign', 'groupVerticalAlign', 'VerticalAlign', 'verticalAlign',
+          'ВертикальноеВыравниваниеГруппы', 'ВертикальноеВыравнивание'
+        ]);
+        var flexBox = layoutPreviewFlexBoxJs(orientation, gh, gv, throughAlign);
+        flexJustifyContent = flexBox.flexJustifyContent;
+        flexAlignItems = flexBox.flexAlignItems;
+      }
       return {
+        tag: tag,
         orientation: orientation,
         shouldIndentChildren: !!shouldIndentChildren,
-        containerClassHints: hints
+        containerClassHints: hints,
+        horizontalSpacing: horizontalSpacing,
+        verticalSpacing: verticalSpacing,
+        childItemsWidth: childItemsWidth,
+        throughAlign: throughAlign,
+        flexJustifyContent: flexJustifyContent,
+        flexAlignItems: flexAlignItems
       };
     }
     function getFormItemKey(it) {
@@ -1197,9 +1331,10 @@ export function getWebviewHtml(
       outerEl.textContent = '';
       var repClass = getPagesRepresentationClass(pagesNode);
       outerEl.className = layoutContainerStyle(
-        { tag: 'Pages', orientation: pagesLayoutMeta.orientation, shouldIndentChildren: pagesLayoutMeta.shouldIndentChildren, containerClassHints: pagesLayoutMeta.containerClassHints },
+        pagesLayoutMeta,
         { skipPreviewChildren: true, previewChildrenAlias: 'preview-pages-outer' }
       ) + ' ' + repClass;
+      applyPreviewContainerLayout(outerEl, pagesLayoutMeta);
       var tabsState = buildTabsState(pagesNode);
       var tablist = document.createElement('div');
       tablist.className = 'preview-pages-tablist';
@@ -1240,12 +1375,8 @@ export function getWebviewHtml(
       var activePage = activeId ? findPageById(tabsState.pages, activeId) : null;
       if (activePage && activePage.childItems && activePage.childItems.length) {
         var pageInnerMeta = getContainerLayoutMeta(activePage);
-        panel.className += ' ' + layoutContainerStyle({
-          tag: 'Page',
-          orientation: pageInnerMeta.orientation,
-          shouldIndentChildren: pageInnerMeta.shouldIndentChildren,
-          containerClassHints: pageInnerMeta.containerClassHints
-        });
+        panel.className += ' ' + layoutContainerStyle(pageInnerMeta);
+        applyPreviewContainerLayout(panel, pageInnerMeta);
         var aid = safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(activeId);
         panel.id = 'preview-panel-' + aid;
         panel.setAttribute('aria-labelledby', 'preview-tab-' + aid);
@@ -1269,12 +1400,8 @@ export function getWebviewHtml(
         var extra = document.createElement('div');
         extra.className = 'preview-pages-nonpage-children';
         var om = getContainerLayoutMeta(pagesNode);
-        extra.className += ' ' + layoutContainerStyle({
-          tag: 'Pages',
-          orientation: om.orientation,
-          shouldIndentChildren: om.shouldIndentChildren,
-          containerClassHints: om.containerClassHints
-        });
+        extra.className += ' ' + layoutContainerStyle(om);
+        applyPreviewContainerLayout(extra, om);
         renderPreview(otherKids, extra);
         outerEl.appendChild(extra);
       }
@@ -1774,12 +1901,8 @@ export function getWebviewHtml(
           if (tag === 'Pages') {
             renderPagesInPreview(item, childWrap, layoutMeta);
           } else {
-            childWrap.className = layoutContainerStyle({
-              tag: tag,
-              orientation: layoutMeta.orientation,
-              shouldIndentChildren: layoutMeta.shouldIndentChildren,
-              containerClassHints: layoutMeta.containerClassHints
-            });
+            childWrap.className = layoutContainerStyle(layoutMeta);
+            applyPreviewContainerLayout(childWrap, layoutMeta);
             renderPreview(item.childItems, childWrap);
           }
         }

@@ -16,6 +16,8 @@ import {
   requisiteTypeToTag,
   createIdGenerator,
   getContainerLayoutPreviewMeta,
+  layoutPreviewFlexBox,
+  layoutSpacingToPx,
 } from '../../src/formEditor/formModelUtils';
 import type { FormModel, FormChildItem, FormAttribute } from '../../src/formEditor/formModel';
 
@@ -494,6 +496,168 @@ suite('formModelUtils — unit tests', () => {
     test('CollapsibleGroup defaults indent like Group family', () => {
       const meta = getContainerLayoutPreviewMeta(makeLayoutItem('CollapsibleGroup'));
       assert.strictEqual(meta.shouldIndentChildren, true);
+    });
+
+    // --- 1CVIEWER-36 Block 3 phase B: spacing, align, ChildItemsWidth, ThroughAlign ---
+
+    test('horizontal group: Half / Double spacing + RU alias for horizontal', () => {
+      const half = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { Group: 'HorizontalIfPossible', VerticalSpacing: 'Half' })
+      );
+      assert.strictEqual(half.horizontalSpacing, '');
+      assert.strictEqual(half.verticalSpacing, 'half');
+      const dbl = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', {
+          Group: 'HorizontalIfPossible',
+          HorizontalSpacing: 'Double',
+          'ИнтервалВертикальный': 'Single',
+        })
+      );
+      assert.strictEqual(dbl.horizontalSpacing, 'double');
+      assert.strictEqual(dbl.verticalSpacing, 'single');
+    });
+
+    test('spacing: unknown extra words still map to single', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('Group', { HorizontalSpacing: 'SomethingSingleExtra' })
+      );
+      assert.strictEqual(meta.horizontalSpacing, 'single');
+    });
+
+    test('ChildItemsWidth: Equal / LeftWidest / RightWidest + ciwidth hints', () => {
+      const eq = getContainerLayoutPreviewMeta(makeLayoutItem('UsualGroup', { ChildItemsWidth: 'Equal' }));
+      assert.strictEqual(eq.childItemsWidth, 'equal');
+      assert.ok(eq.containerClassHints.includes('ciwidth-equal'));
+      const lw = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { 'ШиринаДочернихЭлементов': 'LeftWidest' })
+      );
+      assert.strictEqual(lw.childItemsWidth, 'leftwidest');
+      assert.ok(lw.containerClassHints.includes('ciwidth-leftwidest'));
+      const rw = getContainerLayoutPreviewMeta(makeLayoutItem('Group', { childItemsWidth: 'RightWidest' }));
+      assert.strictEqual(rw.childItemsWidth, 'rightwidest');
+      assert.ok(rw.containerClassHints.includes('ciwidth-rightwidest'));
+    });
+
+    test('ChildItemsWidth: unrecognized value stays empty', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { ChildItemsWidth: 'Magic' })
+      );
+      assert.strictEqual(meta.childItemsWidth, '');
+      assert.ok(!meta.containerClassHints.some((h) => h.startsWith('ciwidth-')));
+    });
+
+    test('ThroughAlign: Use / DontUse + throughalign-use hint; RU не использовать', () => {
+      const use = getContainerLayoutPreviewMeta(makeLayoutItem('UsualGroup', { ThroughAlign: 'Use' }));
+      assert.strictEqual(use.throughAlign, 'use');
+      assert.ok(use.containerClassHints.includes('throughalign-use'));
+      const dont = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', { 'СквозноеВыравнивание': 'НеИспользовать' })
+      );
+      assert.strictEqual(dont.throughAlign, 'dontuse');
+      assert.ok(!dont.containerClassHints.includes('throughalign-use'));
+    });
+
+    test('group align maps to flex (horizontal container): center + bottom', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', {
+          Group: 'HorizontalIfPossible',
+          GroupHorizontalAlign: 'Center',
+          GroupVerticalAlign: 'Bottom',
+        })
+      );
+      assert.strictEqual(meta.flexJustifyContent, 'center');
+      assert.strictEqual(meta.flexAlignItems, 'flex-end');
+    });
+
+    test('group align maps to flex (vertical container): swaps justify vs align', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', {
+          Group: 'Vertical',
+          GroupHorizontalAlign: 'Right',
+          GroupVerticalAlign: 'Center',
+        })
+      );
+      assert.strictEqual(meta.flexJustifyContent, 'center');
+      assert.strictEqual(meta.flexAlignItems, 'flex-end');
+    });
+
+    test('ThroughAlign Use forces align-items stretch in flex meta', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', {
+          Group: 'HorizontalIfPossible',
+          GroupHorizontalAlign: 'Left',
+          GroupVerticalAlign: 'Top',
+          ThroughAlign: 'Use',
+        })
+      );
+      assert.strictEqual(meta.flexAlignItems, 'stretch');
+    });
+
+    test('Pages root: vertical shell — ignore Group, spacing, width, ThroughAlign, group align', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('Pages', {
+          Group: 'HorizontalIfPossible',
+          HorizontalSpacing: 'Double',
+          VerticalSpacing: 'Half',
+          ChildItemsWidth: 'Equal',
+          ThroughAlign: 'Use',
+          GroupHorizontalAlign: 'Center',
+          GroupVerticalAlign: 'Bottom',
+        })
+      );
+      assert.strictEqual(meta.tag, 'Pages');
+      assert.strictEqual(meta.orientation, 'vertical');
+      assert.strictEqual(meta.horizontalSpacing, '');
+      assert.strictEqual(meta.verticalSpacing, '');
+      assert.strictEqual(meta.childItemsWidth, '');
+      assert.strictEqual(meta.throughAlign, '');
+      assert.strictEqual(meta.flexJustifyContent, '');
+      assert.strictEqual(meta.flexAlignItems, '');
+      assert.ok(meta.containerClassHints.includes('container-pages-root'));
+      assert.ok(!meta.containerClassHints.includes('ciwidth-equal'));
+      assert.ok(!meta.containerClassHints.includes('throughalign-use'));
+    });
+
+    test('namespaced layout property keys still resolve (v8:)', () => {
+      const meta = getContainerLayoutPreviewMeta(
+        makeLayoutItem('UsualGroup', {
+          'v8:HorizontalSpacing': 'Half',
+          'v8:ThroughAlign': { '#text': 'DontUse' },
+        })
+      );
+      assert.strictEqual(meta.horizontalSpacing, 'half');
+      assert.strictEqual(meta.throughAlign, 'dontuse');
+    });
+  });
+
+  suite('layoutPreviewFlexBox (parity with webview)', () => {
+    test('empty align strings yield empty flex values', () => {
+      const r = layoutPreviewFlexBox('horizontal', '', '', '');
+      assert.strictEqual(r.flexJustifyContent, '');
+      assert.strictEqual(r.flexAlignItems, '');
+    });
+
+    test('throughAlign use alone still sets stretch', () => {
+      const r = layoutPreviewFlexBox('vertical', '', '', 'use');
+      assert.strictEqual(r.flexAlignItems, 'stretch');
+    });
+
+    test('RU tokens: центр по горизонтали / низ', () => {
+      const r = layoutPreviewFlexBox('horizontal', 'Центр', 'Низ', '');
+      assert.strictEqual(r.flexJustifyContent, 'center');
+      assert.strictEqual(r.flexAlignItems, 'flex-end');
+    });
+  });
+
+  suite('layoutSpacingToPx', () => {
+    test('empty kind → null', () => {
+      assert.strictEqual(layoutSpacingToPx(''), null);
+    });
+
+    test('half / single / double', () => {
+      assert.strictEqual(layoutSpacingToPx('half'), 4);
+      assert.strictEqual(layoutSpacingToPx('single'), 8);
+      assert.strictEqual(layoutSpacingToPx('double'), 16);
     });
   });
 });
