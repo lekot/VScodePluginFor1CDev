@@ -617,11 +617,39 @@ export function getWebviewHtml(
     .preview-table-col { min-width: 60px; padding: var(--fe-spacing-xs) var(--fe-spacing-sm); border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); font-size: 0.85em; }
     .preview-page-caption, .preview-group-caption { font-weight: 600; font-size: 0.9em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-foreground); }
     .preview-fallback { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+    .preview-fallback-widget {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px dashed var(--fe-border-strong);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background) 10%);
+    }
+    .preview-fallback-widget .fallback-label { color: var(--vscode-foreground); }
+    .preview-fallback-widget .fallback-tag {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.85em;
+      padding: 1px 6px;
+      border: 1px solid var(--fe-border-subtle);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-list-hoverBackground) 12%);
+    }
     /* Form mockup (variant B): layout as form */
     #preview-form.preview-mockup-form { padding: var(--fe-spacing-sm); width: 100%; min-width: 100%; box-sizing: border-box; }
     .preview-field-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-sm); margin-bottom: var(--fe-spacing-xs); }
     .preview-field-label { min-width: 80px; color: var(--vscode-foreground); font-size: inherit; flex-shrink: 0; }
     .preview-field-row .preview-input { flex: 1; min-width: 100px; }
+    .preview-field-row.preview-title-top,
+    .preview-field-row.preview-title-bottom {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 4px;
+    }
+    .preview-field-row.preview-title-right { flex-direction: row-reverse; justify-content: flex-end; }
+    .preview-field-row.preview-title-none .preview-field-label { display: none; }
+    .preview-field-row.preview-title-bottom .preview-field-label { order: 2; }
+    .preview-field-row.preview-title-bottom .preview-input { order: 1; }
     .preview-buttons-row { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-xs); align-items: center; }
     .preview-table-mock { overflow-x: auto; border: 1px solid var(--fe-border-strong); border-radius: 6px; margin: 4px 0; background: var(--vscode-editor-background); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
     .preview-table-mock table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
@@ -1048,18 +1076,123 @@ export function getWebviewHtml(
     var selectedRequisiteFullPath = null;
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
     function isRealElement(it) { var t = it.tag; return t && t !== ':@' && !String(t).startsWith('@'); }
+    function normalizeLangCode(lang) {
+      if (lang == null) return '';
+      return String(lang).trim().toLowerCase().replace('_', '-');
+    }
+    function pickLocalizedContent(itemNodes, localeHint) {
+      if (!Array.isArray(itemNodes) || itemNodes.length === 0) return '';
+      var requested = normalizeLangCode(localeHint || (navigator && navigator.language) || '');
+      var requestedBase = requested ? requested.split('-')[0] : '';
+      var firstNonEmpty = '';
+      for (var i = 0; i < itemNodes.length; i++) {
+        var node = itemNodes[i];
+        if (!node || typeof node !== 'object') continue;
+        var lang = '';
+        var content = '';
+        Object.keys(node).forEach(function(key) {
+          if (key === ':@' || key.startsWith('@')) return;
+          var local = key.indexOf(':') >= 0 ? key.split(':').pop() : key;
+          if (local === 'lang') lang = extractDisplayValue(node[key]);
+          if (local === 'content') content = extractDisplayValue(node[key]);
+        });
+        content = String(content || '').trim();
+        if (!content) continue;
+        if (!firstNonEmpty) firstNonEmpty = content;
+        var normLang = normalizeLangCode(lang);
+        if (!requested) continue;
+        if (normLang === requested) return content;
+        if (requestedBase && normLang === requestedBase) return content;
+        if (requestedBase && normLang && normLang.split('-')[0] === requestedBase) return content;
+      }
+      return firstNonEmpty;
+    }
+    function extractTitleValue(rawTitle, localeHint) {
+      if (rawTitle == null) return '';
+      if (typeof rawTitle === 'string') return rawTitle.trim();
+      if (Array.isArray(rawTitle)) {
+        for (var i = 0; i < rawTitle.length; i++) {
+          var fromItem = extractTitleValue(rawTitle[i], localeHint);
+          if (fromItem) return fromItem;
+        }
+        return '';
+      }
+      if (typeof rawTitle !== 'object') return '';
+      var keys = Object.keys(rawTitle);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        if (key === ':@' || key.startsWith('@')) continue;
+        var local = key.indexOf(':') >= 0 ? key.split(':').pop() : key;
+        if (local !== 'item') continue;
+        var node = rawTitle[key];
+        var items = Array.isArray(node) ? node : [node];
+        var localized = pickLocalizedContent(items, localeHint);
+        if (localized) return localized;
+      }
+      return extractDisplayValue(rawTitle);
+    }
     /**
-     * Single entry for preview label from Title + fallbacks (ADR-2 hook). localeHint reserved for multilang (block C).
+     * Single entry for preview label from Title + fallbacks (ADR-2).
      */
     function resolvePreviewTitle(item, localeHint) {
-      void localeHint;
       if (!item) return '';
       var props = item.properties;
-      if (props && props['Title'] != null) {
-        var t = extractDisplayValue(props['Title']);
-        if (t && String(t).trim() !== '') return String(t).trim();
+      if (props) {
+        var titleRaw = props['Title'];
+        if (titleRaw == null) {
+          for (var propKey in props) {
+            if (propKey === ':@' || propKey.startsWith('@')) continue;
+            var local = propKey.indexOf(':') >= 0 ? propKey.split(':').pop() : propKey;
+            if (local === 'Title') {
+              titleRaw = props[propKey];
+              break;
+            }
+          }
+        }
+        var title = extractTitleValue(titleRaw, localeHint);
+        if (title && String(title).trim() !== '') return String(title).trim();
       }
-      return item.name || '';
+      return String(item.name || '').trim();
+    }
+    function normalizeTitleLocation(raw) {
+      var value = String(raw || '').toLowerCase().replace(/[ _-]+/g, '');
+      if (!value) return 'left';
+      if (value === 'none' || value.indexOf('нет') >= 0) return 'none';
+      if (value === 'right' || value.indexOf('прав') >= 0) return 'right';
+      if (value === 'top' || value.indexOf('верх') >= 0) return 'top';
+      if (value === 'bottom' || value.indexOf('низ') >= 0) return 'bottom';
+      return 'left';
+    }
+    function resolveTitleLocation(item) {
+      if (!item || !item.properties) return 'left';
+      var raw = getLayoutPropertyValueByAliases(item.properties, ['TitleLocation']);
+      return normalizeTitleLocation(raw);
+    }
+    var RARE_TAG_FALLBACKS = new Set([
+      'RadioButtonField',
+      'TrackBarField',
+      'ProgressBarField',
+      'TextDocumentField',
+      'SpreadSheetDocumentField',
+      'HTMLDocumentField',
+      'ChartField',
+      'GanttChartField',
+      'PlannerField',
+      'GraphicalSchemaField',
+      'FormattedDocumentField'
+    ]);
+    function createRareTagFallbackWidget(label, tag) {
+      var widget = document.createElement('div');
+      widget.className = 'preview-fallback-widget';
+      var text = document.createElement('span');
+      text.className = 'fallback-label';
+      text.textContent = label || '\u2014';
+      var pill = document.createElement('span');
+      pill.className = 'fallback-tag';
+      pill.textContent = tag || 'Control';
+      widget.appendChild(text);
+      widget.appendChild(pill);
+      return widget;
     }
     function getTreeIcon(tag) {
       if (!tag) return '';
@@ -1666,8 +1799,9 @@ export function getWebviewHtml(
       var label = resolvePreviewTitle(item) || (item.name || tag) + '';
       var wrap = document.createElement('div');
       wrap.className = 'preview-control-wrap';
-      if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'FormattedDocumentField' || tag === 'ValueList') {
-        wrap.className = 'preview-control-wrap preview-field-row';
+      if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'ValueList') {
+        var titleLocation = resolveTitleLocation(item);
+        wrap.className = 'preview-control-wrap preview-field-row preview-title-' + titleLocation;
         var lbl = document.createElement('span');
         lbl.className = 'preview-field-label';
         lbl.textContent = label || '\u2014';
@@ -1689,7 +1823,7 @@ export function getWebviewHtml(
         lblCb.textContent = label || '\u2014';
         wrap.appendChild(lblCb);
         wrap.appendChild(cb);
-      } else if (tag === 'RadioButtonField' || tag === 'RadioButton') {
+      } else if (tag === 'RadioButton') {
         wrap.className = 'preview-control-wrap preview-field-row';
         var radioLabel = document.createElement('span');
         radioLabel.className = 'preview-field-label';
@@ -1790,6 +1924,8 @@ export function getWebviewHtml(
         }
         wrap.appendChild(groupBlock);
         wrap._mockupChildContainer = groupBlock;
+      } else if (RARE_TAG_FALLBACKS.has(tag)) {
+        wrap.appendChild(createRareTagFallbackWidget(label, tag));
       } else {
         var fall = document.createElement('span');
         fall.className = 'preview-fallback';
