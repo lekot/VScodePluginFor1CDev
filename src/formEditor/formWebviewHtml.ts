@@ -872,11 +872,100 @@ export function getWebviewHtml(
     }
     .btn-goto-proc:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .btn-goto-proc:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .add-wizard-overlay {
+      position: fixed;
+      inset: 0;
+      background: color-mix(in srgb, var(--vscode-editor-background) 45%, transparent);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1200;
+      padding: var(--fe-spacing-lg);
+    }
+    .add-wizard-panel {
+      width: min(560px, calc(100vw - 40px));
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      border: 1px solid var(--fe-border-strong);
+      border-radius: var(--fe-radius-md);
+      background: var(--vscode-editorWidget-background);
+      box-shadow: 0 8px 28px color-mix(in srgb, var(--vscode-editor-background) 65%, #000 35%);
+      padding: var(--fe-spacing-lg);
+    }
+    .add-wizard-title {
+      margin: 0 0 var(--fe-spacing-sm) 0;
+      font-size: 1.05em;
+      font-weight: 700;
+    }
+    .add-wizard-step {
+      margin: 0 0 var(--fe-spacing-sm) 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.88em;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .add-wizard-label {
+      display: block;
+      margin: var(--fe-spacing-sm) 0 var(--fe-spacing-xs) 0;
+      font-size: 0.92em;
+      font-weight: 600;
+    }
+    .add-wizard-select,
+    .add-wizard-input {
+      width: 100%;
+      border: 1px solid var(--vscode-input-border);
+      border-radius: var(--fe-radius-sm);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      font-family: var(--vscode-font-family);
+      font-size: 0.95em;
+    }
+    .add-wizard-hint {
+      margin: var(--fe-spacing-sm) 0 0 0;
+      min-height: 2.6em;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+      line-height: 1.35;
+    }
+    .add-wizard-target {
+      margin: var(--fe-spacing-sm) 0 0 0;
+      font-size: 0.88em;
+      color: var(--vscode-descriptionForeground);
+    }
+    .add-wizard-actions {
+      margin-top: var(--fe-spacing-md);
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--fe-spacing-sm);
+    }
+    .add-wizard-actions button {
+      border: none;
+      border-radius: var(--fe-radius-btn);
+      padding: var(--fe-spacing-xs) var(--fe-spacing-md);
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+    }
+    #add-wizard-submit {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    #add-wizard-submit:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+    #add-wizard-cancel {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+    #add-wizard-cancel:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
   </style>
 </head>
 <body>
   <div class="fe-toolbar" role="toolbar" aria-label="Панель инструментов формы">
     <button type="button" class="fe-toolbar-btn" id="tb-add" title="Добавить элемент" aria-label="Добавить">&#43;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-add-wizard" title="Мастер добавления" aria-label="Мастер добавления">Мастер</button>
     <button type="button" class="fe-toolbar-btn" id="tb-delete" title="Удалить" aria-label="Удалить">&#x1F5D1;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-up" title="Вверх" aria-label="Вверх">&#x2191;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-down" title="Вниз" aria-label="Вниз">&#x2193;</button>
@@ -894,6 +983,23 @@ export function getWebviewHtml(
     <button type="button" class="fe-toolbar-btn" id="tb-module" title="Открыть модуль формы" aria-label="Модуль формы">Модуль</button>
     <button type="button" class="fe-toolbar-btn" id="tb-cancel" title="Отмена" aria-label="Отмена">Отмена</button>
     <button type="button" class="fe-toolbar-btn" id="tb-save" title="Сохранить" aria-label="Сохранить">Сохранить</button>
+  </div>
+  <div id="add-wizard-overlay" class="add-wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="add-wizard-title">
+    <div class="add-wizard-panel">
+      <h3 id="add-wizard-title" class="add-wizard-title">Мастер добавления элемента</h3>
+      <p class="add-wizard-step">Шаг 1. Выберите тип элемента</p>
+      <label class="add-wizard-label" for="add-wizard-type">Тип</label>
+      <select id="add-wizard-type" class="add-wizard-select"></select>
+      <p id="add-wizard-hint" class="add-wizard-hint"></p>
+      <p class="add-wizard-step">Шаг 2. Задайте имя элемента</p>
+      <label class="add-wizard-label" for="add-wizard-name">Имя</label>
+      <input id="add-wizard-name" class="add-wizard-input" type="text" maxlength="128" />
+      <p id="add-wizard-target" class="add-wizard-target"></p>
+      <div class="add-wizard-actions">
+        <button type="button" id="add-wizard-cancel">Отмена</button>
+        <button type="button" id="add-wizard-submit">Добавить</button>
+      </div>
+    </div>
   </div>
   <div class="top-row">
     <div class="zone-tree">
@@ -1074,6 +1180,8 @@ export function getWebviewHtml(
     var activePageIdByPagesKey = Object.create(null);
     var requisiteExpandedPaths = new Set();
     var selectedRequisiteFullPath = null;
+    // Host is the source of truth for wizard type allow-list.
+    var addElementWizardConfig = { options: [] };
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
     function isRealElement(it) { var t = it.tag; return t && t !== ':@' && !String(t).startsWith('@'); }
     function normalizeLangCode(lang) {
@@ -2080,6 +2188,7 @@ export function getWebviewHtml(
     }
     function updateToolbarState() {
       var addBtn = document.getElementById('tb-add');
+      var addWizardBtn = document.getElementById('tb-add-wizard');
       var delBtn = document.getElementById('tb-delete');
       var upBtn = document.getElementById('tb-up');
       var downBtn = document.getElementById('tb-down');
@@ -2098,6 +2207,7 @@ export function getWebviewHtml(
       var hasSelection = selectedIds.length > 0;
       var pasteTarget = getPasteTargetId();
       addBtn.disabled = !hasModel || (singleId && !isContainer);
+      if (addWizardBtn) addWizardBtn.disabled = addBtn.disabled;
       delBtn.disabled = !hasModel || !hasSelection;
       upBtn.disabled = !hasModel || !singleId || isFirst || selectedIds.length > 1;
       downBtn.disabled = !hasModel || !singleId || isLast || selectedIds.length > 1;
@@ -2105,6 +2215,107 @@ export function getWebviewHtml(
       pasteBtn.disabled = !hasModel || !clipboardBuffer || !pasteTarget;
       saveBtn.disabled = !hasModel;
       if (cancelBtn) cancelBtn.disabled = false;
+    }
+    function getAddElementWizardOptions() {
+      var options = addElementWizardConfig && Array.isArray(addElementWizardConfig.options)
+        ? addElementWizardConfig.options
+        : [];
+      return options
+        .filter(function(option) { return option && typeof option.tag === 'string' && option.tag.trim() !== ''; })
+        .map(function(option) {
+          return {
+            tag: String(option.tag).trim(),
+            defaultName: typeof option.defaultName === 'string' ? option.defaultName : 'NewItem',
+            hint: typeof option.hint === 'string' ? option.hint : ''
+          };
+        });
+    }
+    function refreshAddWizardHint() {
+      var select = document.getElementById('add-wizard-type');
+      var hintEl = document.getElementById('add-wizard-hint');
+      var nameInput = document.getElementById('add-wizard-name');
+      if (!select || !hintEl || !nameInput) return;
+      var options = getAddElementWizardOptions();
+      var selectedTag = select.value || '';
+      var selectedOption = options.find(function(option) { return option.tag === selectedTag; }) || null;
+      hintEl.textContent = selectedOption && selectedOption.hint
+        ? selectedOption.hint
+        : 'Для выбранного типа нет дополнительной подсказки.';
+      if (!nameInput.value.trim()) {
+        nameInput.value = selectedOption ? selectedOption.defaultName : 'NewItem';
+      }
+    }
+    function fillAddWizardTypeOptions() {
+      var select = document.getElementById('add-wizard-type');
+      if (!select) return;
+      var options = getAddElementWizardOptions();
+      var prevTag = select.value;
+      select.innerHTML = '';
+      options.forEach(function(option) {
+        var opt = document.createElement('option');
+        opt.value = option.tag;
+        opt.textContent = option.tag;
+        select.appendChild(opt);
+      });
+      if (prevTag && options.some(function(option) { return option.tag === prevTag; })) {
+        select.value = prevTag;
+      } else if (options.length) {
+        select.value = options[0].tag;
+      }
+      refreshAddWizardHint();
+    }
+    function getAddWizardTargetId() {
+      var parentId = getPasteTargetId();
+      if (!parentId && selectedIds.length === 1) {
+        var selected = findElement(formModel, selectedIds[0]);
+        if (selected && isContainerTag(selected.tag)) parentId = selectedIds[0];
+      }
+      return parentId;
+    }
+    function openAddWizard() {
+      if (!formModel) return;
+      var overlay = document.getElementById('add-wizard-overlay');
+      var nameInput = document.getElementById('add-wizard-name');
+      var targetInfo = document.getElementById('add-wizard-target');
+      var typeSelect = document.getElementById('add-wizard-type');
+      if (!overlay || !nameInput || !targetInfo || !typeSelect) return;
+      fillAddWizardTypeOptions();
+      var options = getAddElementWizardOptions();
+      var currentTag = typeSelect.value;
+      var selectedOption = options.find(function(option) { return option.tag === currentTag; }) || options[0] || null;
+      nameInput.value = selectedOption ? selectedOption.defaultName : 'NewItem';
+      var targetId = getAddWizardTargetId();
+      targetInfo.textContent = targetId
+        ? ('Родитель: ' + targetId)
+        : 'Родитель: корень формы';
+      overlay.style.display = 'flex';
+      nameInput.focus();
+      nameInput.select();
+    }
+    function closeAddWizard() {
+      var overlay = document.getElementById('add-wizard-overlay');
+      if (!overlay) return;
+      overlay.style.display = 'none';
+    }
+    function submitAddWizard() {
+      if (!formModel) return;
+      var select = document.getElementById('add-wizard-type');
+      var nameInput = document.getElementById('add-wizard-name');
+      if (!select || !nameInput) return;
+      var options = getAddElementWizardOptions();
+      var selectedTag = select.value;
+      if (!options.some(function(option) { return option.tag === selectedTag; })) {
+        return;
+      }
+      var parentId = getAddWizardTargetId();
+      var rawName = nameInput.value ? nameInput.value.trim() : '';
+      vscode.postMessage({
+        type: 'addElementWizard',
+        parentId: parentId,
+        tag: selectedTag,
+        name: rawName
+      });
+      closeAddWizard();
     }
 
     function extractDisplayValue(v) {
@@ -2722,6 +2933,30 @@ export function getWebviewHtml(
       if (!parentId && selectedIds.length === 1) parentId = findElement(formModel, selectedIds[0]) && isContainerTag(findElement(formModel, selectedIds[0]).tag) ? selectedIds[0] : undefined;
       vscode.postMessage({ type: 'addElement', parentId: parentId, tag: 'InputField', name: 'NewItem' });
     });
+    document.getElementById('tb-add-wizard').addEventListener('click', () => {
+      openAddWizard();
+    });
+    document.getElementById('add-wizard-cancel').addEventListener('click', function() {
+      closeAddWizard();
+    });
+    document.getElementById('add-wizard-submit').addEventListener('click', function() {
+      submitAddWizard();
+    });
+    document.getElementById('add-wizard-type').addEventListener('change', function() {
+      refreshAddWizardHint();
+    });
+    document.getElementById('add-wizard-name').addEventListener('keydown', function(event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submitAddWizard();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeAddWizard();
+      }
+    });
+    document.getElementById('add-wizard-overlay').addEventListener('click', function(event) {
+      if (event.target === this) closeAddWizard();
+    });
     document.getElementById('tb-delete').addEventListener('click', () => {
       if (!selectedIds.length) return;
       if (selectedIds.length === 1) {
@@ -2862,6 +3097,11 @@ export function getWebviewHtml(
       }
       if (msg.type === 'formData') {
         formModel = msg.formModel;
+        if (msg.addElementWizardConfig && typeof msg.addElementWizardConfig === 'object') {
+          addElementWizardConfig = msg.addElementWizardConfig;
+          fillAddWizardTypeOptions();
+        }
+        closeAddWizard();
         formXmlPath = msg.formXmlPath || '';
         modulePath = msg.modulePath || '';
         if (formModel) {

@@ -9,6 +9,7 @@ import * as fc from 'fast-check';
 import {
   applyDragDrop,
   applyAddElement,
+  applyAddElementWizard,
   applyDeleteElements,
   applyMoveElementSibling,
   applyPasteElements,
@@ -328,6 +329,82 @@ suite('formModelCommands — unit tests', () => {
       applyAddElement(model, '1', 'Button', 'First', 0);
       assert.strictEqual(model.childItemsRoot[0].childItems[0].name, 'First');
       assert.strictEqual(model.childItemsRoot[0].childItems[1].id, '2');
+    });
+  });
+
+  // applyAddElementWizard
+  suite('applyAddElementWizard', () => {
+    test('adds element with default name and properties patch', () => {
+      const model = makeModel();
+      const result = applyAddElementWizard(model, {
+        tag: 'InputField',
+        propertiesPatch: { Width: '220', Title: 'Поле' },
+      });
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(model.childItemsRoot.length, 1);
+      assert.strictEqual(model.childItemsRoot[0].tag, 'InputField');
+      assert.strictEqual(model.childItemsRoot[0].name, 'NewInputField');
+      assert.strictEqual(model.childItemsRoot[0].properties['Width'], '220');
+      assert.strictEqual(model.childItemsRoot[0].properties['Title'], 'Поле');
+    });
+
+    test('trims explicit name and falls back to default when name is blank', () => {
+      const model = makeModel();
+      const blankName = applyAddElementWizard(model, { tag: 'Button', name: '   ' });
+      assert.strictEqual(blankName.ok, true);
+      assert.strictEqual(model.childItemsRoot[0].name, 'NewButton');
+
+      const explicitName = applyAddElementWizard(model, { tag: 'Button', name: '  MyButton  ' });
+      assert.strictEqual(explicitName.ok, true);
+      assert.strictEqual(model.childItemsRoot[1].name, 'MyButton');
+    });
+
+    test('returns {ok:false} for empty/whitespace tag and unsupported tag', () => {
+      const model = makeModel();
+      const before = snapshot(model);
+
+      const emptyTag = applyAddElementWizard(model, { tag: '   ' });
+      assert.strictEqual(emptyTag.ok, false);
+      assert.deepStrictEqual(model, before);
+
+      const unsupportedTag = applyAddElementWizard(model, { tag: 'UnknownWidget' });
+      assert.strictEqual(unsupportedTag.ok, false);
+      assert.deepStrictEqual(model, before);
+    });
+
+    test('returns {ok:false} when parent is not a container', () => {
+      const model = makeModel({ childItemsRoot: [makeLeaf('1', 'leaf')] });
+      const before = snapshot(model);
+      const result = applyAddElementWizard(model, { parentId: '1', tag: 'Button' });
+      assert.strictEqual(result.ok, false);
+      assert.deepStrictEqual(model, before);
+    });
+
+    test('inserts into container at clamped index', () => {
+      const container = makeItem('1', 'container', [makeLeaf('2', 'A')]);
+      const model = makeModel({ childItemsRoot: [container] });
+
+      const atStart = applyAddElementWizard(model, { parentId: '1', tag: 'LabelField', index: -10 });
+      assert.strictEqual(atStart.ok, true);
+      assert.strictEqual(model.childItemsRoot[0].childItems[0].tag, 'LabelField');
+
+      const atEnd = applyAddElementWizard(model, { parentId: '1', tag: 'CheckBoxField', index: 999 });
+      assert.strictEqual(atEnd.ok, true);
+      const childItems = model.childItemsRoot[0].childItems;
+      assert.strictEqual(childItems[childItems.length - 1].tag, 'CheckBoxField');
+    });
+
+    test('generates next id using existing model ids', () => {
+      const model = makeModel({
+        childItemsRoot: [
+          makeLeaf('10', 'A'),
+          makeItem('11', 'Group', [makeLeaf('99', 'Nested')]),
+        ],
+      });
+
+      const result = applyAddElementWizard(model, { tag: 'InputField' });
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(model.childItemsRoot[2].id, '100');
     });
   });
 

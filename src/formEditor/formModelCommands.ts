@@ -26,6 +26,10 @@ import {
   requisiteTypeToTag,
   orderIdsForDeletion,
 } from './formModelUtils';
+import {
+  getAddElementWizardDefaultName,
+  isAllowedAddElementWizardTag,
+} from './formAddElementWizardConfig';
 
 /** Result type for model mutation commands. */
 export type CommandResult = { ok: true } | { ok: false; error: string };
@@ -140,6 +144,53 @@ export function applyAddElement(
   };
   const insertIndex = typeof index === 'number'
     ? Math.max(0, Math.min(index, parentList.length))
+    : parentList.length;
+  parentList.splice(insertIndex, 0, newItem);
+  return { ok: true };
+}
+
+/** Add a new element from wizard payload with allow-list validation and optional properties patch. */
+export function applyAddElementWizard(
+  model: FormModel,
+  payload: {
+    parentId?: string;
+    tag?: string;
+    name?: string;
+    index?: number;
+    propertiesPatch?: Record<string, unknown>;
+  }
+): CommandResult {
+  const rawTag = typeof payload.tag === 'string' ? payload.tag.trim() : '';
+  if (!rawTag) {
+    return { ok: false, error: 'Неверные параметры addElementWizard (tag).' };
+  }
+  const tag = rawTag;
+  if (!isAllowedAddElementWizardTag(tag)) {
+    return { ok: false, error: `Тип элемента "${tag}" не поддерживается мастером.` };
+  }
+
+  const parentList = payload.parentId
+    ? (() => {
+        const parentEl = findElementById(model.childItemsRoot, payload.parentId as string);
+        if (!parentEl || !isContainer(parentEl)) {return null;}
+        return parentEl.childItems ?? (parentEl.childItems = []);
+      })()
+    : model.childItemsRoot;
+  if (!parentList) {
+    return { ok: false, error: 'Родитель не является контейнером.' };
+  }
+
+  const safeName = typeof payload.name === 'string' ? payload.name.trim() : '';
+  const newId = generateNextId(model);
+  const newItem: FormChildItem = {
+    tag,
+    id: newId,
+    name: safeName || getAddElementWizardDefaultName(tag),
+    properties: { ...(payload.propertiesPatch ?? {}) },
+    childItems: [],
+  };
+  const insertIndex = typeof payload.index === 'number'
+    ? Math.max(0, Math.min(payload.index, parentList.length))
     : parentList.length;
   parentList.splice(insertIndex, 0, newItem);
   return { ok: true };

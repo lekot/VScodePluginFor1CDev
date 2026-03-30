@@ -3,6 +3,7 @@ import { getWebviewHtml } from '../../src/formEditor/formWebviewHtml';
 import {
   applyExternalPropertyChange,
   createSerializedExecutor,
+  handleMessage,
   type MessageHandlerContext,
 } from '../../src/formEditor/formMessageHandler';
 import type { FormModel } from '../../src/formEditor/formModel';
@@ -98,5 +99,172 @@ suite('form editor message handling regressions', () => {
     });
     assert.strictEqual(model.childItemsRoot[0].properties?.Width, '220', 'matching docUri must apply');
     assert.ok(posted > 0, 'applied payload should emit formData');
+  });
+
+  test('addElementWizard rejects empty tag at message handler boundary', async () => {
+    const docUri = vscode.Uri.parse('file:///tmp/form-a/Ext/Form.xml');
+    const model: FormModel = {
+      attributes: [],
+      commands: [],
+      formEvents: [],
+      childItemsRoot: [],
+    };
+    const posted: Array<Record<string, unknown>> = [];
+    const ctx: MessageHandlerContext = {
+      document: { uri: docUri },
+      webviewPanel: {
+        title: '',
+        webview: {
+          postMessage: (message: unknown) => {
+            posted.push(message as Record<string, unknown>);
+            return Promise.resolve(true);
+          },
+        },
+      } as unknown as vscode.WebviewPanel,
+      documentModel: new Map<string, FormModel>([[docUri.toString(), model]]),
+      dirtyDocuments: new Set<string>(),
+    };
+
+    await handleMessage(ctx, { type: 'addElementWizard', tag: '   ' });
+
+    const error = posted.find((message) => message.type === 'error');
+    assert.ok(error, 'empty/whitespace tag must be rejected');
+    assert.strictEqual(model.childItemsRoot.length, 0, 'model must stay unchanged on validation error');
+  });
+
+  test('addElementWizard rejects non-string tag at message handler boundary', async () => {
+    const docUri = vscode.Uri.parse('file:///tmp/form-a/Ext/Form.xml');
+    const model: FormModel = {
+      attributes: [],
+      commands: [],
+      formEvents: [],
+      childItemsRoot: [],
+    };
+    const posted: Array<Record<string, unknown>> = [];
+    const ctx: MessageHandlerContext = {
+      document: { uri: docUri },
+      webviewPanel: {
+        title: '',
+        webview: {
+          postMessage: (message: unknown) => {
+            posted.push(message as Record<string, unknown>);
+            return Promise.resolve(true);
+          },
+        },
+      } as unknown as vscode.WebviewPanel,
+      documentModel: new Map<string, FormModel>([[docUri.toString(), model]]),
+      dirtyDocuments: new Set<string>(),
+    };
+
+    await handleMessage(ctx, { type: 'addElementWizard', tag: 42 as unknown as string });
+
+    const error = posted.find((message) => message.type === 'error');
+    assert.ok(error, 'non-string tag must be rejected');
+    assert.strictEqual(model.childItemsRoot.length, 0, 'model must stay unchanged on validation error');
+  });
+
+  test('addElementWizard rejects non-object propertiesPatch', async () => {
+    const docUri = vscode.Uri.parse('file:///tmp/form-a/Ext/Form.xml');
+    const model: FormModel = {
+      attributes: [],
+      commands: [],
+      formEvents: [],
+      childItemsRoot: [],
+    };
+    const posted: Array<Record<string, unknown>> = [];
+    const ctx: MessageHandlerContext = {
+      document: { uri: docUri },
+      webviewPanel: {
+        title: '',
+        webview: {
+          postMessage: (message: unknown) => {
+            posted.push(message as Record<string, unknown>);
+            return Promise.resolve(true);
+          },
+        },
+      } as unknown as vscode.WebviewPanel,
+      documentModel: new Map<string, FormModel>([[docUri.toString(), model]]),
+      dirtyDocuments: new Set<string>(),
+    };
+
+    await handleMessage(ctx, { type: 'addElementWizard', tag: 'InputField', propertiesPatch: [] });
+
+    const error = posted.find((message) => message.type === 'error');
+    assert.ok(error, 'array propertiesPatch must be rejected');
+    assert.strictEqual(model.childItemsRoot.length, 0, 'model must stay unchanged on validation error');
+  });
+
+  test('addElementWizard rejects null propertiesPatch', async () => {
+    const docUri = vscode.Uri.parse('file:///tmp/form-a/Ext/Form.xml');
+    const model: FormModel = {
+      attributes: [],
+      commands: [],
+      formEvents: [],
+      childItemsRoot: [],
+    };
+    const posted: Array<Record<string, unknown>> = [];
+    const ctx: MessageHandlerContext = {
+      document: { uri: docUri },
+      webviewPanel: {
+        title: '',
+        webview: {
+          postMessage: (message: unknown) => {
+            posted.push(message as Record<string, unknown>);
+            return Promise.resolve(true);
+          },
+        },
+      } as unknown as vscode.WebviewPanel,
+      documentModel: new Map<string, FormModel>([[docUri.toString(), model]]),
+      dirtyDocuments: new Set<string>(),
+    };
+
+    await handleMessage(ctx, { type: 'addElementWizard', tag: 'InputField', propertiesPatch: null });
+
+    const error = posted.find((message) => message.type === 'error');
+    assert.ok(error, 'null propertiesPatch must be rejected');
+    assert.strictEqual(model.childItemsRoot.length, 0, 'model must stay unchanged on validation error');
+  });
+
+  test('addElementWizard accepts trimmed tag and posts updated formData', async () => {
+    const docUri = vscode.Uri.parse('file:///tmp/form-a/Ext/Form.xml');
+    const model: FormModel = {
+      attributes: [],
+      commands: [],
+      formEvents: [],
+      childItemsRoot: [],
+    };
+    const posted: Array<Record<string, unknown>> = [];
+    const ctx: MessageHandlerContext = {
+      document: { uri: docUri },
+      webviewPanel: {
+        title: '',
+        webview: {
+          postMessage: (message: unknown) => {
+            posted.push(message as Record<string, unknown>);
+            return Promise.resolve(true);
+          },
+        },
+      } as unknown as vscode.WebviewPanel,
+      documentModel: new Map<string, FormModel>([[docUri.toString(), model]]),
+      dirtyDocuments: new Set<string>(),
+    };
+
+    await handleMessage(ctx, {
+      type: 'addElementWizard',
+      tag: ' InputField ',
+      propertiesPatch: { Width: '320' },
+    });
+
+    assert.strictEqual(model.childItemsRoot.length, 1, 'wizard should add one element');
+    assert.strictEqual(model.childItemsRoot[0].tag, 'InputField', 'tag should be trimmed before apply');
+    assert.strictEqual(model.childItemsRoot[0].properties?.Width, '320');
+    assert.ok(
+      posted.some((message) => message.type === 'formData'),
+      'successful wizard add should publish updated formData'
+    );
+    assert.ok(
+      !(posted.some((message) => message.type === 'error')),
+      'valid payload should not trigger error post'
+    );
   });
 });
