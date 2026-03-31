@@ -2,8 +2,6 @@
 
 **Статус:** зафиксировано для Founding Engineer (синхрон с [developer-backlog.md](../developer-backlog.md) §«Топ-3 разрыва», [edt-killer-target.md](../analytics/edt-killer-target.md) §2–§4, gap [cdt-vs-edt-functional-gap.md](../research/cdt-vs-edt-functional-gap.md) §12–§13).
 
-**Не в scope этого пакета:** GTM, биржи фриланса (см. родительские тикеты компании).
-
 **Исключение по решению владельца (комментарий в [AIF-40](/AIF/issues/AIF-40#comment-0a29a5b9-e5dc-41bf-bcfc-a2c6652510da)):** работы по **редактору форм** ([#27](https://github.com/lekot/VScodePluginFor1CDev/issues/27), критерий **B.1**) **не входят** в этот спринт-пакет для исполнения; пункт 2 ниже заменён на **проверку конфигурации / задачи VS Code** ([#30](https://github.com/lekot/VScodePluginFor1CDev/issues/30), опора на **D.1**). Продуктовый разрыв B.1 в [edt-killer-target.md](../analytics/edt-killer-target.md) §4 остаётся открытым до отдельного решения.
 
 ---
