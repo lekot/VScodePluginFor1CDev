@@ -126,7 +126,7 @@ VS Code расширение для визуализации и редактир
 - Справочники (Catalogs)
 - Документы (Documents)
 - Перечисления (Enums)
-- Отчеты (Reports)
+- Отчеты (Reports) (?)
 - Обработки (DataProcessors)
 - Регистры (Information/Accumulation/Accounting/Calculation)
 - Бизнес-процессы (BusinessProcesses)
