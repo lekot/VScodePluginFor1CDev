@@ -14,7 +14,6 @@
 | [research/e2e-container-matrix-ibcmd.md](research/e2e-container-matrix-ibcmd.md) | Эталонные пути и среда заказчика для прогона матрицы. |
 | [plans/e2e-container-matrix-ibcmd.md](plans/e2e-container-matrix-ibcmd.md) | План сценариев матрицы (в т.ч. create×2 → delete×1) и связь с кодом `test/matrix/`. |
 | [plans/issue-bsl-common-module-tree-plan.md](plans/issue-bsl-common-module-tree-plan.md) | Фазы работ по дереву общих модулей / BSL handoff (#21, #25, §13 gap). |
-| [plans/fe-next-top3-sprint-spec.md](plans/fe-next-top3-sprint-spec.md) | Топ-3 из developer-backlog: роли/RLS (#28/#18), #30/D.1, **B.3 состав подсистем** затем B.2 макеты; #27 вне спринт-пакета; приоритет B.3 — [AIF-40](/AIF/issues/AIF-40#comment-aa2fc814-607e-41a7-a3e3-e77b1e712bde). |
 | [architecture.md](architecture.md) | Карта каталогов `src/` и потоков данных (точка входа → парсеры → UI). |
 | [developer-backlog.md](developer-backlog.md) | Очередь задач для разработчика, синхронизированная с gap-документом и GitHub issues. |
 | [manifest.md](manifest.md) | Краткий контракт предсказуемости изменений XML и границ продукта. |
