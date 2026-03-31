@@ -21,6 +21,8 @@ VS Code расширение для визуализации и редактир
 <img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />
 <img width="1092" height="450" alt="image" src="https://github.com/user-attachments/assets/755d5a95-4088-4567-89ba-8d6ffe38d670" />
 <img width="1159" height="885" alt="image" src="https://github.com/user-attachments/assets/7f608dee-7a6d-46a9-aac8-f86e52e55433" />
+<img width="1490" height="757" alt="image" src="https://github.com/user-attachments/assets/ebca534a-d37c-4c88-8b1b-826525a743c4" />
+
 
 
 ## Установка
