@@ -1,3 +1,5 @@
+[Релизы](https://github.com/lekot/VScodePluginFor1CDev/releases)
+
 Вся фича написана роботами. Багрепорты принимаю с благодарностью
 
 # CDT 41 (Community Development Tools for 1C)
