@@ -12,6 +12,7 @@ import type { ExtensionState } from '../state/extensionState';
 import { detectIbcmdExtensionNameFromConfigRelativePath, normalizeConfigRelativePath } from './bindingPathUtils';
 import {
   DeployService,
+  readDeployPrecheckXmlBeforeImportSetting,
   listDeployTargetLabels,
   readDeployMode,
   resolveDeployTargetsForBinding,
@@ -186,8 +187,11 @@ export async function runDeployForConfigurationFromTree(
         ? '\n\nРежим 1cMetadataTree.deploy.mode = block: редактирование дерева выгрузки конфигурации будет заблокировано (только просмотр) на время раскатки.'
         : '\n\nРежим block выбран в настройках, но блокировка через files.readonlyInclude недоступна (нужен VS Code 1.88+). Раскатка продолжится без readonly.'
       : '\n\nРежим 1cMetadataTree.deploy.mode = copy: раскатка выполняется из временной копии папки с Configuration.xml; редактирование в workspace не блокируется.';
+  const precheckNotice = readDeployPrecheckXmlBeforeImportSetting()
+    ? '\n\nПеред загрузкой будет выполнен preflight XML (ibcmd config import) для целевой базы; при ошибке раскатка остановится.'
+    : '';
   const ok = await vscode.window.showWarningMessage(
-    `Конфигурация в выбранных информационных базах будет перезаписана (ibcmd config import). Продолжить?${deployModeNotice}${lines}`,
+    `Конфигурация в выбранных информационных базах будет перезаписана (ibcmd config import). Продолжить?${deployModeNotice}${precheckNotice}${lines}`,
     { modal: true },
     'Продолжить',
   );

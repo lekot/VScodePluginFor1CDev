@@ -304,6 +304,11 @@
         "title": "Раскатать в базы…",
         "category": "CDT 41",
         "icon": "$(run-all)"
+      },
+      {
+        "command": "1c-metadata-tree.validateCurrentXml",
+        "title": "CDT 41: Validate current XML (ibcmd preflight)",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -678,6 +683,11 @@
             "block"
           ],
           "description": "Deploy mode (WOW Phase 2): copy — from project copy; block — lock editors."
+        },
+        "1cMetadataTree.deploy.precheckXmlBeforeImport": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run XML preflight (ibcmd config import check phase) before deploy import into linked infobase; when enabled and preflight fails, deploy stops."
         }
       }
     },
