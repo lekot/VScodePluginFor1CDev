@@ -14,6 +14,7 @@ import {
   applyPropertyChange,
   applyDragDrop,
   applyAddElement,
+  applyAddElementWizard,
   applyDeleteElements,
   applyMoveElementSibling,
   applyPasteElements,
@@ -23,6 +24,7 @@ import {
   applyAddCommand,
   applyDeleteCommand,
 } from './formModelCommands';
+import { getAddElementWizardConfigPayload } from './formAddElementWizardConfig';
 import {
   loadFormModel,
   saveFormModel,
@@ -123,6 +125,9 @@ export async function handleMessage(
       } else {
         await handleAddElement(ctx, msg);
       }
+      break;
+    case 'addElementWizard':
+      await handleAddElementWizard(ctx, msg);
       break;
     case 'deleteElement':
       if (isFormCommandEngineEnabled()) {
@@ -264,6 +269,7 @@ function sendFormData(
     formModel: model,
     formXmlPath,
     modulePath,
+    addElementWizardConfig: getAddElementWizardConfigPayload(),
   });
 }
 
@@ -285,6 +291,7 @@ async function reloadFormAndSend(ctx: MessageHandlerContext): Promise<void> {
     formModel: result.model,
     formXmlPath,
     modulePath: result.modulePath,
+    addElementWizardConfig: getAddElementWizardConfigPayload(),
     fileMissing: fileMissing || undefined,
     fileMissingTitle: fileMissing ? MESSAGES.EMPTY_STATE_FORM_XML_MISSING_TITLE : undefined,
     fileMissingHint: fileMissing ? MESSAGES.EMPTY_STATE_FORM_XML_MISSING_HINT : undefined,
@@ -419,6 +426,48 @@ async function handleDragDrop(
   const targetId = String(rawTarget);
   Logger.debug('dragDrop', { sourceId, targetId, index });
   const result = applyDragDrop(model, sourceId, targetId, index);
+  if (!result.ok) {
+    postError(ctx.webviewPanel, result.error);
+    return;
+  }
+  setDirtyState(ctx, true);
+  sendFormData(ctx, model);
+}
+
+async function handleAddElementWizard(
+  ctx: MessageHandlerContext,
+  msg: Record<string, unknown>
+): Promise<void> {
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  if (!model) {
+    postError(ctx.webviewPanel, 'Нет модели формы.');
+    return;
+  }
+
+  const parentId = typeof msg.parentId === 'string' ? msg.parentId : undefined;
+  const tag = typeof msg.tag === 'string' ? msg.tag.trim() : '';
+  const name = typeof msg.name === 'string' ? msg.name.trim() : undefined;
+  const index = typeof msg.index === 'number' ? msg.index : undefined;
+  if (!tag) {
+    postError(ctx.webviewPanel, 'Неверные параметры addElementWizard (tag).');
+    return;
+  }
+  const rawPropertiesPatch = msg.propertiesPatch;
+  if (
+    rawPropertiesPatch !== undefined &&
+    (rawPropertiesPatch === null || Array.isArray(rawPropertiesPatch) || typeof rawPropertiesPatch !== 'object')
+  ) {
+    postError(ctx.webviewPanel, 'Неверные параметры addElementWizard (propertiesPatch).');
+    return;
+  }
+
+  const result = applyAddElementWizard(model, {
+    parentId,
+    tag,
+    name,
+    index,
+    propertiesPatch: (rawPropertiesPatch as Record<string, unknown> | undefined) ?? undefined,
+  });
   if (!result.ok) {
     postError(ctx.webviewPanel, result.error);
     return;

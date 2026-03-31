@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.32.3",
+  "version": "0.32.8",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -746,6 +746,7 @@
     "test:coverage": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && c8 --reporter=text-summary --reporter=json-summary node out/test/runCore.js",
     "coverage:check": "node scripts/check-coverage-delta.js",
     "test:smoke": "npm run compile && node node_modules/typescript/bin/tsc -p tsconfig.test.json && node out/test/runSmoke.js",
+    "acceptance:epic36:block6": "node scripts/epic36-block6-acceptance.cjs",
     "format": "prettier --write \"src/**/*.ts\""
   },
   "devDependencies": {

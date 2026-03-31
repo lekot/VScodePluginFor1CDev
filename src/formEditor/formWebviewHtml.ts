@@ -5,15 +5,28 @@
 
 import * as vscode from 'vscode';
 
+function hostThemeFromColorKind(kind: vscode.ColorThemeKind): 'light' | 'dark' {
+  return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
+    ? 'light'
+    : 'dark';
+}
+
 /**
  * Returns the complete HTML string for the form editor webview,
  * including all CSS and client-side JavaScript.
  * CSP: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'
+ *
+ * @param hostColorThemeKind VS Code UI theme so `data-theme-mode=auto` can set `color-scheme` and
+ * native `<select>` options to match the host (avoids white-on-white in dark VS Code).
  */
-export function getWebviewHtml(webview: vscode.Webview): string {
+export function getWebviewHtml(
+  webview: vscode.Webview,
+  hostColorThemeKind: vscode.ColorThemeKind = vscode.ColorThemeKind.Dark
+): string {
   void webview;
+  const hostTheme = hostThemeFromColorKind(hostColorThemeKind);
   return `<!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-vscode-theme="${hostTheme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -29,16 +42,12 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --fe-radius-sm: 4px;
       --fe-radius-md: 8px;
       --fe-radius-btn: 8px;
-      --fe-border-subtle: color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
-      --fe-border-strong: color-mix(in srgb, var(--vscode-panel-border) 95%, var(--vscode-foreground) 5%);
-      --fe-surface-muted: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-list-hoverBackground) 10%);
-      --fe-focus-ring: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 85%, transparent);
-      --fe-hover-bg: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-focusBorder) 18%);
-      --fe-hover-bg-strong: color-mix(in srgb, var(--vscode-editor-background) 74%, var(--vscode-focusBorder) 26%);
-      --fe-selected-bg: color-mix(in srgb, var(--vscode-editor-background) 70%, var(--vscode-focusBorder) 30%);
-      --fe-selected-fg: var(--vscode-foreground);
-      --fe-card-bg: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background) 10%);
     }
+    /**
+     * Theme-derived tokens live on body (not :root): VS Code sets --vscode-* on the webview
+     * host; forced Light/Dark only override them on body. If --fe-* stayed on :root, they would
+     * keep resolving the host html palette and “active” rows / inputs in Light looked black.
+     */
     body {
       margin: 0;
       font-family: var(--vscode-font-family);
@@ -51,8 +60,18 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       overflow: hidden;
       --tree-width: 280px;
       --preview-height: 300px;
+      --fe-border-subtle: color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
+      --fe-border-strong: color-mix(in srgb, var(--vscode-panel-border) 95%, var(--vscode-foreground) 5%);
+      --fe-surface-muted: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-list-hoverBackground) 10%);
+      --fe-focus-ring: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 85%, transparent);
+      --fe-hover-bg: color-mix(in srgb, var(--vscode-editor-background) 82%, var(--vscode-focusBorder) 18%);
+      --fe-hover-bg-strong: color-mix(in srgb, var(--vscode-editor-background) 74%, var(--vscode-focusBorder) 26%);
+      --fe-selected-bg: color-mix(in srgb, var(--vscode-editor-background) 70%, var(--vscode-focusBorder) 30%);
+      --fe-selected-fg: var(--vscode-foreground);
+      --fe-card-bg: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background) 10%);
     }
     body[data-theme-mode='light'] {
+      color-scheme: light;
       --vscode-editor-background: #f3f5f8;
       --vscode-sideBar-background: #ffffff;
       --vscode-editorWidget-background: #f8fafc;
@@ -79,6 +98,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --vscode-badge-foreground: #1f2937;
     }
     body[data-theme-mode='dark'] {
+      color-scheme: dark;
       --vscode-editor-background: #111827;
       --vscode-sideBar-background: #1f2937;
       --vscode-editorWidget-background: #273244;
@@ -105,22 +125,86 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       --vscode-badge-foreground: #e5e7eb;
     }
     body[data-theme-mode='light'] .zone-right-upper {
-      background: #ffffff;
+      background: var(--vscode-sideBar-background);
     }
     body[data-theme-mode='light'] .fe-table-wrap {
-      background: #ffffff;
+      background: var(--vscode-editor-background);
     }
     body[data-theme-mode='light'] .fe-table th {
-      background: #f3f6fb;
-      color: #4b5563;
+      background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-list-hoverBackground) 12%);
+      color: var(--vscode-descriptionForeground);
     }
     body[data-theme-mode='light'] .right-panel-tabs button.active,
     body[data-theme-mode='light'] .left-zone-tabs button.active {
-      background: color-mix(in srgb, #dbeafe 80%, #ffffff 20%);
-      color: #1f2937;
+      background: var(--vscode-list-activeSelectionBackground);
+      color: var(--vscode-list-activeSelectionForeground);
     }
     body[data-theme-mode='dark'] .zone-right-upper {
       background: color-mix(in srgb, var(--vscode-sideBar-background) 82%, var(--vscode-editor-background) 18%);
+    }
+    body[data-theme-mode='light'] {
+      scrollbar-color: color-mix(in srgb, var(--vscode-panel-border) 55%, var(--vscode-descriptionForeground) 45%) var(--vscode-editor-background);
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar,
+    body[data-theme-mode='light'] *::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar-track,
+    body[data-theme-mode='light'] *::-webkit-scrollbar-track {
+      background: var(--vscode-editor-background);
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar-thumb,
+    body[data-theme-mode='light'] *::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--vscode-panel-border) 50%, var(--vscode-descriptionForeground) 50%);
+      border-radius: 5px;
+      border: 2px solid var(--vscode-editor-background);
+    }
+    body[data-theme-mode='light']::-webkit-scrollbar-thumb:hover,
+    body[data-theme-mode='light'] *::-webkit-scrollbar-thumb:hover {
+      background: color-mix(in srgb, var(--vscode-descriptionForeground) 40%, var(--vscode-panel-border) 60%);
+    }
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] {
+      color-scheme: light;
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] {
+      color-scheme: dark;
+    }
+    /**
+     * Auto: host webview tokens are often low-contrast on native <select> popups; use explicit
+     * WCAG-friendly pairs so list items stay readable (Windows/Chromium ignore some option rules).
+     */
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select {
+      color-scheme: light;
+      background-color: #ffffff;
+      color: #111827;
+      border-color: #475569;
+      font-weight: 500;
+      accent-color: #2563eb;
+    }
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select option {
+      background-color: #ffffff;
+      color: #111827;
+    }
+    html[data-vscode-theme='light'] body[data-theme-mode='auto'] .fe-theme-select option:checked {
+      background-color: #dbeafe;
+      color: #0f172a;
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select {
+      color-scheme: dark;
+      background-color: #0f172a;
+      color: #f9fafb;
+      border-color: #94a3b8;
+      font-weight: 500;
+      accent-color: #38bdf8;
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select option {
+      background-color: #0f172a;
+      color: #f9fafb;
+    }
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] .fe-theme-select option:checked {
+      background-color: #1e3a5f;
+      color: #f8fafc;
     }
     .fe-toolbar {
       flex-shrink: 0;
@@ -138,23 +222,29 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .fe-theme-select {
       height: 24px;
       padding: 0 6px;
-      border: 1px solid var(--fe-border-subtle);
+      border: 1px solid var(--vscode-input-border);
       border-radius: var(--fe-radius-md);
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
-      color-scheme: light;
     }
     .fe-theme-select:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+    body[data-theme-mode='light'] .fe-theme-select {
+      color-scheme: light;
+    }
+    body[data-theme-mode='light'] .fe-theme-select option {
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+    }
     body[data-theme-mode='dark'] .fe-theme-select {
       color-scheme: dark;
       background: color-mix(in srgb, var(--vscode-input-background) 88%, var(--vscode-editor-background) 12%);
-      border-color: color-mix(in srgb, var(--vscode-input-border) 80%, var(--vscode-focusBorder) 20%);
+      border-color: var(--vscode-input-border);
     }
     body[data-theme-mode='dark'] .fe-theme-select option {
-      background: var(--vscode-sideBar-background);
-      color: var(--vscode-foreground);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
     }
     .fe-toolbar-btn {
       display: inline-flex;
@@ -491,6 +581,16 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .preview-children.preview-children-vertical { flex-direction: column; }
     .preview-children.preview-children-horizontal { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: var(--fe-spacing-sm); }
     .preview-children.preview-children-horizontal > .preview-item { flex: 1 1 220px; min-width: 180px; width: auto; }
+    /* Block 3B: ChildItemsWidth / ThroughAlign (UsualGroup horizontal — preview approximation) */
+    .preview-children.preview-ciwidth-equal.preview-children-horizontal > .preview-item { flex: 1 1 0; min-width: 0; width: auto; }
+    .preview-children.preview-ciwidth-leftwidest.preview-children-horizontal > .preview-item:first-child { flex: 2 1 260px; min-width: 140px; }
+    .preview-children.preview-ciwidth-leftwidest.preview-children-horizontal > .preview-item:not(:first-child) { flex: 1 1 120px; min-width: 100px; width: auto; }
+    .preview-children.preview-ciwidth-rightwidest.preview-children-horizontal > .preview-item:last-child { flex: 2 1 260px; min-width: 140px; }
+    .preview-children.preview-ciwidth-rightwidest.preview-children-horizontal > .preview-item:not(:last-child) { flex: 1 1 120px; min-width: 100px; width: auto; }
+    .preview-children.preview-throughalign-use.preview-children-horizontal { align-items: stretch; }
+    .preview-children.preview-throughalign-use.preview-children-vertical > .preview-item { align-self: stretch; }
+    /* Pages root: column of tabs + panel, never a horizontal “group of pages” */
+    .preview-pages-outer.preview-container-pages-root { display: flex; flex-direction: column; align-items: stretch; width: 100%; }
     .preview-children.preview-children-indented { margin-left: 10px; }
     .preview-children.preview-container-page,
     .preview-children.preview-container-pages {
@@ -517,11 +617,39 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .preview-table-col { min-width: 60px; padding: var(--fe-spacing-xs) var(--fe-spacing-sm); border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); font-size: 0.85em; }
     .preview-page-caption, .preview-group-caption { font-weight: 600; font-size: 0.9em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-foreground); }
     .preview-fallback { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+    .preview-fallback-widget {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px dashed var(--fe-border-strong);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-sideBar-background) 10%);
+    }
+    .preview-fallback-widget .fallback-label { color: var(--vscode-foreground); }
+    .preview-fallback-widget .fallback-tag {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.85em;
+      padding: 1px 6px;
+      border: 1px solid var(--fe-border-subtle);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-list-hoverBackground) 12%);
+    }
     /* Form mockup (variant B): layout as form */
     #preview-form.preview-mockup-form { padding: var(--fe-spacing-sm); width: 100%; min-width: 100%; box-sizing: border-box; }
     .preview-field-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-sm); margin-bottom: var(--fe-spacing-xs); }
     .preview-field-label { min-width: 80px; color: var(--vscode-foreground); font-size: inherit; flex-shrink: 0; }
     .preview-field-row .preview-input { flex: 1; min-width: 100px; }
+    .preview-field-row.preview-title-top,
+    .preview-field-row.preview-title-bottom {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 4px;
+    }
+    .preview-field-row.preview-title-right { flex-direction: row-reverse; justify-content: flex-end; }
+    .preview-field-row.preview-title-none .preview-field-label { display: none; }
+    .preview-field-row.preview-title-bottom .preview-field-label { order: 2; }
+    .preview-field-row.preview-title-bottom .preview-input { order: 1; }
     .preview-buttons-row { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-xs); align-items: center; }
     .preview-table-mock { overflow-x: auto; border: 1px solid var(--fe-border-strong); border-radius: 6px; margin: 4px 0; background: var(--vscode-editor-background); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
     .preview-table-mock table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
@@ -536,6 +664,86 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     .preview-page-title { font-weight: 700; font-size: 0.92em; margin-bottom: 4px; color: var(--vscode-foreground); padding-bottom: 2px; border-bottom: 1px solid var(--vscode-panel-border); }
     .preview-group-block { margin-left: 0; margin-bottom: var(--fe-spacing-xs); }
     .preview-group-title { font-weight: 600; font-size: 0.88em; margin-bottom: 6px; color: var(--vscode-descriptionForeground); }
+    /* Pages: tab strip (ADR-1 / block 2); TabsOnTop | TabsOnBottom from PagesRepresentation */
+    .preview-pages-outer {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    .preview-pages-outer.TabsOnTop { flex-direction: column; }
+    .preview-pages-outer.TabsOnBottom { flex-direction: column; }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tablist { order: 2; }
+    .preview-pages-outer.TabsOnBottom .preview-pages-panel-wrap { order: 1; }
+    .preview-pages-tablist {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 2px;
+      padding: 0 0 4px 0;
+      margin: 0 0 6px 0;
+      border-bottom: 1px solid var(--fe-border-strong);
+      list-style: none;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tablist {
+      margin: 6px 0 0 0;
+      padding: 4px 0 0 0;
+      border-bottom: none;
+      border-top: 1px solid var(--fe-border-strong);
+      align-items: flex-start;
+    }
+    .preview-pages-tab {
+      margin: 0;
+      padding: 5px 10px;
+      font: inherit;
+      font-size: 0.88em;
+      font-weight: 500;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      border: 1px solid transparent;
+      border-bottom: none;
+      border-radius: var(--fe-radius-sm) var(--fe-radius-sm) 0 0;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tab {
+      border-radius: 0 0 var(--fe-radius-sm) var(--fe-radius-sm);
+      border-top: none;
+      border-bottom: 1px solid transparent;
+    }
+    .preview-pages-tab:hover {
+      color: var(--vscode-foreground);
+      background: var(--fe-hover-bg);
+    }
+    .preview-pages-tab[aria-selected='true'] {
+      color: var(--vscode-foreground);
+      font-weight: 600;
+      background: color-mix(in srgb, var(--vscode-tab-activeBackground, transparent) 65%, var(--vscode-editor-background) 35%);
+      border-color: var(--fe-border-subtle);
+      border-bottom-color: transparent;
+      box-shadow: 0 1px 0 0 var(--vscode-editor-background);
+    }
+    .preview-pages-outer.TabsOnBottom .preview-pages-tab[aria-selected='true'] {
+      border-top-color: transparent;
+      border-bottom-color: var(--fe-border-subtle);
+      box-shadow: 0 -1px 0 0 var(--vscode-editor-background);
+    }
+    .preview-pages-tab:focus-visible {
+      outline: 2px solid var(--vscode-focusBorder);
+      outline-offset: 1px;
+    }
+    .preview-pages-panel-wrap {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
     .preview-children.preview-buttons-container { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-sm); align-items: center; margin-left: 0; }
     .empty-state { text-align: center; padding: var(--fe-spacing-lg); color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 var(--fe-spacing-sm) 0; font-size: 1em; color: var(--vscode-foreground); opacity: 0.9; }
@@ -664,11 +872,100 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     }
     .btn-goto-proc:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .btn-goto-proc:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .add-wizard-overlay {
+      position: fixed;
+      inset: 0;
+      background: color-mix(in srgb, var(--vscode-editor-background) 45%, transparent);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1200;
+      padding: var(--fe-spacing-lg);
+    }
+    .add-wizard-panel {
+      width: min(560px, calc(100vw - 40px));
+      max-height: calc(100vh - 48px);
+      overflow: auto;
+      border: 1px solid var(--fe-border-strong);
+      border-radius: var(--fe-radius-md);
+      background: var(--vscode-editorWidget-background);
+      box-shadow: 0 8px 28px color-mix(in srgb, var(--vscode-editor-background) 65%, #000 35%);
+      padding: var(--fe-spacing-lg);
+    }
+    .add-wizard-title {
+      margin: 0 0 var(--fe-spacing-sm) 0;
+      font-size: 1.05em;
+      font-weight: 700;
+    }
+    .add-wizard-step {
+      margin: 0 0 var(--fe-spacing-sm) 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.88em;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .add-wizard-label {
+      display: block;
+      margin: var(--fe-spacing-sm) 0 var(--fe-spacing-xs) 0;
+      font-size: 0.92em;
+      font-weight: 600;
+    }
+    .add-wizard-select,
+    .add-wizard-input {
+      width: 100%;
+      border: 1px solid var(--vscode-input-border);
+      border-radius: var(--fe-radius-sm);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
+      font-family: var(--vscode-font-family);
+      font-size: 0.95em;
+    }
+    .add-wizard-hint {
+      margin: var(--fe-spacing-sm) 0 0 0;
+      min-height: 2.6em;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+      line-height: 1.35;
+    }
+    .add-wizard-target {
+      margin: var(--fe-spacing-sm) 0 0 0;
+      font-size: 0.88em;
+      color: var(--vscode-descriptionForeground);
+    }
+    .add-wizard-actions {
+      margin-top: var(--fe-spacing-md);
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--fe-spacing-sm);
+    }
+    .add-wizard-actions button {
+      border: none;
+      border-radius: var(--fe-radius-btn);
+      padding: var(--fe-spacing-xs) var(--fe-spacing-md);
+      cursor: pointer;
+      font-family: var(--vscode-font-family);
+    }
+    #add-wizard-submit {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    #add-wizard-submit:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+    #add-wizard-cancel {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+    #add-wizard-cancel:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
   </style>
 </head>
 <body>
   <div class="fe-toolbar" role="toolbar" aria-label="Панель инструментов формы">
     <button type="button" class="fe-toolbar-btn" id="tb-add" title="Добавить элемент" aria-label="Добавить">&#43;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-add-wizard" title="Мастер добавления" aria-label="Мастер добавления">Мастер</button>
     <button type="button" class="fe-toolbar-btn" id="tb-delete" title="Удалить" aria-label="Удалить">&#x1F5D1;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-up" title="Вверх" aria-label="Вверх">&#x2191;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-down" title="Вниз" aria-label="Вниз">&#x2193;</button>
@@ -686,6 +983,23 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     <button type="button" class="fe-toolbar-btn" id="tb-module" title="Открыть модуль формы" aria-label="Модуль формы">Модуль</button>
     <button type="button" class="fe-toolbar-btn" id="tb-cancel" title="Отмена" aria-label="Отмена">Отмена</button>
     <button type="button" class="fe-toolbar-btn" id="tb-save" title="Сохранить" aria-label="Сохранить">Сохранить</button>
+  </div>
+  <div id="add-wizard-overlay" class="add-wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="add-wizard-title">
+    <div class="add-wizard-panel">
+      <h3 id="add-wizard-title" class="add-wizard-title">Мастер добавления элемента</h3>
+      <p class="add-wizard-step">Шаг 1. Выберите тип элемента</p>
+      <label class="add-wizard-label" for="add-wizard-type">Тип</label>
+      <select id="add-wizard-type" class="add-wizard-select"></select>
+      <p id="add-wizard-hint" class="add-wizard-hint"></p>
+      <p class="add-wizard-step">Шаг 2. Задайте имя элемента</p>
+      <label class="add-wizard-label" for="add-wizard-name">Имя</label>
+      <input id="add-wizard-name" class="add-wizard-input" type="text" maxlength="128" />
+      <p id="add-wizard-target" class="add-wizard-target"></p>
+      <div class="add-wizard-actions">
+        <button type="button" id="add-wizard-cancel">Отмена</button>
+        <button type="button" id="add-wizard-submit">Добавить</button>
+      </div>
+    </div>
   </div>
   <div class="top-row">
     <div class="zone-tree">
@@ -862,18 +1176,131 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
     var FORM_ROOT_ID = '__form_root__';
     var expandedIds = new Set();
+    /** Per-Pages active tab: key = Pages item id or name (stable within preview session). */
+    var activePageIdByPagesKey = Object.create(null);
     var requisiteExpandedPaths = new Set();
     var selectedRequisiteFullPath = null;
+    // Host is the source of truth for wizard type allow-list.
+    var addElementWizardConfig = { options: [] };
     function isContainerTag(tag) { return tag && CONTAINER_TAGS.has(tag); }
     function isRealElement(it) { var t = it.tag; return t && t !== ':@' && !String(t).startsWith('@'); }
-    function getItemTitle(item) {
+    function normalizeLangCode(lang) {
+      if (lang == null) return '';
+      return String(lang).trim().toLowerCase().replace('_', '-');
+    }
+    function pickLocalizedContent(itemNodes, localeHint) {
+      if (!Array.isArray(itemNodes) || itemNodes.length === 0) return '';
+      var requested = normalizeLangCode(localeHint || (navigator && navigator.language) || '');
+      var requestedBase = requested ? requested.split('-')[0] : '';
+      var firstNonEmpty = '';
+      for (var i = 0; i < itemNodes.length; i++) {
+        var node = itemNodes[i];
+        if (!node || typeof node !== 'object') continue;
+        var lang = '';
+        var content = '';
+        Object.keys(node).forEach(function(key) {
+          if (key === ':@' || key.startsWith('@')) return;
+          var local = key.indexOf(':') >= 0 ? key.split(':').pop() : key;
+          if (local === 'lang') lang = extractDisplayValue(node[key]);
+          if (local === 'content') content = extractDisplayValue(node[key]);
+        });
+        content = String(content || '').trim();
+        if (!content) continue;
+        if (!firstNonEmpty) firstNonEmpty = content;
+        var normLang = normalizeLangCode(lang);
+        if (!requested) continue;
+        if (normLang === requested) return content;
+        if (requestedBase && normLang === requestedBase) return content;
+        if (requestedBase && normLang && normLang.split('-')[0] === requestedBase) return content;
+      }
+      return firstNonEmpty;
+    }
+    function extractTitleValue(rawTitle, localeHint) {
+      if (rawTitle == null) return '';
+      if (typeof rawTitle === 'string') return rawTitle.trim();
+      if (Array.isArray(rawTitle)) {
+        for (var i = 0; i < rawTitle.length; i++) {
+          var fromItem = extractTitleValue(rawTitle[i], localeHint);
+          if (fromItem) return fromItem;
+        }
+        return '';
+      }
+      if (typeof rawTitle !== 'object') return '';
+      var keys = Object.keys(rawTitle);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        if (key === ':@' || key.startsWith('@')) continue;
+        var local = key.indexOf(':') >= 0 ? key.split(':').pop() : key;
+        if (local !== 'item') continue;
+        var node = rawTitle[key];
+        var items = Array.isArray(node) ? node : [node];
+        var localized = pickLocalizedContent(items, localeHint);
+        if (localized) return localized;
+      }
+      return extractDisplayValue(rawTitle);
+    }
+    /**
+     * Single entry for preview label from Title + fallbacks (ADR-2).
+     */
+    function resolvePreviewTitle(item, localeHint) {
       if (!item) return '';
       var props = item.properties;
-      if (props && props['Title'] != null) {
-        var t = extractDisplayValue(props['Title']);
-        if (t && String(t).trim() !== '') return String(t).trim();
+      if (props) {
+        var titleRaw = props['Title'];
+        if (titleRaw == null) {
+          for (var propKey in props) {
+            if (propKey === ':@' || propKey.startsWith('@')) continue;
+            var local = propKey.indexOf(':') >= 0 ? propKey.split(':').pop() : propKey;
+            if (local === 'Title') {
+              titleRaw = props[propKey];
+              break;
+            }
+          }
+        }
+        var title = extractTitleValue(titleRaw, localeHint);
+        if (title && String(title).trim() !== '') return String(title).trim();
       }
-      return item.name || '';
+      return String(item.name || '').trim();
+    }
+    function normalizeTitleLocation(raw) {
+      var value = String(raw || '').toLowerCase().replace(/[ _-]+/g, '');
+      if (!value) return 'left';
+      if (value === 'none' || value.indexOf('нет') >= 0) return 'none';
+      if (value === 'right' || value.indexOf('прав') >= 0) return 'right';
+      if (value === 'top' || value.indexOf('верх') >= 0) return 'top';
+      if (value === 'bottom' || value.indexOf('низ') >= 0) return 'bottom';
+      return 'left';
+    }
+    function resolveTitleLocation(item) {
+      if (!item || !item.properties) return 'left';
+      var raw = getLayoutPropertyValueByAliases(item.properties, ['TitleLocation']);
+      return normalizeTitleLocation(raw);
+    }
+    var RARE_TAG_FALLBACKS = new Set([
+      'RadioButtonField',
+      'TrackBarField',
+      'ProgressBarField',
+      'TextDocumentField',
+      'SpreadSheetDocumentField',
+      'HTMLDocumentField',
+      'ChartField',
+      'GanttChartField',
+      'PlannerField',
+      'GraphicalSchemaField',
+      'FormattedDocumentField'
+    ]);
+    function createRareTagFallbackWidget(label, tag) {
+      var widget = document.createElement('div');
+      widget.className = 'preview-fallback-widget';
+      var text = document.createElement('span');
+      text.className = 'fallback-label';
+      text.textContent = label || '\u2014';
+      var pill = document.createElement('span');
+      pill.className = 'fallback-tag';
+      pill.textContent = tag || 'Control';
+      widget.appendChild(text);
+      widget.appendChild(pill);
+      return widget;
     }
     function getTreeIcon(tag) {
       if (!tag) return '';
@@ -934,10 +1361,91 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       if (v.indexOf('vertical') >= 0 || v.indexOf('vert') >= 0 || v === 'column' || v.indexOf('topbottom') >= 0 || v.indexOf('вертикал') >= 0 || v.indexOf('сверхувниз') >= 0) return 'vertical';
       return null;
     }
+    function normalizeSpacingKindJs(raw) {
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (!v) return '';
+      if (v.indexOf('double') >= 0 || v.indexOf('двойн') >= 0) return 'double';
+      if (v.indexOf('half') >= 0 || v.indexOf('половин') >= 0) return 'half';
+      return 'single';
+    }
+    function normalizeChildItemsWidthJs(raw) {
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (!v) return '';
+      if (v === 'equal' || v.indexOf('равн') >= 0) return 'equal';
+      if (v.indexOf('left') >= 0 && v.indexOf('wide') >= 0) return 'leftwidest';
+      if (v.indexOf('right') >= 0 && v.indexOf('wide') >= 0) return 'rightwidest';
+      if (v === 'leftwidest') return 'leftwidest';
+      if (v === 'rightwidest') return 'rightwidest';
+      return '';
+    }
+    function normalizeThroughAlignJs(raw) {
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (!v) return '';
+      if (v.indexOf('dont') >= 0 || v.indexOf('неиспользов') >= 0 || v === 'no') return 'dontuse';
+      if (v.indexOf('use') >= 0 || v === 'yes' || v === 'да') return 'use';
+      return '';
+    }
+    function groupHToFlexJs(raw) {
+      var s = String(raw || '');
+      var v = s.toLowerCase();
+      if (!s.trim()) return '';
+      if (v.indexOf('center') >= 0 || v.indexOf('центр') >= 0) return 'center';
+      if (v.indexOf('right') >= 0 || v.indexOf('конец') >= 0 || v.indexOf('прав') >= 0) return 'flex-end';
+      if (v.indexOf('left') >= 0 || v.indexOf('начал') >= 0 || v.indexOf('лев') >= 0) return 'flex-start';
+      return '';
+    }
+    function groupVToFlexJs(raw) {
+      var s = String(raw || '');
+      var v = s.toLowerCase();
+      if (!s.trim()) return '';
+      if (v.indexOf('center') >= 0 || v.indexOf('центр') >= 0) return 'center';
+      if (v.indexOf('bottom') >= 0 || v.indexOf('низ') >= 0) return 'flex-end';
+      if (v.indexOf('top') >= 0 || v.indexOf('верх') >= 0) return 'flex-start';
+      return '';
+    }
+    function layoutPreviewFlexBoxJs(orientation, gh, gv, throughAlign) {
+      var h = groupHToFlexJs(gh);
+      var v = groupVToFlexJs(gv);
+      var flexJustifyContent = '';
+      var flexAlignItems = '';
+      if (orientation === 'horizontal') {
+        flexJustifyContent = h;
+        flexAlignItems = v;
+      } else {
+        flexJustifyContent = v;
+        flexAlignItems = h;
+      }
+      if (throughAlign === 'use') flexAlignItems = 'stretch';
+      return { flexJustifyContent: flexJustifyContent, flexAlignItems: flexAlignItems };
+    }
+    function spacingKindToPxJs(k) {
+      if (!k) return null;
+      if (k === 'half') return 4;
+      if (k === 'double') return 16;
+      return 8;
+    }
+    function applyPreviewContainerLayout(el, meta) {
+      if (!el || !meta) return;
+      if (meta.verticalSpacing) {
+        var r = spacingKindToPxJs(meta.verticalSpacing);
+        if (r != null) el.style.rowGap = r + 'px';
+      } else {
+        el.style.rowGap = '';
+      }
+      if (meta.horizontalSpacing) {
+        var c = spacingKindToPxJs(meta.horizontalSpacing);
+        if (c != null) el.style.columnGap = c + 'px';
+      } else {
+        el.style.columnGap = '';
+      }
+      el.style.justifyContent = meta.flexJustifyContent || '';
+      el.style.alignItems = meta.flexAlignItems || '';
+    }
     function getContainerLayoutMeta(item) {
       var tag = String((item && item.tag) || '');
       var props = item ? item.properties : null;
-      var rawOrientation = getLayoutPropertyValueByAliases(props, [
+      var isPagesRoot = tag === 'Pages';
+      var rawOrientation = isPagesRoot ? '' : getLayoutPropertyValueByAliases(props, [
         'Group',
         'groups',
         'GroupOrientation',
@@ -950,7 +1458,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         'Ориентация',
         'Группировка'
       ]);
-      var orientation = normalizeContainerOrientation(rawOrientation) || 'vertical';
+      var orientation = isPagesRoot ? 'vertical' : (normalizeContainerOrientation(rawOrientation) || 'vertical');
       var rawIndent = getLayoutPropertyValueByAliases(props, [
         'IndentChildren',
         'ShouldIndentChildren',
@@ -969,11 +1477,195 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       if (tag) hints.push('container-' + tag.toLowerCase());
       if (tag === 'AutoCommandBar') hints.push('container-buttons');
       if (tag === 'Page' || tag === 'Pages') hints.push('container-page');
+      if (isPagesRoot) hints.push('container-pages-root');
+      var horizontalSpacing = '';
+      var verticalSpacing = '';
+      var childItemsWidth = '';
+      var throughAlign = '';
+      var flexJustifyContent = '';
+      var flexAlignItems = '';
+      if (!isPagesRoot) {
+        horizontalSpacing = normalizeSpacingKindJs(getLayoutPropertyValueByAliases(props, [
+          'HorizontalSpacing', 'horizontalSpacing', 'ГоризонтальныйИнтервал', 'ИнтервалГоризонтальный'
+        ]));
+        verticalSpacing = normalizeSpacingKindJs(getLayoutPropertyValueByAliases(props, [
+          'VerticalSpacing', 'verticalSpacing', 'ВертикальныйИнтервал', 'ИнтервалВертикальный'
+        ]));
+        childItemsWidth = normalizeChildItemsWidthJs(getLayoutPropertyValueByAliases(props, [
+          'ChildItemsWidth', 'childItemsWidth', 'ШиринаДочернихЭлементов'
+        ]));
+        throughAlign = normalizeThroughAlignJs(getLayoutPropertyValueByAliases(props, [
+          'ThroughAlign', 'throughAlign', 'СквозноеВыравнивание'
+        ]));
+        if (childItemsWidth === 'equal') hints.push('ciwidth-equal');
+        else if (childItemsWidth === 'leftwidest') hints.push('ciwidth-leftwidest');
+        else if (childItemsWidth === 'rightwidest') hints.push('ciwidth-rightwidest');
+        if (throughAlign === 'use') hints.push('throughalign-use');
+        var gh = getLayoutPropertyValueByAliases(props, [
+          'GroupHorizontalAlign', 'groupHorizontalAlign', 'HorizontalAlign', 'horizontalAlign',
+          'ГоризонтальноеВыравниваниеГруппы', 'ГоризонтальноеВыравнивание'
+        ]);
+        var gv = getLayoutPropertyValueByAliases(props, [
+          'GroupVerticalAlign', 'groupVerticalAlign', 'VerticalAlign', 'verticalAlign',
+          'ВертикальноеВыравниваниеГруппы', 'ВертикальноеВыравнивание'
+        ]);
+        var flexBox = layoutPreviewFlexBoxJs(orientation, gh, gv, throughAlign);
+        flexJustifyContent = flexBox.flexJustifyContent;
+        flexAlignItems = flexBox.flexAlignItems;
+      }
       return {
+        tag: tag,
         orientation: orientation,
         shouldIndentChildren: !!shouldIndentChildren,
-        containerClassHints: hints
+        containerClassHints: hints,
+        horizontalSpacing: horizontalSpacing,
+        verticalSpacing: verticalSpacing,
+        childItemsWidth: childItemsWidth,
+        throughAlign: throughAlign,
+        flexJustifyContent: flexJustifyContent,
+        flexAlignItems: flexAlignItems
       };
+    }
+    function getFormItemKey(it) {
+      if (!it) return '';
+      return it.id != null ? String(it.id) : (it.name != null ? String(it.name) : '');
+    }
+    function safePreviewDomIdPart(s) {
+      return String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+    /** Maps PagesRepresentation to CSS class TabsOnTop | TabsOnBottom (design ADR-1). */
+    function getPagesRepresentationClass(item) {
+      var props = item && item.properties;
+      var raw = getLayoutPropertyValueByAliases(props, [
+        'PagesRepresentation',
+        'pagesRepresentation',
+        'ПредставлениеСтраниц'
+      ]);
+      var v = String(raw || '').toLowerCase().replace(/[\\s_-]+/g, '');
+      if (v.indexOf('bottom') >= 0 || v.indexOf('низ') >= 0 || v.indexOf('внизу') >= 0) return 'TabsOnBottom';
+      return 'TabsOnTop';
+    }
+    /** Ordered Page children under Pages; activePageId stored per Pages key (id||name). */
+    function buildTabsState(pagesNode) {
+      var pagesKey = getFormItemKey(pagesNode);
+      var kids = pagesNode && pagesNode.childItems ? pagesNode.childItems : [];
+      var pages = kids.filter(function(it) { return it && it.tag === 'Page'; });
+      var pageOrderIds = pages.map(function(p) { return getFormItemKey(p); }).filter(function(k) { return k !== ''; });
+      var stored = pagesKey ? activePageIdByPagesKey[pagesKey] : undefined;
+      var activePageId = stored != null && stored !== '' ? String(stored) : null;
+      if (activePageId && pageOrderIds.indexOf(activePageId) < 0) activePageId = null;
+      if (!activePageId && pageOrderIds.length) activePageId = pageOrderIds[0];
+      if (!pageOrderIds.length) {
+        delete activePageIdByPagesKey[pagesKey];
+      } else if (activePageId != null) {
+        activePageIdByPagesKey[pagesKey] = activePageId;
+      }
+      return { pages: pages, pageOrderIds: pageOrderIds, activePageId: activePageId, pagesKey: pagesKey };
+    }
+    function findPageById(pages, pageId) {
+      for (var i = 0; i < pages.length; i++) {
+        if (getFormItemKey(pages[i]) === pageId) return pages[i];
+      }
+      return null;
+    }
+    function renderPagesInPreview(pagesNode, outerEl, pagesLayoutMeta) {
+      outerEl.textContent = '';
+      var repClass = getPagesRepresentationClass(pagesNode);
+      outerEl.className = layoutContainerStyle(
+        pagesLayoutMeta,
+        { skipPreviewChildren: true, previewChildrenAlias: 'preview-pages-outer' }
+      ) + ' ' + repClass;
+      applyPreviewContainerLayout(outerEl, pagesLayoutMeta);
+      var tabsState = buildTabsState(pagesNode);
+      var tablist = document.createElement('div');
+      tablist.className = 'preview-pages-tablist';
+      tablist.setAttribute('role', 'tablist');
+      var panelWrap = document.createElement('div');
+      panelWrap.className = 'preview-pages-panel-wrap';
+      var pagesKey = tabsState.pagesKey;
+      var activeId = tabsState.activePageId;
+      tabsState.pages.forEach(function(pageItem, idx) {
+        var pid = getFormItemKey(pageItem);
+        if (!pid) return;
+        var tab = document.createElement('button');
+        tab.type = 'button';
+        tab.className = 'preview-pages-tab';
+        tab.setAttribute('role', 'tab');
+        var sid = safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(pid);
+        tab.id = 'preview-tab-' + sid;
+        tab.setAttribute('aria-controls', 'preview-panel-' + sid);
+        tab.setAttribute('data-pages-key', pagesKey);
+        tab.setAttribute('data-page-id', pid);
+        tab.setAttribute('aria-selected', pid === activeId ? 'true' : 'false');
+        tab.setAttribute('tabindex', pid === activeId ? '0' : '-1');
+        var tabLabel = resolvePreviewTitle(pageItem) || pageItem.name || ('Страница ' + (idx + 1));
+        tab.textContent = tabLabel;
+        tab.addEventListener('click', function(ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (String(activePageIdByPagesKey[pagesKey]) === String(pid)) return;
+          activePageIdByPagesKey[pagesKey] = pid;
+          var root = document.getElementById('preview-form');
+          if (formModel && formModel.childItemsRoot && root) renderPreview(formModel.childItemsRoot, root);
+        });
+        tablist.appendChild(tab);
+      });
+      var panel = document.createElement('div');
+      panel.className = 'preview-pages-active-panel';
+      panel.setAttribute('role', 'tabpanel');
+      var activePage = activeId ? findPageById(tabsState.pages, activeId) : null;
+      if (activePage && activePage.childItems && activePage.childItems.length) {
+        var pageInnerMeta = getContainerLayoutMeta(activePage);
+        panel.className += ' ' + layoutContainerStyle(pageInnerMeta);
+        applyPreviewContainerLayout(panel, pageInnerMeta);
+        var aid = safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(activeId);
+        panel.id = 'preview-panel-' + aid;
+        panel.setAttribute('aria-labelledby', 'preview-tab-' + aid);
+        renderPreview(activePage.childItems, panel);
+      } else {
+        var eid = activeId ? safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(activeId) : safePreviewDomIdPart(pagesKey) + '-empty';
+        panel.id = 'preview-panel-' + eid;
+        if (activeId) panel.setAttribute('aria-labelledby', 'preview-tab-' + safePreviewDomIdPart(pagesKey) + '-' + safePreviewDomIdPart(activeId));
+        if (!tabsState.pages.length) {
+          panel.textContent = 'Нет страниц';
+          panel.className += ' preview-empty-state';
+        } else if (activePage && (!activePage.childItems || !activePage.childItems.length)) {
+          panel.textContent = '';
+        }
+      }
+      panelWrap.appendChild(panel);
+      var otherKids = (pagesNode.childItems || []).filter(function(it) { return it && it.tag !== 'Page'; });
+      outerEl.appendChild(tablist);
+      outerEl.appendChild(panelWrap);
+      if (otherKids.length) {
+        var extra = document.createElement('div');
+        extra.className = 'preview-pages-nonpage-children';
+        var om = getContainerLayoutMeta(pagesNode);
+        extra.className += ' ' + layoutContainerStyle(om);
+        applyPreviewContainerLayout(extra, om);
+        renderPreview(otherKids, extra);
+        outerEl.appendChild(extra);
+      }
+    }
+    /** CSS class string for preview-children wrapper (parity with previous inline assembly). */
+    function layoutContainerStyle(meta, opts) {
+      opts = opts || {};
+      var tag = meta && meta.tag != null ? String(meta.tag) : '';
+      var orientation = meta && meta.orientation ? meta.orientation : 'vertical';
+      var childClasses = [];
+      if (opts.previewChildrenAlias) {
+        childClasses.push(opts.previewChildrenAlias);
+      } else if (!opts.skipPreviewChildren) {
+        childClasses.push('preview-children');
+      }
+      childClasses.push('preview-children-' + orientation);
+      if (meta && meta.shouldIndentChildren) childClasses.push('preview-children-indented');
+      if (tag === 'AutoCommandBar') childClasses.push('preview-buttons-container');
+      var hints = meta && meta.containerClassHints ? meta.containerClassHints : [];
+      for (var hi = 0; hi < hints.length; hi++) {
+        childClasses.push('preview-' + String(hints[hi]).replace(/[^a-z0-9_-]/gi, '-'));
+      }
+      return childClasses.join(' ');
     }
     function getPreviewDropIndex(children, evt, orientation) {
       var horizontal = orientation === 'horizontal';
@@ -1212,11 +1904,12 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     }
 
     function createPreviewControl(item, tag) {
-      var label = getItemTitle(item) || (item.name || tag) + '';
+      var label = resolvePreviewTitle(item) || (item.name || tag) + '';
       var wrap = document.createElement('div');
       wrap.className = 'preview-control-wrap';
-      if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'FormattedDocumentField' || tag === 'ValueList') {
-        wrap.className = 'preview-control-wrap preview-field-row';
+      if (tag === 'InputField' || tag === 'SearchStringAddition' || tag === 'ValueList') {
+        var titleLocation = resolveTitleLocation(item);
+        wrap.className = 'preview-control-wrap preview-field-row preview-title-' + titleLocation;
         var lbl = document.createElement('span');
         lbl.className = 'preview-field-label';
         lbl.textContent = label || '\u2014';
@@ -1238,7 +1931,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         lblCb.textContent = label || '\u2014';
         wrap.appendChild(lblCb);
         wrap.appendChild(cb);
-      } else if (tag === 'RadioButtonField' || tag === 'RadioButton') {
+      } else if (tag === 'RadioButton') {
         wrap.className = 'preview-control-wrap preview-field-row';
         var radioLabel = document.createElement('span');
         radioLabel.className = 'preview-field-label';
@@ -1296,7 +1989,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         var tableCols = (item.childItems || []).filter(function(it) { return isRealElement(it); });
         tableCols.forEach(function(colItem) {
           var th = document.createElement('th');
-          th.textContent = getItemTitle(colItem) || (colItem.name || colItem.tag) || '\u2014';
+          th.textContent = resolvePreviewTitle(colItem) || (colItem.name || colItem.tag) || '\u2014';
           th.dataset.id = colItem.id || colItem.name || '';
           th.setAttribute('data-id', th.dataset.id);
           headTr.appendChild(th);
@@ -1339,6 +2032,8 @@ export function getWebviewHtml(webview: vscode.Webview): string {
         }
         wrap.appendChild(groupBlock);
         wrap._mockupChildContainer = groupBlock;
+      } else if (RARE_TAG_FALLBACKS.has(tag)) {
+        wrap.appendChild(createRareTagFallbackWidget(label, tag));
       } else {
         var fall = document.createElement('span');
         fall.className = 'preview-fallback';
@@ -1445,18 +2140,15 @@ export function getWebviewHtml(webview: vscode.Webview): string {
               });
             })(ths[ti]);
           }
-        } else if (isContainer && item.childItems && item.childItems.length && controlWrap._mockupChildContainer) {
+        } else if (isContainer && controlWrap._mockupChildContainer && ((item.childItems && item.childItems.length) || tag === 'Pages')) {
           var childWrap = controlWrap._mockupChildContainer;
-          var childClasses = ['preview-children', 'preview-children-' + (layoutMeta ? layoutMeta.orientation : 'vertical')];
-          if (layoutMeta && layoutMeta.shouldIndentChildren) childClasses.push('preview-children-indented');
-          if (tag === 'AutoCommandBar') childClasses.push('preview-buttons-container');
-          if (layoutMeta && layoutMeta.containerClassHints && layoutMeta.containerClassHints.length) {
-            layoutMeta.containerClassHints.forEach(function(hint) {
-              childClasses.push('preview-' + String(hint).replace(/[^a-z0-9_-]/gi, '-'));
-            });
+          if (tag === 'Pages') {
+            renderPagesInPreview(item, childWrap, layoutMeta);
+          } else {
+            childWrap.className = layoutContainerStyle(layoutMeta);
+            applyPreviewContainerLayout(childWrap, layoutMeta);
+            renderPreview(item.childItems, childWrap);
           }
-          childWrap.className = childClasses.join(' ');
-          renderPreview(item.childItems, childWrap);
         }
       });
     }
@@ -1496,6 +2188,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     }
     function updateToolbarState() {
       var addBtn = document.getElementById('tb-add');
+      var addWizardBtn = document.getElementById('tb-add-wizard');
       var delBtn = document.getElementById('tb-delete');
       var upBtn = document.getElementById('tb-up');
       var downBtn = document.getElementById('tb-down');
@@ -1514,6 +2207,7 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       var hasSelection = selectedIds.length > 0;
       var pasteTarget = getPasteTargetId();
       addBtn.disabled = !hasModel || (singleId && !isContainer);
+      if (addWizardBtn) addWizardBtn.disabled = addBtn.disabled;
       delBtn.disabled = !hasModel || !hasSelection;
       upBtn.disabled = !hasModel || !singleId || isFirst || selectedIds.length > 1;
       downBtn.disabled = !hasModel || !singleId || isLast || selectedIds.length > 1;
@@ -1521,6 +2215,107 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       pasteBtn.disabled = !hasModel || !clipboardBuffer || !pasteTarget;
       saveBtn.disabled = !hasModel;
       if (cancelBtn) cancelBtn.disabled = false;
+    }
+    function getAddElementWizardOptions() {
+      var options = addElementWizardConfig && Array.isArray(addElementWizardConfig.options)
+        ? addElementWizardConfig.options
+        : [];
+      return options
+        .filter(function(option) { return option && typeof option.tag === 'string' && option.tag.trim() !== ''; })
+        .map(function(option) {
+          return {
+            tag: String(option.tag).trim(),
+            defaultName: typeof option.defaultName === 'string' ? option.defaultName : 'NewItem',
+            hint: typeof option.hint === 'string' ? option.hint : ''
+          };
+        });
+    }
+    function refreshAddWizardHint() {
+      var select = document.getElementById('add-wizard-type');
+      var hintEl = document.getElementById('add-wizard-hint');
+      var nameInput = document.getElementById('add-wizard-name');
+      if (!select || !hintEl || !nameInput) return;
+      var options = getAddElementWizardOptions();
+      var selectedTag = select.value || '';
+      var selectedOption = options.find(function(option) { return option.tag === selectedTag; }) || null;
+      hintEl.textContent = selectedOption && selectedOption.hint
+        ? selectedOption.hint
+        : 'Для выбранного типа нет дополнительной подсказки.';
+      if (!nameInput.value.trim()) {
+        nameInput.value = selectedOption ? selectedOption.defaultName : 'NewItem';
+      }
+    }
+    function fillAddWizardTypeOptions() {
+      var select = document.getElementById('add-wizard-type');
+      if (!select) return;
+      var options = getAddElementWizardOptions();
+      var prevTag = select.value;
+      select.innerHTML = '';
+      options.forEach(function(option) {
+        var opt = document.createElement('option');
+        opt.value = option.tag;
+        opt.textContent = option.tag;
+        select.appendChild(opt);
+      });
+      if (prevTag && options.some(function(option) { return option.tag === prevTag; })) {
+        select.value = prevTag;
+      } else if (options.length) {
+        select.value = options[0].tag;
+      }
+      refreshAddWizardHint();
+    }
+    function getAddWizardTargetId() {
+      var parentId = getPasteTargetId();
+      if (!parentId && selectedIds.length === 1) {
+        var selected = findElement(formModel, selectedIds[0]);
+        if (selected && isContainerTag(selected.tag)) parentId = selectedIds[0];
+      }
+      return parentId;
+    }
+    function openAddWizard() {
+      if (!formModel) return;
+      var overlay = document.getElementById('add-wizard-overlay');
+      var nameInput = document.getElementById('add-wizard-name');
+      var targetInfo = document.getElementById('add-wizard-target');
+      var typeSelect = document.getElementById('add-wizard-type');
+      if (!overlay || !nameInput || !targetInfo || !typeSelect) return;
+      fillAddWizardTypeOptions();
+      var options = getAddElementWizardOptions();
+      var currentTag = typeSelect.value;
+      var selectedOption = options.find(function(option) { return option.tag === currentTag; }) || options[0] || null;
+      nameInput.value = selectedOption ? selectedOption.defaultName : 'NewItem';
+      var targetId = getAddWizardTargetId();
+      targetInfo.textContent = targetId
+        ? ('Родитель: ' + targetId)
+        : 'Родитель: корень формы';
+      overlay.style.display = 'flex';
+      nameInput.focus();
+      nameInput.select();
+    }
+    function closeAddWizard() {
+      var overlay = document.getElementById('add-wizard-overlay');
+      if (!overlay) return;
+      overlay.style.display = 'none';
+    }
+    function submitAddWizard() {
+      if (!formModel) return;
+      var select = document.getElementById('add-wizard-type');
+      var nameInput = document.getElementById('add-wizard-name');
+      if (!select || !nameInput) return;
+      var options = getAddElementWizardOptions();
+      var selectedTag = select.value;
+      if (!options.some(function(option) { return option.tag === selectedTag; })) {
+        return;
+      }
+      var parentId = getAddWizardTargetId();
+      var rawName = nameInput.value ? nameInput.value.trim() : '';
+      vscode.postMessage({
+        type: 'addElementWizard',
+        parentId: parentId,
+        tag: selectedTag,
+        name: rawName
+      });
+      closeAddWizard();
     }
 
     function extractDisplayValue(v) {
@@ -2138,6 +2933,30 @@ export function getWebviewHtml(webview: vscode.Webview): string {
       if (!parentId && selectedIds.length === 1) parentId = findElement(formModel, selectedIds[0]) && isContainerTag(findElement(formModel, selectedIds[0]).tag) ? selectedIds[0] : undefined;
       vscode.postMessage({ type: 'addElement', parentId: parentId, tag: 'InputField', name: 'NewItem' });
     });
+    document.getElementById('tb-add-wizard').addEventListener('click', () => {
+      openAddWizard();
+    });
+    document.getElementById('add-wizard-cancel').addEventListener('click', function() {
+      closeAddWizard();
+    });
+    document.getElementById('add-wizard-submit').addEventListener('click', function() {
+      submitAddWizard();
+    });
+    document.getElementById('add-wizard-type').addEventListener('change', function() {
+      refreshAddWizardHint();
+    });
+    document.getElementById('add-wizard-name').addEventListener('keydown', function(event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submitAddWizard();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeAddWizard();
+      }
+    });
+    document.getElementById('add-wizard-overlay').addEventListener('click', function(event) {
+      if (event.target === this) closeAddWizard();
+    });
     document.getElementById('tb-delete').addEventListener('click', () => {
       if (!selectedIds.length) return;
       if (selectedIds.length === 1) {
@@ -2271,8 +3090,18 @@ export function getWebviewHtml(webview: vscode.Webview): string {
     }
     window.addEventListener('message', function(event) {
       var msg = event.data;
+      if (msg && msg.type === 'hostColorTheme' && typeof msg.kind === 'number') {
+        var lt = (msg.kind === 1 || msg.kind === 4);
+        document.documentElement.setAttribute('data-vscode-theme', lt ? 'light' : 'dark');
+        return;
+      }
       if (msg.type === 'formData') {
         formModel = msg.formModel;
+        if (msg.addElementWizardConfig && typeof msg.addElementWizardConfig === 'object') {
+          addElementWizardConfig = msg.addElementWizardConfig;
+          fillAddWizardTypeOptions();
+        }
+        closeAddWizard();
         formXmlPath = msg.formXmlPath || '';
         modulePath = msg.modulePath || '';
         if (formModel) {

@@ -7,10 +7,29 @@ import type { FormModel, FormChildItem, FormAttribute } from './formModel';
 
 export type ContainerOrientation = 'horizontal' | 'vertical';
 
+/** 1C: HorizontalSpacing / VerticalSpacing — Single | Half | Double */
+export type LayoutSpacingKind = 'single' | 'half' | 'double' | '';
+
+/** 1C: ChildItemsWidth — LeftWidest | RightWidest | Equal */
+export type ChildItemsWidthKind = 'leftwidest' | 'rightwidest' | 'equal' | '';
+
+/** 1C: ThroughAlign — Use | DontUse */
+export type ThroughAlignKind = 'use' | 'dontuse' | '';
+
 export interface ContainerLayoutPreviewMeta {
+  /** Element tag from Form.xml (e.g. UsualGroup, Pages). */
+  tag: string;
   orientation: ContainerOrientation;
   shouldIndentChildren: boolean;
   containerClassHints: string[];
+  horizontalSpacing: LayoutSpacingKind;
+  verticalSpacing: LayoutSpacingKind;
+  childItemsWidth: ChildItemsWidthKind;
+  throughAlign: ThroughAlignKind;
+  /** When set, map to CSS `justify-content` for the preview flex container. */
+  flexJustifyContent: string;
+  /** When set, map to CSS `align-items` for the preview flex container. */
+  flexAlignItems: string;
 }
 
 function normalizeKey(key: string): string {
@@ -65,24 +84,105 @@ function normalizeOrientation(rawValue: string): ContainerOrientation | null {
   return null;
 }
 
+function normalizeSpacingKind(rawValue: string): LayoutSpacingKind {
+  const v = rawValue.toLowerCase().replace(/[\s_-]+/g, '');
+  if (!v) {return '';}
+  if (v.includes('double') || v.includes('двойн')) {return 'double';}
+  if (v.includes('half') || v.includes('половин')) {return 'half';}
+  return 'single';
+}
+
+function normalizeChildItemsWidth(rawValue: string): ChildItemsWidthKind {
+  const v = rawValue.toLowerCase().replace(/[\s_-]+/g, '');
+  if (!v) {return '';}
+  if (v === 'equal' || v.includes('равн')) {return 'equal';}
+  if (v.includes('left') && v.includes('wide')) {return 'leftwidest';}
+  if (v.includes('right') && v.includes('wide')) {return 'rightwidest';}
+  if (v === 'leftwidest') {return 'leftwidest';}
+  if (v === 'rightwidest') {return 'rightwidest';}
+  return '';
+}
+
+function normalizeThroughAlign(rawValue: string): ThroughAlignKind {
+  const v = rawValue.toLowerCase().replace(/[\s_-]+/g, '');
+  if (!v) {return '';}
+  if (v.includes('dont') || v.includes('неиспользов') || v === 'no') {return 'dontuse';}
+  if (v.includes('use') || v === 'yes' || v === 'да') {return 'use';}
+  return '';
+}
+
+function groupHToFlex(raw: string): string {
+  const v = raw.toLowerCase();
+  if (!raw.trim()) {return '';}
+  if (v.includes('center') || v.includes('центр')) {return 'center';}
+  if (v.includes('right') || v.includes('конец') || v.includes('прав')) {return 'flex-end';}
+  if (v.includes('left') || v.includes('начал') || v.includes('лев')) {return 'flex-start';}
+  return '';
+}
+
+function groupVToFlex(raw: string): string {
+  const v = raw.toLowerCase();
+  if (!raw.trim()) {return '';}
+  if (v.includes('center') || v.includes('центр')) {return 'center';}
+  if (v.includes('bottom') || v.includes('низ')) {return 'flex-end';}
+  if (v.includes('top') || v.includes('верх')) {return 'flex-start';}
+  return '';
+}
+
+/** Map group align + orientation to the same `justify-content` / `align-items` choices as the webview. */
+export function layoutPreviewFlexBox(
+  orientation: ContainerOrientation,
+  groupHorizontalRaw: string,
+  groupVerticalRaw: string,
+  throughAlign: ThroughAlignKind,
+): { flexJustifyContent: string; flexAlignItems: string } {
+  const h = groupHToFlex(groupHorizontalRaw);
+  const v = groupVToFlex(groupVerticalRaw);
+  let flexJustifyContent = '';
+  let flexAlignItems = '';
+  if (orientation === 'horizontal') {
+    flexJustifyContent = h;
+    flexAlignItems = v;
+  } else {
+    flexJustifyContent = v;
+    flexAlignItems = h;
+  }
+  if (throughAlign === 'use') {
+    flexAlignItems = 'stretch';
+  }
+  return { flexJustifyContent, flexAlignItems };
+}
+
+/** Pixel gap for preview: Single 8 / Half 4 / Double 16; empty → no override. */
+export function layoutSpacingToPx(kind: LayoutSpacingKind): number | null {
+  if (!kind) {return null;}
+  if (kind === 'half') {return 4;}
+  if (kind === 'double') {return 16;}
+  return 8;
+}
+
 /** Compact, safe layout metadata for preview rendering of container child items. */
 export function getContainerLayoutPreviewMeta(item: FormChildItem | undefined): ContainerLayoutPreviewMeta {
   const tag = String(item?.tag || '');
   const properties = item?.properties as Record<string, unknown> | undefined;
-  const rawOrientation = getPropertyValueByAliases(properties, [
-    'Group',
-    'groups',
-    'GroupOrientation',
-    'Orientation',
-    'Layout',
-    'LayoutOrientation',
-    'ChildrenLayout',
-    'ChildItemsLayout',
-    'Расположение',
-    'Ориентация',
-    'Группировка',
-  ]);
-  const orientation = normalizeOrientation(rawOrientation) ?? 'vertical';
+  /** `Pages` is tabs + panel, not a horizontal flex of its XML children; ignore Group orientation on the root. */
+  const isPagesRoot = tag === 'Pages';
+  const rawOrientation = isPagesRoot
+    ? ''
+    : getPropertyValueByAliases(properties, [
+      'Group',
+      'groups',
+      'GroupOrientation',
+      'Orientation',
+      'Layout',
+      'LayoutOrientation',
+      'ChildrenLayout',
+      'ChildItemsLayout',
+      'Расположение',
+      'Ориентация',
+      'Группировка',
+    ]);
+  const orientation = isPagesRoot ? 'vertical' : (normalizeOrientation(rawOrientation) ?? 'vertical');
   const rawIndent = getPropertyValueByAliases(properties, [
     'IndentChildren',
     'ShouldIndentChildren',
@@ -102,10 +202,66 @@ export function getContainerLayoutPreviewMeta(item: FormChildItem | undefined): 
   if (tag) {hints.add(`container-${tag.toLowerCase()}`);}
   if (tag === 'AutoCommandBar') {hints.add('container-buttons');}
   if (tag === 'Page' || tag === 'Pages') {hints.add('container-page');}
+  if (isPagesRoot) {hints.add('container-pages-root');}
+
+  /** Pages = tab shell, not a horizontal/vertical group: ignore group layout props on the root node. */
+  let horizontalSpacing: LayoutSpacingKind = '';
+  let verticalSpacing: LayoutSpacingKind = '';
+  let childItemsWidth: ChildItemsWidthKind = '';
+  let throughAlign: ThroughAlignKind = '';
+  let flexJustifyContent = '';
+  let flexAlignItems = '';
+
+  if (!isPagesRoot) {
+    horizontalSpacing = normalizeSpacingKind(
+      getPropertyValueByAliases(properties, ['HorizontalSpacing', 'horizontalSpacing', 'ГоризонтальныйИнтервал', 'ИнтервалГоризонтальный']),
+    );
+    verticalSpacing = normalizeSpacingKind(
+      getPropertyValueByAliases(properties, ['VerticalSpacing', 'verticalSpacing', 'ВертикальныйИнтервал', 'ИнтервалВертикальный']),
+    );
+    childItemsWidth = normalizeChildItemsWidth(
+      getPropertyValueByAliases(properties, ['ChildItemsWidth', 'childItemsWidth', 'ШиринаДочернихЭлементов']),
+    );
+    throughAlign = normalizeThroughAlign(
+      getPropertyValueByAliases(properties, ['ThroughAlign', 'throughAlign', 'СквозноеВыравнивание']),
+    );
+    if (childItemsWidth === 'equal') {hints.add('ciwidth-equal');}
+    else if (childItemsWidth === 'leftwidest') {hints.add('ciwidth-leftwidest');}
+    else if (childItemsWidth === 'rightwidest') {hints.add('ciwidth-rightwidest');}
+    if (throughAlign === 'use') {hints.add('throughalign-use');}
+
+    const gh = getPropertyValueByAliases(properties, [
+      'GroupHorizontalAlign',
+      'groupHorizontalAlign',
+      'HorizontalAlign',
+      'horizontalAlign',
+      'ГоризонтальноеВыравниваниеГруппы',
+      'ГоризонтальноеВыравнивание',
+    ]);
+    const gv = getPropertyValueByAliases(properties, [
+      'GroupVerticalAlign',
+      'groupVerticalAlign',
+      'VerticalAlign',
+      'verticalAlign',
+      'ВертикальноеВыравниваниеГруппы',
+      'ВертикальноеВыравнивание',
+    ]);
+    const flexBox = layoutPreviewFlexBox(orientation, gh, gv, throughAlign);
+    flexJustifyContent = flexBox.flexJustifyContent;
+    flexAlignItems = flexBox.flexAlignItems;
+  }
+
   return {
+    tag,
     orientation,
     shouldIndentChildren,
     containerClassHints: [...hints],
+    horizontalSpacing,
+    verticalSpacing,
+    childItemsWidth,
+    throughAlign,
+    flexJustifyContent,
+    flexAlignItems,
   };
 }
 
