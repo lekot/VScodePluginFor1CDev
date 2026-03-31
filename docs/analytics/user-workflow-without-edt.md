@@ -34,18 +34,13 @@
 
 Реализована загрузка конфигурации из базы и в базу с помощью ibcmd, в настройках указать путь до IBCMD, привязать базу через InfobaseManager View
 
-~~ 1. Для запуска без EDT используйте задачи VS Code:
-   - `CDT: ibcmd — check infobase configuration`
-   - `CDT: ibcmd — import configuration from XML`
-2. Перед запуском задать минимум `IBCMD_PATH` и `IBCMD_INFOBASE_CONFIG`; для `import` добавить `MATRIX_WORK_DIR` (корень выгрузки с `Configuration.xml`).
-3. После каждого запуска смотреть артефакт отчёта:
-   - `.ibcmd-reports/check-last.log`
-   - `.ibcmd-reports/import-last.log`
-   (или каталог из `IBCMD_REPORT_DIR`).
-4. Альтернатива: открыть последний отчёт из палитры команд CDT 41:
-   - `CDT 41: Open last ibcmd check report`
-   - `CDT 41: Open last ibcmd import report`
-5. Интерпретация отчёта: `exitCode=0` — успешный прогон; `exitCode!=0` или текст ошибок в секции `--- stderr ---` — требуется исправление конфигурации/параметров запуска. ~~
+~~1. Для запуска без EDT используйте задачи VS Code:~~
+   ~~- `CDT: ibcmd — check infobase configuration`~~
+  ~~- `CDT: ibcmd — import configuration from XML`~~
+~~2. Перед запуском задать минимум `IBCMD_PATH` и `IBCMD_INFOBASE_CONFIG`; для `import` добавить `MATRIX_WORK_DIR` (корень выгрузки с `Configuration.xml`).~~
+~~3. После каждого запуска смотреть артефакт отчёта:~~
+   ~~- `.ibcmd-reports/check-last.log`~~
+  ~~...~~
 
 ## Сообщить о проблеме
 
