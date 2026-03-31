@@ -15,7 +15,6 @@
 | [plans/e2e-container-matrix-ibcmd.md](plans/e2e-container-matrix-ibcmd.md) | План сценариев матрицы (в т.ч. create×2 → delete×1) и связь с кодом `test/matrix/`. |
 | [plans/issue-bsl-common-module-tree-plan.md](plans/issue-bsl-common-module-tree-plan.md) | Фазы работ по дереву общих модулей / BSL handoff (#21, #25, §13 gap). |
 | [architecture.md](architecture.md) | Карта каталогов `src/` и потоков данных (точка входа → парсеры → UI). |
-| [manifest.md](manifest.md) | Краткий контракт предсказуемости изменений XML и границ продукта. |
 | [research/1c-config-objects-spec.md](research/1c-config-objects-spec.md) | Заметки по объектам Designer XML (в т.ч. без `ChildObjects`); синхрон с `XMLWriter.ts`. |
 | [DEVELOPING.md](../DEVELOPING.md) | Сборка, тесты, отладка, структура тестов. |
 | [README.md](../README.md) | Установка, команды, smoke/instrument, пользовательская документация. |
