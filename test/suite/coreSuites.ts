@@ -70,6 +70,7 @@ export const coreSuiteFiles: string[] = [
   'suite/subsystemCompositionE2e.test.js',
   'suite/subsystemCompositionRefResolver.test.js',
   'suite/compositionObjectCollector.test.js',
+  'suite/compositionCollectorV2.test.js',
   'suite/subsystemCompositionEditorProvider.test.js',
   'suite/infobaseStorageService.test.js',
   'suite/infobaseManager.test.js',

@@ -76,22 +76,6 @@
             border-color: var(--vscode-focusBorder);
         }
 
-        select {
-            background: var(--vscode-dropdown-background);
-            color: var(--vscode-dropdown-foreground);
-            border: 1px solid var(--vscode-dropdown-border);
-            padding: 4px 8px;
-            border-radius: 2px;
-            outline: none;
-            cursor: pointer;
-            font-family: var(--vscode-font-family);
-            font-size: var(--vscode-font-size);
-        }
-
-        select:focus {
-            border-color: var(--vscode-focusBorder);
-        }
-
         .checkbox-label {
             display: flex;
             align-items: center;
@@ -186,10 +170,6 @@
             padding: 6px 4px;
         }
 
-        th.col-type {
-            width: 140px;
-        }
-
         th.col-name {
             /* fills remaining space */
         }
@@ -216,12 +196,6 @@
         td.col-check input[type="checkbox"] {
             width: 14px;
             height: 14px;
-        }
-
-        td.col-type {
-            width: 140px;
-            color: var(--vscode-descriptionForeground);
-            font-size: 0.9em;
         }
 
         td.col-name {
@@ -276,6 +250,90 @@
             color: var(--vscode-inputValidation-infoForeground);
             border: 1px solid var(--vscode-inputValidation-infoBorder);
         }
+
+        /* ── Tree layout ─────────────────────────────────────── */
+        .type-container-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            cursor: pointer;
+            user-select: none;
+            background: var(--vscode-editorGroupHeader-tabsBackground);
+            font-weight: 600;
+        }
+
+        .type-container-row:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        .expand-arrow {
+            width: 16px;
+            text-align: center;
+            font-size: 10px;
+            flex-shrink: 0;
+            transition: transform 0.1s;
+        }
+
+        .expand-arrow.expanded {
+            transform: rotate(90deg);
+        }
+
+        .child-row td.col-name {
+            padding-left: 28px;
+        }
+
+        .spinner-inline {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid var(--vscode-progressBar-background);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ── Loading overlay ────────────────────────────────── */
+        #loading-overlay {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.35);
+            z-index: 20;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        #loading-overlay.visible {
+            display: flex;
+        }
+
+        .spinner-large {
+            width: 28px;
+            height: 28px;
+            border: 3px solid var(--vscode-progressBar-background);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        #loading-text {
+            color: var(--vscode-foreground);
+            font-size: 13px;
+        }
+
+        /* ── Container checkbox tri-state ───────────────────── */
+        .container-cb-wrap {
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
@@ -288,9 +346,6 @@
     <div class="toolbar">
         <div class="toolbar-left">
             <input type="text" id="search" placeholder="Поиск...">
-            <select id="type-filter">
-                <option value="">Все типы</option>
-            </select>
             <label class="checkbox-label">
                 <input type="checkbox" id="show-checked-only">
                 <span>Только включённые</span>
@@ -304,11 +359,14 @@
     </div>
 
     <div class="table-container">
+        <div id="loading-overlay">
+            <div class="spinner-large"></div>
+            <span id="loading-text">Загрузка объектов...</span>
+        </div>
         <table id="composition-table">
             <thead>
                 <tr>
                     <th class="col-check"></th>
-                    <th class="col-type">Тип</th>
                     <th class="col-name">Имя</th>
                 </tr>
             </thead>
@@ -331,14 +389,20 @@
         (function () {
             const vscode = acquireVsCodeApi();
 
-            let allObjects = [];
+            // ── State ─────────────────────────────────────────────────────────
+
+            let containers = [];          // CompositionTypeContainer[]
+            let objectsByType = new Map(); // typeFolderId → CompositionObjectEntry[]
+            let expandedTypes = new Set();
             let checkedSet = new Set();
             let initialChecked = new Set();
+            let allLoaded = false;
+            let loadingTypes = new Set();
+            let bulkLoadInProgress = false;
+            let pendingAfterLoad = null;
 
             let searchQuery = '';
-            let typeFilter = '';
             let showCheckedOnly = false;
-
             let renderSeq = 0;
             let searchDebounceTimer = null;
 
@@ -351,91 +415,135 @@
                 document.getElementById('subsystem-title').textContent =
                     'Состав подсистемы: ' + data.subsystemName;
 
-                allObjects = data.objects || [];
+                containers = data.containers || [];
                 checkedSet = new Set(data.checkedRefs || []);
                 initialChecked = new Set(data.checkedRefs || []);
 
-                const typeSelect = document.getElementById('type-filter');
-                const types = Array.from(new Set(allObjects.map(function (o) { return o.type; }))).sort();
-                for (const t of types) {
-                    const opt = document.createElement('option');
-                    opt.value = t;
-                    opt.textContent = t;
-                    typeSelect.appendChild(opt);
-                }
-
-                renderTable();
+                renderTree();
                 updateBadge();
                 updateFooter();
             }
 
             // ── Rendering ─────────────────────────────────────────────────────
 
-            function renderTable() {
-                renderSeq += 1;
-                const seq = renderSeq;
-
+            function renderTree() {
+                if (searchQuery || showCheckedOnly) {
+                    ensureAllLoaded(renderFlat);
+                    return;
+                }
+                renderSeq++;
                 const tbody = document.getElementById('table-body');
                 const emptyState = document.getElementById('empty-state');
                 tbody.innerHTML = '';
 
-                const visible = getVisibleObjects();
-
-                if (visible.length === 0) {
+                if (containers.length === 0) {
                     emptyState.style.display = 'block';
                     updateFooter();
                     return;
                 }
                 emptyState.style.display = 'none';
 
-                const CHUNK = 100;
-
-                if (visible.length <= CHUNK) {
-                    renderAll(visible, tbody);
-                    updateFooter();
-                    return;
-                }
-
-                let i = 0;
-                function renderChunk() {
-                    if (seq !== renderSeq) { return; }
-                    const fragment = document.createDocumentFragment();
-                    const end = Math.min(i + CHUNK, visible.length);
-                    for (; i < end; i++) {
-                        fragment.appendChild(createRow(visible[i]));
-                    }
-                    tbody.appendChild(fragment);
-                    if (i < visible.length) {
-                        requestAnimationFrame(renderChunk);
-                    } else {
-                        updateFooter();
-                    }
-                }
-                renderChunk();
-            }
-
-            function getVisibleObjects() {
-                const q = searchQuery.toLowerCase();
-                return allObjects.filter(function (obj) {
-                    if (q && !obj.displayName.toLowerCase().includes(q) &&
-                            !obj.ref.toLowerCase().includes(q)) { return false; }
-                    if (typeFilter && obj.type !== typeFilter) { return false; }
-                    if (showCheckedOnly && !checkedSet.has(obj.ref)) { return false; }
-                    return true;
-                });
-            }
-
-            function renderAll(objects, tbody) {
                 const fragment = document.createDocumentFragment();
-                for (const obj of objects) {
-                    fragment.appendChild(createRow(obj));
+                for (const container of containers) {
+                    fragment.appendChild(createContainerRow(container));
+                    if (expandedTypes.has(container.typeFolderId)) {
+                        const objects = objectsByType.get(container.typeFolderId) || [];
+                        for (const obj of objects) {
+                            fragment.appendChild(createObjectRow(obj, true));
+                        }
+                    }
                 }
                 tbody.appendChild(fragment);
+
+                updateFooter();
             }
 
-            function createRow(obj) {
+            function createContainerRow(container) {
+                const isExpanded = expandedTypes.has(container.typeFolderId);
+                const isLoading = loadingTypes.has(container.typeFolderId);
+                const objects = objectsByType.get(container.typeFolderId);
+
+                // Счётчик
+                let countLabel;
+                if (objects !== undefined) {
+                    countLabel = objects.length;
+                } else if (container.objectCount !== null) {
+                    countLabel = container.objectCount;
+                } else {
+                    countLabel = '?';
+                }
+
+                const tr = document.createElement('tr');
+                tr.className = 'type-container-row';
+
+                // Ячейка стрелки + чекбокса
+                const tdCheck = document.createElement('td');
+                tdCheck.className = 'col-check';
+                tdCheck.style.display = 'flex';
+                tdCheck.style.alignItems = 'center';
+                tdCheck.style.gap = '4px';
+                tdCheck.style.width = 'auto';
+                tdCheck.style.padding = '0 4px';
+
+                const arrow = document.createElement('span');
+                arrow.className = 'expand-arrow' + (isExpanded ? ' expanded' : '');
+                if (isLoading) {
+                    arrow.innerHTML = '<span class="spinner-inline"></span>';
+                } else {
+                    arrow.textContent = '\u25B6';
+                }
+                arrow.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    toggleExpand(container.typeFolderId);
+                });
+
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'container-cb-wrap';
+                // Tri-state
+                if (objects && objects.length > 0) {
+                    const checkedCount = objects.filter(function (o) { return checkedSet.has(o.ref); }).length;
+                    if (checkedCount === objects.length) {
+                        cb.checked = true;
+                    } else if (checkedCount > 0) {
+                        cb.checked = false;
+                        cb.indeterminate = true;
+                    } else {
+                        cb.checked = false;
+                    }
+                } else {
+                    cb.checked = container.checkedCount > 0;
+                    if (container.checkedCount > 0 &&
+                        container.objectCount !== null &&
+                        container.checkedCount < container.objectCount) {
+                        cb.indeterminate = true;
+                    }
+                }
+
+                cb.addEventListener('change', function (e) {
+                    e.stopPropagation();
+                    handleContainerCheck(container, cb.checked);
+                });
+
+                tdCheck.appendChild(arrow);
+                tdCheck.appendChild(cb);
+
+                const tdName = document.createElement('td');
+                tdName.className = 'col-name';
+                tdName.colSpan = 1;
+                tdName.textContent = container.displayName + ' (' + countLabel + ')';
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdName);
+
+                tr.addEventListener('click', function () { toggleExpand(container.typeFolderId); });
+                return tr;
+            }
+
+            function createObjectRow(obj, isChild) {
                 const tr = document.createElement('tr');
                 tr.dataset.ref = obj.ref;
+                if (isChild) { tr.className = 'child-row'; }
 
                 const tdCheck = document.createElement('td');
                 tdCheck.className = 'col-check';
@@ -450,22 +558,133 @@
                         checkedSet.delete(obj.ref);
                     }
                     vscode.postMessage({ command: 'toggle', data: { ref: obj.ref, checked: checked } });
+                    // Обновить tri-state у родительского контейнера
+                    refreshContainerCheckbox(obj);
                     updateBadge();
                 });
                 tdCheck.appendChild(cb);
-
-                const tdType = document.createElement('td');
-                tdType.className = 'col-type';
-                tdType.textContent = obj.type;
 
                 const tdName = document.createElement('td');
                 tdName.className = 'col-name';
                 tdName.textContent = obj.displayName;
 
                 tr.appendChild(tdCheck);
-                tr.appendChild(tdType);
                 tr.appendChild(tdName);
                 return tr;
+            }
+
+            // Обновить визуальный tri-state чекбокса контейнера после изменения дочернего
+            function refreshContainerCheckbox(obj) {
+                // Найти контейнер по ref-типу
+                const typeName = obj.ref.split('.')[0];
+                const container = containers.find(function (c) {
+                    return c.metadataType === typeName || c.typeFolderId.indexOf(typeName) !== -1;
+                });
+                if (!container) { return; }
+                const objects = objectsByType.get(container.typeFolderId);
+                if (!objects) { return; }
+
+                // Найти строку контейнера по typeFolderId через data-attribute недоступен на tr.type-container-row,
+                // поэтому проще перерисовать tree (дёшево: только tbody)
+                renderTree();
+            }
+
+            // ── Expand / collapse ─────────────────────────────────────────────
+
+            function toggleExpand(typeFolderId) {
+                if (expandedTypes.has(typeFolderId)) {
+                    expandedTypes.delete(typeFolderId);
+                    renderTree();
+                } else {
+                    expandedTypes.add(typeFolderId);
+                    if (!objectsByType.has(typeFolderId)) {
+                        triggerExpand(typeFolderId);
+                    } else {
+                        renderTree();
+                    }
+                }
+            }
+
+            function triggerExpand(typeFolderId) {
+                loadingTypes.add(typeFolderId);
+                renderTree(); // перерисовать со спиннером
+                vscode.postMessage({ command: 'expand', data: { typeFolderId: typeFolderId } });
+            }
+
+            // ── Container checkbox ────────────────────────────────────────────
+
+            function handleContainerCheck(container, checked) {
+                const objects = objectsByType.get(container.typeFolderId);
+                if (!objects) {
+                    // Нужно загрузить сначала — раскрываем и ждём
+                    expandedTypes.add(container.typeFolderId);
+                    triggerExpand(container.typeFolderId);
+                    // После загрузки пользователь повторит клик
+                    return;
+                }
+                const refs = objects.map(function (o) { return o.ref; });
+                if (checked) {
+                    for (const ref of refs) { checkedSet.add(ref); }
+                    vscode.postMessage({ command: 'selectAll', data: { refs: refs } });
+                } else {
+                    for (const ref of refs) { checkedSet.delete(ref); }
+                    vscode.postMessage({ command: 'deselectAll', data: { refs: refs } });
+                }
+                renderTree();
+                updateBadge();
+            }
+
+            // ── Bulk load ─────────────────────────────────────────────────────
+
+            function ensureAllLoaded(callback) {
+                if (allLoaded) {
+                    callback();
+                    return;
+                }
+                bulkLoadInProgress = true;
+                pendingAfterLoad = callback;
+                showLoadingOverlay('Загрузка объектов...');
+                vscode.postMessage({ command: 'expandAll' });
+            }
+
+            function showLoadingOverlay(text) {
+                const ov = document.getElementById('loading-overlay');
+                document.getElementById('loading-text').textContent = text;
+                ov.classList.add('visible');
+            }
+
+            function hideLoadingOverlay() {
+                document.getElementById('loading-overlay').classList.remove('visible');
+            }
+
+            // ── Flat render (поиск / showCheckedOnly) ─────────────────────────
+
+            function renderFlat() {
+                renderSeq++;
+                const tbody = document.getElementById('table-body');
+                const emptyState = document.getElementById('empty-state');
+                tbody.innerHTML = '';
+                const q = searchQuery.toLowerCase();
+                const allObjects = [];
+                for (const objects of objectsByType.values()) {
+                    for (const obj of objects) {
+                        if (q && !obj.displayName.toLowerCase().includes(q) &&
+                            !obj.ref.toLowerCase().includes(q)) { continue; }
+                        if (showCheckedOnly && !checkedSet.has(obj.ref)) { continue; }
+                        allObjects.push(obj);
+                    }
+                }
+                if (allObjects.length === 0) {
+                    emptyState.style.display = 'block';
+                } else {
+                    emptyState.style.display = 'none';
+                    const fragment = document.createDocumentFragment();
+                    for (const obj of allObjects) {
+                        fragment.appendChild(createObjectRow(obj, false));
+                    }
+                    tbody.appendChild(fragment);
+                }
+                updateFooter();
             }
 
             // ── Badge / footer ────────────────────────────────────────────────
@@ -486,9 +705,17 @@
             }
 
             function updateFooter() {
-                const visible = getVisibleObjects().length;
+                let total = 0;
+                for (const objects of objectsByType.values()) {
+                    total += objects.length;
+                }
+                const approxTotal = containers.reduce(function (acc, c) {
+                    return acc + (c.objectCount !== null ? c.objectCount : 0);
+                }, 0);
                 document.getElementById('status').textContent =
-                    'Показано: ' + visible + ' из ' + allObjects.length;
+                    allLoaded
+                        ? 'Объектов: ' + total
+                        : 'Загружено: ' + total + ' (всего ~' + approxTotal + ')';
             }
 
             // ── Banner ────────────────────────────────────────────────────────
@@ -508,42 +735,43 @@
                 if (searchDebounceTimer) { clearTimeout(searchDebounceTimer); }
                 searchDebounceTimer = setTimeout(function () {
                     searchDebounceTimer = null;
-                    requestAnimationFrame(renderTable);
+                    requestAnimationFrame(renderTree);
                 }, 200);
-            });
-
-            document.getElementById('type-filter').addEventListener('change', function (e) {
-                typeFilter = e.target.value;
-                requestAnimationFrame(renderTable);
             });
 
             document.getElementById('show-checked-only').addEventListener('change', function (e) {
                 showCheckedOnly = e.target.checked;
-                requestAnimationFrame(renderTable);
+                requestAnimationFrame(renderTree);
             });
 
             document.getElementById('btn-select-all').addEventListener('click', function () {
-                const visible = getVisibleObjects();
-                const refs = [];
-                for (const obj of visible) {
-                    checkedSet.add(obj.ref);
-                    refs.push(obj.ref);
-                }
-                renderTable();
-                updateBadge();
-                vscode.postMessage({ command: 'selectAll', data: { refs: refs } });
+                ensureAllLoaded(function () {
+                    const refs = [];
+                    for (const objects of objectsByType.values()) {
+                        for (const obj of objects) {
+                            checkedSet.add(obj.ref);
+                            refs.push(obj.ref);
+                        }
+                    }
+                    renderTree();
+                    updateBadge();
+                    vscode.postMessage({ command: 'selectAll', data: { refs: refs } });
+                });
             });
 
             document.getElementById('btn-deselect-all').addEventListener('click', function () {
-                const visible = getVisibleObjects();
-                const refs = [];
-                for (const obj of visible) {
-                    checkedSet.delete(obj.ref);
-                    refs.push(obj.ref);
-                }
-                renderTable();
-                updateBadge();
-                vscode.postMessage({ command: 'deselectAll', data: { refs: refs } });
+                ensureAllLoaded(function () {
+                    const refs = [];
+                    for (const objects of objectsByType.values()) {
+                        for (const obj of objects) {
+                            checkedSet.delete(obj.ref);
+                            refs.push(obj.ref);
+                        }
+                    }
+                    renderTree();
+                    updateBadge();
+                    vscode.postMessage({ command: 'deselectAll', data: { refs: refs } });
+                });
             });
 
             document.getElementById('btn-save').addEventListener('click', function () {
@@ -573,6 +801,36 @@
             window.addEventListener('message', function (e) {
                 const msg = e.data;
                 switch (msg.command) {
+                    case 'objectsLoaded': {
+                        const typeFolderId = msg.data.typeFolderId;
+                        const objects = msg.data.objects;
+                        objectsByType.set(typeFolderId, objects);
+                        loadingTypes.delete(typeFolderId);
+                        // Обновить objectCount в containers
+                        const c = containers.find(function (ct) { return ct.typeFolderId === typeFolderId; });
+                        if (c) { c.objectCount = objects.length; }
+                        renderTree();
+                        break;
+                    }
+                    case 'allObjectsLoaded': {
+                        const entries = Object.entries(msg.data.containers);
+                        for (const entry of entries) {
+                            const typeFolderId = entry[0];
+                            const objects = entry[1];
+                            objectsByType.set(typeFolderId, objects);
+                            const c = containers.find(function (ct) { return ct.typeFolderId === typeFolderId; });
+                            if (c) { c.objectCount = objects.length; }
+                        }
+                        allLoaded = true;
+                        bulkLoadInProgress = false;
+                        hideLoadingOverlay();
+                        if (pendingAfterLoad) {
+                            const cb = pendingAfterLoad;
+                            pendingAfterLoad = null;
+                            cb();
+                        }
+                        break;
+                    }
                     case 'saveSuccess':
                         // Panel will be disposed by provider
                         break;
