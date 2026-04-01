@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+    <title>Состав подсистемы</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            padding: 16px;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        header h2 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            margin-bottom: 8px;
+        }
+
+        .toolbar-left {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex: 1;
+            flex-wrap: wrap;
+        }
+
+        .toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        input[type="text"] {
+            background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            padding: 4px 8px;
+            border-radius: 2px;
+            outline: none;
+            min-width: 180px;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--vscode-focusBorder);
+        }
+
+        select {
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+            padding: 4px 8px;
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+        }
+
+        select:focus {
+            border-color: var(--vscode-focusBorder);
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        input[type="checkbox"] {
+            cursor: pointer;
+        }
+
+        button {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 4px 12px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: var(--vscode-font-size);
+            font-family: var(--vscode-font-family);
+            white-space: nowrap;
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--vscode-button-hoverBackground);
+        }
+
+        button:active:not(:disabled) {
+            opacity: 0.9;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+
+        button.secondary:hover:not(:disabled) {
+            background: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .changes-badge {
+            display: none;
+            background: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+
+        .table-container {
+            flex: 1;
+            overflow: auto;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 2px;
+            position: relative;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        thead {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        th {
+            background: var(--vscode-editorGroupHeader-tabsBackground);
+            color: var(--vscode-foreground);
+            font-weight: 600;
+            padding: 6px 10px;
+            text-align: left;
+            border-bottom: 2px solid var(--vscode-panel-border);
+            border-right: 1px solid var(--vscode-panel-border);
+            white-space: nowrap;
+        }
+
+        th.col-check {
+            width: 36px;
+            text-align: center;
+            padding: 6px 4px;
+        }
+
+        th.col-type {
+            width: 140px;
+        }
+
+        th.col-name {
+            /* fills remaining space */
+        }
+
+        tbody tr {
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        tbody tr:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        td {
+            padding: 5px 10px;
+            border-right: 1px solid var(--vscode-panel-border);
+        }
+
+        td.col-check {
+            text-align: center;
+            padding: 4px;
+            width: 36px;
+        }
+
+        td.col-check input[type="checkbox"] {
+            width: 14px;
+            height: 14px;
+        }
+
+        td.col-type {
+            width: 140px;
+            color: var(--vscode-descriptionForeground);
+            font-size: 0.9em;
+        }
+
+        td.col-name {
+            word-break: break-word;
+        }
+
+        .footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-top: 10px;
+            border-top: 1px solid var(--vscode-panel-border);
+            margin-top: 8px;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .footer-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .footer-status {
+            color: var(--vscode-descriptionForeground);
+            font-size: 12px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .banner {
+            display: none;
+            padding: 8px 12px;
+            border-radius: 2px;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin-bottom: 8px;
+        }
+
+        .banner-error {
+            background: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+        }
+
+        .banner-info {
+            background: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h2 id="subsystem-title">Состав подсистемы</h2>
+    </header>
+
+    <div id="banner" class="banner" aria-live="polite"></div>
+
+    <div class="toolbar">
+        <div class="toolbar-left">
+            <input type="text" id="search" placeholder="Поиск...">
+            <select id="type-filter">
+                <option value="">Все типы</option>
+            </select>
+            <label class="checkbox-label">
+                <input type="checkbox" id="show-checked-only">
+                <span>Только включённые</span>
+            </label>
+            <button class="secondary" id="btn-select-all">Выбрать все</button>
+            <button class="secondary" id="btn-deselect-all">Снять все</button>
+        </div>
+        <div class="toolbar-right">
+            <span id="changes-badge" class="changes-badge"></span>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <table id="composition-table">
+            <thead>
+                <tr>
+                    <th class="col-check"></th>
+                    <th class="col-type">Тип</th>
+                    <th class="col-name">Имя</th>
+                </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+        </table>
+        <div id="empty-state" class="empty-state" style="display: none;">
+            Нет объектов, соответствующих фильтру.
+        </div>
+    </div>
+
+    <div class="footer">
+        <div class="footer-actions">
+            <button id="btn-save" disabled>Сохранить</button>
+            <button class="secondary" id="btn-cancel">Отмена</button>
+        </div>
+        <span id="status" class="footer-status"></span>
+    </div>
+
+    <script>
+        (function () {
+            const vscode = acquireVsCodeApi();
+
+            let allObjects = [];
+            let checkedSet = new Set();
+            let initialChecked = new Set();
+
+            let searchQuery = '';
+            let typeFilter = '';
+            let showCheckedOnly = false;
+
+            let renderSeq = 0;
+            let searchDebounceTimer = null;
+
+            // ── Init ──────────────────────────────────────────────────────────
+
+            function init() {
+                const data = window.__compositionData;
+                if (!data) { return; }
+
+                document.getElementById('subsystem-title').textContent =
+                    'Состав подсистемы: ' + data.subsystemName;
+
+                allObjects = data.objects || [];
+                checkedSet = new Set(data.checkedRefs || []);
+                initialChecked = new Set(data.checkedRefs || []);
+
+                const typeSelect = document.getElementById('type-filter');
+                const types = Array.from(new Set(allObjects.map(function (o) { return o.type; }))).sort();
+                for (const t of types) {
+                    const opt = document.createElement('option');
+                    opt.value = t;
+                    opt.textContent = t;
+                    typeSelect.appendChild(opt);
+                }
+
+                renderTable();
+                updateBadge();
+                updateFooter();
+            }
+
+            // ── Rendering ─────────────────────────────────────────────────────
+
+            function renderTable() {
+                renderSeq += 1;
+                const seq = renderSeq;
+
+                const tbody = document.getElementById('table-body');
+                const emptyState = document.getElementById('empty-state');
+                tbody.innerHTML = '';
+
+                const visible = getVisibleObjects();
+
+                if (visible.length === 0) {
+                    emptyState.style.display = 'block';
+                    updateFooter();
+                    return;
+                }
+                emptyState.style.display = 'none';
+
+                const CHUNK = 100;
+
+                if (visible.length <= CHUNK) {
+                    renderAll(visible, tbody);
+                    updateFooter();
+                    return;
+                }
+
+                let i = 0;
+                function renderChunk() {
+                    if (seq !== renderSeq) { return; }
+                    const fragment = document.createDocumentFragment();
+                    const end = Math.min(i + CHUNK, visible.length);
+                    for (; i < end; i++) {
+                        fragment.appendChild(createRow(visible[i]));
+                    }
+                    tbody.appendChild(fragment);
+                    if (i < visible.length) {
+                        requestAnimationFrame(renderChunk);
+                    } else {
+                        updateFooter();
+                    }
+                }
+                renderChunk();
+            }
+
+            function getVisibleObjects() {
+                const q = searchQuery.toLowerCase();
+                return allObjects.filter(function (obj) {
+                    if (q && !obj.displayName.toLowerCase().includes(q) &&
+                            !obj.ref.toLowerCase().includes(q)) { return false; }
+                    if (typeFilter && obj.type !== typeFilter) { return false; }
+                    if (showCheckedOnly && !checkedSet.has(obj.ref)) { return false; }
+                    return true;
+                });
+            }
+
+            function renderAll(objects, tbody) {
+                const fragment = document.createDocumentFragment();
+                for (const obj of objects) {
+                    fragment.appendChild(createRow(obj));
+                }
+                tbody.appendChild(fragment);
+            }
+
+            function createRow(obj) {
+                const tr = document.createElement('tr');
+                tr.dataset.ref = obj.ref;
+
+                const tdCheck = document.createElement('td');
+                tdCheck.className = 'col-check';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = checkedSet.has(obj.ref);
+                cb.addEventListener('change', function () {
+                    const checked = cb.checked;
+                    if (checked) {
+                        checkedSet.add(obj.ref);
+                    } else {
+                        checkedSet.delete(obj.ref);
+                    }
+                    vscode.postMessage({ command: 'toggle', data: { ref: obj.ref, checked: checked } });
+                    updateBadge();
+                });
+                tdCheck.appendChild(cb);
+
+                const tdType = document.createElement('td');
+                tdType.className = 'col-type';
+                tdType.textContent = obj.type;
+
+                const tdName = document.createElement('td');
+                tdName.className = 'col-name';
+                tdName.textContent = obj.displayName;
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdType);
+                tr.appendChild(tdName);
+                return tr;
+            }
+
+            // ── Badge / footer ────────────────────────────────────────────────
+
+            function updateBadge() {
+                const added = Array.from(checkedSet).filter(function (r) { return !initialChecked.has(r); }).length;
+                const removed = Array.from(initialChecked).filter(function (r) { return !checkedSet.has(r); }).length;
+                const total = added + removed;
+                const badge = document.getElementById('changes-badge');
+                if (total > 0) {
+                    badge.textContent = total + '\u00a0изм.';
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.textContent = '';
+                    badge.style.display = 'none';
+                }
+                document.getElementById('btn-save').disabled = total === 0;
+            }
+
+            function updateFooter() {
+                const visible = getVisibleObjects().length;
+                document.getElementById('status').textContent =
+                    'Показано: ' + visible + ' из ' + allObjects.length;
+            }
+
+            // ── Banner ────────────────────────────────────────────────────────
+
+            function showBanner(text, type) {
+                const banner = document.getElementById('banner');
+                banner.textContent = text;
+                banner.className = 'banner banner-' + type;
+                banner.style.display = 'block';
+                setTimeout(function () { banner.style.display = 'none'; }, 8000);
+            }
+
+            // ── Event listeners ───────────────────────────────────────────────
+
+            document.getElementById('search').addEventListener('input', function (e) {
+                searchQuery = e.target.value;
+                if (searchDebounceTimer) { clearTimeout(searchDebounceTimer); }
+                searchDebounceTimer = setTimeout(function () {
+                    searchDebounceTimer = null;
+                    requestAnimationFrame(renderTable);
+                }, 200);
+            });
+
+            document.getElementById('type-filter').addEventListener('change', function (e) {
+                typeFilter = e.target.value;
+                requestAnimationFrame(renderTable);
+            });
+
+            document.getElementById('show-checked-only').addEventListener('change', function (e) {
+                showCheckedOnly = e.target.checked;
+                requestAnimationFrame(renderTable);
+            });
+
+            document.getElementById('btn-select-all').addEventListener('click', function () {
+                const visible = getVisibleObjects();
+                const refs = [];
+                for (const obj of visible) {
+                    checkedSet.add(obj.ref);
+                    refs.push(obj.ref);
+                }
+                renderTable();
+                updateBadge();
+                vscode.postMessage({ command: 'selectAll', data: { refs: refs } });
+            });
+
+            document.getElementById('btn-deselect-all').addEventListener('click', function () {
+                const visible = getVisibleObjects();
+                const refs = [];
+                for (const obj of visible) {
+                    checkedSet.delete(obj.ref);
+                    refs.push(obj.ref);
+                }
+                renderTable();
+                updateBadge();
+                vscode.postMessage({ command: 'deselectAll', data: { refs: refs } });
+            });
+
+            document.getElementById('btn-save').addEventListener('click', function () {
+                vscode.postMessage({ command: 'save' });
+                const btn = document.getElementById('btn-save');
+                btn.disabled = true;
+                btn.textContent = 'Сохранение...';
+            });
+
+            document.getElementById('btn-cancel').addEventListener('click', function () {
+                const added = Array.from(checkedSet).filter(function (r) { return !initialChecked.has(r); }).length;
+                const removed = Array.from(initialChecked).filter(function (r) { return !checkedSet.has(r); }).length;
+                const dirty = added + removed;
+                if (dirty > 0 && !confirm('Есть несохранённые изменения. Закрыть?')) { return; }
+                vscode.postMessage({ command: 'cancel' });
+            });
+
+            // Ctrl+S
+            document.addEventListener('keydown', function (e) {
+                if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                    e.preventDefault();
+                    const btn = document.getElementById('btn-save');
+                    if (!btn.disabled) { btn.click(); }
+                }
+            });
+
+            window.addEventListener('message', function (e) {
+                const msg = e.data;
+                switch (msg.command) {
+                    case 'saveSuccess':
+                        // Panel will be disposed by provider
+                        break;
+                    case 'saveError': {
+                        const btn = document.getElementById('btn-save');
+                        btn.disabled = false;
+                        btn.textContent = 'Сохранить';
+                        showBanner((msg.data && msg.data.message) || 'Ошибка сохранения', 'error');
+                        break;
+                    }
+                    case 'error':
+                        showBanner((msg.data && msg.data.message) || 'Неизвестная ошибка', 'error');
+                        break;
+                }
+            });
+
+            // ── Bootstrap ─────────────────────────────────────────────────────
+
+            // __COMPOSITION_DATA_PLACEHOLDER__
+
+            if (window.__compositionData) {
+                init();
+            }
+        })();
+    </script>
+</body>
+</html>

@@ -175,6 +175,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.editSubsystemComposition",
+        "title": "Редактор состава подсистемы",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
         "title": "CDT 41: Configure ibcmd…",
         "category": "CDT 41"
@@ -539,6 +544,11 @@
           "group": "1_modify"
         },
         {
+          "command": "1c-metadata-tree.editSubsystemComposition",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Subsystem/",
+          "group": "2_subsystem@0"
+        },
+        {
           "command": "1c-metadata-tree.clearSubsystemFilter",
           "when": "view == 1c-metadata-tree && subsystemFilterActive",
           "group": "navigation"
@@ -766,7 +776,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "package": "npm run compile && node node_modules/@vscode/vsce/vsce package",
-    "compile": "tsc -p ./",
+    "copy:webviews": "node -e \"const fs=require('fs');const p=require('path');const pairs=[['src/rolesEditor/rolesEditorWebview.html','dist/rolesEditor/rolesEditorWebview.html'],['src/subsystemCompositionEditor/subsystemCompositionWebview.html','dist/subsystemCompositionEditor/subsystemCompositionWebview.html']];for(const [s,d] of pairs){fs.mkdirSync(p.dirname(d),{recursive:true});fs.copyFileSync(s,d);}\"",
+    "compile": "tsc -p ./ && npm run copy:webviews",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",

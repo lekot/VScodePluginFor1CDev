@@ -498,6 +498,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
+   * Get all root nodes (one per configuration in workspace).
+   */
+  getRootNodes(): readonly TreeNode[] {
+    return this.rootNodes;
+  }
+
+  /**
    * Get configuration root path for the tree (first root's context; backward compat).
    */
   getConfigPath(): string | null {

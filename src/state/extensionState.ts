@@ -4,6 +4,7 @@ import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
+import type { SubsystemCompositionEditorProvider } from '../subsystemCompositionEditor/subsystemCompositionEditorProvider';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
 import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
@@ -23,6 +24,7 @@ export class ExtensionState {
   propertiesProvider: PropertiesProvider | null = null;
   typeEditorProvider: TypeEditorProvider | null = null;
   rolesRightsEditorProvider: RolesRightsEditorProvider | null = null;
+  subsystemCompositionEditorProvider: SubsystemCompositionEditorProvider | null = null;
   formEditorProvider: FormEditorProvider | null = null;
   mxlPreviewProvider: MxlPreviewProvider | null = null;
   extensionContext: vscode.ExtensionContext | undefined;
@@ -50,6 +52,8 @@ export class ExtensionState {
     this.metadataWatchers = [];
     this.reloadCoordinator?.dispose();
     this.reloadCoordinator = null;
+    this.subsystemCompositionEditorProvider?.dispose();
+    this.subsystemCompositionEditorProvider = null;
     this.infobaseTreeProvider = null;
     this.infobaseTreeView = null;
     this.refreshBindingTreeDecorations = null;

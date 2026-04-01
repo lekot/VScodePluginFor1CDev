@@ -195,6 +195,34 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const editSubsystemCompositionCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.editSubsystemComposition',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.Subsystem) {
+        vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.treeDataProvider || !state.subsystemCompositionEditorProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава подсистемы.');
+        return;
+      }
+      const configPath = state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
+      if (!configPath) {
+        vscode.window.showErrorMessage('CDT 41: не удалось определить путь к конфигурации.');
+        return;
+      }
+      try {
+        await state.subsystemCompositionEditorProvider.show(target, state.treeDataProvider, configPath);
+      } catch (err) {
+        Logger.error('Failed to open subsystem composition editor', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ошибка открытия редактора состава: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
   const validateCurrentXmlCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.validateCurrentXml',
     async () => {
@@ -309,5 +337,6 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     openTemplatePreviewCommand,
     saveRightsEditorCommand,
     validateCurrentXmlCommand,
+    editSubsystemCompositionCommand,
   ];
 }

@@ -4,6 +4,7 @@ import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
+import { SubsystemCompositionEditorProvider } from '../subsystemCompositionEditor/subsystemCompositionEditorProvider';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
 import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
@@ -61,6 +62,12 @@ export function registerExtensionWorkspace(
 
   state.rolesRightsEditorProvider = new RolesRightsEditorProvider(context);
   context.subscriptions.push(state.rolesRightsEditorProvider);
+
+  state.subsystemCompositionEditorProvider = new SubsystemCompositionEditorProvider(context, {
+    loadMetadataTree: () => lifecycle.loadMetadataTree(),
+    invalidateTreeCacheOnly: (cp: string) => lifecycle.invalidateTreeCacheOnly(cp),
+  });
+  context.subscriptions.push(state.subsystemCompositionEditorProvider);
 
   state.propertiesProvider = new PropertiesProvider(
     context,

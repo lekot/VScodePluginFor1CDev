@@ -18,6 +18,7 @@ import {
 import { loadMetadataObjects } from './metadataLoader';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
+import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 
 /**
  * Provider for the roles and rights editor webview
@@ -204,7 +205,7 @@ export class RolesRightsEditorProvider {
     let html = await fs.promises.readFile(htmlPath, 'utf8');
 
     // Prepare data to inject
-    const roleDataJson = this.escapeJsonForScript(
+    const roleDataJson = escapeJsonForScript(
       JSON.stringify({
         name: this.currentRoleModel.name,
         rights: this.currentRoleModel.rights,
@@ -212,7 +213,7 @@ export class RolesRightsEditorProvider {
       })
     );
 
-    const objectsJson = this.escapeJsonForScript(JSON.stringify(this.allObjects));
+    const objectsJson = escapeJsonForScript(JSON.stringify(this.allObjects));
     const loadingFlag = initialTableLoading ? 'true' : 'false';
 
     // Inject data into the script (match line ending \n or \r\n)
@@ -581,16 +582,6 @@ export class RolesRightsEditorProvider {
       'tableRenderProgress',
     ];
     return validCommands.includes(m.command);
-  }
-
-  /**
-   * Escape JSON for safe embedding in script tags
-   */
-  private escapeJsonForScript(json: string): string {
-    return json
-      .replace(/<\/script>/gi, '<\\/script>')
-      .replace(/\u2028/g, '\\u2028')
-      .replace(/\u2029/g, '\\u2029');
   }
 
   /**

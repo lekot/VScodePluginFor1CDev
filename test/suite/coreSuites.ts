@@ -68,6 +68,8 @@ export const coreSuiteFiles: string[] = [
   'suite/subsystemComposition.test.js',
   'suite/subsystemCompositionFileUpdater.test.js',
   'suite/subsystemCompositionRefResolver.test.js',
+  'suite/compositionObjectCollector.test.js',
+  'suite/subsystemCompositionEditorProvider.test.js',
   'suite/infobaseStorageService.test.js',
   'suite/infobaseManager.test.js',
   'suite/bindingManager.test.js',
