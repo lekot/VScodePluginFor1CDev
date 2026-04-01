@@ -254,6 +254,7 @@
         /* ── Tree layout ─────────────────────────────────────── */
         .type-container-row {
             display: flex;
+            width: 100%;
             align-items: center;
             gap: 6px;
             padding: 5px 10px;
@@ -278,6 +279,22 @@
 
         .expand-arrow.expanded {
             transform: rotate(90deg);
+        }
+
+        .type-container-row td.col-check {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex: none;
+            width: auto;
+            padding: 0 4px;
+        }
+
+        .type-container-row td.col-name {
+            display: block;
+            flex: 1;
+            min-width: 0;
+            white-space: nowrap;
         }
 
         .child-row td.col-name {
@@ -479,11 +496,6 @@
                 // Ячейка стрелки + чекбокса
                 const tdCheck = document.createElement('td');
                 tdCheck.className = 'col-check';
-                tdCheck.style.display = 'flex';
-                tdCheck.style.alignItems = 'center';
-                tdCheck.style.gap = '4px';
-                tdCheck.style.width = 'auto';
-                tdCheck.style.padding = '0 4px';
 
                 const arrow = document.createElement('span');
                 arrow.className = 'expand-arrow' + (isExpanded ? ' expanded' : '');
