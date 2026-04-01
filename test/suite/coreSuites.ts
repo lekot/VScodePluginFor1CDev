@@ -67,6 +67,7 @@ export const coreSuiteFiles: string[] = [
   'suite/subsystemTreeBuilder.test.js',
   'suite/subsystemComposition.test.js',
   'suite/subsystemCompositionFileUpdater.test.js',
+  'suite/subsystemCompositionE2e.test.js',
   'suite/subsystemCompositionRefResolver.test.js',
   'suite/compositionObjectCollector.test.js',
   'suite/subsystemCompositionEditorProvider.test.js',

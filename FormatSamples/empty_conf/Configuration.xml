@@ -244,6 +244,7 @@
 			<DefaultConstantsForm/>
 		</Properties>
 		<ChildObjects>
+			<Subsystem>TestSubsystem1</Subsystem>
 			<Language>Русский</Language>
 			<Role>РольИзРасширения</Role>
 			<CommonModule>моооодуль</CommonModule>
