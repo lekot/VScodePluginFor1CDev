@@ -25,6 +25,9 @@ import {
   detectIbcmdExtensionNameFromConfigRelativePath,
   normalizeConfigRelativePath,
 } from '../bindings/bindingPathUtils';
+import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
+import { TreeCacheService } from './treeCacheService';
 
 const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.Catalog,
@@ -34,29 +37,6 @@ const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
   MetadataType.ChartOfAccounts,
   MetadataType.ChartOfCalculationTypes,
 ]);
-
-/** Main metadata types shown in type filter QuickPick. */
-const FILTERABLE_METADATA_TYPES: MetadataType[] = [
-  MetadataType.Catalog,
-  MetadataType.Document,
-  MetadataType.Enum,
-  MetadataType.Report,
-  MetadataType.DataProcessor,
-  MetadataType.InformationRegister,
-  MetadataType.AccumulationRegister,
-  MetadataType.ChartOfAccounts,
-  MetadataType.ChartOfCharacteristicTypes,
-  MetadataType.ChartOfCalculationTypes,
-  MetadataType.BusinessProcess,
-  MetadataType.Task,
-  MetadataType.Constant,
-  MetadataType.CommonModule,
-  MetadataType.Subsystem,
-  MetadataType.Role,
-  MetadataType.Extension,
-];
-
-const MAX_SEARCH_HISTORY = 10;
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
@@ -71,24 +51,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this._onDidChangeTreeData.event;
 
   private rootNodes: TreeNode[] = [];
-  private nodeCache = new Map<string, TreeNode>();
-  /** ID → all nodes with that ID (for collision-safe lookup). */
-  private nodeCandidatesById = new Map<string, TreeNode[]>();
-  /** Normalized name (lowercase) → node ids, for fast search (Stage 8.3). */
-  private nameIndex = new Map<string, string[]>();
-  /** Per-root load context for lazy loading (key = root node id). */
-  private loadContextByRootId = new Map<string, { configPath: string; format: ConfigFormat }>();
 
-  private searchQuery = '';
-  private searchBySynonymComment = false;
-  private searchUseRegex = false;
-  private typeFilter: Set<MetadataType> | null = null;
-  private subsystemFilter: { subsystemId: string | null; subsystemName: string | null } = {
-    subsystemId: null,
-    subsystemName: null,
-  };
-  private searchHistory: string[] = [];
-  private filterAncestorOrVisibleIds: Set<string> | null = null;
+  private readonly filter = new TreeFilterService();
+  private readonly cache = new TreeCacheService();
+
   private messageUpdater: ((message: string | undefined) => void) | null = null;
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
   private configurationBindingDecorations = new Map<string, ConfigurationBindingDecoration>();
@@ -173,54 +139,37 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
   }
 
-  /** Display form of search query: *query* for plain substring search, else as-is (additional_req.md п.2). */
-  private getSearchQueryForDisplay(): string {
-    const q = this.searchQuery.trim();
-    if (!q) {return q;}
-    if (this.searchUseRegex) {return q;}
-    const trimmed = q;
-    if (trimmed.startsWith('*') || trimmed.endsWith('*')) {return trimmed;}
-    return `*${trimmed}*`;
-  }
-
   private updateFilterMessage(): void {
     if (!this.messageUpdater) {return;}
-    const parts: string[] = [];
-    if (this.searchQuery.trim()) {parts.push(`Поиск: ${this.getSearchQueryForDisplay()}`);}
-    if (this.typeFilter && this.typeFilter.size > 0) {parts.push(`Типы: ${this.typeFilter.size}`);}
-    const subsystemLabel = this.getSubsystemFilterLabel();
-    if (subsystemLabel) {parts.push(subsystemLabel);}
+    const parts = this.filter.buildFilterMessageParts();
     this.messageUpdater(parts.length > 0 ? parts.join(' · ') : undefined);
   }
 
   // --- Search/filter state (public API) ---
 
   setSearchQuery(query: string): void {
-    this.searchQuery = (query || '').trim();
-    this.filterAncestorOrVisibleIds = null;
+    this.filter.setSearchQuery(query);
     this.updateFilterMessage();
     this.refresh();
   }
 
   getSearchQuery(): string {
-    return this.searchQuery;
+    return this.filter.getSearchQuery();
   }
 
   setSearchOptions(options: { bySynonymComment?: boolean; useRegex?: boolean }): void {
-    if (options.bySynonymComment !== undefined) {this.searchBySynonymComment = options.bySynonymComment;}
-    if (options.useRegex !== undefined) {this.searchUseRegex = options.useRegex;}
-    this.filterAncestorOrVisibleIds = null;
+    this.filter.setSearchOptions(options);
     this.refresh();
   }
 
   setTypeFilter(types: MetadataType[] | null): void {
-    this.typeFilter = types && types.length > 0 ? new Set(types) : null;
+    this.filter.setTypeFilter(types);
     this.updateFilterMessage();
     this.refresh();
   }
 
   getTypeFilter(): MetadataType[] | null {
-    return this.typeFilter ? Array.from(this.typeFilter) : null;
+    return this.filter.getTypeFilter();
   }
 
   /**
@@ -229,11 +178,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @param subsystemName The display name of the subsystem, or null to clear filter
    */
   async setSubsystemFilter(subsystemId: string | null, subsystemName: string | null): Promise<void> {
-    this.subsystemFilter.subsystemId = subsystemId;
-    this.subsystemFilter.subsystemName = subsystemName;
-    
+    this.filter.setSubsystemFilter(subsystemId, subsystemName);
+
     if (subsystemId) {
-      const subsystemNode = this.nodeCache.get(subsystemId);
+      const subsystemNode = this.cache.findById(subsystemId);
       if (subsystemNode) {
         await this.loadSubsystemContent(subsystemNode);
         // Eagerly load all type-nodes referenced in subsystem Content so that
@@ -241,8 +189,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         await this.eagerLoadSubsystemTypes(subsystemNode);
       }
     }
-    
-    this.filterAncestorOrVisibleIds = null;
+
     this.updateFilterMessage();
     this.refresh();
   }
@@ -252,7 +199,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @returns Object with subsystemId and subsystemName, or null values if no filter is active
    */
   getSubsystemFilter(): { subsystemId: string | null; subsystemName: string | null } {
-    return { ...this.subsystemFilter };
+    return this.filter.getSubsystemFilter();
   }
 
   /**
@@ -277,13 +224,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
 
     // Get config path
-    const configRoot = this.getConfigurationRoot(subsystemNode);
+    const configRoot = this.cache.getConfigurationRoot(subsystemNode);
     if (!configRoot) {
       Logger.info('No config root found');
       return;
     }
-    
-    const ctx = this.loadContextByRootId.get(configRoot.id);
+
+    const ctx = this.cache.getLoadContext(configRoot.id);
     if (!ctx) {
       Logger.info('No load context found');
       return;
@@ -320,7 +267,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * and ensureFilterSets() cannot match any element nodes.
    */
   private async eagerLoadSubsystemTypes(subsystemNode: TreeNode): Promise<void> {
-    const subsystemsToLoad = this.collectSubsystemAndDescendants(subsystemNode);
+    const subsystemsToLoad = this.filter.collectSubsystemAndDescendants(subsystemNode);
     for (const sub of subsystemsToLoad) {
       await this.loadSubsystemContent(sub);
     }
@@ -346,9 +293,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (foldersToLoad.size === 0) {return;}
 
     // Find config root and load context
-    const configRoot = this.getConfigurationRoot(subsystemNode);
+    const configRoot = this.cache.getConfigurationRoot(subsystemNode);
     if (!configRoot) {return;}
-    const ctx = this.loadContextByRootId.get(configRoot.id);
+    const ctx = this.cache.getLoadContext(configRoot.id);
     if (!ctx) {return;}
 
     // For each folder, find the type-node in the tree and load its children if not yet loaded.
@@ -368,7 +315,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           const children = await MetadataParser.parseTypeContents(ctx.configPath, folder);
           for (const c of children) {
             c.parent = typeNode;
-            this.buildCache(c);
+            this.cache.buildCache(c);
           }
           typeNode.children = children;
         } catch (error) {
@@ -382,59 +329,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
   }
 
-  /** Build a map from XML ref type name (singular) to folder name (plural). */
+  /**
+   * Build a map from XML ref type name (singular) to folder name (plural).
+   * Derived from MetadataTypeMapper: the MetadataType enum values equal the singular XML ref type
+   * names used in subsystem Content (e.g. 'Document', 'Catalog'), and the folder names are the
+   * plural Designer directory names (e.g. 'Documents', 'Catalogs').
+   */
   private buildRefTypeToFolderMap(): Map<string, string> {
-    // Derived from MetadataTypeMapper: folder → MetadataType, we need refType → folder.
-    // refType in subsystem Content matches the singular XML element name used in 1C,
-    // which equals the MetadataType enum value (e.g. 'Document', 'Report', 'Catalog').
-    // The folder name is the plural form used in the file system.
-    const map = new Map<string, string>([
-      ['Catalog', 'Catalogs'],
-      ['Document', 'Documents'],
-      ['Enum', 'Enums'],
-      ['Report', 'Reports'],
-      ['DataProcessor', 'DataProcessors'],
-      ['ChartOfCharacteristicTypes', 'ChartsOfCharacteristicTypes'],
-      ['ChartOfAccounts', 'ChartsOfAccounts'],
-      ['ChartOfCalculationTypes', 'ChartsOfCalculationTypes'],
-      ['InformationRegister', 'InformationRegisters'],
-      ['AccumulationRegister', 'AccumulationRegisters'],
-      ['AccountingRegister', 'AccountingRegisters'],
-      ['CalculationRegister', 'CalculationRegisters'],
-      ['BusinessProcess', 'BusinessProcesses'],
-      ['Task', 'Tasks'],
-      ['ExternalDataSource', 'ExternalDataSources'],
-      ['Constant', 'Constants'],
-      ['SessionParameter', 'SessionParameters'],
-      ['FilterCriterion', 'FilterCriteria'],
-      ['ScheduledJob', 'ScheduledJobs'],
-      ['FunctionalOption', 'FunctionalOptions'],
-      ['FunctionalOptionsParameter', 'FunctionalOptionsParameters'],
-      ['SettingsStorage', 'SettingsStorages'],
-      ['EventSubscription', 'EventSubscriptions'],
-      ['CommonModule', 'CommonModules'],
-      ['CommandGroup', 'CommandGroups'],
-      ['Role', 'Roles'],
-      ['Interface', 'Interfaces'],
-      ['Style', 'Styles'],
-      ['WebService', 'WebServices'],
-      ['HTTPService', 'HTTPServices'],
-      ['IntegrationService', 'IntegrationServices'],
-      ['Subsystem', 'Subsystems'],
-      ['ExchangePlan', 'ExchangePlans'],
-      ['DocumentJournal', 'DocumentJournals'],
-      ['DefinedType', 'DefinedTypes'],
-      ['CommonAttribute', 'CommonAttributes'],
-      ['CommonCommand', 'CommonCommands'],
-      ['CommonForm', 'CommonForms'],
-      ['CommonPicture', 'CommonPictures'],
-      ['CommonTemplate', 'CommonTemplates'],
-      ['DocumentNumerator', 'DocumentNumerators'],
-      ['Language', 'Languages'],
-      ['WSReference', 'WSReferences'],
-      ['XDTOPackage', 'XDTOPackages'],
-      ['StyleItem', 'StyleItems'],
-    ]);
+    const map = new Map<string, string>();
+    for (const folderName of MetadataTypeMapper.getMetadataTypes()) {
+      const metaType = MetadataTypeMapper.map(folderName);
+      // MetadataType enum values are string literals matching the singular XML ref type names
+      map.set(metaType as string, folderName);
+    }
     return map;
   }
 
@@ -503,247 +410,38 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return result;
   }
 
-  /** Filter: visible if node is selected subsystem or its ancestor, or in Content of selected or any descendant subsystem (ADR 0001). */
-  private nodePassesSubsystemFilter(node: TreeNode): boolean {
-      if (!this.subsystemFilter.subsystemId) {
-        return true;
-      }
-
-      // Check if node is ancestor of the subsystem (Configuration → Subsystems → SelectedSubsystem)
-      let current: TreeNode | undefined = node;
-      while (current) {
-        // `id` is expected to be unique in real metadata. In property-based tests it can be duplicated,
-        // so we also require the node to be an actual subsystem.
-        if (
-          current.id === this.subsystemFilter.subsystemId &&
-          current.type === MetadataType.Subsystem
-        ) {
-          return true;
-        }
-        current = current.parent;
-      }
-
-      const subsystemNode = this.nodeCache.get(this.subsystemFilter.subsystemId);
-      if (!subsystemNode || subsystemNode.type !== MetadataType.Subsystem) {return false;}
-
-      const subsystemsToCheck = this.collectSubsystemAndDescendants(subsystemNode);
-      for (const sub of subsystemsToCheck) {
-        const content = sub.properties.Content;
-        if (!content || typeof content !== 'object' || content === null) {continue;}
-        const contentObj = content as Record<string, unknown>;
-        const rawItems = contentObj['xr:Item'];
-        const items: unknown[] = Array.isArray(rawItems) ? rawItems : (rawItems != null ? [rawItems] : []);
-        for (const item of items) {
-          if (typeof item === 'object' && item !== null) {
-            const refText = (item as Record<string, unknown>)['#text'] as string;
-            if (refText && this.nodeMatchesContentRef(node, refText)) {
-              return true;
-            }
-          }
-        }
-      }
-      return false;
-    }
-
-  /** Collect subsystem node and all descendant subsystem nodes (by tree children). */
-  private collectSubsystemAndDescendants(subsystemNode: TreeNode): TreeNode[] {
-    const out: TreeNode[] = [subsystemNode];
-    const stack: TreeNode[] = [subsystemNode];
-    while (stack.length > 0) {
-      const n = stack.pop()!;
-      for (const ch of n.children ?? []) {
-        if (ch.type === MetadataType.Subsystem) {
-          out.push(ch);
-          stack.push(ch);
-        }
-      }
-    }
-    return out;
-  }
-
-  /**
-   * Check if a node matches a subsystem content reference.
-   * Content references are in format "Type.Name" (e.g., "CommonModule.ТелеграмСервер")
-   */
-  private nodeMatchesContentRef(node: TreeNode, refText: string): boolean {
-    // Parse reference: "CommonModule.ТелеграмСервер" → type="CommonModule", name="ТелеграмСервер"
-    const parts = refText.split('.');
-    if (parts.length < 2) {
-      return false;
-    }
-
-    const refType = parts[0];
-    const refName = parts.slice(1).join('.'); // Handle names with dots
-
-    // Check if node matches the reference directly
-    if (node.type === refType && node.name === refName) {
-      return true;
-    }
-
-    // Check if any ancestor matches (to include child elements like Attributes, Forms, etc.)
-    let current: TreeNode | undefined = node.parent;
-    while (current) {
-      if (current.type === refType && current.name === refName) {
-        return true;
-      }
-      current = current.parent;
-    }
-
-    return false;
-  }
-
   /**
    * Get the subsystem filter label for display in the UI.
    * @returns The filter label string, or null if no filter is active
    */
   getSubsystemFilterLabel(): string | null {
-    if (!this.subsystemFilter.subsystemId || !this.subsystemFilter.subsystemName) {
-      return null;
-    }
-    return `Подсистема: ${this.subsystemFilter.subsystemName}`;
+    return this.filter.getSubsystemFilterLabel();
   }
 
   clearSearch(): void {
-    this.searchQuery = '';
-    this.typeFilter = null;
-    this.subsystemFilter.subsystemId = null;
-    this.subsystemFilter.subsystemName = null;
-    this.filterAncestorOrVisibleIds = null;
+    this.filter.clearAll();
     this.updateFilterMessage();
     this.refresh();
   }
 
   addSearchToHistory(query: string): void {
-    const q = (query || '').trim();
-    if (!q) {return;}
-    this.searchHistory = [q, ...this.searchHistory.filter((x) => x !== q)].slice(0, MAX_SEARCH_HISTORY);
+    this.filter.addSearchToHistory(query);
   }
 
   getSearchHistory(): string[] {
-    return [...this.searchHistory];
+    return this.filter.getSearchHistory();
   }
 
   /** Human-readable labels for filterable types. */
   static getFilterableTypeLabels(): { type: MetadataType; label: string }[] {
-    const labels: Record<MetadataType, string> = {
-      [MetadataType.Configuration]: 'Конфигурация',
-      [MetadataType.Catalog]: 'Справочник',
-      [MetadataType.Document]: 'Документ',
-      [MetadataType.Enum]: 'Перечисление',
-      [MetadataType.Report]: 'Отчёт',
-      [MetadataType.DataProcessor]: 'Обработка',
-      [MetadataType.ChartOfCharacteristicTypes]: 'План видов характеристик',
-      [MetadataType.ChartOfAccounts]: 'План счетов',
-      [MetadataType.ChartOfCalculationTypes]: 'План видов расчёта',
-      [MetadataType.InformationRegister]: 'Регистр сведений',
-      [MetadataType.AccumulationRegister]: 'Регистр накопления',
-      [MetadataType.AccountingRegister]: 'Регистр бухгалтерии',
-      [MetadataType.CalculationRegister]: 'Регистр расчёта',
-      [MetadataType.BusinessProcess]: 'Бизнес-процесс',
-      [MetadataType.Task]: 'Задача',
-      [MetadataType.ExternalDataSource]: 'Внешний источник',
-      [MetadataType.Constant]: 'Константа',
-      [MetadataType.SessionParameter]: 'Параметр сеанса',
-      [MetadataType.FilterCriterion]: 'Критерий отбора',
-      [MetadataType.ScheduledJob]: 'Регламентное задание',
-      [MetadataType.FunctionalOption]: 'Функциональная опция',
-      [MetadataType.FunctionalOptionsParameter]: 'Параметр ФО',
-      [MetadataType.SettingsStorage]: 'Хранилище настроек',
-      [MetadataType.EventSubscription]: 'Подписка на событие',
-      [MetadataType.CommonModule]: 'Общий модуль',
-      [MetadataType.CommandGroup]: 'Группа команд',
-      [MetadataType.Command]: 'Команда',
-      [MetadataType.Role]: 'Роль',
-      [MetadataType.Interface]: 'Интерфейс',
-      [MetadataType.Style]: 'Стиль',
-      [MetadataType.WebService]: 'Веб-сервис',
-      [MetadataType.HTTPService]: 'HTTP-сервис',
-      [MetadataType.IntegrationService]: 'Сервис интеграции',
-      [MetadataType.Subsystem]: 'Подсистема',
-      [MetadataType.ExchangePlan]: 'План обмена',
-      [MetadataType.DocumentJournal]: 'Журнал документов',
-      [MetadataType.DefinedType]: 'Определяемый тип',
-      [MetadataType.CommonAttribute]: 'Общий реквизит',
-      [MetadataType.CommonCommand]: 'Общая команда',
-      [MetadataType.CommonForm]: 'Общая форма',
-      [MetadataType.CommonPicture]: 'Общая картинка',
-      [MetadataType.CommonTemplate]: 'Общий макет',
-      [MetadataType.DocumentNumerator]: 'Нумератор документов',
-      [MetadataType.Language]: 'Язык',
-      [MetadataType.WSReference]: 'WS-ссылка',
-      [MetadataType.XDTOPackage]: 'XDTO-пакет',
-      [MetadataType.StyleItem]: 'Элемент стиля',
-      [MetadataType.Attribute]: 'Реквизит',
-      [MetadataType.TabularSection]: 'Табличная часть',
-      [MetadataType.Form]: 'Форма',
-      [MetadataType.Template]: 'Макет',
-      [MetadataType.CommandSubElement]: 'Подэлемент команды',
-      [MetadataType.Recurrence]: 'Повторение',
-      [MetadataType.Method]: 'Метод',
-      [MetadataType.Parameter]: 'Параметр',
-      [MetadataType.Extension]: 'Расширение',
-      [MetadataType.Unknown]: 'Неизвестный',
-    };
-    return FILTERABLE_METADATA_TYPES.map((type) => ({ type, label: labels[type] ?? type }));
-  }
-
-  private nodeMatchesSearch(node: TreeNode, query: string): boolean {
-    if (!query) {return true;}
-    const q = query.trim().toLowerCase();
-    const name = (node.name || '').toLowerCase();
-    const synonym = String((node.properties?.synonym as string) ?? '').toLowerCase();
-    const comment = String((node.properties?.comment as string) ?? '').toLowerCase();
-
-    const testString = (s: string): boolean => {
-      if (this.searchUseRegex) {
-        try {
-          const raw = this.searchQuery.trim();
-          const pattern = raw.startsWith('/') && raw.endsWith('/') ? raw.slice(1, -1) : raw;
-          return new RegExp(pattern, 'i').test(s);
-        } catch {
-          return s.includes(q);
-        }
-      }
-      return s.includes(q);
-    };
-
-    if (testString(name)) {return true;}
-    if (this.searchBySynonymComment && (testString(synonym) || testString(comment))) {return true;}
-    return false;
-  }
-
-  private nodeOrDescendantMatchesSearch(node: TreeNode, query: string): boolean {
-    if (!query) {return true;}
-    if (this.nodeMatchesSearch(node, query)) {return true;}
-    if (node.children) {
-      for (const child of node.children) {
-        if (this.nodeOrDescendantMatchesSearch(child, query)) {return true;}
-      }
-    }
-    return false;
-  }
-
-  private hasDescendantWithTypeInFilter(node: TreeNode): boolean {
-    if (!this.typeFilter || this.typeFilter.size === 0) {return true;}
-    if (this.typeFilter.has(node.type)) {return true;}
-    if (node.children) {
-      for (const child of node.children) {
-        if (this.hasDescendantWithTypeInFilter(child)) {return true;}
-      }
-    }
-    return false;
-  }
-
-  private passesTypeFilter(node: TreeNode): boolean {
-    if (!this.typeFilter || this.typeFilter.size === 0) {return true;}
-    return this.typeFilter.has(node.type) || this.hasDescendantWithTypeInFilter(node);
+    return TreeFilterService.getFilterableTypeLabels();
   }
 
   /** Visible nodes in depth-first order (for next/previous match navigation). */
   getVisibleNodesInOrder(): TreeNode[] {
     const ids = this.getVisibleOrderedNodeIds();
     return ids
-      .map((id) => this.nodeCache.get(id))
+      .map((id) => this.cache.findById(id))
       .filter((n): n is TreeNode => n != null);
   }
 
@@ -757,16 +455,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return;
     }
     this.rootNodes = [node];
-    this.loadContextByRootId.clear();
-    if (loadContext) {this.loadContextByRootId.set(node.id, loadContext);}
-    this.nodeCache.clear();
-    this.nodeCandidatesById.clear();
-    this.nameIndex.clear();
-    this.buildCache(node);
-    Logger.info('Tree cache size', { nodeCount: this.nodeCache.size });
-    this.filterAncestorOrVisibleIds = null;
+    this.cache.clearLoadContexts();
+    if (loadContext) {this.cache.setLoadContext(node.id, loadContext);}
+    this.cache.clear();
+    this.cache.buildCache(node);
+    Logger.info('Tree cache size', { nodeCount: this.cache.size });
+    this.filter.filterAncestorOrVisibleIds = null;
     this.refresh();
-    if (this.messageUpdater && !this.hasActiveFilter()) {
+    if (this.messageUpdater && !this.filter.hasActiveFilter()) {
       this.messageUpdater(undefined);
     }
   }
@@ -779,18 +475,16 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     loadContextMap?: Map<string, { configPath: string; format: ConfigFormat }>
   ): void {
     this.rootNodes = nodes;
-    this.loadContextByRootId = new Map(loadContextMap ?? []);
-    this.nodeCache.clear();
-    this.nodeCandidatesById.clear();
-    this.nameIndex.clear();
-    for (const node of nodes) {this.buildCache(node);}
-    Logger.info('Tree cache size', { nodeCount: this.nodeCache.size, roots: nodes.length });
-    this.filterAncestorOrVisibleIds = null;
+    this.cache.setLoadContexts(loadContextMap ?? new Map());
+    this.cache.clear();
+    for (const node of nodes) {this.cache.buildCache(node);}
+    Logger.info('Tree cache size', { nodeCount: this.cache.size, roots: nodes.length });
+    this.filter.filterAncestorOrVisibleIds = null;
     this.refresh();
     if (this.messageUpdater) {
       if (this.rootNodes.length === 0) {
         this.messageUpdater(MESSAGES.EMPTY_TREE_MESSAGE);
-      } else if (!this.hasActiveFilter()) {
+      } else if (!this.filter.hasActiveFilter()) {
         this.messageUpdater(undefined);
       }
     }
@@ -809,7 +503,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   getConfigPath(): string | null {
     const first = this.rootNodes[0];
     if (!first) {return null;}
-    return this.loadContextByRootId.get(first.id)?.configPath ?? first.filePath ?? null;
+    return this.cache.getLoadContext(first.id)?.configPath ?? first.filePath ?? null;
   }
 
   /**
@@ -829,39 +523,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Returns only nodes currently in cache (loaded so far).
    */
   searchByName(query: string): TreeNode[] {
-    const q = (query || '').trim().toLowerCase();
-    if (!q) {return [];}
-    const result: TreeNode[] = [];
-    for (const [key, ids] of this.nameIndex) {
-      if (key.includes(q)) {
-        for (const id of ids) {
-          const node = this.nodeCache.get(id);
-          if (node) {result.push(node);}
-        }
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Build cache for fast node lookup and name index for search
-   */
-  private buildCache(node: TreeNode): void {
-    this.nodeCache.set(node.id, node);
-    const candidates = this.nodeCandidatesById.get(node.id) ?? [];
-    candidates.push(node);
-    this.nodeCandidatesById.set(node.id, candidates);
-    const key = (node.name || '').toLowerCase();
-    if (key) {
-      const list = this.nameIndex.get(key) ?? [];
-      list.push(node.id);
-      this.nameIndex.set(key, list);
-    }
-    if (node.children) {
-      for (const child of node.children) {
-        this.buildCache(child);
-      }
-    }
+    return this.cache.searchByName(query);
   }
 
   /**
@@ -877,7 +539,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Call after create/delete that change files under this container (matrix, tests).
    */
   invalidateLoadedChildren(element: TreeNode): void {
-    const el = this.resolveActiveNode(element);
+    const el = this.cache.resolveActiveNode(element, this.rootNodes);
     if (!el.properties) {
       el.properties = {};
     }
@@ -893,17 +555,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // children must reload from disk like first expand — same as shallow parseMetadataElement.
       (el.properties as Record<string, unknown>)._lazy = true;
     }
-    this.filterAncestorOrVisibleIds = null;
+    this.filter.filterAncestorOrVisibleIds = null;
     this.refresh(el);
-  }
-
-  private getConfigurationRoot(node: TreeNode): TreeNode | null {
-    let n: TreeNode | undefined = node;
-    while (n) {
-      if (n.type === MetadataType.Configuration) {return n;}
-      n = n.parent;
-    }
-    return null;
   }
 
   /** Type folder under `Configuration` or under «Общие» (`Common`) after tree normalization. */
@@ -916,152 +569,24 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return commonGroup?.children?.find((c) => c.id === folderId);
   }
 
-  private getNodeLineage(node: TreeNode): TreeNode[] {
-    const lineage: TreeNode[] = [];
-    let current: TreeNode | undefined = node;
-    while (current) {
-      lineage.push(current);
-      current = current.parent;
-    }
-    return lineage.reverse();
-  }
-
-  private normalizeIdentityPath(value: string | undefined): string {
-    return (value ?? '').replace(/\\/g, '/').toLowerCase();
-  }
-
   private getConfigRootIdentity(root: TreeNode | null): string {
     if (!root) {return '';}
-    const fromLoadContext = this.loadContextByRootId.get(root.id)?.configPath;
-    if (fromLoadContext) {return this.normalizeIdentityPath(fromLoadContext);}
-    if (root.filePath) {return this.normalizeIdentityPath(path.dirname(root.filePath));}
-    return this.normalizeIdentityPath(root.id);
+    const fromLoadContext = this.cache.getLoadContext(root.id)?.configPath;
+    if (fromLoadContext) {return fromLoadContext.replace(/\\/g, '/').toLowerCase();}
+    if (root.filePath) {return path.dirname(root.filePath).replace(/\\/g, '/').toLowerCase();}
+    return root.id.replace(/\\/g, '/').toLowerCase();
   }
 
   private getNodeRootIdentity(node: TreeNode): string {
-    return this.getConfigRootIdentity(this.getConfigurationRoot(node));
+    return this.getConfigRootIdentity(this.cache.getConfigurationRoot(node));
   }
 
-  private getLineageSignature(node: TreeNode): string {
-    const lineage = this.getNodeLineage(node);
-    return lineage.map((part) => `${part.type}:${part.name}:${part.id}`).join(' > ');
-  }
-
-  private preferCandidateOnTie(target: TreeNode, currentBest: TreeNode, candidate: TreeNode): TreeNode {
-    const targetRootIdentity = this.getNodeRootIdentity(target);
-    if (targetRootIdentity) {
-      const bestMatchesRoot = this.getNodeRootIdentity(currentBest) === targetRootIdentity;
-      const candidateMatchesRoot = this.getNodeRootIdentity(candidate) === targetRootIdentity;
-      if (candidateMatchesRoot !== bestMatchesRoot) {
-        return candidateMatchesRoot ? candidate : currentBest;
-      }
-    }
-
-    const bestHasParent = currentBest.parent != null;
-    const candidateHasParent = candidate.parent != null;
-    if (candidateHasParent !== bestHasParent) {
-      return candidateHasParent ? candidate : currentBest;
-    }
-
-    const bestLineage = this.getLineageSignature(currentBest);
-    const candidateLineage = this.getLineageSignature(candidate);
-    if (candidateLineage !== bestLineage) {
-      return candidateLineage < bestLineage ? candidate : currentBest;
-    }
-
-    return candidate.id < currentBest.id ? candidate : currentBest;
-  }
-
-  private scoreNodeCandidate(target: TreeNode, candidate: TreeNode): number {
-    let score = 0;
-    if (candidate.type === target.type) {score += 8;}
-    if (candidate.name === target.name) {score += 8;}
-    if (candidate.id === target.id) {score += 4;}
-    if (target.filePath && candidate.filePath && target.filePath === candidate.filePath) {score += 6;}
-    if (
-      target.parentFilePath &&
-      candidate.parentFilePath &&
-      target.parentFilePath === candidate.parentFilePath
-    ) {
-      score += 4;
-    }
-    if (target.parent && candidate.parent && target.parent.id === candidate.parent.id) {score += 3;}
-    return score;
-  }
-
-  private pickBestCandidate(target: TreeNode, candidates: TreeNode[]): TreeNode | null {
-    if (candidates.length === 0) {return null;}
-    let best: TreeNode | null = null;
-    let bestScore = -1;
-    for (const candidate of candidates) {
-      const score = this.scoreNodeCandidate(target, candidate);
-      if (score > bestScore) {
-        bestScore = score;
-        best = candidate;
-      } else if (score === bestScore && best) {
-        best = this.preferCandidateOnTie(target, best, candidate);
-      }
-    }
-    return best;
-  }
-
-  private findNodeByIdWithContext(node: TreeNode): TreeNode | null {
-    const candidates = this.nodeCandidatesById.get(node.id) ?? [];
-    if (candidates.length === 0) {return null;}
-    return this.pickBestCandidate(node, candidates);
-  }
-
-  /**
-   * Resolve stale TreeNode instance to active node from the current in-memory tree.
-   * This keeps getChildren stable after tree reloads when VS Code passes old references.
-   */
-  private resolveActiveNode(node: TreeNode): TreeNode {
-    const lineage = this.getNodeLineage(node);
-    if (lineage.length === 0) {return node;}
-
-    const rootSegment = lineage[0];
-    const rootCandidates = this.rootNodes.filter(
-      (root) => root.type === rootSegment.type && root.name === rootSegment.name
-    );
-    let current = this.pickBestCandidate(rootSegment, rootCandidates);
-    if (!current) {
-      current = this.findNodeByIdWithContext(rootSegment);
-    }
-    if (!current) {
-      return this.findNodeByIdWithContext(node) ?? this.nodeCache.get(node.id) ?? node;
-    }
-
-    for (let i = 1; i < lineage.length; i++) {
-      const segment = lineage[i];
-      const children = current.children ?? [];
-      if (children.length === 0) {
-        return this.findNodeByIdWithContext(node) ?? this.nodeCache.get(node.id) ?? current;
-      }
-      const childCandidates = children.filter(
-        (child) =>
-          child.type === segment.type &&
-          child.name === segment.name &&
-          (!segment.filePath || !child.filePath || child.filePath === segment.filePath)
-      );
-      const next = this.pickBestCandidate(segment, childCandidates);
-      if (!next) {
-        return this.findNodeByIdWithContext(node) ?? this.nodeCache.get(node.id) ?? current;
-      }
-      current = next;
-    }
-
-    return current;
-  }
-
-  /**
-   * Get tree item for a node
-   */
   private isLazyTypeNode(element: TreeNode): boolean {
     if (element.children && element.children.length > 0) {
       return false;
     }
-    const configRoot = this.getConfigurationRoot(element);
-    if (!configRoot || !this.loadContextByRootId.has(configRoot.id)) {
+    const configRoot = this.cache.getConfigurationRoot(element);
+    if (!configRoot || !this.cache.getLoadContext(configRoot.id)) {
       return false;
     }
     const p = element.parent;
@@ -1078,8 +603,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private isLazyElementNode(element: TreeNode): boolean {
-    const configRoot = this.getConfigurationRoot(element);
-    if (!configRoot || !this.loadContextByRootId.has(configRoot.id) || element.properties._lazy !== true) {
+    const configRoot = this.cache.getConfigurationRoot(element);
+    if (!configRoot || !this.cache.getLoadContext(configRoot.id) || element.properties._lazy !== true) {
       return false;
     }
     if (!element.children || element.children.length === 0) {return true;}
@@ -1106,8 +631,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
     ensureTabularSectionColumnsPlaceholder(node);
     for (const c of node.children ?? []) {
-      if (!this.nodeCache.has(c.id)) {
-        this.buildCache(c);
+      if (!this.cache.findById(c.id)) {
+        this.cache.buildCache(c);
       }
     }
   }
@@ -1174,8 +699,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       const pathStr = this.getPathForTooltip(element);
       if (pathStr) {tooltipText += `\n${pathStr}`;}
       // Highlight match in tooltip when search is active (additional_req.md п.2)
-      const q = this.searchQuery.trim();
-      if (q && !this.searchUseRegex && this.nodeMatchesSearch(element, q)) {
+      const q = this.filter.rawSearchQuery.trim();
+      if (q && !this.filter.isRegex && this.filter.nodeMatchesSearch(element, q)) {
         tooltipText += `\nНайдено: "${q}"`;
       }
       if (element.type === MetadataType.Configuration) {
@@ -1251,22 +776,22 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     try {
       if (!element) {
         if (this.rootNodes.length === 0) {return Promise.resolve([]);}
-        if (!this.hasActiveFilter()) {return Promise.resolve(this.rootNodes);}
-        this.ensureFilterSets();
-        const ids = this.filterAncestorOrVisibleIds!;
+        if (!this.filter.hasActiveFilter()) {return Promise.resolve(this.rootNodes);}
+        this.filter.ensureFilterSets(this.cache.nodes);
+        const ids = this.filter.filterAncestorOrVisibleIds!;
         return Promise.resolve(this.rootNodes.filter((r) => ids.has(r.id)));
       }
-      const activeElement = this.resolveActiveNode(element);
+      const activeElement = this.cache.resolveActiveNode(element, this.rootNodes);
 
       // Lazy load: type node with no children yet
       if (this.isLazyTypeNode(activeElement)) {
-        const configRoot = this.getConfigurationRoot(activeElement);
-        const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
+        const configRoot = this.cache.getConfigurationRoot(activeElement);
+        const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         return MetadataParser.parseTypeContents(ctx.configPath, activeElement.id).then((children) => {
           for (const c of children) {
             c.parent = activeElement;
-            this.buildCache(c);
+            this.cache.buildCache(c);
           }
           activeElement.children = children;
           for (const c of children) {
@@ -1274,21 +799,21 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           }
           Logger.info('Tree cache size after lazy load', {
             type: activeElement.id,
-            nodeCount: this.nodeCache.size,
+            nodeCount: this.cache.size,
           });
-          this.filterAncestorOrVisibleIds = null;
+          this.filter.filterAncestorOrVisibleIds = null;
           this.refresh(activeElement);
-          if (!this.hasActiveFilter()) {return children;}
-          this.ensureFilterSets();
-          const ids = this.filterAncestorOrVisibleIds!;
+          if (!this.filter.hasActiveFilter()) {return children;}
+          this.filter.ensureFilterSets(this.cache.nodes);
+          const ids = this.filter.filterAncestorOrVisibleIds!;
           return children.filter((c) => ids.has(c.id));
         });
       }
 
       // Lazy load: element node with _lazy and no children yet (Attributes, Forms, Ext, etc.)
       if (this.isLazyElementNode(activeElement)) {
-        const configRoot = this.getConfigurationRoot(activeElement);
-        const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
+        const configRoot = this.cache.getConfigurationRoot(activeElement);
+        const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         const format = ctx.format;
         if (format == null) {
@@ -1302,26 +827,26 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             const children = existingSubsystems.length > 0 ? [...existingSubsystems, ...loaded] : loaded;
             for (const c of loaded) {
               c.parent = activeElement;
-              this.buildCache(c);
+              this.cache.buildCache(c);
             }
             activeElement.children = children;
             delete activeElement.properties._lazy;
             Logger.info('Tree cache size after lazy element load', {
               element: activeElement.id,
-              nodeCount: this.nodeCache.size,
+              nodeCount: this.cache.size,
             });
-            this.filterAncestorOrVisibleIds = null;
+            this.filter.filterAncestorOrVisibleIds = null;
             this.refresh(activeElement);
-            if (!this.hasActiveFilter()) {return children;}
-            this.ensureFilterSets();
-            const ids = this.filterAncestorOrVisibleIds!;
+            if (!this.filter.hasActiveFilter()) {return children;}
+            this.filter.ensureFilterSets(this.cache.nodes);
+            const ids = this.filter.filterAncestorOrVisibleIds!;
             return children.filter((c) => ids.has(c.id));
           }
         );
       }
 
-      const configRoot = this.getConfigurationRoot(activeElement);
-      const ctx = configRoot ? this.loadContextByRootId.get(configRoot.id) : undefined;
+      const configRoot = this.cache.getConfigurationRoot(activeElement);
+      const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
       if (ctx) {
         ensureR6PlaceholdersForInstanceNode(activeElement, { configPath: ctx.configPath, format: ctx.format });
       }
@@ -1329,26 +854,18 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       this.ensureTabularSectionColumnsIfNeeded(activeElement);
 
       const raw = activeElement.children || [];
-      if (!this.hasActiveFilter()) {
+      if (!this.filter.hasActiveFilter()) {
         return Promise.resolve(raw);
       }
 
-      this.ensureFilterSets();
-      const ids = this.filterAncestorOrVisibleIds!;
+      this.filter.ensureFilterSets(this.cache.nodes);
+      const ids = this.filter.filterAncestorOrVisibleIds!;
       const filtered = raw.filter((c) => ids.has(c.id));
       return Promise.resolve(filtered);
     } catch (error) {
       Logger.error('Error getting children', error);
       return Promise.resolve([]);
     }
-  }
-
-  private hasActiveFilter(): boolean {
-    return (
-      this.searchQuery.trim() !== '' ||
-      (this.typeFilter != null && this.typeFilter.size > 0) ||
-      this.subsystemFilter.subsystemId != null
-    );
   }
 
   /** Path for tooltip: filePath if set, otherwise parent chain (e.g. "Configuration / Catalogs / MyCatalog"). */
@@ -1363,34 +880,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return parts.length > 0 ? parts.join(' / ') : '';
   }
 
-  private ensureFilterSets(): void {
-    if (this.filterAncestorOrVisibleIds != null) {return;}
-    const visibleIds = new Set<string>();
-    for (const node of this.nodeCache.values()) {
-      if (
-        this.nodeOrDescendantMatchesSearch(node, this.searchQuery) &&
-        this.passesTypeFilter(node) &&
-        this.nodePassesSubsystemFilter(node)
-      ) {
-        visibleIds.add(node.id);
-      }
-    }
-    const ancestorIds = new Set<string>(visibleIds);
-    for (const id of visibleIds) {
-      let n = this.nodeCache.get(id);
-      while (n?.parent) {
-        ancestorIds.add(n.parent.id);
-        n = n.parent;
-      }
-    }
-    this.filterAncestorOrVisibleIds = ancestorIds;
-  }
-
   /** Ordered list of visible node ids (depth-first) for next/previous match navigation. */
   getVisibleOrderedNodeIds(): string[] {
     if (this.rootNodes.length === 0) {return [];}
-    this.ensureFilterSets();
-    const ids = this.filterAncestorOrVisibleIds!;
+    this.filter.ensureFilterSets(this.cache.nodes);
+    const ids = this.filter.filterAncestorOrVisibleIds!;
     const out: string[] = [];
     const walk = (n: TreeNode): void => {
       if (!ids.has(n.id)) {return;}
@@ -1495,7 +989,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Find node by ID (uses cache for performance)
    */
   findNodeById(id: string): TreeNode | null {
-    return this.nodeCache.get(id) || null;
+    return this.cache.findById(id);
   }
 
   /**
@@ -1510,10 +1004,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (!expectedId) {
       return null;
     }
-    const candidates = this.nodeCandidatesById.get(expectedId) ?? [];
+    const candidates = this.cache.getCandidatesById(expectedId);
     const configPath = this.getConfigPathForNode(scopeNode);
     if (candidates.length === 0) {
-      return this.nodeCache.get(expectedId) ?? null;
+      return this.cache.findById(expectedId);
     }
     if (configPath) {
       const scoped = candidates.find((candidate) => this.getConfigPathForNode(candidate) === configPath);
@@ -1534,7 +1028,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (!expectedId) {
       return false;
     }
-    const candidates = this.nodeCandidatesById.get(expectedId) ?? [];
+    const candidates = this.cache.getCandidatesById(expectedId);
     if (candidates.length === 0) {
       return false;
     }
@@ -1551,11 +1045,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   /** Resolve possibly stale node reference to active in-memory node. */
   resolveNodeForUi(node: TreeNode): TreeNode {
-    return this.resolveActiveNode(node);
+    return this.cache.resolveActiveNode(node, this.rootNodes);
   }
 
   applyOptimisticDelete(node: TreeNode, operationId: string): OptimisticDeleteToken | null {
-    const activeNode = this.resolveActiveNode(node);
+    const activeNode = this.cache.resolveActiveNode(node, this.rootNodes);
     const parent = activeNode.parent;
     if (!parent || !parent.children || parent.children.length === 0) {
       return null;
@@ -1587,14 +1081,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       removedIndex,
       operationId,
     };
-    this.filterAncestorOrVisibleIds = null;
+    this.filter.filterAncestorOrVisibleIds = null;
     this.refresh(parent);
     Logger.info('Applied optimistic delete', { operationId, configPath, parentId: parent.id, removedNodeId: removedNode.id });
     return token;
   }
 
   rollbackOptimisticDelete(token: OptimisticDeleteToken): boolean {
-    const parent = this.findRollbackParentNode(token);
+    const parent = this.cache.findRollbackParentNode(token.parentId, token.configRootId);
     if (!parent) {
       Logger.warn('Rollback skipped: parent not found', { operationId: token.operationId, parentId: token.parentId });
       return false;
@@ -1612,23 +1106,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const restoredNode = this.rehydrateRollbackNode(token.removedNodeSnapshot, parent);
     const insertionIndex = Math.max(0, Math.min(token.removedIndex, parent.children.length));
     parent.children.splice(insertionIndex, 0, restoredNode);
-    this.buildCache(restoredNode);
-    this.filterAncestorOrVisibleIds = null;
+    this.cache.buildCache(restoredNode);
+    this.filter.filterAncestorOrVisibleIds = null;
     this.refresh(parent);
     Logger.warn('Optimistic delete rolled back', { operationId: token.operationId, parentId: token.parentId, nodeId: token.removedNodeId });
     return true;
-  }
-
-  private findRollbackParentNode(token: OptimisticDeleteToken): TreeNode | null {
-    const candidates = this.nodeCandidatesById.get(token.parentId) ?? [];
-    if (candidates.length === 0) {
-      return null;
-    }
-    if (candidates.length === 1) {
-      return candidates[0];
-    }
-    const scoped = candidates.find((candidate) => this.getNodeRootIdentity(candidate) === token.configRootId);
-    return scoped ?? candidates[0];
   }
 
   /**
@@ -1637,16 +1119,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * @returns Nodes whose name matches (includes partial match if index is extended)
    */
   findNodesByName(query: string): TreeNode[] {
-    const key = (query || '').toLowerCase().trim();
-    if (!key) {return [];}
-    const ids = this.nameIndex.get(key);
-    if (!ids) {return [];}
-    const out: TreeNode[] = [];
-    for (const id of ids) {
-      const node = this.nodeCache.get(id);
-      if (node) {out.push(node);}
-    }
-    return out;
+    return this.cache.findByName(query);
   }
 
   /**
@@ -1727,7 +1200,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (!root.children || root.children.length === 0) {continue;}
 
       const configPath =
-        this.loadContextByRootId.get(root.id)?.configPath ??
+        this.cache.getLoadContext(root.id)?.configPath ??
         (root.filePath ? path.dirname(root.filePath) : null);
 
       if (!configPath) {continue;}
@@ -1742,7 +1215,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           typeNode.children = children;
 
           // Update in-memory caches so other features can use the newly loaded nodes.
-          for (const c of children) {this.buildCache(c);}
+          for (const c of children) {this.cache.buildCache(c);}
         } catch (e) {
           Logger.warn('Failed to eager load referenceable type contents for type editor', {
             configPath,
