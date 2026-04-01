@@ -3,6 +3,7 @@ import * as path from 'path';
 import { Logger } from '../utils/logger';
 import { DesignerParser } from './designerParser';
 import { EdtParser } from './edtParser';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 /**
  * Configuration format types
@@ -62,7 +63,7 @@ export class FormatDetector {
   private static async isConfigurationRoot(dirPath: string): Promise<boolean> {
     const cfPath = path.join(dirPath, '1cv8.cf');
     const cfePath = path.join(dirPath, '1cv8.cfe');
-    const configXmlPath = path.join(dirPath, 'Configuration.xml');
+    const configXmlPath = path.join(dirPath, CONFIGURATION_XML);
     try {
       await fs.promises.access(cfPath);
       return true;
@@ -207,7 +208,7 @@ export class FormatDetector {
             // Check if this directory is a configuration root
             const cfPath = path.join(itemPath, '1cv8.cf');
             const cfePath = path.join(itemPath, '1cv8.cfe');
-            const configXmlPath = path.join(itemPath, 'Configuration.xml');
+            const configXmlPath = path.join(itemPath, CONFIGURATION_XML);
 
             // Check all paths in parallel
             const checks = await Promise.allSettled([
@@ -261,7 +262,7 @@ export class FormatDetector {
       // Check for required files or directories
       const cfPath = path.join(configPath, '1cv8.cf');
       const cfePath = path.join(configPath, '1cv8.cfe');
-      const configXmlPath = path.join(configPath, 'Configuration.xml');
+      const configXmlPath = path.join(configPath, CONFIGURATION_XML);
       const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
 
       // Check all paths in parallel

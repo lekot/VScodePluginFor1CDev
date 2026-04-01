@@ -12,6 +12,7 @@ import {
   flattenAttributeProperties,
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -42,7 +43,7 @@ export class EdtParser {
         type: MetadataType.Configuration,
         properties: {},
         children: [],
-        filePath: path.join(configPath, 'Configuration.xml'),
+        filePath: path.join(configPath, CONFIGURATION_XML),
       };
 
       // Parse metadata directories in src
@@ -96,7 +97,7 @@ export class EdtParser {
       type: MetadataType.Configuration,
       properties: {},
       children: [],
-      filePath: path.join(configPath, 'Configuration.xml'),
+      filePath: path.join(configPath, CONFIGURATION_XML),
     };
 
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();

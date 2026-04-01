@@ -8,6 +8,7 @@ import {
   getGitRefreshInfobaseManagerOnHeadChangeSetting,
   getGitReloadMetadataOnHeadChangeSetting,
 } from './metadataTreeSettings';
+import { Logger } from '../utils/logger';
 
 /** Минимальные типы встроенного расширения vscode.git (без зависимости от @types). */
 interface GitRepositoryState {
@@ -109,12 +110,12 @@ export function registerGitPhase4HeadChangeHandlers(
           attach(r);
         }
         subs.push(api.onDidOpenRepository((r) => attach(r)));
-      } catch {
-        /* API недоступен — тихо */
+      } catch (err) {
+        Logger.warn('Git API unavailable; HEAD-change reload disabled', err);
       }
     },
-    () => {
-      /* активация git не удалась */
+    (err) => {
+      Logger.warn('Git extension activation failed; HEAD-change reload disabled', err);
     },
   );
 

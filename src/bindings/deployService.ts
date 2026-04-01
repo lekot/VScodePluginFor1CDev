@@ -110,9 +110,18 @@ async function applyReadonlyIncludeForDeploy(
 
 function createConfigurationSnapshot(sourceDir: string): string {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-snap-'));
-  const dest = path.join(parent, 'cfg');
-  fs.cpSync(sourceDir, dest, { recursive: true });
-  return dest;
+  try {
+    const dest = path.join(parent, 'cfg');
+    fs.cpSync(sourceDir, dest, { recursive: true });
+    return dest;
+  } catch (err) {
+    try {
+      fs.rmSync(parent, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
 }
 
 /**

@@ -8,6 +8,7 @@ import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 import {
   ensureR6PlaceholdersForInstanceNode,
@@ -92,8 +93,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
   private configurationBindingDecorations = new Map<string, ConfigurationBindingDecoration>();
 
-  constructor(_context: vscode.ExtensionContext) {
-    void _context;
+  constructor() {
     Logger.info('MetadataTreeDataProvider initialized');
   }
 
@@ -114,7 +114,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (!configDir) {
         return undefined;
       }
-      const configXmlFs = path.join(configDir, 'Configuration.xml');
+      const configXmlFs = path.join(configDir, CONFIGURATION_XML);
       const uri = vscode.Uri.file(configXmlFs);
       const wf = vscode.workspace.getWorkspaceFolder(uri);
       if (!wf) {
@@ -131,7 +131,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (props?.isExtension !== true || !element.filePath?.trim()) {
         return undefined;
       }
-      const configXmlFs = path.join(element.filePath.trim(), 'Configuration.xml');
+      const configXmlFs = path.join(element.filePath.trim(), CONFIGURATION_XML);
       try {
         if (!fs.existsSync(configXmlFs)) {
           return undefined;
@@ -167,7 +167,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return false;
     }
     try {
-      return fs.existsSync(path.join(dir, 'Configuration.xml'));
+      return fs.existsSync(path.join(dir, CONFIGURATION_XML));
     } catch {
       return false;
     }
@@ -351,23 +351,33 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const ctx = this.loadContextByRootId.get(configRoot.id);
     if (!ctx) {return;}
 
-    // For each folder, find the type-node in the tree and load its children if not yet loaded
-    for (const folder of foldersToLoad) {
-      const typeNode = this.findTypeFolderNode(configRoot, folder);
-      if (!typeNode) {continue;}
-      // Already loaded
-      if (typeNode.children && typeNode.children.length > 0) {continue;}
+    // For each folder, find the type-node in the tree and load its children if not yet loaded.
+    // Process in small chunks to avoid blocking the event loop on large configurations.
+    const CHUNK_SIZE = 5;
+    const foldersArray = Array.from(foldersToLoad);
+    for (let i = 0; i < foldersArray.length; i += CHUNK_SIZE) {
+      const chunk = foldersArray.slice(i, i + CHUNK_SIZE);
+      for (const folder of chunk) {
+        const typeNode = this.findTypeFolderNode(configRoot, folder);
+        if (!typeNode) {continue;}
+        // Already loaded
+        if (typeNode.children && typeNode.children.length > 0) {continue;}
 
-      Logger.info('Eager loading type for subsystem filter', { folder });
-      try {
-        const children = await MetadataParser.parseTypeContents(ctx.configPath, folder);
-        for (const c of children) {
-          c.parent = typeNode;
-          this.buildCache(c);
+        Logger.info('Eager loading type for subsystem filter', { folder });
+        try {
+          const children = await MetadataParser.parseTypeContents(ctx.configPath, folder);
+          for (const c of children) {
+            c.parent = typeNode;
+            this.buildCache(c);
+          }
+          typeNode.children = children;
+        } catch (error) {
+          Logger.warn('Failed to eager load type for subsystem filter', { folder, error });
         }
-        typeNode.children = children;
-      } catch (error) {
-        Logger.warn('Failed to eager load type for subsystem filter', { folder, error });
+      }
+      // Yield between chunks to avoid blocking the event loop
+      if (i + CHUNK_SIZE < foldersArray.length) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
   }
@@ -1212,10 +1222,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (element.type === MetadataType.Configuration) {
         const configDir = this.getConfigPathForNode(element);
         if (configDir != null) {
-          treeItem.resourceUri = vscode.Uri.file(path.join(configDir, 'Configuration.xml'));
+          treeItem.resourceUri = vscode.Uri.file(path.join(configDir, CONFIGURATION_XML));
         }
       } else if (this.isExtensionInfobaseBindingRoot(element) && element.filePath?.trim()) {
-        treeItem.resourceUri = vscode.Uri.file(path.join(element.filePath.trim(), 'Configuration.xml'));
+        treeItem.resourceUri = vscode.Uri.file(path.join(element.filePath.trim(), CONFIGURATION_XML));
       } else if (element.filePath) {
         if (element.type === MetadataType.Form) {
           const { formXmlPath } = getFormPaths(element.filePath);

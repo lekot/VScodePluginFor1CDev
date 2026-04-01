@@ -66,17 +66,18 @@ function getByLocalName(obj: Record<string, unknown>, key: string): unknown {
  * Attributes may be direct items { "@_name": "..." } or in a ":@" wrapper { ":@": { "@_name": "...", "@_id": "..." } }.
  */
 function getAttrsFromContent(content: unknown[]): { name?: string; id?: string } {
+  if (!Array.isArray(content)) {return {};}
   const attrs: { name?: string; id?: string } = {};
   for (const item of content) {
-    if (!item || typeof item !== 'object') {continue;}
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {continue;}
     const o = item as Record<string, unknown>;
-    if ('@_name' in o && o['@_name'] != null) {attrs.name = String(o['@_name']);}
-    if ('@_id' in o && o['@_id'] != null) {attrs.id = String(o['@_id']);}
+    if ('@_name' in o && typeof o['@_name'] === 'string') {attrs.name = o['@_name'];}
+    if ('@_id' in o && typeof o['@_id'] === 'string') {attrs.id = o['@_id'];}
     const at = o[':@'];
     if (at && typeof at === 'object' && !Array.isArray(at)) {
       const atObj = at as Record<string, unknown>;
-      if (atObj['@_name'] != null) {attrs.name = String(atObj['@_name']);}
-      if (atObj['@_id'] != null) {attrs.id = String(atObj['@_id']);}
+      if (typeof atObj['@_name'] === 'string') {attrs.name = atObj['@_name'];}
+      if (typeof atObj['@_id'] === 'string') {attrs.id = atObj['@_id'];}
     }
   }
   return attrs;

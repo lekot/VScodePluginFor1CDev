@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseStorageService } from './infobaseStorageService';
 import {
@@ -112,11 +113,11 @@ function vscodeCancellation(token: vscode.CancellationToken): IbcmdStreamCancell
 }
 
 /** Параметры подключения ibcmd (как ibcmdrunner: `--db-path`/`--config` + `--data`). */
-function appendIbcmdResolvedConfigChannelLines(
+async function appendIbcmdResolvedConfigChannelLines(
   ch: vscode.OutputChannel,
   prep: PreparedIbcmdConnectionOk,
   entry: InfobaseEntry,
-): void {
+): Promise<void> {
   ch.appendLine(`[ibcmd] --data (каталог данных автономного сервера): ${prep.offlineDataDir}`);
   if (prep.kind === 'fileDb') {
     ch.appendLine(`[ibcmd] --db-path (файловая ИБ): ${prep.dbCatalogPath}`);
@@ -126,7 +127,7 @@ function appendIbcmdResolvedConfigChannelLines(
   ch.appendLine(`[ibcmd] --config: ${prep.absoluteConfigPath} (${configKind})`);
   if (prep.isTemporary && entry.type === 'file' && entry.filePath?.trim()) {
     try {
-      const body = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
+      const body = await fs.promises.readFile(prep.absoluteConfigPath, 'utf8');
       const fileScalar = tryParseInfobaseFileScalarFromYaml(body);
       if (fileScalar !== undefined) {
         ch.appendLine(
@@ -139,7 +140,7 @@ function appendIbcmdResolvedConfigChannelLines(
   }
   if (!prep.isTemporary && entry.type === 'file' && entry.filePath?.trim()) {
     try {
-      const body = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
+      const body = await fs.promises.readFile(prep.absoluteConfigPath, 'utf8');
       const fileScalar = tryParseInfobaseFileScalarFromYaml(body);
       if (fileScalar !== undefined) {
         const fromYaml = resolvePathForIbcmdYamlFileField(fileScalar);
@@ -162,7 +163,7 @@ function findWorkspaceConfigurationRoot(): string | undefined {
     return undefined;
   }
   for (const f of folders) {
-    const cfg = path.join(f.uri.fsPath, 'Configuration.xml');
+    const cfg = path.join(f.uri.fsPath, CONFIGURATION_XML);
     if (fs.existsSync(cfg)) {
       return f.uri.fsPath;
     }
@@ -302,7 +303,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   const ch = getOutputChannel();
   const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
   ch.appendLine(`[import${ctx}] ${params.entry.name} (${new Date().toISOString()})\n`);
-  appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
+  await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
   const resolvedSourceDir = path.resolve(params.absoluteSourceDir);
   let importCredentials: IbcmdConfigCliCredentials | undefined;
@@ -324,7 +325,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       const kind = prep.isTemporary ? 'временный YAML (сгенерирован расширением)' : 'явный файл пользователя';
       ch.appendLine(`[import diag] --config: ${prep.absoluteConfigPath} (${kind})`);
       try {
-        const raw = fs.readFileSync(prep.absoluteConfigPath, 'utf8');
+        const raw = await fs.promises.readFile(prep.absoluteConfigPath, 'utf8');
         ch.appendLine('[import diag] тело --config (пароль скрыт):');
         ch.appendLine(redactIbcmdYamlPasswordLines(raw).trimEnd());
       } catch (e) {
@@ -401,7 +402,7 @@ async function runInfobaseConfigOperation(params: {
   const ch = getOutputChannel();
   const header = `[${params.op}] ${params.entry.name} (${new Date().toISOString()})\n`;
   ch.appendLine(header);
-  appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
+  await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
   try {
     await vscode.window.withProgress(

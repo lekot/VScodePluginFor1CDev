@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { prepareIbcmdConfigYaml } from '../infobases/ibcmdConfigPathResolver';
@@ -154,8 +155,8 @@ export async function runCompareInfobaseConfigurations(params: {
           return;
         }
 
-        const xmlA = path.join(dirA, 'Configuration.xml');
-        const xmlB = path.join(dirB, 'Configuration.xml');
+        const xmlA = path.join(dirA, CONFIGURATION_XML);
+        const xmlB = path.join(dirB, CONFIGURATION_XML);
         if (!fs.existsSync(xmlA) || !fs.existsSync(xmlB)) {
           void vscode.window.showWarningMessage(
             'После выгрузки не найден Configuration.xml в одном из каталогов. Пути записаны в канал «Infobase (ibcmd)».',

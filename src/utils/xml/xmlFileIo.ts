@@ -30,11 +30,17 @@ export async function writeUtf8FileWithBackup(
       if (fs.existsSync(backupPath)) {
         const restored = await fs.promises.readFile(backupPath, 'utf-8');
         await fs.promises.writeFile(filePath, restored, 'utf-8');
-        await fs.promises.unlink(backupPath);
         Logger.info(`Rolled back ${filePath} from backup`);
       }
     } catch (rollbackErr) {
       Logger.error(`Rollback failed for ${filePath}`, rollbackErr);
+    } finally {
+      // Always clean up backup file even if rollback failed
+      try {
+        await fs.promises.unlink(backupPath);
+      } catch {
+        Logger.debug(`Could not remove backup after failed write ${backupPath}`);
+      }
     }
     throw new Error(
       `Unable to write to file. Check file permissions and disk space. ${
@@ -44,9 +50,7 @@ export async function writeUtf8FileWithBackup(
   }
 
   try {
-    if (fs.existsSync(backupPath)) {
-      await fs.promises.unlink(backupPath);
-    }
+    await fs.promises.unlink(backupPath);
   } catch {
     Logger.debug(`Could not remove backup ${backupPath}`);
   }

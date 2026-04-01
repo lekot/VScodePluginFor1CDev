@@ -48,28 +48,26 @@ export class RolesRightsEditorProvider {
   }
 
   /**
-   * HTML is not emitted by tsc; integration tests compile to `out/src/rolesEditor/*.js` without copying the template.
-   * Production VSIX places it next to the JS under `dist/rolesEditor/`. Try common locations.
+   * Resolve path to rolesEditorWebview.html.
+   * Primary: next to the compiled JS (works in both VSIX production and `out/` dev builds when the file is copied).
+   * Fallback: extensionUri-based path for cases where __dirname differs from the extension root layout.
    */
   private resolveRolesEditorWebviewHtmlPath(): string {
-    const nextToCompiled = path.join(__dirname, 'rolesEditorWebview.html');
-    const candidates: string[] = [nextToCompiled];
-    if (this.context.extensionPath) {
-      candidates.push(
-        path.join(this.context.extensionPath, 'dist', 'rolesEditor', 'rolesEditorWebview.html'),
-        path.join(this.context.extensionPath, 'src', 'rolesEditor', 'rolesEditorWebview.html')
-      );
+    const primary = path.join(__dirname, 'rolesEditorWebview.html');
+    if (fs.existsSync(primary)) {
+      return primary;
     }
-    candidates.push(
-      path.join(__dirname, '..', '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html'),
-      path.join(__dirname, '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html')
+    const fallback = path.join(
+      this.context.extensionUri.fsPath,
+      'dist',
+      'rolesEditor',
+      'rolesEditorWebview.html'
     );
-    for (const p of candidates) {
-      if (p && fs.existsSync(p)) {
-        return p;
-      }
+    if (fs.existsSync(fallback)) {
+      return fallback;
     }
-    return nextToCompiled;
+    Logger.warn(`rolesEditorWebview.html not found; falling back to ${primary}`);
+    return primary;
   }
 
   /**

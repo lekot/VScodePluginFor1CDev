@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.32.8",
+  "version": "0.32.9",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -403,6 +403,20 @@
           "group": "navigation@6"
         }
       ],
+      "editor/title": [
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "resourceExtname == .xml",
+          "group": "navigation@20"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "resourceExtname == .xml",
+          "group": "navigation@20"
+        }
+      ],
       "view/item/context": [
         {
           "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
@@ -433,6 +447,16 @@
           "command": "1c-metadata-tree.config.deployMultiple",
           "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot.*bindingBound.*deployMany/",
           "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
+          "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot/",
+          "group": "infobase@2"
         },
         {
           "command": "1c-metadata-tree.openXML",

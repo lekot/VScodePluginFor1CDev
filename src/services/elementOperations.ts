@@ -15,6 +15,7 @@ import {
   removeRegisterReferenceFromRecorderDocument,
 } from './registerRecorderDocumentLinker';
 import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from './configurationXmlUpdater';
+import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
 import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
 import {
@@ -137,7 +138,7 @@ function getSiblingNames(parent: TreeNode): string[] {
 function findConfigurationRootDir(typeFolderPath: string): string {
   let dir = typeFolderPath;
   for (let depth = 0; depth < 16; depth++) {
-    const candidate = path.join(dir, 'Configuration.xml');
+    const candidate = path.join(dir, CONFIGURATION_XML);
     if (fs.existsSync(candidate)) {
       return dir;
     }
@@ -184,6 +185,240 @@ async function ensureCompanionTaskForBusinessProcess(
   await addRootObjectToConfiguration(configRootPath, 'Task', taskName);
 }
 
+// ---------------------------------------------------------------------------
+// createElement validation helpers
+// ---------------------------------------------------------------------------
+
+/** Validate name and throw if invalid. Returns the trimmed name on success. */
+function validateCreateName(newName: string, parentNode: TreeNode): string {
+  const trimmedName = newName.trim();
+  if (!trimmedName) {
+    throw new Error('Имя элемента не может быть пустым');
+  }
+  const err = validateElementName(trimmedName, getSiblingNames(parentNode));
+  if (err) {
+    throw new Error(err);
+  }
+  return trimmedName;
+}
+
+// ---------------------------------------------------------------------------
+// createElement branch handlers
+// ---------------------------------------------------------------------------
+
+/** Branch: parentNode is the Configuration root — always invalid for creation. */
+async function handleCreateUnderConfiguration(): Promise<void> {
+  throw new Error('Выберите узел типа (например Справочники) или объект для создания реквизита.');
+}
+
+/** Branch: parentNode is the Forms folder — delegate to createForm. */
+async function handleCreateForm(parentNode: TreeNode, name: string): Promise<void> {
+  return createForm(parentNode, name);
+}
+
+/** Branch: parentNode is a type folder (e.g. Catalogs) — create a root metadata object file. */
+async function handleCreateRootObject(parentNode: TreeNode, name: string): Promise<void> {
+  const typeFolderPath = parentNode.filePath;
+  if (!typeFolderPath) {
+    throw new Error(`Папка типа не найдена: ${typeFolderPath}`);
+  }
+
+  // Guard against path traversal: typeFolderPath must be inside configuration root.
+  const configRootForCheck = findConfigurationRootDir(typeFolderPath);
+  const resolvedTypeFolder = path.resolve(typeFolderPath);
+  const resolvedConfigRoot = path.resolve(configRootForCheck);
+  if (!resolvedTypeFolder.startsWith(resolvedConfigRoot + path.sep) && resolvedTypeFolder !== resolvedConfigRoot) {
+    throw new Error(`Небезопасный путь: папка типа за пределами корня конфигурации: ${typeFolderPath}`);
+  }
+
+  // When using placeholder type-nodes, the type folder may be absent on disk.
+  // Create it on-demand so element creation can proceed.
+  // Use a single async stat to avoid TOCTOU between existsSync and statSync.
+  try {
+    const stat = await fs.promises.stat(typeFolderPath);
+    if (!stat.isDirectory()) {
+      throw new Error(`Папка типа не является директорией: ${typeFolderPath}`);
+    }
+  } catch (statErr) {
+    if ((statErr as NodeJS.ErrnoException).code === 'ENOENT') {
+      await fs.promises.mkdir(typeFolderPath, { recursive: true });
+    } else {
+      throw statErr;
+    }
+  }
+
+  const newFilePath = path.join(typeFolderPath, `${name}.xml`);
+  if (fs.existsSync(newFilePath)) {
+    throw new Error(`Файл уже существует: ${newFilePath}`);
+  }
+
+  const rootTag = String(parentNode.type);
+  const configRootPath = findConfigurationRootDir(typeFolderPath);
+
+  if (rootTag === 'BusinessProcess') {
+    await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
+  }
+
+  const templateXml = await getDesignerTemplateXml(rootTag);
+  if (templateXml !== null) {
+    const uuid = XMLWriter.generateSimpleUuid();
+    const uuidDim = XMLWriter.generateSimpleUuid();
+    const uuidResource = XMLWriter.generateSimpleUuid();
+    let content = substituteDesignerTemplate(templateXml, {
+      uuid,
+      Name: name,
+      Synonym_ru: name,
+      ...(rootTag === 'InformationRegister' || rootTag === 'AccumulationRegister'
+        ? { uuidDim, uuidResource }
+        : {}),
+      ...(rootTag === 'DocumentJournal'
+        ? (() => {
+            const doc = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
+            return doc ? { RecorderDocumentRef: `Document.${doc}` } : {};
+          })()
+        : {}),
+    });
+    content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
+    content = normalizeMetaDataObjectRoot(content);
+    await fs.promises.writeFile(newFilePath, content, 'utf-8');
+  } else {
+    await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name);
+  }
+
+  const elementDir = path.join(typeFolderPath, name);
+  await fs.promises.mkdir(elementDir, { recursive: true });
+
+  if (rootTag === 'CommonModule') {
+    const moduleBslPath = path.join(elementDir, 'Ext', 'Module', 'Module.bsl');
+    await fs.promises.mkdir(path.dirname(moduleBslPath), { recursive: true });
+    await fs.promises.writeFile(moduleBslPath, '', 'utf-8');
+  }
+
+  try {
+    await addRootObjectToConfiguration(configRootPath, rootTag, name);
+  } catch (err) {
+    Logger.error('Failed to update Configuration.xml', err);
+    throw err;
+  }
+
+  if (rootTag === 'AccumulationRegister') {
+    try {
+      await appendRegisterReferenceToRecorderDocument(configRootPath, 'AccumulationRegister', name);
+    } catch (e) {
+      Logger.warn('Could not link AccumulationRegister to recorder document', e);
+    }
+  }
+}
+
+/** Branch: parentNode is a top-level metadata object (Catalog, Document, …) — create nested Attribute. */
+async function handleCreateNestedUnderTopLevel(parentNode: TreeNode, name: string): Promise<void> {
+  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parentNode.type))) {
+    throw new Error(
+      'В формате Designer у этого типа метаданных нет ChildObjects (например, роль, общий модуль). ' +
+        'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
+    );
+  }
+  const filePath = parentNode.filePath;
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error('Файл объекта не найден.');
+  }
+  await XMLWriter.addNestedElement(filePath, 'Attribute', name, {}, parentNode.type, parentNode.name);
+}
+
+/** Branch: parentNode is an Attribute/TabularSection container folder under a top-level object. */
+async function handleCreateInContainerFolder(
+  parentNode: TreeNode,
+  parent: TreeNode,
+  name: string
+): Promise<void> {
+  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parent.type))) {
+    throw new Error(
+      'В формате Designer у этого типа метаданных нет ChildObjects. ' +
+        'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
+    );
+  }
+  const filePath = parent.filePath;
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error('Файл объекта не найден.');
+  }
+  const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
+  await XMLWriter.addNestedElement(filePath, elementType, name, {}, parent.type, parent.name);
+}
+
+/** Branch: parentNode is a columns-container under a tabular section instance. */
+async function handleCreateTabularSectionColumn(parentNode: TreeNode, name: string): Promise<void> {
+  const sectionInstance = parentNode.parent;
+  const owner = resolveTopLevelMetadataObject(sectionInstance);
+  if (!sectionInstance || !owner) {
+    throw new Error('Некорректный родитель для колонки табличной части.');
+  }
+  const xmlTarget = resolveXmlPathForTabularSectionInstance(sectionInstance);
+  if (!xmlTarget || !fs.existsSync(xmlTarget)) {
+    throw new Error('Файл табличной части или объекта не найден.');
+  }
+  await XMLWriter.addAttributeToTabularSection(xmlTarget, sectionInstance.name, name, owner.type, owner.name);
+}
+
+/** Branch: parentNode is a TabularSection instance node — delegate via its columns container. */
+async function handleCreateViaTabularSectionInstance(
+  parentNode: TreeNode,
+  newName: string
+): Promise<void> {
+  ensureTabularSectionColumnsPlaceholder(parentNode);
+  const container = parentNode.children?.find((c) => isTabularSectionColumnsContainer(c));
+  if (container) {
+    return createElement(container, newName);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch map entry type
+// ---------------------------------------------------------------------------
+
+type CreateElementCase = {
+  /** Returns true when this case applies. `parent` may be undefined. */
+  matches: (parentNode: TreeNode, parent: TreeNode | undefined) => boolean;
+  handle: (parentNode: TreeNode, parent: TreeNode | undefined, name: string, newName: string) => Promise<void>;
+};
+
+/** Ordered dispatch table for {@link createElement}. First matching entry wins. */
+const CREATE_ELEMENT_CASES: CreateElementCase[] = [
+  {
+    matches: (n) => n.type === MetadataType.Configuration,
+    handle: () => handleCreateUnderConfiguration(),
+  },
+  {
+    matches: (n) => n.id === 'Forms',
+    handle: (n, _p, name) => handleCreateForm(n, name),
+  },
+  {
+    matches: (n) => isRootObjectCreateInTypeFolder(n),
+    handle: (n, _p, name) => handleCreateRootObject(n, name),
+  },
+  {
+    matches: (n) => TOP_LEVEL_TYPES.has(n.type),
+    handle: (n, _p, name) => handleCreateNestedUnderTopLevel(n, name),
+  },
+  {
+    matches: (n, p) =>
+      (n.type === MetadataType.Attribute || n.type === MetadataType.TabularSection) &&
+      p !== undefined &&
+      TOP_LEVEL_TYPES.has(p.type),
+    handle: (n, p, name) => handleCreateInContainerFolder(n, p as TreeNode, name),
+  },
+  {
+    matches: (n) => isTabularSectionColumnsContainer(n),
+    handle: (n, _p, name) => handleCreateTabularSectionColumn(n, name),
+  },
+  {
+    matches: (n) =>
+      n.type === MetadataType.TabularSection &&
+      n.id.startsWith('TabularSections.') &&
+      n.parent?.id === 'TabularSections',
+    handle: (n, _p, _name, newName) => handleCreateViaTabularSectionInstance(n, newName),
+  },
+];
+
 /**
  * Creates a new metadata element in the configuration.
  *
@@ -209,176 +444,13 @@ export async function createElement(
   parentNode: TreeNode,
   newName: string
 ): Promise<void> {
-  const trimmedName = newName.trim();
-  if (!trimmedName) {
-    throw new Error('Имя элемента не может быть пустым');
-  }
-  
-  const err = validateElementName(trimmedName, getSiblingNames(parentNode));
-  if (err) {
-    throw new Error(err);
-  }
-  const name = trimmedName;
-
-  if (parentNode.type === MetadataType.Configuration) {
-    throw new Error('Выберите узел типа (например Справочники) или объект для создания реквизита.');
-  }
-
-  if (parentNode.id === 'Forms') {
-    return await createForm(parentNode, name);
-  }
-
+  const name = validateCreateName(newName, parentNode);
   const parent = parentNode.parent;
-  if (!parent) {
-    throw new Error('Нет родительского узла.');
-  }
 
-  if (isRootObjectCreateInTypeFolder(parentNode)) {
-    const typeFolderPath = parentNode.filePath;
-    if (!typeFolderPath) {
-      throw new Error(`Папка типа не найдена: ${typeFolderPath}`);
-    }
-    
-    // When using placeholder type-nodes, the type folder may be absent on disk.
-    // Create it on-demand so element creation can proceed.
-    if (!fs.existsSync(typeFolderPath)) {
-      await fs.promises.mkdir(typeFolderPath, { recursive: true });
-    } else {
-      // If the path exists but is not a directory, fail early with a clear message.
-      const stat = fs.statSync(typeFolderPath);
-      if (!stat.isDirectory()) {
-        throw new Error(`Папка типа не является директорией: ${typeFolderPath}`);
-      }
-    }
-    const newFilePath = path.join(typeFolderPath, `${name}.xml`);
-    if (fs.existsSync(newFilePath)) {
-      throw new Error(`Файл уже существует: ${newFilePath}`);
-    }
-    const rootTag = String(parentNode.type);
-    const configRootPath = findConfigurationRootDir(typeFolderPath);
-    if (rootTag === 'BusinessProcess') {
-      await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
-    }
-    const templateXml = await getDesignerTemplateXml(rootTag);
-    if (templateXml !== null) {
-      const uuid = XMLWriter.generateSimpleUuid();
-      const uuidDim = XMLWriter.generateSimpleUuid();
-      const uuidResource = XMLWriter.generateSimpleUuid();
-      let content = substituteDesignerTemplate(templateXml, {
-        uuid,
-        Name: name,
-        Synonym_ru: name,
-        ...(rootTag === 'InformationRegister' || rootTag === 'AccumulationRegister'
-          ? { uuidDim, uuidResource }
-          : {}),
-        ...(rootTag === 'DocumentJournal'
-          ? (() => {
-              const doc = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
-              return doc ? { RecorderDocumentRef: `Document.${doc}` } : {};
-            })()
-          : {}),
-      });
-      content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
-      content = normalizeMetaDataObjectRoot(content);
-      await fs.promises.writeFile(newFilePath, content, 'utf-8');
-    } else {
-      await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name);
-    }
-    const elementDir = path.join(typeFolderPath, name);
-    await fs.promises.mkdir(elementDir, { recursive: true });
-    if (rootTag === 'CommonModule') {
-      const moduleBslPath = path.join(elementDir, 'Ext', 'Module', 'Module.bsl');
-      await fs.promises.mkdir(path.dirname(moduleBslPath), { recursive: true });
-      await fs.promises.writeFile(moduleBslPath, '', 'utf-8');
-    }
-    try {
-      await addRootObjectToConfiguration(configRootPath, rootTag, name);
-    } catch (err) {
-      Logger.error('Failed to update Configuration.xml', err);
-      throw err;
-    }
-    if (rootTag === 'AccumulationRegister') {
-      try {
-        await appendRegisterReferenceToRecorderDocument(configRootPath, 'AccumulationRegister', name);
-      } catch (e) {
-        Logger.warn('Could not link AccumulationRegister to recorder document', e);
-      }
-    }
-    return;
-  }
-
-  // Handle nested elements: when parentNode is a top-level type (Catalog, Document, etc.)
-  if (TOP_LEVEL_TYPES.has(parentNode.type)) {
-    if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parentNode.type))) {
-      throw new Error(
-        'В формате Designer у этого типа метаданных нет ChildObjects (например, роль, общий модуль). ' +
-          'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
-      );
-    }
-    const filePath = parentNode.filePath;
-    if (!filePath || !fs.existsSync(filePath)) {
-      throw new Error('Файл объекта не найден.');
-    }
-    await XMLWriter.addNestedElement(filePath, 'Attribute', name, {}, parentNode.type, parentNode.name);
-    return;
-  }
-
-  // Handle container folders (Attributes, TabularSections) under objects
-  const containerTypes = new Set([
-    MetadataType.Attribute, // Attributes folder has type Attribute
-    MetadataType.TabularSection // TabularSections folder has type TabularSection
-  ]);
-
-  if (containerTypes.has(parentNode.type) && parent) {
-    // Check if the parent of the container is a top-level type object
-    if (TOP_LEVEL_TYPES.has(parent.type)) {
-      if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(parent.type))) {
-        throw new Error(
-          'В формате Designer у этого типа метаданных нет ChildObjects. ' +
-            'Создание реквизита/табличной части под выбранным узлом не поддерживается.'
-        );
-      }
-      const filePath = parent.filePath;
-      if (!filePath || !fs.existsSync(filePath)) {
-        throw new Error('Файл объекта не найден.');
-      }
-      
-      // Determine the element type based on container type
-      const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
-      await XMLWriter.addNestedElement(filePath, elementType, name, {}, parent.type, parent.name);
+  for (const { matches, handle } of CREATE_ELEMENT_CASES) {
+    if (matches(parentNode, parent)) {
+      await handle(parentNode, parent, name, newName);
       return;
-    }
-  }
-
-  if (isTabularSectionColumnsContainer(parentNode)) {
-    const sectionInstance = parentNode.parent;
-    const owner = resolveTopLevelMetadataObject(sectionInstance);
-    if (!sectionInstance || !owner) {
-      throw new Error('Некорректный родитель для колонки табличной части.');
-    }
-    const xmlTarget = resolveXmlPathForTabularSectionInstance(sectionInstance);
-    if (!xmlTarget || !fs.existsSync(xmlTarget)) {
-      throw new Error('Файл табличной части или объекта не найден.');
-    }
-    await XMLWriter.addAttributeToTabularSection(
-      xmlTarget,
-      sectionInstance.name,
-      name,
-      owner.type,
-      owner.name
-    );
-    return;
-  }
-
-  if (
-    parentNode.type === MetadataType.TabularSection &&
-    parentNode.id.startsWith('TabularSections.') &&
-    parentNode.parent?.id === 'TabularSections'
-  ) {
-    ensureTabularSectionColumnsPlaceholder(parentNode);
-    const container = parentNode.children?.find((c) => isTabularSectionColumnsContainer(c));
-    if (container) {
-      return await createElement(container, newName);
     }
   }
 
@@ -440,7 +512,7 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   }
   await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name);
   const extDir = path.join(extRoot, 'Ext');
-  const formXmlPath = path.join(extDir, 'Form.xml');
+  const formXmlPath = path.join(extDir, FORM_XML);
   const formModuleDir = path.join(extDir, 'Form');
   const modulePath = path.join(formModuleDir, 'Module.bsl');
   await fs.promises.mkdir(formModuleDir, { recursive: true });

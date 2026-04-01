@@ -44,7 +44,7 @@ export function registerExtensionWorkspace(
   state: ExtensionState,
   lifecycle: MetadataTreeLifecycle
 ): void {
-  state.treeDataProvider = new MetadataTreeDataProvider(context);
+  state.treeDataProvider = new MetadataTreeDataProvider();
 
   state.treeView = vscode.window.createTreeView('1c-metadata-tree', {
     treeDataProvider: state.treeDataProvider,
@@ -114,18 +114,18 @@ export function registerExtensionWorkspace(
       showCollapseAll: true,
     });
     context.subscriptions.push(state.infobaseTreeView);
-    void syncInfobaseTreeViewMessage(state);
+    syncInfobaseTreeViewMessage(state).catch((err) => Logger.error('syncInfobaseTreeViewMessage failed', err));
     context.subscriptions.push(
       state.infobaseStorage.onDidChangeCatalog(() => {
         infobaseTreeProvider.refresh();
-        void syncInfobaseTreeViewMessage(state);
+        syncInfobaseTreeViewMessage(state).catch((err) => Logger.error('syncInfobaseTreeViewMessage failed', err));
       }),
     );
     context.subscriptions.push(...registerInfobaseTreeCommands(state));
     state.refreshBindingTreeDecorations = () => rebuildBindingDecorationsForTree(state);
     context.subscriptions.push(...registerBindingDialogCommands(context, state, state.treeDataProvider));
     context.subscriptions.push(registerBindingDecorationSync(state));
-    void rebuildBindingDecorationsForTree(state);
+    rebuildBindingDecorationsForTree(state).catch((err) => Logger.error('rebuildBindingDecorationsForTree failed', err));
   }
 
   const commandDisposables = registerAllCommands({ context, state, lifecycle });

@@ -10,6 +10,7 @@ import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type { ExtensionState } from '../state/extensionState';
 import { detectIbcmdExtensionNameFromConfigRelativePath, normalizeConfigRelativePath } from './bindingPathUtils';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import {
   DeployService,
   readDeployPrecheckXmlBeforeImportSetting,
@@ -42,7 +43,7 @@ export function resolveBindingTargetForConfigurationTreeNode(
   if (!configDir) {
     return undefined;
   }
-  const configXmlFs = path.join(configDir, 'Configuration.xml');
+  const configXmlFs = path.join(configDir, CONFIGURATION_XML);
   const uri = vscode.Uri.file(configXmlFs);
   const wf = vscode.workspace.getWorkspaceFolder(uri);
   if (!wf) {
@@ -69,7 +70,7 @@ function resolveBindingTargetForExtensionRootTreeNode(
   if (!dir) {
     return undefined;
   }
-  const configXmlFs = path.join(dir, 'Configuration.xml');
+  const configXmlFs = path.join(dir, CONFIGURATION_XML);
   if (!fs.existsSync(configXmlFs)) {
     return undefined;
   }

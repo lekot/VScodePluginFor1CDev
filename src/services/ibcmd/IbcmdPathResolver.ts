@@ -58,6 +58,17 @@ function collectProgramRoots(env: NodeJS.ProcessEnv, platform: NodeJS.Platform):
   return ['/opt'];
 }
 
+function isValidIbcmdPath(resolvedPath: string, platform: NodeJS.Platform): boolean {
+  // Must be an absolute path
+  if (!path.isAbsolute(resolvedPath)) {
+    return false;
+  }
+  // On Windows, must end with ibcmd.exe; on other platforms, must end with ibcmd
+  const expectedExeName = platform === 'win32' ? 'ibcmd.exe' : 'ibcmd';
+  const basename = path.basename(resolvedPath).toLowerCase();
+  return basename === expectedExeName;
+}
+
 function defaultFindOnSystemPath(deps: IbcmdPathResolverDeps): string | null {
   try {
     if (deps.platform === 'win32') {
@@ -71,7 +82,7 @@ function defaultFindOnSystemPath(deps: IbcmdPathResolverDeps): string | null {
         .split(/\r?\n/)
         .map((l) => l.trim())
         .find(Boolean);
-      if (line && deps.existsSync(line)) {
+      if (line && isValidIbcmdPath(line, deps.platform) && deps.existsSync(line)) {
         return line;
       }
     } else {
@@ -81,7 +92,7 @@ function defaultFindOnSystemPath(deps: IbcmdPathResolverDeps): string | null {
         maxBuffer: 65536,
       });
       const line = out.trim().split('\n')[0]?.trim();
-      if (line && deps.existsSync(line)) {
+      if (line && isValidIbcmdPath(line, deps.platform) && deps.existsSync(line)) {
         return line;
       }
     }

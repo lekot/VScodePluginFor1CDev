@@ -9,7 +9,8 @@ try {
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const MAX_BUFFER_LINES = 10000;
-const BUFFER_TRIM_PERCENTAGE = 0.2; // Remove 20% of old entries when limit reached
+const BUFFER_HARD_CAP = 12000; // Absolute maximum — entries beyond this are dropped immediately
+const BUFFER_TRIM_PERCENTAGE = 0.2; // Remove 20% of old entries when soft limit reached
 
 /**
  * Logger utility for the extension
@@ -95,6 +96,10 @@ export class Logger {
     
     // Buffer management with rotation
     if (this.bufferingEnabled) {
+      if (this.buffer.length >= BUFFER_HARD_CAP) {
+        // Hard cap: drop the oldest entry to keep size bounded
+        this.buffer.shift();
+      }
       this.buffer.push(logMessage);
       if (this.buffer.length > MAX_BUFFER_LINES) {
         // Remove 20% of oldest entries to prevent frequent trimming
