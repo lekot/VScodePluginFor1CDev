@@ -73,7 +73,7 @@ suite('Properties Integration Test Suite', () => {
   test('provider reuses single panel and updates payload for next selected node', async function () {
     this.timeout(8000);
     const mockContext = createMockContext();
-    const treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    const treeDataProvider = new MetadataTreeDataProvider();
     const typeEditorProvider = new TypeEditorProvider(mockContext);
     const provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
 

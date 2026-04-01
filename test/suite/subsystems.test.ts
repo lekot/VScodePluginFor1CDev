@@ -73,7 +73,7 @@ suite('Subsystems (hierarchy + filter) Tests', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 
-    const provider = new MetadataTreeDataProvider(mockContext);
+    const provider = new MetadataTreeDataProvider();
 
     const parentSubsystem: TreeNode = {
       id: 'sub-parent',

@@ -57,7 +57,7 @@ suite('Preservation Property Tests: Non-Configuration Nodes Unaffected', functio
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 
-    treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    treeDataProvider = new MetadataTreeDataProvider();
     typeEditorProvider = new TypeEditorProvider(mockContext);
     provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });

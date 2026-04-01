@@ -49,7 +49,7 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 
-    treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    treeDataProvider = new MetadataTreeDataProvider();
     typeEditorProvider = new TypeEditorProvider(mockContext);
     provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });
