@@ -505,6 +505,35 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
+   * Eagerly load children for all lazy type-folder nodes under a configuration root.
+   * Used by composition editor to see all objects before lazy expand.
+   */
+  async eagerLoadAllTypeFolders(configRoot: TreeNode): Promise<void> {
+    const ctx = this.cache.getLoadContext(configRoot.id);
+    if (!ctx) { return; }
+
+    if (!configRoot.children) { return; }
+
+    for (const typeFolder of configRoot.children) {
+      // Already loaded
+      if (typeFolder.children && typeFolder.children.length > 0) { continue; }
+      // Skip non-lazy nodes (e.g. already empty or not a type folder)
+      if (!this.isLazyTypeNode(typeFolder)) { continue; }
+
+      try {
+        const children = await MetadataParser.parseTypeContents(ctx.configPath, typeFolder.id);
+        for (const c of children) {
+          c.parent = typeFolder;
+          this.cache.buildCache(c);
+        }
+        typeFolder.children = children;
+      } catch (error) {
+        Logger.warn('Failed to eager load type folder', { folder: typeFolder.id, error });
+      }
+    }
+  }
+
+  /**
    * Get configuration root path for the tree (first root's context; backward compat).
    */
   getConfigPath(): string | null {

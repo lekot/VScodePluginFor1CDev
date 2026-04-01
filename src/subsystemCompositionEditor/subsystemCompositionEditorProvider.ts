@@ -88,6 +88,12 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
 
     try {
       const currentRefs = await readSubsystemCompositionRefsFromFile(subsystemNode.filePath);
+
+      // Eager load all type folders so collector sees actual objects, not empty lazy containers
+      for (const root of treeProvider.getRootNodes()) {
+        await treeProvider.eagerLoadAllTypeFolders(root);
+      }
+
       const allObjects = collectCompositionEligibleObjects(
         treeProvider.getRootNodes(),
         subsystemNode,
