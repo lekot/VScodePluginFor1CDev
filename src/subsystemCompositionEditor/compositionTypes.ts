@@ -1,3 +1,12 @@
+/** Type-folder container displayed in the lazy subsystem composition tree */
+export interface CompositionTypeContainer {
+  typeFolderId: string;
+  metadataType: string;
+  displayName: string;
+  objectCount: number | null;
+  checkedCount: number;
+}
+
 /** Object entry displayed in the subsystem composition editor */
 export interface CompositionObjectEntry {
   /** Reference in "Type.Name" format — key in XML Content (e.g. "Catalog.Items") */
