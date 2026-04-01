@@ -20,9 +20,8 @@ export interface CompositionObjectEntry {
 /** Payload sent with the 'init' message to the webview */
 export interface CompositionInitPayload {
   subsystemName: string;
-  objects: CompositionObjectEntry[];
+  containers: CompositionTypeContainer[];
   checkedRefs: string[];
-  totalCount: number;
 }
 
 // ── Webview → Extension ─────────────────────────────────────────────
@@ -32,7 +31,9 @@ export type CompositionWebviewMessage =
   | { command: 'save' }
   | { command: 'cancel' }
   | { command: 'selectAll'; data: { refs: string[] } }
-  | { command: 'deselectAll'; data: { refs: string[] } };
+  | { command: 'deselectAll'; data: { refs: string[] } }
+  | { command: 'expand'; data: { typeFolderId: string } }
+  | { command: 'expandAll' };
 
 // ── Extension → Webview ─────────────────────────────────────────────
 
@@ -41,4 +42,15 @@ export type CompositionHostMessage =
   | { command: 'init'; data: CompositionInitPayload }
   | { command: 'saveSuccess' }
   | { command: 'saveError'; data: { message: string } }
-  | { command: 'error'; data: { message: string } };
+  | { command: 'error'; data: { message: string } }
+  | { command: 'objectsLoaded'; data: ObjectsLoadedPayload }
+  | { command: 'allObjectsLoaded'; data: AllObjectsLoadedPayload };
+
+export interface ObjectsLoadedPayload {
+  typeFolderId: string;
+  objects: CompositionObjectEntry[];
+}
+
+export interface AllObjectsLoadedPayload {
+  containers: Record<string, CompositionObjectEntry[]>;
+}

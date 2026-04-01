@@ -7,8 +7,15 @@ import type {
   CompositionWebviewMessage,
   CompositionHostMessage,
   CompositionInitPayload,
+  CompositionObjectEntry,
+  CompositionTypeContainer,
+  ObjectsLoadedPayload,
+  AllObjectsLoadedPayload,
 } from './compositionTypes';
-import { collectCompositionEligibleObjects } from './compositionObjectCollector';
+import {
+  collectTypeFolders,
+  collectObjectsForType,
+} from './compositionObjectCollector';
 import {
   readSubsystemCompositionRefsFromFile,
   applySubsystemCompositionFileUpdate,
@@ -17,7 +24,7 @@ import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 
 export class SubsystemCompositionEditorProvider implements vscode.Disposable {
-  private static readonly VALID_COMMANDS = new Set(['toggle', 'save', 'cancel', 'selectAll', 'deselectAll']);
+  private static readonly VALID_COMMANDS = new Set(['toggle', 'save', 'cancel', 'selectAll', 'deselectAll', 'expand', 'expandAll']);
 
   private panel: vscode.WebviewPanel | undefined;
   private subsystemFilePath: string | undefined;
@@ -25,6 +32,10 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
   private initialChecked = new Set<string>();
   private currentChecked = new Set<string>();
   private saveInProgress = false;
+  private loadedObjects = new Map<string, CompositionObjectEntry[]>();
+  private treeProvider: MetadataTreeDataProvider | undefined;
+  private subsystemNode: TreeNode | undefined;
+  private loadingTypes = new Set<string>();
   private disposables: vscode.Disposable[] = [];
 
   constructor(
@@ -70,7 +81,11 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       const data = m.data as Record<string, unknown> | undefined;
       return !!data && Array.isArray(data.refs);
     }
-    return true; // save, cancel have no data
+    if (m.command === 'expand') {
+      const data = m.data as Record<string, unknown> | undefined;
+      return !!data && typeof data.typeFolderId === 'string';
+    }
+    return true; // save, cancel, expandAll have no data
   }
 
   /**
@@ -88,20 +103,22 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
 
     try {
       const currentRefs = await readSubsystemCompositionRefsFromFile(subsystemNode.filePath);
+      const checkedSet = new Set(currentRefs);
 
-      // Eager load all type folders so collector sees actual objects, not empty lazy containers
-      for (const root of treeProvider.getRootNodes()) {
-        await treeProvider.eagerLoadAllTypeFolders(root);
-      }
-
-      const allObjects = collectCompositionEligibleObjects(
+      // Lazy: collect type-folder containers without loading their children
+      const containers: CompositionTypeContainer[] = collectTypeFolders(
         treeProvider.getRootNodes(),
         subsystemNode,
-        configPath
+        configPath,
+        checkedSet,
       );
 
       this.subsystemFilePath = subsystemNode.filePath;
       this.configPath = configPath;
+      this.treeProvider = treeProvider;
+      this.subsystemNode = subsystemNode;
+      this.loadedObjects.clear();
+      this.loadingTypes.clear();
       this.initialChecked = new Set(currentRefs);
       this.currentChecked = new Set(currentRefs);
 
@@ -128,6 +145,10 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
             this.initialChecked.clear();
             this.currentChecked.clear();
             this.saveInProgress = false;
+            this.loadedObjects.clear();
+            this.loadingTypes.clear();
+            this.treeProvider = undefined;
+            this.subsystemNode = undefined;
           },
           null,
           this.disposables
@@ -145,9 +166,8 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
 
       const payload: CompositionInitPayload = {
         subsystemName: subsystemNode.name,
-        objects: allObjects,
+        containers,
         checkedRefs: currentRefs,
-        totalCount: allObjects.length,
       };
 
       const htmlPath = this.resolveWebviewHtmlPath();
@@ -190,6 +210,12 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
           this.currentChecked.delete(ref);
         }
         break;
+      case 'expand':
+        void this.handleExpand(msg.data.typeFolderId);
+        break;
+      case 'expandAll':
+        void this.handleExpandAll();
+        break;
     }
   }
 
@@ -199,6 +225,94 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
     } else {
       this.currentChecked.delete(ref);
     }
+  }
+
+  private async handleExpand(typeFolderId: string): Promise<void> {
+    // Return from cache if already loaded
+    if (this.loadedObjects.has(typeFolderId)) {
+      const payload: ObjectsLoadedPayload = {
+        typeFolderId,
+        objects: this.loadedObjects.get(typeFolderId)!,
+      };
+      this.postMessage({ command: 'objectsLoaded', data: payload });
+      return;
+    }
+    // Guard: already loading
+    if (this.loadingTypes.has(typeFolderId)) { return; }
+    this.loadingTypes.add(typeFolderId);
+
+    try {
+      if (!this.treeProvider || !this.subsystemNode) { return; }
+
+      // Find typeFolder in the tree and lazy-load children if needed
+      const roots = this.treeProvider.getRootNodes();
+      let typeFolder: TreeNode | undefined;
+      for (const root of roots) {
+        typeFolder = root.children?.find(c => c.id === typeFolderId);
+        if (typeFolder) { break; }
+      }
+
+      if (typeFolder && (!typeFolder.children || typeFolder.children.length === 0)) {
+        // Standard lazy load via getChildren
+        await this.treeProvider.getChildren(typeFolder);
+      }
+
+      const objects = collectObjectsForType(
+        roots,
+        this.subsystemNode,
+        this.configPath,
+        typeFolderId,
+      );
+
+      this.loadedObjects.set(typeFolderId, objects);
+      if (!this.panel) { return; } // panel disposed during loading
+      const payload: ObjectsLoadedPayload = { typeFolderId, objects };
+      this.postMessage({ command: 'objectsLoaded', data: payload });
+    } finally {
+      this.loadingTypes.delete(typeFolderId);
+    }
+  }
+
+  private async handleExpandAll(): Promise<void> {
+    if (!this.treeProvider || !this.subsystemNode) { return; }
+
+    const roots = this.treeProvider.getRootNodes();
+    const result: Record<string, CompositionObjectEntry[]> = {};
+
+    // Add already loaded from cache
+    for (const [id, objects] of this.loadedObjects) {
+      result[id] = objects;
+    }
+
+    // For each root — sequentially (prevent race conditions on tree mutation)
+    for (const root of roots) {
+      if (!root.children) { continue; }
+      for (const typeFolder of root.children) {
+        if (this.loadedObjects.has(typeFolder.id)) { continue; }
+        if (this.loadingTypes.has(typeFolder.id)) { continue; }
+
+        this.loadingTypes.add(typeFolder.id);
+        try {
+          if (!typeFolder.children || typeFolder.children.length === 0) {
+            await this.treeProvider.getChildren(typeFolder);
+          }
+          const objects = collectObjectsForType(
+            roots,
+            this.subsystemNode,
+            this.configPath,
+            typeFolder.id,
+          );
+          this.loadedObjects.set(typeFolder.id, objects);
+          result[typeFolder.id] = objects;
+        } finally {
+          this.loadingTypes.delete(typeFolder.id);
+        }
+      }
+    }
+
+    if (!this.panel) { return; }
+    const payload: AllObjectsLoadedPayload = { containers: result };
+    this.postMessage({ command: 'allObjectsLoaded', data: payload });
   }
 
   private async handleSave(): Promise<void> {
@@ -262,6 +376,10 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       this.panel.dispose();
       this.panel = undefined;
     }
+    this.loadedObjects.clear();
+    this.loadingTypes.clear();
+    this.treeProvider = undefined;
+    this.subsystemNode = undefined;
     for (const d of this.disposables) {
       d.dispose();
     }
