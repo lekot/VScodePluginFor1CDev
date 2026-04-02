@@ -15,7 +15,7 @@ import {
   serializeInfobaseConfigIbcmdOp,
   showIbcmdInfobaseOutputChannel,
 } from '../infobases/infobaseConfigCommands';
-import { buildInfobaseConfigExportArgs, ibcmdOfflineConnectionFromPrepared } from './ibcmd/ibcmdInfobaseConfigArgs';
+import { buildInfobaseConfigExportArgs, ibcmdOfflineConnectionFromPrepared, type IbcmdConfigCliCredentials } from './ibcmd/ibcmdInfobaseConfigArgs';
 import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
 import { runIbcmdStreaming } from './ibcmd/IbcmdStreamingRunner';
 import { interpretIbcmdInfobaseOutcome } from './ibcmd/ibcmdInfobaseOperationResult';
@@ -60,9 +60,19 @@ async function exportInfobaseConfigToDir(params: {
   }
 
   try {
+    let credentials: IbcmdConfigCliCredentials | undefined;
+    const entryUser = params.entry.user?.trim();
+    let entryPassword: string | undefined;
+    if (params.entry.hasStoredPassword) {
+      entryPassword = (await params.storage.readPasswordSecret(params.entry.id)) ?? undefined;
+    }
+    if (entryUser || (entryPassword !== undefined && entryPassword.length > 0)) {
+      credentials = { user: entryUser || undefined, password: entryPassword };
+    }
     const args = buildInfobaseConfigExportArgs(
       ibcmdOfflineConnectionFromPrepared(prep),
       path.resolve(params.outDir),
+      { credentials },
     );
     const outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,

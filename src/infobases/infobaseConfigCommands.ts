@@ -375,7 +375,7 @@ async function runInfobaseConfigOperation(params: {
   entry: InfobaseEntry;
   storage: InfobaseStorageService;
   progressTitle: string;
-  buildArgsFromPrep: (prep: PreparedIbcmdConnectionOk) => string[];
+  buildArgsFromPrep: (prep: PreparedIbcmdConnectionOk, credentials?: IbcmdConfigCliCredentials) => string[];
 }): Promise<void> {
   const ibcmd = getIbcmdService();
   const pathResult = ibcmd.resolveExecutablePath();
@@ -405,6 +405,16 @@ async function runInfobaseConfigOperation(params: {
   ch.appendLine(header);
   await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
+  let credentials: IbcmdConfigCliCredentials | undefined;
+  const entryUser = params.entry.user?.trim();
+  let entryPassword: string | undefined;
+  if (params.entry.hasStoredPassword) {
+    entryPassword = (await params.storage.readPasswordSecret(params.entry.id)) ?? undefined;
+  }
+  if (entryUser || (entryPassword !== undefined && entryPassword.length > 0)) {
+    credentials = { user: entryUser || undefined, password: entryPassword };
+  }
+
   try {
     await vscode.window.withProgress(
       {
@@ -415,7 +425,7 @@ async function runInfobaseConfigOperation(params: {
       async (_progress, token) => {
         const outcome = await runIbcmdStreaming({
           executablePath: pathResult.path,
-          args: params.buildArgsFromPrep(prep),
+          args: params.buildArgsFromPrep(prep, credentials),
           timeoutMs: ibcmd.getTimeoutMs(),
           cancellation: vscodeCancellation(token),
           consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
@@ -500,8 +510,8 @@ export async function runInfobaseConfigImport(
       entry,
       storage: s,
       progressTitle: `Загрузка конфигурации: ${entry.name}`,
-      buildArgsFromPrep: (p) =>
-        buildInfobaseConfigImportArgs(ibcmdOfflineConnectionFromPrepared(p), path.resolve(source)),
+      buildArgsFromPrep: (p, creds) =>
+        buildInfobaseConfigImportArgs(ibcmdOfflineConnectionFromPrepared(p), path.resolve(source), { credentials: creds }),
     });
   });
 }
@@ -535,8 +545,8 @@ export async function runInfobaseConfigExport(
       entry,
       storage: s,
       progressTitle: `Выгрузка конфигурации: ${entry.name}`,
-      buildArgsFromPrep: (p) =>
-        buildInfobaseConfigExportArgs(ibcmdOfflineConnectionFromPrepared(p), absOut),
+      buildArgsFromPrep: (p, creds) =>
+        buildInfobaseConfigExportArgs(ibcmdOfflineConnectionFromPrepared(p), absOut, { credentials: creds }),
     });
   });
 }
@@ -562,7 +572,7 @@ export async function runInfobaseConfigCheck(
       entry,
       storage: s,
       progressTitle: `Проверка конфигурации: ${entry.name}`,
-      buildArgsFromPrep: (p) => buildInfobaseConfigCheckArgs(ibcmdOfflineConnectionFromPrepared(p)),
+      buildArgsFromPrep: (p, creds) => buildInfobaseConfigCheckArgs(ibcmdOfflineConnectionFromPrepared(p), { credentials: creds }),
     });
   });
 }
