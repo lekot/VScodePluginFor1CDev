@@ -1380,3 +1380,57 @@ export async function runCompareInfobaseWithOther(
   }
   await runCompareInfobaseConfigurations({ storage: s, entryA: entry, entryB: picked.target });
 }
+
+/** Команда «Настроить учётные данные» — обновить пользователя и пароль для любой базы без изменения прочих полей. */
+export async function runSetCredentials(
+  storage: InfobaseStorageService | null,
+  entry: InfobaseEntry | undefined,
+): Promise<void> {
+  if (!storage) {
+    void vscode.window.showErrorMessage('Infobase Manager: хранилище не инициализировано.');
+    return;
+  }
+  if (!entry) {
+    void vscode.window.showWarningMessage('Настроить учётные данные: выберите базу в дереве Infobase Manager.');
+    return;
+  }
+
+  const newUser = await vscode.window.showInputBox({
+    value: entry.user ?? '',
+    prompt: 'Имя пользователя (пусто — без пользователя)',
+    placeHolder: 'admin',
+    ignoreFocusOut: true,
+  });
+  if (newUser === undefined) {
+    return;
+  }
+
+  const passwordPrompt = entry.hasStoredPassword
+    ? 'Пароль сохранён в SecretStorage. Пусто — не менять, «-» — удалить.'
+    : 'Пароль (пусто — без пароля)';
+  const passwordInput = await vscode.window.showInputBox({
+    password: true,
+    prompt: passwordPrompt,
+    ignoreFocusOut: true,
+  });
+  if (passwordInput === undefined) {
+    return;
+  }
+
+  const keepPassword = passwordInput === '' && entry.hasStoredPassword;
+  const deletePassword = passwordInput === '-' && entry.hasStoredPassword;
+  const saveNewPassword = !keepPassword && !deletePassword && passwordInput.length > 0;
+
+  const nextHasStoredPassword = saveNewPassword || keepPassword;
+
+  const updated: InfobaseEntry = {
+    ...entry,
+    user: newUser.trim() || undefined,
+    hasStoredPassword: nextHasStoredPassword,
+  };
+  await storage.upsert(updated);
+  if (saveNewPassword) {
+    await storage.writePasswordSecret(entry.id, passwordInput);
+  }
+  void vscode.window.showInformationMessage('Учётные данные обновлены.');
+}

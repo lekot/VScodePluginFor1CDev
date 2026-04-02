@@ -1000,7 +1000,7 @@ suite('registerInfobaseTreeCommands', () => {
     } as unknown as ExtensionState;
 
     const d = registerInfobaseTreeCommands(state);
-    assert.strictEqual(d.length, 17);
+    assert.strictEqual(d.length, 18);
     assert.deepStrictEqual(ids, [
       '1c-metadata-tree.infobases.refresh',
       '1c-metadata-tree.infobases.create',
@@ -1017,6 +1017,7 @@ suite('registerInfobaseTreeCommands', () => {
       '1c-metadata-tree.infobase.configImport',
       '1c-metadata-tree.infobase.configExport',
       '1c-metadata-tree.infobase.configCheck',
+      '1c-metadata-tree.infobase.setCredentials',
       '1c-metadata-tree.infobase.edit',
       '1c-metadata-tree.infobase.remove',
     ]);

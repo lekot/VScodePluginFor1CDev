@@ -350,6 +350,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
       onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      abortPattern: /Имя пользователя\s*:/,
     });
 
     flushOutputChannel();
@@ -419,6 +420,7 @@ async function runInfobaseConfigOperation(params: {
           cancellation: vscodeCancellation(token),
           consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
           onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+          abortPattern: /Имя пользователя\s*:/,
         });
 
         flushOutputChannel();

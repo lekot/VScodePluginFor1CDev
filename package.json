@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.33.5",
+  "version": "0.33.6",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -255,6 +255,12 @@
         "title": "Сравнить конфигурацию с другой базой…",
         "category": "CDT 41",
         "icon": "$(diff)"
+      },
+      {
+        "command": "1c-metadata-tree.infobase.setCredentials",
+        "title": "Настроить учётные данные…",
+        "category": "CDT 41",
+        "icon": "$(key)"
       },
       {
         "command": "1c-metadata-tree.infobase.moveToFolder",
@@ -614,6 +620,11 @@
           "group": "infobase@5b"
         },
         {
+          "command": "1c-metadata-tree.infobase.setCredentials",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@5b2"
+        },
+        {
           "command": "1c-metadata-tree.infobase.moveToFolder",
           "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
           "group": "infobase@5c"
@@ -704,8 +715,8 @@
         },
         "1cMetadataTree.ibcmd.timeout": {
           "type": "number",
-          "default": 600000,
-          "description": "Timeout in milliseconds for ibcmd operations. Zero or negative values fall back to IBCMD_TIMEOUT_MS or built-in default (600000 ms)."
+          "default": 600,
+          "description": "Timeout in seconds for ibcmd operations. Zero or negative values fall back to IBCMD_TIMEOUT_MS (ms) or built-in default (600 s)."
         },
         "1cMetadataTree.ibcmd.autoDetect": {
           "type": "boolean",

@@ -12,7 +12,7 @@ export function getIbcmdTimeoutMsSetting(): number {
   const cfg = vscode.workspace.getConfiguration();
   const primary = cfg.get<number>('1cMetadataTree.ibcmd.timeout');
   if (typeof primary === 'number' && primary > 0 && Number.isFinite(primary)) {
-    return primary;
+    return primary * 1000;
   }
   return 0;
 }

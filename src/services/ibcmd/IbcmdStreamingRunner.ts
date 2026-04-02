@@ -27,6 +27,8 @@ export interface IbcmdStreamingRunnerOptions {
   ringBufferMaxBytes?: number;
   /** Injected for tests (default: `child_process.spawn`). */
   spawnImpl?: typeof spawn;
+  /** If set, abort the process when this pattern matches accumulated output (e.g. interactive credential prompt). */
+  abortPattern?: RegExp;
 }
 
 export interface IbcmdStreamingRawOutcome {
@@ -40,6 +42,8 @@ export interface IbcmdStreamingRawOutcome {
   /** Set when spawn fails (e.g. ENOENT). */
   spawnErrorCode?: string;
   spawnErrorMessage?: string;
+  /** True when process was killed because {@link IbcmdStreamingRunnerOptions.abortPattern} matched output. */
+  abortPatternMatched?: boolean;
 }
 
 class RingBufferText {
@@ -165,6 +169,20 @@ export async function runIbcmdStreaming(
         return;
       }
       ring.append(text);
+      if (options.abortPattern && !settled && options.abortPattern.test(ring.state.text)) {
+        killTree(child);
+        flushDecodedStreams();
+        finish({
+          exitCode: null,
+          signal: 'SIGTERM',
+          combinedLog: '',
+          logTruncated: false,
+          cancelled: false,
+          timedOut: false,
+          abortPatternMatched: true,
+        });
+        return;
+      }
       options.onStreamChunk?.(text, stream);
     };
 
