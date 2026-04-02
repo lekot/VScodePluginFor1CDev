@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.33.6",
+  "version": "0.33.8",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -817,7 +817,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "package": "npm run compile && node node_modules/@vscode/vsce/vsce package",
-    "copy:webviews": "node -e \"const fs=require('fs');const p=require('path');const pairs=[['src/rolesEditor/rolesEditorWebview.html','dist/rolesEditor/rolesEditorWebview.html'],['src/subsystemCompositionEditor/subsystemCompositionWebview.html','dist/subsystemCompositionEditor/subsystemCompositionWebview.html']];for(const [s,d] of pairs){fs.mkdirSync(p.dirname(d),{recursive:true});fs.copyFileSync(s,d);}\"",
+    "copy:webviews": "node scripts/copy-webviews.js",
     "compile": "tsc -p ./ && npm run copy:webviews",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
