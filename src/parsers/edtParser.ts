@@ -13,6 +13,10 @@ import {
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import {
+  extractExtensionProperties,
+  extractObjectBelonging,
+} from '../extensionSupport/extensionXmlParser';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -45,6 +49,22 @@ export class EdtParser {
         children: [],
         filePath: path.join(configPath, CONFIGURATION_XML),
       };
+
+      // Try to read extension properties from Configuration.mdo (EDT format)
+      try {
+        const configMdoPath = path.join(srcPath, 'Configuration', 'Configuration.mdo');
+        await fs.promises.access(configMdoPath);
+        const configXml = await XmlParser.parseFileAsync(configMdoPath);
+        const extProps = extractExtensionProperties(configXml);
+        if (extProps.extensionPurpose !== undefined) {
+          rootNode.properties.extensionPurpose = extProps.extensionPurpose;
+        }
+        if (extProps.namePrefix !== undefined) {
+          rootNode.properties.namePrefix = extProps.namePrefix;
+        }
+      } catch {
+        // Not an extension or .mdo not found — skip
+      }
 
       // Parse metadata directories in src
       const metadataTypes = MetadataTypeMapper.getMetadataTypes();
@@ -99,6 +119,22 @@ export class EdtParser {
       children: [],
       filePath: path.join(configPath, CONFIGURATION_XML),
     };
+
+    // Try to read extension properties from Configuration.mdo (EDT format)
+    try {
+      const configMdoPath = path.join(srcPath, 'Configuration', 'Configuration.mdo');
+      await fs.promises.access(configMdoPath);
+      const configXml = await XmlParser.parseFileAsync(configMdoPath);
+      const extProps = extractExtensionProperties(configXml);
+      if (extProps.extensionPurpose !== undefined) {
+        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
+      }
+      if (extProps.namePrefix !== undefined) {
+        rootNode.properties.namePrefix = extProps.namePrefix;
+      }
+    } catch {
+      // Not an extension or .mdo not found — skip
+    }
 
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();
     for (const typeName of metadataTypes) {
@@ -422,6 +458,13 @@ export class EdtParser {
         mdoContent = await XmlParser.parseFileAsync(mdoPath);
         const properties = this.extractPropertiesFromMdo(mdoContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
+        const objBelonging = extractObjectBelonging(mdoContent);
+        if (objBelonging.objectBelonging !== undefined) {
+          elementNode.properties.objectBelonging = objBelonging.objectBelonging;
+        }
+        if (objBelonging.extendedConfigurationObject !== undefined) {
+          elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
+        }
       } catch (error) {
         Logger.warn(`Error parsing MDO file ${mdoPath}`, error);
       }

@@ -14,6 +14,10 @@ import {
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import {
+  extractExtensionProperties,
+  extractObjectBelonging,
+} from '../extensionSupport/extensionXmlParser';
 
 /**
  * Parser for 1C Designer format metadata
@@ -74,6 +78,22 @@ export class DesignerParser {
       filePath: this.getConfigurationXmlPath(configPath),
     };
 
+    // Try to read extension properties from Configuration.xml
+    try {
+      const configXmlPath = this.getConfigurationXmlPath(configPath);
+      await fs.promises.access(configXmlPath);
+      const configXml = await XmlParser.parseFileAsync(configXmlPath);
+      const extProps = extractExtensionProperties(configXml);
+      if (extProps.extensionPurpose !== undefined) {
+        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
+      }
+      if (extProps.namePrefix !== undefined) {
+        rootNode.properties.namePrefix = extProps.namePrefix;
+      }
+    } catch {
+      // Not an extension or Configuration.xml not found — skip
+    }
+
     // Parse metadata directories
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();
 
@@ -116,6 +136,22 @@ export class DesignerParser {
       children: [],
       filePath: this.getConfigurationXmlPath(configPath),
     };
+
+    // Try to read extension properties from Configuration.xml
+    try {
+      const configXmlPath = this.getConfigurationXmlPath(configPath);
+      await fs.promises.access(configXmlPath);
+      const configXml = await XmlParser.parseFileAsync(configXmlPath);
+      const extProps = extractExtensionProperties(configXml);
+      if (extProps.extensionPurpose !== undefined) {
+        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
+      }
+      if (extProps.namePrefix !== undefined) {
+        rootNode.properties.namePrefix = extProps.namePrefix;
+      }
+    } catch {
+      // Not an extension or Configuration.xml not found — skip
+    }
 
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();
     for (const typeName of metadataTypes) {
@@ -440,6 +476,13 @@ export class DesignerParser {
         const properties = this.extractPropertiesFromElement(xmlContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
         elementNode.filePath = xmlPath;
+        const objBelonging = extractObjectBelonging(xmlContent);
+        if (objBelonging.objectBelonging !== undefined) {
+          elementNode.properties.objectBelonging = objBelonging.objectBelonging;
+        }
+        if (objBelonging.extendedConfigurationObject !== undefined) {
+          elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
+        }
       } catch {
         // Keep elementPath as filePath
       }
@@ -458,6 +501,13 @@ export class DesignerParser {
         xmlContent = await XmlParser.parseFileAsync(xmlPath);
         const properties = this.extractPropertiesFromElement(xmlContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
+        const objBelonging = extractObjectBelonging(xmlContent);
+        if (objBelonging.objectBelonging !== undefined) {
+          elementNode.properties.objectBelonging = objBelonging.objectBelonging;
+        }
+        if (objBelonging.extendedConfigurationObject !== undefined) {
+          elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
+        }
       } catch (error) {
         Logger.warn(`Error parsing element XML ${xmlPath}`, error);
       }
