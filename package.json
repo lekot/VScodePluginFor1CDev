@@ -314,6 +314,26 @@
         "command": "1c-metadata-tree.validateCurrentXml",
         "title": "CDT 41: Validate current XML (ibcmd preflight)",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.borrowToExtension",
+        "title": "Добавить в расширение",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.navigateToMainObject",
+        "title": "Перейти к объекту конфигурации",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.showRelatedObjects",
+        "title": "Связанные объекты",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.showInterceptors",
+        "title": "Показать перехваты",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -627,6 +647,26 @@
           "command": "1c-metadata-tree.infobase.deleteFolder",
           "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
           "group": "infobaseFolder@3"
+        },
+        {
+          "command": "1c-metadata-tree.borrowToExtension",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^(Catalog|Document|Enum|Report|DataProcessor|InformationRegister|AccumulationRegister|CommonModule|Role|Subsystem|CommonForm|CommonTemplate|CommonPicture|CommonCommand|ExchangePlan|Constant|ChartOfCharacteristicTypes|ChartOfAccounts|AccountingRegister|ChartOfCalculationTypes|CalculationRegister|BusinessProcess|Task|DocumentJournal|FilterCriterion|SettingsStorage|FunctionalOption|ScheduledJob|Sequence)$/",
+          "group": "3_extension@0"
+        },
+        {
+          "command": "1c-metadata-tree.navigateToMainObject",
+          "when": "view == 1c-metadata-tree && viewItem =~ /.Adopted$/",
+          "group": "3_extension@1"
+        },
+        {
+          "command": "1c-metadata-tree.showRelatedObjects",
+          "when": "view == 1c-metadata-tree",
+          "group": "3_extension@2"
+        },
+        {
+          "command": "1c-metadata-tree.showInterceptors",
+          "when": "view == 1c-metadata-tree && viewItem =~ /MethodBsl/",
+          "group": "3_extension@3"
         }
       ]
     },
