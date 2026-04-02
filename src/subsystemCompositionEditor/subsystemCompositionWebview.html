@@ -351,6 +351,17 @@
         .container-cb-wrap {
             flex-shrink: 0;
         }
+
+        /* ── Orphan entries (ref in XML but not in tree) ─────── */
+        .orphan-row {
+            opacity: 0.55;
+            font-style: italic;
+        }
+        .orphan-row .obj-name::after {
+            content: ' (не в дереве)';
+            font-size: 0.85em;
+            opacity: 0.7;
+        }
     </style>
 </head>
 <body>
@@ -486,6 +497,8 @@
                     countLabel = objects.length;
                 } else if (container.objectCount !== null) {
                     countLabel = container.objectCount;
+                } else if (container.checkedCount > 0) {
+                    countLabel = '\u2713' + container.checkedCount;
                 } else {
                     countLabel = '?';
                 }
@@ -556,6 +569,7 @@
                 const tr = document.createElement('tr');
                 tr.dataset.ref = obj.ref;
                 if (isChild) { tr.className = 'child-row'; }
+                if (obj.orphan) { tr.classList.add('orphan-row'); }
 
                 const tdCheck = document.createElement('td');
                 tdCheck.className = 'col-check';
@@ -578,7 +592,10 @@
 
                 const tdName = document.createElement('td');
                 tdName.className = 'col-name';
-                tdName.textContent = obj.displayName;
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'obj-name';
+                nameSpan.textContent = obj.displayName;
+                tdName.appendChild(nameSpan);
 
                 tr.appendChild(tdCheck);
                 tr.appendChild(tdName);

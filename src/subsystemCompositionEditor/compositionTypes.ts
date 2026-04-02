@@ -15,6 +15,8 @@ export interface CompositionObjectEntry {
   displayName: string;
   /** Metadata type: "Catalog", "Document", etc. */
   type: string;
+  /** True when ref exists in subsystem XML but object is not found in the metadata tree. */
+  orphan?: boolean;
 }
 
 /** Payload sent with the 'init' message to the webview */

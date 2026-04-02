@@ -15,6 +15,7 @@ import type {
 import {
   collectTypeFolders,
   collectObjectsForType,
+  buildOrphanEntries,
 } from './compositionObjectCollector';
 import {
   readSubsystemCompositionRefsFromFile,
@@ -33,6 +34,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
   private currentChecked = new Set<string>();
   private saveInProgress = false;
   private loadedObjects = new Map<string, CompositionObjectEntry[]>();
+  private containers: CompositionTypeContainer[] = [];
   private treeProvider: MetadataTreeDataProvider | undefined;
   private subsystemNode: TreeNode | undefined;
   private loadingTypes = new Set<string>();
@@ -117,6 +119,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       this.configPath = configPath;
       this.treeProvider = treeProvider;
       this.subsystemNode = subsystemNode;
+      this.containers = containers;
       this.loadedObjects.clear();
       this.loadingTypes.clear();
       this.initialChecked = new Set(currentRefs);
@@ -147,6 +150,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
             this.saveInProgress = false;
             this.loadedObjects.clear();
             this.loadingTypes.clear();
+            this.containers = [];
             this.treeProvider = undefined;
             this.subsystemNode = undefined;
           },
@@ -264,9 +268,15 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
         typeFolderId,
       );
 
-      this.loadedObjects.set(typeFolderId, objects);
+      const container = this.containers.find(c => c.typeFolderId === typeFolderId);
+      const orphans = container
+        ? buildOrphanEntries(this.initialChecked, container.metadataType, objects)
+        : [];
+      const combined = [...objects, ...orphans];
+
+      this.loadedObjects.set(typeFolderId, combined);
       if (!this.panel) { return; } // panel disposed during loading
-      const payload: ObjectsLoadedPayload = { typeFolderId, objects };
+      const payload: ObjectsLoadedPayload = { typeFolderId, objects: combined };
       this.postMessage({ command: 'objectsLoaded', data: payload });
     } finally {
       this.loadingTypes.delete(typeFolderId);
@@ -302,8 +312,13 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
             this.configPath,
             typeFolder.id,
           );
-          this.loadedObjects.set(typeFolder.id, objects);
-          result[typeFolder.id] = objects;
+          const container = this.containers.find(c => c.typeFolderId === typeFolder.id);
+          const orphans = container
+            ? buildOrphanEntries(this.initialChecked, container.metadataType, objects)
+            : [];
+          const combined = [...objects, ...orphans];
+          this.loadedObjects.set(typeFolder.id, combined);
+          result[typeFolder.id] = combined;
         } finally {
           this.loadingTypes.delete(typeFolder.id);
         }
@@ -378,6 +393,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
     }
     this.loadedObjects.clear();
     this.loadingTypes.clear();
+    this.containers = [];
     this.treeProvider = undefined;
     this.subsystemNode = undefined;
     for (const d of this.disposables) {

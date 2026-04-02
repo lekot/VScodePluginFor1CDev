@@ -169,7 +169,9 @@ export function collectTypeFolders(
         : (typeFolder.children?.[0]?.type ?? typeFolder.type);
 
       const objectCount: number | null =
-        typeFolder.children !== undefined ? typeFolder.children.length : null;
+        typeFolder.children !== undefined && typeFolder.children.length > 0
+          ? typeFolder.children.length
+          : null;
 
       // Approximate checkedCount based on ref prefix
       let checkedCount = 0;
@@ -255,6 +257,37 @@ export function collectObjectsForType(
     }
   }
 
+  result.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  return result;
+}
+
+/**
+ * Build orphan entries — refs that are checked in the subsystem XML but whose
+ * objects are not found in the metadata tree for the given metadataType.
+ *
+ * @param checkedRefs   Currently checked refs from the subsystem XML.
+ * @param metadataType  Metadata type prefix (e.g. "Catalog").
+ * @param knownObjects  Objects already collected from the tree for this type.
+ * @returns Sorted list of orphan CompositionObjectEntry items.
+ */
+export function buildOrphanEntries(
+  checkedRefs: ReadonlySet<string>,
+  metadataType: string,
+  knownObjects: readonly CompositionObjectEntry[],
+): CompositionObjectEntry[] {
+  const knownRefs = new Set(knownObjects.map(o => o.ref));
+  const prefix = `${metadataType}.`;
+  const result: CompositionObjectEntry[] = [];
+  for (const ref of checkedRefs) {
+    if (ref.startsWith(prefix) && !knownRefs.has(ref)) {
+      result.push({
+        ref,
+        displayName: ref.slice(prefix.length),
+        type: metadataType,
+        orphan: true,
+      });
+    }
+  }
   result.sort((a, b) => a.displayName.localeCompare(b.displayName));
   return result;
 }
