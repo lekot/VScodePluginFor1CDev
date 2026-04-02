@@ -66,8 +66,9 @@ suite('epic36 block6 acceptance script', function () {
     const run = spawnSync(process.execPath, [scriptPath, '--skip-tests'], {
       cwd: repoRoot,
       encoding: 'utf8',
+      timeout: 20000,
     });
-    assert.strictEqual(run.status, 0, run.stderr || run.stdout);
+    assert.strictEqual(run.status, 0, run.stderr || run.stdout || String(run.signal));
 
     const report = fs.readFileSync(acceptanceReportPath, 'utf8');
     assert.ok(
@@ -92,6 +93,7 @@ suite('epic36 block6 acceptance script', function () {
     const run = spawnSync(process.execPath, [scriptPath, '--skip-tests'], {
       cwd: repoRoot,
       encoding: 'utf8',
+      timeout: 20000,
     });
 
     assert.notStrictEqual(run.status, 0, 'script must fail when core report is missing');

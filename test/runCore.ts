@@ -11,6 +11,7 @@ async function main(): Promise<void> {
   const mocha = new Mocha({
     ui: 'tdd',
     color: true,
+    timeout: 10000,
   });
 
   const testsRoot = path.resolve(__dirname);

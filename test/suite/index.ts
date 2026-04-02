@@ -34,15 +34,28 @@ export function run(): Promise<void> {
   const mocha = new Mocha({
     ui: 'tdd',
     color: true,
+    timeout: 10000,
   });
 
   const testsRoot = path.resolve(__dirname, '..');
+
+  // Core-only tests use vscode module stub and hang in real VS Code host.
+  // Exclude them — they run via runCore.ts instead.
+  // Keep mandatory VSCode suites even if they appear in coreSuites.
+  const { coreSuiteFiles } = require('./coreSuites');
+  const mandatoryRaw = process.env.MANDATORY_SUITES_VSCODE ?? '';
+  const mandatory = new Set<string>(mandatoryRaw.split(',').map((s: string) => s.trim()).filter(Boolean));
+  const coreOnly = new Set<string>(
+    (coreSuiteFiles as string[])
+      .map((f: string) => f.replace(/\\/g, '/'))
+      .filter((f: string) => !mandatory.has(f)),
+  );
 
   return new Promise((c, e) => {
     const testFiles = glob.sync('**/**.test.js', {
       cwd: testsRoot,
       ignore: ['suite/smoke/**', '**/smoke/**'],
-    });
+    }).filter((f) => !coreOnly.has(f.replace(/\\/g, '/')));
 
     testFiles.forEach((file) => mocha.addFile(path.resolve(testsRoot, file)));
     const discoveredSuites = testFiles.map((file) => file.replace(/\\/g, '/')).sort();

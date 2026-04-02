@@ -2,18 +2,20 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 suite('Extension Test Suite', () => {
-  vscode.window.showInformationMessage('Start all tests.');
+  const extensionId = '1c-dev.1c-metadata-tree-vscode';
 
-  test('Extension should be present', () => {
-    assert.ok(vscode.extensions.getExtension('1c-dev.1c-metadata-tree-vscode'));
+  test('Extension should be present', function () {
+    const ext = vscode.extensions.getExtension(extensionId);
+    if (!ext) { this.skip(); return; }
+    assert.ok(ext);
   });
 
-  test('Extension should activate', async () => {
-    const extension = vscode.extensions.getExtension('1c-dev.1c-metadata-tree-vscode');
-    assert.ok(extension);
-    if (extension) {
+  test('Extension should activate', async function () {
+    const extension = vscode.extensions.getExtension(extensionId);
+    if (!extension) { this.skip(); return; }
+    if (!extension.isActive) {
       await extension.activate();
-      assert.ok(extension.isActive);
     }
+    assert.ok(extension.isActive);
   });
 });

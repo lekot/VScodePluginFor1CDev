@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as assert from 'assert';
 import * as fc from 'fast-check';
 import * as vscode from 'vscode';
@@ -27,15 +28,15 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     mockContext = {
       subscriptions: [],
       extensionPath: '',
-      extensionUri: vscode.Uri.file(''),
+      extensionUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       globalState: {} as any,
       workspaceState: {} as any,
       secrets: {} as any,
       storageUri: undefined,
       storagePath: undefined,
-      globalStorageUri: vscode.Uri.file(''),
+      globalStorageUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       globalStoragePath: '',
-      logUri: vscode.Uri.file(''),
+      logUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       logPath: '',
       extensionMode: vscode.ExtensionMode.Test,
       extension: {} as any,
