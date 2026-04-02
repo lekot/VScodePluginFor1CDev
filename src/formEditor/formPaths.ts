@@ -6,6 +6,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { FORM_XML } from '../constants/fileNames';
 
 export interface FormPaths {
   /** Directory of the form. */
@@ -26,7 +27,7 @@ export function getFormPaths(formNodeFilePath: string): FormPaths {
   const parentDir = path.dirname(normalized);
 
   // Already Ext/Form.xml — editor was opened with this file (e.g. from tree → formXmlPath)
-  if (basename === 'Form.xml' && path.basename(parentDir) === 'Ext') {
+  if (basename === FORM_XML && path.basename(parentDir) === 'Ext') {
     const formDirectory = parentDir;
     const formXmlPath = normalized;
     const modulePath = path.join(formDirectory, 'Form', 'Module.bsl');
@@ -38,13 +39,13 @@ export function getFormPaths(formNodeFilePath: string): FormPaths {
     const formsParent = path.dirname(normalized);
     const formStem = path.basename(normalized, path.extname(normalized));
     const extRoot = path.join(formsParent, formStem);
-    const formXmlPath = path.join(extRoot, 'Ext', 'Form.xml');
+    const formXmlPath = path.join(extRoot, 'Ext', FORM_XML);
     const modulePath = path.join(extRoot, 'Ext', 'Form', 'Module.bsl');
     return { formDirectory: extRoot, formXmlPath, modulePath };
   }
 
   const formDirectory = formNodeFilePath;
-  const formXmlPath = path.join(formDirectory, 'Ext', 'Form.xml');
+  const formXmlPath = path.join(formDirectory, 'Ext', FORM_XML);
   const modulePath = path.join(formDirectory, 'Ext', 'Form', 'Module.bsl');
   return { formDirectory, formXmlPath, modulePath };
 }

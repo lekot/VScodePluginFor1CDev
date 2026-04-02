@@ -48,3 +48,10 @@ coverage/tmp/**
 .playwright-mcp/
 smoke-avansovyotchet-console.log
 suite-reports/
+.claude/
+.mcp.json
+.ibcmd-reports/
+CLAUDE.md
+AGENTS.md
+shcntx_help_db_path.txt
+coverage/

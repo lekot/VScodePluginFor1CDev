@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.32.8",
+  "version": "0.33.9",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -175,6 +175,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.editSubsystemComposition",
+        "title": "Редактор состава подсистемы",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
         "title": "CDT 41: Configure ibcmd…",
         "category": "CDT 41"
@@ -252,6 +257,12 @@
         "icon": "$(diff)"
       },
       {
+        "command": "1c-metadata-tree.infobase.setCredentials",
+        "title": "Настроить учётные данные…",
+        "category": "CDT 41",
+        "icon": "$(key)"
+      },
+      {
         "command": "1c-metadata-tree.infobase.moveToFolder",
         "title": "Переместить в папку…",
         "category": "CDT 41",
@@ -304,6 +315,31 @@
         "title": "Раскатать в базы…",
         "category": "CDT 41",
         "icon": "$(run-all)"
+      },
+      {
+        "command": "1c-metadata-tree.validateCurrentXml",
+        "title": "CDT 41: Validate current XML (ibcmd preflight)",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.borrowToExtension",
+        "title": "Добавить в расширение",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.navigateToMainObject",
+        "title": "Перейти к объекту конфигурации",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.showRelatedObjects",
+        "title": "Связанные объекты",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.showInterceptors",
+        "title": "Показать перехваты",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -398,6 +434,20 @@
           "group": "navigation@6"
         }
       ],
+      "editor/title": [
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "resourceExtname == .xml",
+          "group": "navigation@20"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "resourceExtname == .xml",
+          "group": "navigation@20"
+        }
+      ],
       "view/item/context": [
         {
           "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
@@ -428,6 +478,16 @@
           "command": "1c-metadata-tree.config.deployMultiple",
           "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot.*bindingBound.*deployMany/",
           "group": "infobase@1"
+        },
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
+          "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.validateCurrentXml",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot/",
+          "group": "infobase@2"
         },
         {
           "command": "1c-metadata-tree.openXML",
@@ -500,14 +560,9 @@
           "group": "navigation"
         },
         {
-          "command": "1c-metadata-tree.addToSubsystemComposition",
-          "when": "view == 1c-metadata-tree && viewItem == 'Subsystem'",
-          "group": "1_modify"
-        },
-        {
-          "command": "1c-metadata-tree.removeFromSubsystemComposition",
-          "when": "view == 1c-metadata-tree && viewItem == 'Subsystem'",
-          "group": "1_modify"
+          "command": "1c-metadata-tree.editSubsystemComposition",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Subsystem/",
+          "group": "2_subsystem@0"
         },
         {
           "command": "1c-metadata-tree.clearSubsystemFilter",
@@ -565,6 +620,11 @@
           "group": "infobase@5b"
         },
         {
+          "command": "1c-metadata-tree.infobase.setCredentials",
+          "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
+          "group": "infobase@5b2"
+        },
+        {
           "command": "1c-metadata-tree.infobase.moveToFolder",
           "when": "view == 1c-infobase-manager && viewItem =~ /^infobase(File|Server|Web)$/",
           "group": "infobase@5c"
@@ -598,6 +658,26 @@
           "command": "1c-metadata-tree.infobase.deleteFolder",
           "when": "view == 1c-infobase-manager && viewItem == 'infobaseFolder'",
           "group": "infobaseFolder@3"
+        },
+        {
+          "command": "1c-metadata-tree.borrowToExtension",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^(Catalog|Document|Enum|Report|DataProcessor|InformationRegister|AccumulationRegister|CommonModule|Role|Subsystem|CommonForm|CommonTemplate|CommonPicture|CommonCommand|ExchangePlan|Constant|ChartOfCharacteristicTypes|ChartOfAccounts|AccountingRegister|ChartOfCalculationTypes|CalculationRegister|BusinessProcess|Task|DocumentJournal|FilterCriterion|SettingsStorage|FunctionalOption|ScheduledJob)$/",
+          "group": "3_extension@0"
+        },
+        {
+          "command": "1c-metadata-tree.navigateToMainObject",
+          "when": "view == 1c-metadata-tree && viewItem =~ /\\.Adopted$/",
+          "group": "3_extension@1"
+        },
+        {
+          "command": "1c-metadata-tree.showRelatedObjects",
+          "when": "view == 1c-metadata-tree",
+          "group": "3_extension@2"
+        },
+        {
+          "command": "1c-metadata-tree.showInterceptors",
+          "when": "view == 1c-metadata-tree && viewItem =~ /MethodBsl/",
+          "group": "3_extension@3"
         }
       ]
     },
@@ -635,8 +715,8 @@
         },
         "1cMetadataTree.ibcmd.timeout": {
           "type": "number",
-          "default": 600000,
-          "description": "Timeout in milliseconds for ibcmd operations. Zero or negative values fall back to IBCMD_TIMEOUT_MS or built-in default (600000 ms)."
+          "default": 600,
+          "description": "Timeout in seconds for ibcmd operations. Zero or negative values fall back to IBCMD_TIMEOUT_MS (ms) or built-in default (600 s)."
         },
         "1cMetadataTree.ibcmd.autoDetect": {
           "type": "boolean",
@@ -678,6 +758,11 @@
             "block"
           ],
           "description": "Deploy mode (WOW Phase 2): copy — from project copy; block — lock editors."
+        },
+        "1cMetadataTree.deploy.precheckXmlBeforeImport": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run XML preflight (ibcmd config import check phase) before deploy import into linked infobase; when enabled and preflight fails, deploy stops."
         }
       }
     },
@@ -732,7 +817,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "package": "npm run compile && node node_modules/@vscode/vsce/vsce package",
-    "compile": "tsc -p ./",
+    "copy:webviews": "node scripts/copy-webviews.js",
+    "compile": "tsc -p ./ && node scripts/copy-webviews.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
@@ -741,9 +827,9 @@
     "verify": "npm run lint:ci && npm run lint:test-promises && npm run test:ci",
     "test": "tsc -p tsconfig.test.json && node -e \"require('fs').cpSync('test/fixtures','out/test/fixtures',{recursive:true,force:true})\" && node node_modules/mocha/bin/mocha --ui tdd out/test/suite/*.test.js",
     "copy:test-fixtures": "node -e \"require('fs').cpSync('test/fixtures','out/test/fixtures',{recursive:true,force:true})\"",
-    "test:ci": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node out/test/runCore.js",
-    "test:vscode:ci": "npm run compile && node node_modules/typescript/bin/tsc -p tsconfig.test.json && npm run copy:test-fixtures && xvfb-run -a node out/test/runTest.js",
-    "test:coverage": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && c8 --reporter=text-summary --reporter=json-summary node out/test/runCore.js",
+    "test:ci": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node scripts/copy-webviews.js && node out/test/runCore.js",
+    "test:vscode:ci": "npm run compile && node node_modules/typescript/bin/tsc -p tsconfig.test.json && npm run copy:test-fixtures && node scripts/copy-webviews.js && xvfb-run -a node out/test/runTest.js",
+    "test:coverage": "tsc -p tsconfig.test.json && npm run copy:test-fixtures && node scripts/copy-webviews.js && c8 --reporter=text-summary --reporter=json-summary node out/test/runCore.js",
     "coverage:check": "node scripts/check-coverage-delta.js",
     "test:smoke": "npm run compile && node node_modules/typescript/bin/tsc -p tsconfig.test.json && node out/test/runSmoke.js",
     "acceptance:epic36:block6": "node scripts/epic36-block6-acceptance.cjs",

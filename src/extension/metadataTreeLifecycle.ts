@@ -112,7 +112,11 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
             progress.report({ increment: (100 * (i + 1)) / configs.length });
           }
 
-          const provider = state.treeDataProvider!;
+          const provider = state.treeDataProvider;
+          if (!provider) {
+            Logger.error(MESSAGES.ERROR_PROVIDER_NOT_INITIALIZED);
+            return;
+          }
           if (roots.length === 1) {
             provider.setRootNode(roots[0], loadContextMap.get(roots[0].id));
           } else {

@@ -89,7 +89,7 @@ suite('Integration', () => {
       asAbsolutePath: (p: string) => p,
     };
 
-    const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+    const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
     provider.setRootNode(rootNode, { configPath: fixturesPath, format });
 
@@ -142,7 +142,7 @@ suite('Integration', () => {
         asAbsolutePath: (p: string) => p,
       };
 
-      const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+      const provider = new MetadataTreeDataProvider();
       const format = await MetadataParser.getFormat(tmpConfigPath);
 
       const rootBefore = await MetadataParser.parse(tmpConfigPath);
@@ -208,7 +208,7 @@ suite('Integration', () => {
         asAbsolutePath: (p: string) => p,
       };
 
-      const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+      const provider = new MetadataTreeDataProvider();
 
       const rootA1 = await MetadataParser.parse(cfgA);
       const rootB1 = await MetadataParser.parse(cfgB);
@@ -314,7 +314,7 @@ suite('Integration', () => {
       asAbsolutePath: (p: string) => p,
     };
 
-    const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+    const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
     provider.setRootNode(rootNode, { configPath: fixturesPath, format });
 
@@ -368,7 +368,7 @@ suite('Integration', () => {
       asAbsolutePath: (p: string) => p,
     };
 
-    const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+    const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
     provider.setRootNode(rootNode, { configPath: fixturesPath, format });
 
@@ -428,7 +428,7 @@ suite('Integration', () => {
       asAbsolutePath: (p: string) => p,
     };
 
-    const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+    const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
     provider.setRootNode(rootNode, { configPath: fixturesPath, format });
 
@@ -485,7 +485,7 @@ suite('Integration', () => {
       asAbsolutePath: (p: string) => p,
     };
 
-    const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+    const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
     provider.setRootNode(rootNode, { configPath: fixturesPath, format });
 
@@ -534,7 +534,7 @@ suite('Integration', () => {
       asAbsolutePath: (p: string) => p,
     };
 
-    const provider = new MetadataTreeDataProvider(mockContext as vscode.ExtensionContext);
+    const provider = new MetadataTreeDataProvider();
     const format = await MetadataParser.getFormat(fixturesPath);
     provider.setRootNode(rootNode, { configPath: fixturesPath, format });
 

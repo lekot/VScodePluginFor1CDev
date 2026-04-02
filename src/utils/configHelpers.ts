@@ -2,6 +2,7 @@ import * as path from 'path';
 import { TreeNode } from '../models/treeNode';
 import { MetadataType } from '../models/treeNode';
 import { FormatDetector, ConfigFormat } from '../parsers/formatDetector';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 /**
  * Get configuration root path from any tree node (walk up to root).
@@ -46,7 +47,7 @@ export function getConfigurationXmlPathForNode(
   if (configDir == null) {
     return null;
   }
-  return path.join(configDir, 'Configuration.xml');
+  return path.join(configDir, CONFIGURATION_XML);
 }
 
 /**

@@ -9,12 +9,14 @@ import {
   registerUtilityCommandsLeading,
   registerUtilityCommandsTrailing,
 } from './utilityCommands';
+import { registerExtensionCommands } from '../extensionSupport/extensionCommands';
 
 export type RegisterAllCommandsArgs = {
   context: vscode.ExtensionContext;
   state: ExtensionState;
   lifecycle: MetadataTreeLifecycle;
 };
+
 
 /** Registers every extension command; order matches historical subscription order in activation. */
 export function registerAllCommands({
@@ -27,6 +29,7 @@ export function registerAllCommands({
     loadMetadataTree: lifecycle.loadMetadataTree,
     extensionContext: context,
   };
+  registerExtensionCommands(context, state);
   return [
     ...registerUtilityCommandsLeading(utilityDeps),
     ...registerEditorCommands({ state }),

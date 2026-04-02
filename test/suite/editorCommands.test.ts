@@ -23,7 +23,7 @@ suite('editorCommands', () => {
     (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
   });
 
-  test('registers seven editor-related command handlers', () => {
+  test('registers nine editor-related command handlers', () => {
     const ids: string[] = [];
     (vscode.commands as any).registerCommand = (id: string) => {
       ids.push(id);
@@ -32,7 +32,7 @@ suite('editorCommands', () => {
 
     const disposables = registerEditorCommands({ state: {} as any });
 
-    assert.strictEqual(disposables.length, 7);
+    assert.strictEqual(disposables.length, 9);
     assert.deepStrictEqual(ids, [
       '1c-metadata-tree.showProperties',
       '1c-metadata-tree.openXML',
@@ -41,6 +41,8 @@ suite('editorCommands', () => {
       '1c-metadata-tree.openRightsEditor',
       '1c-metadata-tree.openTemplatePreview',
       '1c-metadata-tree.saveRightsEditor',
+      '1c-metadata-tree.validateCurrentXml',
+      '1c-metadata-tree.editSubsystemComposition',
     ]);
   });
 
@@ -105,5 +107,41 @@ suite('editorCommands', () => {
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
     }
+  });
+
+  test('validateCurrentXml warns when no active editor', async () => {
+    const handlers: Record<string, () => Promise<void> | void> = {};
+    (vscode.commands as any).registerCommand = (id: string, handler: any) => {
+      handlers[id] = handler;
+      return { dispose: () => undefined };
+    };
+    const warnings: string[] = [];
+    (vscode.window as any).showWarningMessage = async (m: string) => {
+      warnings.push(m);
+      return undefined;
+    };
+    (vscode.window as any).activeTextEditor = undefined;
+    registerEditorCommands({ state: { bindingManager: {}, infobaseStorage: {} } as any });
+    await handlers['1c-metadata-tree.validateCurrentXml']();
+    assert.ok(warnings.some((m) => m.includes('XML-файл')));
+  });
+
+  test('validateCurrentXml warns for non-xml editor', async () => {
+    const handlers: Record<string, () => Promise<void> | void> = {};
+    (vscode.commands as any).registerCommand = (id: string, handler: any) => {
+      handlers[id] = handler;
+      return { dispose: () => undefined };
+    };
+    const warnings: string[] = [];
+    (vscode.window as any).showWarningMessage = async (m: string) => {
+      warnings.push(m);
+      return undefined;
+    };
+    (vscode.window as any).activeTextEditor = {
+      document: { uri: vscode.Uri.file('C:/tmp/test.bsl') },
+    };
+    registerEditorCommands({ state: { bindingManager: {}, infobaseStorage: {} } as any });
+    await handlers['1c-metadata-tree.validateCurrentXml']();
+    assert.ok(warnings.some((m) => m.includes('только для активного XML')));
   });
 });

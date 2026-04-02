@@ -3,6 +3,7 @@
  */
 
 import * as path from 'path';
+import { FORM_XML } from '../constants/fileNames';
 
 /** Metadata folder name → Russian label for form editor title. */
 const METADATA_FOLDER_TO_RUSSIAN: Record<string, string> = {
@@ -65,7 +66,7 @@ export function getFormEditorTitle(formXmlPath: string): string {
   const basename = path.basename(normalized);
   const parentOfFile = path.dirname(normalized);
   // Must end with Ext/Form.xml
-  if (basename !== 'Form.xml' || path.basename(parentOfFile) !== 'Ext') {
+  if (basename !== FORM_XML || path.basename(parentOfFile) !== 'Ext') {
     return FALLBACK_TITLE;
   }
   const formDir = path.dirname(parentOfFile); // .../FormName

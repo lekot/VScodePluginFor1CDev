@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { serializeTree, deserializeTree } from './treeSerializer';
 import { Logger } from './logger';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 interface CacheEntry {
   configPath: string;
@@ -47,7 +48,7 @@ export async function loadTreeFromCache(
     }
     
     // Validate cache freshness by checking Configuration.xml mtime
-    const configXmlPath = path.join(configPath, 'Configuration.xml');
+    const configXmlPath = path.join(configPath, CONFIGURATION_XML);
     try {
       const stats = await fs.promises.stat(configXmlPath);
       const currentMtime = stats.mtimeMs;
@@ -68,10 +69,10 @@ export async function loadTreeFromCache(
     // Old cache may have filePath = directory or ConfigDumpInfo.xml; normalize to Configuration.xml in configDir
     if (root.type === MetadataType.Configuration && root.filePath) {
       if (!root.filePath.endsWith('.xml')) {
-        root.filePath = path.join(root.filePath, 'Configuration.xml');
+        root.filePath = path.join(root.filePath, CONFIGURATION_XML);
         Logger.info('Migrated Configuration root filePath to Configuration.xml');
-      } else if (path.basename(root.filePath) !== 'Configuration.xml') {
-        root.filePath = path.join(path.dirname(root.filePath), 'Configuration.xml');
+      } else if (path.basename(root.filePath) !== CONFIGURATION_XML) {
+        root.filePath = path.join(path.dirname(root.filePath), CONFIGURATION_XML);
         Logger.info('Normalized Configuration root filePath to Configuration.xml in configDir');
       }
     }
@@ -101,7 +102,7 @@ export async function saveTreeToCache(
     // Get Configuration.xml mtime for cache validation
     let timestamp: number | undefined;
     try {
-      const configXmlPath = path.join(configPath, 'Configuration.xml');
+      const configXmlPath = path.join(configPath, CONFIGURATION_XML);
       const stats = await fs.promises.stat(configXmlPath);
       timestamp = stats.mtimeMs;
     } catch {
@@ -144,7 +145,9 @@ export async function clearTreeCache(globalStoragePath: string): Promise<void> {
     const files = await fs.promises.readdir(dir).catch(() => []);
     for (const f of files) {
       if (f.endsWith('.json')) {
-        await fs.promises.unlink(path.join(dir, f));
+        await fs.promises.unlink(path.join(dir, f)).catch((err) => {
+          Logger.warn(`Failed to delete cache file ${f}`, err);
+        });
       }
     }
     Logger.info('Tree disk cache cleared');

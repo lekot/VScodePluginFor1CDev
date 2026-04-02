@@ -13,6 +13,11 @@ import {
   flattenAttributeProperties,
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
+import { CONFIGURATION_XML } from '../constants/fileNames';
+import {
+  extractExtensionProperties,
+  extractObjectBelonging,
+} from '../extensionSupport/extensionXmlParser';
 
 /**
  * Parser for 1C Designer format metadata
@@ -32,7 +37,7 @@ export class DesignerParser {
       // Read ConfigDumpInfo.xml or Configuration.xml
       let configXmlPath = path.join(configPath, 'ConfigDumpInfo.xml');
       if (!fs.existsSync(configXmlPath)) {
-        configXmlPath = path.join(configPath, 'Configuration.xml');
+        configXmlPath = path.join(configPath, CONFIGURATION_XML);
       }
 
       if (!fs.existsSync(configXmlPath)) {
@@ -53,7 +58,7 @@ export class DesignerParser {
    * Resolve path to configuration properties file (Configuration.xml).
    */
   private static getConfigurationXmlPath(configPath: string): string {
-    return path.join(configPath, 'Configuration.xml');
+    return path.join(configPath, CONFIGURATION_XML);
   }
 
   /**
@@ -72,6 +77,22 @@ export class DesignerParser {
       children: [],
       filePath: this.getConfigurationXmlPath(configPath),
     };
+
+    // Try to read extension properties from Configuration.xml
+    try {
+      const configXmlPath = this.getConfigurationXmlPath(configPath);
+      await fs.promises.access(configXmlPath);
+      const configXml = await XmlParser.parseFileAsync(configXmlPath);
+      const extProps = extractExtensionProperties(configXml);
+      if (extProps.extensionPurpose !== undefined) {
+        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
+      }
+      if (extProps.namePrefix !== undefined) {
+        rootNode.properties.namePrefix = extProps.namePrefix;
+      }
+    } catch {
+      // Not an extension or Configuration.xml not found — skip
+    }
 
     // Parse metadata directories
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();
@@ -115,6 +136,22 @@ export class DesignerParser {
       children: [],
       filePath: this.getConfigurationXmlPath(configPath),
     };
+
+    // Try to read extension properties from Configuration.xml
+    try {
+      const configXmlPath = this.getConfigurationXmlPath(configPath);
+      await fs.promises.access(configXmlPath);
+      const configXml = await XmlParser.parseFileAsync(configXmlPath);
+      const extProps = extractExtensionProperties(configXml);
+      if (extProps.extensionPurpose !== undefined) {
+        rootNode.properties.extensionPurpose = extProps.extensionPurpose;
+      }
+      if (extProps.namePrefix !== undefined) {
+        rootNode.properties.namePrefix = extProps.namePrefix;
+      }
+    } catch {
+      // Not an extension or Configuration.xml not found — skip
+    }
 
     const metadataTypes = MetadataTypeMapper.getMetadataTypes();
     for (const typeName of metadataTypes) {
@@ -187,15 +224,17 @@ export class DesignerParser {
       // No XML
     }
 
+    // Use a temporary container to leverage the shared child-building helpers.
+    const container: TreeNode = {
+      id: `${typeName}.${elementName}`,
+      name: elementName,
+      type: MetadataType.Configuration,
+      properties: {},
+      children,
+    };
+
     if (xmlContent) {
-      const attributesNode = await this.parseAttributesFromXML(xmlContent, xmlPath, elementName);
-      if (attributesNode && attributesNode.children && attributesNode.children.length > 0) {
-        children.push(attributesNode);
-      }
-      const tabularFromXml = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName);
-      if (tabularFromXml && tabularFromXml.children && tabularFromXml.children.length > 0) {
-        children.push(tabularFromXml);
-      }
+      await this.applyXmlDerivedChildren(container, xmlContent, xmlPath, elementName);
     }
 
     const typeDir = path.join(configPath, typeName);
@@ -206,48 +245,7 @@ export class DesignerParser {
       }
       const items = await fs.promises.readdir(elementPath);
       for (const item of items) {
-        if (item === 'Ext') {
-          const extPath = path.join(elementPath, item);
-          const extNode = await this.parseExtensions(
-            extPath,
-            typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined
-          );
-          if (extNode.children && extNode.children.length > 0) {
-            children.push(extNode);
-          }
-        } else if (item === 'Forms') {
-          const formsPath = path.join(elementPath, item);
-          const formsNode = await this.parseForms(formsPath);
-          if (formsNode.children && formsNode.children.length > 0) {
-            children.push(formsNode);
-          }
-        } else if (item === 'Attributes') {
-          const attributesPath = path.join(elementPath, item);
-          const attributesNode = await this.parseAttributes(attributesPath);
-          if (attributesNode.children && attributesNode.children.length > 0) {
-            children.push(attributesNode);
-          }
-        } else if (item === 'TabularSections') {
-          const tabularPath = path.join(elementPath, item);
-          const tabularNode = await this.parseTabularSections(tabularPath);
-          if (tabularNode.children && tabularNode.children.length > 0) {
-            const existingTabularId = children.find((c) => c.id === 'TabularSections');
-            if (!existingTabularId) {
-              children.push(tabularNode);
-            } else {
-              const existing = existingTabularId as TreeNode;
-              existing.children = existing.children ?? [];
-              for (const ch of tabularNode.children ?? []) {
-                // Skip if a TS node with the same name already exists (from XML parse)
-                if (existing.children.some((e) => e.name === ch.name)) {
-                  continue;
-                }
-                ch.parent = existing;
-                existing.children.push(ch);
-              }
-            }
-          }
-        }
+        await this.applyDirectoryChild(container, elementPath, typeName, elementName, item);
       }
     } catch (error) {
       Logger.debug(`Error reading element directory ${elementPath}`, error);
@@ -478,6 +476,13 @@ export class DesignerParser {
         const properties = this.extractPropertiesFromElement(xmlContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
         elementNode.filePath = xmlPath;
+        const objBelonging = extractObjectBelonging(xmlContent);
+        if (objBelonging.objectBelonging !== undefined) {
+          elementNode.properties.objectBelonging = objBelonging.objectBelonging;
+        }
+        if (objBelonging.extendedConfigurationObject !== undefined) {
+          elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
+        }
       } catch {
         // Keep elementPath as filePath
       }
@@ -496,6 +501,13 @@ export class DesignerParser {
         xmlContent = await XmlParser.parseFileAsync(xmlPath);
         const properties = this.extractPropertiesFromElement(xmlContent);
         elementNode.properties = { ...elementNode.properties, ...properties };
+        const objBelonging = extractObjectBelonging(xmlContent);
+        if (objBelonging.objectBelonging !== undefined) {
+          elementNode.properties.objectBelonging = objBelonging.objectBelonging;
+        }
+        if (objBelonging.extendedConfigurationObject !== undefined) {
+          elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
+        }
       } catch (error) {
         Logger.warn(`Error parsing element XML ${xmlPath}`, error);
       }
@@ -503,73 +515,16 @@ export class DesignerParser {
       // XML file doesn't exist, skip
     }
 
-    // Parse Attributes from XML ChildObjects if available (use xmlPath — same file we read from)
+    // Parse Attributes and TabularSections from XML ChildObjects if available
     if (xmlContent) {
-      const attributesNode = await this.parseAttributesFromXML(xmlContent, xmlPath, elementName);
-      if (attributesNode && attributesNode.children && attributesNode.children.length > 0) {
-        attributesNode.parent = elementNode;
-        elementNode.children?.push(attributesNode);
-      }
-      const tabularFromXml = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName);
-      if (tabularFromXml && tabularFromXml.children && tabularFromXml.children.length > 0) {
-        tabularFromXml.parent = elementNode;
-        elementNode.children?.push(tabularFromXml);
-      }
+      await this.applyXmlDerivedChildren(elementNode, xmlContent, xmlPath, elementName);
     }
 
-    // Parse sub-elements (Ext, Forms, Attributes, etc.)
+    // Parse sub-elements from filesystem (Ext, Forms, Attributes, TabularSections)
     try {
       const items = await fs.promises.readdir(elementPath);
-
       for (const item of items) {
-        if (item === 'Ext') {
-          const extPath = path.join(elementPath, item);
-          const extNode = await this.parseExtensions(
-            extPath,
-            typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined
-          );
-          if (extNode.children && extNode.children.length > 0) {
-            extNode.parent = elementNode;
-            elementNode.children?.push(extNode);
-          }
-        } else if (item === 'Forms') {
-          // Parse forms
-          const formsPath = path.join(elementPath, item);
-          const formsNode = await this.parseForms(formsPath);
-          if (formsNode.children && formsNode.children.length > 0) {
-            formsNode.parent = elementNode;
-            elementNode.children?.push(formsNode);
-          }
-        } else if (item === 'Attributes') {
-          // Parse attributes (реквизиты)
-          const attributesPath = path.join(elementPath, item);
-          const attributesNode = await this.parseAttributes(attributesPath);
-          if (attributesNode.children && attributesNode.children.length > 0) {
-            attributesNode.parent = elementNode;
-            elementNode.children?.push(attributesNode);
-          }
-        } else if (item === 'TabularSections') {
-          // Parse tabular sections
-          const tabularPath = path.join(elementPath, item);
-          const tabularNode = await this.parseTabularSections(tabularPath);
-          if (tabularNode.children && tabularNode.children.length > 0) {
-            const existingTabular = elementNode.children?.find((c) => c.id === 'TabularSections');
-            if (!existingTabular) {
-              tabularNode.parent = elementNode;
-              elementNode.children?.push(tabularNode);
-            } else {
-              existingTabular.children = existingTabular.children ?? [];
-              for (const ch of tabularNode.children ?? []) {
-                // Skip if a TS node with the same name already exists (from XML parse)
-                if (existingTabular.children.some((e) => e.name === ch.name)) {
-                  continue;
-                }
-                ch.parent = existingTabular;
-                existingTabular.children.push(ch);
-              }
-            }
-          }
-        }
+        await this.applyDirectoryChild(elementNode, elementPath, typeName, elementName, item);
       }
     } catch (error) {
       Logger.debug(`Error reading element directory ${elementPath}`, error);
@@ -822,6 +777,146 @@ export class DesignerParser {
   }
 
   /**
+   * Build a single attribute TreeNode from a raw XML attribute object.
+   * Shared by both XML-embedded and filesystem attribute parsing paths.
+   */
+  private static buildAttributeNodeFromRaw(
+    attr: Record<string, unknown>,
+    idPrefix: string,
+    parentXmlPath: string
+  ): TreeNode {
+    const attrName =
+      (attr.Properties && (attr.Properties as Record<string, unknown>).Name) ||
+      attr.Name ||
+      'Unknown';
+    return {
+      id: `${idPrefix}.${String(attrName)}`,
+      name: String(attrName),
+      type: MetadataType.Attribute,
+      properties: flattenAttributeProperties(attr),
+      parentFilePath: parentXmlPath,
+    };
+  }
+
+  /**
+   * Build a single tabular section TreeNode (and its attribute children) from a raw XML section object.
+   * Shared by both XML-embedded and filesystem tabular-section parsing paths.
+   */
+  private static buildTsNodeFromRaw(
+    ts: Record<string, unknown>,
+    xmlFilePath: string,
+    containerNode: TreeNode
+  ): TreeNode {
+    const props = this.extractPropertiesFromElement({ TabularSection: ts });
+    const sectionName = String(
+      props.Name ??
+        ((ts.Properties && (ts.Properties as Record<string, unknown>).Name) ?? 'Unknown')
+    );
+
+    const tsNode: TreeNode = {
+      id: `TabularSections.${sectionName}`,
+      name: sectionName,
+      type: MetadataType.TabularSection,
+      properties: { ...props },
+      children: [],
+      parentFilePath: xmlFilePath,
+    };
+    tsNode.parent = containerNode;
+
+    const colNodes = this.buildTabularColumnNodesFromTsBlock(ts, tsNode, xmlFilePath);
+    for (const col of colNodes) {
+      col.parent = tsNode;
+      tsNode.children!.push(col);
+    }
+
+    return tsNode;
+  }
+
+  /**
+   * Merge a parsed tabular sections container into a parent node's children list.
+   * If a 'TabularSections' container already exists, deduplicates by section name.
+   * Otherwise appends the new container node.
+   */
+  private static mergeTabularNode(parent: TreeNode, tabularNode: TreeNode): void {
+    const existing = parent.children?.find((c) => c.id === 'TabularSections');
+    if (!existing) {
+      tabularNode.parent = parent;
+      parent.children!.push(tabularNode);
+      return;
+    }
+    existing.children = existing.children ?? [];
+    for (const ch of tabularNode.children ?? []) {
+      if (existing.children.some((e) => e.name === ch.name)) {
+        continue;
+      }
+      ch.parent = existing;
+      existing.children.push(ch);
+    }
+  }
+
+  /**
+   * Parse the XML-embedded Attributes and TabularSections from ChildObjects and push results
+   * into the given parent node's children. Handles deduplication for tabular sections.
+   */
+  private static async applyXmlDerivedChildren(
+    parent: TreeNode,
+    xmlContent: Record<string, unknown>,
+    xmlPath: string,
+    elementName: string
+  ): Promise<void> {
+    const attributesNode = await this.parseAttributesFromXML(xmlContent, xmlPath, elementName);
+    if (attributesNode.children && attributesNode.children.length > 0) {
+      attributesNode.parent = parent;
+      parent.children!.push(attributesNode);
+    }
+
+    const tabularNode = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName);
+    if (tabularNode && tabularNode.children && tabularNode.children.length > 0) {
+      this.mergeTabularNode(parent, tabularNode);
+    }
+  }
+
+  /**
+   * Process a single directory item (Ext, Forms, Attributes, TabularSections) from an element
+   * directory and push resulting child nodes into the parent node's children list.
+   */
+  private static async applyDirectoryChild(
+    parent: TreeNode,
+    elementPath: string,
+    typeName: string,
+    elementName: string,
+    item: string
+  ): Promise<void> {
+    if (item === 'Ext') {
+      const extNode = await this.parseExtensions(
+        path.join(elementPath, item),
+        typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined
+      );
+      if (extNode.children && extNode.children.length > 0) {
+        extNode.parent = parent;
+        parent.children!.push(extNode);
+      }
+    } else if (item === 'Forms') {
+      const formsNode = await this.parseForms(path.join(elementPath, item));
+      if (formsNode.children && formsNode.children.length > 0) {
+        formsNode.parent = parent;
+        parent.children!.push(formsNode);
+      }
+    } else if (item === 'Attributes') {
+      const attributesNode = await this.parseAttributes(path.join(elementPath, item));
+      if (attributesNode.children && attributesNode.children.length > 0) {
+        attributesNode.parent = parent;
+        parent.children!.push(attributesNode);
+      }
+    } else if (item === 'TabularSections') {
+      const tabularNode = await this.parseTabularSections(path.join(elementPath, item));
+      if (tabularNode.children && tabularNode.children.length > 0) {
+        this.mergeTabularNode(parent, tabularNode);
+      }
+    }
+  }
+
+  /**
    * Parse attributes directory
    * @param attributesPath Path to Attributes directory
    * @returns Tree node for attributes
@@ -839,7 +934,6 @@ export class DesignerParser {
     try {
       const items = await fs.promises.readdir(attributesPath);
 
-      // Process all attribute items
       const attributeNodes = await Promise.all(
         items.map(async (item) => {
           const itemPath = path.join(attributesPath, item);
@@ -847,10 +941,9 @@ export class DesignerParser {
             const stat = await fs.promises.stat(itemPath);
 
             if (stat.isDirectory()) {
-              // Parse attribute XML to get properties
               const xmlPath = path.join(itemPath, `${item}.xml`);
               let properties: Record<string, unknown> = { name: item };
-              
+
               try {
                 await fs.promises.access(xmlPath);
                 const xmlContent = await XmlParser.parseFileAsync(xmlPath);
@@ -876,7 +969,6 @@ export class DesignerParser {
         })
       );
 
-      // Add non-null attribute nodes
       for (const attributeNode of attributeNodes) {
         if (attributeNode) {
           attributesNode.children?.push(attributeNode);
@@ -907,69 +999,13 @@ export class DesignerParser {
     try {
       const items = await fs.promises.readdir(tabularPath);
 
-      // Process all tabular section items
       const tabularSectionNodes = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = path.join(tabularPath, item);
-          try {
-            const stat = await fs.promises.stat(itemPath);
-
-            if (stat.isDirectory()) {
-              // Parse tabular section XML to get properties and child attributes
-              const xmlPath = path.join(itemPath, `${item}.xml`);
-              let properties: Record<string, unknown> = { name: item };
-              const tsChildren: TreeNode[] = [];
-
-              try {
-                await fs.promises.access(xmlPath);
-                const xmlContent = await XmlParser.parseFileAsync(xmlPath);
-                properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
-                const tsChildObjects = findChildObjects(xmlContent);
-                if (tsChildObjects) {
-                  const attrList = extractAttributes(tsChildObjects);
-                  for (const attr of attrList) {
-                    const a = attr as Record<string, unknown>;
-                    const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? (a as Record<string, unknown>).Name ?? 'Unknown';
-                    const attributeNode: TreeNode = {
-                      id: `TabularSections.${item}.${String(attrName)}`,
-                      name: String(attrName),
-                      type: MetadataType.Attribute,
-                      properties: flattenAttributeProperties(a),
-                      parentFilePath: xmlPath,
-                    };
-                    attributeNode.parent = undefined;
-                    tsChildren.push(attributeNode);
-                  }
-                }
-              } catch {
-                // XML doesn't exist, use default properties
-              }
-
-              const tsNode: TreeNode = {
-                id: `TabularSections.${item}`,
-                name: item,
-                type: MetadataType.TabularSection,
-                properties,
-                children: tsChildren.length > 0 ? tsChildren : undefined,
-                filePath: xmlPath,
-              };
-              for (const c of tsChildren) {
-                (c as TreeNode).parent = tsNode;
-              }
-              tsNode.parent = tabularNode;
-              return tsNode;
-            }
-          } catch (error) {
-            Logger.debug(`Error processing tabular section ${itemPath}`, error);
-          }
-          return null;
-        })
+        items.map((item) => this.parseSingleTabularSectionDir(tabularPath, item, tabularNode))
       );
 
-      // Add non-null tabular section nodes
-      for (const tabularSectionNode of tabularSectionNodes) {
-        if (tabularSectionNode) {
-          tabularNode.children?.push(tabularSectionNode);
+      for (const tsNode of tabularSectionNodes) {
+        if (tsNode) {
+          tabularNode.children?.push(tsNode);
         }
       }
     } catch (error) {
@@ -980,10 +1016,69 @@ export class DesignerParser {
   }
 
   /**
-   * Parse attributes from XML ChildObjects section
+   * Parse a single tabular section subdirectory into a TreeNode.
+   * Returns null when the item is not a directory or cannot be parsed.
+   */
+  private static async parseSingleTabularSectionDir(
+    tabularPath: string,
+    item: string,
+    containerNode: TreeNode
+  ): Promise<TreeNode | null> {
+    const itemPath = path.join(tabularPath, item);
+    try {
+      const stat = await fs.promises.stat(itemPath);
+      if (!stat.isDirectory()) {
+        return null;
+      }
+
+      const xmlPath = path.join(itemPath, `${item}.xml`);
+      let properties: Record<string, unknown> = { name: item };
+      let tsChildren: TreeNode[] = [];
+
+      try {
+        await fs.promises.access(xmlPath);
+        const xmlContent = await XmlParser.parseFileAsync(xmlPath);
+        properties = { ...properties, ...this.extractPropertiesFromElement(xmlContent) };
+
+        const tsChildObjects = findChildObjects(xmlContent);
+        if (tsChildObjects) {
+          const attrList = extractAttributes(tsChildObjects);
+          tsChildren = attrList.map((attr) =>
+            this.buildAttributeNodeFromRaw(
+              attr as Record<string, unknown>,
+              `TabularSections.${item}`,
+              xmlPath
+            )
+          );
+        }
+      } catch {
+        // XML doesn't exist, use default properties
+      }
+
+      const tsNode: TreeNode = {
+        id: `TabularSections.${item}`,
+        name: item,
+        type: MetadataType.TabularSection,
+        properties,
+        children: tsChildren.length > 0 ? tsChildren : undefined,
+        filePath: xmlPath,
+      };
+      for (const c of tsChildren) {
+        c.parent = tsNode;
+      }
+      tsNode.parent = containerNode;
+      return tsNode;
+    } catch (error) {
+      Logger.debug(`Error processing tabular section ${itemPath}`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Parse attributes from XML ChildObjects section.
    * @param xmlContent Parsed XML content
    * @param xmlFilePath Path to the element's XML file (same file we read attributes from)
-   * @param elementName Name of element
+   * @param elementName Name of element (used for logging)
    * @returns Tree node for attributes container
    */
   private static async parseAttributesFromXML(
@@ -991,8 +1086,6 @@ export class DesignerParser {
     xmlFilePath: string,
     elementName: string
   ): Promise<TreeNode> {
-    const parentXmlPath = xmlFilePath;
-    
     const attributesNode: TreeNode = {
       id: 'Attributes',
       name: 'Attributes',
@@ -1000,32 +1093,23 @@ export class DesignerParser {
       properties: {},
       children: [],
       // Don't set filePath to avoid collision with parent node
-      parentFilePath: parentXmlPath,
+      parentFilePath: xmlFilePath,
     };
 
     try {
-      // Navigate through XML structure to find ChildObjects
       const childObjects = findChildObjects(xmlContent);
       if (childObjects == null) {
         return attributesNode;
       }
 
-      const attributes = extractAttributes(childObjects);
-      
-      for (const attr of attributes) {
-        const a = attr as Record<string, unknown>;
-        const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) || a.Name || 'Unknown';
-        const attributeNode: TreeNode = {
-          id: `Attributes.${String(attrName)}`,
-          name: String(attrName),
-          type: MetadataType.Attribute,
-          properties: flattenAttributeProperties(a),
-          // Use parentFilePath instead of filePath to avoid collision
-          parentFilePath: parentXmlPath,
-        };
-        
-        attributeNode.parent = attributesNode;
-        attributesNode.children?.push(attributeNode);
+      for (const attr of extractAttributes(childObjects)) {
+        const attrNode = this.buildAttributeNodeFromRaw(
+          attr as Record<string, unknown>,
+          'Attributes',
+          xmlFilePath
+        );
+        attrNode.parent = attributesNode;
+        attributesNode.children!.push(attrNode);
       }
     } catch (error) {
       Logger.debug(`Error parsing attributes from XML for ${elementName}`, error);
@@ -1038,8 +1122,8 @@ export class DesignerParser {
    * Parse tabular sections and their attributes from object XML (single-file Designer format).
    * @param xmlContent Parsed XML content of the object file
    * @param xmlFilePath Path to the object XML file
-   * @param _elementName Name of the element (for logging)
-   * @returns Tree node for TabularSections container or null if none
+   * @param _elementName Name of the element (unused; kept for call-site consistency)
+   * @returns Tree node for TabularSections container or null if none found
    */
   private static async parseTabularSectionsFromXML(
     xmlContent: Record<string, unknown>,
@@ -1064,38 +1148,8 @@ export class DesignerParser {
 
     for (const section of sectionList) {
       const ts = section as Record<string, unknown>;
-      const props = this.extractPropertiesFromElement({ TabularSection: ts });
-      const sectionName = String(props.Name ?? ((ts.Properties && (ts.Properties as Record<string, unknown>).Name) ?? 'Unknown'));
-      const tsChildObjects = ts.ChildObjects;
-      const attrList = tsChildObjects && typeof tsChildObjects === 'object'
-        ? extractAttributes(tsChildObjects as Record<string, unknown>)
-        : [];
-
-      const tsNode: TreeNode = {
-        id: `TabularSections.${sectionName}`,
-        name: sectionName,
-        type: MetadataType.TabularSection,
-        properties: { ...props },
-        children: [],
-        parentFilePath: xmlFilePath,
-      };
-
-      for (const attr of attrList) {
-        const a = attr as Record<string, unknown>;
-        const attrName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? (a as Record<string, unknown>).Name ?? 'Unknown';
-        const attributeNode: TreeNode = {
-          id: `TabularSections.${sectionName}.${String(attrName)}`,
-          name: String(attrName),
-          type: MetadataType.Attribute,
-          properties: flattenAttributeProperties(a),
-          parentFilePath: xmlFilePath,
-        };
-        attributeNode.parent = tsNode;
-        tsNode.children?.push(attributeNode);
-      }
-
-      tsNode.parent = tabularNode;
-      tabularNode.children?.push(tsNode);
+      const tsNode = this.buildTsNodeFromRaw(ts, xmlFilePath, tabularNode);
+      tabularNode.children!.push(tsNode);
     }
 
     return tabularNode;
@@ -1264,7 +1318,7 @@ export class DesignerParser {
       const cfPath = path.join(configPath, '1cv8.cf');
       const cfePath = path.join(configPath, '1cv8.cfe');
       const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
-      const configXmlPath = path.join(configPath, 'Configuration.xml');
+      const configXmlPath = path.join(configPath, CONFIGURATION_XML);
 
       // Check if binary files exist (full Designer format)
       const hasBinaryFiles = fs.existsSync(cfPath) || fs.existsSync(cfePath);

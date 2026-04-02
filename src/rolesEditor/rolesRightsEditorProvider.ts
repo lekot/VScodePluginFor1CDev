@@ -18,6 +18,7 @@ import {
 import { loadMetadataObjects } from './metadataLoader';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
+import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 
 /**
  * Provider for the roles and rights editor webview
@@ -48,28 +49,26 @@ export class RolesRightsEditorProvider {
   }
 
   /**
-   * HTML is not emitted by tsc; integration tests compile to `out/src/rolesEditor/*.js` without copying the template.
-   * Production VSIX places it next to the JS under `dist/rolesEditor/`. Try common locations.
+   * Resolve path to rolesEditorWebview.html.
+   * Primary: next to the compiled JS (works in both VSIX production and `out/` dev builds when the file is copied).
+   * Fallback: extensionUri-based path for cases where __dirname differs from the extension root layout.
    */
   private resolveRolesEditorWebviewHtmlPath(): string {
-    const nextToCompiled = path.join(__dirname, 'rolesEditorWebview.html');
-    const candidates: string[] = [nextToCompiled];
-    if (this.context.extensionPath) {
-      candidates.push(
-        path.join(this.context.extensionPath, 'dist', 'rolesEditor', 'rolesEditorWebview.html'),
-        path.join(this.context.extensionPath, 'src', 'rolesEditor', 'rolesEditorWebview.html')
-      );
+    const primary = path.join(__dirname, 'rolesEditorWebview.html');
+    if (fs.existsSync(primary)) {
+      return primary;
     }
-    candidates.push(
-      path.join(__dirname, '..', '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html'),
-      path.join(__dirname, '..', '..', 'src', 'rolesEditor', 'rolesEditorWebview.html')
+    const fallback = path.join(
+      this.context.extensionUri.fsPath,
+      'dist',
+      'rolesEditor',
+      'rolesEditorWebview.html'
     );
-    for (const p of candidates) {
-      if (p && fs.existsSync(p)) {
-        return p;
-      }
+    if (fs.existsSync(fallback)) {
+      return fallback;
     }
-    return nextToCompiled;
+    Logger.warn(`rolesEditorWebview.html not found; falling back to ${primary}`);
+    return primary;
   }
 
   /**
@@ -206,7 +205,7 @@ export class RolesRightsEditorProvider {
     let html = await fs.promises.readFile(htmlPath, 'utf8');
 
     // Prepare data to inject
-    const roleDataJson = this.escapeJsonForScript(
+    const roleDataJson = escapeJsonForScript(
       JSON.stringify({
         name: this.currentRoleModel.name,
         rights: this.currentRoleModel.rights,
@@ -214,7 +213,7 @@ export class RolesRightsEditorProvider {
       })
     );
 
-    const objectsJson = this.escapeJsonForScript(JSON.stringify(this.allObjects));
+    const objectsJson = escapeJsonForScript(JSON.stringify(this.allObjects));
     const loadingFlag = initialTableLoading ? 'true' : 'false';
 
     // Inject data into the script (match line ending \n or \r\n)
@@ -583,16 +582,6 @@ export class RolesRightsEditorProvider {
       'tableRenderProgress',
     ];
     return validCommands.includes(m.command);
-  }
-
-  /**
-   * Escape JSON for safe embedding in script tags
-   */
-  private escapeJsonForScript(json: string): string {
-    return json
-      .replace(/<\/script>/gi, '<\\/script>')
-      .replace(/\u2028/g, '\\u2028')
-      .replace(/\u2029/g, '\\u2029');
   }
 
   /**

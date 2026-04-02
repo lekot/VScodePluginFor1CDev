@@ -41,7 +41,7 @@ suite('IbcmdService', () => {
   });
 
   test('getTimeoutMs uses workspace 1cMetadataTree.ibcmd.timeout when positive', () => {
-    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 88_000;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.timeout'] = 88;
     const svc = new IbcmdService();
     assert.strictEqual(svc.getTimeoutMs(), 88_000);
   });

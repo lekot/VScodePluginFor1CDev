@@ -10,8 +10,10 @@ import { MetadataType, type TreeNode } from '../models/treeNode';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type { ExtensionState } from '../state/extensionState';
 import { detectIbcmdExtensionNameFromConfigRelativePath, normalizeConfigRelativePath } from './bindingPathUtils';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import {
   DeployService,
+  readDeployPrecheckXmlBeforeImportSetting,
   listDeployTargetLabels,
   readDeployMode,
   resolveDeployTargetsForBinding,
@@ -41,7 +43,7 @@ export function resolveBindingTargetForConfigurationTreeNode(
   if (!configDir) {
     return undefined;
   }
-  const configXmlFs = path.join(configDir, 'Configuration.xml');
+  const configXmlFs = path.join(configDir, CONFIGURATION_XML);
   const uri = vscode.Uri.file(configXmlFs);
   const wf = vscode.workspace.getWorkspaceFolder(uri);
   if (!wf) {
@@ -68,7 +70,7 @@ function resolveBindingTargetForExtensionRootTreeNode(
   if (!dir) {
     return undefined;
   }
-  const configXmlFs = path.join(dir, 'Configuration.xml');
+  const configXmlFs = path.join(dir, CONFIGURATION_XML);
   if (!fs.existsSync(configXmlFs)) {
     return undefined;
   }
@@ -186,8 +188,11 @@ export async function runDeployForConfigurationFromTree(
         ? '\n\nРежим 1cMetadataTree.deploy.mode = block: редактирование дерева выгрузки конфигурации будет заблокировано (только просмотр) на время раскатки.'
         : '\n\nРежим block выбран в настройках, но блокировка через files.readonlyInclude недоступна (нужен VS Code 1.88+). Раскатка продолжится без readonly.'
       : '\n\nРежим 1cMetadataTree.deploy.mode = copy: раскатка выполняется из временной копии папки с Configuration.xml; редактирование в workspace не блокируется.';
+  const precheckNotice = readDeployPrecheckXmlBeforeImportSetting()
+    ? '\n\nПеред загрузкой будет выполнен preflight XML (ibcmd config import) для целевой базы; при ошибке раскатка остановится.'
+    : '';
   const ok = await vscode.window.showWarningMessage(
-    `Конфигурация в выбранных информационных базах будет перезаписана (ibcmd config import). Продолжить?${deployModeNotice}${lines}`,
+    `Конфигурация в выбранных информационных базах будет перезаписана (ibcmd config import). Продолжить?${deployModeNotice}${precheckNotice}${lines}`,
     { modal: true },
     'Продолжить',
   );

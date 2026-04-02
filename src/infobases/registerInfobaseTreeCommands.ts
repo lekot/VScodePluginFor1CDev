@@ -16,6 +16,7 @@ import {
   runOpenDesigner,
   runOpenEnterprise,
   runRemoveInfobase,
+  runSetCredentials,
 } from './infobaseCommands';
 import {
   runInfobaseConfigCheck,
@@ -143,6 +144,15 @@ export function registerInfobaseTreeCommands(state: ExtensionState): vscode.Disp
       }
       const entry = await resolveCatalogEntry(state, node);
       await runInfobaseConfigCheck(state.infobaseStorage, entry);
+    }),
+    vscode.commands.registerCommand('1c-metadata-tree.infobase.setCredentials', async (arg?: unknown) => {
+      const node = requireEntry(arg, 'Настроить учётные данные');
+      if (!node) {
+        return;
+      }
+      const entry = await resolveCatalogEntry(state, node);
+      await runSetCredentials(state.infobaseStorage, entry);
+      refresh();
     }),
     vscode.commands.registerCommand('1c-metadata-tree.infobase.edit', async (arg?: unknown) => {
       const node = requireEntry(arg, 'Редактировать базу');

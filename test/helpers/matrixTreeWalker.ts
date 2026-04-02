@@ -19,8 +19,9 @@ export interface DesignerMatrixContext {
  * a `MetadataTreeDataProvider` with Designer load context.
  */
 export async function buildDesignerMatrixContext(workDir: string): Promise<DesignerMatrixContext> {
-  const mockCtx = createMatrixExtensionContext() as ConstructorParameters<typeof MetadataTreeDataProvider>[0];
-  initDesignerTemplateRepository(mockCtx);
+  const mockCtx = createMatrixExtensionContext();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  initDesignerTemplateRepository(mockCtx as any);
 
   let root = await MetadataParser.parseStructureOnly(workDir);
   const format = await FormatDetector.detect(workDir);
@@ -29,7 +30,7 @@ export async function buildDesignerMatrixContext(workDir: string): Promise<Desig
   root.id = 'config:test-matrix';
   root.name = 'Configuration';
 
-  const provider = new MetadataTreeDataProvider(mockCtx);
+  const provider = new MetadataTreeDataProvider();
   provider.setRootNode(root, { configPath: workDir, format: ConfigFormat.Designer });
 
   return { provider, root, configPath: workDir };

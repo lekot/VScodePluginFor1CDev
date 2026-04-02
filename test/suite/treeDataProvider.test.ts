@@ -44,7 +44,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 
-    provider = new MetadataTreeDataProvider(mockContext);
+    provider = new MetadataTreeDataProvider();
   });
 
   test('Provider should be initialized', () => {

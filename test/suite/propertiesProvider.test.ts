@@ -33,7 +33,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 
-    treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    treeDataProvider = new MetadataTreeDataProvider();
     typeEditorProvider = new TypeEditorProvider(mockContext);
     provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });
@@ -459,7 +459,7 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 
-    treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    treeDataProvider = new MetadataTreeDataProvider();
     typeEditorProvider = new TypeEditorProvider(mockContext);
     provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });

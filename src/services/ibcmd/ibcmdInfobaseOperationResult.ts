@@ -14,10 +14,13 @@ export interface IbcmdInfobaseOperationResult {
 }
 
 const TIMEOUT_HINT =
-  'Превышено время ожидания ibcmd. Увеличьте 1cMetadataTree.ibcmd.timeout или переменную IBCMD_TIMEOUT_MS.';
+  'Превышено время ожидания ibcmd. Увеличьте 1cMetadataTree.ibcmd.timeout (секунды) или переменную IBCMD_TIMEOUT_MS (мс).';
 
 const SPAWN_ENOENT =
   'Исполняемый файл ibcmd не найден. Проверьте путь в настройках или переменную IBCMD_PATH.';
+
+const INTERACTIVE_PROMPT_ABORT =
+  'ibcmd запросил учётные данные интерактивно. Укажите имя пользователя и пароль через контекстное меню → «Настроить учётные данные».';
 
 const IMPORT_EXIT_MESSAGES: Record<number, string> = {
   0: 'Операция завершена успешно.',
@@ -76,6 +79,17 @@ export function interpretIbcmdInfobaseOutcome(
       exitCode: raw.exitCode,
       signal: raw.signal ?? undefined,
       userMessage: CANCELLED_MSG,
+      logExcerpt,
+      logTruncated,
+    };
+  }
+
+  if (raw.abortPatternMatched) {
+    return {
+      status: 'error',
+      exitCode: raw.exitCode,
+      signal: raw.signal ?? undefined,
+      userMessage: INTERACTIVE_PROMPT_ABORT,
       logExcerpt,
       logTruncated,
     };

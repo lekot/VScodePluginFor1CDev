@@ -200,7 +200,7 @@ suite('treeNormalization Test Suite', () => {
 
     const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
 
-    const provider = new MetadataTreeDataProvider(createMockContext());
+    const provider = new MetadataTreeDataProvider();
     provider.setRootNode(normalized);
 
     const catalogs = normalized.children!.find((c) => c.id === 'Catalogs')!;
@@ -222,7 +222,7 @@ suite('treeNormalization Test Suite', () => {
     };
 
     const normalized = normalizeEmptyPlaceholderTree(root, { configPath, format: ConfigFormat.Designer });
-    const provider = new MetadataTreeDataProvider(createMockContext());
+    const provider = new MetadataTreeDataProvider();
     provider.setRootNode(normalized);
 
     const commonGroup = normalized.children!.find((c) => c.id === 'Common')!;

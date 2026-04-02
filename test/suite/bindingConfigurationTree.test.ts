@@ -44,7 +44,7 @@ suite('WOW §2C binding commands + Configuration tree (CDT 41)', () => {
       languageModelAccessInformation: {},
       asAbsolutePath: (relativePath: string) => relativePath,
     } as unknown as vscode.ExtensionContext;
-    tree = new MetadataTreeDataProvider(mockContext);
+    tree = new MetadataTreeDataProvider();
   });
 
   teardown(() => {
@@ -365,7 +365,7 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
       languageModelAccessInformation: {},
       asAbsolutePath: (relativePath: string) => relativePath,
     } as unknown as vscode.ExtensionContext;
-    tree = new MetadataTreeDataProvider(mockContext);
+    tree = new MetadataTreeDataProvider();
   });
 
   teardown(() => {

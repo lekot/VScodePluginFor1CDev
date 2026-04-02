@@ -47,3 +47,10 @@ ibcmd-local.sh
 suite-report-core.json
 /shcntx_help_db_path.txt
 /scripts/read-cursor-infobase-entry.py
+.claude/
+/.mcp.json
+/CLAUDE.md
+/claude-telegram.bat
+/.vscode/infobase-bindings.json
+/FormatSamples/uh/
+/FormatSamples/uh1/

@@ -8,6 +8,7 @@ import {
   DeployService,
   listDeployTargetLabels,
   readDeployMode,
+  readDeployPrecheckXmlBeforeImportSetting,
   resolveConfigurationXmlDirectory,
   resolveDeployTargetsForBinding,
   vscodeSupportsDeployReadonlyLock,
@@ -92,6 +93,24 @@ suite('deployService readDeployMode', () => {
   test('explicit copy setting returns copy', () => {
     vscodeTestState.workspaceConfig['deploy.mode'] = 'copy';
     assert.strictEqual(readDeployMode(), 'copy');
+  });
+});
+
+suite('deployService readDeployPrecheckXmlBeforeImportSetting', () => {
+  setup(() => {
+    resetVscodeTestState();
+  });
+  teardown(() => {
+    resetVscodeTestState();
+  });
+
+  test('defaults to false', () => {
+    assert.strictEqual(readDeployPrecheckXmlBeforeImportSetting(), false);
+  });
+
+  test('returns true when enabled in settings', () => {
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
+    assert.strictEqual(readDeployPrecheckXmlBeforeImportSetting(), true);
   });
 });
 
@@ -610,6 +629,73 @@ suite('DeployService.deployBinding', () => {
         token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
       });
       assert.deepStrictEqual(increments, [50, 50]);
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('precheck gate disabled: deploy does not call preflight runner', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = false;
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-nogate-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      let calls = 0;
+      const svc = new DeployService({
+        runXmlPreflight: async () => {
+          calls += 1;
+          return { ok: true, message: 'ok', durationMs: 1 };
+        },
+      });
+      const root = fixtureSmallRoot();
+      await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['a'], massDeployment: false }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.strictEqual(calls, 0);
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('precheck gate enabled and failed: blocks deploy and skips rest', async () => {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    vscodeTestState.workspaceConfig['deploy.precheckXmlBeforeImport'] = true;
+    resetIbcmdServiceSingletonForTests();
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-gatefail-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      let calls = 0;
+      const svc = new DeployService({
+        runXmlPreflight: async () => {
+          calls += 1;
+          return { ok: false, message: 'bad xml', durationMs: 10, code: 'IMPORT_FAILED' };
+        },
+      });
+      const root = fixtureSmallRoot();
+      const summary = await svc.deployBinding({
+        binding: baseBinding({ infobaseIds: ['a', 'b'], massDeployment: true }),
+        workspaceFolderRoot: root,
+        storage: mockStorage,
+        catalog: [fileEntry('a', 'Alpha', ibPath), fileEntry('b', 'Beta', ibPath)],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+      assert.strictEqual(calls, 1);
+      assert.strictEqual(summary.errorCount, 1);
+      assert.strictEqual(summary.skippedCount, 1);
+      assert.ok(summary.results[0]!.message.includes('Preflight XML'));
     } finally {
       rmDirQuiet(work);
     }

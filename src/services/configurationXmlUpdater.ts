@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 // ConfigDumpInfo.xml update deferred (Phase 2); format TBD.
 
@@ -76,7 +77,7 @@ export async function addRootObjectToConfiguration(
   rootTag: string,
   objectName: string
 ): Promise<void> {
-  const configPath = path.join(configRootPath, 'Configuration.xml');
+  const configPath = path.join(configRootPath, CONFIGURATION_XML);
   let xmlContent: string;
   try {
     xmlContent = await fs.promises.readFile(configPath, 'utf-8');
@@ -134,7 +135,7 @@ export async function removeRootObjectFromConfiguration(
   rootTag: string,
   objectName: string
 ): Promise<void> {
-  const configPath = path.join(configRootPath, 'Configuration.xml');
+  const configPath = path.join(configRootPath, CONFIGURATION_XML);
   let xmlContent: string;
   try {
     xmlContent = await fs.promises.readFile(configPath, 'utf-8');

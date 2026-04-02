@@ -50,7 +50,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
       asAbsolutePath: (relativePath: string) => relativePath,
     };
 
-    treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    treeDataProvider = new MetadataTreeDataProvider();
     typeEditorProvider = new TypeEditorProvider(mockContext);
     provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });

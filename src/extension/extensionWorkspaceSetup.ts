@@ -4,6 +4,7 @@ import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
+import { SubsystemCompositionEditorProvider } from '../subsystemCompositionEditor/subsystemCompositionEditorProvider';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
 import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
@@ -44,7 +45,7 @@ export function registerExtensionWorkspace(
   state: ExtensionState,
   lifecycle: MetadataTreeLifecycle
 ): void {
-  state.treeDataProvider = new MetadataTreeDataProvider(context);
+  state.treeDataProvider = new MetadataTreeDataProvider();
 
   state.treeView = vscode.window.createTreeView('1c-metadata-tree', {
     treeDataProvider: state.treeDataProvider,
@@ -61,6 +62,12 @@ export function registerExtensionWorkspace(
 
   state.rolesRightsEditorProvider = new RolesRightsEditorProvider(context);
   context.subscriptions.push(state.rolesRightsEditorProvider);
+
+  state.subsystemCompositionEditorProvider = new SubsystemCompositionEditorProvider(context, {
+    loadMetadataTree: () => lifecycle.loadMetadataTree(),
+    invalidateTreeCacheOnly: (cp: string) => lifecycle.invalidateTreeCacheOnly(cp),
+  });
+  context.subscriptions.push(state.subsystemCompositionEditorProvider);
 
   state.propertiesProvider = new PropertiesProvider(
     context,
@@ -114,18 +121,18 @@ export function registerExtensionWorkspace(
       showCollapseAll: true,
     });
     context.subscriptions.push(state.infobaseTreeView);
-    void syncInfobaseTreeViewMessage(state);
+    syncInfobaseTreeViewMessage(state).catch((err) => Logger.error('syncInfobaseTreeViewMessage failed', err));
     context.subscriptions.push(
       state.infobaseStorage.onDidChangeCatalog(() => {
         infobaseTreeProvider.refresh();
-        void syncInfobaseTreeViewMessage(state);
+        syncInfobaseTreeViewMessage(state).catch((err) => Logger.error('syncInfobaseTreeViewMessage failed', err));
       }),
     );
     context.subscriptions.push(...registerInfobaseTreeCommands(state));
     state.refreshBindingTreeDecorations = () => rebuildBindingDecorationsForTree(state);
     context.subscriptions.push(...registerBindingDialogCommands(context, state, state.treeDataProvider));
     context.subscriptions.push(registerBindingDecorationSync(state));
-    void rebuildBindingDecorationsForTree(state);
+    rebuildBindingDecorationsForTree(state).catch((err) => Logger.error('rebuildBindingDecorationsForTree failed', err));
   }
 
   const commandDisposables = registerAllCommands({ context, state, lifecycle });

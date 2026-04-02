@@ -1,6 +1,6 @@
 # Целевое определение «EDT-killer» для CDT 41 и критерии приёмки
 
-**Связанные материалы:** [cdt-vs-edt-functional-gap.md](../research/cdt-vs-edt-functional-gap.md), [aif-6-capability-inventory.md](./aif-6-capability-inventory.md).
+**Связанные материалы:** [cdt-vs-edt-functional-gap.md](./cdt-vs-edt-functional-gap.md), [aif-6-capability-inventory.md](./aif-6-capability-inventory.md).
 
 ## 1. Термин
 

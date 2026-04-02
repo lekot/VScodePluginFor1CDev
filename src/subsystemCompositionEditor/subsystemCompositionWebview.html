@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+    <title>Состав подсистемы</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            padding: 16px;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        header h2 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            margin-bottom: 8px;
+        }
+
+        .toolbar-left {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex: 1;
+            flex-wrap: wrap;
+        }
+
+        .toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        input[type="text"] {
+            background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            padding: 4px 8px;
+            border-radius: 2px;
+            outline: none;
+            min-width: 180px;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--vscode-focusBorder);
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        input[type="checkbox"] {
+            cursor: pointer;
+        }
+
+        button {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 4px 12px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: var(--vscode-font-size);
+            font-family: var(--vscode-font-family);
+            white-space: nowrap;
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--vscode-button-hoverBackground);
+        }
+
+        button:active:not(:disabled) {
+            opacity: 0.9;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.secondary {
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+
+        button.secondary:hover:not(:disabled) {
+            background: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .changes-badge {
+            display: none;
+            background: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+
+        .table-container {
+            flex: 1;
+            overflow: auto;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 2px;
+            position: relative;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        thead {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        th {
+            background: var(--vscode-editorGroupHeader-tabsBackground);
+            color: var(--vscode-foreground);
+            font-weight: 600;
+            padding: 6px 10px;
+            text-align: left;
+            border-bottom: 2px solid var(--vscode-panel-border);
+            border-right: 1px solid var(--vscode-panel-border);
+            white-space: nowrap;
+        }
+
+        th.col-check {
+            width: 36px;
+            text-align: center;
+            padding: 6px 4px;
+        }
+
+        th.col-name {
+            /* fills remaining space */
+        }
+
+        tbody tr {
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        tbody tr:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        td {
+            padding: 5px 10px;
+            border-right: 1px solid var(--vscode-panel-border);
+        }
+
+        td.col-check {
+            text-align: center;
+            padding: 4px;
+            width: 36px;
+        }
+
+        td.col-check input[type="checkbox"] {
+            width: 14px;
+            height: 14px;
+        }
+
+        td.col-name {
+            word-break: break-word;
+        }
+
+        .footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-top: 10px;
+            border-top: 1px solid var(--vscode-panel-border);
+            margin-top: 8px;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .footer-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .footer-status {
+            color: var(--vscode-descriptionForeground);
+            font-size: 12px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .banner {
+            display: none;
+            padding: 8px 12px;
+            border-radius: 2px;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin-bottom: 8px;
+        }
+
+        .banner-error {
+            background: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+        }
+
+        .banner-info {
+            background: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+            border: 1px solid var(--vscode-inputValidation-infoBorder);
+        }
+
+        /* ── Tree layout ─────────────────────────────────────── */
+        .type-container-row {
+            display: flex;
+            width: 100%;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            cursor: pointer;
+            user-select: none;
+            background: var(--vscode-editorGroupHeader-tabsBackground);
+            font-weight: 600;
+        }
+
+        .type-container-row:hover {
+            background: var(--vscode-list-hoverBackground);
+        }
+
+        .expand-arrow {
+            width: 16px;
+            text-align: center;
+            font-size: 10px;
+            flex-shrink: 0;
+            transition: transform 0.1s;
+        }
+
+        .expand-arrow.expanded {
+            transform: rotate(90deg);
+        }
+
+        .type-container-row td.col-check {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex: none;
+            width: auto;
+            padding: 0 4px;
+        }
+
+        .type-container-row td.col-name {
+            display: block;
+            flex: 1;
+            min-width: 0;
+            white-space: nowrap;
+        }
+
+        .child-row td.col-name {
+            padding-left: 28px;
+        }
+
+        .spinner-inline {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid var(--vscode-progressBar-background);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ── Loading overlay ────────────────────────────────── */
+        #loading-overlay {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.35);
+            z-index: 20;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        #loading-overlay.visible {
+            display: flex;
+        }
+
+        .spinner-large {
+            width: 28px;
+            height: 28px;
+            border: 3px solid var(--vscode-progressBar-background);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        #loading-text {
+            color: var(--vscode-foreground);
+            font-size: 13px;
+        }
+
+        /* ── Container checkbox tri-state ───────────────────── */
+        .container-cb-wrap {
+            flex-shrink: 0;
+        }
+
+        /* ── Orphan entries (ref in XML but not in tree) ─────── */
+        .orphan-row {
+            opacity: 0.55;
+            font-style: italic;
+        }
+        .orphan-row .obj-name::after {
+            content: ' (не в дереве)';
+            font-size: 0.85em;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h2 id="subsystem-title">Состав подсистемы</h2>
+    </header>
+
+    <div id="banner" class="banner" aria-live="polite"></div>
+
+    <div class="toolbar">
+        <div class="toolbar-left">
+            <input type="text" id="search" placeholder="Поиск...">
+            <label class="checkbox-label">
+                <input type="checkbox" id="show-checked-only">
+                <span>Только включённые</span>
+            </label>
+            <button class="secondary" id="btn-select-all">Выбрать все</button>
+            <button class="secondary" id="btn-deselect-all">Снять все</button>
+        </div>
+        <div class="toolbar-right">
+            <span id="changes-badge" class="changes-badge"></span>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <div id="loading-overlay">
+            <div class="spinner-large"></div>
+            <span id="loading-text">Загрузка объектов...</span>
+        </div>
+        <table id="composition-table">
+            <thead>
+                <tr>
+                    <th class="col-check"></th>
+                    <th class="col-name">Имя</th>
+                </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+        </table>
+        <div id="empty-state" class="empty-state" style="display: none;">
+            Нет объектов, соответствующих фильтру.
+        </div>
+    </div>
+
+    <div class="footer">
+        <div class="footer-actions">
+            <button id="btn-save" disabled>Сохранить</button>
+            <button class="secondary" id="btn-cancel">Отмена</button>
+        </div>
+        <span id="status" class="footer-status"></span>
+    </div>
+
+    <script>
+        (function () {
+            const vscode = acquireVsCodeApi();
+
+            // ── State ─────────────────────────────────────────────────────────
+
+            let containers = [];          // CompositionTypeContainer[]
+            let objectsByType = new Map(); // typeFolderId → CompositionObjectEntry[]
+            let expandedTypes = new Set();
+            let checkedSet = new Set();
+            let initialChecked = new Set();
+            let allLoaded = false;
+            let loadingTypes = new Set();
+            let bulkLoadInProgress = false;
+            let pendingAfterLoad = null;
+
+            let searchQuery = '';
+            let showCheckedOnly = false;
+            let renderSeq = 0;
+            let searchDebounceTimer = null;
+
+            // ── Init ──────────────────────────────────────────────────────────
+
+            function init() {
+                const data = window.__compositionData;
+                if (!data) { return; }
+
+                document.getElementById('subsystem-title').textContent =
+                    'Состав подсистемы: ' + data.subsystemName;
+
+                containers = data.containers || [];
+                checkedSet = new Set(data.checkedRefs || []);
+                initialChecked = new Set(data.checkedRefs || []);
+
+                renderTree();
+                updateBadge();
+                updateFooter();
+            }
+
+            // ── Rendering ─────────────────────────────────────────────────────
+
+            function renderTree() {
+                if (searchQuery || showCheckedOnly) {
+                    ensureAllLoaded(renderFlat);
+                    return;
+                }
+                renderSeq++;
+                const tbody = document.getElementById('table-body');
+                const emptyState = document.getElementById('empty-state');
+                tbody.innerHTML = '';
+
+                if (containers.length === 0) {
+                    emptyState.style.display = 'block';
+                    updateFooter();
+                    return;
+                }
+                emptyState.style.display = 'none';
+
+                const fragment = document.createDocumentFragment();
+                for (const container of containers) {
+                    fragment.appendChild(createContainerRow(container));
+                    if (expandedTypes.has(container.typeFolderId)) {
+                        const objects = objectsByType.get(container.typeFolderId) || [];
+                        for (const obj of objects) {
+                            fragment.appendChild(createObjectRow(obj, true));
+                        }
+                    }
+                }
+                tbody.appendChild(fragment);
+
+                updateFooter();
+            }
+
+            function createContainerRow(container) {
+                const isExpanded = expandedTypes.has(container.typeFolderId);
+                const isLoading = loadingTypes.has(container.typeFolderId);
+                const objects = objectsByType.get(container.typeFolderId);
+
+                // Счётчик
+                let countLabel;
+                if (objects !== undefined) {
+                    countLabel = objects.length;
+                } else if (container.objectCount !== null) {
+                    countLabel = container.objectCount;
+                } else if (container.checkedCount > 0) {
+                    countLabel = '\u2713' + container.checkedCount;
+                } else {
+                    countLabel = '?';
+                }
+
+                const tr = document.createElement('tr');
+                tr.className = 'type-container-row';
+
+                // Ячейка стрелки + чекбокса
+                const tdCheck = document.createElement('td');
+                tdCheck.className = 'col-check';
+
+                const arrow = document.createElement('span');
+                arrow.className = 'expand-arrow' + (isExpanded ? ' expanded' : '');
+                if (isLoading) {
+                    arrow.innerHTML = '<span class="spinner-inline"></span>';
+                } else {
+                    arrow.textContent = '\u25B6';
+                }
+                arrow.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    toggleExpand(container.typeFolderId);
+                });
+
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'container-cb-wrap';
+                // Tri-state
+                if (objects && objects.length > 0) {
+                    const checkedCount = objects.filter(function (o) { return checkedSet.has(o.ref); }).length;
+                    if (checkedCount === objects.length) {
+                        cb.checked = true;
+                    } else if (checkedCount > 0) {
+                        cb.checked = false;
+                        cb.indeterminate = true;
+                    } else {
+                        cb.checked = false;
+                    }
+                } else {
+                    cb.checked = container.checkedCount > 0;
+                    if (container.checkedCount > 0 &&
+                        container.objectCount !== null &&
+                        container.checkedCount < container.objectCount) {
+                        cb.indeterminate = true;
+                    }
+                }
+
+                cb.addEventListener('change', function (e) {
+                    e.stopPropagation();
+                    handleContainerCheck(container, cb.checked);
+                });
+
+                tdCheck.appendChild(arrow);
+                tdCheck.appendChild(cb);
+
+                const tdName = document.createElement('td');
+                tdName.className = 'col-name';
+                tdName.colSpan = 1;
+                tdName.textContent = container.displayName + ' (' + countLabel + ')';
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdName);
+
+                tr.addEventListener('click', function () { toggleExpand(container.typeFolderId); });
+                return tr;
+            }
+
+            function createObjectRow(obj, isChild) {
+                const tr = document.createElement('tr');
+                tr.dataset.ref = obj.ref;
+                if (isChild) { tr.className = 'child-row'; }
+                if (obj.orphan) { tr.classList.add('orphan-row'); }
+
+                const tdCheck = document.createElement('td');
+                tdCheck.className = 'col-check';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = checkedSet.has(obj.ref);
+                cb.addEventListener('change', function () {
+                    const checked = cb.checked;
+                    if (checked) {
+                        checkedSet.add(obj.ref);
+                    } else {
+                        checkedSet.delete(obj.ref);
+                    }
+                    vscode.postMessage({ command: 'toggle', data: { ref: obj.ref, checked: checked } });
+                    // Обновить tri-state у родительского контейнера
+                    refreshContainerCheckbox(obj);
+                    updateBadge();
+                });
+                tdCheck.appendChild(cb);
+
+                const tdName = document.createElement('td');
+                tdName.className = 'col-name';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'obj-name';
+                nameSpan.textContent = obj.displayName;
+                tdName.appendChild(nameSpan);
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdName);
+                return tr;
+            }
+
+            // Обновить визуальный tri-state чекбокса контейнера после изменения дочернего
+            function refreshContainerCheckbox(obj) {
+                // Найти контейнер по ref-типу
+                const typeName = obj.ref.split('.')[0];
+                const container = containers.find(function (c) {
+                    return c.metadataType === typeName || c.typeFolderId.indexOf(typeName) !== -1;
+                });
+                if (!container) { return; }
+                const objects = objectsByType.get(container.typeFolderId);
+                if (!objects) { return; }
+
+                // Найти строку контейнера по typeFolderId через data-attribute недоступен на tr.type-container-row,
+                // поэтому проще перерисовать tree (дёшево: только tbody)
+                renderTree();
+            }
+
+            // ── Expand / collapse ─────────────────────────────────────────────
+
+            function toggleExpand(typeFolderId) {
+                if (expandedTypes.has(typeFolderId)) {
+                    expandedTypes.delete(typeFolderId);
+                    renderTree();
+                } else {
+                    expandedTypes.add(typeFolderId);
+                    if (!objectsByType.has(typeFolderId)) {
+                        triggerExpand(typeFolderId);
+                    } else {
+                        renderTree();
+                    }
+                }
+            }
+
+            function triggerExpand(typeFolderId) {
+                loadingTypes.add(typeFolderId);
+                renderTree(); // перерисовать со спиннером
+                vscode.postMessage({ command: 'expand', data: { typeFolderId: typeFolderId } });
+            }
+
+            // ── Container checkbox ────────────────────────────────────────────
+
+            function handleContainerCheck(container, checked) {
+                const objects = objectsByType.get(container.typeFolderId);
+                if (!objects) {
+                    // Нужно загрузить сначала — раскрываем и ждём
+                    expandedTypes.add(container.typeFolderId);
+                    triggerExpand(container.typeFolderId);
+                    // После загрузки пользователь повторит клик
+                    return;
+                }
+                const refs = objects.map(function (o) { return o.ref; });
+                if (checked) {
+                    for (const ref of refs) { checkedSet.add(ref); }
+                    vscode.postMessage({ command: 'selectAll', data: { refs: refs } });
+                } else {
+                    for (const ref of refs) { checkedSet.delete(ref); }
+                    vscode.postMessage({ command: 'deselectAll', data: { refs: refs } });
+                }
+                renderTree();
+                updateBadge();
+            }
+
+            // ── Bulk load ─────────────────────────────────────────────────────
+
+            function ensureAllLoaded(callback) {
+                if (allLoaded) {
+                    callback();
+                    return;
+                }
+                bulkLoadInProgress = true;
+                pendingAfterLoad = callback;
+                showLoadingOverlay('Загрузка объектов...');
+                vscode.postMessage({ command: 'expandAll' });
+            }
+
+            function showLoadingOverlay(text) {
+                const ov = document.getElementById('loading-overlay');
+                document.getElementById('loading-text').textContent = text;
+                ov.classList.add('visible');
+            }
+
+            function hideLoadingOverlay() {
+                document.getElementById('loading-overlay').classList.remove('visible');
+            }
+
+            // ── Flat render (поиск / showCheckedOnly) ─────────────────────────
+
+            function renderFlat() {
+                renderSeq++;
+                const tbody = document.getElementById('table-body');
+                const emptyState = document.getElementById('empty-state');
+                tbody.innerHTML = '';
+                const q = searchQuery.toLowerCase();
+                const allObjects = [];
+                for (const objects of objectsByType.values()) {
+                    for (const obj of objects) {
+                        if (q && !obj.displayName.toLowerCase().includes(q) &&
+                            !obj.ref.toLowerCase().includes(q)) { continue; }
+                        if (showCheckedOnly && !checkedSet.has(obj.ref)) { continue; }
+                        allObjects.push(obj);
+                    }
+                }
+                if (allObjects.length === 0) {
+                    emptyState.style.display = 'block';
+                } else {
+                    emptyState.style.display = 'none';
+                    const fragment = document.createDocumentFragment();
+                    for (const obj of allObjects) {
+                        fragment.appendChild(createObjectRow(obj, false));
+                    }
+                    tbody.appendChild(fragment);
+                }
+                updateFooter();
+            }
+
+            // ── Badge / footer ────────────────────────────────────────────────
+
+            function updateBadge() {
+                const added = Array.from(checkedSet).filter(function (r) { return !initialChecked.has(r); }).length;
+                const removed = Array.from(initialChecked).filter(function (r) { return !checkedSet.has(r); }).length;
+                const total = added + removed;
+                const badge = document.getElementById('changes-badge');
+                if (total > 0) {
+                    badge.textContent = total + '\u00a0изм.';
+                    badge.style.display = 'inline-block';
+                } else {
+                    badge.textContent = '';
+                    badge.style.display = 'none';
+                }
+                document.getElementById('btn-save').disabled = total === 0;
+            }
+
+            function updateFooter() {
+                let total = 0;
+                for (const objects of objectsByType.values()) {
+                    total += objects.length;
+                }
+                const approxTotal = containers.reduce(function (acc, c) {
+                    return acc + (c.objectCount !== null ? c.objectCount : 0);
+                }, 0);
+                document.getElementById('status').textContent =
+                    allLoaded
+                        ? 'Объектов: ' + total
+                        : 'Загружено: ' + total + ' (всего ~' + approxTotal + ')';
+            }
+
+            // ── Banner ────────────────────────────────────────────────────────
+
+            function showBanner(text, type) {
+                const banner = document.getElementById('banner');
+                banner.textContent = text;
+                banner.className = 'banner banner-' + type;
+                banner.style.display = 'block';
+                setTimeout(function () { banner.style.display = 'none'; }, 8000);
+            }
+
+            // ── Event listeners ───────────────────────────────────────────────
+
+            document.getElementById('search').addEventListener('input', function (e) {
+                searchQuery = e.target.value;
+                if (searchDebounceTimer) { clearTimeout(searchDebounceTimer); }
+                searchDebounceTimer = setTimeout(function () {
+                    searchDebounceTimer = null;
+                    requestAnimationFrame(renderTree);
+                }, 200);
+            });
+
+            document.getElementById('show-checked-only').addEventListener('change', function (e) {
+                showCheckedOnly = e.target.checked;
+                requestAnimationFrame(renderTree);
+            });
+
+            document.getElementById('btn-select-all').addEventListener('click', function () {
+                ensureAllLoaded(function () {
+                    const refs = [];
+                    for (const objects of objectsByType.values()) {
+                        for (const obj of objects) {
+                            checkedSet.add(obj.ref);
+                            refs.push(obj.ref);
+                        }
+                    }
+                    renderTree();
+                    updateBadge();
+                    vscode.postMessage({ command: 'selectAll', data: { refs: refs } });
+                });
+            });
+
+            document.getElementById('btn-deselect-all').addEventListener('click', function () {
+                ensureAllLoaded(function () {
+                    const refs = [];
+                    for (const objects of objectsByType.values()) {
+                        for (const obj of objects) {
+                            checkedSet.delete(obj.ref);
+                            refs.push(obj.ref);
+                        }
+                    }
+                    renderTree();
+                    updateBadge();
+                    vscode.postMessage({ command: 'deselectAll', data: { refs: refs } });
+                });
+            });
+
+            document.getElementById('btn-save').addEventListener('click', function () {
+                vscode.postMessage({ command: 'save' });
+                const btn = document.getElementById('btn-save');
+                btn.disabled = true;
+                btn.textContent = 'Сохранение...';
+            });
+
+            document.getElementById('btn-cancel').addEventListener('click', function () {
+                const added = Array.from(checkedSet).filter(function (r) { return !initialChecked.has(r); }).length;
+                const removed = Array.from(initialChecked).filter(function (r) { return !checkedSet.has(r); }).length;
+                const dirty = added + removed;
+                if (dirty > 0 && !confirm('Есть несохранённые изменения. Закрыть?')) { return; }
+                vscode.postMessage({ command: 'cancel' });
+            });
+
+            // Ctrl+S
+            document.addEventListener('keydown', function (e) {
+                if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                    e.preventDefault();
+                    const btn = document.getElementById('btn-save');
+                    if (!btn.disabled) { btn.click(); }
+                }
+            });
+
+            window.addEventListener('message', function (e) {
+                const msg = e.data;
+                switch (msg.command) {
+                    case 'objectsLoaded': {
+                        const typeFolderId = msg.data.typeFolderId;
+                        const objects = msg.data.objects;
+                        objectsByType.set(typeFolderId, objects);
+                        loadingTypes.delete(typeFolderId);
+                        // Обновить objectCount в containers
+                        const c = containers.find(function (ct) { return ct.typeFolderId === typeFolderId; });
+                        if (c) { c.objectCount = objects.length; }
+                        renderTree();
+                        break;
+                    }
+                    case 'allObjectsLoaded': {
+                        const entries = Object.entries(msg.data.containers);
+                        for (const entry of entries) {
+                            const typeFolderId = entry[0];
+                            const objects = entry[1];
+                            objectsByType.set(typeFolderId, objects);
+                            const c = containers.find(function (ct) { return ct.typeFolderId === typeFolderId; });
+                            if (c) { c.objectCount = objects.length; }
+                        }
+                        allLoaded = true;
+                        bulkLoadInProgress = false;
+                        hideLoadingOverlay();
+                        if (pendingAfterLoad) {
+                            const cb = pendingAfterLoad;
+                            pendingAfterLoad = null;
+                            cb();
+                        }
+                        break;
+                    }
+                    case 'saveSuccess':
+                        // Panel will be disposed by provider
+                        break;
+                    case 'saveError': {
+                        const btn = document.getElementById('btn-save');
+                        btn.disabled = false;
+                        btn.textContent = 'Сохранить';
+                        showBanner((msg.data && msg.data.message) || 'Ошибка сохранения', 'error');
+                        break;
+                    }
+                    case 'error':
+                        showBanner((msg.data && msg.data.message) || 'Неизвестная ошибка', 'error');
+                        break;
+                }
+            });
+
+            // ── Bootstrap ─────────────────────────────────────────────────────
+
+            // __COMPOSITION_DATA_PLACEHOLDER__
+
+            if (window.__compositionData) {
+                init();
+            }
+        })();
+    </script>
+</body>
+</html>

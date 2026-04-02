@@ -48,7 +48,7 @@ suite('propertiesProvider changedKeys logic', () => {
 
   setup(() => {
     mockContext = createMockContext();
-    const treeDataProvider = new MetadataTreeDataProvider(mockContext);
+    const treeDataProvider = new MetadataTreeDataProvider();
     const typeEditorProvider = new TypeEditorProvider(mockContext);
     provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
   });

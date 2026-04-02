@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { prepareIbcmdConfigYaml } from '../infobases/ibcmdConfigPathResolver';
@@ -14,7 +15,7 @@ import {
   serializeInfobaseConfigIbcmdOp,
   showIbcmdInfobaseOutputChannel,
 } from '../infobases/infobaseConfigCommands';
-import { buildInfobaseConfigExportArgs, ibcmdOfflineConnectionFromPrepared } from './ibcmd/ibcmdInfobaseConfigArgs';
+import { buildInfobaseConfigExportArgs, ibcmdOfflineConnectionFromPrepared, type IbcmdConfigCliCredentials } from './ibcmd/ibcmdInfobaseConfigArgs';
 import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
 import { runIbcmdStreaming } from './ibcmd/IbcmdStreamingRunner';
 import { interpretIbcmdInfobaseOutcome } from './ibcmd/ibcmdInfobaseOperationResult';
@@ -59,9 +60,19 @@ async function exportInfobaseConfigToDir(params: {
   }
 
   try {
+    let credentials: IbcmdConfigCliCredentials | undefined;
+    const entryUser = params.entry.user?.trim();
+    let entryPassword: string | undefined;
+    if (params.entry.hasStoredPassword) {
+      entryPassword = (await params.storage.readPasswordSecret(params.entry.id)) ?? undefined;
+    }
+    if (entryUser || (entryPassword !== undefined && entryPassword.length > 0)) {
+      credentials = { user: entryUser || undefined, password: entryPassword };
+    }
     const args = buildInfobaseConfigExportArgs(
       ibcmdOfflineConnectionFromPrepared(prep),
       path.resolve(params.outDir),
+      { credentials },
     );
     const outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,
@@ -72,6 +83,7 @@ async function exportInfobaseConfigToDir(params: {
       onStreamChunk: () => {
         /* вывод уже в общем канале при необходимости */
       },
+      abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
     if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
@@ -154,8 +166,8 @@ export async function runCompareInfobaseConfigurations(params: {
           return;
         }
 
-        const xmlA = path.join(dirA, 'Configuration.xml');
-        const xmlB = path.join(dirB, 'Configuration.xml');
+        const xmlA = path.join(dirA, CONFIGURATION_XML);
+        const xmlB = path.join(dirB, CONFIGURATION_XML);
         if (!fs.existsSync(xmlA) || !fs.existsSync(xmlB)) {
           void vscode.window.showWarningMessage(
             'После выгрузки не найден Configuration.xml в одном из каталогов. Пути записаны в канал «Infobase (ibcmd)».',

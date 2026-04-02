@@ -89,8 +89,7 @@ export class RoleXmlParser {
     const re = /<(?:[a-zA-Z0-9_.]+:)?restrictionTemplate\b[^>]*>[\s\S]*?<\/(?:[a-zA-Z0-9_.]+:)?restrictionTemplate>/gi;
     const parts: string[] = [];
     let m: RegExpExecArray | null;
-    const r = new RegExp(re.source, re.flags);
-    while ((m = r.exec(xml)) !== null) {
+    while ((m = re.exec(xml)) !== null) {
       parts.push(this.decodeBasicXmlEntities(m[0].trim()));
     }
     return parts.join('\n\n');

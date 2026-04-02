@@ -28,15 +28,22 @@ export async function findReferencesToElement(
   }
   const pattern = `${refKind}.${elementName}`;
   const results: ReferenceMatch[] = [];
-  await scanDir(configPath, pattern, results);
+  await scanDir(configPath, pattern, results, 0);
   return results;
 }
+
+const MAX_SCAN_DEPTH = 20;
 
 async function scanDir(
   dir: string,
   pattern: string,
-  results: ReferenceMatch[]
+  results: ReferenceMatch[],
+  depth: number
 ): Promise<void> {
+  if (depth > MAX_SCAN_DEPTH) {
+    Logger.warn(`referenceFinder: max depth ${MAX_SCAN_DEPTH} reached at ${dir}, stopping recursion`);
+    return;
+  }
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -46,7 +53,7 @@ async function scanDir(
   for (const e of entries) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
-      await scanDir(full, pattern, results);
+      await scanDir(full, pattern, results, depth + 1);
     } else if (e.isFile() && e.name.endsWith('.xml')) {
       const matches = await grepInFile(full, pattern);
       if (matches.length > 0) {
@@ -98,7 +105,7 @@ export async function replaceReferencesInProject(
   const oldPattern = `${refKind}.${oldName}`;
   const newPattern = `${refKind}.${newName}`;
   const results: { filePath: string; replaceCount: number }[] = [];
-  await replaceInDir(configPath, oldPattern, newPattern, results);
+  await replaceInDir(configPath, oldPattern, newPattern, results, 0);
   return results;
 }
 
@@ -106,8 +113,13 @@ async function replaceInDir(
   dir: string,
   oldPattern: string,
   newPattern: string,
-  results: { filePath: string; replaceCount: number }[]
+  results: { filePath: string; replaceCount: number }[],
+  depth: number
 ): Promise<void> {
+  if (depth > MAX_SCAN_DEPTH) {
+    Logger.warn(`referenceFinder: max depth ${MAX_SCAN_DEPTH} reached at ${dir}, stopping recursion`);
+    return;
+  }
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -117,7 +129,7 @@ async function replaceInDir(
   for (const e of entries) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
-      await replaceInDir(full, oldPattern, newPattern, results);
+      await replaceInDir(full, oldPattern, newPattern, results, depth + 1);
     } else if (e.isFile() && e.name.endsWith('.xml')) {
       const count = await replaceInFile(full, oldPattern, newPattern);
       if (count > 0) {

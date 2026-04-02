@@ -104,7 +104,13 @@ export class XmlParser {
   static objectToXml(obj: Record<string, unknown>): string {
     try {
       const body = this.builder.build(obj) as string;
-      return body ? `<?xml version="1.0" encoding="UTF-8"?>\n${body}` : '';
+      if (!body) {
+        return '';
+      }
+      // builder already emits <?xml...?> when the parsed object contains a `?xml` key
+      // (which fast-xml-parser preserves from the source file). Avoid duplicating it.
+      const hasDeclaration = body.trimStart().startsWith('<?xml');
+      return hasDeclaration ? body : `<?xml version="1.0" encoding="UTF-8"?>\n${body}`;
     } catch (error) {
       Logger.error('Error converting object to XML', error);
       throw new Error(`Failed to convert object to XML: ${error instanceof Error ? error.message : String(error)}`);

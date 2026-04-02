@@ -32,7 +32,7 @@
 - [ ] `npm run verify` (или минимум `lint:ci` + релевантные тесты).
 - [ ] Новые фикстуры в `test/fixtures/` для затронутых XML-форм.
 - [ ] Обновление пользовательской документации (`README` или `docs/analytics/`) для новых команд.
-- [ ] Если затрагивается паритет с EDT — ссылка на issue из gap-документа и строка в [cdt-vs-edt-functional-gap.md](../research/cdt-vs-edt-functional-gap.md) при необходимости.
+- [ ] Если затрагивается паритет с EDT — ссылка на issue из gap-документа и строка в [cdt-vs-edt-functional-gap.md](./cdt-vs-edt-functional-gap.md) при необходимости.
 
 ## 6. Интеграция с внешним контуром
 

@@ -155,13 +155,13 @@ export class ReloadCoordinatorService {
     } finally {
       slot.state.inFlight = false;
       slot.state.completedAt = Date.now();
-    }
 
-    if (slot.state.pending) {
-      slot.state.pending = false;
-      slot.timer = setTimeout(() => {
-        void this.executeSlot(slot);
-      }, 0);
+      if (slot.state.pending) {
+        slot.state.pending = false;
+        slot.timer = setTimeout(() => {
+          void this.executeSlot(slot);
+        }, 0);
+      }
     }
   }
 

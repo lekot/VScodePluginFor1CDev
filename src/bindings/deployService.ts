@@ -17,6 +17,7 @@ import {
   serializeInfobaseConfigIbcmdOp,
 } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
+import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 
 export type DeployItemStatus = 'success' | 'error' | 'skipped';
 
@@ -47,6 +48,11 @@ export type DeployMode = 'copy' | 'block';
 export function readDeployMode(): DeployMode {
   const v = vscode.workspace.getConfiguration('1cMetadataTree').get<string>('deploy.mode', 'copy');
   return v === 'block' ? 'block' : 'copy';
+}
+
+/** Optional XML precheck gate before deploy import (default off). */
+export function readDeployPrecheckXmlBeforeImportSetting(): boolean {
+  return vscode.workspace.getConfiguration('1cMetadataTree').get<boolean>('deploy.precheckXmlBeforeImport') === true;
 }
 
 /**
@@ -104,9 +110,18 @@ async function applyReadonlyIncludeForDeploy(
 
 function createConfigurationSnapshot(sourceDir: string): string {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-snap-'));
-  const dest = path.join(parent, 'cfg');
-  fs.cpSync(sourceDir, dest, { recursive: true });
-  return dest;
+  try {
+    const dest = path.join(parent, 'cfg');
+    fs.cpSync(sourceDir, dest, { recursive: true });
+    return dest;
+  } catch (err) {
+    try {
+      fs.rmSync(parent, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
 }
 
 /**
@@ -199,6 +214,12 @@ export function resolveDeployTargetsForBinding(
 }
 
 export class DeployService {
+  constructor(
+    private readonly deps: {
+      runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
+    } = {},
+  ) {}
+
   /**
    * Последовательная раскатка: ошибка на одной базе не прерывает остальные (design §12.5).
    * Отмена — после текущей ibcmd пропускает оставшиеся цели.
@@ -321,6 +342,40 @@ export class DeployService {
         }
 
         const entry = entries[i]!;
+        if (readDeployPrecheckXmlBeforeImportSetting()) {
+          const preflight = await (this.deps.runXmlPreflight ?? runIbcmdXmlImportPreflight)({
+            entry,
+            storage: params.storage,
+            absoluteSourceDir: sourceDir,
+            ibcmdExtensionName: params.binding.ibcmdExtensionName,
+          });
+          if (!preflight.ok) {
+            appendIbcmdOutputLine(
+              `[раскатка] ${entry.name}: preflight XML не пройден (${preflight.durationMs} мс) — ${preflight.message}`,
+            );
+            results.push({
+              infobaseId: entry.id,
+              name: entry.name,
+              status: 'error',
+              message: `Preflight XML не пройден: ${preflight.message}`,
+            });
+            for (let j = i + 1; j < entries.length; j++) {
+              const e = entries[j]!;
+              results.push({
+                infobaseId: e.id,
+                name: e.name,
+                status: 'skipped',
+                message: 'Пропущено: preflight XML завершился ошибкой на предыдущей базе.',
+              });
+            }
+            const s = summarizeDeployRun(results, false);
+            appendDeployRunSummaryLine(s);
+            return s;
+          }
+          appendIbcmdOutputLine(
+            `[раскатка] ${entry.name}: preflight XML ok (${preflight.durationMs} мс).`,
+          );
+        }
         params.progress.report({
           message: `Раскатка: ${entry.name} (${i + 1}/${total})`,
           increment,

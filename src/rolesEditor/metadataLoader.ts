@@ -12,6 +12,7 @@ import { MetadataObject } from './models/metadataObject';
 import { RightsMap } from './models/roleModel';
 import { Logger } from '../utils/logger';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 /**
  * Metadata types that can have rights assigned
@@ -40,30 +41,16 @@ const RIGHTS_ASSIGNABLE_TYPES: MetadataType[] = [
   MetadataType.FunctionalOption,
   MetadataType.FunctionalOptionsParameter,
   MetadataType.SettingsStorage,
-  MetadataType.EventSubscription,
-  MetadataType.CommonModule,
-  MetadataType.CommandGroup,
   MetadataType.Command,
-  MetadataType.Role,
-  MetadataType.Interface,
-  MetadataType.Style,
   MetadataType.WebService,
   MetadataType.HTTPService,
   MetadataType.IntegrationService,
   MetadataType.Subsystem,
   MetadataType.ExchangePlan,
   MetadataType.DocumentJournal,
-  MetadataType.DefinedType,
   MetadataType.CommonAttribute,
   MetadataType.CommonCommand,
   MetadataType.CommonForm,
-  MetadataType.CommonPicture,
-  MetadataType.CommonTemplate,
-  MetadataType.DocumentNumerator,
-  MetadataType.Language,
-  MetadataType.WSReference,
-  MetadataType.XDTOPackage,
-  MetadataType.StyleItem,
 ];
 
 /** Types for which we load attribute-level rights rows (same scope as R6 lazy Attributes in the tree). */
@@ -89,7 +76,7 @@ function folderNameForMetadataType(t: MetadataType): string | null {
  * Best-effort synonym or name from Configuration.xml for the configuration root rights row.
  */
 async function readConfigurationRootDisplayName(configRootPath: string): Promise<string> {
-  const configXmlPath = path.join(configRootPath, 'Configuration.xml');
+  const configXmlPath = path.join(configRootPath, CONFIGURATION_XML);
   try {
     const text = await fs.promises.readFile(configXmlPath, 'utf-8');
     const syn = text.match(/<Synonym>[\s\S]*?<v8:content>([^<]+)<\/v8:content>/i);
