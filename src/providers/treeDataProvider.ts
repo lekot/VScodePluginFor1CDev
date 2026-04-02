@@ -707,6 +707,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
       }
 
+      // Extension: append '.Adopted' suffix to contextValue for borrowed objects
+      if (props?.objectBelonging === 'Adopted') {
+        treeItem.contextValue = `${treeItem.contextValue}.Adopted`;
+      }
+
       const bindingDeco = this.lookupConfigurationBindingDecoration(element);
       // WOW §2D: контекст для «Раскатать в базу/базы» (viewItem when в package.json).
       if (element.type === MetadataType.Configuration) {
@@ -769,6 +774,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       ) {
         descParts.push(`🔗${bindingDeco.boundCount}`);
       }
+
+      // Extension decorations
+      if (props?.objectBelonging === 'Adopted') {
+        // Borrowed (adopted) object from base configuration
+        descParts.push('(заимствованный)');
+      } else if (props?.extensionPurpose) {
+        // Extension root node: show purpose and prefix
+        const purpose = props.extensionPurpose as string;
+        const prefix = props.namePrefix as string | undefined;
+        const extDesc = prefix ? `(${purpose}, ${prefix})` : `(${purpose})`;
+        descParts.push(extDesc);
+      }
+
       if (descParts.length > 0) {
         treeItem.description = descParts.join(' · ');
       }
