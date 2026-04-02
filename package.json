@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.33.4",
+  "version": "0.33.5",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -650,12 +650,12 @@
         },
         {
           "command": "1c-metadata-tree.borrowToExtension",
-          "when": "view == 1c-metadata-tree && viewItem =~ /^(Catalog|Document|Enum|Report|DataProcessor|InformationRegister|AccumulationRegister|CommonModule|Role|Subsystem|CommonForm|CommonTemplate|CommonPicture|CommonCommand|ExchangePlan|Constant|ChartOfCharacteristicTypes|ChartOfAccounts|AccountingRegister|ChartOfCalculationTypes|CalculationRegister|BusinessProcess|Task|DocumentJournal|FilterCriterion|SettingsStorage|FunctionalOption|ScheduledJob|Sequence)$/",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^(Catalog|Document|Enum|Report|DataProcessor|InformationRegister|AccumulationRegister|CommonModule|Role|Subsystem|CommonForm|CommonTemplate|CommonPicture|CommonCommand|ExchangePlan|Constant|ChartOfCharacteristicTypes|ChartOfAccounts|AccountingRegister|ChartOfCalculationTypes|CalculationRegister|BusinessProcess|Task|DocumentJournal|FilterCriterion|SettingsStorage|FunctionalOption|ScheduledJob)$/",
           "group": "3_extension@0"
         },
         {
           "command": "1c-metadata-tree.navigateToMainObject",
-          "when": "view == 1c-metadata-tree && viewItem =~ /.Adopted$/",
+          "when": "view == 1c-metadata-tree && viewItem =~ /\\.Adopted$/",
           "group": "3_extension@1"
         },
         {

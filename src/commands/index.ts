@@ -29,6 +29,7 @@ export function registerAllCommands({
     loadMetadataTree: lifecycle.loadMetadataTree,
     extensionContext: context,
   };
+  registerExtensionCommands(context, state);
   return [
     ...registerUtilityCommandsLeading(utilityDeps),
     ...registerEditorCommands({ state }),
@@ -45,6 +46,5 @@ export function registerAllCommands({
       loadMetadataTree: lifecycle.loadMetadataTree,
       invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
     }),
-    ...registerExtensionCommands(context, state),
   ];
 }

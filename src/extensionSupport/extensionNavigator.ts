@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { ExtensionState } from '../state/extensionState';
+import { getExtensionRootNodes } from './extensionTypes';
 
 /**
  * Returns all root Configuration nodes that are NOT extensions (main config nodes).
@@ -15,27 +16,6 @@ function getMainConfigRoots(state: ExtensionState): TreeNode[] {
   );
 }
 
-/**
- * Returns all Extension nodes across all workspace configs.
- */
-function getExtensionNodes(state: ExtensionState): TreeNode[] {
-  const provider = state.treeDataProvider;
-  if (!provider) {
-    return [];
-  }
-  const extensions: TreeNode[] = [];
-  for (const root of provider.getRootNodes()) {
-    if (!root.children) {
-      continue;
-    }
-    for (const child of root.children) {
-      if (child.type === MetadataType.Extension && typeof child.properties.extensionPurpose === 'string') {
-        extensions.push(child);
-      }
-    }
-  }
-  return extensions;
-}
 
 /**
  * Recursively walk tree to find a node by predicate. Returns first match or undefined.
@@ -67,7 +47,6 @@ export async function navigateToMainObject(borrowedNode: TreeNode, state: Extens
     return;
   }
 
-  const extUuid = borrowedNode.properties.extendedConfigurationObject;
   const mainRoots = getMainConfigRoots(state);
 
   if (mainRoots.length === 0) {
@@ -77,34 +56,14 @@ export async function navigateToMainObject(borrowedNode: TreeNode, state: Extens
 
   let targetNode: TreeNode | undefined;
 
-  // Strategy 1: match by extendedConfigurationObject UUID stored in node id or properties
-  if (typeof extUuid === 'string' && extUuid.length > 0) {
-    for (const mainRoot of mainRoots) {
-      targetNode = findNodeInTree(mainRoot, (n) => {
-        // UUID can appear in id (e.g. "uuid:...") or in properties._uuid or properties.uuid
-        const props = n.properties as Record<string, string | undefined>;
-        return (
-          props._uuid === extUuid ||
-          props.uuid === extUuid ||
-          n.id === extUuid
-        );
-      });
-      if (targetNode) {
-        break;
-      }
-    }
-  }
-
-  // Strategy 2: match by name + type
-  if (!targetNode) {
-    for (const mainRoot of mainRoots) {
-      targetNode = findNodeInTree(
-        mainRoot,
-        (n) => n.name === borrowedNode.name && n.type === borrowedNode.type
-      );
-      if (targetNode) {
-        break;
-      }
+  // Match by name + type: borrowed object name and type match the main config object
+  for (const mainRoot of mainRoots) {
+    targetNode = findNodeInTree(
+      mainRoot,
+      (n) => n.name === borrowedNode.name && n.type === borrowedNode.type
+    );
+    if (targetNode) {
+      break;
     }
   }
 
@@ -128,7 +87,7 @@ export async function navigateToMainObject(borrowedNode: TreeNode, state: Extens
  * Find all extension nodes that borrow a given main-config object (same name + type + objectBelonging === 'Adopted').
  */
 export async function findBorrowingExtensions(mainNode: TreeNode, state: ExtensionState): Promise<TreeNode[]> {
-  const extensionRoots = getExtensionNodes(state);
+  const extensionRoots = getExtensionRootNodes(state);
   const borrowingNodes: TreeNode[] = [];
 
   for (const extRoot of extensionRoots) {

@@ -13,7 +13,7 @@ import { Logger } from '../utils/logger';
 export function registerExtensionCommands(
   context: vscode.ExtensionContext,
   state: ExtensionState
-): vscode.Disposable[] {
+): void {
   const borrowCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.borrowToExtension',
     async (node?: TreeNode) => {
@@ -101,6 +101,4 @@ export function registerExtensionCommands(
     showRelatedCommand,
     showInterceptorsCommand
   );
-
-  return [borrowCommand, navigateToMainCommand, showRelatedCommand, showInterceptorsCommand];
 }

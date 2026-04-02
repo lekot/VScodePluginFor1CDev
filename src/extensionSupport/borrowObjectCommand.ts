@@ -7,6 +7,7 @@ import { addRootObjectToConfiguration } from '../services/configurationXmlUpdate
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { Logger } from '../utils/logger';
+import { getExtensionRootNodes } from './extensionTypes';
 
 /** XML namespaces for MetaDataObject root element */
 const METADATA_OBJECT_NS = [
@@ -30,19 +31,26 @@ const METADATA_OBJECT_NS = [
 ].join(' ');
 
 /**
+ * Escapes special XML characters to prevent XML injection.
+ */
+function escapeXml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
  * Builds the XML content for a borrowed (Adopted) object in an extension.
  */
 function buildBorrowedObjectXml(rootTag: string, newUuid: string, objectName: string, sourceUuid: string): string {
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<MetaDataObject ${METADATA_OBJECT_NS}>\n` +
-    `\t<${rootTag} uuid="${newUuid}">\n` +
+    `\t<${escapeXml(rootTag)} uuid="${escapeXml(newUuid)}">\n` +
     `\t\t<Properties>\n` +
-    `\t\t\t<Name>${objectName}</Name>\n` +
+    `\t\t\t<Name>${escapeXml(objectName)}</Name>\n` +
     `\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n` +
-    `\t\t\t<ExtendedConfigurationObject>${sourceUuid}</ExtendedConfigurationObject>\n` +
+    `\t\t\t<ExtendedConfigurationObject>${escapeXml(sourceUuid)}</ExtendedConfigurationObject>\n` +
     `\t\t</Properties>\n` +
-    `\t</${rootTag}>\n` +
+    `\t</${escapeXml(rootTag)}>\n` +
     `</MetaDataObject>\n`
   );
 }
@@ -64,30 +72,11 @@ async function readObjectUuid(xmlFilePath: string): Promise<string | null> {
 }
 
 /**
- * Returns all extension root nodes from the tree (nodes with extensionPurpose in properties).
+ * Returns all extension root nodes from the tree.
+ * Extensions are top-level root nodes with extensionPurpose in properties.
  */
 function findExtensionRootNodes(state: ExtensionState): TreeNode[] {
-  const provider = state.treeDataProvider;
-  if (!provider) {
-    return [];
-  }
-  const roots = provider.getRootNodes();
-  const extensions: TreeNode[] = [];
-  for (const root of roots) {
-    // Each root is a Configuration node — check its children for Extension nodes
-    if (!root.children) {
-      continue;
-    }
-    for (const child of root.children) {
-      if (
-        child.type === MetadataType.Extension &&
-        typeof child.properties.extensionPurpose === 'string'
-      ) {
-        extensions.push(child);
-      }
-    }
-  }
-  return extensions;
+  return getExtensionRootNodes(state);
 }
 
 /**
@@ -150,8 +139,24 @@ function resolveTypeFolderPath(extensionRootDir: string, typeFolderNode: TreeNod
     [MetadataType.SettingsStorage]: 'SettingsStorages',
     [MetadataType.FunctionalOption]: 'FunctionalOptions',
     [MetadataType.ScheduledJob]: 'ScheduledJobs',
+    [MetadataType.ExternalDataSource]: 'ExternalDataSources',
+    [MetadataType.SessionParameter]: 'SessionParameters',
+    [MetadataType.FunctionalOptionsParameter]: 'FunctionalOptionsParameters',
+    [MetadataType.EventSubscription]: 'EventSubscriptions',
+    [MetadataType.CommandGroup]: 'CommandGroups',
+    [MetadataType.Interface]: 'Interfaces',
+    [MetadataType.WebService]: 'WebServices',
+    [MetadataType.HTTPService]: 'HTTPServices',
+    [MetadataType.IntegrationService]: 'IntegrationServices',
+    [MetadataType.DefinedType]: 'DefinedTypes',
+    [MetadataType.CommonAttribute]: 'CommonAttributes',
+    [MetadataType.DocumentNumerator]: 'DocumentNumerators',
+    [MetadataType.Language]: 'Languages',
+    [MetadataType.XDTOPackage]: 'XDTOPackages',
+    [MetadataType.WSReference]: 'WSReferences',
   };
-  const folderName = pluralMap[type] ?? `${String(type)}s`;
+  const typeName = String(type);
+  const folderName = pluralMap[type] ?? (typeName.endsWith('s') ? `${typeName}es` : `${typeName}s`);
   return path.join(extensionRootDir, folderName);
 }
 

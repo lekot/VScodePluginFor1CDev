@@ -4,9 +4,6 @@ import { TreeNode } from '../models/treeNode';
 import { ExtensionState } from '../state/extensionState';
 import { InterceptEntry } from './extensionTypes';
 
-/** Regex matching BSL extension decorator annotations */
-const INTERCEPT_REGEX = /&(Перед|После|Вместо|ИзменениеИКонтроль)\("([^"]+)"\)/g;
-
 /**
  * Parse BSL content and return all intercept decorator entries with line numbers.
  */
@@ -16,9 +13,10 @@ export function findInterceptDecorators(bslContent: string): InterceptEntry[] {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    // Create regex inside the loop to avoid shared lastIndex state
+    const interceptRegex = /&(Перед|После|Вместо|ИзменениеИКонтроль)\("([^"]+)"\)/g;
     let match: RegExpExecArray | null;
-    INTERCEPT_REGEX.lastIndex = 0;
-    while ((match = INTERCEPT_REGEX.exec(line)) !== null) {
+    while ((match = interceptRegex.exec(line)) !== null) {
       const decorator = match[1] as InterceptEntry['decorator'];
       const targetProcedure = match[2];
       entries.push({
