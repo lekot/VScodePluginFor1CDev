@@ -73,7 +73,7 @@ async function exportInfobaseConfigToDir(params: {
       onStreamChunk: () => {
         /* вывод уже в общем канале при необходимости */
       },
-      abortPattern: /Имя пользователя\s*:/,
+      abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
     if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
