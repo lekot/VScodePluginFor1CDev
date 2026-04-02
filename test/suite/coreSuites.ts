@@ -107,6 +107,7 @@ export const coreSuiteFiles: string[] = [
   'suite/treeNormalization.test.js',
   'suite/typeFormatterAndFilterState.test.js',
   'suite/configurationXmlUpdater.test.js',
+  'suite/extensionSupport.test.js',
   'suite/designerTemplateServices.test.js',
   'suite/servicesCoverage.test.js',
   'suite/fixtureMatrix.test.js',
