@@ -6,7 +6,7 @@ import { TreeNode } from '../models/treeNode';
 import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
-import { resolveLaunchExecutable, buildLaunchArgs, spawnPlatformProcess } from '../services/platformLauncher';
+import { resolveLaunchExecutable, buildLaunchArgs } from '../services/platformLauncher';
 import { resolveConfigurationXmlDirectory } from '../bindings/deployService';
 import { Logger } from '../utils/logger';
 
@@ -211,19 +211,46 @@ export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
 
   launchArgs.push('/Debug', '-http', '-attach', '/DebuggerURL', `http://localhost:${port}`);
 
-  // 20. Launch 1C client
+  // 20. Launch 1C client (tracked so we can kill dbgs when 1C exits)
   Logger.info(`[debugLauncher] Запуск 1С клиента: ${exe}`);
-  spawnPlatformProcess(exe, launchArgs);
+  const onecProcess = spawn(exe, launchArgs, {
+    detached: false,
+    stdio: 'ignore',
+    windowsHide: false,
+    shell: false,
+  });
+  onecProcess.on('error', (err) => {
+    Logger.error('[debugLauncher] Ошибка запуска 1С клиента', err);
+  });
 
   // 21. Register cleanup on session termination
+  let sessionEnded = false;
   const disposable = vscode.debug.onDidTerminateDebugSession((session) => {
     if (
       session.configuration.type === 'bsl' &&
       session.configuration._dbgsPort === port
     ) {
+      sessionEnded = true;
       Logger.info('[debugLauncher] Сеанс отладки завершён, останавливаем dbgs');
       dbgsProcess.kill();
       disposable.dispose();
+    }
+  });
+
+  // 22. When 1C client exits — terminate the debug session and kill dbgs
+  onecProcess.on('exit', (code) => {
+    Logger.info(`[debugLauncher] 1С клиент завершился с кодом ${code}`);
+    if (!sessionEnded) {
+      sessionEnded = true;
+      disposable.dispose();
+      // Give the DAP session a moment to process any pending events, then kill dbgs
+      setTimeout(() => {
+        if (!dbgsProcess.killed) {
+          Logger.info('[debugLauncher] 1С закрыт, принудительно останавливаем dbgs');
+          dbgsProcess.kill();
+        }
+      }, 2000);
+      void vscode.debug.stopDebugging();
     }
   });
 }
