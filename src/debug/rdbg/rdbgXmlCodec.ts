@@ -211,8 +211,7 @@ export function encodeInitSettings(debugUiId: string, infobaseAlias?: string): s
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:data xsi:type="HTTPServerInitialDebugSettingsData"><autoAttachToNewTargets>true</autoAttachToNewTargets></rdbg:data>\n`;
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n`;
   return wrapRequest('rdbg:RDBGSetInitialDebugSettingsRequest', fields);
 }
 
@@ -224,8 +223,7 @@ export function encodeSetAutoAttachSettings(debugUiId: string, infobaseAlias?: s
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:autoAttachToNewTargets>true</rdbg:autoAttachToNewTargets>\n`;
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n`;
   return wrapRequest('rdbg:RDBGSetAutoAttachSettingsRequest', fields);
 }
 
