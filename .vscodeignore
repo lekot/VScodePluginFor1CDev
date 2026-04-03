@@ -51,6 +51,7 @@ suite-reports/
 .claude/
 .mcp.json
 .ibcmd-reports/
+scripts/
 CLAUDE.md
 AGENTS.md
 shcntx_help_db_path.txt

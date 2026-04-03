@@ -54,3 +54,5 @@ suite-report-core.json
 /.vscode/infobase-bindings.json
 /FormatSamples/uh/
 /FormatSamples/uh1/
+scripts/va-features/va.epf
+scripts/rdbg-*.mjs

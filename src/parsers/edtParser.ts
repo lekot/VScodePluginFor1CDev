@@ -17,6 +17,7 @@ import {
   extractExtensionProperties,
   extractObjectBelonging,
 } from '../extensionSupport/extensionXmlParser';
+import { STANDARD_MODULES } from '../constants/moduleTypes';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -205,15 +206,37 @@ export class EdtParser {
       // No .mdo or parse error — skip Attributes/TabularSections from MDO
     }
 
+    // Add virtual module nodes based on type
+    const metadataType = MetadataTypeMapper.map(typeName);
+    const standardModules = STANDARD_MODULES[metadataType];
+    if (standardModules) {
+      for (const mod of standardModules) {
+        const modPath = path.join(elementPath, mod.fileName);
+        const modNode: TreeNode = {
+          id: `${typeName}.${elementName}.${mod.fileName}`,
+          name: mod.label,
+          type: MetadataType.Method,
+          properties: { isModule: true, fileType: 'bsl' },
+          filePath: modPath,
+        };
+        children.push(modNode);
+      }
+    }
+
     try {
       const items = await fs.promises.readdir(elementPath);
       for (const item of items) {
-        if (item === 'Forms' || item === 'Ext') {
+        if (item === 'Forms') {
           const subPath = path.join(elementPath, item);
           const subNode = await this.parseSubElements(subPath, item);
           if (subNode.children && subNode.children.length > 0) {
             children.push(subNode);
           }
+        } else if (item === 'Ext') {
+          const subPath = path.join(elementPath, item);
+          const subNode = await this.parseSubElements(subPath, item);
+          subNode.parent = undefined; // will be set by caller
+          children.push(subNode);
         }
       }
     } catch (error) {
@@ -489,16 +512,38 @@ export class EdtParser {
       }
     }
 
+    // Add virtual module nodes based on type
+    const standardModules = STANDARD_MODULES[metadataType];
+    if (standardModules) {
+      for (const mod of standardModules) {
+        const modPath = path.join(elementPath, mod.fileName);
+        const modNode: TreeNode = {
+          id: `${typeName}.${elementName}.${mod.fileName}`,
+          name: mod.label,
+          type: MetadataType.Method,
+          properties: { isModule: true, fileType: 'bsl' },
+          filePath: modPath,
+          parent: elementNode,
+        };
+        elementNode.children?.push(modNode);
+      }
+    }
+
     try {
       const items = await fs.promises.readdir(elementPath);
       for (const item of items) {
-        if (item === 'Forms' || item === 'Ext') {
+        if (item === 'Forms') {
           const subPath = path.join(elementPath, item);
           const subNode = await this.parseSubElements(subPath, item);
           if (subNode.children && subNode.children.length > 0) {
             subNode.parent = elementNode;
             elementNode.children?.push(subNode);
           }
+        } else if (item === 'Ext') {
+          const subPath = path.join(elementPath, item);
+          const subNode = await this.parseSubElements(subPath, item);
+          subNode.parent = elementNode;
+          elementNode.children?.push(subNode);
         }
       }
     } catch (error) {
