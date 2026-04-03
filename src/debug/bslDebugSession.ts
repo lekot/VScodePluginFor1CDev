@@ -75,8 +75,10 @@ export class BslDebugSession extends DebugSession {
 
         this._setupClientListeners(this._client);
 
+        this.sendEvent(new OutputEvent(`BSL Debug: connecting to http://${cfg.host}:${cfg.port}, UI=${this._debugUiId}\n`, 'console'));
         try {
             await this._client.attach(cfg.infobaseAlias);
+            this.sendEvent(new OutputEvent(`BSL Debug: attached successfully\n`, 'console'));
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.sendEvent(new OutputEvent(`BSL Debug: ошибка подключения: ${message}\n`, 'stderr'));
@@ -89,7 +91,7 @@ export class BslDebugSession extends DebugSession {
             try {
                 const targets = await this._client.getTargets();
                 if (targets.length > 0) {
-                    await this._client.attachTargets(targets.map((t) => t.id));
+                    await this._client.attachTargets(targets.map((t) => ({ id: t.id, seanceId: t.seanceId })));
                 }
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
@@ -165,6 +167,10 @@ export class BslDebugSession extends DebugSession {
             // Resolve BSL file path to RDBG module ID (objectUUID + propertyId suffix)
             const resolved = await resolveModuleId(sourcePath, this._workspaceRoot);
             const moduleId = resolved?.moduleId ?? { objectId: sourcePath, propertyId: '' };
+            this.sendEvent(new OutputEvent(
+                `[bsl-debug] setBreakpoints: source=${sourcePath} workspaceRoot=${this._workspaceRoot} resolved=${resolved ? `${resolved.label} (${moduleId.objectId}:${moduleId.propertyId})` : 'FALLBACK'}\n`,
+                'console'
+            ));
 
             const rdbgBps: RdbgBreakpointRequest[] = requestedBps.map((bp) => ({
                 moduleId,
@@ -487,7 +493,12 @@ export class BslDebugSession extends DebugSession {
             const threadId = this._nextThreadId++;
             this._threadMap.set(threadId, e.target.id);
             this._reverseThreadMap.set(e.target.id, threadId);
+            this.sendEvent(new OutputEvent(`BSL Debug: target started id=${e.target.id} seance=${e.target.seanceId}\n`, 'console'));
             this.sendEvent(new ThreadEvent('started', threadId));
+            // Auto-attach new target so breakpoints fire
+            void this._client?.attachTargets([{ id: e.target.id, seanceId: e.target.seanceId ?? '' }])
+                .then(() => this.sendEvent(new OutputEvent(`BSL Debug: target attached OK\n`, 'console')))
+                .catch((err) => this.sendEvent(new OutputEvent(`BSL Debug: target attach FAILED: ${err}\n`, 'stderr')));
         });
 
         client.on('targetQuit', (e) => {
@@ -512,6 +523,10 @@ export class BslDebugSession extends DebugSession {
         client.on('error', (err) => {
             this.sendEvent(new OutputEvent(err.message + '\n', 'stderr'));
             this.sendEvent(new TerminatedEvent());
+        });
+
+        client.on('log', (msg: string) => {
+            this.sendEvent(new OutputEvent(`BSL Debug: ${msg}\n`, 'console'));
         });
     }
 }

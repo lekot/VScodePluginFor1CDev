@@ -9,6 +9,7 @@
 import { EventEmitter } from 'events';
 import { RdbgTransport } from './rdbgTransport';
 import * as codec from './rdbgXmlCodec';
+import { RdbgTargetRef } from './rdbgXmlCodec';
 import {
     RdbgTargetInfo,
     RdbgBreakpointRequest,
@@ -48,6 +49,7 @@ export interface RdbgClient {
     on(event: 'breakpointCorrected', listener: (e: RdbgBreakpointCorrectedEvent) => void): this;
     on(event: 'expressionEvaluated', listener: (e: RdbgExpressionEvaluatedEvent) => void): this;
     on(event: 'error', listener: (err: Error) => void): this;
+    on(event: 'log', listener: (msg: string) => void): this;
 
     emit(event: 'stopped', e: RdbgStoppedEvent): boolean;
     emit(event: 'continued', e: RdbgContinuedEvent): boolean;
@@ -57,6 +59,7 @@ export interface RdbgClient {
     emit(event: 'breakpointCorrected', e: RdbgBreakpointCorrectedEvent): boolean;
     emit(event: 'expressionEvaluated', e: RdbgExpressionEvaluatedEvent): boolean;
     emit(event: 'error', err: Error): boolean;
+    emit(event: 'log', msg: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +75,8 @@ export class RdbgClient extends EventEmitter {
     private _infobaseAlias?: string;
     private _pollingTimer: ReturnType<typeof setInterval> | undefined;
     private _consecutiveFailures = 0;
+    /** Maps targetId → seanceId, populated from getTargets() and targetStarted events. */
+    private readonly _seanceMap = new Map<string, string>();
 
     constructor(transport: RdbgTransport, debugUiId: string) {
         super();
@@ -145,18 +150,22 @@ export class RdbgClient extends EventEmitter {
         this.requireAttached('getTargets');
         const body = codec.encodeGetTargets(this.debugUiId, this._infobaseAlias);
         const xml = await this.transport.send('getDbgTargets', body);
-        return codec.decodeTargets(xml);
+        const targets = codec.decodeTargets(xml);
+        for (const t of targets) {
+            this._seanceMap.set(t.id, t.seanceId);
+        }
+        return targets;
     }
 
-    async attachTargets(targetIds: string[]): Promise<void> {
+    async attachTargets(targets: RdbgTargetRef[]): Promise<void> {
         this.requireAttached('attachTargets');
-        const body = codec.encodeAttachTargets(this.debugUiId, targetIds, true, this._infobaseAlias);
+        const body = codec.encodeAttachTargets(this.debugUiId, targets, true, this._infobaseAlias);
         await this.transport.send('attachDbgTargetsRequest', body);
     }
 
-    async detachTargets(targetIds: string[]): Promise<void> {
+    async detachTargets(targets: RdbgTargetRef[]): Promise<void> {
         this.requireAttached('detachTargets');
-        const body = codec.encodeAttachTargets(this.debugUiId, targetIds, false, this._infobaseAlias);
+        const body = codec.encodeAttachTargets(this.debugUiId, targets, false, this._infobaseAlias);
         await this.transport.send('detachDbgTargetsRequest', body);
     }
 
@@ -184,13 +193,15 @@ export class RdbgClient extends EventEmitter {
 
     async step(targetId: string, action: 'into' | 'over' | 'out'): Promise<void> {
         this.requireAttached('step');
-        const body = codec.encodeStep(this.debugUiId, targetId, action, this._infobaseAlias);
+        const seanceId = this._seanceMap.get(targetId) ?? '';
+        const body = codec.encodeStep(this.debugUiId, targetId, seanceId, action, this._infobaseAlias);
         await this.transport.send('stepRequest', body);
     }
 
     async continue(targetId: string): Promise<void> {
         this.requireAttached('continue');
-        const body = codec.encodeContinue(this.debugUiId, targetId, this._infobaseAlias);
+        const seanceId = this._seanceMap.get(targetId) ?? '';
+        const body = codec.encodeContinue(this.debugUiId, targetId, seanceId, this._infobaseAlias);
         await this.transport.send('continueRequest', body);
     }
 
@@ -200,14 +211,16 @@ export class RdbgClient extends EventEmitter {
 
     async getCallStack(targetId: string): Promise<RdbgCallStackItem[]> {
         this.requireAttached('getCallStack');
-        const body = codec.encodeGetCallStack(this.debugUiId, targetId, this._infobaseAlias);
+        const seanceId = this._seanceMap.get(targetId) ?? '';
+        const body = codec.encodeGetCallStack(this.debugUiId, targetId, seanceId, this._infobaseAlias);
         const xml = await this.transport.send('getCallStackRequest', body);
         return codec.decodeCallStack(xml);
     }
 
     async getLocalVariables(targetId: string, frameIndex: number): Promise<RdbgVariable[]> {
         this.requireAttached('getLocalVariables');
-        const body = codec.encodeEvalLocalVariables(this.debugUiId, targetId, frameIndex, this._infobaseAlias);
+        const seanceId = this._seanceMap.get(targetId) ?? '';
+        const body = codec.encodeEvalLocalVariables(this.debugUiId, targetId, seanceId, frameIndex, this._infobaseAlias);
         const xml = await this.transport.send('evalLocalVariablesRequest', body);
         return codec.decodeVariables(xml);
     }
@@ -218,7 +231,8 @@ export class RdbgClient extends EventEmitter {
         frameIndex: number
     ): Promise<RdbgEvalResult> {
         this.requireAttached('evaluate');
-        const body = codec.encodeEvaluate(this.debugUiId, targetId, expression, frameIndex, this._infobaseAlias);
+        const seanceId = this._seanceMap.get(targetId) ?? '';
+        const body = codec.encodeEvaluate(this.debugUiId, targetId, seanceId, expression, frameIndex, this._infobaseAlias);
         const xml = await this.transport.send('evaluateRequest', body);
         return codec.decodeEvalResult(xml);
     }
@@ -244,11 +258,20 @@ export class RdbgClient extends EventEmitter {
         }
     }
 
+    private _pollCount = 0;
     private async _poll(): Promise<void> {
         try {
             const body = codec.encodePing(this.debugUiId);
             const xml = await this.transport.send('pingDebugUI', body);
+            this._pollCount++;
             const events = codec.decodePingEvents(xml);
+
+            if (events.length > 0 || (xml && xml.trim().length > 0)) {
+                this.emit('log', `[poll #${this._pollCount}] events=${events.length} xmlLen=${xml.length} types=${events.map(e => e.type).join(',')}`);
+            }
+            if (this._pollCount % 30 === 1) {
+                this.emit('log', `[poll #${this._pollCount}] alive, xmlLen=${xml.length}`);
+            }
 
             for (const event of events) {
                 this._emitTypedEvent(event);
@@ -263,8 +286,9 @@ export class RdbgClient extends EventEmitter {
                 console.warn(`[RdbgClient] Poll warning (failure ${this._consecutiveFailures}/3): ${message}`);
             } else {
                 this.stopPolling();
+                const detail = err instanceof Error ? err.message : String(err);
                 const lostErr = new Error(
-                    `Lost connection to RDBG server after ${this._consecutiveFailures} consecutive failures`
+                    `Lost connection to RDBG server after ${this._consecutiveFailures} consecutive failures. Last error: ${detail}`
                 );
                 this.emit('error', lostErr);
             }
@@ -280,9 +304,11 @@ export class RdbgClient extends EventEmitter {
                 this.emit('continued', event);
                 break;
             case 'targetStarted':
+                this._seanceMap.set(event.target.id, event.target.seanceId);
                 this.emit('targetStarted', event);
                 break;
             case 'targetQuit':
+                this._seanceMap.delete(event.targetId);
                 this.emit('targetQuit', event);
                 break;
             case 'runtimeError':

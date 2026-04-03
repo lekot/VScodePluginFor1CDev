@@ -42,7 +42,7 @@ const DEF_ALIAS = 'DefAlias';
 
 /** Standard namespace declarations for the <request> root element. */
 const REQUEST_NS_ATTRS =
-  `xmlns="${NS_BASE}" xmlns:rdbg="${NS_RDBG}" xmlns:xsi="${NS_XSI}"`;
+  `xmlns="${NS_BASE}" xmlns:rdbg="${NS_RDBG}" xmlns:bp="http://v8.1c.ru/8.3/debugger/debugBreakpoints" xmlns:xsi="${NS_XSI}"`;
 
 // ---------------------------------------------------------------------------
 // Parser instance
@@ -86,24 +86,31 @@ function wrapRequest(xsiType: string, fields: string): string {
 ${fields}</request>`;
 }
 
-/** Serialize a module ID to rdbg: prefixed XML fragment. */
+/** Serialize a module ID to bp: prefixed XML fragment (BSLModuleIdInternal). */
 function moduleIdToXml(mid: RdbgModuleId, indent: string): string {
   const ext = mid.extensionName
-    ? `${indent}  <rdbg:extensionName>${escapeXml(mid.extensionName)}</rdbg:extensionName>\n`
+    ? `${indent}    <extensionName>${escapeXml(mid.extensionName)}</extensionName>\n`
     : '';
-  return `${indent}<rdbg:moduleID>\n` +
-    `${indent}  <rdbg:objectID>${escapeXml(mid.objectId)}</rdbg:objectID>\n` +
-    `${indent}  <rdbg:propertyID>${escapeXml(mid.propertyId)}</rdbg:propertyID>\n` +
+  return `${indent}<bp:id xsi:type="BSLModuleIdInternal">\n` +
+    `${indent}  <objectID>${escapeXml(mid.objectId)}</objectID>\n` +
+    `${indent}  <propertyID>${escapeXml(mid.propertyId)}</propertyID>\n` +
     ext +
-    `${indent}</rdbg:moduleID>\n`;
+    `${indent}</bp:id>\n`;
 }
 
-/** Serialize a target ID to rdbg: prefixed XML fragment. */
-function targetIdToXml(id: string, seanceId: string, indent: string): string {
-  return `${indent}<rdbg:targetID>\n` +
-    `${indent}  <rdbg:id>${escapeXml(id)}</rdbg:id>\n` +
-    `${indent}  <rdbg:seanceId>${escapeXml(seanceId)}</rdbg:seanceId>\n` +
+
+/** Serialize a target ID with xsi:type for step/continue operations (DebugTargetIdLight). */
+function targetIdTypedToXml(id: string, indent: string): string {
+  return `${indent}<rdbg:targetID xsi:type="DebugTargetIdLight">\n` +
+    `${indent}  <id>${escapeXml(id)}</id>\n` +
     `${indent}</rdbg:targetID>\n`;
+}
+
+/** Serialize a target ID as rdbg:id with xsi:type for getCallStack (DebugTargetIdLight). */
+function targetIdAsIdTypedToXml(id: string, indent: string): string {
+  return `${indent}<rdbg:id xsi:type="DebugTargetIdLight">\n` +
+    `${indent}  <id>${escapeXml(id)}</id>\n` +
+    `${indent}</rdbg:id>\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,8 +210,8 @@ export function encodePing(debugUiId: string): string {
 export function encodeGetTargets(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n`;
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
   return wrapRequest('rdbg:RDBGGetDbgTargetsRequest', fields);
 }
 
@@ -220,17 +227,18 @@ export function encodeSetBreakpoints(
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   let fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n`;
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
 
-  // TODO: verify wrapper element name — may be bpWorkspace or bpWorkspaceInternal
   for (const bp of bps) {
     fields +=
-      `  <rdbg:bpWorkspace>\n` +
-      `    <rdbg:breakpoint>\n` +
+      `  <rdbg:bpWorkspace xsi:type="bp:BPWorkspaceInternal">\n` +
+      `    <bp:moduleBPInfo>\n` +
       moduleIdToXml(bp.moduleId, '      ') +
-      `      <rdbg:lineNo>${bp.lineNo}</rdbg:lineNo>\n` +
-      `    </rdbg:breakpoint>\n` +
+      `      <bp:bpInfo>\n` +
+      `        <bp:line>${bp.lineNo}</bp:line>\n` +
+      `      </bp:bpInfo>\n` +
+      `    </bp:moduleBPInfo>\n` +
       `  </rdbg:bpWorkspace>\n`;
   }
 
@@ -245,6 +253,7 @@ export function encodeSetBreakpoints(
 export function encodeStep(
   debugUiId: string,
   targetId: string,
+  _seanceId: string,
   action: 'into' | 'over' | 'out',
   infobaseAlias?: string
 ): string {
@@ -255,10 +264,9 @@ export function encodeStep(
     out: 'StepOut',
   };
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    // TODO: targetID structure may need seanceId as well
-    targetIdToXml(targetId, '', '  ') +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    targetIdTypedToXml(targetId, '  ') +
     `  <rdbg:action>${escapeXml(actionMap[action])}</rdbg:action>\n`;
   return wrapRequest('rdbg:RDBGStepRequest', fields);
 }
@@ -271,13 +279,14 @@ export function encodeStep(
 export function encodeContinue(
   debugUiId: string,
   targetId: string,
+  _seanceId: string,
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    targetIdToXml(targetId, '', '  ') +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    targetIdTypedToXml(targetId, '  ') +
     `  <rdbg:action>Continue</rdbg:action>\n`; // TODO: may be "go", "resume", or numeric
   return wrapRequest('rdbg:RDBGStepRequest', fields);
 }
@@ -290,13 +299,14 @@ export function encodeContinue(
 export function encodeGetCallStack(
   debugUiId: string,
   targetId: string,
+  _seanceId: string,
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    targetIdToXml(targetId, '', '  ');
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    targetIdAsIdTypedToXml(targetId, '  ');
   return wrapRequest('rdbg:RDBGGetCallStackRequest', fields);
 }
 
@@ -308,14 +318,15 @@ export function encodeGetCallStack(
 export function encodeEvalLocalVariables(
   debugUiId: string,
   targetId: string,
+  _seanceId: string,
   frameIndex: number,
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    targetIdToXml(targetId, '', '  ') +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    targetIdTypedToXml(targetId, '  ') +
     `  <rdbg:callStackLevel>${frameIndex}</rdbg:callStackLevel>\n`; // TODO: verify field name
   return wrapRequest('rdbg:RDBGEvalLocalVariablesRequest', fields);
 }
@@ -328,18 +339,25 @@ export function encodeEvalLocalVariables(
 export function encodeEvaluate(
   debugUiId: string,
   targetId: string,
+  _seanceId: string,
   expression: string,
   frameIndex: number,
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    targetIdToXml(targetId, '', '  ') +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    targetIdTypedToXml(targetId, '  ') +
     `  <rdbg:expression>${escapeXml(expression)}</rdbg:expression>\n` +
     `  <rdbg:callStackLevel>${frameIndex}</rdbg:callStackLevel>\n`; // TODO: verify field name
   return wrapRequest('rdbg:RDBGEvalExprRequest', fields);
+}
+
+/** Target identifier carrying both id and seanceId for attach/detach operations. */
+export interface RdbgTargetRef {
+  id: string;
+  seanceId: string;
 }
 
 /**
@@ -349,19 +367,21 @@ export function encodeEvaluate(
  */
 export function encodeAttachTargets(
   debugUiId: string,
-  targetIds: string[],
+  targets: RdbgTargetRef[],
   attach: boolean,
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   let fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:attach>${attach}</rdbg:attach>\n`; // TODO: may be separate attach/detach commands
 
-  // TODO: verify structure — seanceId may also be required in targetID
-  for (const id of targetIds) {
-    fields += targetIdToXml(id, '', '  ');
+  for (const target of targets) {
+    fields +=
+      `  <rdbg:id>\n` +
+      `    <id>${escapeXml(target.id)}</id>\n` +
+      `  </rdbg:id>\n`;
   }
 
   return wrapRequest('rdbg:RDBGAttachDetachDebugTargetsRequest', fields);

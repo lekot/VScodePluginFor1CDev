@@ -121,6 +121,19 @@ export function buildInfobaseConfigImportArgs(
   return args;
 }
 
+export function buildInfobaseConfigApplyArgs(
+  connection: IbcmdOfflineConnection,
+  options?: { credentials?: IbcmdConfigCliCredentials; extension?: string },
+): string[] {
+  const args = ['infobase', 'config', 'apply'];
+  appendConnectionAuthData(args, connection, options?.credentials);
+  const ext = options?.extension?.trim();
+  if (ext) {
+    args.push(`--extension=${ext}`);
+  }
+  return args;
+}
+
 export function buildInfobaseConfigExportArgs(
   connection: IbcmdOfflineConnection,
   outPath: string,

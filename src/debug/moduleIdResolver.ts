@@ -46,7 +46,7 @@ const TOP_LEVEL_TYPE_FOLDERS = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// Module type → propertyId (numeric suffix as string)
+// Module type → propertyId (platform-constant UUID)
 // ---------------------------------------------------------------------------
 type ModuleKind =
   | 'ObjectModule'
@@ -54,17 +54,21 @@ type ModuleKind =
   | 'FormModule'
   | 'ValueManagerModule'
   | 'CommandModule'
-  | 'ManagerModule';
+  | 'ManagerModule'
+  | 'RecordSetModule';
 
+/**
+ * Platform-constant UUIDs for module propertyId in the RDBG debug protocol.
+ * Source: yukon39/bsl-debug-server ModulePropertyId.java (JAXB mapping).
+ */
 const PROPERTY_ID_MAP: Record<ModuleKind, string> = {
-  ObjectModule: '0',
-  CommonModule: '0',
-  FormModule: '0',
-  ValueManagerModule: '0',
-  CommandModule: '2',
-  // TODO: ManagerModule suffix may differ per metadata type
-  //   e.g. ChartOfCharacteristicTypes = 16, but 3 is the common default.
-  ManagerModule: '3',
+  ObjectModule: 'a637f77f-3840-441d-a1c3-699c8c5cb7e0',
+  CommonModule: 'd5963243-262e-4398-b4d7-fb16d06484f6',
+  FormModule: '32e087ab-1491-49b6-aba7-43571b41ac2b',
+  ValueManagerModule: '3e58c91f-9aaa-4f42-8999-4baf33907b75',
+  CommandModule: '078a6af8-d22c-4248-9c33-7e90075a3d2c',
+  ManagerModule: 'd1b64a2c-8078-4982-8190-8f81aefda192',
+  RecordSetModule: '9f36fd70-4bf4-47f6-b235-935f73aab43f',
 };
 
 // ---------------------------------------------------------------------------
@@ -267,12 +271,36 @@ async function readUuidFromXml(xmlFilePath: string): Promise<string | undefined>
  * Reads the metadata XML to get the object UUID.
  * Returns undefined if the path cannot be resolved.
  */
+/**
+ * Attempt to detect configuration root from the BSL file path itself.
+ * Looks for a known type folder (Catalogs, Documents, etc.) in the path
+ * and returns everything before it as the root.
+ */
+function detectConfigRoot(bslFilePath: string): string | undefined {
+  const norm = bslFilePath.replace(/\\/g, '/');
+  for (const folder of TOP_LEVEL_TYPE_FOLDERS) {
+    const marker = `/${folder}/`;
+    const idx = norm.indexOf(marker);
+    if (idx >= 0) {
+      return norm.slice(0, idx);
+    }
+  }
+  return undefined;
+}
+
 export async function resolveModuleId(
   bslFilePath: string,
   workspaceRoot: string
 ): Promise<ModuleIdResolveResult | undefined> {
   try {
-    const descriptor = parseBslPath(bslFilePath, workspaceRoot);
+    let descriptor = parseBslPath(bslFilePath, workspaceRoot);
+    // Fallback: detect config root from path structure
+    if (!descriptor) {
+      const detected = detectConfigRoot(bslFilePath);
+      if (detected) {
+        descriptor = parseBslPath(bslFilePath, detected);
+      }
+    }
     if (!descriptor) {
       return undefined;
     }

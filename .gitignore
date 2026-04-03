@@ -56,3 +56,4 @@ suite-report-core.json
 /FormatSamples/uh1/
 scripts/va-features/va.epf
 scripts/rdbg-*.mjs
+/FormatSamples/empty_conf_reexport/

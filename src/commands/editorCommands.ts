@@ -13,6 +13,7 @@ import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDial
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import { appendIbcmdOutputLine, showIbcmdInfobaseOutputChannel } from '../infobases/infobaseConfigCommands';
+import { startDebugging } from '../debug/debugLauncher';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
@@ -339,6 +340,27 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const startDebuggingCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.startDebugging',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target) {
+        vscode.window.showWarningMessage('Выберите узел конфигурации в дереве метаданных.');
+        return;
+      }
+      if (!state.bindingManager || !state.infobaseStorage || !state.treeDataProvider) {
+        vscode.window.showErrorMessage('Отладка недоступна: не инициализированы зависимости.');
+        return;
+      }
+      await startDebugging({
+        node: target,
+        bindingManager: state.bindingManager,
+        infobaseStorage: state.infobaseStorage,
+        treeDataProvider: state.treeDataProvider,
+      });
+    }
+  );
+
   return [
     showPropertiesCommand,
     openXMLCommand,
@@ -349,5 +371,6 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     saveRightsEditorCommand,
     validateCurrentXmlCommand,
     editSubsystemCompositionCommand,
+    startDebuggingCommand,
   ];
 }

@@ -22,7 +22,7 @@ export class BslDebugConfigProvider implements vscode.DebugConfigurationProvider
             cfg.pingIntervalMs = 1000;
         }
         if (cfg.connectTimeoutMs === undefined) {
-            cfg.connectTimeoutMs = 5000;
+            cfg.connectTimeoutMs = 0;
         }
 
         // Validate port

@@ -3,7 +3,7 @@
  * Does not depend on VS Code API or rdbgTypes.
  */
 
-const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 0;
 
 export class RdbgTransport {
     private readonly baseUrl: string;
@@ -30,15 +30,17 @@ export class RdbgTransport {
     async send(command: string, body: string): Promise<string> {
         const url = `${this.baseUrl}/e1crdbg/rdbg?cmd=${command}&dbgui=${this.debugUiId}`;
 
-        let signal: AbortSignal;
+        let signal: AbortSignal | undefined;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
-        if (typeof AbortSignal.timeout === 'function') {
-            signal = AbortSignal.timeout(this.timeoutMs);
-        } else {
-            const controller = new AbortController();
-            timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
-            signal = controller.signal;
+        if (this.timeoutMs > 0) {
+            if (typeof AbortSignal.timeout === 'function') {
+                signal = AbortSignal.timeout(this.timeoutMs);
+            } else {
+                const controller = new AbortController();
+                timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
+                signal = controller.signal;
+            }
         }
 
         try {
@@ -53,7 +55,7 @@ export class RdbgTransport {
                         'Accept-Encoding': 'gzip',
                     },
                     body,
-                    signal,
+                    ...(signal ? { signal } : {}),
                 });
             } catch (err: unknown) {
                 const isAbort =
