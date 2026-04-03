@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<request xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:rdbg="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="rdbg:RDBGSetBreakpointsRequest">
+  <rdbg:idOfDebuggerUI>e2dfba92-4a6e-4e27-ab9b-832483e29186</rdbg:idOfDebuggerUI>
+  <rdbg:infoBaseAlias>DefAlias</rdbg:infoBaseAlias>
+  <rdbg:bpWorkspace>
+    <rdbg:breakpoint>
+      <rdbg:moduleID>
+        <rdbg:objectID>fc59acc3-f1f7-4e3f-96da-e580f2c5a88f</rdbg:objectID>
+        <rdbg:propertyID>0</rdbg:propertyID>
+      </rdbg:moduleID>
+      <rdbg:lineNo>3</rdbg:lineNo>
+    </rdbg:breakpoint>
+  </rdbg:bpWorkspace>
+</request>
