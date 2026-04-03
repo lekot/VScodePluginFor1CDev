@@ -559,7 +559,8 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
 
   return results.flatMap((raw): RdbgEvent[] => {
     const r = raw as Record<string, unknown>;
-    const xsiType = String(r['@_type'] ?? r['type'] ?? '');
+    const rawType = String(r['@_type'] ?? r['type'] ?? '');
+    const xsiType = rawType.includes(':') ? rawType.split(':').pop()! : rawType;
     const targetIdEl = (r['targetID'] ?? r['id'] ?? {}) as Record<string, unknown>;
     const targetInfo = parseTargetId(targetIdEl);
     const targetId = targetInfo.id;

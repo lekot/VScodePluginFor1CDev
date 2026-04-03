@@ -297,6 +297,9 @@ export class RdbgClient extends EventEmitter {
 
             if (events.length > 0 || (xml && xml.trim().length > 0)) {
                 this.emit('log', `[poll #${this._pollCount}] events=${events.length} xmlLen=${xml.length} types=${events.map(e => e.type).join(',')}`);
+                if (this._pollCount <= 5 && xml.length > 0) {
+                    this.emit('log', `[poll #${this._pollCount}] RAW XML: ${xml.slice(0, 500)}`);
+                }
             }
             if (this._pollCount % 30 === 1) {
                 this.emit('log', `[poll #${this._pollCount}] alive, xmlLen=${xml.length}`);
