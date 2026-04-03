@@ -114,12 +114,29 @@ export class RdbgClient extends EventEmitter {
         this._state = 'attaching';
         try {
             const body = codec.encodeAttachDebugUI(this.debugUiId, infobaseAlias);
-            await this.transport.send('attachDebugUI', body);
+            const responseText = await this.transport.send('attachDebugUI', body);
+            if (responseText.includes('ibInDebug')) {
+                this.emit('log', 'WARNING: attachDebugUI returned ibInDebug — another debugger is already connected');
+            }
             this._infobaseAlias = infobaseAlias;
             this._state = 'attached';
         } catch (err) {
             this._state = 'disconnected';
             throw err;
+        }
+
+        try {
+            await this.initSettings(infobaseAlias);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.emit('log', `WARNING: initSettings failed (non-fatal): ${message}`);
+        }
+
+        try {
+            await this.setAutoAttachSettings(infobaseAlias);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.emit('log', `WARNING: setAutoAttachSettings failed (non-fatal): ${message}`);
         }
     }
 
@@ -140,6 +157,18 @@ export class RdbgClient extends EventEmitter {
             this._infobaseAlias = undefined;
             this._state = 'disconnected';
         }
+    }
+
+    async initSettings(infobaseAlias?: string): Promise<void> {
+        this.requireAttached('initSettings');
+        const body = codec.encodeInitSettings(this.debugUiId, infobaseAlias);
+        await this.transport.send('initSettings', body);
+    }
+
+    async setAutoAttachSettings(infobaseAlias?: string): Promise<void> {
+        this.requireAttached('setAutoAttachSettings');
+        const body = codec.encodeSetAutoAttachSettings(this.debugUiId, infobaseAlias);
+        await this.transport.send('setAutoAttachSettings', body);
     }
 
     // -----------------------------------------------------------------------
@@ -275,6 +304,21 @@ export class RdbgClient extends EventEmitter {
 
             for (const event of events) {
                 this._emitTypedEvent(event);
+            }
+
+            // Periodic target discovery
+            if (this._pollCount % 5 === 0 && this._state === 'attached') {
+                try {
+                    const targets = await this.getTargets();
+                    for (const t of targets) {
+                        if (!this._seanceMap.has(t.id)) {
+                            this._seanceMap.set(t.id, t.seanceId);
+                            this.emit('targetStarted', { type: 'targetStarted', target: t });
+                        }
+                    }
+                } catch {
+                    // non-fatal — target discovery is best-effort
+                }
             }
 
             this._consecutiveFailures = 0;

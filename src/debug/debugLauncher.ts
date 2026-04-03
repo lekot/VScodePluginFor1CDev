@@ -177,7 +177,7 @@ export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
     name: 'Отладка 1С',
     host: 'localhost',
     port: port,
-    infobaseAlias: matchedBinding.ibcmdExtensionName ?? undefined,
+    infobaseAlias: undefined,
     autoAttachTargets: true,
     _dbgsPort: port,
     workspaceRoot: configPath ?? node.filePath,

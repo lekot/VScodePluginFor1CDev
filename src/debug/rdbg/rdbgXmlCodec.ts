@@ -204,6 +204,32 @@ export function encodePing(debugUiId: string): string {
 }
 
 /**
+ * InitSettings — send initial debug settings to the server.
+ * xsi:type="rdbg:RDBGSetInitialDebugSettingsRequest"
+ */
+export function encodeInitSettings(debugUiId: string, infobaseAlias?: string): string {
+  const alias = infobaseAlias ?? DEF_ALIAS;
+  const fields =
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:data xsi:type="HTTPServerInitialDebugSettingsData"><autoAttachToNewTargets>true</autoAttachToNewTargets></rdbg:data>\n`;
+  return wrapRequest('rdbg:RDBGSetInitialDebugSettingsRequest', fields);
+}
+
+/**
+ * SetAutoAttachSettings — configure auto-attach behaviour for new targets.
+ * xsi:type="rdbg:RDBGSetAutoAttachSettingsRequest"
+ */
+export function encodeSetAutoAttachSettings(debugUiId: string, infobaseAlias?: string): string {
+  const alias = infobaseAlias ?? DEF_ALIAS;
+  const fields =
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:autoAttachToNewTargets>true</rdbg:autoAttachToNewTargets>\n`;
+  return wrapRequest('rdbg:RDBGSetAutoAttachSettingsRequest', fields);
+}
+
+/**
  * GetTargets — retrieve the list of currently attached debug targets.
  * xsi:type="rdbg:RDBGGetDbgTargetsRequest"
  */

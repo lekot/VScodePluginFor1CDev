@@ -31,6 +31,7 @@ export class BslDebugSession extends DebugSession {
     private _nextThreadId: number = 1;
     private _lastError: RdbgRuntimeError | undefined;
     private _workspaceRoot: string = '';
+    private readonly _knownBreakpoints: Map<string, { moduleId: { objectId: string; propertyId: string }; lineNos: number[] }> = new Map();
 
     constructor() {
         super();
@@ -52,7 +53,6 @@ export class BslDebugSession extends DebugSession {
         response.body.supportsExceptionInfoRequest = true;
 
         this.sendResponse(response);
-        this.sendEvent(new InitializedEvent());
     }
 
     // -------------------------------------------------------------------------
@@ -108,6 +108,7 @@ export class BslDebugSession extends DebugSession {
             this._workspaceRoot = String((cfg as Record<string, unknown>)['workspaceRoot']);
         }
 
+        this.sendEvent(new InitializedEvent());
         this.sendResponse(response);
     }
 
@@ -176,6 +177,13 @@ export class BslDebugSession extends DebugSession {
                 moduleId,
                 lineNo: bp.line,
             }));
+
+            if (resolved) {
+                this._knownBreakpoints.set(sourcePath, {
+                    moduleId: resolved.moduleId,
+                    lineNos: requestedBps.map(bp => bp.line),
+                });
+            }
 
             const confirmed = await this._client.setBreakpoints(rdbgBps);
 
@@ -497,7 +505,10 @@ export class BslDebugSession extends DebugSession {
             this.sendEvent(new ThreadEvent('started', threadId));
             // Auto-attach new target so breakpoints fire
             void this._client?.attachTargets([{ id: e.target.id, seanceId: e.target.seanceId ?? '' }])
-                .then(() => this.sendEvent(new OutputEvent(`BSL Debug: target attached OK\n`, 'console')))
+                .then(() => {
+                    this.sendEvent(new OutputEvent(`BSL Debug: target attached OK\n`, 'console'));
+                    return this._reapplyBreakpoints();
+                })
                 .catch((err) => this.sendEvent(new OutputEvent(`BSL Debug: target attach FAILED: ${err}\n`, 'stderr')));
         });
 
@@ -528,5 +539,22 @@ export class BslDebugSession extends DebugSession {
         client.on('log', (msg: string) => {
             this.sendEvent(new OutputEvent(`BSL Debug: ${msg}\n`, 'console'));
         });
+    }
+
+    private async _reapplyBreakpoints(): Promise<void> {
+        if (!this._client || this._knownBreakpoints.size === 0) return;
+        for (const [sourcePath, entry] of this._knownBreakpoints) {
+            try {
+                const rdbgBps = entry.lineNos.map(lineNo => ({
+                    moduleId: entry.moduleId,
+                    lineNo,
+                }));
+                await this._client.setBreakpoints(rdbgBps);
+                this.sendEvent(new OutputEvent(`BSL Debug: re-set ${rdbgBps.length} breakpoint(s) for ${sourcePath}\n`, 'console'));
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                this.sendEvent(new OutputEvent(`BSL Debug: failed to re-set breakpoints for ${sourcePath}: ${msg}\n`, 'stderr'));
+            }
+        }
     }
 }
