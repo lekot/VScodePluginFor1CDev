@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 import { ExtensionState } from '../state/extensionState';
 import { MetadataType, TreeNode } from '../models/treeNode';
@@ -78,6 +79,16 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         return;
       }
       try {
+        // Create module file on disk if it doesn't exist yet
+        const fileExists = await fs.promises.access(fp).then(() => true, () => false);
+        if (!fileExists) {
+          await fs.promises.mkdir(path.dirname(fp), { recursive: true });
+          await fs.promises.writeFile(fp, '', 'utf-8');
+          Logger.info(`Created module file: ${fp}`);
+          if (target.properties.isVirtual) {
+            target.properties.isVirtual = false;
+          }
+        }
         Logger.info(`Opening BSL module: ${fp}`);
         await vscode.window.showTextDocument(vscode.Uri.file(fp));
       } catch (err) {
