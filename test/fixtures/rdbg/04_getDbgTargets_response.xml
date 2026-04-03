@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?><?xml-stylesheet type="text/xsl" href="/e1csys/vrscore/exception.xslt?sysver=8.3.27.1859"?><exception xmlns="http://v8.1c.ru/8.2/virtual-resource-system" xmlns:d1p1="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="d1p1:Exception" clsid="5372caa7-07b9-4767-9776-53b510236d93"><d1p1:descr>Ошибка преобразования данных XDTO:
+НачалоСвойства: {http://v8.1c.ru/8.3/debugger/debugBaseData}idOfDebuggerUI	Форма: Элемент	Тип: {http://www.w3.org/2001/XMLSchema}anyType</d1p1:descr><d1p1:data>77u/ew0KezUzNzJjYWE3LTA3YjktNDc2Ny05Nzc2LTUzYjUxMDIzNmQ5Mywi0J7R
+iNC40LHQutCwINC/0YDQtdC+0LHRgNCw0LfQvtCy0LDQvdC40Y8g0LTQsNC90L3R
+i9GFIFhEVE86DQrQndCw0YfQsNC70L7QodCy0L7QudGB0YLQstCwOiB7aHR0cDov
+L3Y4LjFjLnJ1LzguMy9kZWJ1Z2dlci9kZWJ1Z0Jhc2VEYXRhfWlkT2ZEZWJ1Z2dl
+clVJCdCk0L7RgNC80LA6INCt0LvQtdC80LXQvdGCCdCi0LjQvzoge2h0dHA6Ly93
+d3cudzMub3JnLzIwMDEvWE1MU2NoZW1hfWFueVR5cGUiLA0KezAwMDAwMDAwLTAw
+MDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMH0sImNvcmU4My5kbGw6MHgwMDAwMDAw
+MDAwMDg1OTI4IGRiZ3Rnc3J2LmRsbDoweDAwMDAwMDAwMDAwNjJFODAgZGJndGdz
+cnYuZGxsOjB4MDAwMDAwMDAwMDA0RDQ4MCBkYmd0Z3Nydi5kbGw6MHgwMDAwMDAw
+MDAwMDYxM0NGIGRiZ3MuZXhlOjB4MDAwMDAwMDAwMDAwRjZGMyBkYmdzLmV4ZTow
+eDAwMDAwMDAwMDAwMEVDRkYgY29yZTgzLmRsbDoweDAwMDAwMDAwMDAyQ0RCN0Ig
+Y29yZTgzLmRsbDoweDAwMDAwMDAwMDAyQ0RCQUMgY29yZTgzLmRsbDoweDAwMDAw
+MDAwMDAxODYwNUYgdW5rbm93bjoweDAwMDAwMDAwMDAwMDAwMDAgdW5rbm93bjow
+eDAwMDAwMDAwMDAwMDAwMDAgS0VSTkVMMzIuRExMOjB4MDAwMDAwMDAwMDAwMDAw
+MCB1bmtub3duOjB4MDAwMDAwMDAwMDAwMDAwMCAiLCIwMDAwMDAwMDAwMDAwMDAw
+MDAwMDAwMDAwMCIsMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAw
+fSwxMX0=</d1p1:data></exception>

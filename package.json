@@ -812,6 +812,68 @@
         "mac": "cmd+s",
         "when": "activeWebviewPanelId == '1c-rights-editor'"
       }
+    ],
+    "breakpoints": [
+      {
+        "language": "bsl"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "bsl",
+        "label": "1C BSL Debugger",
+        "languages": [
+          "bsl"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Debug server hostname",
+                "default": "localhost"
+              },
+              "port": {
+                "type": "number",
+                "description": "Debug server port",
+                "default": 1550
+              },
+              "infobaseAlias": {
+                "type": "string",
+                "description": "Infobase alias filter"
+              },
+              "autoAttachTargets": {
+                "type": "boolean",
+                "description": "Auto-attach to all debug targets",
+                "default": true
+              },
+              "pingIntervalMs": {
+                "type": "number",
+                "description": "Event polling interval (ms)",
+                "default": 1000
+              },
+              "connectTimeoutMs": {
+                "type": "number",
+                "description": "HTTP request timeout (ms)",
+                "default": 5000
+              }
+            }
+          }
+        },
+        "configurationSnippets": [
+          {
+            "label": "BSL: Attach to 1C Debug Server",
+            "description": "Attach to a running 1C:Enterprise debug server",
+            "body": {
+              "type": "bsl",
+              "request": "attach",
+              "name": "Attach to 1C",
+              "host": "localhost",
+              "port": 1550
+            }
+          }
+        ]
+      }
     ]
   },
   "scripts": {
@@ -853,6 +915,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@vscode/debugadapter": "^1.68.0",
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3"
   },

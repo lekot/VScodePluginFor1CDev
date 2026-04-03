@@ -5,6 +5,7 @@ import { initDesignerTemplateRepository } from './services/designerTemplateRepos
 import { ExtensionState } from './state/extensionState';
 import { createMetadataTreeLifecycle } from './extension/metadataTreeLifecycle';
 import { registerExtensionWorkspace } from './extension/extensionWorkspaceSetup';
+import { registerDebugAdapter } from './debug';
 
 const extensionState = new ExtensionState();
 
@@ -20,6 +21,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const lifecycle = createMetadataTreeLifecycle(extensionState);
     registerExtensionWorkspace(context, extensionState, lifecycle);
+    registerDebugAdapter(context);
 
     if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
       lifecycle.loadMetadataTree().catch((error) => {

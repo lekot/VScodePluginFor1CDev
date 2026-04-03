@@ -1,0 +1,1 @@
+{"#exception":"{http://v8.1c.ru/8.2/virtual-resource-system}Exception","exception":{"clsid":"580392e6-ba49-4280-ac67-fcd6f2180121","reason":400,"descr":"Ошибка при выполнении запроса POST к ресурсу /e1crdbg/rdbg:\nНе указан идентификатор UI+ - части отладчика"}}
