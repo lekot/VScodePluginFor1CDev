@@ -129,19 +129,33 @@ function parseXml(xml: string): Record<string, unknown> {
 
 /** Parse a module ID element from the parsed XML (after removeNSPrefix). */
 function parseModuleId(raw: Record<string, unknown>): RdbgModuleId {
+  const version = raw['version'] !== undefined ? String(raw['version']) : undefined;
   return {
     objectId: String(raw['objectID'] ?? raw['objectId'] ?? ''),
     propertyId: String(raw['propertyID'] ?? raw['propertyId'] ?? ''),
     extensionName: raw['extensionName'] as string | undefined,
+    version,
   };
 }
 
 /** Parse a targetID element (used in events and call stack). */
-function parseTargetId(raw: Record<string, unknown>): { id: string; seanceId: string } {
+function parseTargetId(raw: Record<string, unknown>): RdbgTargetInfo {
   return {
     id: String(raw['id'] ?? ''),
     seanceId: String(raw['seanceId'] ?? ''),
+    userName: String(raw['userName'] ?? ''),
+    targetType: raw['targetType'] !== undefined ? String(raw['targetType']) : 0,
+    infobaseAlias: String(raw['infoBaseAlias'] ?? raw['infobaseAlias'] ?? DEF_ALIAS),
   };
+}
+
+/** Decode a base64-encoded UTF-8 string from the server. */
+function decodeBase64Utf8(s: string): string {
+  try {
+    return Buffer.from(s, 'base64').toString('utf8');
+  } catch {
+    return s;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,29 +517,50 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
     const r = raw as Record<string, unknown>;
     const xsiType = String(r['@_type'] ?? r['type'] ?? '');
     const targetIdEl = (r['targetID'] ?? r['id'] ?? {}) as Record<string, unknown>;
-    const { id: targetId } = parseTargetId(targetIdEl);
+    const targetInfo = parseTargetId(targetIdEl);
+    const targetId = targetInfo.id;
 
     switch (xsiType) {
       case 'DBGUIExtCmdInfoCallStackFormed': {
-        const reason: RdbgStoppedEvent['reason'] = r['rteInfo'] ? 'exception' : 'breakpoint';
+        // stopByBP: true → breakpoint, false → step; rteInfo present → exception
+        let reason: RdbgStoppedEvent['reason'];
+        if (r['rteInfo']) {
+          reason = 'exception';
+        } else if (String(r['stopByBP']) === 'true') {
+          reason = 'breakpoint';
+        } else {
+          reason = 'step';
+        }
+
+        // callStack may be a single element or an array
+        const callStackRaw = toArray(r['callStack']);
+        const callStack = callStackRaw.map((cs) => {
+          const csEl = cs as Record<string, unknown>;
+          const moduleRaw = (csEl['moduleID'] ?? csEl['moduleId'] ?? {}) as Record<string, unknown>;
+          const presentationRaw = String(csEl['presentation'] ?? '');
+          // presentation is base64-encoded UTF-8
+          const presentation = presentationRaw ? decodeBase64Utf8(presentationRaw) : '';
+          return {
+            moduleId: parseModuleId(moduleRaw),
+            lineNo: Number(csEl['lineNo'] ?? 0),
+            presentation,
+          };
+        });
+
         return [{
           type: 'stopped',
           targetId,
           reason,
+          callStack: callStack.length > 0 ? callStack : undefined,
         }];
       }
 
       case 'DBGUIExtCmdInfoStarted': {
         const tEl = (r['targetID'] ?? {}) as Record<string, unknown>;
+        const target = parseTargetId(tEl);
         return [{
           type: 'targetStarted',
-          target: {
-            id: String(tEl['id'] ?? targetId),
-            seanceId: String(tEl['seanceId'] ?? ''),
-            userName: String(r['userName'] ?? ''),
-            targetType: Number(r['targetType'] ?? 0),
-            infobaseAlias: String(r['infoBaseAlias'] ?? DEF_ALIAS),
-          },
+          target,
         }];
       }
 

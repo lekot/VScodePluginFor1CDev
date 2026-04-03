@@ -3,13 +3,14 @@ export interface RdbgModuleId {
   objectId: string;        // UUID of the metadata object
   propertyId: string;      // UUID of the module type (ObjectModule, ManagerModule, etc.)
   extensionName?: string;  // extension name (if the module belongs to an extension)
+  version?: string;        // module version hash (present in callStack events)
 }
 
 export interface RdbgTargetInfo {
   id: string;
   seanceId: string;
   userName: string;
-  targetType: number;
+  targetType: string | number;  // "Client", "Server", etc. or numeric
   infobaseAlias: string;
 }
 

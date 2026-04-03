@@ -4,6 +4,7 @@ import {
   RdbgBreakpointRequest,
   RdbgBreakpoint,
   RdbgEvalResult,
+  RdbgCallStackItem,
 } from './rdbgTypes';
 
 export interface RdbgStoppedEvent {
@@ -11,6 +12,7 @@ export interface RdbgStoppedEvent {
   targetId: string;
   reason: 'breakpoint' | 'step' | 'exception' | 'entry';
   error?: RdbgRuntimeError;
+  callStack?: RdbgCallStackItem[];
 }
 
 export interface RdbgContinuedEvent {
