@@ -189,13 +189,13 @@ export class RdbgClient extends EventEmitter {
     async attachTargets(targets: RdbgTargetRef[]): Promise<void> {
         this.requireAttached('attachTargets');
         const body = codec.encodeAttachTargets(this.debugUiId, targets, true, this._infobaseAlias);
-        await this.transport.send('attachDbgTargetsRequest', body);
+        await this.transport.send('attachDetachDbgTargets', body);
     }
 
     async detachTargets(targets: RdbgTargetRef[]): Promise<void> {
         this.requireAttached('detachTargets');
         const body = codec.encodeAttachTargets(this.debugUiId, targets, false, this._infobaseAlias);
-        await this.transport.send('detachDbgTargetsRequest', body);
+        await this.transport.send('attachDetachDbgTargets', body);
     }
 
     // -----------------------------------------------------------------------
