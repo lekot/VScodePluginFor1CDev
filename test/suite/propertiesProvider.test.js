@@ -1,4 +1,5 @@
 "use strict";
+const path = require("path");
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -47,15 +48,15 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
         mockContext = {
             subscriptions: [],
             extensionPath: '',
-            extensionUri: vscode.Uri.file(''),
+            extensionUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
             globalState: {},
             workspaceState: {},
             secrets: {},
             storageUri: undefined,
             storagePath: undefined,
-            globalStorageUri: vscode.Uri.file(''),
+            globalStorageUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
             globalStoragePath: '',
-            logUri: vscode.Uri.file(''),
+            logUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
             logPath: '',
             extensionMode: vscode.ExtensionMode.Test,
             extension: {},

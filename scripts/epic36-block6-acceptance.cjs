@@ -76,11 +76,17 @@ function discoverControlForms(rootDir) {
     return result;
   }
 
+  const MAX_SCAN_FILES = 5000;
+  let scanned = 0;
+
   const stack = [rootDir];
-  while (stack.length > 0) {
+  while (stack.length > 0 && scanned < MAX_SCAN_FILES) {
     const current = stack.pop();
     const entries = fs.readdirSync(current, { withFileTypes: true });
     for (const entry of entries) {
+      if (scanned >= MAX_SCAN_FILES) {
+        break;
+      }
       const fullPath = path.join(current, entry.name);
       if (entry.isDirectory()) {
         stack.push(fullPath);
@@ -89,6 +95,7 @@ function discoverControlForms(rootDir) {
       if (!entry.isFile()) {
         continue;
       }
+      scanned++;
       if (!entry.name.toLowerCase().endsWith('.xml')) {
         continue;
       }

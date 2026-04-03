@@ -108,6 +108,8 @@ export const coreSuiteFiles: string[] = [
   'suite/typeFormatterAndFilterState.test.js',
   'suite/configurationXmlUpdater.test.js',
   'suite/extensionSupport.test.js',
+  'suite/ibcmdXmlPreflightService.test.js',
+  'suite/formTreePreservation.test.js',
   'suite/designerTemplateServices.test.js',
   'suite/servicesCoverage.test.js',
   'suite/fixtureMatrix.test.js',

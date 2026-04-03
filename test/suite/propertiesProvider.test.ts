@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { PropertiesProvider } from '../../src/providers/propertiesProvider';
@@ -16,15 +17,15 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
     mockContext = {
       subscriptions: [],
       extensionPath: '',
-      extensionUri: vscode.Uri.file(''),
+      extensionUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       globalState: {} as any,
       workspaceState: {} as any,
       secrets: {} as any,
       storageUri: undefined,
       storagePath: undefined,
-      globalStorageUri: vscode.Uri.file(''),
+      globalStorageUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       globalStoragePath: '',
-      logUri: vscode.Uri.file(''),
+      logUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       logPath: '',
       extensionMode: vscode.ExtensionMode.Test,
       extension: {} as any,
@@ -442,15 +443,15 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
     mockContext = {
       subscriptions: [],
       extensionPath: '',
-      extensionUri: vscode.Uri.file(''),
+      extensionUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       globalState: {} as any,
       workspaceState: {} as any,
       secrets: {} as any,
       storageUri: undefined,
       storagePath: undefined,
-      globalStorageUri: vscode.Uri.file(''),
+      globalStorageUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       globalStoragePath: '',
-      logUri: vscode.Uri.file(''),
+      logUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
       logPath: '',
       extensionMode: vscode.ExtensionMode.Test,
       extension: {} as any,

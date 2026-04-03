@@ -1,25 +1,27 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 /** Minimal `ExtensionContext` for `RolesRightsEditorProvider` core tests. */
 export function createFakeExtensionContext(): vscode.ExtensionContext {
+  const extensionRoot = vscode.Uri.file(path.resolve(__dirname, '..', '..'));
   return {
     subscriptions: [] as vscode.Disposable[],
-    extensionPath: '',
-    extensionUri: vscode.Uri.file(''),
+    extensionPath: extensionRoot.fsPath,
+    extensionUri: extensionRoot,
     globalState: {} as vscode.Memento,
     workspaceState: {} as vscode.Memento,
     secrets: {} as vscode.SecretStorage,
     storageUri: undefined,
     storagePath: undefined,
-    globalStorageUri: vscode.Uri.file(''),
-    globalStoragePath: '',
-    logUri: vscode.Uri.file(''),
-    logPath: '',
+    globalStorageUri: extensionRoot,
+    globalStoragePath: extensionRoot.fsPath,
+    logUri: extensionRoot,
+    logPath: extensionRoot.fsPath,
     extensionMode: vscode.ExtensionMode.Test,
     extension: {} as vscode.Extension<unknown>,
     environmentVariableCollection: {} as vscode.EnvironmentVariableCollection,
     languageModelAccessInformation: {} as vscode.LanguageModelAccessInformation,
-    asAbsolutePath: (p: string) => p,
+    asAbsolutePath: (p: string) => path.resolve(extensionRoot.fsPath, p),
   } as vscode.ExtensionContext;
 }
 
