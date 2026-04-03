@@ -115,6 +115,7 @@ export class RdbgClient extends EventEmitter {
         try {
             const body = codec.encodeAttachDebugUI(this.debugUiId, infobaseAlias);
             const responseText = await this.transport.send('attachDebugUI', body);
+            this.emit('log', `[attachDebugUI] RESPONSE: ${responseText.slice(0, 300)}`);
             if (responseText.includes('ibInDebug')) {
                 this.emit('log', 'WARNING: attachDebugUI returned ibInDebug — another debugger is already connected');
             }
@@ -189,7 +190,9 @@ export class RdbgClient extends EventEmitter {
     async attachTargets(targets: RdbgTargetRef[]): Promise<void> {
         this.requireAttached('attachTargets');
         const body = codec.encodeAttachTargets(this.debugUiId, targets, true, this._infobaseAlias);
-        await this.transport.send('attachDetachDbgTargets', body);
+        this.emit('log', `[attachTargets] REQUEST: ${body.slice(0, 500)}`);
+        const xml = await this.transport.send('attachDetachDbgTargets', body);
+        this.emit('log', `[attachTargets] RESPONSE: ${xml.slice(0, 300)}`);
     }
 
     async detachTargets(targets: RdbgTargetRef[]): Promise<void> {
@@ -205,8 +208,12 @@ export class RdbgClient extends EventEmitter {
     async setBreakpoints(bps: RdbgBreakpointRequest[]): Promise<RdbgBreakpoint[]> {
         this.requireAttached('setBreakpoints');
         const body = codec.encodeSetBreakpoints(this.debugUiId, bps, this._infobaseAlias);
+        this.emit('log', `[setBreakpoints] REQUEST (${bps.length} bp): ${body.slice(0, 800)}`);
         const xml = await this.transport.send('setBreakpoints', body);
-        return codec.decodeBreakpoints(xml);
+        this.emit('log', `[setBreakpoints] RESPONSE (${xml.length} bytes): ${xml.slice(0, 800)}`);
+        const result = codec.decodeBreakpoints(xml);
+        this.emit('log', `[setBreakpoints] DECODED: ${result.length} confirmed breakpoints`);
+        return result;
     }
 
     async removeBreakpoints(bps: RdbgBreakpointRequest[]): Promise<void> {
