@@ -794,8 +794,15 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       // Set icon based on metadata type
       treeItem.iconPath = this.getIconForType(element.type);
 
-      // Remove default file open command - selection will trigger properties panel instead
-      // Context menu will provide "Open XML" option for direct file access
+      // BSL module nodes: open module on click (creates file if virtual)
+      if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
+        treeItem.command = {
+          command: '1c-metadata-tree.openBslModule',
+          title: 'Open BSL Module',
+          arguments: [element],
+        };
+      }
+      // Other nodes: selection triggers properties panel (no command)
 
       // Set resource URI: Configuration → Configuration.xml in configDir; Form → formXmlPath; else filePath
       if (element.type === MetadataType.Configuration) {
