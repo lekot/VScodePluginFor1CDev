@@ -105,6 +105,10 @@
 - **Остановка в UI**: `Event('stopped', { threadId, allThreadsStopped, description, … })`, резервный `threadId` если `targetId` из ping не сопоставился.
 - **Call stack из ping** — кэш `_stackTraceCacheByThreadId` из `DBGUIExtCmdInfoCallStackFormed`; HTTP `getCallStack` — резервный fallback, до исправления `xsi:type` может давать XDTO ошибку.
 - **`_pausedThreadId`** — threadId остановленного потока; Locals/Evaluate используют его targetId, а не произвольный из Map.
+- **CallStack bottom-up** — платформа отдаёт стек снизу вверх (caller first), DAP ожидает сверху вниз (current frame first). Реверсируем в `_rdbgItemsToStackFramesAsync`.
+- **setBreakpoints: один bpWorkspace** — все breakpoints одного модуля в одном `<bp:moduleBPInfo>` с множеством `<bp:bpInfo>`. Ранее каждый breakpoint был в отдельном bpWorkspace — сервер трактовал каждый как замену, выживал только последний.
+- **Порядок полей XSD** — `infoBaseAlias` → `idOfDebuggerUI` (из RDbgBaseRequest). Ранее initSettings и setAutoAttachSettings имели обратный порядок → XDTO-ошибка.
+- **Дедупликация stopped** — платформа шлёт `CallStackFormed` на каждый ping пока цель стоит; повторный `StoppedEvent` не отправляется если targetId+lineNo+reason не изменились.
 
 ## Тестовое окружение (эталон для проверок)
 
