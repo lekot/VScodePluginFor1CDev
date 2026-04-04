@@ -71,6 +71,43 @@ const PROPERTY_ID_MAP: Record<ModuleKind, string> = {
   RecordSetModule: '9f36fd70-4bf4-47f6-b235-935f73aab43f',
 };
 
+/** Reverse map: RDBG propertyId → module kind (for stack-frame → file path). */
+const PROPERTY_ID_TO_KIND: Record<string, ModuleKind> = Object.fromEntries(
+  (Object.keys(PROPERTY_ID_MAP) as ModuleKind[]).map((k) => [PROPERTY_ID_MAP[k], k])
+) as Record<string, ModuleKind>;
+
+/**
+ * ConfigDumpInfo `Metadata/@name` type prefix → hierarchical dump folder (same as TOP_LEVEL_TYPE_FOLDERS).
+ */
+const DUMP_TYPE_TO_FOLDER: Record<string, string> = {
+  Catalog: 'Catalogs',
+  Document: 'Documents',
+  DataProcessor: 'DataProcessors',
+  Report: 'Reports',
+  InformationRegister: 'InformationRegisters',
+  AccumulationRegister: 'AccumulationRegisters',
+  AccountingRegister: 'AccountingRegisters',
+  ChartOfAccounts: 'ChartsOfAccounts',
+  ChartOfCharacteristicTypes: 'ChartsOfCharacteristicTypes',
+  ChartOfCalculationTypes: 'ChartsOfCalculationTypes',
+  Task: 'Tasks',
+  BusinessProcess: 'BusinessProcesses',
+  Enum: 'Enums',
+  ExchangePlan: 'ExchangePlans',
+  DocumentJournal: 'DocumentJournals',
+  Sequence: 'Sequences',
+  ScheduledJob: 'ScheduledJobs',
+  FilterCriterion: 'FilterCriteria',
+  FilterCriteria: 'FilterCriteria',
+  SettingsStorage: 'SettingsStorages',
+  FunctionalOption: 'FunctionalOptions',
+  Constant: 'Constants',
+  HTTPService: 'HTTPServices',
+  WebService: 'WebServices',
+  IntegrationService: 'IntegrationServices',
+  CommonModule: 'CommonModules',
+};
+
 // ---------------------------------------------------------------------------
 // Parsed BSL path descriptor
 // ---------------------------------------------------------------------------
@@ -325,6 +362,331 @@ export async function resolveModuleId(
     }
 
     return { moduleId, label };
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ConfigDumpInfo → BSL path (reverse of resolveModuleId, for debug stack frames)
+// ---------------------------------------------------------------------------
+
+interface DumpMetaEntry {
+  name: string;
+  id: string;
+}
+
+const dumpMetadataCache = new Map<string, { mtimeMs: number; entries: DumpMetaEntry[] }>();
+
+/** Test hook: clear cached ConfigDumpInfo parse results. */
+export function clearDumpMetadataCache(): void {
+  dumpMetadataCache.clear();
+}
+
+function walkDumpMetadataNode(node: unknown, out: DumpMetaEntry[]): void {
+  if (node === undefined || node === null) {
+    return;
+  }
+  const arr = Array.isArray(node) ? node : [node];
+  for (const el of arr) {
+    if (!el || typeof el !== 'object') {
+      continue;
+    }
+    const o = el as Record<string, unknown>;
+    const name = o['@_name'];
+    const id = o['@_id'];
+    if (typeof name === 'string' && typeof id === 'string') {
+      out.push({ name, id });
+    }
+    const nested = o['Metadata'];
+    if (nested) {
+      walkDumpMetadataNode(nested, out);
+    }
+  }
+}
+
+async function loadConfigDumpMetadataList(configRoot: string): Promise<DumpMetaEntry[] | undefined> {
+  const dumpPath = path.join(configRoot, 'ConfigDumpInfo.xml');
+  let st: fs.Stats;
+  try {
+    st = await fs.promises.stat(dumpPath);
+  } catch {
+    return undefined;
+  }
+  const cached = dumpMetadataCache.get(configRoot);
+  if (cached && cached.mtimeMs === st.mtimeMs) {
+    return cached.entries;
+  }
+  let content: string;
+  try {
+    content = await fs.promises.readFile(dumpPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = xmlParser.parse(content) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const rootKey =
+    parsed['ConfigDumpInfo'] !== undefined
+      ? 'ConfigDumpInfo'
+      : Object.keys(parsed).find((k) => !k.startsWith('?') && typeof parsed[k] === 'object');
+  const root = (rootKey ? (parsed[rootKey] as Record<string, unknown>) : undefined) ?? undefined;
+  if (!root || typeof root !== 'object') {
+    return undefined;
+  }
+  const versions = (root as Record<string, unknown>)['ConfigVersions'] as Record<string, unknown> | undefined;
+  if (!versions || typeof versions !== 'object') {
+    return undefined;
+  }
+  const topMeta = versions['Metadata'];
+  const out: DumpMetaEntry[] = [];
+  walkDumpMetadataNode(topMeta, out);
+  dumpMetadataCache.set(configRoot, { mtimeMs: st.mtimeMs, entries: out });
+  return out;
+}
+
+function findParentByName(entries: DumpMetaEntry[], parentName: string): DumpMetaEntry | undefined {
+  return entries.find((e) => e.name === parentName);
+}
+
+/**
+ * Pick ConfigDumpInfo `Metadata/@name` for this RDBG module id + property kind.
+ */
+function findDumpMetadataName(
+  objectId: string,
+  kind: ModuleKind,
+  entries: DumpMetaEntry[]
+): string | undefined {
+  if (kind === 'CommonModule') {
+    const hit = entries.find((e) => e.name.startsWith('CommonModule.') && e.id === objectId);
+    return hit?.name;
+  }
+
+  if (kind === 'FormModule') {
+    const hit = entries.find((e) => e.id === objectId && /\.Form\./.test(e.name));
+    return hit?.name;
+  }
+
+  if (kind === 'CommandModule') {
+    const byId = entries.find((e) => e.id === objectId && /\.Command\./.test(e.name));
+    if (byId) {
+      return byId.name;
+    }
+    for (const e of entries) {
+      if (!e.name.includes('.Command.')) {
+        continue;
+      }
+      const parentName = e.name.replace(/\.Command\.[^.]+$/, '');
+      const parent = findParentByName(entries, parentName);
+      if (parent && parent.id === objectId) {
+        return e.name;
+      }
+    }
+    return undefined;
+  }
+
+  if (kind === 'ValueManagerModule') {
+    const byId = entries.find(
+      (e) => e.id === objectId && (e.name.endsWith('.ValueManager') || e.name.includes('.ValueManager.'))
+    );
+    if (byId) {
+      return byId.name;
+    }
+    for (const e of entries) {
+      if (!e.name.endsWith('.ValueManager')) {
+        continue;
+      }
+      const parentName = e.name.slice(0, -'.ValueManager'.length);
+      const parent = findParentByName(entries, parentName);
+      if (parent && parent.id === objectId) {
+        return e.name;
+      }
+    }
+    return undefined;
+  }
+
+  const suffix =
+    kind === 'ObjectModule'
+      ? '.ObjectModule'
+      : kind === 'ManagerModule'
+        ? '.ManagerModule'
+        : kind === 'RecordSetModule'
+          ? '.RecordSetModule'
+          : '';
+
+  if (!suffix) {
+    return undefined;
+  }
+
+  for (const e of entries) {
+    if (!e.name.endsWith(suffix)) {
+      continue;
+    }
+    const parentName = e.name.slice(0, -suffix.length);
+    const parent = findParentByName(entries, parentName);
+    if (parent && parent.id === objectId) {
+      return e.name;
+    }
+    if (e.id === objectId || e.id === `${objectId}.0` || e.id.startsWith(`${objectId}.`)) {
+      return e.name;
+    }
+  }
+  // Dump may omit `.ManagerModule` / `.ObjectModule` rows; parent object still has catalog UUID.
+  const parentOnly = entries.find(
+    (e) =>
+      e.id === objectId &&
+      /^[^.]+\.[^.]+$/u.test(e.name) &&
+      !e.name.startsWith('CommonModule.')
+  );
+  if (parentOnly) {
+    return `${parentOnly.name}${suffix}`;
+  }
+  return undefined;
+}
+
+/**
+ * Map `Metadata/@name` from ConfigDumpInfo to path under config root (forward slashes).
+ */
+function metadataDumpNameToRelativeBslPath(metadataName: string, kind: ModuleKind): string | undefined {
+  if (kind === 'CommonModule') {
+    if (!metadataName.startsWith('CommonModule.')) {
+      return undefined;
+    }
+    const modName = metadataName.slice('CommonModule.'.length);
+    if (!modName) {
+      return undefined;
+    }
+    return `CommonModules/${modName}/Ext/Module.bsl`;
+  }
+
+  if (kind === 'FormModule') {
+    const m = metadataName.match(/^(.+)\.Form\.(.+)$/);
+    if (!m) {
+      return undefined;
+    }
+    const prefix = m[1];
+    const formName = m[2];
+    const dot = prefix.indexOf('.');
+    if (dot < 0) {
+      return undefined;
+    }
+    const dumpType = prefix.slice(0, dot);
+    const obj = prefix.slice(dot + 1);
+    const folder = DUMP_TYPE_TO_FOLDER[dumpType];
+    if (!folder) {
+      return undefined;
+    }
+    return `${folder}/${obj}/Forms/${formName}/Ext/Form/Module.bsl`;
+  }
+
+  if (kind === 'CommandModule') {
+    const m = metadataName.match(/^(.+)\.Command\.(.+)$/);
+    if (!m) {
+      return undefined;
+    }
+    const prefix = m[1];
+    const cmdName = m[2];
+    const dot = prefix.indexOf('.');
+    if (dot < 0) {
+      return undefined;
+    }
+    const dumpType = prefix.slice(0, dot);
+    const obj = prefix.slice(dot + 1);
+    const folder = DUMP_TYPE_TO_FOLDER[dumpType];
+    if (!folder) {
+      return undefined;
+    }
+    return `${folder}/${obj}/Commands/${cmdName}/Ext/CommandModule.bsl`;
+  }
+
+  if (kind === 'ValueManagerModule') {
+    if (!metadataName.endsWith('.ValueManager')) {
+      return undefined;
+    }
+    const body = metadataName.slice(0, -'.ValueManager'.length);
+    const dot = body.indexOf('.');
+    if (dot < 0) {
+      return undefined;
+    }
+    const dumpType = body.slice(0, dot);
+    const obj = body.slice(dot + 1);
+    const folder = DUMP_TYPE_TO_FOLDER[dumpType];
+    if (!folder) {
+      return undefined;
+    }
+    return `${folder}/${obj}/Ext/ValueManagerModule.bsl`;
+  }
+
+  const modSuffix =
+    kind === 'ObjectModule'
+      ? '.ObjectModule'
+      : kind === 'ManagerModule'
+        ? '.ManagerModule'
+        : kind === 'RecordSetModule'
+          ? '.RecordSetModule'
+          : '';
+
+  if (!modSuffix || !metadataName.endsWith(modSuffix)) {
+    return undefined;
+  }
+  const body = metadataName.slice(0, -modSuffix.length);
+  const dot = body.indexOf('.');
+  if (dot < 0) {
+    return undefined;
+  }
+  const dumpType = body.slice(0, dot);
+  const obj = body.slice(dot + 1);
+  const folder = DUMP_TYPE_TO_FOLDER[dumpType];
+  if (!folder) {
+    return undefined;
+  }
+
+  if (kind === 'ObjectModule') {
+    return `${folder}/${obj}/Ext/ObjectModule.bsl`;
+  }
+  if (kind === 'ManagerModule') {
+    return `${folder}/${obj}/Ext/ManagerModule.bsl`;
+  }
+  if (kind === 'RecordSetModule') {
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve RDBG {@link RdbgModuleId} to an on-disk `.bsl` path using `ConfigDumpInfo.xml`
+ * under `configRoot`. Returns `undefined` if dump is missing, ambiguous, or file absent.
+ */
+export async function resolveBslPathFromRdbgModule(
+  moduleId: RdbgModuleId,
+  configRoot: string
+): Promise<string | undefined> {
+  if (!configRoot || !moduleId.objectId || !moduleId.propertyId) {
+    return undefined;
+  }
+  const kind = PROPERTY_ID_TO_KIND[moduleId.propertyId];
+  if (!kind) {
+    return undefined;
+  }
+  const entries = await loadConfigDumpMetadataList(configRoot);
+  if (!entries || entries.length === 0) {
+    return undefined;
+  }
+  const metadataName = findDumpMetadataName(moduleId.objectId, kind, entries);
+  if (!metadataName) {
+    return undefined;
+  }
+  const rel = metadataDumpNameToRelativeBslPath(metadataName, kind);
+  if (!rel) {
+    return undefined;
+  }
+  const abs = path.join(configRoot, ...rel.split('/'));
+  try {
+    await fs.promises.access(abs, fs.constants.R_OK);
+    return abs;
   } catch {
     return undefined;
   }

@@ -74,7 +74,13 @@ export class RdbgClient extends EventEmitter {
     private _state: ClientState = 'disconnected';
     private _infobaseAlias?: string;
     private _pollingTimer: ReturnType<typeof setInterval> | undefined;
+    /** After this many failed polls in a row, emit `error` and stop (was 3; raised for transient load at breakpoint). */
     private _consecutiveFailures = 0;
+    private static readonly _maxPollFailures = 8;
+    /** Only one `_poll` at a time — `setInterval` must not overlap awaits (was inflating failure count / duplicate `error`). */
+    private _pollInFlight = false;
+    /** After fatal transport loss: ignore further poll ticks until new `startPolling`. */
+    private _sessionLost = false;
     /** Maps targetId → seanceId, populated from getTargets() and targetStarted events. */
     private readonly _seanceMap = new Map<string, string>();
 
@@ -211,6 +217,16 @@ export class RdbgClient extends EventEmitter {
         this.emit('log', `[setBreakpoints] REQUEST (${bps.length} bp): ${body.slice(0, 800)}`);
         const xml = await this.transport.send('setBreakpoints', body);
         this.emit('log', `[setBreakpoints] RESPONSE (${xml.length} bytes): ${xml.slice(0, 800)}`);
+        // Server often returns 200 with empty body — breakpoints are still applied.
+        if (!xml || xml.trim() === '') {
+            const fallback = bps.map((bp) => ({
+                moduleId: bp.moduleId,
+                lineNo: bp.lineNo,
+                enabled: true,
+            }));
+            this.emit('log', `[setBreakpoints] empty body — treating ${fallback.length} breakpoint(s) as confirmed`);
+            return fallback;
+        }
         const result = codec.decodeBreakpoints(xml);
         this.emit('log', `[setBreakpoints] DECODED: ${result.length} confirmed breakpoints`);
         return result;
@@ -231,14 +247,14 @@ export class RdbgClient extends EventEmitter {
         this.requireAttached('step');
         const seanceId = this._seanceMap.get(targetId) ?? '';
         const body = codec.encodeStep(this.debugUiId, targetId, seanceId, action, this._infobaseAlias);
-        await this.transport.send('stepRequest', body);
+        await this.transport.send('step', body);
     }
 
     async continue(targetId: string): Promise<void> {
         this.requireAttached('continue');
         const seanceId = this._seanceMap.get(targetId) ?? '';
         const body = codec.encodeContinue(this.debugUiId, targetId, seanceId, this._infobaseAlias);
-        await this.transport.send('continueRequest', body);
+        await this.transport.send('step', body);
     }
 
     // -----------------------------------------------------------------------
@@ -249,7 +265,7 @@ export class RdbgClient extends EventEmitter {
         this.requireAttached('getCallStack');
         const seanceId = this._seanceMap.get(targetId) ?? '';
         const body = codec.encodeGetCallStack(this.debugUiId, targetId, seanceId, this._infobaseAlias);
-        const xml = await this.transport.send('getCallStackRequest', body);
+        const xml = await this.transport.send('getCallStack', body);
         return codec.decodeCallStack(xml);
     }
 
@@ -257,7 +273,9 @@ export class RdbgClient extends EventEmitter {
         this.requireAttached('getLocalVariables');
         const seanceId = this._seanceMap.get(targetId) ?? '';
         const body = codec.encodeEvalLocalVariables(this.debugUiId, targetId, seanceId, frameIndex, this._infobaseAlias);
-        const xml = await this.transport.send('evalLocalVariablesRequest', body);
+        this.emit('log', `[evalLocalVariables] REQUEST (target=${targetId}, frame=${frameIndex}): ${body.slice(0, 500)}`);
+        const xml = await this.transport.send('evalLocalVariables', body);
+        this.emit('log', `[evalLocalVariables] RESPONSE (${xml.length} bytes): ${xml.slice(0, 500)}`);
         return codec.decodeVariables(xml);
     }
 
@@ -269,7 +287,7 @@ export class RdbgClient extends EventEmitter {
         this.requireAttached('evaluate');
         const seanceId = this._seanceMap.get(targetId) ?? '';
         const body = codec.encodeEvaluate(this.debugUiId, targetId, seanceId, expression, frameIndex, this._infobaseAlias);
-        const xml = await this.transport.send('evaluateRequest', body);
+        const xml = await this.transport.send('evalExpr', body);
         return codec.decodeEvalResult(xml);
     }
 
@@ -282,6 +300,7 @@ export class RdbgClient extends EventEmitter {
             return;
         }
         this._consecutiveFailures = 0;
+        this._sessionLost = false;
         this._pollingTimer = setInterval(() => {
             void this._poll();
         }, intervalMs);
@@ -296,11 +315,25 @@ export class RdbgClient extends EventEmitter {
 
     private _pollCount = 0;
     private async _poll(): Promise<void> {
+        if (this._pollingTimer === undefined || this._sessionLost) {
+            return;
+        }
+        if (this._pollInFlight) {
+            return;
+        }
+        this._pollInFlight = true;
         try {
             const body = codec.encodePing(this.debugUiId);
             const xml = await this.transport.send('pingDebugUI', body);
             this._pollCount++;
-            const events = codec.decodePingEvents(xml);
+            let events: RdbgEvent[];
+            try {
+                events = codec.decodePingEvents(xml);
+            } catch (decodeErr) {
+                const msg = decodeErr instanceof Error ? decodeErr.message : String(decodeErr);
+                this.emit('log', `[poll #${this._pollCount}] decodePingEvents failed: ${msg}`);
+                events = [];
+            }
 
             if (events.length > 0 || (xml && xml.trim().length > 0)) {
                 this.emit('log', `[poll #${this._pollCount}] events=${events.length} xmlLen=${xml.length} types=${events.map(e => e.type).join(',')}`);
@@ -319,10 +352,10 @@ export class RdbgClient extends EventEmitter {
             // Periodic target discovery
             if (this._pollCount % 5 === 0 && this._state === 'attached') {
                 try {
+                    const knownBefore = new Set(this._seanceMap.keys());
                     const targets = await this.getTargets();
                     for (const t of targets) {
-                        if (!this._seanceMap.has(t.id)) {
-                            this._seanceMap.set(t.id, t.seanceId);
+                        if (!knownBefore.has(t.id)) {
                             this.emit('targetStarted', { type: 'targetStarted', target: t });
                         }
                     }
@@ -334,18 +367,21 @@ export class RdbgClient extends EventEmitter {
             this._consecutiveFailures = 0;
         } catch (err) {
             this._consecutiveFailures++;
-            if (this._consecutiveFailures < 3) {
-                // Non-fatal — log and continue polling
-                const message = err instanceof Error ? err.message : String(err);
-                console.warn(`[RdbgClient] Poll warning (failure ${this._consecutiveFailures}/3): ${message}`);
-            } else {
+            const message = err instanceof Error ? err.message : String(err);
+            const max = RdbgClient._maxPollFailures;
+            if (this._consecutiveFailures < max) {
+                this.emit('log', `[poll] transient failure ${this._consecutiveFailures}/${max}: ${message}`);
+                console.warn(`[RdbgClient] Poll warning (${this._consecutiveFailures}/${max}): ${message}`);
+            } else if (!this._sessionLost) {
+                this._sessionLost = true;
                 this.stopPolling();
-                const detail = err instanceof Error ? err.message : String(err);
                 const lostErr = new Error(
-                    `Lost connection to RDBG server after ${this._consecutiveFailures} consecutive failures. Last error: ${detail}`
+                    `Lost connection to RDBG server after ${this._consecutiveFailures} consecutive ping failures. Last error: ${message}`
                 );
                 this.emit('error', lostErr);
             }
+        } finally {
+            this._pollInFlight = false;
         }
     }
 

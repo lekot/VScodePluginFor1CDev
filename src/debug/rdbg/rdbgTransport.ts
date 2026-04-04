@@ -1,15 +1,45 @@
 /**
  * HTTP transport for the RDBG debug protocol.
  * Does not depend on VS Code API or rdbgTypes.
+ *
+ * All requests are serialized on one chain: the 1C dbgs endpoint is not safe
+ * under concurrent POSTs (ping + stackTrace + variables at breakpoint time).
  */
 
 const DEFAULT_TIMEOUT_MS = 0;
+
+/** Turn undici/node `fetch failed` into something diagnosable (ECONNREFUSED, cause chain). */
+function describeFetchFailure(err: unknown, command: string): Error {
+  const parts: string[] = [`cmd=${command}`];
+  let cur: unknown = err;
+  let depth = 0;
+  while (cur !== undefined && depth < 5) {
+    if (cur instanceof Error) {
+      parts.push(cur.message);
+      const ne = cur as NodeJS.ErrnoException;
+      if (typeof ne.code === 'string' && ne.code.length > 0) {
+        parts.push(`code=${ne.code}`);
+      }
+      if (typeof ne.errno === 'number') {
+        parts.push(`errno=${ne.errno}`);
+      }
+      cur = 'cause' in cur ? (cur as Error & { cause?: unknown }).cause : undefined;
+    } else {
+      parts.push(String(cur));
+      break;
+    }
+    depth++;
+  }
+  return new Error(parts.join(' | '));
+}
 
 export class RdbgTransport {
     private readonly baseUrl: string;
     private readonly debugUiId: string;
     private readonly fetchImpl: typeof fetch;
     private readonly timeoutMs: number;
+    /** One in-flight HTTP request at a time; new calls wait on the previous. */
+    private _sendChain: Promise<unknown> = Promise.resolve();
 
     constructor(
         baseUrl: string,
@@ -28,6 +58,15 @@ export class RdbgTransport {
     }
 
     async send(command: string, body: string): Promise<string> {
+        const next = this._sendChain.then(() => this.sendOne(command, body));
+        this._sendChain = next.then(
+            () => undefined,
+            () => undefined
+        );
+        return next;
+    }
+
+    private async sendOne(command: string, body: string): Promise<string> {
         const url = `${this.baseUrl}/e1crdbg/rdbg?cmd=${command}&dbgui=${this.debugUiId}`;
 
         let signal: AbortSignal | undefined;
@@ -68,8 +107,7 @@ export class RdbgTransport {
                     );
                 }
 
-                const message = err instanceof Error ? err.message : String(err);
-                throw new Error(message);
+                throw describeFetchFailure(err, command);
             }
 
             if (!response.ok) {

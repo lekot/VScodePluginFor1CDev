@@ -1,149 +1,156 @@
-# BSL Debug Adapter — Session Summary (2026-04-04)
+# BSL Debug Adapter — Summary (актуализация 2026-04-05)
 
 ## Цель
-Inline BSL Debug Adapter для отладки 1С прямо в VS Code, без Java-зависимости.
 
-## Что сделано
+Встроенный отладчик BSL в VS Code/Cursor: DAP-сессия напрямую к **dbgs** (HTTP RDBG), **без Java** и без запуска JAR yukon39.
 
-### Предыдущие сессии (2026-04-03)
+## Архитектура
 
-1. **seanceId passthrough fix** — `_seanceMap` в `rdbgClient.ts`
-2. **Команда «Запустить отладку»** — `src/debug/debugLauncher.ts`, flow: ПКМ на Configuration → binding → infobase → платформа → dbgs → DAP → 1С с debug-флагами → cleanup
-3. **RDBG XML Codec реврайт** — JAXB-формат из yukon39/bsl-debug-server
-4. **propertyID — платформенные UUID-константы** — замена числовых суффиксов на UUID из `ModulePropertyId.java`
-5. **XDTO field order fix** — строгий порядок элементов в encode-функциях
-6. **Убран таймаут HTTP** — `DEFAULT_TIMEOUT_MS = 0`
-7. **Auto-attach targets при targetStarted**
-8. **ibcmd config apply после import**
-9. **moduleIdResolver fallback detectConfigRoot**
-10. **Диагностическое логирование**
+| Компонент | Роль |
+|-----------|------|
+| **Реализация** | Полностью **TypeScript** в расширении: `BslDebugSession`, `RdbgClient`, `RdbgTransport`, `rdbgXmlCodec.ts`, `moduleIdResolver.ts`, `debugLauncher.ts`. |
+| **HTTP** | `RdbgTransport.send` **сериализует** все запросы в одну цепочку (без параллельных POST на dbgs — иначе при остановке гонка ping + stack + variables). |
+| **yukon39/bsl-debug-server** | Только **справочник** по XML/XSD и именам HTTP-команд (`HTTPDebugClient.java`, классы запросов). В рантайме **не подключается**. |
 
-### Сессия 2026-04-04 — fix: race condition, initSettings, target discovery
+## Текущее состояние (прогресс)
 
-Найдены и исправлены **3 критических бага**, образующих цепочку отказов — breakpoint не мог сработать ни при каких условиях:
+- Запуск из дерева: dbgs → attach DAP → клиент 1С с `/Debug -http -attach /DebuggerURL …`.
+- Регистрация UI, `initSettings` / `setAutoAttachSettings`, ping, обнаружение таргетов, attach к цели, установка точек по UUID модуля.
+- **Остановка на точке** в 1С подтверждена; интеграция с IDE доведена (в т.ч. событие `stopped`, привязка к потоку).
+- **Step / Continue / Call stack** — после исправления имён `cmd` в URL (раньше был **501 Not implemented**).
+- **Call stack в UI** — кадры из ping `DBGUIExtCmdInfoCallStackFormed` (кэш в `BslDebugSession`) + разбор вложенного `callStack`/`item` и base64 `presentation` в `decodeCallStack` / ping; при пустом кэше — HTTP `getCallStack`.
+- **Evaluate (watch)** — `cmd=evalExpr` и тело `RDBGEvalExprRequest` с блоком `expr` / `CalculationSourceDataStorage` (`calc:stackLevel` + `srcCalcInfo`); разбор ответа через `result[]` / `resultValueInfo`.
+- **Локальные переменные** — `cmd=evalLocalVariables`, тело **`RDBGEvalLocalVariablesRequest`**: как у eval — `calcWaitingTime`, `targetID`, **`rdbg:expr` / `calc:stackLevel`** (не корневой `callStackLevel` — иначе **400 XDTO**). Ответ: один `result` → `calculationResult.valueOfContextPropInfo[]` (`decodeVariables`).
+- **Открытие исходника по стеку** — в DAP нельзя подставлять `objectID` модуля как `Source.path` (VS Code пытается открыть файл с именем UUID). Нужен обратный резолв: **`ConfigDumpInfo.xml`** в корне конфигурации (`workspaceRoot` из attach) → `Metadata/@name` по паре `objectId` + `propertyId` → путь к `.bsl` (`resolveBslPathFromRdbgModule` в `moduleIdResolver.ts`). Если файла нет или строки нет в дампе — `Source` только с именем (без path), без ошибки «Could not load source».
 
-#### Баг #1: DAP Race Condition (CRITICAL)
-- **Проблема**: `InitializedEvent` отправлялся в `initializeRequest` ДО создания клиента. `@vscode/debugadapter` диспатчит async-обработчики без await. VS Code отправлял `setBreakpointsRequest` пока `attachRequest` ещё выполнялся → `this._client === undefined` → breakpoints молча терялись.
-- **Решение**: `InitializedEvent` перенесён в КОНЕЦ `attachRequest` — после создания клиента, attach, initSettings, startPolling.
-- **Файл**: `src/debug/bslDebugSession.ts`
+## Обязательно знать при продолжении работ
 
-#### Баг #2: Отсутствие initSettings + setAutoAttachSettings (CRITICAL)
-- **Проблема**: В кодовой базе полностью отсутствовали `RDBGSetInitialDebugSettingsRequest` и `RDBGSetAutoAttachSettingsRequest`. Без них сервер отладки НЕ отправляет события `targetStarted`/`targetQuit` через ping и НЕ авто-подключает новые таргеты.
-- **Доказательство**: `test/fixtures/rdbg/event_targetStarted.xml` — пустой файл (0 байт). За всё время тестирования событие ни разу не было получено.
-- **Решение**: Добавлены `encodeInitSettings` и `encodeSetAutoAttachSettings` в codec. Вызываются автоматически после `attachDebugUI` в `rdbgClient.attach()` (non-fatal try/catch).
-- **Файлы**: `src/debug/rdbg/rdbgXmlCodec.ts`, `src/debug/rdbg/rdbgClient.ts`
-- **Уточнение (коммит 535287a) — XDTO fix**: первоначальная реализация включала элементы `<rdbg:data xsi:type="HTTPServerInitialDebugSettingsData">` и `<rdbg:autoAttachToNewTargets>`, которые сервер 1С 8.3.27 отвергал с HTTP 400 «Ошибка преобразования данных XDTO: НачалоСвойства». Исправление: отправлять минимальные запросы (только `idOfDebuggerUI` + `infoBaseAlias`), соответствующие захваченному фикстуру `02_initSettings_request.xml`.
+### 1. Имя метода DAP в `@vscode/debugadapter`
 
-#### Баг #3: Нет обнаружения таргетов после запуска 1С (CRITICAL)
-- **Проблема**: `getTargets()` вызывался ОДИН РАЗ при attach (строка 92), но 1С клиент запускается ПОСЛЕ (`debugLauncher.ts:216`). Список таргетов пустой. Дальше расширение полагалось только на `targetStarted` события из ping, которые не приходили (баг #2).
-- **Решение**: В `_poll()` каждые 5 циклов — вызов `getTargets()` для обнаружения новых таргетов. Для новых таргетов (не в `_seanceMap`) эмитится `targetStarted`.
-- **Файл**: `src/debug/rdbg/rdbgClient.ts`
+Диспетчер вызывает **`setBreakPointsRequest`** (с **P** в `Points`). Обработчик с именем `setBreakpointsRequest` **не вызывается** — точки «молча» не уходят на сервер. Файл: `bslDebugSession.ts`.
 
-#### Дополнительные фиксы
-- **ibInDebug детекция**: ответ `attachDebugUI` теперь парсится, при `ibInDebug` — warning в лог
-- **Re-set breakpoints**: при подключении нового таргета все известные breakpoints переставляются через `_reapplyBreakpoints()`
-- **infobaseAlias**: всегда `undefined` (DefAlias) вместо `ibcmdExtensionName`
+### 2. Параметр `cmd` в URL (не суффикс `Request`)
 
-## Что подтверждено
+Формат: `POST …/e1crdbg/rdbg?cmd=<имя>&dbgui=<uuid>`. Имена как в платформе / yukon39 `HTTPDebugClient`:
 
-| Операция | Статус | Примечание |
-|----------|--------|------------|
-| attachDebugUI | ✅ 200 `registered` | С чистым dbgs |
-| initSettings | ✅ добавлен | XDTO format исправлен (535287a); ответ сервера после фикса не подтверждён |
-| setAutoAttachSettings | ✅ добавлен | XDTO format исправлен (535287a); ответ сервера после фикса не подтверждён |
-| getDbgTargets | ✅ 200 | + periodic polling каждые 5 пингов |
-| setBreakpoints | ✅ 200 | С правильными UUID propertyID |
-| pingDebugUI | ✅ 204 | Без таймаута, стабильное соединение |
-| attachDetachDbgTargets | ✅ 200 | + auto-attach на targetStarted |
-| DAP race condition | ✅ исправлен | InitializedEvent в конце attachRequest |
-| Breakpoint re-set | ✅ добавлен | При каждом новом targetStarted |
-| Unit-тесты propertyID | ✅ 7/7 | `test/suite/moduleIdResolver.test.ts` |
+| Действие | `cmd` |
+|----------|--------|
+| Шаг (over/in/out), продолжение | **`step`** (continue = тот же `step`, в XML `action=Continue`) |
+| Стек | **`getCallStack`** |
+| Локальные переменные | **`evalLocalVariables`** |
+| Выражение (watch) | **`evalExpr`** |
+| Точки останова | `setBreakpoints` |
+| Ping | у нас `pingDebugUI` (в Java — `pingDebugUIParams`; при сбоях ping сверить с платформой) |
+| Цели | `getDbgTargets`, `attachDetachDbgTargets` |
 
-## Что ещё НЕ подтверждено
+Неверное имя → **HTTP 501** «Not implemented» для ресурса `/e1crdbg/rdbg`.
 
-### Breakpoint hit — ключевой тест
-**Статус**: Все 3 критических блокера исправлены. Требуется live-тестирование.
+### 3. Значения `action` для `RDBGStepRequest` (enum платформы)
 
-**Ожидаемый flow после фиксов**:
-1. `attachDebugUI` → `registered`
-2. `initSettings` → `autoAttachToNewTargets=true`
-3. `setAutoAttachSettings` → auto-attach enabled
-4. VS Code шлёт `setBreakpoints` → client существует → breakpoints ставятся
-5. 1С запускается с debug-флагами → подключается к dbgs
-6. Periodic `getDbgTargets` или `targetStarted` event → таргет обнаружен
-7. `attachTargets` → таргет подключен к UI
-8. `_reapplyBreakpoints()` → breakpoints переставлены
-9. Пользователь записывает Справочник55 → `ПередЗаписью` → breakpoint hit
-10. `pingDebugUI` → `DBGUIExtCmdInfoCallStackFormed` с `stopByBP=true`
+| DAP | XML `action` |
+|-----|----------------|
+| Step over (next) | **`Step`** |
+| Step into | **`StepIn`** |
+| Step out | **`StepOut`** |
+| Continue | **`Continue`** |
 
-### Не тестировались (требуют breakpoint hit)
-- getCallStack
-- evalLocalVariables / evaluate
-- step / continue
+Не использовать выдуманное `StepOver`.
 
-## Ключевые находки
+### 4. Периодическое обнаружение таргетов
 
-### Протокол (из расследования 2026-04-04)
-1. **`InitializedEvent` в DAP** — НЕЛЬЗЯ отправлять до создания клиента. `@vscode/debugadapter` не ждёт завершения async-обработчиков.
-2. **`initSettings` + `setAutoAttachSettings`** — ОБЯЗАТЕЛЬНЫ для получения `targetStarted` событий через ping.
-3. **Periodic `getDbgTargets`** — safety net на случай если события targetStarted не приходят.
-4. **Re-set breakpoints** — после подключения нового таргета нужно переставить breakpoints.
+В `_poll` перед `getTargets()` сохранять **`knownBefore = new Set(_seanceMap.keys())`**. После `getTargets()` эмитить `targetStarted` только для `id`, которых **не было** в `knownBefore`. Иначе `getTargets()` сам заполняет карту — условие «новый таргет» никогда не выполняется.
 
-### XDTO reverse-engineering (из сессии 2026-04-03)
-5. **Каждый сложный элемент требует `xsi:type`** — XDTO не инферит типы из контекста
-6. **propertyID — платформенные UUID-константы**, не числовые суффиксы
-7. **DebugTargetIdLight** — содержит только `<id>UUID</id>`
-8. **`ibInDebug` vs `registered`**: attach возвращает `ibInDebug` когда другой UI уже подключен
+### 5. Неразрешённый путь к модулю
 
-### Инфраструктурные
-9. **HTTP таймауты убивают отладку** — ping ждёт бесконечно, таймаут = 0
-10. **1С клиент должен быть запущен С debug-флагами** — `/Debug -http -attach /DebuggerURL http://localhost:1550`
+Если `resolveModuleId` вернул `undefined`, **не слать** в RDBG заглушку с путём файла в `<objectID>` — будет **400 XDTO**. Ответ DAP: точки `verified: false`, сообщение в консоль. Лишние `.bsl` в `Ext/` (не `ObjectModule` / `ManagerModule` / формы / команды и т.д.) — **UNRESOLVED**, пока нет явного правила в `moduleIdResolver`.
 
-## Файлы затронуты
+### 6. Пустой ответ `setBreakpoints`
 
-### Новые
-- `src/debug/debugLauncher.ts`
-- `test/suite/moduleIdResolver.test.ts`
+Часто **200 с пустым телом**. Клиент трактует переданные точки как подтверждённые, иначе в UI они «неверифицированы».
 
-### Изменённые (коммит 535287a, 2026-04-04)
-- `src/debug/rdbg/rdbgXmlCodec.ts` — XDTO fix: убраны лишние элементы из initSettings/setAutoAttachSettings, минимальный запрос
+### 7. Пустой `attachTargets` в логе
 
-### Изменённые (коммит 10a91a7, 2026-04-04)
-- `src/debug/bslDebugSession.ts` — InitializedEvent fix, _knownBreakpoints, _reapplyBreakpoints
-- `src/debug/rdbg/rdbgClient.ts` — initSettings/setAutoAttachSettings вызовы, ibInDebug детекция, periodic target discovery
-- `src/debug/rdbg/rdbgXmlCodec.ts` — encodeInitSettings, encodeSetAutoAttachSettings
-- `src/debug/debugLauncher.ts` — infobaseAlias: undefined
+Нормально, если тело ответа пустое и HTTP успешен.
 
-### Изменённые (предыдущие сессии)
-- `src/debug/rdbg/rdbgXmlCodec.ts` — реврайт encode-функций + XDTO field order
-- `src/debug/rdbg/rdbgClient.ts` — `_seanceMap`, poll diagnostics, `'log'` event
-- `src/debug/rdbg/rdbgTransport.ts` — `DEFAULT_TIMEOUT_MS = 0`
-- `src/debug/bslDebugSession.ts` — диагностика, auto-attach targetStarted
-- `src/debug/bslDebugConfigProvider.ts` — `connectTimeoutMs = 0`
-- `src/debug/moduleIdResolver.ts` — UUID propertyID, fallback detectConfigRoot
-- `src/commands/editorCommands.ts` — команда startDebugging
-- `package.json` — command, context menu
+### 8. `RDBGEvalLocalVariablesRequest` — эталон yukon39 + XSD
 
-## Тестовое окружение
+Сверено с `RDBGEvalLocalVariablesRequest.java`, `CalculationSourceDataStorage.java`, `debugRDBGRequestResponse.xsd`, `debugCalculations.xsd` из yukon39/bsl-debug-server.
 
-### Платформа
-- **1С:Предприятие 8.3.27.1859**: `C:\Program Files\1cv8\8.3.27.1859\bin\`
-- **dbgs.exe**: порт 1550
-- **1cv8.exe**: клиент с `/Debug -http -attach /DebuggerURL http://localhost:1550`
+**Порядок полей XSD** (xs:sequence, строгий):
+1. `infoBaseAlias` (из `RDbgBaseRequest`)
+2. `idOfDebuggerUI` (из `RDbgBaseRequest`)
+3. `calcWaitingTime` (xs:decimal)
+4. `targetID` (тип `DebugTargetIdLight`)
+5. `expr` (0..N, тип `CalculationSourceDataStorage`)
 
-### Файловая инфобаза
-- **Путь**: `C:\Users\Максим\Documents\InfoBase11`
-- **Конфигурация**: `FormatSamples/empty_conf/`
+**`CalculationSourceDataStorage`** — все дочерние элементы namespace-qualified через `http://v8.1c.ru/8.3/debugger/debugCalculations` (`calc:` prefix). Поля: `stackLevel` → `srcCalcInfo` (опц.) → `presOptions` (опц.). Для получения всех локальных переменных фрейма достаточно только `calc:stackLevel`.
 
-### Тестовый модуль для breakpoint
-- **Файл**: `FormatSamples/empty_conf/Catalogs/Справочник55/Ext/ObjectModule.bsl`
-- **Содержимое**: `Процедура ПередЗаписью(Отказ) а=0; КонецПроцедуры`
-- **Бряка на строке 2** (`а=0;`) — срабатывает при записи элемента
-- **objectID**: `c39f6b2f-c005-4039-9d58-fe4565807e54`
-- **propertyID**: `a637f77f-3840-441d-a1c3-699c8c5cb7e0` (ObjectModule)
+**Ответ** — `result.calculationResult.valueOfContextPropInfo[]` (propInfo + valueInfo), а не плоский список `variable`.
 
-## Next steps
+### 9. `xsi:type` на `<rdbg:targetID>` — не ставить для eval/callstack
 
-1. **Live-тест**: пересобрать расширение → запустить отладку из контекстного меню → записать Справочник55 → проверить breakpoint hit
-2. **Если breakpoint hit работает**: проверить getCallStack, evalLocalVariables, step/continue
-3. **Если не работает**: добавить verbose-логирование XML запросов/ответов для initSettings и setAutoAttachSettings, сравнить с Конфигуратором
+**Эталон:** JAXB **не добавляет** `xsi:type` когда объявленный тип совпадает с фактическим. Для `evalLocalVariables`, `evalExpr`, `getCallStack` в XSD объявлен конкретный тип `DebugTargetIdLight` — `xsi:type` **избыточен**.
+
+**Факт:** `test/fixtures/rdbg/live/callstack_final.xml` содержит ошибку XDTO именно на `xsi:type="DebugTargetIdLight"` у `targetID`. `localvars_final.xml` — ошибка про `callStackLevel` (устаревшая, убран в текущем коде). Однако `xsi:type` на targetID в `evalLocalVariables` **тоже является проблемой**.
+
+**Правило:** `xsi:type` нужен только для полиморфных полей (когда фактический тип — подтип объявленного). В текущих encode-функциях `step`/`continue` работают с `xsi:type` (платформа прощает), но для eval/callstack вызывает ошибку XDTO или TCP reset.
+
+**Решение:** использовать `<rdbg:targetID>` / `<rdbg:id>` **без** атрибута `xsi:type` в encode-функциях `evalLocalVariables`, `evaluate`, `getCallStack`. Для единообразия с эталоном — убрать и из `step`/`continue`.
+
+## Краткая история фиксов (без устаревших гипотез)
+
+- **InitializedEvent** — только в конце `attachRequest` (после создания `_client` и attach), иначе гонка с `setBreakpoints`.
+- **initSettings / setAutoAttachSettings** — минимальный XDTO под 8.3.27; вызов из `attach`, ошибки non-fatal.
+- **`_seanceMap`**, reapply точек при новом таргете, `DefAlias` для `infobaseAlias` в лаунчере.
+- **Остановка в UI**: `Event('stopped', { threadId, allThreadsStopped, description, … })`, резервный `threadId` если `targetId` из ping не сопоставился.
+- **Call stack из ping** — кэш `_stackTraceCacheByThreadId` из `DBGUIExtCmdInfoCallStackFormed`; HTTP `getCallStack` — резервный fallback, до исправления `xsi:type` может давать XDTO ошибку.
+- **`_pausedThreadId`** — threadId остановленного потока; Locals/Evaluate используют его targetId, а не произвольный из Map.
+
+## Тестовое окружение (эталон для проверок)
+
+- Платформа **8.3.27.x**, **dbgs** (например порт **1550**).
+- Конфиг для примера: `FormatSamples/empty_conf/`, точка в `Catalogs/Справочник55/Ext/ObjectModule.bsl` (строка с исполняемым кодом, например `ПередЗаписью`).
+- UUID объекта каталога и `propertyID` ObjectModule — см. `ConfigDumpInfo.xml` / `moduleIdResolver.test.ts`.
+
+## Следующие шаги
+
+1. **Починить Locals** (текущий приоритет):
+   - Убрать `xsi:type="DebugTargetIdLight"` с `<rdbg:targetID>` / `<rdbg:id>` во всех encode-функциях — привести к эталону JAXB.
+   - Обернуть `getLocalVariables` и `getCallStack` HTTP-вызовы защитным try/catch — при ошибке возвращать пустой результат, не ронять сессию.
+   - Логировать XML запрос/ответ для `evalLocalVariables` в Debug Console.
+   - Протестировать на живом dbgs 8.3.27.
+2. **Регрессия**: после фикса Locals — полный цикл (точка, стек, шаги, continue, watch, Locals).
+3. **moduleIdResolver**: явные шаблоны для **RecordSetModule** и прочих `Ext/*.bsl`, если появятся в выгрузке.
+4. **Переменные (расширение)**: раскрытие `isExpandable`, привязка `variablesReference` к кадру/цели.
+5. **ping**: при несовпадении с `pingDebugUIParams` — снять трафик с Конфигуратора и выровнять query.
+
+## Ключевые пути в репозитории
+
+- `src/debug/bslDebugSession.ts` — DAP, `setBreakPointsRequest`, `stopped`, `_knownBreakpoints`, `_reapplyBreakpoints`
+- `src/debug/rdbg/rdbgClient.ts` — state machine, poll, имена **`cmd`** для HTTP
+- `src/debug/rdbg/rdbgXmlCodec.ts` — encode/decode XML, **`evalExpr`** тело, `decodeEvalResult`
+- `src/debug/rdbg/rdbgTransport.ts` — POST, **очередь** (один запрос за раз), таймаут 0
+- `src/debug/moduleIdResolver.ts` — путь BSL → objectId + propertyId
+- `src/debug/debugLauncher.ts` — старт dbgs + `startDebugging`
+- `test/suite/moduleIdResolver.test.ts` — регрессия UUID модулей
+
+## Диагностика
+
+В Debug Console искать префиксы: `BSL Debug:`, `[bsl-debug] setBreakpoints:`, `[setBreakpoints]`, `[poll #…]`, `[poll] transient failure …`. Полный сырой XML при необходимости временно нарастить в `rdbgClient` / transport.
+
+### Два разных «обрыва» (не путать)
+
+1. **Реальный отказ связи с сервером отладки (сторона 1С)**  
+   Тонкий клиент / сеанс 1С показывает сообщение вроде **«нет связи с сервером»** (или аналог) — это обрыв **канала клиент ↔ dbgs**, не интерпретация VS Code. Причины типично на стороне процесса **dbgs**, сети, порта, нехватки ресурсов или **дефекта/нагрузки** на HTTP-слое отладчика платформы. Адаптер VS Code тут лишь перестаёт получать ответы; симптом в IDE может совпасть по времени, но **первичен именно падёж связи в 1С**.
+
+2. **Сессия отладки в VS Code завершилась по логике адаптера**  
+   После **ряда подряд неудачных ping** `RdbgClient` эмитит `error` → `TerminatedEvent` в DAP. Это **наше** решение «считать соединение потерянным»; клиент 1С при этом может оставаться подключённым или нет — сценарии разные.
+
+3. **Обрыв при evalLocalVariables / getCallStack (XDTO crash)**  
+   Лишний `xsi:type="DebugTargetIdLight"` на элементах `<rdbg:targetID>` / `<rdbg:id>` приводит к тому, что XDTO-процессор платформы сбрасывает TCP-соединение (ECONNRESET). После этого все последующие ping получают ECONNREFUSED → адаптер объявляет потерю сессии (п.2), а 1С-клиент показывает «нет связи» (п.1). **Причина первична на стороне нашего XML, не платформы.**
+
+**Снижение риска для п.1 (на стороне расширения):** все HTTP-запросы к `/e1crdbg/rdbg` идут **последовательно** (`RdbgTransport`), чтобы не создавать параллельную нагрузку на dbgs в момент остановки (ping + стек + переменные). Если после этого **1С по-прежнему** рвёт связь — имеет смысл смотреть логи dbgs/платформы, версию 8.3.x, стабильность порта и обращаться в поддержку 1С как к сбою/ограничению сервера отладки, а не только адаптера.
+
+**Poll:** только **один** асинхронный `_poll` за раз (повторный тик `setInterval`, пока предыдущий ping ещё в `await`, пропускается). Иначе несколько опросов параллельно наращивали `_consecutiveFailures` и вызывали **многократный** `emit('error')` с числами 8, 9, 10… — это артефакт клиента, а не «25 обрывов» сервера.
+
+**Сообщение `fetch failed`:** в лог теперь добавляются **цепочка `cause` и `code` (например `ECONNREFUSED`)** — по ним видно, закрыт ли порт, сброшен ли TCP, и т.д.

@@ -11,16 +11,17 @@ import {
     Thread,
     StackFrame,
     Scope,
-    Variable,
+    // Variable,  // TODO: re-enable when evalLocalVariables is fixed
     Source,
     Breakpoint,
+    Event,
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
-import { RdbgRuntimeError, RdbgBreakpointRequest } from './rdbg/rdbgTypes';
+import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem } from './rdbg/rdbgTypes';
 import { BslAttachConfiguration } from './types';
-import { resolveModuleId } from './moduleIdResolver';
+import { resolveModuleId, resolveBslPathFromRdbgModule } from './moduleIdResolver';
 
 export class BslDebugSession extends DebugSession {
     private _client: RdbgClient | undefined;
@@ -32,6 +33,10 @@ export class BslDebugSession extends DebugSession {
     private _lastError: RdbgRuntimeError | undefined;
     private _workspaceRoot: string = '';
     private readonly _knownBreakpoints: Map<string, { moduleId: { objectId: string; propertyId: string }; lineNos: number[] }> = new Map();
+    /** Frames from last DBGUIExtCmdInfoCallStackFormed (ping); 1C often does not fill HTTP getCallStack for UI. */
+    private readonly _stackTraceCacheByThreadId: Map<number, RdbgCallStackItem[]> = new Map();
+    /** Thread that last received `stopped` — Locals/Evaluate must use its targetId (not arbitrary Map iteration). */
+    private _pausedThreadId: number | undefined;
 
     constructor() {
         super();
@@ -144,6 +149,7 @@ export class BslDebugSession extends DebugSession {
             this._transport?.dispose();
             this._client = undefined;
             this._transport = undefined;
+            this._pausedThreadId = undefined;
         }
     }
 
@@ -151,7 +157,7 @@ export class BslDebugSession extends DebugSession {
     // Breakpoints
     // -------------------------------------------------------------------------
 
-    protected async setBreakpointsRequest(
+    protected async setBreakPointsRequest(
         response: DebugProtocol.SetBreakpointsResponse,
         args: DebugProtocol.SetBreakpointsArguments
     ): Promise<void> {
@@ -167,23 +173,40 @@ export class BslDebugSession extends DebugSession {
 
             // Resolve BSL file path to RDBG module ID (objectUUID + propertyId suffix)
             const resolved = await resolveModuleId(sourcePath, this._workspaceRoot);
-            const moduleId = resolved?.moduleId ?? { objectId: sourcePath, propertyId: '' };
             this.sendEvent(new OutputEvent(
-                `[bsl-debug] setBreakpoints: source=${sourcePath} workspaceRoot=${this._workspaceRoot} resolved=${resolved ? `${resolved.label} (${moduleId.objectId}:${moduleId.propertyId})` : 'FALLBACK'}\n`,
+                `[bsl-debug] setBreakpoints: source=${sourcePath} workspaceRoot=${this._workspaceRoot} resolved=${resolved ? `${resolved.label} (${resolved.moduleId.objectId}:${resolved.moduleId.propertyId})` : 'UNRESOLVED'}\n`,
                 'console'
             ));
 
+            if (!resolved) {
+                if (requestedBps.length === 0) {
+                    response.body = { breakpoints: [] };
+                    this.sendResponse(response);
+                    return;
+                }
+                this.sendEvent(
+                    new OutputEvent(
+                        `BSL Debug: cannot map "${sourcePath}" to RDBG module — breakpoints not sent to server (remove them or fix path).\n`,
+                        'stderr'
+                    )
+                );
+                response.body = {
+                    breakpoints: requestedBps.map((bp) => new Breakpoint(false, bp.line)),
+                };
+                this.sendResponse(response);
+                return;
+            }
+
+            const moduleId = resolved.moduleId;
             const rdbgBps: RdbgBreakpointRequest[] = requestedBps.map((bp) => ({
                 moduleId,
                 lineNo: bp.line,
             }));
 
-            if (resolved) {
-                this._knownBreakpoints.set(sourcePath, {
-                    moduleId: resolved.moduleId,
-                    lineNos: requestedBps.map(bp => bp.line),
-                });
-            }
+            this._knownBreakpoints.set(sourcePath, {
+                moduleId: resolved.moduleId,
+                lineNos: requestedBps.map(bp => bp.line),
+            });
 
             const confirmed = await this._client.setBreakpoints(rdbgBps);
 
@@ -236,15 +259,20 @@ export class BslDebugSession extends DebugSession {
         }
 
         try {
-            const callStack = await this._client.getCallStack(targetId);
+            let callStack = this._stackTraceCacheByThreadId.get(args.threadId);
+            if (!callStack || callStack.length === 0) {
+                try {
+                    callStack = await this._client.getCallStack(targetId);
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    this.sendEvent(new OutputEvent(`BSL Debug: getCallStack failed (using empty): ${msg}\n`, 'console'));
+                    callStack = [];
+                }
+            }
 
-            const stackFrames: StackFrame[] = callStack.map((item, index) => {
-                const moduleName = path.basename(item.moduleId.objectId);
-                const source = new Source(moduleName, item.moduleId.objectId);
-                return new StackFrame(index, item.presentation, source, item.lineNo);
-            });
+            const stackFrames = await this._rdbgItemsToStackFramesAsync(callStack);
 
-            response.body = { stackFrames, totalFrames: callStack.length };
+            response.body = { stackFrames, totalFrames: stackFrames.length };
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.sendErrorResponse(response, 1003, `Ошибка получения стека вызовов: ${message}`);
@@ -285,10 +313,13 @@ export class BslDebugSession extends DebugSession {
 
         const frameIndex = args.variablesReference - 1;
 
-        // For MVP: use first attached thread
-        const targetId = this._threadMap.size > 0
-            ? this._threadMap.values().next().value as string
-            : undefined;
+        const threadIdForVars = this._pausedThreadId;
+        const targetId =
+            threadIdForVars !== undefined
+                ? this._threadMap.get(threadIdForVars)
+                : this._threadMap.size > 0
+                  ? (this._threadMap.values().next().value as string)
+                  : undefined;
 
         if (!targetId) {
             response.body = { variables: [] };
@@ -296,21 +327,9 @@ export class BslDebugSession extends DebugSession {
             return;
         }
 
-        try {
-            const rdbgVars = await this._client.getLocalVariables(targetId, frameIndex);
-
-            const variables: Variable[] = rdbgVars.map((v) => {
-                const variable = new Variable(v.name, v.value, v.isExpandable ? v.variableReference : 0);
-                (variable as DebugProtocol.Variable).type = v.typeName;
-                return variable;
-            });
-
-            response.body = { variables };
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            this.sendErrorResponse(response, 1004, `Ошибка получения переменных: ${message}`);
-            return;
-        }
+        // TODO: evalLocalVariables disabled — crashes dbgs (TCP reset). Debugging XML format separately.
+        this.sendEvent(new OutputEvent(`BSL Debug: Locals disabled (evalLocalVariables crashes dbgs). target=${targetId} frame=${frameIndex}\n`, 'console'));
+        response.body = { variables: [] };
 
         this.sendResponse(response);
     }
@@ -328,10 +347,13 @@ export class BslDebugSession extends DebugSession {
             return;
         }
 
-        // Determine targetId from frame → thread mapping (for MVP use first thread)
-        const targetId = this._threadMap.size > 0
-            ? this._threadMap.values().next().value as string
-            : undefined;
+        const threadIdForEval = this._pausedThreadId;
+        const targetId =
+            threadIdForEval !== undefined
+                ? this._threadMap.get(threadIdForEval)
+                : this._threadMap.size > 0
+                  ? (this._threadMap.values().next().value as string)
+                  : undefined;
 
         if (!targetId) {
             this.sendErrorResponse(response, 1005, 'Нет активных целей отладки');
@@ -377,6 +399,7 @@ export class BslDebugSession extends DebugSession {
 
         try {
             await this._client.continue(targetId);
+            this._stackTraceCacheByThreadId.delete(args.threadId);
             response.body = { allThreadsContinued: false };
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -400,6 +423,7 @@ export class BslDebugSession extends DebugSession {
 
         try {
             await this._client.step(targetId, 'over');
+            this._stackTraceCacheByThreadId.delete(args.threadId);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.sendErrorResponse(response, 1008, `Ошибка шага (over): ${message}`);
@@ -422,6 +446,7 @@ export class BslDebugSession extends DebugSession {
 
         try {
             await this._client.step(targetId, 'into');
+            this._stackTraceCacheByThreadId.delete(args.threadId);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.sendErrorResponse(response, 1009, `Ошибка шага (into): ${message}`);
@@ -444,6 +469,7 @@ export class BslDebugSession extends DebugSession {
 
         try {
             await this._client.step(targetId, 'out');
+            this._stackTraceCacheByThreadId.delete(args.threadId);
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.sendErrorResponse(response, 1010, `Ошибка шага (out): ${message}`);
@@ -483,17 +509,76 @@ export class BslDebugSession extends DebugSession {
     // Client event listeners
     // -------------------------------------------------------------------------
 
+    private async _rdbgItemsToStackFramesAsync(items: RdbgCallStackItem[]): Promise<StackFrame[]> {
+        const out: StackFrame[] = [];
+        for (let index = 0; index < items.length; index++) {
+            const item = items[index];
+            const label =
+                item.presentation.trim() !== ''
+                    ? item.presentation
+                    : item.moduleId.objectId
+                      ? path.basename(item.moduleId.objectId)
+                      : `Frame ${index + 1}`;
+            let resolvedPath: string | undefined;
+            if (this._workspaceRoot.length > 0) {
+                try {
+                    resolvedPath = await resolveBslPathFromRdbgModule(
+                        item.moduleId,
+                        this._workspaceRoot
+                    );
+                } catch {
+                    resolvedPath = undefined;
+                }
+            }
+            const sourceName = resolvedPath ? path.basename(resolvedPath) : label;
+            const source = resolvedPath
+                ? new Source(sourceName, resolvedPath)
+                : new Source(label);
+            out.push(new StackFrame(index, label, source, item.lineNo));
+        }
+        return out;
+    }
+
     private _setupClientListeners(client: RdbgClient): void {
         client.on('stopped', (e) => {
-            const threadId = this._reverseThreadMap.get(e.targetId) ?? 1;
+            let threadId = this._reverseThreadMap.get(e.targetId);
+            if (threadId === undefined && this._threadMap.size > 0) {
+                const first = this._threadMap.keys().next();
+                threadId = first.done ? 1 : first.value;
+            }
+            if (threadId === undefined) {
+                threadId = 1;
+            }
+            if (e.callStack && e.callStack.length > 0) {
+                this._stackTraceCacheByThreadId.set(threadId, e.callStack);
+            } else {
+                this._stackTraceCacheByThreadId.delete(threadId);
+            }
             if (e.reason === 'exception' && e.error) {
                 this._lastError = e.error;
             }
-            this.sendEvent(new StoppedEvent(e.reason, threadId));
+            // Full stopped body (allThreadsStopped, description) helps some clients show pause + thread UI.
+            this._pausedThreadId = threadId;
+            this.sendEvent(
+                new Event('stopped', {
+                    reason: e.reason,
+                    threadId,
+                    allThreadsStopped: true,
+                    ...(e.reason === 'breakpoint'
+                        ? { description: 'Paused on breakpoint' }
+                        : e.reason === 'step'
+                          ? { description: 'Paused on step' }
+                          : {}),
+                })
+            );
         });
 
         client.on('continued', (e) => {
             const threadId = this._reverseThreadMap.get(e.targetId) ?? 1;
+            this._stackTraceCacheByThreadId.delete(threadId);
+            if (this._pausedThreadId === threadId) {
+                this._pausedThreadId = undefined;
+            }
             this.sendEvent(new ContinuedEvent(threadId));
         });
 
@@ -518,6 +603,7 @@ export class BslDebugSession extends DebugSession {
                 this.sendEvent(new ThreadEvent('exited', threadId));
                 this._threadMap.delete(threadId);
                 this._reverseThreadMap.delete(e.targetId);
+                this._stackTraceCacheByThreadId.delete(threadId);
 
                 if (this._threadMap.size === 0) {
                     this.sendEvent(new TerminatedEvent());
@@ -528,6 +614,7 @@ export class BslDebugSession extends DebugSession {
         client.on('runtimeError', (e) => {
             this._lastError = e.error;
             const threadId = this._reverseThreadMap.get(e.targetId) ?? 1;
+            this._pausedThreadId = threadId;
             this.sendEvent(new StoppedEvent('exception', threadId));
         });
 

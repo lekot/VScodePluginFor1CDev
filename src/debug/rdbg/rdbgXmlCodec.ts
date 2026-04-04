@@ -40,9 +40,11 @@ const NS_RDBG = 'http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse';
 const NS_XSI  = 'http://www.w3.org/2001/XMLSchema-instance';
 const DEF_ALIAS = 'DefAlias';
 
+const NS_CALC = 'http://v8.1c.ru/8.3/debugger/debugCalculations';
+
 /** Standard namespace declarations for the <request> root element. */
 const REQUEST_NS_ATTRS =
-  `xmlns="${NS_BASE}" xmlns:rdbg="${NS_RDBG}" xmlns:bp="http://v8.1c.ru/8.3/debugger/debugBreakpoints" xmlns:xsi="${NS_XSI}"`;
+  `xmlns="${NS_BASE}" xmlns:rdbg="${NS_RDBG}" xmlns:bp="http://v8.1c.ru/8.3/debugger/debugBreakpoints" xmlns:calc="${NS_CALC}" xmlns:xsi="${NS_XSI}"`;
 
 // ---------------------------------------------------------------------------
 // Parser instance
@@ -99,16 +101,16 @@ function moduleIdToXml(mid: RdbgModuleId, indent: string): string {
 }
 
 
-/** Serialize a target ID with xsi:type for step/continue operations (DebugTargetIdLight). */
-function targetIdTypedToXml(id: string, indent: string): string {
-  return `${indent}<rdbg:targetID xsi:type="DebugTargetIdLight">\n` +
+/** Serialize a target ID for step/continue/eval RDBG requests. */
+function targetIdToXml(id: string, indent: string): string {
+  return `${indent}<rdbg:targetID>\n` +
     `${indent}  <id>${escapeXml(id)}</id>\n` +
     `${indent}</rdbg:targetID>\n`;
 }
 
-/** Serialize a target ID as rdbg:id with xsi:type for getCallStack (DebugTargetIdLight). */
-function targetIdAsIdTypedToXml(id: string, indent: string): string {
-  return `${indent}<rdbg:id xsi:type="DebugTargetIdLight">\n` +
+/** Serialize a target ID as rdbg:id for getCallStack RDBG requests. */
+function targetIdAsIdToXml(id: string, indent: string): string {
+  return `${indent}<rdbg:id>\n` +
     `${indent}  <id>${escapeXml(id)}</id>\n` +
     `${indent}</rdbg:id>\n`;
 }
@@ -272,7 +274,7 @@ export function encodeSetBreakpoints(
 /**
  * Step — single-step execution (into / over / out).
  * xsi:type="rdbg:RDBGStepRequest"
- * TODO: confirm action string values vs numeric codes.
+ * HTTP cmd name: "step" (same endpoint for continue with action Continue).
  */
 export function encodeStep(
   debugUiId: string,
@@ -282,15 +284,16 @@ export function encodeStep(
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
+  // Matches 1C DebugStepAction (yukon39/bsl-debug-server): Step = step over, StepIn / StepOut.
   const actionMap: Record<string, string> = {
-    into: 'Step',
-    over: 'StepOver',
+    over: 'Step',
+    into: 'StepIn',
     out: 'StepOut',
   };
   const fields =
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    targetIdTypedToXml(targetId, '  ') +
+    targetIdToXml(targetId, '  ') +
     `  <rdbg:action>${escapeXml(actionMap[action])}</rdbg:action>\n`;
   return wrapRequest('rdbg:RDBGStepRequest', fields);
 }
@@ -310,7 +313,7 @@ export function encodeContinue(
   const fields =
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    targetIdTypedToXml(targetId, '  ') +
+    targetIdToXml(targetId, '  ') +
     `  <rdbg:action>Continue</rdbg:action>\n`; // TODO: may be "go", "resume", or numeric
   return wrapRequest('rdbg:RDBGStepRequest', fields);
 }
@@ -330,14 +333,17 @@ export function encodeGetCallStack(
   const fields =
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    targetIdAsIdTypedToXml(targetId, '  ');
+    targetIdAsIdToXml(targetId, '  ');
   return wrapRequest('rdbg:RDBGGetCallStackRequest', fields);
 }
 
 /**
  * EvalLocalVariables — get local variables at a specific stack frame.
  * xsi:type="rdbg:RDBGEvalLocalVariablesRequest"
- * TODO: field name for frame index (callStackLevel vs stackLevel vs frameIndex).
+ * Expr list items are CalculationSourceDataStorage (yukon39): calc:stackLevel only is valid.
+ * Do not add xsi:type on &lt;rdbg:expr&gt; — JAXB reference impl does not; a mismatched QName
+ * has been observed to reset the TCP connection and kill dbgs (ECONNRESET → ECONNREFUSED on ping).
+ * No root-level callStackLevel (HTTP 400 XDTO).
  */
 export function encodeEvalLocalVariables(
   debugUiId: string,
@@ -350,15 +356,17 @@ export function encodeEvalLocalVariables(
   const fields =
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    targetIdTypedToXml(targetId, '  ') +
-    `  <rdbg:callStackLevel>${frameIndex}</rdbg:callStackLevel>\n`; // TODO: verify field name
+    `  <rdbg:calcWaitingTime>5000</rdbg:calcWaitingTime>\n` +
+    targetIdToXml(targetId, '  ') +
+    `  <rdbg:expr>\n` +
+    `    <calc:stackLevel>${frameIndex}</calc:stackLevel>\n` +
+    `  </rdbg:expr>\n`;
   return wrapRequest('rdbg:RDBGEvalLocalVariablesRequest', fields);
 }
 
 /**
- * Evaluate — evaluate an arbitrary expression in the context of a stack frame.
- * xsi:type="rdbg:RDBGEvalExprRequest"
- * TODO: field name for frame index, expression wrapper element name.
+ * Evaluate — RDBGEvalExprRequest (same expr shape as RDBGEvalLocalVariablesRequest in yukon39).
+ * HTTP cmd: "evalExpr" (not evaluateRequest).
  */
 export function encodeEvaluate(
   debugUiId: string,
@@ -372,9 +380,17 @@ export function encodeEvaluate(
   const fields =
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    targetIdTypedToXml(targetId, '  ') +
-    `  <rdbg:expression>${escapeXml(expression)}</rdbg:expression>\n` +
-    `  <rdbg:callStackLevel>${frameIndex}</rdbg:callStackLevel>\n`; // TODO: verify field name
+    `  <rdbg:calcWaitingTime>5000</rdbg:calcWaitingTime>\n` +
+    targetIdToXml(targetId, '  ') +
+    `  <rdbg:expr>\n` +
+    `    <calc:stackLevel>${frameIndex}</calc:stackLevel>\n` +
+    `    <calc:srcCalcInfo>\n` +
+    `      <calc:calcItem>\n` +
+    `        <calc:itemType>expression</calc:itemType>\n` +
+    `        <calc:expression>${escapeXml(expression)}</calc:expression>\n` +
+    `      </calc:calcItem>\n` +
+    `    </calc:srcCalcInfo>\n` +
+    `  </rdbg:expr>\n`;
   return wrapRequest('rdbg:RDBGEvalExprRequest', fields);
 }
 
@@ -463,43 +479,131 @@ export function decodeBreakpoints(xml: string): RdbgBreakpoint[] {
   });
 }
 
-/**
- * Decode the call stack from a GetCallStack response.
- * TODO: exact element names (callStack / item / frame) not yet confirmed.
- */
-export function decodeCallStack(xml: string): RdbgCallStackItem[] {
-  const root = parseXml(xml);
-  const response = (root['response'] ?? root['result'] ?? {}) as Record<string, unknown>;
-  const callStack = (response['callStack'] ?? response['callstack'] ?? {}) as Record<string, unknown>;
-  const items = toArray(callStack['item'] ?? callStack['frame'] ?? response['item']);
-
-  return items.map((raw) => {
-    const r = raw as Record<string, unknown>;
-    const moduleRaw = (r['moduleID'] ?? r['moduleId'] ?? {}) as Record<string, unknown>;
-    return {
-      moduleId: parseModuleId(moduleRaw),
-      lineNo: Number(r['lineNo'] ?? 0),
-      presentation: String(r['presentation'] ?? ''),
-    };
-  });
+/** Map one RDBG stack frame element (ping or getCallStack) to RdbgCallStackItem. */
+function mapRawCallStackFrame(raw: Record<string, unknown>): RdbgCallStackItem {
+  const moduleRaw = (raw['moduleID'] ?? raw['moduleId'] ?? {}) as Record<string, unknown>;
+  const presentationRaw = String(raw['presentation'] ?? '');
+  const presentation = presentationRaw ? decodeBase64Utf8(presentationRaw) : '';
+  return {
+    moduleId: parseModuleId(moduleRaw),
+    lineNo: Number(raw['lineNo'] ?? 0),
+    presentation,
+  };
 }
 
 /**
- * Decode local variables from an EvalLocalVariables response.
- * TODO: element names (localVariables / variable / item / localVar) not yet confirmed.
+ * Normalize a callStack field from parsed XML to a flat list of frame records
+ * (handles repeated elements, item/frame wrappers, and single-frame objects).
+ */
+function flattenCallStackElements(callStackField: unknown): Record<string, unknown>[] {
+  if (callStackField === undefined || callStackField === null) {
+    return [];
+  }
+  const isFrameLike = (o: Record<string, unknown>): boolean =>
+    o['moduleID'] !== undefined ||
+    o['moduleId'] !== undefined ||
+    o['lineNo'] !== undefined ||
+    o['presentation'] !== undefined;
+
+  const normalizeOne = (el: unknown): Record<string, unknown>[] => {
+    if (!el || typeof el !== 'object') {
+      return [];
+    }
+    const o = el as Record<string, unknown>;
+    const nested = o['item'] ?? o['frame'];
+    if (nested !== undefined) {
+      return toArray(nested).flatMap((x) => normalizeOne(x));
+    }
+    if (isFrameLike(o)) {
+      return [o];
+    }
+    return [];
+  };
+
+  return toArray(callStackField).flatMap((el) => normalizeOne(el));
+}
+
+/**
+ * Decode the call stack from a GetCallStack HTTP response.
+ * Also handles: nested result.callStack, single frame as object (no item wrapper), base64 presentation.
+ */
+export function decodeCallStack(xml: string): RdbgCallStackItem[] {
+  if (!xml || !xml.trim()) {
+    return [];
+  }
+  const root = parseXml(xml);
+  const top = (root['response'] ?? root) as Record<string, unknown>;
+  let holder: Record<string, unknown> = top;
+  const res = top['result'];
+  if (res && typeof res === 'object' && !Array.isArray(res)) {
+    const r = res as Record<string, unknown>;
+    if (r['callStack'] !== undefined || r['callstack'] !== undefined) {
+      holder = r;
+    }
+  }
+  const csKey = holder['callStack'] !== undefined ? 'callStack' : 'callstack';
+  const csNode: unknown = holder[csKey] ?? top['callStack'] ?? top['callstack'];
+
+  let frames = flattenCallStackElements(csNode);
+  if (frames.length === 0) {
+    frames = flattenCallStackElements(top['item']);
+  }
+
+  return frames.map((raw) => mapRawCallStackFrame(raw));
+}
+
+/**
+ * Decode local variables from RDBGEvalLocalVariablesResponse.
+ * Platform returns a single CalculationResultBaseData in result; locals live in
+ * calculationResult.valueOfContextPropInfo[] (propInfo + valueInfo), see yukon39 model.
  */
 export function decodeVariables(xml: string): RdbgVariable[] {
+  if (!xml || !xml.trim()) {
+    return [];
+  }
   const root = parseXml(xml);
-  const response = (root['response'] ?? root['result'] ?? {}) as Record<string, unknown>;
+  const response = (root['response'] ?? root) as Record<string, unknown>;
+  const rawResult = response['result'] ?? response;
+  const resultParts = toArray(
+    rawResult as Record<string, unknown> | Record<string, unknown>[] | undefined
+  );
+  const result = (resultParts[0] ?? {}) as Record<string, unknown>;
+
+  const calcResult = (result['calculationResult'] ?? {}) as Record<string, unknown>;
+  const fromContext = toArray(calcResult['valueOfContextPropInfo']);
+  if (fromContext.length > 0) {
+    return fromContext.map((raw, idx) => {
+      const r = raw as Record<string, unknown>;
+      const propInfo = (r['propInfo'] ?? {}) as Record<string, unknown>;
+      const valueInfo = (r['valueInfo'] ?? {}) as Record<string, unknown>;
+      const name = String(propInfo['propName'] ?? `var${idx}`);
+      const presRaw = valueInfo['pres'];
+      const fromPres =
+        typeof presRaw === 'string' && presRaw.length > 0 ? decodeBase64Utf8(presRaw) : '';
+      const value = String(
+        valueInfo['valueString'] ?? valueInfo['presentation'] ?? (fromPres || '')
+      );
+      const typeName = String(valueInfo['typeName'] ?? '');
+      const isExpandable =
+        valueInfo['isExpandable'] === true || valueInfo['isExpandable'] === 'true';
+      return {
+        name,
+        typeName,
+        value,
+        isExpandable,
+        variableReference: 0,
+      };
+    });
+  }
+
+  // Legacy / alternate shapes
   const container = (
     response['localVariables'] ??
     response['variables'] ??
-    response
+    result
   ) as Record<string, unknown>;
   const items = toArray(
-    container['variable'] ??
-    container['localVar'] ??
-    container['item']
+    container['variable'] ?? container['localVar'] ?? container['item']
   );
 
   return items.map((raw, idx) => {
@@ -515,20 +619,48 @@ export function decodeVariables(xml: string): RdbgVariable[] {
 }
 
 /**
- * Decode an expression evaluation result.
- * TODO: error field name and structure not yet confirmed.
+ * Decode RDBGEvalExprResponse: result is CalculationResultBaseData[] (yukon39).
  */
 export function decodeEvalResult(xml: string): RdbgEvalResult {
   const root = parseXml(xml);
   const response = (root['response'] ?? {}) as Record<string, unknown>;
-  const result = (response['result'] ?? response) as Record<string, unknown>;
+  const rawResult = response['result'] ?? response;
+  const items = toArray(rawResult as Record<string, unknown> | Record<string, unknown>[] | undefined);
+  const result = (items[0] ?? {}) as Record<string, unknown>;
 
-  const error = result['error'] ?? result['errorDescription'];
+  const errOccurred = result['errorOccurred'] === true || result['errorOccurred'] === 'true';
+  const exceptionStr = result['exceptionStr'];
+  const rvi = (result['resultValueInfo'] ?? {}) as Record<string, unknown>;
+  const presRaw = rvi['pres'];
+  const fromPres =
+    typeof presRaw === 'string' && presRaw.length > 0 ? decodeBase64Utf8(presRaw) : '';
+  const value = String(
+    rvi['valueString'] ??
+      rvi['presentation'] ??
+      result['value'] ??
+      result['presentation'] ??
+      (fromPres || '')
+  );
+  const typeName = String(rvi['typeName'] ?? result['typeName'] ?? result['type'] ?? '');
+  const isExpandable = rvi['isExpandable'] === true || rvi['isExpandable'] === 'true';
+  const legacyErr = result['error'] ?? result['errorDescription'];
+
+  let error: string | undefined;
+  if (legacyErr !== undefined && legacyErr !== null && String(legacyErr).length > 0) {
+    error = String(legacyErr);
+  } else if (errOccurred) {
+    const ex =
+      typeof exceptionStr === 'string' && exceptionStr.length > 0
+        ? decodeBase64Utf8(exceptionStr)
+        : '';
+    error = ex.length > 0 ? ex : 'Evaluation error';
+  }
+
   return {
-    value: String(result['value'] ?? result['presentation'] ?? ''),
-    typeName: String(result['typeName'] ?? result['type'] ?? ''),
-    isExpandable: result['isExpandable'] === true || result['isExpandable'] === 'true',
-    error: error !== undefined ? String(error) : undefined,
+    value,
+    typeName,
+    isExpandable,
+    error,
   };
 }
 
@@ -577,20 +709,8 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
           reason = 'step';
         }
 
-        // callStack may be a single element or an array
-        const callStackRaw = toArray(r['callStack']);
-        const callStack = callStackRaw.map((cs) => {
-          const csEl = cs as Record<string, unknown>;
-          const moduleRaw = (csEl['moduleID'] ?? csEl['moduleId'] ?? {}) as Record<string, unknown>;
-          const presentationRaw = String(csEl['presentation'] ?? '');
-          // presentation is base64-encoded UTF-8
-          const presentation = presentationRaw ? decodeBase64Utf8(presentationRaw) : '';
-          return {
-            moduleId: parseModuleId(moduleRaw),
-            lineNo: Number(csEl['lineNo'] ?? 0),
-            presentation,
-          };
-        });
+        const frameRaws = flattenCallStackElements(r['callStack']);
+        const callStack = frameRaws.map((cs) => mapRawCallStackFrame(cs));
 
         return [{
           type: 'stopped',
