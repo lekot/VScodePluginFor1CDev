@@ -247,14 +247,18 @@ export class RdbgClient extends EventEmitter {
         this.requireAttached('step');
         const seanceId = this._seanceMap.get(targetId) ?? '';
         const body = codec.encodeStep(this.debugUiId, targetId, seanceId, action, this._infobaseAlias);
+        this.emit('log', `[step] action=${action} target=${targetId}`);
         await this.transport.send('step', body);
+        this.emit('log', `[step] done`);
     }
 
     async continue(targetId: string): Promise<void> {
         this.requireAttached('continue');
         const seanceId = this._seanceMap.get(targetId) ?? '';
         const body = codec.encodeContinue(this.debugUiId, targetId, seanceId, this._infobaseAlias);
+        this.emit('log', `[continue] target=${targetId}`);
         await this.transport.send('step', body);
+        this.emit('log', `[continue] done`);
     }
 
     // -----------------------------------------------------------------------

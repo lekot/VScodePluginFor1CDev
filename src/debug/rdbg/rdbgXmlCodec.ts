@@ -101,14 +101,24 @@ function moduleIdToXml(mid: RdbgModuleId, indent: string): string {
 }
 
 
-/** Serialize a target ID for step/continue/eval RDBG requests. */
+/**
+ * Serialize a target ID WITH xsi:type for step/continue (proven to work with platform).
+ * JAXB reference omits xsi:type, but 1C platform accepts it for step — keep for safety.
+ */
+function targetIdTypedToXml(id: string, indent: string): string {
+  return `${indent}<rdbg:targetID xsi:type="DebugTargetIdLight">\n` +
+    `${indent}  <id>${escapeXml(id)}</id>\n` +
+    `${indent}</rdbg:targetID>\n`;
+}
+
+/** Serialize a target ID WITHOUT xsi:type for eval requests (xsi:type crashes dbgs). */
 function targetIdToXml(id: string, indent: string): string {
   return `${indent}<rdbg:targetID>\n` +
     `${indent}  <id>${escapeXml(id)}</id>\n` +
     `${indent}</rdbg:targetID>\n`;
 }
 
-/** Serialize a target ID as rdbg:id for getCallStack RDBG requests. */
+/** Serialize a target ID as rdbg:id WITHOUT xsi:type for getCallStack. */
 function targetIdAsIdToXml(id: string, indent: string): string {
   return `${indent}<rdbg:id>\n` +
     `${indent}  <id>${escapeXml(id)}</id>\n` +
@@ -225,7 +235,8 @@ export function encodeSetAutoAttachSettings(debugUiId: string, infobaseAlias?: s
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n`;
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:autoAttachIdleTargets>true</rdbg:autoAttachIdleTargets>\n`;
   return wrapRequest('rdbg:RDBGSetAutoAttachSettingsRequest', fields);
 }
 
@@ -293,7 +304,7 @@ export function encodeStep(
   const fields =
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    targetIdToXml(targetId, '  ') +
+    targetIdTypedToXml(targetId, '  ') +
     `  <rdbg:action>${escapeXml(actionMap[action])}</rdbg:action>\n`;
   return wrapRequest('rdbg:RDBGStepRequest', fields);
 }
@@ -313,7 +324,7 @@ export function encodeContinue(
   const fields =
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    targetIdToXml(targetId, '  ') +
+    targetIdTypedToXml(targetId, '  ') +
     `  <rdbg:action>Continue</rdbg:action>\n`; // TODO: may be "go", "resume", or numeric
   return wrapRequest('rdbg:RDBGStepRequest', fields);
 }

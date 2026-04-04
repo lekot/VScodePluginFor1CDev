@@ -37,6 +37,8 @@ export class BslDebugSession extends DebugSession {
     private readonly _stackTraceCacheByThreadId: Map<number, RdbgCallStackItem[]> = new Map();
     /** Thread that last received `stopped` — Locals/Evaluate must use its targetId (not arbitrary Map iteration). */
     private _pausedThreadId: number | undefined;
+    /** Dedup key for last StoppedEvent — prevents repeated UI refresh on each ping tick while paused. */
+    private _lastStoppedKey: string = '';
 
     constructor() {
         super();
@@ -398,6 +400,7 @@ export class BslDebugSession extends DebugSession {
         }
 
         try {
+            this._lastStoppedKey = '';
             await this._client.continue(targetId);
             this._stackTraceCacheByThreadId.delete(args.threadId);
             response.body = { allThreadsContinued: false };
@@ -422,6 +425,7 @@ export class BslDebugSession extends DebugSession {
         }
 
         try {
+            this._lastStoppedKey = '';
             await this._client.step(targetId, 'over');
             this._stackTraceCacheByThreadId.delete(args.threadId);
         } catch (err) {
@@ -445,6 +449,7 @@ export class BslDebugSession extends DebugSession {
         }
 
         try {
+            this._lastStoppedKey = '';
             await this._client.step(targetId, 'into');
             this._stackTraceCacheByThreadId.delete(args.threadId);
         } catch (err) {
@@ -468,6 +473,7 @@ export class BslDebugSession extends DebugSession {
         }
 
         try {
+            this._lastStoppedKey = '';
             await this._client.step(targetId, 'out');
             this._stackTraceCacheByThreadId.delete(args.threadId);
         } catch (err) {
@@ -510,9 +516,12 @@ export class BslDebugSession extends DebugSession {
     // -------------------------------------------------------------------------
 
     private async _rdbgItemsToStackFramesAsync(items: RdbgCallStackItem[]): Promise<StackFrame[]> {
+        // 1C platform sends call stack bottom-up (caller first, current frame last).
+        // DAP expects top-down (current frame first). Reverse.
+        const reversed = [...items].reverse();
         const out: StackFrame[] = [];
-        for (let index = 0; index < items.length; index++) {
-            const item = items[index];
+        for (let index = 0; index < reversed.length; index++) {
+            const item = reversed[index];
             const label =
                 item.presentation.trim() !== ''
                     ? item.presentation
@@ -549,6 +558,8 @@ export class BslDebugSession extends DebugSession {
             if (threadId === undefined) {
                 threadId = 1;
             }
+
+            // Update stack cache regardless of dedup
             if (e.callStack && e.callStack.length > 0) {
                 this._stackTraceCacheByThreadId.set(threadId, e.callStack);
             } else {
@@ -557,6 +568,23 @@ export class BslDebugSession extends DebugSession {
             if (e.reason === 'exception' && e.error) {
                 this._lastError = e.error;
             }
+
+            // Log decoded call stack for diagnostics
+            const csInfo = (e.callStack ?? []).map((f, i) =>
+                `  [${i}] line=${f.lineNo} obj=${f.moduleId.objectId?.slice(0, 8)} prop=${f.moduleId.propertyId?.slice(0, 8)} pres=${f.presentation?.slice(0, 40)}`
+            ).join('\n');
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: stopped reason=${e.reason} target=${e.targetId?.slice(0, 8)} frames=${e.callStack?.length ?? 0}\n${csInfo}\n`,
+                'console'
+            ));
+
+            // Dedup: skip StoppedEvent if same position/reason as last ping
+            const stoppedKey = `${e.targetId}:${e.callStack?.[0]?.lineNo ?? ''}:${e.reason}`;
+            if (stoppedKey === this._lastStoppedKey) {
+                return;
+            }
+            this._lastStoppedKey = stoppedKey;
+
             // Full stopped body (allThreadsStopped, description) helps some clients show pause + thread UI.
             this._pausedThreadId = threadId;
             this.sendEvent(
@@ -579,6 +607,7 @@ export class BslDebugSession extends DebugSession {
             if (this._pausedThreadId === threadId) {
                 this._pausedThreadId = undefined;
             }
+            this._lastStoppedKey = '';
             this.sendEvent(new ContinuedEvent(threadId));
         });
 
