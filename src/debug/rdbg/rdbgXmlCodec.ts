@@ -222,8 +222,8 @@ export function encodePing(debugUiId: string): string {
 export function encodeInitSettings(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n`;
+    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
   return wrapRequest('rdbg:RDBGSetInitialDebugSettingsRequest', fields);
 }
 
@@ -234,8 +234,8 @@ export function encodeInitSettings(debugUiId: string, infobaseAlias?: string): s
 export function encodeSetAutoAttachSettings(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
+    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
     `  <rdbg:autoAttachIdleTargets>true</rdbg:autoAttachIdleTargets>\n`;
   return wrapRequest('rdbg:RDBGSetAutoAttachSettingsRequest', fields);
 }
@@ -255,7 +255,8 @@ export function encodeGetTargets(debugUiId: string, infobaseAlias?: string): str
 /**
  * SetBreakpoints — send a list of breakpoints to the server.
  * xsi:type="rdbg:RDBGSetBreakpointsRequest"
- * TODO: exact wrapper element name (bpWorkspace vs bpWorkspaceInternal) not yet confirmed.
+ * One bpWorkspace contains one moduleBPInfo per unique module, each with multiple bpInfo entries.
+ * Confirmed format: matches yukon39/bsl-debug-server reference implementation.
  */
 export function encodeSetBreakpoints(
   debugUiId: string,
@@ -267,16 +268,31 @@ export function encodeSetBreakpoints(
     `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
     `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
 
+  // Group breakpoints by module (objectId + propertyId)
+  const byModule = new Map<string, { moduleId: RdbgModuleId; lines: number[] }>();
   for (const bp of bps) {
-    fields +=
-      `  <rdbg:bpWorkspace xsi:type="bp:BPWorkspaceInternal">\n` +
-      `    <bp:moduleBPInfo>\n` +
-      moduleIdToXml(bp.moduleId, '      ') +
-      `      <bp:bpInfo>\n` +
-      `        <bp:line>${bp.lineNo}</bp:line>\n` +
-      `      </bp:bpInfo>\n` +
-      `    </bp:moduleBPInfo>\n` +
-      `  </rdbg:bpWorkspace>\n`;
+    const key = `${bp.moduleId.objectId}:${bp.moduleId.propertyId}`;
+    let entry = byModule.get(key);
+    if (!entry) {
+      entry = { moduleId: bp.moduleId, lines: [] };
+      byModule.set(key, entry);
+    }
+    entry.lines.push(bp.lineNo);
+  }
+
+  if (byModule.size > 0) {
+    fields += `  <rdbg:bpWorkspace xsi:type="bp:BPWorkspaceInternal">\n`;
+    for (const { moduleId, lines } of byModule.values()) {
+      fields += `    <bp:moduleBPInfo>\n` +
+        moduleIdToXml(moduleId, '      ');
+      for (const line of lines) {
+        fields += `      <bp:bpInfo>\n` +
+          `        <bp:line>${line}</bp:line>\n` +
+          `      </bp:bpInfo>\n`;
+      }
+      fields += `    </bp:moduleBPInfo>\n`;
+    }
+    fields += `  </rdbg:bpWorkspace>\n`;
   }
 
   return wrapRequest('rdbg:RDBGSetBreakpointsRequest', fields);
