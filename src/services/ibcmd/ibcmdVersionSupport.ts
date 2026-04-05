@@ -109,6 +109,79 @@ export async function queryParsedIbcmdVersion(
   return run;
 }
 
+// ---------------------------------------------------------------------------
+// Incremental support probe (ibcmd import files / export status / sync / objects)
+// ---------------------------------------------------------------------------
+
+export interface IncrementalSupportProbe {
+  importFiles: boolean;
+  exportStatus: boolean;
+  exportSync: boolean;
+  exportObjects: boolean;
+}
+
+const incrementalProbeByPath = new Map<string, Promise<IncrementalSupportProbe>>();
+
+/** Сброс кэша проверки инкрементальных команд (например после смены пути к ibcmd). */
+export function invalidateIncrementalSupportProbeCache(): void {
+  incrementalProbeByPath.clear();
+}
+
+/**
+ * Проверяет, поддерживает ли данный исполняемый ibcmd инкрементальные подкоманды.
+ * Результат кэшируется на путь к исполняемому файлу.
+ */
+export async function probeIncrementalSupport(
+  executablePath: string,
+  execImpl: IbcmdVersionExecFn = execFileAsync as IbcmdVersionExecFn,
+): Promise<IncrementalSupportProbe> {
+  const pending = incrementalProbeByPath.get(executablePath);
+  if (pending) {
+    return pending;
+  }
+
+  const run = (async (): Promise<IncrementalSupportProbe> => {
+    const execOpts = {
+      timeout: 10_000,
+      windowsHide: true,
+      maxBuffer: 64 * 1024,
+    };
+
+    async function getHelpText(args: readonly string[]): Promise<string> {
+      try {
+        const result = await execImpl(executablePath, args, execOpts);
+        const out = typeof result.stdout === 'string' ? result.stdout : result.stdout.toString('utf8');
+        const err = typeof result.stderr === 'string' ? result.stderr : result.stderr.toString('utf8');
+        return out + err;
+      } catch (e: unknown) {
+        // ibcmd exits with non-zero for --help; capture output from the error object
+        if (e && typeof e === 'object') {
+          const ex = e as { stdout?: string | Buffer; stderr?: string | Buffer };
+          const out = ex.stdout ? (typeof ex.stdout === 'string' ? ex.stdout : ex.stdout.toString('utf8')) : '';
+          const err = ex.stderr ? (typeof ex.stderr === 'string' ? ex.stderr : ex.stderr.toString('utf8')) : '';
+          return out + err;
+        }
+        return '';
+      }
+    }
+
+    const importHelp = await getHelpText(['infobase', 'config', 'import', '--help']);
+    const exportHelp = await getHelpText(['infobase', 'config', 'export', '--help']);
+
+    return {
+      importFiles: importHelp.includes('files'),
+      exportStatus: exportHelp.includes('status'),
+      exportSync: exportHelp.includes('sync'),
+      exportObjects: exportHelp.includes('objects'),
+    };
+  })();
+
+  incrementalProbeByPath.set(executablePath, run);
+  return run;
+}
+
+// ---------------------------------------------------------------------------
+
 /**
  * Если версия известна и ниже порога — текст ошибки для UI; иначе `undefined` (можно вызывать ibcmd).
  */

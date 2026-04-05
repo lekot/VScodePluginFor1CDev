@@ -50,6 +50,7 @@ export function registerExtensionWorkspace(
   state.treeView = vscode.window.createTreeView('1c-metadata-tree', {
     treeDataProvider: state.treeDataProvider,
     showCollapseAll: true,
+    canSelectMany: true,
   });
   state.treeDataProvider.setMessageUpdater((msg) => {
     if (state.treeView) {

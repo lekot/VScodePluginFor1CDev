@@ -382,6 +382,24 @@
         "title": "Запустить отладку",
         "category": "CDT 41",
         "icon": "$(debug-alt)"
+      },
+      {
+        "command": "1c-metadata-tree.config.deploySelectedObjects",
+        "title": "Раскатка выбранных в ИБ",
+        "category": "CDT 41",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "1c-metadata-tree.config.deployChangedFiles",
+        "title": "Раскатка изменённых файлов (git)",
+        "category": "CDT 41",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "1c-metadata-tree.config.configExportStatus",
+        "title": "Статус конфигурации (ИБ vs файлы)",
+        "category": "CDT 41",
+        "icon": "$(diff)"
       }
     ],
     "customEditors": [
@@ -426,6 +444,18 @@
         },
         {
           "command": "1c-metadata-tree.config.deployMultiple",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.config.deploySelectedObjects",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployChangedFiles",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.config.configExportStatus",
           "when": "false"
         }
       ],
@@ -530,6 +560,21 @@
           "command": "1c-metadata-tree.validateCurrentXml",
           "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot/",
           "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.config.deploySelectedObjects",
+          "when": "view == 1c-metadata-tree && viewItem =~ /bindingBound/",
+          "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.config.deployChangedFiles",
+          "when": "view == 1c-metadata-tree && viewItem =~ /bindingBound/",
+          "group": "infobase@3"
+        },
+        {
+          "command": "1c-metadata-tree.config.configExportStatus",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound/",
+          "group": "infobase@4"
         },
         {
           "command": "1c-metadata-tree.startDebugging",
