@@ -90,7 +90,7 @@ const server = http.createServer(async (req, res) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.log(`#${id} ✗ ERROR: ${msg}`);
     res.writeHead(502);
-    res.end(msg);
+    res.end('Proxy error');
   }
 });
 
