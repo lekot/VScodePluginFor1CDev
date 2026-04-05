@@ -1,0 +1,1 @@
+// ObjectModule stub for tests
