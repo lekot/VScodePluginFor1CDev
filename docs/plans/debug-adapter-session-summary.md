@@ -14,14 +14,20 @@
 
 ## Текущее состояние (прогресс)
 
-- Запуск из дерева: dbgs → attach DAP → клиент 1С с `/Debug -http -attach /DebuggerURL …`.
-- Регистрация UI, `initSettings` / `setAutoAttachSettings`, ping, обнаружение таргетов, attach к цели, установка точек по UUID модуля.
-- **Остановка на точке** в 1С подтверждена; интеграция с IDE доведена (в т.ч. событие `stopped`, привязка к потоку).
-- **Step / Continue / Call stack** — после исправления имён `cmd` в URL (раньше был **501 Not implemented**).
-- **Call stack в UI** — кадры из ping `DBGUIExtCmdInfoCallStackFormed` (кэш в `BslDebugSession`) + разбор вложенного `callStack`/`item` и base64 `presentation` в `decodeCallStack` / ping; при пустом кэше — HTTP `getCallStack`.
-- **Evaluate (watch)** — `cmd=evalExpr` и тело `RDBGEvalExprRequest` с блоком `expr` / `CalculationSourceDataStorage` (`calc:stackLevel` + `srcCalcInfo`); разбор ответа через `result[]` / `resultValueInfo`.
-- **Локальные переменные** — `cmd=evalLocalVariables`, тело **`RDBGEvalLocalVariablesRequest`**: как у eval — `calcWaitingTime`, `targetID`, **`rdbg:expr` / `calc:stackLevel`** (не корневой `callStackLevel` — иначе **400 XDTO**). Ответ: один `result` → `calculationResult.valueOfContextPropInfo[]` (`decodeVariables`).
-- **Открытие исходника по стеку** — в DAP нельзя подставлять `objectID` модуля как `Source.path` (VS Code пытается открыть файл с именем UUID). Нужен обратный резолв: **`ConfigDumpInfo.xml`** в корне конфигурации (`workspaceRoot` из attach) → `Metadata/@name` по паре `objectId` + `propertyId` → путь к `.bsl` (`resolveBslPathFromRdbgModule` в `moduleIdResolver.ts`). Если файла нет или строки нет в дампе — `Source` только с именем (без path), без ошибки «Could not load source».
+### Работает (подтверждено на живом dbgs 8.3.27)
+- Запуск из дерева: dbgs → attach DAP → клиент 1С.
+- `initSettings`, `setAutoAttachSettings` (с `autoAttachIdleTargets=true`), ping, обнаружение таргетов, auto-attach.
+- **Breakpoints** — множественные точки в одном модуле (группировка в один `bpWorkspace`). Динамическое добавление/удаление во время паузы.
+- **Остановка на точке** — подтверждена, включая вложенные вызовы.
+- **Step (over/into/out) / Continue** — работает, `xsi:type="DebugTargetIdLight"` на targetID.
+- **Call stack** — кадры из ping `DBGUIExtCmdInfoCallStackFormed` (кэш), fallback HTTP `getCallStack`. **Реверс** bottom-up → top-down для DAP.
+- **Открытие исходника по стеку** — `resolveBslPathFromRdbgModule` через `ConfigDumpInfo.xml`.
+- **Дедупликация stopped** — платформа шлёт `CallStackFormed` на каждый ping; повторный `StoppedEvent` не отправляется.
+
+### Не работает / отключено
+- **Локальные переменные** — `evalLocalVariables` **отключён** (вызывает TCP reset / crash dbgs). Возвращает пустой список. XML-формат сверен с yukon39 XSD, `xsi:type` убран с targetID, но сервер всё равно роняет соединение. Требуется отладка формата.
+- **Evaluate (watch)** — не тестировалось (evalExpr аналогичен evalLocalVariables по структуре, может иметь те же проблемы).
+- **Popup «Неизвестный модуль»** — при возврате из вложенной процедуры платформа может показать `{<Неизвестный модуль>(1,1)}: Переменная не определена (Отказ)`. Косметический баг, не блокирует.
 
 ## Обязательно знать при продолжении работ
 
@@ -95,7 +101,7 @@
 
 **Правило:** `xsi:type` нужен только для полиморфных полей (когда фактический тип — подтип объявленного). В текущих encode-функциях `step`/`continue` работают с `xsi:type` (платформа прощает), но для eval/callstack вызывает ошибку XDTO или TCP reset.
 
-**Решение:** использовать `<rdbg:targetID>` / `<rdbg:id>` **без** атрибута `xsi:type` в encode-функциях `evalLocalVariables`, `evaluate`, `getCallStack`. Для единообразия с эталоном — убрать и из `step`/`continue`.
+**Решение:** `xsi:type` **оставлен** на targetID для `step`/`continue` (работает). **Убран** для `evalLocalVariables`, `evaluate`, `getCallStack` (вызывает XDTO-ошибку или TCP reset). Две хелпер-функции: `targetIdTypedToXml` (с xsi:type) и `targetIdToXml` (без).
 
 ## Краткая история фиксов (без устаревших гипотез)
 
@@ -118,15 +124,13 @@
 
 ## Следующие шаги
 
-1. **Починить Locals** (текущий приоритет):
-   - Убрать `xsi:type="DebugTargetIdLight"` с `<rdbg:targetID>` / `<rdbg:id>` во всех encode-функциях — привести к эталону JAXB.
-   - Обернуть `getLocalVariables` и `getCallStack` HTTP-вызовы защитным try/catch — при ошибке возвращать пустой результат, не ронять сессию.
-   - Логировать XML запрос/ответ для `evalLocalVariables` в Debug Console.
-   - Протестировать на живом dbgs 8.3.27.
-2. **Регрессия**: после фикса Locals — полный цикл (точка, стек, шаги, continue, watch, Locals).
-3. **moduleIdResolver**: явные шаблоны для **RecordSetModule** и прочих `Ext/*.bsl`, если появятся в выгрузке.
+1. **Починить evalLocalVariables** (текущий приоритет):
+   - Сейчас отключён (crash dbgs). XML-формат сверен с XSD, `xsi:type` убран, порядок полей исправлен. Нужно: написать standalone тест-скрипт для пробы формата против живого dbgs, итеративно найти правильную разметку.
+   - Гипотеза: может быть проблема с `calc:` namespace prefix на дочерних элементах `<rdbg:expr>` — платформа может ожидать unqualified элементы.
+2. **Evaluate (watch)** — включить и протестировать `evalExpr` (аналогичная структура).
+3. **moduleIdResolver**: явные шаблоны для **RecordSetModule** и прочих `Ext/*.bsl`.
 4. **Переменные (расширение)**: раскрытие `isExpandable`, привязка `variablesReference` к кадру/цели.
-5. **ping**: при несовпадении с `pingDebugUIParams` — снять трафик с Конфигуратора и выровнять query.
+5. **Popup «Неизвестный модуль»** — при возврате из вложенной процедуры; косметический баг.
 
 ## Ключевые пути в репозитории
 
