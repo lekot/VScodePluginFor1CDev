@@ -656,7 +656,9 @@ export class BslDebugSession extends DebugSession {
     }
 
     private async _reapplyBreakpoints(): Promise<void> {
-        if (!this._client || this._knownBreakpoints.size === 0) return;
+        if (!this._client || this._knownBreakpoints.size === 0) {
+            return;
+        }
         for (const [sourcePath, entry] of this._knownBreakpoints) {
             try {
                 const rdbgBps = entry.lineNos.map(lineNo => ({
