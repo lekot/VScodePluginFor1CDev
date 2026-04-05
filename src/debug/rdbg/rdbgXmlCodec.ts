@@ -5,16 +5,24 @@
  *
  * Namespaces:
  *   default / root element: http://v8.1c.ru/8.3/debugger/debugBaseData
- *   rdbg prefix:            http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse
+ *   debugRDBGRequestResponse: http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse
+ *   debugCalculations:        http://v8.1c.ru/8.3/debugger/debugCalculations
+ *   debugBreakpoints:         http://v8.1c.ru/8.3/debugger/debugBreakpoints
  *
  * Encode functions use template strings (NOT XMLBuilder) because fast-xml-parser
- * builder cannot produce namespace-prefixed child elements like <rdbg:foo>.
+ * builder cannot produce namespace-prefixed child elements.
  * Decode functions use XMLParser with removeNSPrefix: true.
+ *
+ * Namespace prefixes match the 1C Configurator (Wireshark reference):
+ *   debugRDBGRequestResponse instead of rdbg
+ *   debugCalculations instead of calc
+ *   debugBreakpoints instead of bp
  *
  * Tested against a live 1C debug server. Fields marked TODO were not yet
  * confirmed with a real server response.
  */
 
+import * as crypto from 'crypto';
 import { XMLParser } from 'fast-xml-parser';
 import {
   RdbgTargetInfo,
@@ -37,14 +45,29 @@ import {
 
 const NS_BASE = 'http://v8.1c.ru/8.3/debugger/debugBaseData';
 const NS_RDBG = 'http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse';
+const NS_CALC = 'http://v8.1c.ru/8.3/debugger/debugCalculations';
+const NS_BP   = 'http://v8.1c.ru/8.3/debugger/debugBreakpoints';
+const NS_CFG  = 'http://v8.1c.ru/8.1/data/enterprise/current-config';
+const NS_V8   = 'http://v8.1c.ru/8.1/data/core';
+const NS_XS   = 'http://www.w3.org/2001/XMLSchema';
 const NS_XSI  = 'http://www.w3.org/2001/XMLSchema-instance';
 const DEF_ALIAS = 'DefAlias';
 
-const NS_CALC = 'http://v8.1c.ru/8.3/debugger/debugCalculations';
+// Namespace prefix constants — match the 1C Configurator reference (Wireshark capture).
+const P_RDBG = 'debugRDBGRequestResponse';
+const P_CALC = 'debugCalculations';
+const P_BP   = 'debugBreakpoints';
 
 /** Standard namespace declarations for the <request> root element. */
 const REQUEST_NS_ATTRS =
-  `xmlns="${NS_BASE}" xmlns:rdbg="${NS_RDBG}" xmlns:bp="http://v8.1c.ru/8.3/debugger/debugBreakpoints" xmlns:calc="${NS_CALC}" xmlns:xsi="${NS_XSI}"`;
+  `xmlns="${NS_BASE}"` +
+  ` xmlns:${P_RDBG}="${NS_RDBG}"` +
+  ` xmlns:${P_BP}="${NS_BP}"` +
+  ` xmlns:${P_CALC}="${NS_CALC}"` +
+  ` xmlns:cfg="${NS_CFG}"` +
+  ` xmlns:v8="${NS_V8}"` +
+  ` xmlns:xs="${NS_XS}"` +
+  ` xmlns:xsi="${NS_XSI}"`;
 
 // ---------------------------------------------------------------------------
 // Parser instance
@@ -79,25 +102,26 @@ function escapeXml(s: string): string {
 
 /**
  * Wrap field XML into the standard <request> envelope.
- * @param xsiType   e.g. "rdbg:RDBGAttachDebugUIRequest"
- * @param fields    inner XML string with rdbg:-prefixed elements
+ * xsi:type is required for most requests (attachDebugUI, ping, setBreakpoints, step, etc.)
+ * but the Configurator omits it for evalExpr (Wireshark capture). Pass undefined to omit.
  */
-function wrapRequest(xsiType: string, fields: string): string {
+function wrapRequest(fields: string, xsiType?: string): string {
+  const typeAttr = xsiType ? ` xsi:type="${escapeXml(xsiType)}"` : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
-<request ${REQUEST_NS_ATTRS} xsi:type="${escapeXml(xsiType)}">
+<request ${REQUEST_NS_ATTRS}${typeAttr}>
 ${fields}</request>`;
 }
 
-/** Serialize a module ID to bp: prefixed XML fragment (BSLModuleIdInternal). */
+/** Serialize a module ID to debugBreakpoints: prefixed XML fragment (BSLModuleIdInternal). */
 function moduleIdToXml(mid: RdbgModuleId, indent: string): string {
   const ext = mid.extensionName
     ? `${indent}    <extensionName>${escapeXml(mid.extensionName)}</extensionName>\n`
     : '';
-  return `${indent}<bp:id xsi:type="BSLModuleIdInternal">\n` +
+  return `${indent}<${P_BP}:id xsi:type="BSLModuleIdInternal">\n` +
     `${indent}  <objectID>${escapeXml(mid.objectId)}</objectID>\n` +
     `${indent}  <propertyID>${escapeXml(mid.propertyId)}</propertyID>\n` +
     ext +
-    `${indent}</bp:id>\n`;
+    `${indent}</${P_BP}:id>\n`;
 }
 
 
@@ -106,23 +130,23 @@ function moduleIdToXml(mid: RdbgModuleId, indent: string): string {
  * JAXB reference omits xsi:type, but 1C platform accepts it for step — keep for safety.
  */
 function targetIdTypedToXml(id: string, indent: string): string {
-  return `${indent}<rdbg:targetID xsi:type="DebugTargetIdLight">\n` +
+  return `${indent}<${P_RDBG}:targetID xsi:type="DebugTargetIdLight">\n` +
     `${indent}  <id>${escapeXml(id)}</id>\n` +
-    `${indent}</rdbg:targetID>\n`;
+    `${indent}</${P_RDBG}:targetID>\n`;
 }
 
 /** Serialize a target ID WITHOUT xsi:type for eval requests (xsi:type crashes dbgs). */
 function targetIdToXml(id: string, indent: string): string {
-  return `${indent}<rdbg:targetID>\n` +
+  return `${indent}<${P_RDBG}:targetID>\n` +
     `${indent}  <id>${escapeXml(id)}</id>\n` +
-    `${indent}</rdbg:targetID>\n`;
+    `${indent}</${P_RDBG}:targetID>\n`;
 }
 
-/** Serialize a target ID as rdbg:id WITHOUT xsi:type for getCallStack. */
+/** Serialize a target ID as debugRDBGRequestResponse:id WITHOUT xsi:type for getCallStack. */
 function targetIdAsIdToXml(id: string, indent: string): string {
-  return `${indent}<rdbg:id>\n` +
+  return `${indent}<${P_RDBG}:id>\n` +
     `${indent}  <id>${escapeXml(id)}</id>\n` +
-    `${indent}</rdbg:id>\n`;
+    `${indent}</${P_RDBG}:id>\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,78 +207,71 @@ function decodeBase64Utf8(s: string): string {
 
 /**
  * AttachDebugUI — register this debug UI with the server.
- * Verified format: xsi:type="rdbg:RDBGAttachDebugUIRequest"
  */
 export function encodeAttachDebugUI(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
-  return wrapRequest('rdbg:RDBGAttachDebugUIRequest', fields);
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
+  return wrapRequest(fields, `${P_RDBG}:RDBGAttachDebugUIRequest`);
 }
 
 /**
  * DetachDebugUI — unregister this debug UI.
- * xsi:type="rdbg:RDBGDetachDebugUIRequest"
  */
 export function encodeDetachDebugUI(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
-  return wrapRequest('rdbg:RDBGDetachDebugUIRequest', fields);
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
+  return wrapRequest(fields, `${P_RDBG}:RDBGDetachDebugUIRequest`);
 }
 
 /**
  * Ping — poll for asynchronous events.
- * xsi:type="rdbg:RDBGPingDebugUIRequest"
  * HTTP 204 (no content) means no events.
  */
 export function encodePing(debugUiId: string): string {
-  const fields = `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
-  return wrapRequest('rdbg:RDBGPingDebugUIRequest', fields);
+  const fields = `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
+  return wrapRequest(fields, `${P_RDBG}:RDBGPingDebugUIRequest`);
 }
 
 /**
  * InitSettings — send initial debug settings to the server.
- * xsi:type="rdbg:RDBGSetInitialDebugSettingsRequest"
  */
 export function encodeInitSettings(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
-  return wrapRequest('rdbg:RDBGSetInitialDebugSettingsRequest', fields);
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
+  return wrapRequest(fields, `${P_RDBG}:RDBGSetInitialDebugSettingsRequest`);
 }
 
 /**
  * SetAutoAttachSettings — configure auto-attach behaviour for new targets.
- * xsi:type="rdbg:RDBGSetAutoAttachSettingsRequest"
  */
 export function encodeSetAutoAttachSettings(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:autoAttachIdleTargets>true</rdbg:autoAttachIdleTargets>\n`;
-  return wrapRequest('rdbg:RDBGSetAutoAttachSettingsRequest', fields);
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:autoAttachIdleTargets>true</${P_RDBG}:autoAttachIdleTargets>\n`;
+  return wrapRequest(fields, `${P_RDBG}:RDBGSetAutoAttachSettingsRequest`);
 }
 
 /**
  * GetTargets — retrieve the list of currently attached debug targets.
- * xsi:type="rdbg:RDBGGetDbgTargetsRequest"
  */
 export function encodeGetTargets(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
-  return wrapRequest('rdbg:RDBGGetDbgTargetsRequest', fields);
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
+  return wrapRequest(fields, `${P_RDBG}:RDBGGetDbgTargetsRequest`);
 }
 
 /**
  * SetBreakpoints — send a list of breakpoints to the server.
- * xsi:type="rdbg:RDBGSetBreakpointsRequest"
  * One bpWorkspace contains one moduleBPInfo per unique module, each with multiple bpInfo entries.
  * Confirmed format: matches yukon39/bsl-debug-server reference implementation.
  */
@@ -265,8 +282,8 @@ export function encodeSetBreakpoints(
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   let fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n`;
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
 
   // Group breakpoints by module (objectId + propertyId)
   const byModule = new Map<string, { moduleId: RdbgModuleId; lines: number[] }>();
@@ -281,26 +298,25 @@ export function encodeSetBreakpoints(
   }
 
   if (byModule.size > 0) {
-    fields += `  <rdbg:bpWorkspace xsi:type="bp:BPWorkspaceInternal">\n`;
+    fields += `  <${P_RDBG}:bpWorkspace xsi:type="${P_BP}:BPWorkspaceInternal">\n`;
     for (const { moduleId, lines } of byModule.values()) {
-      fields += `    <bp:moduleBPInfo>\n` +
+      fields += `    <${P_BP}:moduleBPInfo>\n` +
         moduleIdToXml(moduleId, '      ');
       for (const line of lines) {
-        fields += `      <bp:bpInfo>\n` +
-          `        <bp:line>${line}</bp:line>\n` +
-          `      </bp:bpInfo>\n`;
+        fields += `      <${P_BP}:bpInfo>\n` +
+          `        <${P_BP}:line>${line}</${P_BP}:line>\n` +
+          `      </${P_BP}:bpInfo>\n`;
       }
-      fields += `    </bp:moduleBPInfo>\n`;
+      fields += `    </${P_BP}:moduleBPInfo>\n`;
     }
-    fields += `  </rdbg:bpWorkspace>\n`;
+    fields += `  </${P_RDBG}:bpWorkspace>\n`;
   }
 
-  return wrapRequest('rdbg:RDBGSetBreakpointsRequest', fields);
+  return wrapRequest(fields, `${P_RDBG}:RDBGSetBreakpointsRequest`);
 }
 
 /**
  * Step — single-step execution (into / over / out).
- * xsi:type="rdbg:RDBGStepRequest"
  * HTTP cmd name: "step" (same endpoint for continue with action Continue).
  */
 export function encodeStep(
@@ -318,16 +334,16 @@ export function encodeStep(
     out: 'StepOut',
   };
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
     targetIdTypedToXml(targetId, '  ') +
-    `  <rdbg:action>${escapeXml(actionMap[action])}</rdbg:action>\n`;
-  return wrapRequest('rdbg:RDBGStepRequest', fields);
+    `  <${P_RDBG}:action>${escapeXml(actionMap[action])}</${P_RDBG}:action>\n`;
+  return wrapRequest(fields, `${P_RDBG}:RDBGStepRequest`);
 }
 
 /**
  * Continue — resume execution after a break.
- * Fallback: uses RDBGStepRequest with action=Continue until the exact command is confirmed.
+ * Fallback: uses step endpoint with action=Continue until the exact command is confirmed.
  * TODO: verify whether this is a separate command or action value "Continue"/"go".
  */
 export function encodeContinue(
@@ -338,16 +354,15 @@ export function encodeContinue(
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
     targetIdTypedToXml(targetId, '  ') +
-    `  <rdbg:action>Continue</rdbg:action>\n`; // TODO: may be "go", "resume", or numeric
-  return wrapRequest('rdbg:RDBGStepRequest', fields);
+    `  <${P_RDBG}:action>Continue</${P_RDBG}:action>\n`; // TODO: may be "go", "resume", or numeric
+  return wrapRequest(fields, `${P_RDBG}:RDBGStepRequest`);
 }
 
 /**
  * GetCallStack — request the current call stack for a target.
- * xsi:type="rdbg:RDBGGetCallStackRequest"
  * TODO: exact field set not yet confirmed with a live response.
  */
 export function encodeGetCallStack(
@@ -358,19 +373,16 @@ export function encodeGetCallStack(
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
     targetIdAsIdToXml(targetId, '  ');
-  return wrapRequest('rdbg:RDBGGetCallStackRequest', fields);
+  return wrapRequest(fields, `${P_RDBG}:RDBGGetCallStackRequest`);
 }
 
 /**
  * EvalLocalVariables — get local variables at a specific stack frame.
- * xsi:type="rdbg:RDBGEvalLocalVariablesRequest"
- * Expr list items are CalculationSourceDataStorage (yukon39): calc:stackLevel only is valid.
- * Do not add xsi:type on &lt;rdbg:expr&gt; — JAXB reference impl does not; a mismatched QName
- * has been observed to reset the TCP connection and kill dbgs (ECONNRESET → ECONNREFUSED on ping).
- * No root-level callStackLevel (HTTP 400 XDTO).
+ * Expr contains only stackLevel (no srcCalcInfo) — platform returns all locals.
+ * No xsi:type on <expr> — mismatched QName resets the TCP connection and kills dbgs.
  */
 export function encodeEvalLocalVariables(
   debugUiId: string,
@@ -381,44 +393,50 @@ export function encodeEvalLocalVariables(
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:calcWaitingTime>5000</rdbg:calcWaitingTime>\n` +
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:calcWaitingTime>100</${P_RDBG}:calcWaitingTime>\n` +
     targetIdToXml(targetId, '  ') +
-    `  <rdbg:expr>\n` +
-    `    <calc:stackLevel>${frameIndex}</calc:stackLevel>\n` +
-    `  </rdbg:expr>\n`;
-  return wrapRequest('rdbg:RDBGEvalLocalVariablesRequest', fields);
+    `  <${P_RDBG}:expr>\n` +
+    `    <${P_CALC}:stackLevel>${frameIndex}</${P_CALC}:stackLevel>\n` +
+    `  </${P_RDBG}:expr>\n`;
+  return wrapRequest(fields);
 }
 
 /**
- * Evaluate — RDBGEvalExprRequest (same expr shape as RDBGEvalLocalVariablesRequest in yukon39).
- * HTTP cmd: "evalExpr" (not evaluateRequest).
+ * Evaluate — evalExpr request matching the 1C Configurator Wireshark reference.
+ * HTTP cmd: "evalExpr".
+ * Format: srcCalcInfo with expressionID + expressionResultID (UUIDs) + interfaces=context.
+ * No stackLevel in evalExpr — only srcCalcInfo (Configurator reference does not include it).
  */
 export function encodeEvaluate(
   debugUiId: string,
   targetId: string,
   _seanceId: string,
   expression: string,
-  frameIndex: number,
+  _frameIndex: number,
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
+  const exprId = crypto.randomUUID();
+  const resultId = crypto.randomUUID();
   const fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:calcWaitingTime>5000</rdbg:calcWaitingTime>\n` +
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:calcWaitingTime>100</${P_RDBG}:calcWaitingTime>\n` +
     targetIdToXml(targetId, '  ') +
-    `  <rdbg:expr>\n` +
-    `    <calc:stackLevel>${frameIndex}</calc:stackLevel>\n` +
-    `    <calc:srcCalcInfo>\n` +
-    `      <calc:calcItem>\n` +
-    `        <calc:itemType>expression</calc:itemType>\n` +
-    `        <calc:expression>${escapeXml(expression)}</calc:expression>\n` +
-    `      </calc:calcItem>\n` +
-    `    </calc:srcCalcInfo>\n` +
-    `  </rdbg:expr>\n`;
-  return wrapRequest('rdbg:RDBGEvalExprRequest', fields);
+    `  <${P_RDBG}:expr>\n` +
+    `    <${P_CALC}:srcCalcInfo>\n` +
+    `      <${P_CALC}:expressionID>${exprId}</${P_CALC}:expressionID>\n` +
+    `      <${P_CALC}:expressionResultID>${resultId}</${P_CALC}:expressionResultID>\n` +
+    `      <${P_CALC}:calcItem>\n` +
+    `        <${P_CALC}:itemType>expression</${P_CALC}:itemType>\n` +
+    `        <${P_CALC}:expression>${escapeXml(expression)}</${P_CALC}:expression>\n` +
+    `      </${P_CALC}:calcItem>\n` +
+    `      <${P_CALC}:interfaces>context</${P_CALC}:interfaces>\n` +
+    `    </${P_CALC}:srcCalcInfo>\n` +
+    `  </${P_RDBG}:expr>\n`;
+  return wrapRequest(fields);
 }
 
 /** Target identifier carrying both id and seanceId for attach/detach operations. */
@@ -429,7 +447,6 @@ export interface RdbgTargetRef {
 
 /**
  * AttachTargets / DetachTargets — attach or detach specific debug targets.
- * xsi:type="rdbg:RDBGAttachDetachDebugTargetsRequest"
  * TODO: exact structure of targetID list and attach/detach flag not yet confirmed.
  */
 export function encodeAttachTargets(
@@ -440,18 +457,18 @@ export function encodeAttachTargets(
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
   let fields =
-    `  <rdbg:infoBaseAlias>${escapeXml(alias)}</rdbg:infoBaseAlias>\n` +
-    `  <rdbg:idOfDebuggerUI>${escapeXml(debugUiId)}</rdbg:idOfDebuggerUI>\n` +
-    `  <rdbg:attach>${attach}</rdbg:attach>\n`; // TODO: may be separate attach/detach commands
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:attach>${attach}</${P_RDBG}:attach>\n`; // TODO: may be separate attach/detach commands
 
   for (const target of targets) {
     fields +=
-      `  <rdbg:id>\n` +
+      `  <${P_RDBG}:id>\n` +
       `    <id>${escapeXml(target.id)}</id>\n` +
-      `  </rdbg:id>\n`;
+      `  </${P_RDBG}:id>\n`;
   }
 
-  return wrapRequest('rdbg:RDBGAttachDetachDebugTargetsRequest', fields);
+  return wrapRequest(fields, `${P_RDBG}:RDBGAttachDetachDebugTargetsRequest`);
 }
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ import {
     Thread,
     StackFrame,
     Scope,
-    // Variable,  // TODO: re-enable when evalLocalVariables is fixed
+    // Variable,  // TODO: re-enable when Locals via evalExpr is implemented
     Source,
     Breakpoint,
     Event,
@@ -305,15 +305,13 @@ export class BslDebugSession extends DebugSession {
 
     protected async variablesRequest(
         response: DebugProtocol.VariablesResponse,
-        args: DebugProtocol.VariablesArguments
+        _args: DebugProtocol.VariablesArguments
     ): Promise<void> {
         if (!this._client) {
             response.body = { variables: [] };
             this.sendResponse(response);
             return;
         }
-
-        const frameIndex = args.variablesReference - 1;
 
         const threadIdForVars = this._pausedThreadId;
         const targetId =
@@ -329,8 +327,8 @@ export class BslDebugSession extends DebugSession {
             return;
         }
 
-        // TODO: evalLocalVariables disabled — crashes dbgs (TCP reset). Debugging XML format separately.
-        this.sendEvent(new OutputEvent(`BSL Debug: Locals disabled (evalLocalVariables crashes dbgs). target=${targetId} frame=${frameIndex}\n`, 'console'));
+        // evalLocalVariables crashes dbgs (CalculationSourceDataStorage namespace bug in 8.3.27).
+        // Configurator uses evalExpr instead. TODO: implement Locals via evalExpr.
         response.body = { variables: [] };
 
         this.sendResponse(response);
