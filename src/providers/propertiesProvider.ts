@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
@@ -162,10 +163,20 @@ export class PropertiesProvider {
         ? (await import('../formEditor/formPaths')).getFormPaths(node.filePath).formXmlPath
         : node.filePath);
 
-    if (pathToRead && !node.parentFilePath) {
+    let isReadableFile = false;
+    if (pathToRead) {
+      try {
+        const stat = await fs.promises.stat(pathToRead);
+        isReadableFile = stat.isFile();
+      } catch {
+        // path doesn't exist — skip reading
+      }
+    }
+
+    if (isReadableFile && !node.parentFilePath) {
       try {
         const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
-        const xmlProperties = await xmlWriter.readProperties(pathToRead);
+        const xmlProperties = await xmlWriter.readProperties(pathToRead!);
         
         // Update node properties with fresh data from XML
         node.properties = { ...xmlProperties };

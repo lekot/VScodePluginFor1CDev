@@ -45,6 +45,11 @@ export class XMLWriter {
         throw new Error(`File not found: ${filePath}`);
       }
 
+      const stat = await fs.promises.stat(filePath);
+      if (!stat.isFile()) {
+        throw new Error(`Not a file: ${filePath}`);
+      }
+
       let xmlContent: string;
       try {
         xmlContent = await fs.promises.readFile(filePath, 'utf-8');
