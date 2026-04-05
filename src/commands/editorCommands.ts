@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 import { ExtensionState } from '../state/extensionState';
 import { MetadataType, TreeNode } from '../models/treeNode';
@@ -12,6 +13,7 @@ import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDial
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import { appendIbcmdOutputLine, showIbcmdInfobaseOutputChannel } from '../infobases/infobaseConfigCommands';
+import { startDebugging } from '../debug/debugLauncher';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
@@ -78,6 +80,16 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         return;
       }
       try {
+        // Create module file on disk if it doesn't exist yet
+        const fileExists = await fs.promises.access(fp).then(() => true, () => false);
+        if (!fileExists) {
+          await fs.promises.mkdir(path.dirname(fp), { recursive: true });
+          await fs.promises.writeFile(fp, '', 'utf-8');
+          Logger.info(`Created module file: ${fp}`);
+          if (target.properties.isVirtual) {
+            target.properties.isVirtual = false;
+          }
+        }
         Logger.info(`Opening BSL module: ${fp}`);
         await vscode.window.showTextDocument(vscode.Uri.file(fp));
       } catch (err) {
@@ -328,6 +340,27 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const startDebuggingCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.startDebugging',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target) {
+        vscode.window.showWarningMessage('Выберите узел конфигурации в дереве метаданных.');
+        return;
+      }
+      if (!state.bindingManager || !state.infobaseStorage || !state.treeDataProvider) {
+        vscode.window.showErrorMessage('Отладка недоступна: не инициализированы зависимости.');
+        return;
+      }
+      await startDebugging({
+        node: target,
+        bindingManager: state.bindingManager,
+        infobaseStorage: state.infobaseStorage,
+        treeDataProvider: state.treeDataProvider,
+      });
+    }
+  );
+
   return [
     showPropertiesCommand,
     openXMLCommand,
@@ -338,5 +371,6 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     saveRightsEditorCommand,
     validateCurrentXmlCommand,
     editSubsystemCompositionCommand,
+    startDebuggingCommand,
   ];
 }

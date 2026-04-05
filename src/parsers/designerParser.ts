@@ -14,6 +14,7 @@ import {
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import { STANDARD_MODULES } from '../constants/moduleTypes';
 import {
   extractExtensionProperties,
   extractObjectBelonging,
@@ -486,6 +487,20 @@ export class DesignerParser {
       } catch {
         // Keep elementPath as filePath
       }
+
+      // For shallow (lazy) nodes, still show virtual Ext with standard modules
+      // so users can navigate to ObjectModule/ManagerModule even before expanding
+      if (STANDARD_MODULES[elementNode.type] !== undefined) {
+        const extNode = await this.parseExtensions(
+          path.join(elementPath, 'Ext'),
+          undefined,
+          elementNode.type
+        );
+        extNode.parent = elementNode;
+        elementNode.children = [extNode];
+        elementNode.properties._lazy = true;
+      }
+
       return elementNode;
     }
 
@@ -521,13 +536,29 @@ export class DesignerParser {
     }
 
     // Parse sub-elements from filesystem (Ext, Forms, Attributes, TabularSections)
+    let extAlreadyAdded = false;
     try {
       const items = await fs.promises.readdir(elementPath);
       for (const item of items) {
         await this.applyDirectoryChild(elementNode, elementPath, typeName, elementName, item);
+        if (item === 'Ext') {
+          extAlreadyAdded = true;
+        }
       }
     } catch (error) {
       Logger.debug(`Error reading element directory ${elementPath}`, error);
+    }
+
+    // If Ext directory does not exist on disk but this type has standard modules,
+    // add a virtual Ext node so that virtual module nodes are always visible.
+    if (!extAlreadyAdded && STANDARD_MODULES[elementNode.type] !== undefined) {
+      const extNode = await this.parseExtensions(
+        path.join(elementPath, 'Ext'),
+        typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined,
+        elementNode.type
+      );
+      extNode.parent = elementNode;
+      elementNode.children!.push(extNode);
     }
 
     return elementNode;
@@ -537,9 +568,14 @@ export class DesignerParser {
    * Parse extensions directory
    * @param extPath Path to Ext directory
    * @param idPrefix Optional prefix for stable node ids (e.g. `CommonModules.MyModule`) so `Ext` is unique in the tree cache
+   * @param parentType MetadataType of the owning object — used to add virtual module nodes for missing .bsl files
    * @returns Tree node for extensions
    */
-  private static async parseExtensions(extPath: string, idPrefix?: string): Promise<TreeNode> {
+  private static async parseExtensions(
+    extPath: string,
+    idPrefix?: string,
+    parentType?: MetadataType
+  ): Promise<TreeNode> {
     const qp = idPrefix != null && idPrefix !== '' ? `${idPrefix}.` : '';
     const extNode: TreeNode = {
       id: `${qp}Ext`,
@@ -613,6 +649,34 @@ export class DesignerParser {
       }
     } catch (error) {
       Logger.debug(`Error reading extensions directory ${extPath}`, error);
+    }
+
+    // Add virtual module nodes for standard modules that are absent on disk
+    if (parentType !== undefined) {
+      const standardModules = STANDARD_MODULES[parentType];
+      if (standardModules && standardModules.length > 0) {
+        const existingFileNames = new Set(
+          (extNode.children ?? []).map((c) => c.name)
+        );
+        for (const mod of standardModules) {
+          if (!existingFileNames.has(mod.fileName)) {
+            const virtualNode: TreeNode = {
+              id: `${qp}Ext.${mod.fileName}`,
+              name: mod.fileName,
+              type: MetadataType.Method,
+              properties: {
+                isModule: true,
+                fileType: 'bsl',
+                isVirtual: true,
+                label: mod.label,
+              },
+              filePath: path.join(extPath, mod.fileName),
+              parent: extNode,
+            };
+            extNode.children?.push(virtualNode);
+          }
+        }
+      }
     }
 
     return extNode;
@@ -890,12 +954,11 @@ export class DesignerParser {
     if (item === 'Ext') {
       const extNode = await this.parseExtensions(
         path.join(elementPath, item),
-        typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined
+        typeName === 'CommonModules' ? `${typeName}.${elementName}` : undefined,
+        parent.type
       );
-      if (extNode.children && extNode.children.length > 0) {
-        extNode.parent = parent;
-        parent.children!.push(extNode);
-      }
+      extNode.parent = parent;
+      parent.children!.push(extNode);
     } else if (item === 'Forms') {
       const formsNode = await this.parseForms(path.join(elementPath, item));
       if (formsNode.children && formsNode.children.length > 0) {

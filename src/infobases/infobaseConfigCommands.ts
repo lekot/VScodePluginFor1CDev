@@ -16,6 +16,7 @@ import {
 
 type PreparedIbcmdConnectionOk = PreparedIbcmdYaml | PreparedIbcmdFileDb;
 import {
+  buildInfobaseConfigApplyArgs,
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
   buildInfobaseConfigImportArgs,
@@ -363,7 +364,39 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       ch.appendLine(TRUNCATION_WARNING);
     }
 
-    return interpretIbcmdInfobaseOutcome('import', outcome);
+    const importResult = interpretIbcmdInfobaseOutcome('import', outcome);
+    if (importResult.status === 'error') {
+      return importResult;
+    }
+
+    // apply: обновление конфигурации БД
+    const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
+    ch.appendLine(`[apply${ctx}] Обновление конфигурации БД...`);
+    const applyArgs = buildInfobaseConfigApplyArgs(connection, {
+      extension: params.ibcmdExtensionName?.trim() || undefined,
+      credentials: importCredentials,
+    });
+    const applyOutcome = await runIbcmdStreaming({
+      executablePath: pathResult.path,
+      args: applyArgs,
+      timeoutMs: ibcmd.getTimeoutMs(),
+      cancellation: vscodeCancellation(params.token),
+      consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
+    });
+
+    flushOutputChannel();
+
+    if (applyOutcome.spawnErrorCode === 'ENOENT' || applyOutcome.spawnErrorCode === 'ENOTDIR') {
+      ibcmd.invalidatePathCache();
+    }
+
+    if (applyOutcome.logTruncated) {
+      ch.appendLine(TRUNCATION_WARNING);
+    }
+
+    return interpretIbcmdInfobaseOutcome('apply', applyOutcome);
   } finally {
     flushOutputChannel();
     await prep.dispose();
@@ -376,6 +409,12 @@ async function runInfobaseConfigOperation(params: {
   storage: InfobaseStorageService;
   progressTitle: string;
   buildArgsFromPrep: (prep: PreparedIbcmdConnectionOk, credentials?: IbcmdConfigCliCredentials) => string[];
+  /** Дополнительная операция после основной (например apply после import). */
+  postStep?: {
+    op: IbcmdInfobaseConfigOpKind;
+    logLine: string;
+    buildArgsFromPrep: (prep: PreparedIbcmdConnectionOk, credentials?: IbcmdConfigCliCredentials) => string[];
+  };
 }): Promise<void> {
   const ibcmd = getIbcmdService();
   const pathResult = ibcmd.resolveExecutablePath();
@@ -443,7 +482,33 @@ async function runInfobaseConfigOperation(params: {
           ch.appendLine(TRUNCATION_WARNING);
         }
 
-        const interpreted = interpretIbcmdInfobaseOutcome(params.op, outcome);
+        let interpreted = interpretIbcmdInfobaseOutcome(params.op, outcome);
+
+        if (interpreted.status !== 'error' && params.postStep) {
+          ch.appendLine(params.postStep.logLine);
+          const postOutcome = await runIbcmdStreaming({
+            executablePath: pathResult.path,
+            args: params.postStep.buildArgsFromPrep(prep, credentials),
+            timeoutMs: ibcmd.getTimeoutMs(),
+            cancellation: vscodeCancellation(token),
+            consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+            onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+            abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
+          });
+
+          flushOutputChannel();
+
+          if (postOutcome.spawnErrorCode === 'ENOENT' || postOutcome.spawnErrorCode === 'ENOTDIR') {
+            ibcmd.invalidatePathCache();
+          }
+
+          if (postOutcome.logTruncated) {
+            ch.appendLine(TRUNCATION_WARNING);
+          }
+
+          interpreted = interpretIbcmdInfobaseOutcome(params.postStep.op, postOutcome);
+        }
+
         const showOutput = 'Показать вывод';
         // Не await: иначе ProgressLocation.Notification крутится, пока пользователь не закроет toast.
         if (interpreted.status === 'success') {
@@ -512,6 +577,12 @@ export async function runInfobaseConfigImport(
       progressTitle: `Загрузка конфигурации: ${entry.name}`,
       buildArgsFromPrep: (p, creds) =>
         buildInfobaseConfigImportArgs(ibcmdOfflineConnectionFromPrepared(p), path.resolve(source), { credentials: creds }),
+      postStep: {
+        op: 'apply',
+        logLine: '[apply] Обновление конфигурации БД...',
+        buildArgsFromPrep: (p, creds) =>
+          buildInfobaseConfigApplyArgs(ibcmdOfflineConnectionFromPrepared(p), { credentials: creds }),
+      },
     });
   });
 }

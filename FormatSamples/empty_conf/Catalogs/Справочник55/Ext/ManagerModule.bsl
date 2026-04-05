@@ -1,0 +1,1 @@
+// ManagerModule stub for tests

@@ -1,0 +1,1 @@
+// CommonModule stub for tests

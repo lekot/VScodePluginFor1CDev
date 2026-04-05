@@ -1,6 +1,6 @@
 import type { IbcmdStreamingRawOutcome } from './IbcmdStreamingRunner';
 
-export type IbcmdInfobaseConfigOpKind = 'import' | 'export' | 'check';
+export type IbcmdInfobaseConfigOpKind = 'import' | 'export' | 'check' | 'apply';
 
 export interface IbcmdInfobaseOperationResult {
   status: 'success' | 'cancelled' | 'error';

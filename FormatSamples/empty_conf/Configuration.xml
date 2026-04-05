@@ -244,11 +244,12 @@
 			<DefaultConstantsForm/>
 		</Properties>
 		<ChildObjects>
-			<Subsystem>TestSubsystem1</Subsystem>
 			<Language>Русский</Language>
+			<Subsystem>TestSubsystem1</Subsystem>
 			<Role>РольИзРасширения</Role>
 			<CommonModule>моооодуль</CommonModule>
 			<CommonModule>мойМодлуоьэ</CommonModule>
+			<CommonModule>тестМодуль</CommonModule>
 			<Catalog>Справочник55</Catalog>
 			<Catalog>СтарееСтарых</Catalog>
 			<Catalog>табатаба</Catalog>

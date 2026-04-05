@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.34.0",
+  "version": "0.38.9",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -20,6 +20,19 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "bsl",
+        "aliases": [
+          "1C (BSL)"
+        ],
+        "extensions": [
+          ".bsl",
+          ".os"
+        ],
+        "configuration": ""
+      }
+    ],
     "commands": [
       {
         "command": "1c-metadata-tree.openPanel",
@@ -340,6 +353,12 @@
         "command": "1c-metadata-tree.showInterceptors",
         "title": "Показать перехваты",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.startDebugging",
+        "title": "Запустить отладку",
+        "category": "CDT 41",
+        "icon": "$(debug-alt)"
       }
     ],
     "customEditors": [
@@ -488,6 +507,11 @@
           "command": "1c-metadata-tree.validateCurrentXml",
           "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot/",
           "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.startDebugging",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration/",
+          "group": "debug@1"
         },
         {
           "command": "1c-metadata-tree.openXML",
@@ -812,6 +836,68 @@
         "mac": "cmd+s",
         "when": "activeWebviewPanelId == '1c-rights-editor'"
       }
+    ],
+    "breakpoints": [
+      {
+        "language": "bsl"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "bsl",
+        "label": "1C BSL Debugger",
+        "languages": [
+          "bsl"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Debug server hostname",
+                "default": "localhost"
+              },
+              "port": {
+                "type": "number",
+                "description": "Debug server port",
+                "default": 1550
+              },
+              "infobaseAlias": {
+                "type": "string",
+                "description": "Infobase alias filter"
+              },
+              "autoAttachTargets": {
+                "type": "boolean",
+                "description": "Auto-attach to all debug targets",
+                "default": true
+              },
+              "pingIntervalMs": {
+                "type": "number",
+                "description": "Event polling interval (ms)",
+                "default": 1000
+              },
+              "connectTimeoutMs": {
+                "type": "number",
+                "description": "HTTP request timeout (ms)",
+                "default": 5000
+              }
+            }
+          }
+        },
+        "configurationSnippets": [
+          {
+            "label": "BSL: Attach to 1C Debug Server",
+            "description": "Attach to a running 1C:Enterprise debug server",
+            "body": {
+              "type": "bsl",
+              "request": "attach",
+              "name": "Attach to 1C",
+              "host": "localhost",
+              "port": 1550
+            }
+          }
+        ]
+      }
     ]
   },
   "scripts": {
@@ -853,6 +939,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@vscode/debugadapter": "^1.68.0",
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3"
   },
