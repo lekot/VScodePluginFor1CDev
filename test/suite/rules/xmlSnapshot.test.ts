@@ -1,10 +1,11 @@
 // test/suite/rules/xmlSnapshot.test.ts
-// Snapshot-тесты для CommonModule, Subsystem, Enum и Catalog rules.
+// Snapshot-тесты для CommonModule, Subsystem, Enum, Catalog и Document rules.
 import * as assert from 'assert';
 import { MetadataConverter } from '../../../src/rules/MetadataConverter';
 import { createDefaultConverterRegistry } from '../../../src/rules/converters/index';
 import { catalogRules } from '../../../src/rules/metadata/catalogRules';
 import { commonModuleRules } from '../../../src/rules/metadata/commonModuleRules';
+import { documentRules } from '../../../src/rules/metadata/documentRules';
 import { enumRules } from '../../../src/rules/metadata/enumRules';
 import { subsystemRules } from '../../../src/rules/metadata/subsystemRules';
 
@@ -273,5 +274,98 @@ suite('XML Snapshot: Catalog', () => {
         assert.ok(basedOnIdx < commentIdx, 'BasedOn should come before Comment');
         assert.ok(commentIdx < nameIdx, 'Comment should come before Name');
         assert.ok(nameIdx < synonymIdx, 'Name should come before Synonym');
+    });
+});
+
+suite('XML Snapshot: Document', () => {
+    test('createDefaultIR sets name, synonym and correct defaults', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        assert.strictEqual(ir.properties['name'], 'ТестДокумент');
+        assert.strictEqual(ir.properties['synonym'], 'ТестДокумент');
+        assert.strictEqual(ir.properties['autonumbering'], true);
+        assert.strictEqual(ir.properties['checkUnique'], true);
+        assert.strictEqual(ir.properties['dataLockControlMode'], 'Managed');
+        assert.strictEqual(ir.properties['numberLength'], 11);
+        assert.strictEqual(ir.properties['posting'], 'Allow');
+        assert.strictEqual(ir.properties['useStandardCommands'], false);
+    });
+
+    test('irToXml generates correct root tag with uuid', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        assert.ok(xml.includes('<Document uuid='), 'should have <Document uuid= root tag');
+        assert.ok(xml.includes('doc-uuid-2222'), 'should include uuid');
+    });
+
+    test('irToXml has correct namespaces including xs', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        assert.ok(xml.includes('xmlns="http://v8.1c.ru/8.3/MDClasses"'), 'should have main namespace');
+        assert.ok(xml.includes('xmlns:v8="http://v8.1c.ru/8.1/data/core"'), 'should have v8 namespace');
+        assert.ok(xml.includes('xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"'), 'should have xr namespace');
+        assert.ok(xml.includes('xmlns:xs="http://www.w3.org/2001/XMLSchema"'), 'should have xs namespace');
+        assert.ok(xml.includes('xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'), 'should have xsi namespace');
+    });
+
+    test('irToXml contains Autonumbering=true and CheckUnique=true', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        assert.ok(xml.includes('<Autonumbering>true</Autonumbering>'), 'should have Autonumbering=true');
+        assert.ok(xml.includes('<CheckUnique>true</CheckUnique>'), 'should have CheckUnique=true');
+    });
+
+    test('irToXml contains DataLockControlMode=Managed and NumberLength=11', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        assert.ok(xml.includes('<DataLockControlMode>Managed</DataLockControlMode>'), 'should have DataLockControlMode=Managed');
+        assert.ok(xml.includes('<NumberLength>11</NumberLength>'), 'should have NumberLength=11');
+        assert.ok(xml.includes('<Posting>Allow</Posting>'), 'should have Posting=Allow');
+    });
+
+    test('irToXml InputByString contains substituted document name', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        assert.ok(
+            xml.includes('Document.ТестДокумент.StandardAttribute.Number'),
+            'InputByString should contain substituted name with Number attribute'
+        );
+        assert.ok(!xml.includes('{Name}'), 'should not contain {Name} placeholder');
+    });
+
+    test('irToXml ListPresentation contains synonym value', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        assert.ok(xml.includes('<ListPresentation>'), 'should have ListPresentation tag');
+        assert.ok(xml.includes('ТестДокумент'), 'ListPresentation should contain synonym value');
+        assert.ok(!xml.includes('{Synonym_ru}'), 'should not contain {Synonym_ru} placeholder');
+    });
+
+    test('irToXml generates ChildObjects', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        assert.ok(xml.includes('ChildObjects'), 'Document should have ChildObjects');
+    });
+
+    test('irToXml properties in correct order: Autonumbering < Comment < Name < NumberLength < Synonym', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(documentRules, { name: 'ТестДокумент', uuid: 'doc-uuid-2222' });
+        const xml = converter.irToXml(ir, documentRules);
+        const autonumberingIdx = xml.indexOf('<Autonumbering');
+        const commentIdx = xml.indexOf('<Comment');
+        const nameIdx = xml.indexOf('<Name>');
+        const numberLengthIdx = xml.indexOf('<NumberLength>');
+        const synonymIdx = xml.indexOf('<Synonym>');
+        assert.ok(autonumberingIdx < commentIdx, 'Autonumbering should come before Comment');
+        assert.ok(commentIdx < nameIdx, 'Comment should come before Name');
+        assert.ok(nameIdx < numberLengthIdx, 'Name should come before NumberLength');
+        assert.ok(numberLengthIdx < synonymIdx, 'NumberLength should come before Synonym');
     });
 });
