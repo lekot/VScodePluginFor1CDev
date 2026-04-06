@@ -58,3 +58,4 @@ suite-report-core.json
 scripts/va-features/va.epf
 scripts/rdbg-*.mjs
 /FormatSamples/empty_conf_reexport/
+out-test-bsl/
