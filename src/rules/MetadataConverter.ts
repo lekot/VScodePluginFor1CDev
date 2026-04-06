@@ -45,6 +45,8 @@ export class MetadataConverter implements IMetadataConverter {
                 properties[key] = params.name;
             }
         }
+        // Replace {Name} and {Synonym_ru} placeholders with actual name
+        this.replaceNamePlaceholders(properties, params.name);
         return {
             objectType: rules.rootTag,
             name: params.name,
@@ -52,6 +54,29 @@ export class MetadataConverter implements IMetadataConverter {
             properties,
             children: {},
         };
+    }
+
+    private replaceNamePlaceholders(properties: Record<string, unknown>, name: string): void {
+        for (const key of Object.keys(properties)) {
+            properties[key] = this.replacePlaceholdersInValue(properties[key], name);
+        }
+    }
+
+    private replacePlaceholdersInValue(value: unknown, name: string): unknown {
+        if (typeof value === 'string') {
+            return value.replace(/\{Name\}/g, name).replace(/\{Synonym_ru\}/g, name);
+        }
+        if (Array.isArray(value)) {
+            return value.map(item => this.replacePlaceholdersInValue(item, name));
+        }
+        if (value !== null && typeof value === 'object') {
+            const result: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                result[k] = this.replacePlaceholdersInValue(v, name);
+            }
+            return result;
+        }
+        return value;
     }
 
     mergeProperties(ir: MetadataIR, overrides: Record<string, unknown>): MetadataIR {

@@ -1,8 +1,9 @@
 // test/suite/rules/xmlSnapshot.test.ts
-// Snapshot-тесты для CommonModule, Subsystem и Enum rules.
+// Snapshot-тесты для CommonModule, Subsystem, Enum и Catalog rules.
 import * as assert from 'assert';
 import { MetadataConverter } from '../../../src/rules/MetadataConverter';
 import { createDefaultConverterRegistry } from '../../../src/rules/converters/index';
+import { catalogRules } from '../../../src/rules/metadata/catalogRules';
 import { commonModuleRules } from '../../../src/rules/metadata/commonModuleRules';
 import { enumRules } from '../../../src/rules/metadata/enumRules';
 import { subsystemRules } from '../../../src/rules/metadata/subsystemRules';
@@ -184,5 +185,93 @@ suite('XML Snapshot: Enum', () => {
         const nameIdx = xml.indexOf('<Name>');
         assert.ok(choiceModeIdx < commentIdx, 'ChoiceMode should come before Comment');
         assert.ok(commentIdx < nameIdx, 'Comment should come before Name');
+    });
+});
+
+suite('XML Snapshot: Catalog', () => {
+    test('createDefaultIR sets name and synonym from params', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        assert.strictEqual(ir.properties['name'], 'ТестСправочник');
+        assert.strictEqual(ir.properties['synonym'], 'ТестСправочник');
+        assert.strictEqual(ir.properties['autonumbering'], false);
+        assert.strictEqual(ir.properties['codeLength'], 0);
+        assert.strictEqual(ir.properties['descriptionLength'], 100);
+        assert.strictEqual(ir.properties['choiceMode'], 'BothWays');
+        assert.strictEqual(ir.properties['foldersOnTop'], true);
+        assert.strictEqual(ir.properties['quickChoice'], true);
+        assert.strictEqual(ir.properties['useStandardCommands'], false);
+    });
+
+    test('irToXml generates correct root tag with uuid', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        const xml = converter.irToXml(ir, catalogRules);
+        assert.ok(xml.includes('<Catalog uuid='), 'should have <Catalog uuid= root tag');
+        assert.ok(xml.includes('cat-uuid-1111'), 'should include uuid');
+    });
+
+    test('irToXml has correct namespaces including xs', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        const xml = converter.irToXml(ir, catalogRules);
+        assert.ok(xml.includes('xmlns="http://v8.1c.ru/8.3/MDClasses"'), 'should have main namespace');
+        assert.ok(xml.includes('xmlns:v8="http://v8.1c.ru/8.1/data/core"'), 'should have v8 namespace');
+        assert.ok(xml.includes('xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"'), 'should have xr namespace');
+        assert.ok(xml.includes('xmlns:xs="http://www.w3.org/2001/XMLSchema"'), 'should have xs namespace');
+        assert.ok(xml.includes('xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'), 'should have xsi namespace');
+    });
+
+    test('irToXml contains Autonumbering and CodeLength with correct values', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        const xml = converter.irToXml(ir, catalogRules);
+        assert.ok(xml.includes('<Autonumbering>false</Autonumbering>'), 'should have Autonumbering=false');
+        assert.ok(xml.includes('<CodeLength>0</CodeLength>'), 'should have CodeLength=0');
+        assert.ok(xml.includes('<DescriptionLength>100</DescriptionLength>'), 'should have DescriptionLength=100');
+        assert.ok(xml.includes('<ChoiceMode>BothWays</ChoiceMode>'), 'should have ChoiceMode=BothWays');
+    });
+
+    test('irToXml InputByString contains substituted name', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        const xml = converter.irToXml(ir, catalogRules);
+        assert.ok(
+            xml.includes('Catalog.ТестСправочник.StandardAttribute.Description'),
+            'InputByString should contain substituted name'
+        );
+        assert.ok(!xml.includes('{Name}'), 'should not contain {Name} placeholder');
+    });
+
+    test('irToXml ExtendedListPresentation contains synonym value', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        const xml = converter.irToXml(ir, catalogRules);
+        assert.ok(xml.includes('<ExtendedListPresentation>'), 'should have ExtendedListPresentation tag');
+        assert.ok(xml.includes('ТестСправочник'), 'ExtendedListPresentation should contain synonym value');
+        assert.ok(!xml.includes('{Synonym_ru}'), 'should not contain {Synonym_ru} placeholder');
+    });
+
+    test('irToXml generates ChildObjects', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        const xml = converter.irToXml(ir, catalogRules);
+        assert.ok(xml.includes('ChildObjects'), 'Catalog should have ChildObjects');
+    });
+
+    test('irToXml properties in correct order: Autonumbering < BasedOn < Comment < Name < Synonym', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(catalogRules, { name: 'ТестСправочник', uuid: 'cat-uuid-1111' });
+        const xml = converter.irToXml(ir, catalogRules);
+        // Use partial tag names without closing > to handle both self-closing and open tags
+        const autonumberingIdx = xml.indexOf('<Autonumbering');
+        const basedOnIdx = xml.indexOf('<BasedOn');
+        const commentIdx = xml.indexOf('<Comment');
+        const nameIdx = xml.indexOf('<Name>');
+        const synonymIdx = xml.indexOf('<Synonym>');
+        assert.ok(autonumberingIdx < basedOnIdx, 'Autonumbering should come before BasedOn');
+        assert.ok(basedOnIdx < commentIdx, 'BasedOn should come before Comment');
+        assert.ok(commentIdx < nameIdx, 'Comment should come before Name');
+        assert.ok(nameIdx < synonymIdx, 'Name should come before Synonym');
     });
 });
