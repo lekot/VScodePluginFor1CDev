@@ -16,8 +16,8 @@ import {
 } from './registerRecorderDocumentLinker';
 import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from './configurationXmlUpdater';
 import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
-import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
-import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
+import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
+import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
@@ -135,12 +135,15 @@ function getSiblingNames(parent: TreeNode): string[] {
 }
 
 /** Directory that contains Configuration.xml (Designer root or EDT project root). */
-function findConfigurationRootDir(typeFolderPath: string): string {
+async function findConfigurationRootDir(typeFolderPath: string): Promise<string> {
   let dir = typeFolderPath;
   for (let depth = 0; depth < 16; depth++) {
     const candidate = path.join(dir, CONFIGURATION_XML);
-    if (fs.existsSync(candidate)) {
+    try {
+      await fs.promises.access(candidate);
       return dir;
+    } catch {
+      // not found, continue
     }
     const parentDir = path.dirname(dir);
     if (parentDir === dir) {
@@ -163,8 +166,11 @@ async function ensureCompanionTaskForBusinessProcess(
   const tasksDir = path.join(path.dirname(businessProcessesFolderPath), 'Tasks');
   await fs.promises.mkdir(tasksDir, { recursive: true });
   const taskFilePath = path.join(tasksDir, `${taskName}.xml`);
-  if (fs.existsSync(taskFilePath)) {
+  try {
+    await fs.promises.access(taskFilePath);
     return;
+  } catch {
+    // file does not exist, continue
   }
   const templateXml = await getDesignerTemplateXml('Task');
   if (templateXml !== null) {
@@ -224,7 +230,7 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
   }
 
   // Guard against path traversal: typeFolderPath must be inside configuration root.
-  const configRootForCheck = findConfigurationRootDir(typeFolderPath);
+  const configRootForCheck = await findConfigurationRootDir(typeFolderPath);
   const resolvedTypeFolder = path.resolve(typeFolderPath);
   const resolvedConfigRoot = path.resolve(configRootForCheck);
   if (!resolvedTypeFolder.startsWith(resolvedConfigRoot + path.sep) && resolvedTypeFolder !== resolvedConfigRoot) {
@@ -248,12 +254,17 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
   }
 
   const newFilePath = path.join(typeFolderPath, `${name}.xml`);
-  if (fs.existsSync(newFilePath)) {
+  try {
+    await fs.promises.access(newFilePath);
     throw new Error(`Файл уже существует: ${newFilePath}`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw e;
+    }
   }
 
   const rootTag = String(parentNode.type);
-  const configRootPath = findConfigurationRootDir(typeFolderPath);
+  const configRootPath = await findConfigurationRootDir(typeFolderPath);
 
   if (rootTag === 'BusinessProcess') {
     await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
@@ -319,7 +330,12 @@ async function handleCreateNestedUnderTopLevel(parentNode: TreeNode, name: strin
     );
   }
   const filePath = parentNode.filePath;
-  if (!filePath || !fs.existsSync(filePath)) {
+  if (!filePath) {
+    throw new Error('Файл объекта не найден.');
+  }
+  try {
+    await fs.promises.access(filePath);
+  } catch {
     throw new Error('Файл объекта не найден.');
   }
   await XMLWriter.addNestedElement(filePath, 'Attribute', name, {}, parentNode.type, parentNode.name);
@@ -338,7 +354,12 @@ async function handleCreateInContainerFolder(
     );
   }
   const filePath = parent.filePath;
-  if (!filePath || !fs.existsSync(filePath)) {
+  if (!filePath) {
+    throw new Error('Файл объекта не найден.');
+  }
+  try {
+    await fs.promises.access(filePath);
+  } catch {
     throw new Error('Файл объекта не найден.');
   }
   const elementType = parentNode.type === MetadataType.Attribute ? 'Attribute' : 'TabularSection';
@@ -353,7 +374,12 @@ async function handleCreateTabularSectionColumn(parentNode: TreeNode, name: stri
     throw new Error('Некорректный родитель для колонки табличной части.');
   }
   const xmlTarget = resolveXmlPathForTabularSectionInstance(sectionInstance);
-  if (!xmlTarget || !fs.existsSync(xmlTarget)) {
+  if (!xmlTarget) {
+    throw new Error('Файл табличной части или объекта не найден.');
+  }
+  try {
+    await fs.promises.access(xmlTarget);
+  } catch {
     throw new Error('Файл табличной части или объекта не найден.');
   }
   await XMLWriter.addAttributeToTabularSection(xmlTarget, sectionInstance.name, name, owner.type, owner.name);
@@ -499,15 +525,24 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   if (!formsPath) {
     throw new Error('Папка форм: не задан путь к каталогу Forms.');
   }
-  if (!fs.existsSync(formsPath)) {
-    await fs.promises.mkdir(formsPath, { recursive: true });
+  let formsStat: fs.Stats | undefined;
+  try {
+    formsStat = await fs.promises.stat(formsPath);
+  } catch {
+    // directory does not exist yet
   }
-  if (!fs.statSync(formsPath).isDirectory()) {
+  if (!formsStat) {
+    await fs.promises.mkdir(formsPath, { recursive: true });
+  } else if (!formsStat.isDirectory()) {
     throw new Error(`Папка форм не найдена: ${formsPath}`);
   }
   const formMetaPath = path.join(formsPath, `${name}.xml`);
   const extRoot = path.join(formsPath, name);
-  if (fs.existsSync(formMetaPath) || fs.existsSync(extRoot)) {
+  const [metaExists, extRootExists] = await Promise.all([
+    fs.promises.access(formMetaPath).then(() => true).catch(() => false),
+    fs.promises.access(extRoot).then(() => true).catch(() => false),
+  ]);
+  if (metaExists || extRootExists) {
     throw new Error(`Форма с именем «${name}» уже существует.`);
   }
   await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name);
@@ -522,8 +557,11 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
 
   const owner = parentNode.parent;
   const ownerXmlPath = owner?.filePath;
-  if (ownerXmlPath && fs.existsSync(ownerXmlPath) && ownerXmlPath.toLowerCase().endsWith('.xml')) {
-    await XMLWriter.addDesignerFormReferenceToOwnerMetadata(ownerXmlPath, name);
+  if (ownerXmlPath && ownerXmlPath.toLowerCase().endsWith('.xml')) {
+    const ownerExists = await fs.promises.access(ownerXmlPath).then(() => true).catch(() => false);
+    if (ownerExists) {
+      await XMLWriter.addDesignerFormReferenceToOwnerMetadata(ownerXmlPath, name);
+    }
   }
 }
 
@@ -557,7 +595,12 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
   const name = newName.trim();
 
   const filePath = node.parentFilePath || node.filePath;
-  if (!filePath || !fs.existsSync(filePath)) {
+  if (!filePath) {
+    throw new Error('Файл элемента не найден.');
+  }
+  try {
+    await fs.promises.access(filePath);
+  } catch {
     throw new Error('Файл элемента не найден.');
   }
 
@@ -572,7 +615,12 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
       const tsInstance = findTabularSectionInstanceForAttributeParent(parent as TreeNode);
       if (tsInstance) {
         const xmlTarget = resolveXmlPathForTabularSectionInstance(tsInstance);
-        if (!xmlTarget || !fs.existsSync(xmlTarget)) {
+        if (!xmlTarget) {
+          throw new Error('Файл табличной части или объекта не найден.');
+        }
+        try {
+          await fs.promises.access(xmlTarget);
+        } catch {
           throw new Error('Файл табличной части или объекта не найден.');
         }
         await XMLWriter.duplicateAttributeInTabularSection(
@@ -612,11 +660,17 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
       throw new Error('Папка типа не найдена.');
     }
     const sourcePath = node.filePath;
-    if (!sourcePath || !fs.existsSync(sourcePath)) {
+    if (!sourcePath) {
+      throw new Error('Файл исходного элемента не найден.');
+    }
+    try {
+      await fs.promises.access(sourcePath);
+    } catch {
       throw new Error('Файл исходного элемента не найден.');
     }
     const newFilePath = path.join(typeFolderPath, `${name}.xml`);
-    if (fs.existsSync(newFilePath)) {
+    const newFileExists = await fs.promises.access(newFilePath).then(() => true).catch(() => false);
+    if (newFileExists) {
       throw new Error(`Файл уже существует: ${newFilePath}`);
     }
     let content = await fs.promises.readFile(sourcePath, 'utf-8');
@@ -631,8 +685,15 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
     await fs.promises.writeFile(newFilePath, content, 'utf-8');
     const oldDir = path.join(typeFolderPath, node.name);
     const newDir = path.join(typeFolderPath, name);
-    if (fs.existsSync(oldDir) && fs.statSync(oldDir).isDirectory()) {
-      if (fs.existsSync(newDir)) {
+    let oldDirStat: fs.Stats | undefined;
+    try {
+      oldDirStat = await fs.promises.stat(oldDir);
+    } catch {
+      // oldDir does not exist
+    }
+    if (oldDirStat?.isDirectory()) {
+      const newDirExists = await fs.promises.access(newDir).then(() => true).catch(() => false);
+      if (newDirExists) {
         throw new Error(`Каталог объекта уже существует: ${newDir}`);
       }
       await fs.promises.cp(oldDir, newDir, { recursive: true });
@@ -675,7 +736,12 @@ export async function deleteElement(node: TreeNode): Promise<void> {
     const tsInstance = findTabularSectionInstanceForAttributeParent(parent as TreeNode);
     if (node.type === MetadataType.Attribute && tsInstance) {
       const xmlTarget = resolveXmlPathForTabularSectionInstance(tsInstance);
-      if (!xmlTarget || !fs.existsSync(xmlTarget)) {
+      if (!xmlTarget) {
+        throw new Error('Файл табличной части или объекта не найден.');
+      }
+      try {
+        await fs.promises.access(xmlTarget);
+      } catch {
         throw new Error('Файл табличной части или объекта не найден.');
       }
       await XMLWriter.removeAttributeFromTabularSection(xmlTarget, tsInstance.name, node.name);
@@ -694,13 +760,21 @@ export async function deleteElement(node: TreeNode): Promise<void> {
   }
 
   if (TOP_LEVEL_TYPES.has(node.type)) {
-    if (!fs.existsSync(filePath)) {
+    try {
+      await fs.promises.access(filePath);
+    } catch {
       throw new Error('Файл элемента не найден.');
     }
     await fs.promises.unlink(filePath);
     const dirPath = path.dirname(filePath);
     const elementDir = path.join(dirPath, node.name);
-    if (fs.existsSync(elementDir) && fs.statSync(elementDir).isDirectory()) {
+    let elementDirStat: fs.Stats | undefined;
+    try {
+      elementDirStat = await fs.promises.stat(elementDir);
+    } catch {
+      // directory does not exist
+    }
+    if (elementDirStat?.isDirectory()) {
       await fs.promises.rm(elementDir, { recursive: true });
     }
     const rootTag = String(node.type);
@@ -732,27 +806,38 @@ export async function deleteElement(node: TreeNode): Promise<void> {
     }
     const owner = parent.parent;
     const ownerXmlPath = owner?.filePath;
-    if (ownerXmlPath && fs.existsSync(ownerXmlPath) && ownerXmlPath.toLowerCase().endsWith('.xml')) {
-      await XMLWriter.removeDesignerFormFromOwnerMetadata(ownerXmlPath, node.name);
+    if (ownerXmlPath && ownerXmlPath.toLowerCase().endsWith('.xml')) {
+      const ownerExists = await fs.promises.access(ownerXmlPath).then(() => true).catch(() => false);
+      if (ownerExists) {
+        await XMLWriter.removeDesignerFormFromOwnerMetadata(ownerXmlPath, node.name);
+      }
     }
     const fp = node.filePath;
-    if (!fp || !fs.existsSync(fp)) {
+    if (!fp) {
+      throw new Error('Файл элемента не найден.');
+    }
+    try {
+      await fs.promises.access(fp);
+    } catch {
       throw new Error('Файл элемента не найден.');
     }
     const lower = fp.toLowerCase();
     if (lower.endsWith('.xml')) {
       const extRoot = path.join(path.dirname(fp), path.basename(fp, path.extname(fp)));
       await fs.promises.unlink(fp);
-      if (fs.existsSync(extRoot)) {
-        const st = fs.statSync(extRoot);
-        if (st.isDirectory()) {
-          await fs.promises.rm(extRoot, { recursive: true, force: true });
-        }
+      let extRootStat: fs.Stats | undefined;
+      try {
+        extRootStat = await fs.promises.stat(extRoot);
+      } catch {
+        // ext dir does not exist
+      }
+      if (extRootStat?.isDirectory()) {
+        await fs.promises.rm(extRoot, { recursive: true, force: true });
       }
       Logger.info(`Deleted form metadata ${fp} and ext dir if present`);
       return;
     }
-    const stat = fs.statSync(fp);
+    const stat = await fs.promises.stat(fp);
     if (!stat.isDirectory()) {
       throw new Error('Ожидалась папка формы.');
     }
@@ -790,7 +875,12 @@ export async function renameElement(
   }
 
   const filePath = node.parentFilePath || node.filePath;
-  if (!filePath || !fs.existsSync(filePath)) {
+  if (!filePath) {
+    throw new Error('Файл элемента не найден.');
+  }
+  try {
+    await fs.promises.access(filePath);
+  } catch {
     throw new Error('Файл элемента не найден.');
   }
 
@@ -840,7 +930,13 @@ export async function renameElement(
     await fs.promises.unlink(filePath);
     const oldDir = path.join(typeFolderPath, oldName);
     const newDir = path.join(typeFolderPath, name);
-    if (fs.existsSync(oldDir) && fs.statSync(oldDir).isDirectory()) {
+    let oldDirStat: fs.Stats | undefined;
+    try {
+      oldDirStat = await fs.promises.stat(oldDir);
+    } catch {
+      // directory does not exist
+    }
+    if (oldDirStat?.isDirectory()) {
       await fs.promises.rename(oldDir, newDir);
     }
     const updated = await replaceReferencesInProject(configPath, oldName, name, node.type);

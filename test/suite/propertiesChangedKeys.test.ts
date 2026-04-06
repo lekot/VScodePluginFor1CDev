@@ -6,6 +6,10 @@ import { PropertiesProvider } from '../../src/providers/propertiesProvider';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import {
+  saveProperties,
+  MessageHandlerContext,
+} from '../../src/providers/propertiesMessageHandler';
 
 /**
  * Tests for propertiesProvider.saveProperties changedKeys logic.
@@ -38,6 +42,23 @@ function createMockContext(): vscode.ExtensionContext {
   };
 }
 
+function createMockMessageHandlerContext(
+  treeDataProvider: MetadataTreeDataProvider,
+  typeEditorProvider: TypeEditorProvider,
+): MessageHandlerContext {
+  return {
+    currentNode: undefined,
+    currentFormSelection: null,
+    currentFormSelectionRevision: 0,
+    isSaving: false,
+    treeDataProvider,
+    typeEditorProvider,
+    postMessage: () => { /* no-op */ },
+    updateWebviewContent: () => { /* no-op */ },
+    setIsSaving: (_value: boolean) => { /* no-op */ },
+  };
+}
+
 /**
  * Extract changedKeys from saveProperties by examining what it passes to XMLWriter.
  * We test the changedKeys computation logic directly by checking what gets written.
@@ -45,12 +66,14 @@ function createMockContext(): vscode.ExtensionContext {
 suite('propertiesProvider changedKeys logic', () => {
   let provider: PropertiesProvider;
   let mockContext: vscode.ExtensionContext;
+  let mockMsgCtx: MessageHandlerContext;
 
   setup(() => {
     mockContext = createMockContext();
     const treeDataProvider = new MetadataTreeDataProvider();
     const typeEditorProvider = new TypeEditorProvider(mockContext);
     provider = new PropertiesProvider(mockContext, treeDataProvider, typeEditorProvider);
+    mockMsgCtx = createMockMessageHandlerContext(treeDataProvider, typeEditorProvider);
   });
 
   teardown(() => {
@@ -218,8 +241,7 @@ suite('propertiesProvider changedKeys logic', () => {
         Type: newTypeXml,
       };
 
-      const saveProperties = (provider as any).saveProperties.bind(provider);
-      await saveProperties(node, newProperties);
+      await saveProperties(node, newProperties, mockMsgCtx);
 
       const result = fs.readFileSync(tempPath, 'utf-8');
       assert.ok(result.includes('<v8:Type>xs:decimal</v8:Type>'),
@@ -257,8 +279,7 @@ suite('propertiesProvider changedKeys logic', () => {
         PasswordMode: true,
       };
 
-      const saveProperties = (provider as any).saveProperties.bind(provider);
-      await saveProperties(node, newProperties);
+      await saveProperties(node, newProperties, mockMsgCtx);
 
       const result = fs.readFileSync(tempPath, 'utf-8');
       assert.ok(result.includes('<v8:Type>xs:string</v8:Type>'),

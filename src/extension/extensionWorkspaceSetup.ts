@@ -37,10 +37,8 @@ async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void>
   }
 }
 
-/**
- * Tree view, providers, reload coordinator, command registration, selection wiring.
- */
-export function registerExtensionWorkspace(
+/** Registers metadata tree view, properties panel, type editor, and selection listener. */
+function registerMetadataTreeProviders(
   context: vscode.ExtensionContext,
   state: ExtensionState,
   lifecycle: MetadataTreeLifecycle
@@ -50,6 +48,7 @@ export function registerExtensionWorkspace(
   state.treeView = vscode.window.createTreeView('1c-metadata-tree', {
     treeDataProvider: state.treeDataProvider,
     showCollapseAll: true,
+    canSelectMany: true,
   });
   state.treeDataProvider.setMessageUpdater((msg) => {
     if (state.treeView) {
@@ -79,19 +78,26 @@ export function registerExtensionWorkspace(
   );
   context.subscriptions.push(state.propertiesProvider);
 
-  state.reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
-    Logger.info('reload.run.started', { configPath, reason, operationId });
-    await lifecycle.invalidateTreeCacheOnly(configPath);
-    await lifecycle.loadMetadataTree();
-    Logger.info('reload.run.completed', { configPath, reason, operationId, success: true });
-  });
-  context.subscriptions.push({
-    dispose: () => {
-      state.reloadCoordinator?.dispose();
-      state.reloadCoordinator = null;
-    },
-  });
+  const treeSelectionDisposable = state.treeView.onDidChangeSelection(async (e) => {
+    if (e.selection.length > 0) {
+      const selectedNode = e.selection[0];
+      Logger.debug(`Tree selection changed: ${selectedNode.name}`);
 
+      if (selectedNode.type === MetadataType.Role && selectedNode.filePath) {
+        await vscode.commands.executeCommand('1c-metadata-tree.openRightsEditor', selectedNode);
+      } else if (state.propertiesProvider) {
+        await vscode.commands.executeCommand('1c-metadata-tree.showProperties', selectedNode);
+      }
+    }
+  });
+  context.subscriptions.push(treeSelectionDisposable);
+}
+
+/** Registers form editor, MXL preview custom editor providers. */
+function registerEditorProviders(
+  context: vscode.ExtensionContext,
+  state: ExtensionState
+): void {
   state.formEditorProvider = new FormEditorProvider((payload) => {
     if (state.propertiesProvider) {
       void state.propertiesProvider.showFormSelectionProperties(payload);
@@ -110,7 +116,13 @@ export function registerExtensionWorkspace(
       supportsMultipleEditorsPerDocument: true,
     })
   );
+}
 
+/** Registers infobase tree view, ibcmd hooks, binding commands. */
+function registerInfobaseFeatures(
+  context: vscode.ExtensionContext,
+  state: ExtensionState
+): void {
   registerIbcmdInfobaseHooks(context);
 
   if (state.infobaseStorage) {
@@ -134,6 +146,41 @@ export function registerExtensionWorkspace(
     context.subscriptions.push(registerBindingDecorationSync(state));
     rebuildBindingDecorationsForTree(state).catch((err) => Logger.error('rebuildBindingDecorationsForTree failed', err));
   }
+}
+
+/** Registers reload coordinator and wires it to the watcher lifecycle. */
+function registerReloadCoordinator(
+  context: vscode.ExtensionContext,
+  state: ExtensionState,
+  lifecycle: MetadataTreeLifecycle
+): void {
+  state.reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
+    Logger.info('reload.run.started', { configPath, reason, operationId });
+    await lifecycle.invalidateTreeCacheOnly(configPath);
+    await lifecycle.loadMetadataTree();
+    Logger.info('reload.run.completed', { configPath, reason, operationId, success: true });
+  });
+  context.subscriptions.push({
+    dispose: () => {
+      state.reloadCoordinator?.dispose();
+      state.reloadCoordinator = null;
+    },
+  });
+}
+
+/**
+ * Orchestrates workspace registration: tree view, providers, reload coordinator,
+ * editor providers, infobase features, commands, git handlers.
+ */
+export function registerExtensionWorkspace(
+  context: vscode.ExtensionContext,
+  state: ExtensionState,
+  lifecycle: MetadataTreeLifecycle
+): void {
+  registerMetadataTreeProviders(context, state, lifecycle);
+  registerReloadCoordinator(context, state, lifecycle);
+  registerEditorProviders(context, state);
+  registerInfobaseFeatures(context, state);
 
   const commandDisposables = registerAllCommands({ context, state, lifecycle });
   context.subscriptions.push(...commandDisposables);
@@ -149,20 +196,6 @@ export function registerExtensionWorkspace(
         }
       : undefined,
   });
-
-  const treeSelectionDisposable = state.treeView.onDidChangeSelection(async (e) => {
-    if (e.selection.length > 0) {
-      const selectedNode = e.selection[0];
-      Logger.debug(`Tree selection changed: ${selectedNode.name}`);
-
-      if (selectedNode.type === MetadataType.Role && selectedNode.filePath) {
-        await vscode.commands.executeCommand('1c-metadata-tree.openRightsEditor', selectedNode);
-      } else if (state.propertiesProvider) {
-        await vscode.commands.executeCommand('1c-metadata-tree.showProperties', selectedNode);
-      }
-    }
-  });
-  context.subscriptions.push(treeSelectionDisposable);
 
   vscode.commands.executeCommand('setContext', '1c-metadata-tree:enabled', true);
 }

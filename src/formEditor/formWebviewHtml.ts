@@ -11,29 +11,9 @@ function hostThemeFromColorKind(kind: vscode.ColorThemeKind): 'light' | 'dark' {
     : 'dark';
 }
 
-/**
- * Returns the complete HTML string for the form editor webview,
- * including all CSS and client-side JavaScript.
- * CSP: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'
- *
- * @param hostColorThemeKind VS Code UI theme so `data-theme-mode=auto` can set `color-scheme` and
- * native `<select>` options to match the host (avoids white-on-white in dark VS Code).
- */
-export function getWebviewHtml(
-  webview: vscode.Webview,
-  hostColorThemeKind: vscode.ColorThemeKind = vscode.ColorThemeKind.Dark
-): string {
-  void webview;
-  const hostTheme = hostThemeFromColorKind(hostColorThemeKind);
-  return `<!DOCTYPE html>
-<html lang="ru" data-vscode-theme="${hostTheme}">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
-  <title>Редактор формы 1С</title>
-  <style>
-    * { box-sizing: border-box; }
+/** Returns the static CSS for the form editor webview. */
+function buildWebviewCss(): string {
+  return `    * { box-sizing: border-box; }
     :root {
       --fe-spacing-xs: 4px;
       --fe-spacing-sm: 8px;
@@ -959,11 +939,12 @@ export function getWebviewHtml(
     }
     #add-wizard-cancel:hover {
       background: var(--vscode-button-secondaryHoverBackground);
-    }
-  </style>
-</head>
-<body>
-  <div class="fe-toolbar" role="toolbar" aria-label="Панель инструментов формы">
+    }`;
+}
+
+/** Returns the static HTML body layout for the form editor webview. */
+function buildWebviewLayout(): string {
+  return `  <div class="fe-toolbar" role="toolbar" aria-label="Панель инструментов формы">
     <button type="button" class="fe-toolbar-btn" id="tb-add" title="Добавить элемент" aria-label="Добавить">&#43;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-add-wizard" title="Мастер добавления" aria-label="Мастер добавления">Мастер</button>
     <button type="button" class="fe-toolbar-btn" id="tb-delete" title="Удалить" aria-label="Удалить">&#x1F5D1;</button>
@@ -1085,9 +1066,12 @@ export function getWebviewHtml(
         <p class="preview-empty-hint">Добавляйте элементы слева, чтобы сразу увидеть структуру и компоновку.</p>
       </div>
     </div>
-  </div>
-  <script>
-    const vscode = acquireVsCodeApi();
+  </div>`;
+}
+
+/** Returns the static client-side JavaScript for the form editor webview. */
+function buildWebviewJs(): string {
+  return `    const vscode = acquireVsCodeApi();
     const THEME_MODE_KEY = 'form-editor-theme-mode';
     function applyThemeMode(mode) {
       var m = mode || 'auto';
@@ -3178,7 +3162,38 @@ export function getWebviewHtml(
       }
     });
 
-    vscode.postMessage({ type: 'load' });
+    vscode.postMessage({ type: 'load' });`;
+}
+
+/**
+ * Returns the complete HTML string for the form editor webview,
+ * including all CSS and client-side JavaScript.
+ * CSP: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'
+ *
+ * @param hostColorThemeKind VS Code UI theme so `data-theme-mode=auto` can set `color-scheme` and
+ * native `<select>` options to match the host (avoids white-on-white in dark VS Code).
+ */
+export function getWebviewHtml(
+  webview: vscode.Webview,
+  hostColorThemeKind: vscode.ColorThemeKind = vscode.ColorThemeKind.Dark
+): string {
+  void webview;
+  const hostTheme = hostThemeFromColorKind(hostColorThemeKind);
+  return `<!DOCTYPE html>
+<html lang="ru" data-vscode-theme="${hostTheme}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
+  <title>Редактор формы 1С</title>
+  <style>
+${buildWebviewCss()}
+  </style>
+</head>
+<body>
+${buildWebviewLayout()}
+  <script>
+${buildWebviewJs()}
   </script>
 </body>
 </html>`;

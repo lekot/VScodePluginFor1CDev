@@ -4,20 +4,26 @@ import type { InfobaseEntry } from './models/infobaseEntry';
 import type { InfobaseTreeEntry, InfobaseTreeNode } from './infobaseTreeProvider';
 import {
   runAddExistingInfobase,
-  runCompareInfobaseWithOther,
   runCreateInfobase,
-  runDeleteInfobaseFolder,
   runEditInfobase,
-  runExportInfobasesV8i,
-  runImportV8i,
-  runMoveInfobaseToFolder,
-  runNewInfobaseFolder,
-  runRenameInfobaseFolder,
-  runOpenDesigner,
-  runOpenEnterprise,
   runRemoveInfobase,
   runSetCredentials,
-} from './infobaseCommands';
+} from './infobaseCrudCommands';
+import {
+  runOpenDesigner,
+  runOpenEnterprise,
+  runCompareInfobaseWithOther,
+} from './infobaseLaunchCommands';
+import {
+  runNewInfobaseFolder,
+  runRenameInfobaseFolder,
+  runDeleteInfobaseFolder,
+  runMoveInfobaseToFolder,
+} from './infobaseFolderCommands';
+import {
+  runImportV8i,
+  runExportInfobasesV8i,
+} from './infobaseV8iCommands';
 import {
   runInfobaseConfigCheck,
   runInfobaseConfigExport,

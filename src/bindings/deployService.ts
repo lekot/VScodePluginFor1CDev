@@ -14,10 +14,13 @@ import type { InfobaseStorageService } from '../infobases/infobaseStorageService
 import {
   appendIbcmdOutputLine,
   runInfobaseConfigImportFromDirectory,
+  runInfobaseConfigIncrementalImport,
   serializeInfobaseConfigIbcmdOp,
 } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
+import { collectFilesForSelection } from '../services/ibcmd/objectFileCollector';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
+import type { TreeNode } from '../models/treeNode';
 
 export type DeployItemStatus = 'success' | 'error' | 'skipped';
 
@@ -211,6 +214,26 @@ export function resolveDeployTargetsForBinding(
     entries.push(entry);
   }
   return { entries, skipped };
+}
+
+export interface DeploySelectedObjectsParams {
+  binding: ConfigurationBinding;
+  workspaceFolderRoot: string;
+  storage: InfobaseStorageService;
+  catalog: readonly InfobaseEntry[];
+  selectedNodes: readonly TreeNode[];
+  progress: DeployProgressSink;
+  token: vscode.CancellationToken;
+}
+
+export interface DeployChangedFilesParams {
+  binding: ConfigurationBinding;
+  workspaceFolderRoot: string;
+  storage: InfobaseStorageService;
+  catalog: readonly InfobaseEntry[];
+  relativeFiles: readonly string[];
+  progress: DeployProgressSink;
+  token: vscode.CancellationToken;
 }
 
 export class DeployService {
@@ -446,6 +469,207 @@ export class DeployService {
       }
       await readonlyGuard?.dispose();
     }
+  }
+
+  /**
+   * Инкрементальная раскатка: загружает только файлы выбранных объектов метаданных.
+   * Не создаёт снимок, не применяет readonly-guard — список файлов уже определён.
+   */
+  async deploySelectedObjects(params: DeploySelectedObjectsParams): Promise<DeployRunSummary> {
+    const catalogById = new Map(params.catalog.map((e) => [e.id, e] as const));
+    const resolved = resolveConfigurationXmlDirectory(params.workspaceFolderRoot, params.binding.configRelativePath);
+    if (!resolved.ok) {
+      const s = summarizeDeployRun([{ infobaseId: '', name: '', status: 'error', message: resolved.message }], false);
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+    const configRoot = resolved.sourceDir;
+
+    const ibcmd = getIbcmdService();
+    if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: 'Исполняемый файл ibcmd не найден. Укажите путь в настройках или переменную IBCMD_PATH.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    const relativeFiles = collectFilesForSelection(params.selectedNodes, configRoot);
+    if (relativeFiles.length === 0) {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: 'Не найдено файлов для выбранных объектов.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    appendIbcmdOutputLine(`[раскатка выбранных] Найдено файлов: ${relativeFiles.length}`);
+    for (const f of relativeFiles) {
+      appendIbcmdOutputLine(`  ${f}`);
+    }
+
+    const { entries, skipped } = resolveDeployTargetsForBinding(params.binding, catalogById);
+    const results: DeployItemResult[] = [...skipped];
+    const total = entries.length;
+    if (total === 0) {
+      const s = summarizeDeployRun(results, false);
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    let cancelledMidChain = false;
+    const increment = total > 0 ? 100 / total : 0;
+
+    for (let i = 0; i < entries.length; i++) {
+      if (params.token.isCancellationRequested) {
+        cancelledMidChain = true;
+        for (let j = i; j < entries.length; j++) {
+          const e = entries[j]!;
+          results.push({ infobaseId: e.id, name: e.name, status: 'skipped', message: 'Пропущено: отмена пользователя.' });
+        }
+        break;
+      }
+
+      const entry = entries[i]!;
+      params.progress.report({ message: `Раскатка выбранных: ${entry.name} (${i + 1}/${total})`, increment });
+
+      const interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+        runInfobaseConfigIncrementalImport({
+          storage: params.storage,
+          entry,
+          configRoot,
+          relativeFiles,
+          token: params.token,
+          logContext: 'выбранные объекты',
+          ibcmdExtensionName: params.binding.ibcmdExtensionName,
+        }),
+      );
+
+      if (interpreted.status === 'cancelled') {
+        cancelledMidChain = true;
+        appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: отменено — ${interpreted.userMessage}`);
+        results.push({ infobaseId: entry.id, name: entry.name, status: 'skipped', message: interpreted.userMessage });
+        for (let j = i + 1; j < entries.length; j++) {
+          const e = entries[j]!;
+          results.push({ infobaseId: e.id, name: e.name, status: 'skipped', message: 'Пропущено: отмена.' });
+        }
+        break;
+      }
+
+      if (interpreted.status === 'success') {
+        appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: успех — ${interpreted.userMessage}`);
+        results.push({ infobaseId: entry.id, name: entry.name, status: 'success', message: interpreted.userMessage });
+      } else {
+        appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: ошибка — ${interpreted.userMessage}`);
+        results.push({ infobaseId: entry.id, name: entry.name, status: 'error', message: interpreted.userMessage });
+      }
+    }
+
+    const s = summarizeDeployRun(results, cancelledMidChain);
+    appendDeployRunSummaryLine(s);
+    return s;
+  }
+
+  /**
+   * Инкрементальная раскатка изменённых файлов (например, по данным git).
+   * Список relative-путей уже вычислен вызывающей стороной (detectChangedConfigFiles).
+   */
+  async deployChangedFiles(params: DeployChangedFilesParams): Promise<DeployRunSummary> {
+    if (params.relativeFiles.length === 0) {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: 'Список изменённых файлов пуст.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    const catalogById = new Map(params.catalog.map((e) => [e.id, e] as const));
+    const resolved = resolveConfigurationXmlDirectory(params.workspaceFolderRoot, params.binding.configRelativePath);
+    if (!resolved.ok) {
+      const s = summarizeDeployRun([{ infobaseId: '', name: '', status: 'error', message: resolved.message }], false);
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+    const configRoot = resolved.sourceDir;
+
+    const ibcmd = getIbcmdService();
+    if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: 'Исполняемый файл ibcmd не найден. Укажите путь в настройках или переменную IBCMD_PATH.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    appendIbcmdOutputLine(`[раскатка изменённых] Файлов к загрузке: ${params.relativeFiles.length}`);
+    for (const f of params.relativeFiles) {
+      appendIbcmdOutputLine(`  ${f}`);
+    }
+
+    const { entries, skipped } = resolveDeployTargetsForBinding(params.binding, catalogById);
+    const results: DeployItemResult[] = [...skipped];
+    const total = entries.length;
+    if (total === 0) {
+      const s = summarizeDeployRun(results, false);
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    let cancelledMidChain = false;
+    const increment = total > 0 ? 100 / total : 0;
+
+    for (let i = 0; i < entries.length; i++) {
+      if (params.token.isCancellationRequested) {
+        cancelledMidChain = true;
+        for (let j = i; j < entries.length; j++) {
+          const e = entries[j]!;
+          results.push({ infobaseId: e.id, name: e.name, status: 'skipped', message: 'Пропущено: отмена пользователя.' });
+        }
+        break;
+      }
+
+      const entry = entries[i]!;
+      params.progress.report({ message: `Раскатка изменённых: ${entry.name} (${i + 1}/${total})`, increment });
+
+      const interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+        runInfobaseConfigIncrementalImport({
+          storage: params.storage,
+          entry,
+          configRoot,
+          relativeFiles: params.relativeFiles,
+          token: params.token,
+          logContext: 'изменённые файлы',
+          ibcmdExtensionName: params.binding.ibcmdExtensionName,
+        }),
+      );
+
+      if (interpreted.status === 'cancelled') {
+        cancelledMidChain = true;
+        appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: отменено — ${interpreted.userMessage}`);
+        results.push({ infobaseId: entry.id, name: entry.name, status: 'skipped', message: interpreted.userMessage });
+        for (let j = i + 1; j < entries.length; j++) {
+          const e = entries[j]!;
+          results.push({ infobaseId: e.id, name: e.name, status: 'skipped', message: 'Пропущено: отмена.' });
+        }
+        break;
+      }
+
+      if (interpreted.status === 'success') {
+        appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: успех — ${interpreted.userMessage}`);
+        results.push({ infobaseId: entry.id, name: entry.name, status: 'success', message: interpreted.userMessage });
+      } else {
+        appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: ошибка — ${interpreted.userMessage}`);
+        results.push({ infobaseId: entry.id, name: entry.name, status: 'error', message: interpreted.userMessage });
+      }
+    }
+
+    const s = summarizeDeployRun(results, cancelledMidChain);
+    appendDeployRunSummaryLine(s);
+    return s;
   }
 }
 

@@ -9,7 +9,10 @@ export function getIbcmdService(): IbcmdService {
   return instance;
 }
 
-/** For tests that need a clean cache between cases (optional). */
-export function resetIbcmdServiceSingletonForTests(): void {
+/** Reset the singleton — called on extension deactivation and in tests. */
+export function resetIbcmdService(): void {
   instance = null;
 }
+
+/** @deprecated Use resetIbcmdService() */
+export const resetIbcmdServiceSingletonForTests = resetIbcmdService;

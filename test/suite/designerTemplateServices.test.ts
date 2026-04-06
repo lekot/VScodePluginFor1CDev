@@ -95,9 +95,7 @@ suite('Designer template services', () => {
       const filePath = path.join(resourcesRoot, 'Catalog.xml');
       fs.writeFileSync(filePath, '<CatalogTemplate>ok</CatalogTemplate>', 'utf-8');
 
-      initDesignerTemplateRepository({
-        asAbsolutePath: (relativePath: string) => path.join(tmp, relativePath),
-      } as any);
+      initDesignerTemplateRepository(tmp);
 
       const content = await getDesignerTemplateXml('Catalog');
       assert.strictEqual(content, '<CatalogTemplate>ok</CatalogTemplate>');
@@ -109,9 +107,7 @@ suite('Designer template services', () => {
   test('getDesignerTemplateXml returns null when template file is missing', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-template-miss-'));
     try {
-      initDesignerTemplateRepository({
-        asAbsolutePath: (relativePath: string) => path.join(tmp, relativePath),
-      } as any);
+      initDesignerTemplateRepository(tmp);
 
       const content = await getDesignerTemplateXml('Document');
       assert.strictEqual(content, null);

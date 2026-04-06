@@ -211,7 +211,7 @@ export function reconcileSubsystemCompositionRefs(
  * {@link extractSubsystemCompositionRefs} and typical fast-xml-parser / XMLBuilder round-trip.
  */
 export function buildSubsystemCompositionContentNode(refs: string[]): Record<string, unknown> {
-  const items = refs.map((r) => ({ '#text': r }));
+  const items = refs.map((r) => ({ '@_xsi:type': 'xr:MDObjectRef', '#text': r }));
   if (items.length === 0) {
     return {};
   }

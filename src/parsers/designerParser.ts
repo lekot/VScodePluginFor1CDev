@@ -471,21 +471,16 @@ export class DesignerParser {
       elementNode.properties._lazy = true;
       // Still read main XML for properties and filePath
       const xmlPath = path.join(path.dirname(elementPath), `${elementName}.xml`);
-      try {
-        await fs.promises.access(xmlPath);
-        const xmlContent = await XmlParser.parseFileAsync(xmlPath);
-        const properties = this.extractPropertiesFromElement(xmlContent);
-        elementNode.properties = { ...elementNode.properties, ...properties };
+      const xmlResult = await this.readElementXmlProperties(xmlPath);
+      if (xmlResult !== null) {
+        elementNode.properties = { ...elementNode.properties, ...xmlResult.properties };
         elementNode.filePath = xmlPath;
-        const objBelonging = extractObjectBelonging(xmlContent);
-        if (objBelonging.objectBelonging !== undefined) {
-          elementNode.properties.objectBelonging = objBelonging.objectBelonging;
+        if (xmlResult.objectBelonging.objectBelonging !== undefined) {
+          elementNode.properties.objectBelonging = xmlResult.objectBelonging.objectBelonging;
         }
-        if (objBelonging.extendedConfigurationObject !== undefined) {
-          elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
+        if (xmlResult.objectBelonging.extendedConfigurationObject !== undefined) {
+          elementNode.properties.extendedConfigurationObject = xmlResult.objectBelonging.extendedConfigurationObject;
         }
-      } catch {
-        // Keep elementPath as filePath
       }
 
       // For shallow (lazy) nodes, still show virtual Ext with standard modules
@@ -508,26 +503,20 @@ export class DesignerParser {
     // XML file is in the parent directory (e.g., CommonModules/Module.xml, not CommonModules/Module/Module.xml)
     const xmlPath = path.join(path.dirname(elementPath), `${elementName}.xml`);
     let xmlContent: Record<string, unknown> | null = null;
-    try {
-      await fs.promises.access(xmlPath);
+    const xmlResult = await this.readElementXmlProperties(xmlPath);
+    if (xmlResult !== null) {
       // Update filePath to point to XML file regardless of parse success
       elementNode.filePath = xmlPath;
-      try {
-        xmlContent = await XmlParser.parseFileAsync(xmlPath);
-        const properties = this.extractPropertiesFromElement(xmlContent);
-        elementNode.properties = { ...elementNode.properties, ...properties };
-        const objBelonging = extractObjectBelonging(xmlContent);
-        if (objBelonging.objectBelonging !== undefined) {
-          elementNode.properties.objectBelonging = objBelonging.objectBelonging;
+      xmlContent = xmlResult.xmlContent;
+      if (xmlContent !== null) {
+        elementNode.properties = { ...elementNode.properties, ...xmlResult.properties };
+        if (xmlResult.objectBelonging.objectBelonging !== undefined) {
+          elementNode.properties.objectBelonging = xmlResult.objectBelonging.objectBelonging;
         }
-        if (objBelonging.extendedConfigurationObject !== undefined) {
-          elementNode.properties.extendedConfigurationObject = objBelonging.extendedConfigurationObject;
+        if (xmlResult.objectBelonging.extendedConfigurationObject !== undefined) {
+          elementNode.properties.extendedConfigurationObject = xmlResult.objectBelonging.extendedConfigurationObject;
         }
-      } catch (error) {
-        Logger.warn(`Error parsing element XML ${xmlPath}`, error);
       }
-    } catch {
-      // XML file doesn't exist, skip
     }
 
     // Parse Attributes and TabularSections from XML ChildObjects if available
@@ -562,6 +551,32 @@ export class DesignerParser {
     }
 
     return elementNode;
+  }
+
+  /**
+   * Read and parse an element's XML file, extracting properties and object belonging.
+   * Returns null if the file does not exist (access check fails).
+   * `xmlContent` inside the result may be null if parsing failed (file exists but is invalid).
+   */
+  private static async readElementXmlProperties(xmlPath: string): Promise<{
+    xmlContent: Record<string, unknown> | null;
+    properties: Record<string, unknown>;
+    objectBelonging: ReturnType<typeof extractObjectBelonging>;
+  } | null> {
+    try {
+      await fs.promises.access(xmlPath);
+    } catch {
+      return null;
+    }
+    try {
+      const xmlContent = await XmlParser.parseFileAsync(xmlPath);
+      const properties = this.extractPropertiesFromElement(xmlContent);
+      const objectBelonging = extractObjectBelonging(xmlContent);
+      return { xmlContent, properties, objectBelonging };
+    } catch (error) {
+      Logger.warn(`Error parsing element XML ${xmlPath}`, error);
+      return { xmlContent: null, properties: {}, objectBelonging: {} };
+    }
   }
 
   /**

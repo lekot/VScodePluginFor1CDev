@@ -1,0 +1,29 @@
+{
+  "comments": {
+    "lineComment": "//"
+  },
+  "brackets": [
+    ["(", ")"],
+    ["[", "]"]
+  ],
+  "autoClosingPairs": [
+    { "open": "(", "close": ")" },
+    { "open": "[", "close": "]" },
+    { "open": "\"", "close": "\"", "notIn": ["string"] }
+  ],
+  "surroundingPairs": [
+    ["(", ")"],
+    ["[", "]"],
+    ["\"", "\""]
+  ],
+  "folding": {
+    "markers": {
+      "start": "^\\s*#(Область|Region|Вставка|Удаление)|^\\s*//\\{",
+      "end": "^\\s*#(КонецОбласти|EndRegion|КонецВставки|КонецУдаления)|^\\s*//\\}"
+    }
+  },
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*(Процедура|Procedure|Функция|Function|Если|If|Иначе|Else|ИначеЕсли|ElsIf|Пока|While|Для|For|Попытка|Try|Исключение|Except)\\b",
+    "decreaseIndentPattern": "^\\s*(КонецПроцедуры|EndProcedure|КонецФункции|EndFunction|КонецЕсли|EndIf|Иначе|Else|ИначеЕсли|ElsIf|КонецЦикла|EndDo|КонецПопытки|EndTry|Исключение|Except)\\b"
+  }
+}

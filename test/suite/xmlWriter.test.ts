@@ -231,7 +231,7 @@ suite('XMLWriter', () => {
           await XMLWriter.updateProperty(nonExistentPath, 'Name', 'Test');
         },
         {
-          message: /Failed to update property/,
+          message: /File not found/,
         }
       );
     });
@@ -538,6 +538,288 @@ suite('XMLWriter', () => {
       assert.strictEqual(updatedProps.Synonym, 'Multi Property Test');
       assert.strictEqual(updatedProps.Comment, 'Testing multiple properties');
       assert.strictEqual(updatedProps.UseStandardCommands, true);
+    });
+  });
+
+  suite('generateSimpleUuid', () => {
+    test('returns a string matching UUID v4 format', () => {
+      const uuid = XMLWriter.generateSimpleUuid();
+      assert.strictEqual(typeof uuid, 'string');
+      assert.match(uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    });
+
+    test('returns unique values on each call', () => {
+      const uuid1 = XMLWriter.generateSimpleUuid();
+      const uuid2 = XMLWriter.generateSimpleUuid();
+      assert.notStrictEqual(uuid1, uuid2);
+    });
+  });
+
+  suite('createMinimalElementFile - edge cases', () => {
+    let tmpDir: string;
+
+    setup(async () => {
+      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-edge-'));
+    });
+
+    teardown(async () => {
+      try {
+        if (tmpDir && fs.existsSync(tmpDir)) {
+          await fs.promises.rm(tmpDir, { recursive: true });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    test('escapes special XML characters in element name', async () => {
+      const p = path.join(tmpDir, 'SpecialName.xml');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'Test&Name<>');
+      const raw = await fs.promises.readFile(p, 'utf-8');
+      assert.ok(raw.includes('Test&amp;Name&lt;&gt;'), 'Ampersand and angle brackets must be escaped');
+      assert.ok(!raw.includes('<Name>Test&Name'), 'Unescaped & must not appear inside <Name>');
+    });
+
+    test('handles Unicode (Cyrillic) element name', async () => {
+      const p = path.join(tmpDir, 'CyrillicCatalog.xml');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'ТестовыйКаталог');
+      const properties = await XMLWriter.readProperties(p);
+      assert.strictEqual(properties.Name, 'ТестовыйКаталог');
+    });
+
+    test('created file has valid XML declaration', async () => {
+      const p = path.join(tmpDir, 'XmlDeclTest.xml');
+      await XMLWriter.createMinimalElementFile(p, 'Document', 'DocTest');
+      const raw = await fs.promises.readFile(p, 'utf-8');
+      assert.ok(raw.startsWith('<?xml version="1.0"'), 'File must start with XML declaration');
+    });
+
+    test('created Catalog file contains ChildObjects', async () => {
+      const p = path.join(tmpDir, 'WithChildObjects.xml');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'WithChildren');
+      const raw = await fs.promises.readFile(p, 'utf-8');
+      assert.ok(raw.includes('<ChildObjects'), 'Catalog must emit ChildObjects');
+    });
+
+    test('created file uuid is embedded in root tag', async () => {
+      const p = path.join(tmpDir, 'UuidTest.xml');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'UuidTest');
+      const raw = await fs.promises.readFile(p, 'utf-8');
+      assert.match(raw, /uuid="[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i);
+    });
+  });
+
+  suite('addNestedElement', () => {
+    let tmpDir: string;
+
+    setup(async () => {
+      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-nested-'));
+    });
+
+    teardown(async () => {
+      try {
+        if (tmpDir && fs.existsSync(tmpDir)) {
+          await fs.promises.rm(tmpDir, { recursive: true });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    test('adds Attribute to Catalog ChildObjects', async () => {
+      const src = path.join(fixturesPath, 'designer-config', 'Catalogs', 'TestCatalog1.xml');
+      const dest = path.join(tmpDir, 'Catalog.xml');
+      fs.copyFileSync(src, dest);
+
+      await XMLWriter.addNestedElement(dest, 'Attribute', 'NewField');
+
+      const raw = await fs.promises.readFile(dest, 'utf-8');
+      assert.ok(raw.includes('NewField'), 'New attribute name must appear in file');
+    });
+
+    test('throws for non-existent file', async () => {
+      await assert.rejects(
+        () => XMLWriter.addNestedElement(path.join(tmpDir, 'missing.xml'), 'Attribute', 'X'),
+        (err: Error) => /File not found|Unable to read/.test(err.message)
+      );
+    });
+
+    test('throws for empty file', async () => {
+      const emptyPath = path.join(tmpDir, 'empty.xml');
+      fs.writeFileSync(emptyPath, '', 'utf-8');
+      await assert.rejects(
+        () => XMLWriter.addNestedElement(emptyPath, 'Attribute', 'X'),
+        (err: Error) => /empty|invalid|File/.test(err.message)
+      );
+    });
+
+    test('throws Unable to read when path is a directory', async () => {
+      // fs.readFile on a directory throws EISDIR, exercising the readError catch in readUtf8AndParse
+      const dirPath = path.join(tmpDir, 'subdir');
+      fs.mkdirSync(dirPath);
+      await assert.rejects(
+        () => XMLWriter.addNestedElement(dirPath, 'Attribute', 'X'),
+        (err: Error) => /Unable to read|File not found/.test(err.message)
+      );
+    });
+  });
+
+  suite('removeNestedElement', () => {
+    let tmpDir: string;
+
+    setup(async () => {
+      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-remove-'));
+    });
+
+    teardown(async () => {
+      try {
+        if (tmpDir && fs.existsSync(tmpDir)) {
+          await fs.promises.rm(tmpDir, { recursive: true });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    test('removes existing Attribute from Catalog ChildObjects', async () => {
+      const src = path.join(fixturesPath, 'designer-config', 'Catalogs', 'TestCatalog1.xml');
+      const dest = path.join(tmpDir, 'Catalog.xml');
+      fs.copyFileSync(src, dest);
+
+      // First verify the attribute exists
+      const rawBefore = await fs.promises.readFile(dest, 'utf-8');
+      assert.ok(rawBefore.includes('NewAttribute'), 'Fixture must contain NewAttribute');
+
+      await XMLWriter.removeNestedElement(dest, 'Attribute', 'NewAttribute');
+
+      const rawAfter = await fs.promises.readFile(dest, 'utf-8');
+      assert.ok(!rawAfter.includes('<Name>NewAttribute</Name>'), 'NewAttribute must be removed');
+    });
+
+    test('throws for non-existent file', async () => {
+      await assert.rejects(
+        () => XMLWriter.removeNestedElement(path.join(tmpDir, 'missing.xml'), 'Attribute', 'X'),
+        (err: Error) => /File not found|Unable to read/.test(err.message)
+      );
+    });
+  });
+
+  suite('addDesignerFormReferenceToOwnerMetadata', () => {
+    let tmpDir: string;
+
+    setup(async () => {
+      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-'));
+    });
+
+    teardown(async () => {
+      try {
+        if (tmpDir && fs.existsSync(tmpDir)) {
+          await fs.promises.rm(tmpDir, { recursive: true });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    test('adds Form reference to Catalog ChildObjects', async () => {
+      const src = path.join(fixturesPath, 'designer-config', 'Catalogs', 'TestCatalog1.xml');
+      const dest = path.join(tmpDir, 'Catalog.xml');
+      fs.copyFileSync(src, dest);
+
+      await XMLWriter.addDesignerFormReferenceToOwnerMetadata(dest, 'ItemForm');
+
+      const raw = await fs.promises.readFile(dest, 'utf-8');
+      assert.ok(raw.includes('ItemForm'), 'Form name must appear in file after adding');
+    });
+
+    test('does not modify file when form reference already exists', async () => {
+      const src = path.join(fixturesPath, 'designer-config', 'Catalogs', 'TestCatalog1.xml');
+      const dest = path.join(tmpDir, 'Catalog.xml');
+      fs.copyFileSync(src, dest);
+
+      // Add once
+      await XMLWriter.addDesignerFormReferenceToOwnerMetadata(dest, 'ListForm');
+      const rawAfterFirst = await fs.promises.readFile(dest, 'utf-8');
+
+      // Add again — should be no-op
+      await XMLWriter.addDesignerFormReferenceToOwnerMetadata(dest, 'ListForm');
+      const rawAfterSecond = await fs.promises.readFile(dest, 'utf-8');
+
+      // Count occurrences — should not be doubled
+      const count = (rawAfterSecond.match(/ListForm/g) ?? []).length;
+      assert.ok(count >= 1, 'Form name must appear at least once');
+      const countFirst = (rawAfterFirst.match(/ListForm/g) ?? []).length;
+      assert.strictEqual(count, countFirst, 'Adding same form twice must not duplicate it');
+    });
+
+    test('throws for non-existent file', async () => {
+      await assert.rejects(
+        () => XMLWriter.addDesignerFormReferenceToOwnerMetadata(path.join(tmpDir, 'missing.xml'), 'Form'),
+        (err: Error) => /File not found|Unable to read/.test(err.message)
+      );
+    });
+  });
+
+  suite('writeNestedElementProperties - error paths', () => {
+    let tmpDir: string;
+
+    setup(async () => {
+      tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-wnep-'));
+    });
+
+    teardown(async () => {
+      try {
+        if (tmpDir && fs.existsSync(tmpDir)) {
+          await fs.promises.rm(tmpDir, { recursive: true });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    test('throws Unable to read error for non-existent file', async () => {
+      await assert.rejects(
+        () => XMLWriter.writeNestedElementProperties(
+          path.join(tmpDir, 'missing.xml'),
+          'Attribute',
+          'SomeAttr',
+          { Name: 'SomeAttr' }
+        ),
+        (err: Error) => {
+          assert.ok(err instanceof Error);
+          assert.ok(
+            /Unable to read|Failed to write nested/.test(err.message),
+            `Unexpected message: ${err.message}`
+          );
+          return true;
+        }
+      );
+    });
+
+    test('wraps error as "Failed to write nested" when XML parse fails inside build step', async () => {
+      // Write content that passes the fs.readFile step but causes xmlParser.parse
+      // to throw inside buildUpdatedNestedXmlImpl, exercising the buildError catch
+      // (lines 519-523) and the outer re-wrap path (lines 535-541)
+      const badXmlPath = path.join(tmpDir, 'bad-nested.xml');
+      // XML with a malformed attribute value (unclosed quote) — triggers parse error
+      fs.writeFileSync(badXmlPath, '<root attr="val</root>', 'utf-8');
+
+      await assert.rejects(
+        () => XMLWriter.writeNestedElementProperties(
+          badXmlPath,
+          'Attribute',
+          'Attr',
+          { Name: 'Attr' }
+        ),
+        (err: Error) => {
+          assert.ok(err instanceof Error);
+          assert.ok(
+            /Failed to write nested|Failed to generate/.test(err.message),
+            `Unexpected message: ${err.message}`
+          );
+          return true;
+        }
+      );
     });
   });
 

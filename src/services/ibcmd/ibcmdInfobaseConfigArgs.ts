@@ -134,6 +134,64 @@ export function buildInfobaseConfigApplyArgs(
   return args;
 }
 
+/**
+ * Инкрементальный импорт: загружает только указанные XML/BSL-файлы из каталога конфигурации.
+ * Файлы передаются как позиционные аргументы после `--base-dir=`.
+ *
+ * Порядок аргументов: `infobase config import files` → подключение/учётка/data → `--extension=` → `--no-check` → файлы → `--base-dir=`.
+ */
+export function buildInfobaseConfigImportFilesArgs(
+  connection: IbcmdOfflineConnection,
+  files: readonly string[],
+  baseDir: string,
+  options?: {
+    credentials?: IbcmdConfigCliCredentials;
+    extension?: string;
+    noCheck?: boolean;
+  },
+): string[] {
+  const args = ['infobase', 'config', 'import', 'files'];
+  appendConnectionAuthData(args, connection, options?.credentials);
+  const ext = options?.extension?.trim();
+  if (ext) {
+    args.push(`--extension=${ext}`);
+  }
+  if (options?.noCheck) {
+    args.push('--no-check');
+  }
+  for (const f of files) {
+    args.push(f);
+  }
+  args.push(`--base-dir=${resolveIbcmdCliPathForWindowsSpawn(baseDir)}`);
+  return args;
+}
+
+/**
+ * Статус конфигурации: сравнивает ИБ с файлами на диске.
+ * `--base=` указывает на `ConfigDumpInfo.xml`.
+ */
+export function buildInfobaseConfigExportStatusArgs(
+  connection: IbcmdOfflineConnection,
+  configDumpInfoPath: string,
+  options?: {
+    credentials?: IbcmdConfigCliCredentials;
+    extension?: string;
+    short?: boolean;
+  },
+): string[] {
+  const args = ['infobase', 'config', 'export', 'status'];
+  appendConnectionAuthData(args, connection, options?.credentials);
+  const ext = options?.extension?.trim();
+  if (ext) {
+    args.push(`--extension=${ext}`);
+  }
+  args.push(`--base=${resolveIbcmdCliPathForWindowsSpawn(configDumpInfoPath)}`);
+  if (options?.short) {
+    args.push('--short');
+  }
+  return args;
+}
+
 export function buildInfobaseConfigExportArgs(
   connection: IbcmdOfflineConnection,
   outPath: string,

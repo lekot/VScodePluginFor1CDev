@@ -19,9 +19,11 @@ import {
   resolveDeployTargetsForBinding,
   vscodeSupportsDeployReadonlyLock,
 } from './deployService';
-import { showIbcmdInfobaseOutputChannel } from '../infobases/infobaseConfigCommands';
+import { showIbcmdInfobaseOutputChannel, runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
+import { detectChangedConfigFiles } from '../services/ibcmd/incrementalChangeDetector';
+import type { GitRepository } from '../services/ibcmd/incrementalChangeDetector';
 
 /** Минимальный контракт панели диалога (избегаем циклического импорта с bindingDialog). */
 export interface BindingDialogLike {
@@ -254,4 +256,357 @@ export async function runDeployForConfigurationFromTree(
       showIbcmdInfobaseOutputChannel();
     }
   }
+}
+
+/**
+ * Resolves the binding target by walking up the tree from any node to the nearest
+ * Configuration or Extension ancestor, then resolving via resolveBindingTargetFromMetadataTreeNode.
+ */
+function resolveConfigRootFromAnyNode(
+  node: TreeNode,
+  treeDataProvider: MetadataTreeDataProvider,
+): { workspaceFolderName: string; configRelativePath: string; ibcmdExtensionName?: string } | undefined {
+  let current: TreeNode | undefined = node;
+  while (current) {
+    if (current.type === MetadataType.Configuration || current.type === MetadataType.Extension) {
+      const target = resolveBindingTargetFromMetadataTreeNode(current, treeDataProvider);
+      if (target) {
+        return target;
+      }
+    }
+    current = current.parent as TreeNode | undefined;
+  }
+  return undefined;
+}
+
+function showDeployRunSummaryToast(summary: { successCount: number; errorCount: number; skippedCount: number; cancelledMidChain: boolean }): void {
+  const tail = summary.cancelledMidChain ? ' Часть баз пропущена (отмена).' : '';
+  const parts: string[] = [`${summary.successCount} успешно`];
+  if (summary.errorCount > 0) {
+    parts.push(`${summary.errorCount} с ошибками`);
+  }
+  if (summary.skippedCount > 0) {
+    parts.push(`${summary.skippedCount} пропущено`);
+  }
+  const msg = `Раскатка завершена: ${parts.join(', ')}.${tail}`;
+  const showOut = 'Показать вывод';
+  const noErrorsOrCancel = summary.errorCount === 0 && !summary.cancelledMidChain;
+  if (summary.successCount > 0 && noErrorsOrCancel) {
+    void vscode.window.showInformationMessage(msg, showOut).then((r) => {
+      if (r === showOut) {
+        showIbcmdInfobaseOutputChannel();
+      }
+    });
+  } else {
+    void vscode.window.showWarningMessage(msg, showOut).then((r) => {
+      if (r === showOut) {
+        showIbcmdInfobaseOutputChannel();
+      }
+    });
+  }
+}
+
+/**
+ * Раскатка выбранных объектов дерева в привязанные ИБ (incremental import files).
+ */
+export async function runDeploySelectedObjectsFromTree(
+  arg: unknown,
+  allSelected: readonly TreeNode[],
+  state: ExtensionState,
+  treeDataProvider: MetadataTreeDataProvider,
+): Promise<void> {
+  if (!state.bindingManager || !state.infobaseStorage) {
+    void vscode.window.showErrorMessage('Раскатка недоступна: хранилище или привязки не инициализированы.');
+    return;
+  }
+  const node = arg as TreeNode | undefined;
+  if (!node) {
+    void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
+    return;
+  }
+  const active = treeDataProvider.resolveNodeForUi(node);
+  const target = resolveConfigRootFromAnyNode(active, treeDataProvider);
+  if (!target) {
+    void vscode.window.showErrorMessage(
+      'Не удалось сопоставить выгрузку с workspace. Выберите узел внутри конфигурации с привязанной базой.',
+    );
+    return;
+  }
+
+  const binding = await state.bindingManager.get(
+    target.workspaceFolderName,
+    target.configRelativePath,
+    target.ibcmdExtensionName,
+  );
+  if (!binding || binding.infobaseIds.length === 0) {
+    void vscode.window.showWarningMessage(
+      'Для этой конфигурации нет привязанных баз. Сначала выполните «Привязать базы…».',
+    );
+    return;
+  }
+
+  let catalog;
+  try {
+    catalog = await state.infobaseStorage.load();
+  } catch {
+    void vscode.window.showErrorMessage('Не удалось загрузить каталог информационных баз.');
+    return;
+  }
+
+  const ibcmd = getIbcmdService();
+  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+    await showIbcmdNotFoundDialog();
+    return;
+  }
+
+  const preview = listDeployTargetLabels(binding, catalog);
+  const lines = preview.length > 0 ? `\n\n${preview.join('\n')}` : '';
+  const selectedNodes = allSelected.length > 0 ? allSelected : [active];
+  const ok = await vscode.window.showWarningMessage(
+    `Выбранные объекты будут загружены в привязанные базы. Продолжить?${lines}`,
+    { modal: true },
+    'Продолжить',
+  );
+  if (ok !== 'Продолжить') {
+    return;
+  }
+
+  const wf = vscode.workspace.workspaceFolders?.find((f) => f.name === target.workspaceFolderName);
+  if (!wf) {
+    void vscode.window.showErrorMessage(`Папка workspace не найдена: «${target.workspaceFolderName}».`);
+    return;
+  }
+
+  const deployService = new DeployService();
+  const summary = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Раскатка выбранных объектов в привязанные базы',
+      cancellable: true,
+    },
+    async (progress, token) =>
+      deployService.deploySelectedObjects({
+        binding,
+        workspaceFolderRoot: wf.uri.fsPath,
+        storage: state.infobaseStorage!,
+        catalog,
+        selectedNodes,
+        progress,
+        token,
+      }),
+  );
+
+  showDeployRunSummaryToast(summary);
+}
+
+/**
+ * Раскатка изменённых файлов конфигурации (по данным git) в привязанные ИБ.
+ */
+export async function runDeployChangedFilesFromTree(
+  arg: unknown,
+  state: ExtensionState,
+  treeDataProvider: MetadataTreeDataProvider,
+): Promise<void> {
+  if (!state.bindingManager || !state.infobaseStorage) {
+    void vscode.window.showErrorMessage('Раскатка недоступна: хранилище или привязки не инициализированы.');
+    return;
+  }
+  const node = arg as TreeNode | undefined;
+  if (!node) {
+    void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
+    return;
+  }
+  const active = treeDataProvider.resolveNodeForUi(node);
+  const target = resolveConfigRootFromAnyNode(active, treeDataProvider);
+  if (!target) {
+    void vscode.window.showErrorMessage(
+      'Не удалось сопоставить выгрузку с workspace. Выберите узел внутри конфигурации с привязанной базой.',
+    );
+    return;
+  }
+
+  const binding = await state.bindingManager.get(
+    target.workspaceFolderName,
+    target.configRelativePath,
+    target.ibcmdExtensionName,
+  );
+  if (!binding || binding.infobaseIds.length === 0) {
+    void vscode.window.showWarningMessage(
+      'Для этой конфигурации нет привязанных баз. Сначала выполните «Привязать базы…».',
+    );
+    return;
+  }
+
+  const wf = vscode.workspace.workspaceFolders?.find((f) => f.name === target.workspaceFolderName);
+  if (!wf) {
+    void vscode.window.showErrorMessage(`Папка workspace не найдена: «${target.workspaceFolderName}».`);
+    return;
+  }
+
+  const configRoot = path.join(wf.uri.fsPath, path.dirname(target.configRelativePath));
+
+  const deps = {
+    getGitRepository(): GitRepository | undefined {
+      const gitExt = vscode.extensions.getExtension<{ getAPI(version: number): { repositories: GitRepository[] } }>('vscode.git');
+      const api = gitExt?.exports?.getAPI(1);
+      if (!api) {
+        return undefined;
+      }
+      return api.repositories.find(
+        (r) => configRoot.toLowerCase().startsWith(r.rootUri.fsPath.toLowerCase()),
+      );
+    },
+  };
+
+  const changesResult = await detectChangedConfigFiles(configRoot, deps);
+  if ('error' in changesResult) {
+    void vscode.window.showWarningMessage(changesResult.error);
+    return;
+  }
+  if (changesResult.relativePaths.length === 0) {
+    void vscode.window.showInformationMessage('Нет изменённых файлов конфигурации (по данным git).');
+    return;
+  }
+
+  let catalog;
+  try {
+    catalog = await state.infobaseStorage.load();
+  } catch {
+    void vscode.window.showErrorMessage('Не удалось загрузить каталог информационных баз.');
+    return;
+  }
+
+  const ibcmd = getIbcmdService();
+  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+    await showIbcmdNotFoundDialog();
+    return;
+  }
+
+  const preview = listDeployTargetLabels(binding, catalog);
+  const lines = preview.length > 0 ? `\n\n${preview.join('\n')}` : '';
+  const ok = await vscode.window.showWarningMessage(
+    `Будут загружены ${changesResult.relativePaths.length} изменённых файлов конфигурации в привязанные базы. Продолжить?${lines}`,
+    { modal: true },
+    'Продолжить',
+  );
+  if (ok !== 'Продолжить') {
+    return;
+  }
+
+  const deployService = new DeployService();
+  const summary = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Раскатка изменённых файлов в привязанные базы',
+      cancellable: true,
+    },
+    async (progress, token) =>
+      deployService.deployChangedFiles({
+        binding,
+        workspaceFolderRoot: wf.uri.fsPath,
+        storage: state.infobaseStorage!,
+        catalog,
+        relativeFiles: changesResult.relativePaths,
+        progress,
+        token,
+      }),
+  );
+
+  showDeployRunSummaryToast(summary);
+}
+
+/**
+ * Статус конфигурации (ИБ vs файлы) через ibcmd config export status.
+ */
+export async function runConfigExportStatusFromTree(
+  arg: unknown,
+  state: ExtensionState,
+  treeDataProvider: MetadataTreeDataProvider,
+): Promise<void> {
+  if (!state.bindingManager || !state.infobaseStorage) {
+    void vscode.window.showErrorMessage('Статус конфигурации недоступен: хранилище или привязки не инициализированы.');
+    return;
+  }
+  const node = arg as TreeNode | undefined;
+  if (!node) {
+    void vscode.window.showErrorMessage('Выберите узел «Конфигурация» в дереве метаданных.');
+    return;
+  }
+  const active = treeDataProvider.resolveNodeForUi(node);
+  const target = resolveBindingTargetFromMetadataTreeNode(active, treeDataProvider);
+  if (!target) {
+    void vscode.window.showErrorMessage(
+      'Не удалось сопоставить выгрузку с workspace. Выберите узел «Конфигурация» с привязанной базой.',
+    );
+    return;
+  }
+
+  const binding = await state.bindingManager.get(
+    target.workspaceFolderName,
+    target.configRelativePath,
+    target.ibcmdExtensionName,
+  );
+  if (!binding || binding.infobaseIds.length === 0) {
+    void vscode.window.showWarningMessage(
+      'Для этой конфигурации нет привязанных баз. Сначала выполните «Привязать базы…».',
+    );
+    return;
+  }
+
+  let catalog;
+  try {
+    catalog = await state.infobaseStorage.load();
+  } catch {
+    void vscode.window.showErrorMessage('Не удалось загрузить каталог информационных баз.');
+    return;
+  }
+
+  const ibcmd = getIbcmdService();
+  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+    await showIbcmdNotFoundDialog();
+    return;
+  }
+
+  const wf = vscode.workspace.workspaceFolders?.find((f) => f.name === target.workspaceFolderName);
+  if (!wf) {
+    void vscode.window.showErrorMessage(`Папка workspace не найдена: «${target.workspaceFolderName}».`);
+    return;
+  }
+
+  const configRoot = path.join(wf.uri.fsPath, path.dirname(target.configRelativePath));
+  const configDumpInfoPath = path.join(configRoot, 'ConfigDumpInfo.xml');
+  if (!fs.existsSync(configDumpInfoPath)) {
+    void vscode.window.showWarningMessage(
+      'Файл ConfigDumpInfo.xml не найден в каталоге конфигурации. Выполните полную выгрузку (ibcmd config export), чтобы создать его.',
+    );
+    return;
+  }
+
+  const catalogById = new Map(catalog.map((e) => [e.id, e] as const));
+  const { entries } = resolveDeployTargetsForBinding(binding, catalogById);
+  if (entries.length === 0) {
+    void vscode.window.showWarningMessage('Нет доступных баз для проверки статуса.');
+    return;
+  }
+
+  const entry = entries[0]!;
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Проверка статуса конфигурации',
+      cancellable: true,
+    },
+    async (_progress, token) => {
+      await runInfobaseConfigExportStatus({
+        storage: state.infobaseStorage!,
+        entry,
+        configDumpInfoPath,
+        token,
+        ibcmdExtensionName: target.ibcmdExtensionName,
+      });
+    },
+  );
+
+  showIbcmdInfobaseOutputChannel();
 }

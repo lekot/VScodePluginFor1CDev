@@ -30,5 +30,5 @@ REM Быстрее полный прогон без окна VS Code:
 set "SKIP_VSCODE_SMOKE=1"
 
 cd /d "%~dp0"
-call instrument-smoke.bat
+call scripts\instrument-smoke.bat
 exit /b %ERRORLEVEL%

@@ -11,7 +11,13 @@ import {
 import type { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { Logger } from '../utils/logger';
-import { openBindingDialogForConfigurationFromTree, runDeployForConfigurationFromTree } from './bindingCommands';
+import {
+  openBindingDialogForConfigurationFromTree,
+  runDeployForConfigurationFromTree,
+  runDeploySelectedObjectsFromTree,
+  runDeployChangedFilesFromTree,
+  runConfigExportStatusFromTree,
+} from './bindingCommands';
 
 const VIEW_TYPE = '1c-binding-dialog';
 
@@ -702,6 +708,15 @@ export function registerBindingDialogCommands(
       }),
       vscode.commands.registerCommand('1c-metadata-tree.config.deployMultiple', async (arg: unknown) => {
         await runDeployForConfigurationFromTree(arg, state, treeDataProvider);
+      }),
+      vscode.commands.registerCommand('1c-metadata-tree.config.deploySelectedObjects', async (arg: unknown) => {
+        await runDeploySelectedObjectsFromTree(arg, state.treeView?.selection ?? [], state, treeDataProvider);
+      }),
+      vscode.commands.registerCommand('1c-metadata-tree.config.deployChangedFiles', async (arg: unknown) => {
+        await runDeployChangedFilesFromTree(arg, state, treeDataProvider);
+      }),
+      vscode.commands.registerCommand('1c-metadata-tree.config.configExportStatus', async (arg: unknown) => {
+        await runConfigExportStatusFromTree(arg, state, treeDataProvider);
       }),
     );
   }

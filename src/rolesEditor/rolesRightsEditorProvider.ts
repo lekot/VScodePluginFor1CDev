@@ -19,6 +19,8 @@ import { loadMetadataObjects } from './metadataLoader';
 import { updateRight } from './rightsUpdateUtils';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
+import { FilterState, createDefaultFilterState } from './models/filterState';
+import { MetadataType } from '../models/treeNode';
 
 /**
  * Provider for the roles and rights editor webview
@@ -34,6 +36,8 @@ export class RolesRightsEditorProvider {
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
+  /** Server-side mirror of the webview filter state — survives webview reloads. */
+  private filterState: FilterState = createDefaultFilterState();
   /** Pending `requestSavePayload` → webview `savePayload` round-trips (external save / Ctrl+S). */
   private pendingSavePayloadRequests = new Map<
     string,
@@ -215,6 +219,12 @@ export class RolesRightsEditorProvider {
 
     const objectsJson = escapeJsonForScript(JSON.stringify(this.allObjects));
     const loadingFlag = initialTableLoading ? 'true' : 'false';
+    const filterStateJson = escapeJsonForScript(JSON.stringify({
+      showAll: this.filterState.showAll,
+      searchQuery: this.filterState.searchQuery,
+      // typeFilter in the webview is a plain string (single type or ''); convert back
+      typeFilter: this.filterState.typeFilter.length > 0 ? this.filterState.typeFilter[0] : '',
+    }));
 
     // Inject data into the script (match line ending \n or \r\n)
     html = html.replace(
@@ -222,6 +232,7 @@ export class RolesRightsEditorProvider {
       ` roleData = ${roleDataJson};
             allObjects = ${objectsJson};
             tableInitialLoading = ${loadingFlag};
+            filterState = ${filterStateJson};
             beginRightsEditorSession();`
     );
 
@@ -514,20 +525,36 @@ export class RolesRightsEditorProvider {
   }
 
   /**
-   * Handle toggleFilter message
+   * Handle toggleFilter message — mirrors showAll into server-side filterState.
    */
-  /** Filter state lives in the webview; host accepts messages for protocol compatibility only. */
-  private async handleToggleFilter(_message: WebviewMessage): Promise<void> {}
+  private async handleToggleFilter(message: WebviewMessage): Promise<void> {
+    if (typeof message.data?.showAll === 'boolean') {
+      this.filterState.showAll = message.data.showAll;
+      Logger.debug(`handleToggleFilter: showAll=${this.filterState.showAll}`);
+    }
+  }
 
   /**
-   * Handle search message
+   * Handle search message — mirrors searchQuery into server-side filterState.
    */
-  private async handleSearch(_message: WebviewMessage): Promise<void> {}
+  private async handleSearch(message: WebviewMessage): Promise<void> {
+    if (typeof message.data?.query === 'string') {
+      this.filterState.searchQuery = message.data.query;
+      Logger.debug(`handleSearch: searchQuery="${this.filterState.searchQuery}"`);
+    }
+  }
 
   /**
-   * Handle filterByType message
+   * Handle filterByType message — mirrors typeFilter into server-side filterState.
    */
-  private async handleFilterByType(_message: WebviewMessage): Promise<void> {}
+  private async handleFilterByType(message: WebviewMessage): Promise<void> {
+    if (typeof message.data?.type === 'string') {
+      this.filterState.typeFilter = message.data.type
+        ? [message.data.type as MetadataType]
+        : [];
+      Logger.debug(`handleFilterByType: typeFilter=${JSON.stringify(this.filterState.typeFilter)}`);
+    }
+  }
 
   /**
    * Large table renders run in the webview; reflect activity in the status bar so the window does not look hung.
@@ -662,5 +689,6 @@ export class RolesRightsEditorProvider {
     this.currentRoleModel = undefined;
     this.allObjects = [];
     this.saveDisabledNoConfig = false;
+    this.filterState = createDefaultFilterState();
   }
 }

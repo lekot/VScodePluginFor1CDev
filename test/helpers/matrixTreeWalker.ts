@@ -4,7 +4,7 @@ import { ConfigFormat, FormatDetector } from '../../src/parsers/formatDetector';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { initDesignerTemplateRepository } from '../../src/services/designerTemplateRepository';
 import { normalizeEmptyPlaceholderTree } from '../../src/utils/treeNormalization';
-import { createMatrixExtensionContext } from './matrixTestPaths';
+import { getRepoRootFromCompiledTestFile } from './matrixTestPaths';
 
 export { copyEmptyConfFixtureToTemp, getRepoRootFromCompiledTestFile } from './matrixTestPaths';
 
@@ -19,9 +19,8 @@ export interface DesignerMatrixContext {
  * a `MetadataTreeDataProvider` with Designer load context.
  */
 export async function buildDesignerMatrixContext(workDir: string): Promise<DesignerMatrixContext> {
-  const mockCtx = createMatrixExtensionContext();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  initDesignerTemplateRepository(mockCtx as any);
+  const repoRoot = getRepoRootFromCompiledTestFile();
+  initDesignerTemplateRepository(repoRoot);
 
   let root = await MetadataParser.parseStructureOnly(workDir);
   const format = await FormatDetector.detect(workDir);

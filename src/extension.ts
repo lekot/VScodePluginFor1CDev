@@ -15,7 +15,7 @@ const extensionState = new ExtensionState();
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   try {
     extensionState.init(context);
-    initDesignerTemplateRepository(context);
+    initDesignerTemplateRepository(context.extensionPath);
     Logger.initialize();
     Logger.info(MESSAGES.EXTENSION_ACTIVATED);
 

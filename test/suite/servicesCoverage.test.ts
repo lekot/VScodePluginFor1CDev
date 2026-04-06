@@ -2,8 +2,8 @@ import * as assert from 'assert';
 import {
   buildInternalInfoXml,
   injectInternalInfoIntoMetadataXml,
-} from '../../src/services/internalInfoGenerator';
-import { normalizeMetaDataObjectRoot } from '../../src/services/metaDataObjectRootNormalizer';
+} from '../../src/utils/xml/internalInfoGenerator';
+import { normalizeMetaDataObjectRoot } from '../../src/utils/xml/metaDataObjectRootNormalizer';
 import { Logger } from '../../src/utils/logger';
 
 suite('services coverage helpers', function () {

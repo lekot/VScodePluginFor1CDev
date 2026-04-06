@@ -2022,4 +2022,422 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.deepStrictEqual((a.parent.children ?? []).map((node) => node.name), ['OnlyA']);
     assert.deepStrictEqual((b.parent.children ?? []).map((node) => node.name), ['OnlyB']);
   });
+
+  // ---------------------------------------------------------------------------
+  // Additional coverage tests
+  // ---------------------------------------------------------------------------
+
+  test('getRootNode returns null when no root is set', () => {
+    assert.strictEqual(provider.getRootNode(), null);
+  });
+
+  test('getRootNode returns first root after setRootNode', () => {
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {} };
+    provider.setRootNode(root);
+    assert.strictEqual(provider.getRootNode(), root);
+  });
+
+  test('getRootNodes returns all roots after setRootNodes', () => {
+    const rootA: TreeNode = { id: 'a', name: 'A', type: MetadataType.Configuration, properties: {}, filePath: path.join('C:', 'cfgA', 'Configuration.xml') };
+    const rootB: TreeNode = { id: 'b', name: 'B', type: MetadataType.Configuration, properties: {}, filePath: path.join('C:', 'cfgB', 'Configuration.xml') };
+    provider.setRootNodes([rootA, rootB]);
+    const roots = provider.getRootNodes();
+    assert.strictEqual(roots.length, 2);
+    assert.strictEqual(roots[0].id, 'a');
+    assert.strictEqual(roots[1].id, 'b');
+  });
+
+  test('getConfigPath returns null when no root', () => {
+    assert.strictEqual(provider.getConfigPath(), null);
+  });
+
+  test('getConfigPath returns configPath from load context', () => {
+    const cfgPath = path.join('C:', 'proj', 'cfg');
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, filePath: path.join(cfgPath, 'Configuration.xml') };
+    provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+    assert.strictEqual(provider.getConfigPath(), cfgPath);
+  });
+
+  test('getConfigPath falls back to root filePath when no load context', () => {
+    const cfgPath = path.join('C:', 'proj', 'cfg');
+    const filePath = path.join(cfgPath, 'Configuration.xml');
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, filePath };
+    provider.setRootNode(root);
+    assert.strictEqual(provider.getConfigPath(), filePath);
+  });
+
+  test('getConfigPathForNode walks up to Configuration node with filePath', () => {
+    const cfgPath = path.join('C:', 'proj', 'cfg');
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, filePath: path.join(cfgPath, 'Configuration.xml') };
+    const catalogs: TreeNode = { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, parent: root };
+    const cat: TreeNode = { id: 'Catalogs.Cat1', name: 'Cat1', type: MetadataType.Catalog, properties: {}, parent: catalogs };
+    provider.setRootNode(root);
+    assert.strictEqual(provider.getConfigPathForNode(cat), cfgPath);
+  });
+
+  test('getConfigPathForNode returns null when no Configuration ancestor has filePath', () => {
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {} };
+    const child: TreeNode = { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, parent: root };
+    assert.strictEqual(provider.getConfigPathForNode(child), null);
+  });
+
+  test('getSearchQuery returns empty string initially', () => {
+    assert.strictEqual(provider.getSearchQuery(), '');
+  });
+
+  test('getSearchQuery returns last set search query', () => {
+    provider.setSearchQuery('testQuery');
+    assert.strictEqual(provider.getSearchQuery(), 'testQuery');
+  });
+
+  test('getTypeFilter returns null when no type filter is set', () => {
+    assert.strictEqual(provider.getTypeFilter(), null);
+  });
+
+  test('getTypeFilter returns set types', () => {
+    provider.setTypeFilter([MetadataType.Catalog, MetadataType.Document]);
+    const filter = provider.getTypeFilter();
+    assert.ok(filter);
+    assert.ok(filter.includes(MetadataType.Catalog));
+    assert.ok(filter.includes(MetadataType.Document));
+    assert.strictEqual(filter.length, 2);
+  });
+
+  test('setTypeFilter with null clears filter', () => {
+    provider.setTypeFilter([MetadataType.Catalog]);
+    provider.setTypeFilter(null);
+    assert.strictEqual(provider.getTypeFilter(), null);
+  });
+
+  test('addSearchToHistory and getSearchHistory', () => {
+    provider.addSearchToHistory('query1');
+    provider.addSearchToHistory('query2');
+    const history = provider.getSearchHistory();
+    assert.ok(Array.isArray(history));
+    assert.ok(history.includes('query1'));
+    assert.ok(history.includes('query2'));
+  });
+
+  test('getSearchHistory returns empty array initially', () => {
+    assert.deepStrictEqual(provider.getSearchHistory(), []);
+  });
+
+  test('getFilterableMetadataTypes returns non-empty array', () => {
+    const types = provider.getFilterableMetadataTypes();
+    assert.ok(Array.isArray(types));
+    assert.ok(types.length > 0);
+    assert.ok(types.includes(MetadataType.Catalog));
+    assert.ok(types.includes(MetadataType.Document));
+  });
+
+  test('findNodesByName returns nodes with matching name', () => {
+    const catA: TreeNode = { id: 'Catalogs.CatalogA', name: 'CatalogA', type: MetadataType.Catalog, properties: {} };
+    const catB: TreeNode = { id: 'Catalogs.CatalogB', name: 'CatalogB', type: MetadataType.Catalog, properties: {} };
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [catA, catB] };
+    catA.parent = root;
+    catB.parent = root;
+    provider.setRootNode(root);
+    const results = provider.findNodesByName('CatalogA');
+    assert.ok(results.some((n) => n.name === 'CatalogA'));
+  });
+
+  test('findNodesByName returns empty array for unknown name', () => {
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [] };
+    provider.setRootNode(root);
+    assert.deepStrictEqual(provider.findNodesByName('DoesNotExist'), []);
+  });
+
+  test('resolveNodeForUi returns fresh node after reload', () => {
+    const oldNode: TreeNode = { id: 'Catalogs.X', name: 'X', type: MetadataType.Catalog, properties: {} };
+    const oldRoot: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [oldNode] };
+    oldNode.parent = oldRoot;
+    provider.setRootNode(oldRoot);
+    const staleRef = oldNode;
+
+    const newNode: TreeNode = { id: 'Catalogs.X', name: 'X', type: MetadataType.Catalog, properties: { renamed: true } };
+    const newRoot: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [newNode] };
+    newNode.parent = newRoot;
+    provider.setRootNode(newRoot);
+
+    const resolved = provider.resolveNodeForUi(staleRef);
+    assert.strictEqual(resolved.id, 'Catalogs.X');
+    // resolveNodeForUi finds the fresh node from the cache by id
+    assert.strictEqual(resolved, newNode);
+  });
+
+  test('setMessageUpdater is called when filter message changes', () => {
+    const messages: Array<string | undefined> = [];
+    provider.setMessageUpdater((msg) => messages.push(msg));
+
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [] };
+    provider.setRootNode(root);
+
+    provider.setSearchQuery('hello');
+    assert.ok(messages.some((m) => m !== undefined && m.includes('hello')));
+  });
+
+  test('setMessageUpdater receives undefined when filter is cleared', () => {
+    const messages: Array<string | undefined> = [];
+    provider.setMessageUpdater((msg) => messages.push(msg));
+
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [] };
+    provider.setRootNode(root);
+
+    provider.setSearchQuery('hello');
+    provider.clearSearch();
+    // After clearSearch, last message should be undefined
+    assert.strictEqual(messages[messages.length - 1], undefined);
+  });
+
+  test('setSearchOptions with useRegex affects filter', async () => {
+    const cat: TreeNode = { id: 'Catalogs.CatABC', name: 'CatABC', type: MetadataType.Catalog, properties: {} };
+    const doc: TreeNode = { id: 'Documents.Doc123', name: 'Doc123', type: MetadataType.Document, properties: {} };
+    const root: TreeNode = {
+      id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {},
+      children: [cat, doc],
+    };
+    cat.parent = root;
+    doc.parent = root;
+    provider.setRootNode(root);
+
+    provider.setSearchOptions({ useRegex: true });
+    provider.setSearchQuery('^Cat');
+
+    const children = await provider.getChildren();
+    // Root should be visible (ancestor of match)
+    assert.strictEqual(children.length, 1);
+    const rootChildren = await provider.getChildren(children[0]);
+    // Only CatABC matches ^Cat regex
+    assert.strictEqual(rootChildren.length, 1);
+    assert.strictEqual(rootChildren[0].name, 'CatABC');
+  });
+
+  test('getTreeItem returns Expanded collapsibleState when isExpanded=true', () => {
+    const node: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      isExpanded: true,
+      children: [{ id: 'Catalogs.C1', name: 'C1', type: MetadataType.Catalog, properties: {} }],
+    };
+    const item = provider.getTreeItem(node);
+    assert.strictEqual(item.collapsibleState, vscode.TreeItemCollapsibleState.Expanded);
+  });
+
+  test('getTreeItem for adopted object appends .Adopted suffix to contextValue', () => {
+    const node: TreeNode = {
+      id: 'Catalogs.C1',
+      name: 'C1',
+      type: MetadataType.Catalog,
+      properties: { objectBelonging: 'Adopted' },
+    };
+    const item = provider.getTreeItem(node);
+    assert.ok(item.contextValue?.endsWith('.Adopted'), `contextValue should end with .Adopted, got: ${item.contextValue}`);
+  });
+
+  test('getTreeItem for adopted object includes (заимствованный) in description', () => {
+    const node: TreeNode = {
+      id: 'Catalogs.C1',
+      name: 'C1',
+      type: MetadataType.Catalog,
+      properties: { objectBelonging: 'Adopted' },
+    };
+    const item = provider.getTreeItem(node);
+    assert.ok(String(item.description ?? '').includes('заимствованный'), `description should contain заимствованный, got: ${item.description}`);
+  });
+
+  test('getTreeItem with filePath sets resourceUri for non-form nodes', () => {
+    const filePath = path.join('C:', 'cfg', 'Catalogs', 'MyCatalog.xml');
+    const node: TreeNode = {
+      id: 'Catalogs.MyCatalog',
+      name: 'MyCatalog',
+      type: MetadataType.Catalog,
+      properties: {},
+      filePath,
+    };
+    const item = provider.getTreeItem(node);
+    assert.ok(item.resourceUri, 'resourceUri should be set when filePath is present');
+    assert.strictEqual(
+      normalizeFsPathForCompare(item.resourceUri!.fsPath),
+      normalizeFsPathForCompare(filePath)
+    );
+  });
+
+  test('getTreeItem with extensionPurpose shows purpose in description', () => {
+    const node: TreeNode = {
+      id: 'root',
+      name: 'MyExtension',
+      type: MetadataType.Extension,
+      properties: { extensionPurpose: 'Patch', namePrefix: 'Ext_' },
+    };
+    const item = provider.getTreeItem(node);
+    const desc = String(item.description ?? '');
+    assert.ok(desc.includes('Patch'), `description should include purpose "Patch", got: ${desc}`);
+    assert.ok(desc.includes('Ext_'), `description should include prefix "Ext_", got: ${desc}`);
+  });
+
+  test('getTreeItem shows synonym in description when synonym property is set', () => {
+    const node: TreeNode = {
+      id: 'Catalogs.Partners',
+      name: 'Partners',
+      type: MetadataType.Catalog,
+      properties: { synonym: 'Контрагенты' },
+    };
+    const item = provider.getTreeItem(node);
+    assert.ok(String(item.description ?? '').includes('Контрагенты'));
+  });
+
+  test('getTreeItem includes synonym in tooltip', () => {
+    const node: TreeNode = {
+      id: 'Catalogs.Partners',
+      name: 'Partners',
+      type: MetadataType.Catalog,
+      properties: { synonym: 'Контрагенты' },
+    };
+    const item = provider.getTreeItem(node);
+    assert.ok(String(item.tooltip ?? '').includes('Контрагенты'));
+  });
+
+  test('getParent returns null for root node without parent', () => {
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {} };
+    const parent = provider.getParent(root);
+    assert.strictEqual(parent, null);
+  });
+
+  test('invalidateLoadedChildren clears children array of the node', () => {
+    const child: TreeNode = { id: 'Catalogs.C1', name: 'C1', type: MetadataType.Catalog, properties: {} };
+    const catalogs: TreeNode = { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [child] };
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [catalogs] };
+    catalogs.parent = root;
+    child.parent = catalogs;
+    provider.setRootNode(root);
+
+    assert.strictEqual(catalogs.children!.length, 1);
+    provider.invalidateLoadedChildren(catalogs);
+    assert.strictEqual(catalogs.children!.length, 0);
+  });
+
+  test('invalidateLoadedChildren sets _lazy on R6 section ids', () => {
+    const attrs: TreeNode = { id: 'Attributes', name: 'Attributes', type: MetadataType.Attribute, properties: {}, children: [] };
+    const cat: TreeNode = { id: 'Catalogs.C1', name: 'C1', type: MetadataType.Catalog, properties: {}, children: [attrs] };
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [cat] };
+    cat.parent = root;
+    attrs.parent = cat;
+    provider.setRootNode(root);
+
+    provider.invalidateLoadedChildren(attrs);
+    assert.strictEqual((attrs.properties as Record<string, unknown>)._lazy, true);
+  });
+
+  test('invalidateLoadedChildren sets _lazy on top-level element instances', () => {
+    const catInstance: TreeNode = { id: 'Catalogs.MyCatalog', name: 'MyCatalog', type: MetadataType.Catalog, properties: {}, children: [] };
+    const catalogs: TreeNode = { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [catInstance] };
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [catalogs] };
+    catalogs.parent = root;
+    catInstance.parent = catalogs;
+    provider.setRootNode(root);
+
+    provider.invalidateLoadedChildren(catInstance);
+    assert.strictEqual((catInstance.properties as Record<string, unknown>)._lazy, true);
+  });
+
+  test('applyOptimisticDelete returns null when node has no parent', () => {
+    const orphan: TreeNode = { id: 'Catalogs.X', name: 'X', type: MetadataType.Catalog, properties: {} };
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [] };
+    provider.setRootNode(root);
+    const token = provider.applyOptimisticDelete(orphan, 'op-orphan');
+    assert.strictEqual(token, null);
+  });
+
+  test('getVisibleNodesInOrder returns nodes in depth-first order', () => {
+    const catA: TreeNode = { id: 'Catalogs.A', name: 'A', type: MetadataType.Catalog, properties: {} };
+    const catB: TreeNode = { id: 'Catalogs.B', name: 'B', type: MetadataType.Catalog, properties: {} };
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [catA, catB] };
+    catA.parent = root;
+    catB.parent = root;
+    provider.setRootNode(root);
+
+    const nodes = provider.getVisibleNodesInOrder();
+    // root → A → B
+    assert.ok(nodes.length >= 3);
+    const ids = nodes.map((n) => n.id);
+    assert.ok(ids.indexOf('root') < ids.indexOf('Catalogs.A'));
+    assert.ok(ids.indexOf('Catalogs.A') < ids.indexOf('Catalogs.B'));
+  });
+
+  test('getVisibleOrderedNodeIds returns empty array when no root', () => {
+    assert.deepStrictEqual(provider.getVisibleOrderedNodeIds(), []);
+  });
+
+  test('getVisibleOrderedNodeIds respects active search filter', () => {
+    const catA: TreeNode = { id: 'Catalogs.Alpha', name: 'Alpha', type: MetadataType.Catalog, properties: {} };
+    const catB: TreeNode = { id: 'Catalogs.Beta', name: 'Beta', type: MetadataType.Catalog, properties: {} };
+    const root: TreeNode = { id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {}, children: [catA, catB] };
+    catA.parent = root;
+    catB.parent = root;
+    provider.setRootNode(root);
+    provider.setSearchQuery('Alpha');
+
+    const ids = provider.getVisibleOrderedNodeIds();
+    assert.ok(ids.includes('root'), 'root should be visible as ancestor');
+    assert.ok(ids.includes('Catalogs.Alpha'), 'Alpha should be visible (matches search)');
+    assert.ok(!ids.includes('Catalogs.Beta'), 'Beta should not be visible');
+  });
+
+  test('setSearchOptions bySynonymComment: search matches synonym', async () => {
+    const cat: TreeNode = {
+      id: 'Catalogs.Partners',
+      name: 'Partners',
+      type: MetadataType.Catalog,
+      properties: { synonym: 'Контрагенты' },
+    };
+    const root: TreeNode = {
+      id: 'root', name: 'Configuration', type: MetadataType.Configuration, properties: {},
+      children: [cat],
+    };
+    cat.parent = root;
+    provider.setRootNode(root);
+
+    provider.setSearchOptions({ bySynonymComment: true });
+    provider.setSearchQuery('Контрагенты');
+
+    const roots = await provider.getChildren();
+    assert.strictEqual(roots.length, 1);
+    const rootChildren = await provider.getChildren(roots[0]);
+    assert.ok(rootChildren.some((n) => n.name === 'Partners'), 'Should find by synonym when bySynonymComment is enabled');
+  });
+
+  test('getChildren returns all roots when multiple roots and no filter', async () => {
+    const rootA: TreeNode = { id: 'a', name: 'ConfigA', type: MetadataType.Configuration, properties: {}, filePath: path.join('C:', 'a', 'Configuration.xml') };
+    const rootB: TreeNode = { id: 'b', name: 'ConfigB', type: MetadataType.Configuration, properties: {}, filePath: path.join('C:', 'b', 'Configuration.xml') };
+    provider.setRootNodes([rootA, rootB]);
+    const children = await provider.getChildren();
+    assert.strictEqual(children.length, 2);
+    assert.ok(children.some((n) => n.name === 'ConfigA'));
+    assert.ok(children.some((n) => n.name === 'ConfigB'));
+  });
+
+  test('getChildren with search filter returns only matching roots', async () => {
+    const catA: TreeNode = { id: 'Catalogs.Alpha', name: 'Alpha', type: MetadataType.Catalog, properties: {} };
+    const rootA: TreeNode = { id: 'a', name: 'ConfigA', type: MetadataType.Configuration, properties: {}, filePath: path.join('C:', 'a', 'Configuration.xml'), children: [catA] };
+    const rootB: TreeNode = { id: 'b', name: 'ConfigB', type: MetadataType.Configuration, properties: {}, filePath: path.join('C:', 'b', 'Configuration.xml'), children: [] };
+    catA.parent = rootA;
+    provider.setRootNodes([rootA, rootB]);
+
+    provider.setSearchQuery('Alpha');
+    const children = await provider.getChildren();
+    // Only rootA contains a match, so rootB should be hidden
+    assert.ok(children.every((n) => n.id === 'a'), 'Only config with matching content should be visible');
+  });
+
+  test('static getFilterableTypeLabels returns labels for all filterable types', () => {
+    const labels = MetadataTreeDataProvider.getFilterableTypeLabels();
+    assert.ok(Array.isArray(labels));
+    assert.ok(labels.length > 0);
+    for (const entry of labels) {
+      assert.ok(typeof entry.type === 'string');
+      assert.ok(typeof entry.label === 'string');
+    }
+  });
 });
