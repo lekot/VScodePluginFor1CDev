@@ -1,4 +1,4 @@
-import { XMLWriter } from '../utils/XMLWriter';
+import { XMLWriter } from '../XMLWriter';
 
 /**
  * Корневые теги метаданных, для которых в иерархической выгрузке Designer **не** должно быть

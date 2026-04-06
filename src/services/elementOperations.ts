@@ -16,8 +16,8 @@ import {
 } from './registerRecorderDocumentLinker';
 import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from './configurationXmlUpdater';
 import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
-import { injectInternalInfoIntoMetadataXml } from './internalInfoGenerator';
-import { normalizeMetaDataObjectRoot } from './metaDataObjectRootNormalizer';
+import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
+import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,

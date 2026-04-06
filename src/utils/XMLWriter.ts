@@ -22,8 +22,8 @@ import {
 } from './xml/xmlFormReferenceService';
 import { getDefaultPropertiesForRootTag } from '../constants/metadataDefaultValues';
 import { MetadataType } from '../models/treeNode';
-import { injectInternalInfoIntoMetadataXml } from '../services/internalInfoGenerator';
-import { normalizeMetaDataObjectRoot } from '../services/metaDataObjectRootNormalizer';
+import { injectInternalInfoIntoMetadataXml } from './xml/internalInfoGenerator';
+import { normalizeMetaDataObjectRoot } from './xml/metaDataObjectRootNormalizer';
 
 export type { WriteNestedElementOptions };
 export { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from './xml/xmlChildObjectsService';
@@ -43,11 +43,6 @@ export class XMLWriter {
     try {
       if (!fs.existsSync(filePath)) {
         throw new Error(`File not found: ${filePath}`);
-      }
-
-      const stat = await fs.promises.stat(filePath);
-      if (!stat.isFile()) {
-        throw new Error(`Not a file: ${filePath}`);
       }
 
       let xmlContent: string;

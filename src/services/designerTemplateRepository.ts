@@ -1,22 +1,21 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as vscode from 'vscode';
 
-let extensionContext: vscode.ExtensionContext | undefined;
+let extensionPath: string | undefined;
 
 /**
- * Initialize the designer template repository with the extension context.
+ * Initialize the designer template repository with the extension path.
  * Must be called from activate() before any template access.
  */
-export function initDesignerTemplateRepository(context: vscode.ExtensionContext): void {
-  extensionContext = context;
+export function initDesignerTemplateRepository(extPath: string): void {
+  extensionPath = extPath;
 }
 
 /**
- * Drops cached extension context (for test isolation after suites that call `initDesignerTemplateRepository`).
+ * Drops cached extension path (for test isolation after suites that call `initDesignerTemplateRepository`).
  */
 export function clearDesignerTemplateRepositoryForTests(): void {
-  extensionContext = undefined;
+  extensionPath = undefined;
 }
 
 /**
@@ -25,12 +24,10 @@ export function clearDesignerTemplateRepositoryForTests(): void {
  * @returns Template XML string or null if file not found / read error.
  */
 export async function getDesignerTemplateXml(rootTag: string): Promise<string | null> {
-  if (!extensionContext) {
+  if (!extensionPath) {
     return null;
   }
-  const templatePath = extensionContext.asAbsolutePath(
-    path.join('resources', 'designerTemplates', 'Designer', `${rootTag}.xml`)
-  );
+  const templatePath = path.join(extensionPath, 'resources', 'designerTemplates', 'Designer', `${rootTag}.xml`);
   try {
     const content = await fs.promises.readFile(templatePath, 'utf-8');
     return content;

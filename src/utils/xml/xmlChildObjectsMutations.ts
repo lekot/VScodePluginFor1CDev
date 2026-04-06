@@ -5,7 +5,7 @@
 import { generateSimpleUuid } from './xmlHelpers';
 import { getDefaultPropertiesForNestedElement } from '../../constants/metadataDefaultValues';
 import { MetadataType } from '../../models/treeNode';
-import { buildTabularSectionInternalInfoObject } from '../../services/internalInfoGenerator';
+import { buildTabularSectionInternalInfoObject } from './internalInfoGenerator';
 import { TOP_LEVEL_TYPES, ROOT_TAGS_WITHOUT_CHILDOBJECTS } from './xmlChildObjectsConstants';
 
 // ---------------------------------------------------------------------------

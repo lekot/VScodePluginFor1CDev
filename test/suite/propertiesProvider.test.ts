@@ -5,6 +5,18 @@ import { PropertiesProvider } from '../../src/providers/propertiesProvider';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { validateProperties } from '../../src/providers/propertiesValidation';
+import {
+  detectPropertyType,
+  escapeHtml,
+  isRootElement,
+  renderPropertyInput,
+} from '../../src/providers/propertiesWebviewContent';
+import {
+  isMatchingCurrentFormSelection,
+  saveProperties,
+  type MessageHandlerContext,
+} from '../../src/providers/propertiesMessageHandler';
 
 suite('PropertiesProvider Message Protocol Test Suite', () => {
   let provider: PropertiesProvider;
@@ -60,17 +72,11 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       filePath: '/test/path.xml',
     };
 
-    // Access private method through any cast for testing
-    const validateProperties = (provider as any).validateProperties.bind(provider);
-    
-    // Set current node
-    (provider as any).currentNode = node;
-
     const result = validateProperties({
       name: 'TestCatalog',
       maxLength: 100,
       autoNumbering: true,
-    });
+    }, node);
 
     assert.strictEqual(result.valid, true);
     assert.strictEqual(Object.keys(result.errors).length, 0);
@@ -88,13 +94,10 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       filePath: '/test/path.xml',
     };
 
-    const validateProperties = (provider as any).validateProperties.bind(provider);
-    (provider as any).currentNode = node;
-
     const result = validateProperties({
       name: 'TestCatalog',
       maxLength: 'not a number',
-    });
+    }, node);
 
     assert.strictEqual(result.valid, false);
     assert.ok(result.errors.maxLength);
@@ -113,13 +116,10 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       filePath: '/test/path.xml',
     };
 
-    const validateProperties = (provider as any).validateProperties.bind(provider);
-    (provider as any).currentNode = node;
-
     const result = validateProperties({
       name: '',
       synonym: 'Test',
-    });
+    }, node);
 
     assert.strictEqual(result.valid, false);
     assert.ok(result.errors.name);
@@ -138,14 +138,11 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       filePath: '/test/path.xml',
     };
 
-    const validateProperties = (provider as any).validateProperties.bind(provider);
-    (provider as any).currentNode = node;
-
     const longString = 'a'.repeat(1001);
     const result = validateProperties({
       name: 'TestCatalog',
       description: longString,
-    });
+    }, node);
 
     assert.strictEqual(result.valid, true);
     assert.strictEqual(result.errors.description, undefined);
@@ -163,13 +160,10 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       filePath: '/test/path.xml',
     };
 
-    const validateProperties = (provider as any).validateProperties.bind(provider);
-    (provider as any).currentNode = node;
-
     const result = validateProperties({
       name: 'TestCatalog',
       autoNumbering: 'yes',
-    });
+    }, node);
 
     assert.strictEqual(result.valid, false);
     assert.ok(result.errors.autoNumbering);
@@ -177,8 +171,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
   });
 
   test('Property type detection should work correctly', () => {
-    const detectPropertyType = (provider as any).detectPropertyType.bind(provider);
-
     assert.strictEqual(detectPropertyType('test'), 'string');
     assert.strictEqual(detectPropertyType(123), 'number');
     assert.strictEqual(detectPropertyType(true), 'boolean');
@@ -187,8 +179,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
   });
 
   test('HTML escaping should prevent XSS', () => {
-    const escapeHtml = (provider as any).escapeHtml.bind(provider);
-
     assert.strictEqual(escapeHtml('<script>alert("xss")</script>'), '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
     assert.strictEqual(escapeHtml('Test & Co'), 'Test &amp; Co');
     assert.strictEqual(escapeHtml("It's a test"), 'It&#039;s a test');
@@ -216,7 +206,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       parentFilePath: '/test/parent.xml',
     };
 
-    const isRootElement = (provider as any).isRootElement.bind(provider);
     const result = isRootElement(node);
 
     assert.strictEqual(result, false, 'Attribute should not be a root element');
@@ -237,7 +226,6 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       filePath: '/test/path.xml',
     };
 
-    const isRootElement = (provider as any).isRootElement.bind(provider);
     const result = isRootElement(node);
 
     assert.strictEqual(result, true, 'Catalog should be a root element');
@@ -260,10 +248,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       filePath: '/test/path.xml',
     };
 
-    (provider as any).currentNode = node;
-
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('type', 'xs:string', false);
+    const html = renderPropertyInput('type', 'xs:string', false, node);
 
     assert.ok(html.includes('disabled'), 'Type property should be disabled for root elements');
     assert.ok(!html.includes('edit-type-btn'), 'Edit Type button should not appear for root elements');
@@ -287,10 +272,7 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       parentFilePath: '/test/parent.xml',
     };
 
-    (provider as any).currentNode = node;
-
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('type', 'xs:string', false);
+    const html = renderPropertyInput('type', 'xs:string', false, node);
 
     assert.ok(!html.includes('disabled'), 'Type property should be enabled for Attribute');
     assert.ok(html.includes('edit-type-btn') && html.includes('aria-label="Редактировать тип"'), 'Edit Type button (pencil icon) should appear for Attribute');
@@ -298,65 +280,61 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
 
   // attribute-type-editor bugfix: Type must not display as "[object Object]"
   test('renderPropertyInput Type as object should display formatted string not [object Object]', () => {
-    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
+    const attrNode: TreeNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
     const typeObject = {
       'v8:Type': 'xs:string',
       'v8:StringQualifiers': { 'v8:Length': 50 },
     };
-    const html = renderPropertyInput('Type', typeObject, false);
+    const html = renderPropertyInput('Type', typeObject, false, attrNode);
     assert.ok(html.includes('String(50)'), 'Type object should render as String(50)');
     assert.ok(!html.includes('[object Object]'), 'Must not display [object Object]');
   });
 
   test('renderPropertyInput Type as string should display as-is', () => {
-    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'CatalogRef.Products', false);
+    const attrNode: TreeNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const html = renderPropertyInput('Type', 'CatalogRef.Products', false, attrNode);
     assert.ok(html.includes('CatalogRef.Products'), 'String Type should be shown as-is');
   });
 
   test('renderPropertyInput Type null/undefined should display Not set', () => {
-    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const htmlNull = renderPropertyInput('Type', null, false);
-    const htmlUndef = renderPropertyInput('Type', undefined, false);
+    const attrNode: TreeNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const htmlNull = renderPropertyInput('Type', null, false, attrNode);
+    const htmlUndef = renderPropertyInput('Type', undefined, false, attrNode);
     assert.ok(htmlNull.includes('Not set'), 'null Type should show Not set');
     assert.ok(htmlUndef.includes('Not set'), 'undefined Type should show Not set');
   });
 
   test('renderPropertyInput malformed Type object should display [Invalid Type]', () => {
-    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', { 'v8:Type': 'cfg:BadRef.Obj' }, false);
+    const attrNode: TreeNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const html = renderPropertyInput('Type', { 'v8:Type': 'cfg:BadRef.Obj' }, false, attrNode);
     assert.ok(html.includes('[Invalid Type]'), 'Malformed type object should show [Invalid Type]');
   });
 
   test('renderPropertyInput Type property name should be case-insensitive', () => {
-    (provider as any).currentNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const htmlLower = renderPropertyInput('type', 'String(10)', false);
-    const htmlUpper = renderPropertyInput('TYPE', 'String(10)', false);
+    const attrNode: TreeNode = { id: 'a', name: 'A', type: MetadataType.Attribute, properties: {}, filePath: '' };
+    const htmlLower = renderPropertyInput('type', 'String(10)', false, attrNode);
+    const htmlUpper = renderPropertyInput('TYPE', 'String(10)', false, attrNode);
     assert.ok(htmlLower.includes('String(10)'));
     assert.ok(htmlUpper.includes('String(10)'));
   });
 
   test('form selection payload is ignored when docUri mismatches current selection', () => {
-    (provider as any).currentFormSelection = {
-      source: 'form-editor',
-      docUri: 'file:///form-a/Ext/Form.xml',
-      entityType: 'element',
-      id: 'el-1',
-      name: 'Element1',
-      tag: 'InputField',
-      properties: { Width: '100' },
-      events: {},
-      selectedIds: ['el-1'],
+    const ctx: Pick<MessageHandlerContext, 'currentFormSelection' | 'currentFormSelectionRevision'> = {
+      currentFormSelection: {
+        source: 'form-editor',
+        docUri: 'file:///form-a/Ext/Form.xml',
+        entityType: 'element',
+        id: 'el-1',
+        name: 'Element1',
+        tag: 'InputField',
+        properties: { Width: '100' },
+        events: {},
+        selectedIds: ['el-1'],
+      },
+      currentFormSelectionRevision: 5,
     };
-    (provider as any).currentFormSelectionRevision = 5;
 
-    const isMatching = (provider as any).isMatchingCurrentFormSelection.bind(provider);
-    const result = isMatching({
+    const result = isMatchingCurrentFormSelection({
       type: 'propertyChanged',
       propertyName: 'Width',
       value: '130',
@@ -364,26 +342,27 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       docUri: 'file:///form-b/Ext/Form.xml',
       entityType: 'element',
       entityId: 'el-1',
-    });
+    }, ctx as MessageHandlerContext);
     assert.strictEqual(result, false);
   });
 
   test('form selection payload is ignored when revision is stale', () => {
-    (provider as any).currentFormSelection = {
-      source: 'form-editor',
-      docUri: 'file:///form-a/Ext/Form.xml',
-      entityType: 'element',
-      id: 'el-1',
-      name: 'Element1',
-      tag: 'InputField',
-      properties: { Width: '100' },
-      events: {},
-      selectedIds: ['el-1'],
+    const ctx: Pick<MessageHandlerContext, 'currentFormSelection' | 'currentFormSelectionRevision'> = {
+      currentFormSelection: {
+        source: 'form-editor',
+        docUri: 'file:///form-a/Ext/Form.xml',
+        entityType: 'element',
+        id: 'el-1',
+        name: 'Element1',
+        tag: 'InputField',
+        properties: { Width: '100' },
+        events: {},
+        selectedIds: ['el-1'],
+      },
+      currentFormSelectionRevision: 7,
     };
-    (provider as any).currentFormSelectionRevision = 7;
 
-    const isMatching = (provider as any).isMatchingCurrentFormSelection.bind(provider);
-    const result = isMatching({
+    const result = isMatchingCurrentFormSelection({
       type: 'propertyChanged',
       propertyName: 'Width',
       value: '130',
@@ -391,25 +370,26 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       docUri: 'file:///form-a/Ext/Form.xml',
       entityType: 'element',
       entityId: 'el-1',
-    });
+    }, ctx as MessageHandlerContext);
     assert.strictEqual(result, false);
   });
 
   test('form selection payload matches only the active context', () => {
-    (provider as any).currentFormSelection = {
-      source: 'form-editor',
-      docUri: 'file:///form-b/Ext/Form.xml',
-      entityType: 'attribute',
-      id: 'attr-2',
-      name: 'Attr2',
-      properties: { Type: 'String(20)' },
-      events: {},
-      selectedIds: ['attr-2'],
+    const ctx: Pick<MessageHandlerContext, 'currentFormSelection' | 'currentFormSelectionRevision'> = {
+      currentFormSelection: {
+        source: 'form-editor',
+        docUri: 'file:///form-b/Ext/Form.xml',
+        entityType: 'attribute',
+        id: 'attr-2',
+        name: 'Attr2',
+        properties: { Type: 'String(20)' },
+        events: {},
+        selectedIds: ['attr-2'],
+      },
+      currentFormSelectionRevision: 9,
     };
-    (provider as any).currentFormSelectionRevision = 9;
 
-    const isMatching = (provider as any).isMatchingCurrentFormSelection.bind(provider);
-    const staleFromOtherContext = isMatching({
+    const staleFromOtherContext = isMatchingCurrentFormSelection({
       type: 'propertyChanged',
       propertyName: 'Type',
       value: 'String(30)',
@@ -417,8 +397,8 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       docUri: 'file:///form-a/Ext/Form.xml',
       entityType: 'attribute',
       entityId: 'attr-2',
-    });
-    const activeContext = isMatching({
+    }, ctx as MessageHandlerContext);
+    const activeContext = isMatchingCurrentFormSelection({
       type: 'propertyChanged',
       propertyName: 'Type',
       value: 'String(30)',
@@ -426,11 +406,29 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
       docUri: 'file:///form-b/Ext/Form.xml',
       entityType: 'attribute',
       entityId: 'attr-2',
-    });
+    }, ctx as MessageHandlerContext);
     assert.strictEqual(staleFromOtherContext, false, 'stale payload from other form must be ignored');
     assert.strictEqual(activeContext, true, 'payload for active form context must be accepted');
   });
 });
+
+/**
+ * Builds a minimal MessageHandlerContext for saveProperties tests.
+ * Uses the provider's treeDataProvider for refresh(); other callbacks are no-ops.
+ */
+function makeSaveCtx(p: PropertiesProvider): MessageHandlerContext {
+  return {
+    currentNode: (p as any).currentNode,
+    currentFormSelection: null,
+    currentFormSelectionRevision: 0,
+    isSaving: false,
+    treeDataProvider: (p as any).treeDataProvider,
+    typeEditorProvider: (p as any).typeEditorProvider,
+    postMessage: () => undefined,
+    updateWebviewContent: () => undefined,
+    setIsSaving: () => undefined,
+  };
+}
 
 suite('PropertiesProvider Save Operation Test Suite', () => {
   let provider: PropertiesProvider;
@@ -480,11 +478,11 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
       // No filePath
     };
 
-    const saveProperties = (provider as any).saveProperties.bind(provider);
+    const ctx = makeSaveCtx(provider);
 
     await assert.rejects(
       async () => {
-        await saveProperties(node, { name: 'UpdatedCatalog' });
+        await saveProperties(node, { name: 'UpdatedCatalog' }, ctx);
       },
       {
         message: /Cannot save properties: no file path associated with this element/,
@@ -495,7 +493,7 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
   test('Save operation should update node properties after successful save', async () => {
     const path = require('path');
     const fs = require('fs');
-    
+
     // Use a test fixture file
     const fixturesPath = path.join(__dirname, '../../../test/fixtures');
     const testXmlPath = path.join(fixturesPath, 'test-properties.xml');
@@ -521,8 +519,8 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
         Synonym: 'Updated Synonym',
       };
 
-      const saveProperties = (provider as any).saveProperties.bind(provider);
-      await saveProperties(node, newProperties);
+      const ctx = makeSaveCtx(provider);
+      await saveProperties(node, newProperties, ctx);
 
       // Verify node properties were updated
       assert.strictEqual(node.properties.Name, 'UpdatedCatalog');
@@ -552,11 +550,11 @@ suite('PropertiesProvider Save Operation Test Suite', () => {
       filePath: '/non/existent/path/file.xml',
     };
 
-    const saveProperties = (provider as any).saveProperties.bind(provider);
+    const ctx = makeSaveCtx(provider);
 
     await assert.rejects(
       async () => {
-        await saveProperties(node, { Name: 'UpdatedCatalog' });
+        await saveProperties(node, { Name: 'UpdatedCatalog' }, ctx);
       },
       {
         message: /Failed to write properties/,

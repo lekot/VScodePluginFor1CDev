@@ -10,9 +10,9 @@ import {
   runAddExistingInfobase,
   runCreateInfobase,
   runEditInfobase,
-  runImportV8i,
   runRemoveInfobase,
-} from '../../src/infobases/infobaseCommands';
+} from '../../src/infobases/infobaseCrudCommands';
+import { runImportV8i } from '../../src/infobases/infobaseV8iCommands';
 import { normalizeFsPathForCompare } from '../../src/infobases/infobaseValidator';
 import { parseV8iContent } from '../../src/infobases/v8iParser';
 import { getIbcmdService, resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';

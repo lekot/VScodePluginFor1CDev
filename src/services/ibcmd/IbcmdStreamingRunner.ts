@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'child_process';
-import type * as vscode from 'vscode';
 import type { IbcmdConsoleOutputEncoding } from './ibcmdConsoleEncodingTypes';
 import { createIbcmdStreamChunkDecoders } from './consoleStreamDecoder';
 import { envForIbcmdExplicitConfigSpawn, ibcmdArgvImpliesExplicitOfflineConnection } from './ibcmdSpawnEnv';
@@ -7,9 +6,14 @@ import { envForIbcmdExplicitConfigSpawn, ibcmdArgvImpliesExplicitOfflineConnecti
 /** Default ring buffer for captured stdout+stderr (design §6). */
 export const IBCMD_STREAM_RING_BUFFER_MAX_BYTES = 384 * 1024;
 
+/** Minimal disposable contract — compatible with vscode.Disposable but without the vscode import. */
+export interface IDisposable {
+  dispose(): void;
+}
+
 export interface IbcmdStreamCancellation {
   readonly isCancellationRequested: boolean;
-  onCancellationRequested(listener: () => void): vscode.Disposable;
+  onCancellationRequested(listener: () => void): IDisposable;
 }
 
 export interface IbcmdStreamingRunnerOptions {
@@ -78,7 +82,7 @@ export async function runIbcmdStreaming(
 
   let child: ChildProcess | undefined;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  let cancelDisp: vscode.Disposable | undefined;
+  let cancelDisp: IDisposable | undefined;
 
   const cleanupTimers = (): void => {
     if (timeoutId !== undefined) {

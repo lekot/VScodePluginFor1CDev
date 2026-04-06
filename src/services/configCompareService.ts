@@ -17,16 +17,13 @@ import {
 } from '../infobases/infobaseConfigCommands';
 import { buildInfobaseConfigExportArgs, ibcmdOfflineConnectionFromPrepared, type IbcmdConfigCliCredentials } from './ibcmd/ibcmdInfobaseConfigArgs';
 import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
-import { runIbcmdStreaming } from './ibcmd/IbcmdStreamingRunner';
+import { runIbcmdStreaming, type IbcmdStreamCancellation } from './ibcmd/IbcmdStreamingRunner';
 import { interpretIbcmdInfobaseOutcome } from './ibcmd/ibcmdInfobaseOperationResult';
 import { getIbcmdConsoleOutputEncodingSetting } from './metadataTreeSettings';
 import { showIbcmdNotFoundDialog } from './ibcmd/showIbcmdNotFoundDialog';
 import { getIbcmdYamlInfobaseConfigUnsupportedMessage } from './ibcmd/ibcmdVersionSupport';
 
-function vscodeCancellation(token: vscode.CancellationToken): {
-  isCancellationRequested: boolean;
-  onCancellationRequested: (listener: () => void) => vscode.Disposable;
-} {
+function vscodeCancellation(token: vscode.CancellationToken): IbcmdStreamCancellation {
   return {
     isCancellationRequested: token.isCancellationRequested,
     onCancellationRequested: (listener) => token.onCancellationRequested(listener),

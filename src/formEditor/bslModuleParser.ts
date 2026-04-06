@@ -10,8 +10,8 @@ export interface BslProcedureInfo {
   line: number;
 }
 
-/** Match "Процедура Имя(" or "Функция Имя(" (BSL). */
-const PROC_FUNC_REGEX = /^\s*(?:Процедура|Функция)\s+(\w+)\s*\(/i;
+/** Match "Процедура Имя(" or "Функция Имя(" (BSL). Supports Cyrillic identifiers. */
+const PROC_FUNC_REGEX = /^\s*(?:Процедура|Функция)\s+(\S+?)\s*\(/i;
 
 /**
  * Read Module.bsl and return list of procedure/function names with line numbers (1-based).

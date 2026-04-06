@@ -1092,4 +1092,313 @@ suite('elementOperations', () => {
     await renameElement(node, 'RenamedMod', tmpDir);
     assert.ok(await fileExists(path.join(cmRoot, 'RenamedMod', 'Ext', 'Module', 'Module.bsl')));
   });
+
+  // ---------------------------------------------------------------------------
+  // Validation errors — name
+  // ---------------------------------------------------------------------------
+
+  test('createElement throws on empty name', async () => {
+    await assert.rejects(
+      async () => createElement(catalogsTypeNode, '   '),
+      /пустым/
+    );
+  });
+
+  test('createElement throws when name starts with digit', async () => {
+    await assert.rejects(
+      async () => createElement(catalogsTypeNode, '1BadName'),
+      /цифры/
+    );
+  });
+
+  test('createElement throws when name contains invalid characters', async () => {
+    await assert.rejects(
+      async () => createElement(catalogsTypeNode, 'Bad-Name!'),
+      /буквы, цифры и подчёркивание/
+    );
+  });
+
+  test('createElement throws when name is a reserved 1C keyword', async () => {
+    await assert.rejects(
+      async () => createElement(catalogsTypeNode, 'Если'),
+      /зарезервированным/
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // createElement — unrecognized parent (no matching case)
+  // ---------------------------------------------------------------------------
+
+  test('createElement throws on unrecognized parent type', async () => {
+    // A node that is not Configuration, not Forms, not a type folder,
+    // not a TOP_LEVEL_TYPES instance, not an Attribute/TabularSection container.
+    const orphan: TreeNode = {
+      id: 'Orphan',
+      name: 'Orphan',
+      type: MetadataType.Unknown,
+      properties: {},
+      parent: configNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => createElement(orphan, 'SomeName'),
+      /Создание элемента/
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // duplicateElement — error paths
+  // ---------------------------------------------------------------------------
+
+  test('duplicateElement throws when node is Configuration', async () => {
+    await assert.rejects(
+      async () => duplicateElement(configNode, 'Copy'),
+      /дублировать корень/
+    );
+  });
+
+  test('duplicateElement throws when target name already exists (duplicate sibling)', async () => {
+    // catalogsTypeNode has child ExistingCatalog
+    catalogsTypeNode.children = [catalogNode];
+    await assert.rejects(
+      async () => duplicateElement(catalogNode, 'ExistingCatalog'),
+      /уже существует/
+    );
+  });
+
+  test('duplicateElement throws when source file does not exist', async () => {
+    const missingNode: TreeNode = {
+      id: 'Catalogs.Ghost',
+      name: 'Ghost',
+      type: MetadataType.Catalog,
+      properties: {},
+      filePath: path.join(tmpDir, 'Catalogs', 'Ghost.xml'), // not on disk
+      parent: catalogsTypeNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => duplicateElement(missingNode, 'GhostCopy'),
+      /не найден/
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // deleteElement — error paths
+  // ---------------------------------------------------------------------------
+
+  test('deleteElement throws when node has no parent', async () => {
+    const noParent: TreeNode = {
+      id: 'Catalogs.Orphan',
+      name: 'Orphan',
+      type: MetadataType.Catalog,
+      properties: {},
+      filePath: catalogPath,
+    };
+    await assert.rejects(
+      async () => deleteElement(noParent),
+      /родительского/
+    );
+  });
+
+  test('deleteElement throws when filePath is absent', async () => {
+    const noFile: TreeNode = {
+      id: 'Catalogs.NoFile',
+      name: 'NoFile',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: catalogsTypeNode,
+    };
+    await assert.rejects(
+      async () => deleteElement(noFile),
+      /не найден/
+    );
+  });
+
+  test('deleteElement throws when top-level element file is missing on disk', async () => {
+    const ghostNode: TreeNode = {
+      id: 'Catalogs.Ghost',
+      name: 'Ghost',
+      type: MetadataType.Catalog,
+      properties: {},
+      filePath: path.join(tmpDir, 'Catalogs', 'Ghost.xml'), // does not exist
+      parent: catalogsTypeNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => deleteElement(ghostNode),
+      /не найден/
+    );
+  });
+
+  test('deleteElement throws for unsupported type (Unknown)', async () => {
+    const unknownNode: TreeNode = {
+      id: 'WeirdNode',
+      name: 'WeirdNode',
+      type: MetadataType.Unknown,
+      properties: {},
+      filePath: catalogPath,
+      parent: catalogsTypeNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => deleteElement(unknownNode),
+      /не поддерживается/
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // renameElement — error paths
+  // ---------------------------------------------------------------------------
+
+  test('renameElement throws when node is Configuration', async () => {
+    await assert.rejects(
+      async () => renameElement(configNode, 'NewName', tmpDir),
+      /переименовать корень/
+    );
+  });
+
+  test('renameElement throws when node has no parent', async () => {
+    const noParent: TreeNode = {
+      id: 'Catalogs.Orphan',
+      name: 'Orphan',
+      type: MetadataType.Catalog,
+      properties: {},
+      filePath: catalogPath,
+    };
+    await assert.rejects(
+      async () => renameElement(noParent, 'NewName', tmpDir),
+      /родительского/
+    );
+  });
+
+  test('renameElement throws when target name already exists as sibling', async () => {
+    // Add a second child to simulate sibling collision
+    const secondCatalog = createCatalogNode('SecondCatalog', catalogsTypeNode,
+      path.join(tmpDir, 'Catalogs', 'SecondCatalog.xml'));
+    catalogsTypeNode.children = [catalogNode, secondCatalog];
+    catalogNode.parent = catalogsTypeNode;
+
+    await assert.rejects(
+      async () => renameElement(catalogNode, 'SecondCatalog', tmpDir),
+      /уже существует/
+    );
+  });
+
+  test('renameElement throws when file is missing on disk', async () => {
+    const ghostNode: TreeNode = {
+      id: 'Catalogs.Ghost',
+      name: 'Ghost',
+      type: MetadataType.Catalog,
+      properties: {},
+      filePath: path.join(tmpDir, 'Catalogs', 'Ghost.xml'), // not on disk
+      parent: catalogsTypeNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => renameElement(ghostNode, 'GhostRenamed', tmpDir),
+      /не найден/
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // createForm — validation edge cases
+  // ---------------------------------------------------------------------------
+
+  test('createForm throws on empty form name', async () => {
+    const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
+    await fs.promises.mkdir(formsPath, { recursive: true });
+    const formsNode = createFormsNode(catalogNode, formsPath);
+    await assert.rejects(
+      async () => createForm(formsNode, '   '),
+      /пустым/
+    );
+  });
+
+  test('createForm throws when form name already exists', async () => {
+    const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
+    await fs.promises.mkdir(formsPath, { recursive: true });
+    const formsNode = createFormsNode(catalogNode, formsPath);
+    await createForm(formsNode, 'UniqueForm');
+    // Second call with same name should fail
+    formsNode.children = [
+      { id: 'Forms.UniqueForm', name: 'UniqueForm', type: MetadataType.Form, properties: {} }
+    ];
+    await assert.rejects(
+      async () => createForm(formsNode, 'UniqueForm'),
+      /уже существует/
+    );
+  });
+
+  test('createForm throws when formsNode has no filePath', async () => {
+    const formsNode: TreeNode = {
+      id: 'Forms',
+      name: 'Forms',
+      type: MetadataType.Form,
+      properties: {},
+      parent: catalogNode,
+      children: [],
+      // filePath intentionally absent
+    };
+    await assert.rejects(
+      async () => createForm(formsNode, 'MyForm'),
+      /не задан путь/
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // findTabularSectionInstanceForAttributeParent — exported utility
+  // ---------------------------------------------------------------------------
+
+  test('findTabularSectionInstanceForAttributeParent returns section for columns container', async () => {
+    const { findTabularSectionInstanceForAttributeParent } = await import('../../src/services/elementOperations');
+
+    const sectionNode: TreeNode = {
+      id: 'TabularSections.Items',
+      name: 'Items',
+      type: MetadataType.TabularSection,
+      properties: {},
+      parent: catalogsTypeNode,
+      children: [],
+    };
+    const columnsContainer: TreeNode = {
+      id: 'TabularSections.Items.Attributes',
+      name: 'Реквизиты',
+      type: MetadataType.Attribute,
+      properties: { type: 'TabularSectionColumns' },
+      parent: sectionNode,
+      children: [],
+    };
+    const result = findTabularSectionInstanceForAttributeParent(columnsContainer);
+    assert.strictEqual(result, sectionNode);
+  });
+
+  test('findTabularSectionInstanceForAttributeParent returns section when parent is TabularSection instance under TabularSections folder', async () => {
+    const { findTabularSectionInstanceForAttributeParent } = await import('../../src/services/elementOperations');
+
+    const tsFolder: TreeNode = {
+      id: 'TabularSections',
+      name: 'TabularSections',
+      type: MetadataType.Unknown,
+      properties: {},
+      children: [],
+    };
+    const sectionNode: TreeNode = {
+      id: 'TabularSections.Items',
+      name: 'Items',
+      type: MetadataType.TabularSection,
+      properties: {},
+      parent: tsFolder,
+      children: [],
+    };
+    // parent of attribute = the section instance itself
+    const result = findTabularSectionInstanceForAttributeParent(sectionNode);
+    assert.strictEqual(result, sectionNode);
+  });
+
+  test('findTabularSectionInstanceForAttributeParent returns undefined for regular catalog node', async () => {
+    const { findTabularSectionInstanceForAttributeParent } = await import('../../src/services/elementOperations');
+
+    const result = findTabularSectionInstanceForAttributeParent(catalogNode);
+    assert.strictEqual(result, undefined);
+  });
 });
