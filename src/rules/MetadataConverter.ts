@@ -1,4 +1,5 @@
 // src/rules/MetadataConverter.ts
+import * as yaml from 'js-yaml';
 import { xmlParser, xmlBuilder } from '../utils/xml/xmlCore';
 import {
     IMetadataConverter,
@@ -205,11 +206,76 @@ export class MetadataConverter implements IMetadataConverter {
         };
     }
 
-    irToYaml(_ir: MetadataIR, _rules: MetadataObjectRules): string {
-        throw new Error('YAML support not implemented (Phase 2)');
+    irToYaml(ir: MetadataIR, rules: MetadataObjectRules): string {
+        const context: ConversionContext = {
+            objectName: ir.name,
+            objectType: ir.objectType,
+            defaultLanguage: 'ru',
+        };
+
+        const result: Record<string, unknown> = {};
+
+        // Meta fields first
+        result['Тип'] = rules.rootTag;
+        result['Имя'] = ir.name;
+
+        for (const [key, rule] of Object.entries(rules.properties)) {
+            if (rule.forReferenceOnly) { continue; }
+            if (rule.yaml === undefined) { continue; }
+
+            const irValue = ir.properties[key];
+            const converter = this.converterRegistry.get(rule.type);
+            const yamlValue = converter.toYaml(irValue, rule, context);
+            if (yamlValue !== undefined) {
+                result[rule.yaml] = yamlValue;
+            }
+        }
+
+        return yaml.dump(result, { lineWidth: -1, quotingType: "'", forceQuotes: false });
     }
 
-    yamlToIr(_yamlContent: string, _rules: MetadataObjectRules): MetadataIR {
-        throw new Error('YAML support not implemented (Phase 2)');
+    yamlToIr(yamlContent: string, rules: MetadataObjectRules): MetadataIR {
+        const data = yaml.load(yamlContent) as Record<string, unknown>;
+
+        // Determine name from YAML
+        const name = (data['Имя'] as string | undefined) ?? '';
+        const objectType = (data['Тип'] as string | undefined) ?? rules.rootTag;
+
+        const context: ConversionContext = {
+            objectName: name,
+            objectType,
+            defaultLanguage: 'ru',
+        };
+
+        const properties: Record<string, unknown> = {};
+
+        for (const [key, rule] of Object.entries(rules.properties)) {
+            if (rule.forReferenceOnly) { continue; }
+
+            if (rule.yaml === undefined) {
+                // Not in YAML — use default
+                properties[key] = getDefaultForType(rule);
+                continue;
+            }
+
+            const yamlValue = data[rule.yaml];
+            if (yamlValue === undefined) {
+                properties[key] = getDefaultForType(rule);
+            } else {
+                const converter = this.converterRegistry.get(rule.type);
+                properties[key] = converter.fromYaml(yamlValue, rule, context);
+            }
+        }
+
+        // Extract uuid if present
+        const uuid = (data['uuid'] as string | undefined) ?? '';
+
+        return {
+            objectType,
+            name,
+            uuid,
+            properties,
+            children: {},
+        };
     }
 }

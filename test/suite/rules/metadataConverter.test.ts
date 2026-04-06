@@ -241,22 +241,66 @@ suite('MetadataConverter', () => {
         });
     });
 
-    suite('YAML stubs', () => {
-        test('irToYaml throws not implemented', () => {
+    suite('YAML', () => {
+        const yamlRules: MetadataObjectRules = {
+            rootTag: 'Catalog',
+            namespaces: { 'xmlns': 'http://v8.1c.ru/8.3/MDClasses', 'xmlns:v8': 'http://v8.1c.ru/8.1/data/core' },
+            properties: {
+                name: { type: 'string', order: 1, xml: 'Name', yaml: 'Имя' },
+                comment: { type: 'string', order: 2, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
+                synonym: { type: 'I8nText', order: 3, xml: 'Synonym', yaml: 'Синоним' },
+            },
+        };
+
+        test('irToYaml produces valid YAML with meta fields', () => {
             const converter = new MetadataConverter(makeRegistry());
             const ir: MetadataIR = {
                 objectType: 'Catalog',
-                name: 'X',
+                name: 'МойСправочник',
                 uuid: 'u1',
-                properties: {},
+                properties: { name: 'МойСправочник', comment: '', synonym: 'Мой справочник' },
                 children: {},
             };
-            assert.throws(() => converter.irToYaml(ir, richRules), /YAML support not implemented/);
+            const result = converter.irToYaml(ir, yamlRules);
+            assert.ok(result.includes('Тип:'), 'should have Тип field');
+            assert.ok(result.includes('Имя:'), 'should have Имя field');
+            assert.ok(result.includes('МойСправочник'), 'should contain object name');
+            assert.ok(result.includes('Синоним:'), 'should have Синоним');
+            assert.ok(!result.includes('Комментарий:'), 'empty comment should be omitted (default)');
         });
 
-        test('yamlToIr throws not implemented', () => {
+        test('irToYaml omits properties without yaml key', () => {
+            const rulesNoYaml: MetadataObjectRules = {
+                rootTag: 'Catalog',
+                namespaces: {},
+                properties: {
+                    name: { type: 'string', order: 1, xml: 'Name', yaml: 'Имя' },
+                    internalData: { type: 'string', order: 2, xml: 'InternalData' },
+                },
+            };
             const converter = new MetadataConverter(makeRegistry());
-            assert.throws(() => converter.yamlToIr('yaml: content', richRules), /YAML support not implemented/);
+            const ir: MetadataIR = {
+                objectType: 'Catalog', name: 'X', uuid: 'u1',
+                properties: { name: 'X', internalData: 'secret' }, children: {},
+            };
+            const result = converter.irToYaml(ir, rulesNoYaml);
+            assert.ok(!result.includes('secret'), 'property without yaml key should not appear');
+        });
+
+        test('yamlToIr parses name and properties', () => {
+            const converter = new MetadataConverter(makeRegistry());
+            const yamlContent = 'Тип: Catalog\nИмя: ТестовыйСправочник\nСиноним: Тестовый справочник\n';
+            const ir = converter.yamlToIr(yamlContent, yamlRules);
+            assert.strictEqual(ir.name, 'ТестовыйСправочник');
+            assert.strictEqual(ir.objectType, 'Catalog');
+            assert.strictEqual(ir.properties['synonym'], 'Тестовый справочник');
+        });
+
+        test('yamlToIr uses default for missing properties', () => {
+            const converter = new MetadataConverter(makeRegistry());
+            const yamlContent = 'Тип: Catalog\nИмя: X\n';
+            const ir = converter.yamlToIr(yamlContent, yamlRules);
+            assert.strictEqual(ir.properties['comment'], '');
         });
     });
 });
