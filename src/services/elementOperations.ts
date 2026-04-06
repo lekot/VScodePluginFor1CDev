@@ -271,8 +271,11 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
     await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
   }
 
-  // Rules-based path (пилотные типы: CommonModule, Subsystem, Enum, Catalog, Document)
-  const rules = rulesRegistry.get(rootTag);
+  // Types that need template fallback (templates include ChildObjects with default children)
+  const templateOnlyTypes = new Set(['InformationRegister', 'AccumulationRegister']);
+
+  // Rules-based path
+  const rules = !templateOnlyTypes.has(rootTag) ? rulesRegistry.get(rootTag) : undefined;
   if (rules) {
     const uuid = XMLWriter.generateSimpleUuid();
     const ir = metadataConverter.createDefaultIR(rules, { name, uuid });
