@@ -36,6 +36,15 @@ export class MetadataConverter implements IMetadataConverter {
             if (rule.forReferenceOnly) { continue; }
             properties[key] = getDefaultForType(rule);
         }
+        // Name and Synonym use params as default source (only for properties with xml: 'Name'/'Synonym')
+        for (const [key, rule] of Object.entries(rules.properties)) {
+            if (rule.forReferenceOnly) { continue; }
+            if (rule.xml === 'Name') {
+                properties[key] = params.name;
+            } else if (rule.xml === 'Synonym') {
+                properties[key] = params.name;
+            }
+        }
         return {
             objectType: rules.rootTag,
             name: params.name,
@@ -86,18 +95,26 @@ export class MetadataConverter implements IMetadataConverter {
             }
         }
 
+        // Build namespace attributes from rules
+        const nsAttrs: Record<string, string> = {};
+        for (const [prefix, uri] of Object.entries(rules.namespaces)) {
+            nsAttrs[`@_${prefix}`] = uri;
+        }
+
+        // Build root object content
+        const rootContent: Record<string, unknown> = {
+            '@_uuid': ir.uuid,
+            Properties: propertiesObj,
+        };
+        if (rules.hasChildObjects) {
+            rootContent['ChildObjects'] = '';
+        }
+
         const obj = {
             '?xml': { '@_version': '1.0', '@_encoding': 'UTF-8' },
             MetaDataObject: {
-                '@_xmlns': 'http://v8.1c.ru/8.3/MDClasses',
-                '@_xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
-                '@_xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
-                '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-                [rules.rootTag]: {
-                    '@_uuid': ir.uuid,
-                    Properties: propertiesObj,
-                    ChildObjects: '',
-                },
+                ...nsAttrs,
+                [rules.rootTag]: rootContent,
             },
         };
 

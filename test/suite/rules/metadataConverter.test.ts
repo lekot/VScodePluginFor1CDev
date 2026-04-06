@@ -16,6 +16,10 @@ function makeRegistry(): PropertyConverterRegistry {
 
 const simpleRules: MetadataObjectRules = {
     rootTag: 'Catalog',
+    namespaces: {
+        'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
+        'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
+    },
     properties: {
         name: { type: 'string', order: 1 },
         comment: { type: 'string', order: 2 },
@@ -25,6 +29,10 @@ const simpleRules: MetadataObjectRules = {
 
 const richRules: MetadataObjectRules = {
     rootTag: 'Catalog',
+    namespaces: {
+        'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
+        'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
+    },
     properties: {
         name: { type: 'string', order: 1, xml: 'Name' },
         synonym: { type: 'I8nText', order: 2, xml: 'Synonym' },
@@ -71,6 +79,7 @@ suite('MetadataConverter', () => {
         test('skips forReferenceOnly properties', () => {
             const rulesWithRef: MetadataObjectRules = {
                 rootTag: 'Catalog',
+                namespaces: { 'xmlns': 'http://v8.1c.ru/8.3/MDClasses', 'xmlns:v8': 'http://v8.1c.ru/8.1/data/core' },
                 properties: {
                     name: { type: 'string', order: 1 },
                     refOnly: { type: 'string', order: 2, forReferenceOnly: true },
@@ -84,6 +93,7 @@ suite('MetadataConverter', () => {
         test('uses defaultValueXML if provided', () => {
             const rulesWithDefault: MetadataObjectRules = {
                 rootTag: 'Catalog',
+                namespaces: { 'xmlns': 'http://v8.1c.ru/8.3/MDClasses', 'xmlns:v8': 'http://v8.1c.ru/8.1/data/core' },
                 properties: {
                     name: { type: 'string', order: 1, defaultValueXML: 'DefaultName' },
                 },
@@ -93,10 +103,11 @@ suite('MetadataConverter', () => {
             assert.strictEqual(ir.properties['name'], 'DefaultName');
         });
 
-        test('I8nText defaults to empty string', () => {
+        test('I8nText with xml:Synonym defaults to params.name', () => {
             const converter = new MetadataConverter(makeRegistry());
             const ir = converter.createDefaultIR(richRules, { name: 'X', uuid: 'u1' });
-            assert.strictEqual(ir.properties['synonym'], '');
+            // When a property has xml: 'Synonym', createDefaultIR uses params.name as default
+            assert.strictEqual(ir.properties['synonym'], 'X');
         });
     });
 

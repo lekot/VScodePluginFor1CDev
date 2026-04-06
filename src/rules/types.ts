@@ -41,6 +41,10 @@ export interface MetadataPropertyRule {
 export interface MetadataObjectRules {
     readonly rootTag: string;
     readonly properties: Readonly<Record<string, MetadataPropertyRule>>;
+    /** Namespaces для XML. Ключ = prefix ('xmlns', 'xmlns:v8', ...), значение = URI. */
+    readonly namespaces: Readonly<Record<string, string>>;
+    /** Генерировать ли <ChildObjects> тег. По умолчанию false. */
+    readonly hasChildObjects?: boolean;
 }
 
 // ─── 3.2 Internal Representation (IR) ────────────────────────────────────────
