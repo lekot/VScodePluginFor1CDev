@@ -53,7 +53,9 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     invalidateCacheAndReload,
   });
 
-  async function loadMetadataTree(): Promise<void> {
+  let loadInProgress: Promise<void> | null = null;
+
+  async function doLoadMetadataTree(): Promise<void> {
     if (!state.treeDataProvider) {
       Logger.error(MESSAGES.ERROR_PROVIDER_NOT_INITIALIZED);
       return;
@@ -152,6 +154,18 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
       );
     } catch (error) {
       handleLoadError(error);
+    }
+  }
+
+  async function loadMetadataTree(): Promise<void> {
+    if (loadInProgress) {
+      await loadInProgress;
+    }
+    loadInProgress = doLoadMetadataTree();
+    try {
+      await loadInProgress;
+    } finally {
+      loadInProgress = null;
     }
   }
 
