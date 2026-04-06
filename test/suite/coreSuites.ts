@@ -119,6 +119,7 @@ export const coreSuiteFiles: string[] = [
   'suite/metadataTreeSettings.test.js',
   'suite/objectFileCollector.test.js',
   'suite/rules/converters.test.js',
+  'suite/rules/metadataConverter.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
