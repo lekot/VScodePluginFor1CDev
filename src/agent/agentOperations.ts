@@ -7,9 +7,14 @@ import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { rulesRegistry, metadataConverter } from '../rules';
 import { addRootObjectToConfiguration } from '../services/configurationXmlUpdater';
+import { getDesignerTemplateXml } from '../services/designerTemplateRepository';
+import { substituteDesignerTemplate } from '../services/designerTemplateSubstitutor';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
+
+/** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
+const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import type {
     AgentResult,
@@ -53,9 +58,10 @@ export class AgentOperations {
             }
             const trimmedName = name.trim();
 
-            // Проверяем наличие правил
-            const rules = rulesRegistry.get(type);
-            if (!rules) {
+            // Проверяем наличие правил или шаблона
+            const rules = !TEMPLATE_ONLY_TYPES.has(type) ? rulesRegistry.get(type) : undefined;
+            const templateXml = !rules ? await getDesignerTemplateXml(type) : null;
+            if (!rules && templateXml === null) {
                 return {
                     success: false,
                     error: `Тип "${type}" не поддерживается. Доступные типы: ${rulesRegistry.allRootTags().join(', ')}`,
@@ -77,24 +83,33 @@ export class AgentOperations {
                 // ENOENT — файл не существует, продолжаем
             }
 
-            // Создаём IR с дефолтными значениями
+            let content: string;
             const uuid = generateSimpleUuid();
-            let ir = metadataConverter.createDefaultIR(rules, { name: trimmedName, uuid });
 
-            // Применяем synonym как override через properties
-            const overrides: Record<string, unknown> = {};
-            if (synonym !== undefined) {
-                overrides['Synonym'] = synonym;
-            }
-            if (properties) {
-                Object.assign(overrides, properties);
-            }
-            if (Object.keys(overrides).length > 0) {
-                ir = metadataConverter.mergeProperties(ir, overrides);
+            if (rules) {
+                // Rules-based path
+                let ir = metadataConverter.createDefaultIR(rules, { name: trimmedName, uuid });
+                const overrides: Record<string, unknown> = {};
+                if (synonym !== undefined) {
+                    overrides['Synonym'] = synonym;
+                }
+                if (properties) {
+                    Object.assign(overrides, properties);
+                }
+                if (Object.keys(overrides).length > 0) {
+                    ir = metadataConverter.mergeProperties(ir, overrides);
+                }
+                content = metadataConverter.irToXml(ir, rules);
+            } else {
+                // Template fallback (registers with default children)
+                const uuidDim = generateSimpleUuid();
+                const uuidResource = generateSimpleUuid();
+                content = substituteDesignerTemplate(templateXml!, {
+                    uuid, Name: trimmedName, Synonym_ru: synonym ?? trimmedName,
+                    uuidDim, uuidResource,
+                });
             }
 
-            // Генерируем XML
-            let content = metadataConverter.irToXml(ir, rules);
             content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
             content = normalizeMetaDataObjectRoot(content);
 
