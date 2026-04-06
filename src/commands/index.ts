@@ -10,6 +10,8 @@ import {
   registerUtilityCommandsTrailing,
 } from './utilityCommands';
 import { registerExtensionCommands } from '../extensionSupport/extensionCommands';
+import { registerAgentCommands } from '../agent/agentCommands';
+import { FormatDetector } from '../parsers/formatDetector';
 
 export type RegisterAllCommandsArgs = {
   context: vscode.ExtensionContext;
@@ -30,6 +32,19 @@ export function registerAllCommands({
     extensionContext: context,
   };
   registerExtensionCommands(context, state);
+
+  // Agent API — регистрируем отдельно (не возвращают Disposable[] — управляют подписками сами)
+  registerAgentCommands(
+    context,
+    () => state.treeDataProvider,
+    async () => {
+      const folders = vscode.workspace.workspaceFolders;
+      if (!folders || folders.length === 0) {return null;}
+      const configs = await FormatDetector.findAllConfigurationRoots(folders.map((f) => f.uri.fsPath));
+      return configs.length > 0 ? configs[0].configPath : null;
+    },
+  );
+
   return [
     ...registerUtilityCommandsLeading(utilityDeps),
     ...registerEditorCommands({ state }),

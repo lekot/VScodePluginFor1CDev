@@ -22,6 +22,7 @@ import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
 } from '../utils/treeNormalization';
+import { rulesRegistry, metadataConverter } from '../rules';
 
 function resolveTopLevelMetadataObject(node: TreeNode | undefined): TreeNode | undefined {
   let p: TreeNode | undefined = node;
@@ -270,30 +271,45 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
     await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
   }
 
-  const templateXml = await getDesignerTemplateXml(rootTag);
-  if (templateXml !== null) {
+  // Types that need template fallback (templates include ChildObjects with default children)
+  const templateOnlyTypes = new Set(['InformationRegister', 'AccumulationRegister']);
+
+  // Rules-based path
+  const rules = !templateOnlyTypes.has(rootTag) ? rulesRegistry.get(rootTag) : undefined;
+  if (rules) {
     const uuid = XMLWriter.generateSimpleUuid();
-    const uuidDim = XMLWriter.generateSimpleUuid();
-    const uuidResource = XMLWriter.generateSimpleUuid();
-    let content = substituteDesignerTemplate(templateXml, {
-      uuid,
-      Name: name,
-      Synonym_ru: name,
-      ...(rootTag === 'InformationRegister' || rootTag === 'AccumulationRegister'
-        ? { uuidDim, uuidResource }
-        : {}),
-      ...(rootTag === 'DocumentJournal'
-        ? (() => {
-            const doc = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
-            return doc ? { RecorderDocumentRef: `Document.${doc}` } : {};
-          })()
-        : {}),
-    });
+    const ir = metadataConverter.createDefaultIR(rules, { name, uuid });
+    let content = metadataConverter.irToXml(ir, rules);
     content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
     content = normalizeMetaDataObjectRoot(content);
     await fs.promises.writeFile(newFilePath, content, 'utf-8');
   } else {
-    await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name);
+    // Template-based fallback (все остальные типы)
+    const templateXml = await getDesignerTemplateXml(rootTag);
+    if (templateXml !== null) {
+      const uuid = XMLWriter.generateSimpleUuid();
+      const uuidDim = XMLWriter.generateSimpleUuid();
+      const uuidResource = XMLWriter.generateSimpleUuid();
+      let content = substituteDesignerTemplate(templateXml, {
+        uuid,
+        Name: name,
+        Synonym_ru: name,
+        ...(rootTag === 'InformationRegister' || rootTag === 'AccumulationRegister'
+          ? { uuidDim, uuidResource }
+          : {}),
+        ...(rootTag === 'DocumentJournal'
+          ? (() => {
+              const doc = process.env.IBCMD_RECORDER_DOCUMENT?.trim();
+              return doc ? { RecorderDocumentRef: `Document.${doc}` } : {};
+            })()
+          : {}),
+      });
+      content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
+      content = normalizeMetaDataObjectRoot(content);
+      await fs.promises.writeFile(newFilePath, content, 'utf-8');
+    } else {
+      await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name);
+    }
   }
 
   const elementDir = path.join(typeFolderPath, name);

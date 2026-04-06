@@ -118,6 +118,13 @@ export const coreSuiteFiles: string[] = [
   'suite/propertiesWebviewContent.test.js',
   'suite/metadataTreeSettings.test.js',
   'suite/objectFileCollector.test.js',
+  'suite/rules/converters.test.js',
+  'suite/rules/metadataConverter.test.js',
+  'suite/rules/xmlSnapshot.test.js',
+  'suite/rules/rulesE2ePipeline.test.js',
+  'suite/rules/yamlRoundTrip.test.js',
+  'suite/rules/agentOperations.test.js',
+  'suite/rules/agentPathResolver.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

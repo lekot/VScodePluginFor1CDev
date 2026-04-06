@@ -13,6 +13,7 @@ import {
   getIbcmdLastReportPath,
   getIbcmdTaskLabel,
 } from '../services/ibcmdReportPaths';
+import { rulesRegistry, metadataConverter } from '../rules';
 
 type RegisterUtilityCommandsDeps = {
   state: ExtensionState;
@@ -197,5 +198,36 @@ export function registerUtilityCommandsTrailing(deps: RegisterUtilityCommandsDep
     }
   );
 
-  return [copyPathOrNameCommand, clearCacheCommand, exportLogsCommand, copyDiagnosticsSummaryCommand];
+  const getYamlCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.getYaml',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target) {
+        vscode.window.showErrorMessage('Выберите элемент в дереве метаданных.');
+        return;
+      }
+      const rootTag = String(target.type);
+      const rules = rulesRegistry.get(rootTag);
+      if (!rules) {
+        vscode.window.showWarningMessage('YAML не поддерживается для типа: ' + rootTag);
+        return;
+      }
+      if (!target.filePath) {
+        vscode.window.showWarningMessage('Для данного элемента отсутствует XML-файл.');
+        return;
+      }
+      try {
+        const xmlContent = await fs.promises.readFile(target.filePath, 'utf-8');
+        const ir = metadataConverter.xmlToIr(xmlContent, rules);
+        const yamlContent = metadataConverter.irToYaml(ir, rules);
+        const doc = await vscode.workspace.openTextDocument({ content: yamlContent, language: 'yaml' });
+        await vscode.window.showTextDocument(doc);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Ошибка при генерации YAML: ${msg}`);
+      }
+    }
+  );
+
+  return [copyPathOrNameCommand, clearCacheCommand, exportLogsCommand, copyDiagnosticsSummaryCommand, getYamlCommand];
 }
