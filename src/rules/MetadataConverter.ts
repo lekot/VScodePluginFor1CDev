@@ -218,10 +218,15 @@ export class MetadataConverter implements IMetadataConverter {
         // Meta fields first
         result['Тип'] = rules.rootTag;
         result['Имя'] = ir.name;
+        if (ir.uuid) {
+            result['uuid'] = ir.uuid;
+        }
 
         for (const [key, rule] of Object.entries(rules.properties)) {
             if (rule.forReferenceOnly) { continue; }
             if (rule.yaml === undefined) { continue; }
+            // Skip 'Имя' — already added as meta field above
+            if (rule.yaml === 'Имя') { continue; }
 
             const irValue = ir.properties[key];
             const converter = this.converterRegistry.get(rule.type);
