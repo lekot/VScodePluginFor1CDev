@@ -12,6 +12,8 @@ import { substituteDesignerTemplate } from '../services/designerTemplateSubstitu
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
+import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { MetadataType } from '../models/treeNode';
 
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
 const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
@@ -68,8 +70,8 @@ export class AgentOperations {
                 };
             }
 
-            // Определяем папку типа (мн. число = rootTag + 's')
-            const typeFolderName = `${type}s`;
+            // Определяем папку типа через маппинг, fallback = rootTag + 's'
+            const typeFolderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(type as MetadataType) ?? `${type}s`;
             const typeFolderPath = path.join(this.configRootPath, typeFolderName);
             await fs.promises.mkdir(typeFolderPath, { recursive: true });
 
