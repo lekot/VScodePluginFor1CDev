@@ -74,6 +74,9 @@ export class ExtensionState {
   set infobaseTreeProvider(v: InfobaseTreeDataProvider | null) { this._infobaseTreeProvider = v; }
   set infobaseTreeView(v: vscode.TreeView<InfobaseTreeNode> | null) { this._infobaseTreeView = v; }
   set refreshBindingTreeDecorations(v: (() => Promise<void>) | null) { this._refreshBindingTreeDecorations = v; }
+  set infobaseStorage(v: InfobaseStorageService | null) { this._infobaseStorage = v; }
+  set bindingManager(v: BindingManager | null) { this._bindingManager = v; }
+  set infobaseManager(v: InfobaseManager | null) { this._infobaseManager = v; }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
