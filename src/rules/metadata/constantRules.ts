@@ -1,0 +1,45 @@
+// src/rules/metadata/constantRules.ts
+// Rules for Constant metadata object (Designer format).
+import { MetadataObjectRules } from '../types';
+
+export const constantRules: MetadataObjectRules = {
+    rootTag: 'Constant',
+    namespaces: {
+        'xmlns': 'http://v8.1c.ru/8.3/MDClasses',
+        'xmlns:v8': 'http://v8.1c.ru/8.1/data/core',
+        'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    },
+    hasChildObjects: false,
+    properties: {
+        choiceFoldersAndItems: { type: 'SystemEnumeration', order: 1, xml: 'ChoiceFoldersAndItems', defaultValueXML: 'Items', typeSE: 'FoldersAndItemsUse' },
+        choiceForm: { type: 'string', order: 2, xml: 'ChoiceForm', defaultValueXML: '' },
+        choiceHistoryOnInput: { type: 'SystemEnumeration', order: 3, xml: 'ChoiceHistoryOnInput', defaultValueXML: 'Auto', typeSE: 'ChoiceHistoryOnInput' },
+        choiceParameterLinks: { type: 'string', order: 4, xml: 'ChoiceParameterLinks', defaultValueXML: '' },
+        choiceParameters: { type: 'string', order: 5, xml: 'ChoiceParameters', defaultValueXML: '' },
+        comment: { type: 'string', order: 6, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
+        dataHistory: { type: 'SystemEnumeration', order: 7, xml: 'DataHistory', defaultValueXML: 'DontUse', typeSE: 'DataHistory' },
+        dataLockControlMode: { type: 'SystemEnumeration', order: 8, xml: 'DataLockControlMode', defaultValueXML: 'Managed', typeSE: 'DataLockControlMode' },
+        defaultForm: { type: 'string', order: 9, xml: 'DefaultForm', defaultValueXML: '' },
+        editFormat: { type: 'string', order: 10, xml: 'EditFormat', defaultValueXML: '' },
+        executeAfterWriteDataHistoryVersionProcessing: { type: 'boolean', order: 11, xml: 'ExecuteAfterWriteDataHistoryVersionProcessing', defaultValueXML: false },
+        explanation: { type: 'string', order: 12, xml: 'Explanation', defaultValueXML: '' },
+        extendedEdit: { type: 'boolean', order: 13, xml: 'ExtendedEdit', defaultValueXML: false },
+        extendedPresentation: { type: 'string', order: 14, xml: 'ExtendedPresentation', defaultValueXML: '' },
+        fillChecking: { type: 'SystemEnumeration', order: 15, xml: 'FillChecking', defaultValueXML: 'DontCheck', typeSE: 'FillChecking' },
+        format: { type: 'string', order: 16, xml: 'Format', defaultValueXML: '' },
+        linkByType: { type: 'string', order: 17, xml: 'LinkByType', defaultValueXML: '' },
+        markNegatives: { type: 'boolean', order: 18, xml: 'MarkNegatives', defaultValueXML: false },
+        mask: { type: 'string', order: 19, xml: 'Mask', defaultValueXML: '' },
+        maxValue: { type: 'InternalInfo', order: 20, xml: 'MaxValue', defaultValueXML: { '@xsi:nil': 'true' } },
+        minValue: { type: 'InternalInfo', order: 21, xml: 'MinValue', defaultValueXML: { '@xsi:nil': 'true' } },
+        multiLine: { type: 'boolean', order: 22, xml: 'MultiLine', defaultValueXML: false },
+        name: { type: 'string', order: 23, xml: 'Name', yaml: 'Имя', required: true },
+        passwordMode: { type: 'boolean', order: 24, xml: 'PasswordMode', defaultValueXML: false },
+        quickChoice: { type: 'SystemEnumeration', order: 25, xml: 'QuickChoice', defaultValueXML: 'Auto', typeSE: 'UseQuickChoice' },
+        synonym: { type: 'I8nText', order: 26, xml: 'Synonym', yaml: 'Синоним' },
+        toolTip: { type: 'string', order: 27, xml: 'ToolTip', defaultValueXML: '' },
+        type: { type: 'InternalInfo', order: 28, xml: 'Type', defaultValueXML: {} },
+        updateDataHistoryImmediatelyAfterWrite: { type: 'boolean', order: 29, xml: 'UpdateDataHistoryImmediatelyAfterWrite', defaultValueXML: false },
+        useStandardCommands: { type: 'boolean', order: 30, xml: 'UseStandardCommands', defaultValueXML: true },
+    },
+};
