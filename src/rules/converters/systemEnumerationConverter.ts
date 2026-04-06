@@ -12,10 +12,12 @@ export const systemEnumerationConverter: IPropertyConverter = {
         if (irValue === null || irValue === undefined) { return ''; }
         return String(irValue);
     },
-    toYaml(_irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): undefined {
-        return undefined;
+    toYaml(irValue: unknown, rule: MetadataPropertyRule, _context: ConversionContext): unknown | undefined {
+        const def = rule.defaultValue ?? rule.defaultValueXML ?? '';
+        if (irValue === def) { return undefined; }
+        return String(irValue ?? '');
     },
     fromYaml(yamlValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
-        return yamlValue;
+        return String(yamlValue ?? '');
     },
 };

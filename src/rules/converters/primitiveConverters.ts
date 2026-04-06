@@ -11,11 +11,13 @@ export const stringConverter: IPropertyConverter = {
     toXml(irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
         return String(irValue ?? '');
     },
-    toYaml(_irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): undefined {
-        return undefined;
+    toYaml(irValue: unknown, rule: MetadataPropertyRule, _context: ConversionContext): unknown | undefined {
+        const def = rule.defaultValue ?? rule.defaultValueXML ?? '';
+        if (irValue === def) { return undefined; }
+        return String(irValue ?? '');
     },
     fromYaml(yamlValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
-        return yamlValue;
+        return String(yamlValue ?? '');
     },
 };
 
@@ -29,11 +31,15 @@ export const numberConverter: IPropertyConverter = {
         const n = Number(irValue);
         return isNaN(n) ? 0 : n;
     },
-    toYaml(_irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): undefined {
-        return undefined;
+    toYaml(irValue: unknown, rule: MetadataPropertyRule, _context: ConversionContext): unknown | undefined {
+        const def = rule.defaultValue ?? rule.defaultValueXML ?? 0;
+        const n = (irValue === null || irValue === undefined) ? 0 : Number(irValue);
+        if (n === def) { return undefined; }
+        return n;
     },
     fromYaml(yamlValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
-        return yamlValue;
+        const n = Number(yamlValue ?? 0);
+        return isNaN(n) ? 0 : n;
     },
 };
 
@@ -44,10 +50,13 @@ export const booleanConverter: IPropertyConverter = {
     toXml(irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
         return irValue ? 'true' : 'false';
     },
-    toYaml(_irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): undefined {
-        return undefined;
+    toYaml(irValue: unknown, rule: MetadataPropertyRule, _context: ConversionContext): unknown | undefined {
+        const def = rule.defaultValue ?? rule.defaultValueXML ?? false;
+        const b = Boolean(irValue);
+        if (b === def) { return undefined; }
+        return b;
     },
     fromYaml(yamlValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
-        return yamlValue;
+        return Boolean(yamlValue);
     },
 };
