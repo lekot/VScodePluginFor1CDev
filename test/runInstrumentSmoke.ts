@@ -1,5 +1,5 @@
 /**
- * Endgame для `instrument-smoke.bat`: контейнерная матрица на свежей копии `FormatSamples/empty_conf`
+ * Endgame для `scripts/instrument-smoke.bat`: контейнерная матрица на свежей копии `FormatSamples/empty_conf`
  * (или на `MATRIX_WORK_DIR`) и опциональная проверка **ibcmd** (`IBCMD_PATH` + `IBCMD_INFOBASE_CONFIG`).
  *
  * Переменные: как у `runMatrixLocal.ts` / design §6.5. Без `MATRIX_WORK_DIR` создаётся temp-копия и удаляется после прогона.

@@ -217,7 +217,7 @@ npm test
 .\test-suite.bat
 ```
 
-**Полный смокер инструмента** (рекомендуемый gate перед релизом или после крупных изменений): **`.\instrument-smoke.bat`**
+**Полный смокер инструмента** (рекомендуемый gate перед релизом или после крупных изменений): **`.\scripts\instrument-smoke.bat`**
 
 Локально без ручного `set`: **`.\instrument-full-local.bat`** — в начале `chcp 65001` (UTF-8 в консоли), задаёт `IBCMD_*` и путь к YAML, полный обход матрицы, при сбое **ibcmd** прогон не обрывается (`INSTRUMENT_IBCMD_NONFATAL=1`), затем VS Code smoke. Перед первым запуском сгенерируйте YAML (`ibcmd server config init`, см. ниже).
 
@@ -233,7 +233,7 @@ npm test
 ```bat
 set IBCMD_PATH=C:\Program Files\1cv8\8.3.27.1859\bin\ibcmd.exe
 set IBCMD_INFOBASE_CONFIG=C:\Users\You\ibcmd-infobase.yml
-.\instrument-smoke.bat
+.\scripts\instrument-smoke.bat
 ```
 
 **Файловая база: как получить YAML для `IBCMD_INFOBASE_CONFIG`.** Утилита ожидает файл в формате, который обычно создают командой **`ibcmd server config init`** (см. Administrator Guide 8.3.x, приложение про **ibcmd**, режим **server** → **config init**). Для **файловой** ИБ укажите каталог базы (`--database-path`), совпадающий с путём подключения в конфигураторе (например `File="C:\Users\...\InfoBase11"`). Пример генерации (выполнить один раз, подставив версию платформы и путь к ИБ):
@@ -242,7 +242,7 @@ set IBCMD_INFOBASE_CONFIG=C:\Users\You\ibcmd-infobase.yml
 "C:\Program Files\1cv8\8.3.27.1859\bin\ibcmd.exe" server config init --database-path="C:\Users\You\Documents\MyFileIB" --name=CDT_matrix --out="%USERPROFILE%\1cviewer-ibcmd-infobase.yml"
 ```
 
-Дальше задайте `IBCMD_INFOBASE_CONFIG` на этот `.yml` и запустите `.\instrument-smoke.bat`. Готовый шаблон с комментариями: **`ibcmd.setup.example.bat`** (скопируйте в **`ibcmd-local.bat`** — файл в `.gitignore`, чтобы не коммитить свои пути).
+Дальше задайте `IBCMD_INFOBASE_CONFIG` на этот `.yml` и запустите `.\scripts\instrument-smoke.bat`. Готовый шаблон с комментариями: **`ibcmd.setup.example.bat`** (скопируйте в **`ibcmd-local.bat`** — файл в `.gitignore`, чтобы не коммитить свои пути).
 
 После прогона с рабочим ibcmd в `suite-reports/instrument-matrix.json` блок **`ibcmd`** будет с `"status": "executed"` и фрагментом лога; при ошибке импорта смокер завершится с ненулевым кодом. Откройте ту же ИБ в конфигураторе и выполните типовую проверку конфигурации при необходимости.
 
@@ -251,7 +251,7 @@ set IBCMD_INFOBASE_CONFIG=C:\Users\You\ibcmd-infobase.yml
 - `CDT 41: Open last ibcmd check report`
 - `CDT 41: Open last ibcmd import report`
 
-Своя копия конфигурации в составе `instrument-smoke.bat` (вместо temp-копии `empty_conf`): перед запуском задайте **`INSTRUMENT_MATRIX_WORK_DIR`** (абсолютный путь к корню с `Configuration.xml`).
+Своя копия конфигурации в составе `scripts\instrument-smoke.bat` (вместо temp-копии `empty_conf`): перед запуском задайте **`INSTRUMENT_MATRIX_WORK_DIR`** (абсолютный путь к корню с `Configuration.xml`).
 
 Только матрица на **своей** копии выгрузки (без полного instrument-smoke): `.\matrix-local.bat`.
 
