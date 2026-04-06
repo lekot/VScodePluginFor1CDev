@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.39.2",
+  "version": "0.39.6",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -563,17 +563,17 @@
         },
         {
           "command": "1c-metadata-tree.config.deploySelectedObjects",
-          "when": "view == 1c-metadata-tree && viewItem =~ /bindingBound/",
+          "when": "view == 1c-metadata-tree",
           "group": "infobase@2"
         },
         {
           "command": "1c-metadata-tree.config.deployChangedFiles",
-          "when": "view == 1c-metadata-tree && viewItem =~ /bindingBound/",
+          "when": "view == 1c-metadata-tree",
           "group": "infobase@3"
         },
         {
           "command": "1c-metadata-tree.config.configExportStatus",
-          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound/",
+          "when": "view == 1c-metadata-tree",
           "group": "infobase@4"
         },
         {
@@ -1015,5 +1015,14 @@
     "include": [
       "out/src/**/*.js"
     ]
+  },
+  "prettier": {
+    "semi": true,
+    "trailingComma": "es5",
+    "singleQuote": true,
+    "printWidth": 100,
+    "tabWidth": 2,
+    "useTabs": false,
+    "arrowParens": "always"
   }
 }
