@@ -231,7 +231,7 @@ suite('XMLWriter', () => {
           await XMLWriter.updateProperty(nonExistentPath, 'Name', 'Test');
         },
         {
-          message: /Failed to update property/,
+          message: /File not found/,
         }
       );
     });

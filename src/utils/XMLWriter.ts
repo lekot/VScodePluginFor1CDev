@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import { Logger } from './logger';
 import { xmlParser } from './xml/xmlCore';
+import { XmlReadError, XmlParseError, XmlWriteError } from './xml/xmlErrors';
 import { buildXmlString, writeUtf8FileWithBackup } from './xml/xmlFileIo';
 import { generateSimpleUuid as xmlGenerateSimpleUuid } from './xml/xmlHelpers';
 import { extractProperties, updatePropertiesInStructure } from './xml/xmlPropertiesService';
@@ -27,6 +28,7 @@ import { normalizeMetaDataObjectRoot } from './xml/metaDataObjectRootNormalizer'
 
 export type { WriteNestedElementOptions };
 export { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from './xml/xmlChildObjectsService';
+export { XmlReadError, XmlParseError, XmlWriteError } from './xml/xmlErrors';
 
 /**
  * XMLWriter utility class for reading and writing XML files
@@ -40,55 +42,40 @@ export class XMLWriter {
    * @throws Error if file cannot be read or parsed
    */
   static async readProperties(filePath: string): Promise<Record<string, unknown>> {
+    if (!fs.existsSync(filePath)) {
+      throw new XmlReadError(`File not found: ${filePath}`);
+    }
+
+    let xmlContent: string;
     try {
-      if (!fs.existsSync(filePath)) {
-        throw new Error(`File not found: ${filePath}`);
-      }
+      xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    } catch (readError) {
+      const msg = readError instanceof Error ? readError.message : String(readError);
+      throw new XmlReadError(`Unable to read file: ${filePath}. ${msg}`);
+    }
 
-      let xmlContent: string;
-      try {
-        xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-      } catch (readError) {
-        throw new Error(
-          `Failed to read properties. Unable to read file. ${readError instanceof Error ? readError.message : String(readError)}`
-        );
-      }
+    if (!xmlContent || xmlContent.trim() === '') {
+      throw new XmlReadError(`File is empty or invalid: ${filePath}`);
+    }
 
-      if (!xmlContent || xmlContent.trim() === '') {
-        throw new Error('Failed to read properties. File is empty or invalid.');
-      }
-
-      let parsed: unknown;
-      try {
-        parsed = xmlParser.parse(xmlContent);
-      } catch (parseError) {
-        const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-        Logger.error(`XML parsing failed for ${filePath}`, parseError);
-        throw new Error(
-          `Failed to read properties. Invalid XML structure in file. The file may be corrupted or not a valid XML document. ${errorMsg}`
-        );
-      }
-
-      if (!parsed || typeof parsed !== 'object' || (Object.keys(parsed as object).length === 0 && xmlContent.trim().length > 0)) {
-        throw new Error('Failed to read properties. Invalid XML structure in file.');
-      }
-
-      const properties = extractProperties(parsed);
-      Logger.info(`Successfully read properties from ${filePath}`);
-      return properties;
-    } catch (error) {
-      Logger.error(`Error reading properties from ${filePath}`, error);
-      
-      if (error instanceof Error && error.message.includes('Invalid XML structure')) {
-        throw error;
-      }
-      
-      throw new Error(
-        `Failed to read properties from XML file: ${filePath}. ${
-          error instanceof Error ? error.message : String(error)
-        }`
+    let parsed: unknown;
+    try {
+      parsed = xmlParser.parse(xmlContent);
+    } catch (parseError) {
+      const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+      Logger.error(`XML parsing failed for ${filePath}`, parseError);
+      throw new XmlParseError(
+        `Invalid XML structure in file: ${filePath}. The file may be corrupted or not a valid XML document. ${errorMsg}`
       );
     }
+
+    if (!parsed || typeof parsed !== 'object' || (Object.keys(parsed as object).length === 0 && xmlContent.trim().length > 0)) {
+      throw new XmlParseError(`Invalid XML structure in file: ${filePath}`);
+    }
+
+    const properties = extractProperties(parsed);
+    Logger.info(`Successfully read properties from ${filePath}`);
+    return properties;
   }
 
   /**
@@ -102,57 +89,39 @@ export class XMLWriter {
     filePath: string,
     properties: Record<string, unknown>
   ): Promise<void> {
+    let xmlContent: string;
     try {
-      let xmlContent: string;
-      try {
-        xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-      } catch (readError) {
-        Logger.error(`Failed to read file for writing: ${filePath}`, readError);
-        throw new Error(
-          `Failed to write properties. Unable to read file for updating. ${readError instanceof Error ? readError.message : String(readError)}`
-        );
-      }
+      xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    } catch (readError) {
+      const msg = readError instanceof Error ? readError.message : String(readError);
+      Logger.error(`Failed to read file for writing: ${filePath}`, readError);
+      throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${msg}`);
+    }
 
-      let parsed: unknown;
-      try {
-        parsed = xmlParser.parse(xmlContent);
-      } catch (parseError) {
-        const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
-        Logger.error(`XML parsing failed for ${filePath}`, parseError);
-        throw new Error(
-          `Invalid XML structure in file. Cannot update properties in a corrupted XML file. ${errorMsg}`
-        );
-      }
-
-      const updated = updatePropertiesInStructure(parsed, properties);
-
-      let xmlString: string;
-      try {
-        xmlString = buildXmlString(updated);
-      } catch (buildError) {
-        Logger.error(`Failed to build XML for ${filePath}`, buildError);
-        throw new Error(
-          `Failed to generate XML content. ${buildError instanceof Error ? buildError.message : String(buildError)}`
-        );
-      }
-
-      await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
-      Logger.info(`Successfully wrote properties to ${filePath}`);
-    } catch (error) {
-      Logger.error(`Error writing properties to ${filePath}`, error);
-      
-      if (error instanceof Error && 
-          (error.message.includes('Invalid XML structure') || 
-           error.message.includes('Unable to'))) {
-        throw error;
-      }
-      
-      throw new Error(
-        `Failed to write properties to XML file: ${filePath}. ${
-          error instanceof Error ? error.message : String(error)
-        }`
+    let parsed: unknown;
+    try {
+      parsed = xmlParser.parse(xmlContent);
+    } catch (parseError) {
+      const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
+      Logger.error(`XML parsing failed for ${filePath}`, parseError);
+      throw new XmlParseError(
+        `Invalid XML structure in file: ${filePath}. Cannot update properties in a corrupted XML file. ${errorMsg}`
       );
     }
+
+    const updated = updatePropertiesInStructure(parsed, properties);
+
+    let xmlString: string;
+    try {
+      xmlString = buildXmlString(updated);
+    } catch (buildError) {
+      const msg = buildError instanceof Error ? buildError.message : String(buildError);
+      Logger.error(`Failed to build XML for ${filePath}`, buildError);
+      throw new XmlWriteError(`Failed to generate XML content for: ${filePath}. ${msg}`);
+    }
+
+    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
+    Logger.info(`Successfully wrote properties to ${filePath}`);
   }
 
   /**
@@ -319,18 +288,17 @@ export class XMLWriter {
    */
   private static async readUtf8AndParse(filePath: string): Promise<{ xmlContent: string; parsed: unknown }> {
     if (!fs.existsSync(filePath)) {
-      throw new Error(`File not found: ${filePath}`);
+      throw new XmlReadError(`File not found: ${filePath}`);
     }
     let xmlContent: string;
     try {
       xmlContent = await fs.promises.readFile(filePath, 'utf-8');
     } catch (readError) {
-      throw new Error(
-        `Unable to read XML file. ${readError instanceof Error ? readError.message : String(readError)}`
-      );
+      const msg = readError instanceof Error ? readError.message : String(readError);
+      throw new XmlReadError(`Unable to read XML file: ${filePath}. ${msg}`);
     }
     if (!xmlContent || xmlContent.trim() === '') {
-      throw new Error(`XML file is empty or invalid: ${filePath}`);
+      throw new XmlReadError(`XML file is empty or invalid: ${filePath}`);
     }
     let parsed: unknown;
     try {
@@ -338,8 +306,8 @@ export class XMLWriter {
     } catch (parseError) {
       const errorMsg = parseError instanceof Error ? parseError.message : String(parseError);
       Logger.error(`XML parsing failed for ${filePath}`, parseError);
-      throw new Error(
-        `Invalid XML structure in file. The file may be corrupted or not a valid XML document. ${errorMsg}`
+      throw new XmlParseError(
+        `Invalid XML structure in file: ${filePath}. The file may be corrupted or not a valid XML document. ${errorMsg}`
       );
     }
     return { xmlContent, parsed };
@@ -355,10 +323,9 @@ export class XMLWriter {
     try {
       xmlString = buildXmlString(updatedParsed);
     } catch (buildError) {
+      const msg = buildError instanceof Error ? buildError.message : String(buildError);
       Logger.error(`Failed to build XML for ${filePath}`, buildError);
-      throw new Error(
-        `Failed to generate XML content. ${buildError instanceof Error ? buildError.message : String(buildError)}`
-      );
+      throw new XmlWriteError(`Failed to generate XML content for: ${filePath}. ${msg}`);
     }
     await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
     Logger.info(logMessage);
@@ -439,19 +406,10 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     propertyName: string,
     value: unknown
   ): Promise<void> {
-    try {
-      const properties = await this.readProperties(filePath);
-      properties[propertyName] = value;
-      await this.writeProperties(filePath, properties);
-      Logger.info(`Successfully updated property '${propertyName}' in ${filePath}`);
-    } catch (error) {
-      Logger.error(`Error updating property '${propertyName}' in ${filePath}`, error);
-      throw new Error(
-        `Failed to update property '${propertyName}' in XML file: ${filePath}. ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
+    const properties = await this.readProperties(filePath);
+    properties[propertyName] = value;
+    await this.writeProperties(filePath, properties);
+    Logger.info(`Successfully updated property '${propertyName}' in ${filePath}`);
   }
 
   /**
@@ -486,59 +444,40 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
    * @throws Error if file cannot be written
    */
   static async writeNestedElementProperties(
-      filePath: string,
-      elementType: string,
-      elementName: string,
-      properties: Record<string, unknown>,
-      changedKeys?: string[],
-      options?: WriteNestedElementOptions
-    ): Promise<void> {
-      try {
-        let xmlContent: string;
-        try {
-          xmlContent = await fs.promises.readFile(filePath, 'utf-8');
-        } catch (readError) {
-          Logger.error(`Failed to read file for writing: ${filePath}`, readError);
-          throw new Error(
-            `Unable to read file for updating. ${readError instanceof Error ? readError.message : String(readError)}`
-          );
-        }
-
-
-        let xmlString: string;
-        try {
-          xmlString = buildUpdatedNestedXmlImpl(
-            xmlContent,
-            elementType,
-            elementName,
-            properties,
-            changedKeys,
-            options
-          );
-        } catch (buildError) {
-          Logger.error(`Failed to build XML for ${filePath}`, buildError);
-          throw new Error(
-            `Failed to generate XML content. ${buildError instanceof Error ? buildError.message : String(buildError)}`
-          );
-        }
-
-        await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
-        Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
-      } catch (error) {
-        Logger.error(`Error writing nested element properties to ${filePath}`, error);
-
-        if (error instanceof Error && 
-            (error.message.includes('Invalid XML structure') || 
-             error.message.includes('Unable to'))) {
-          throw error;
-        }
-
-        throw new Error(
-          `Failed to write nested element properties to XML file: ${filePath}. ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-      }
+    filePath: string,
+    elementType: string,
+    elementName: string,
+    properties: Record<string, unknown>,
+    changedKeys?: string[],
+    options?: WriteNestedElementOptions
+  ): Promise<void> {
+    let xmlContent: string;
+    try {
+      xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+    } catch (readError) {
+      const msg = readError instanceof Error ? readError.message : String(readError);
+      Logger.error(`Failed to read file for writing: ${filePath}`, readError);
+      throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${msg}`);
     }
+
+    let xmlString: string;
+    try {
+      xmlString = buildUpdatedNestedXmlImpl(
+        xmlContent,
+        elementType,
+        elementName,
+        properties,
+        changedKeys,
+        options
+      );
+    } catch (buildError) {
+      const msg = buildError instanceof Error ? buildError.message : String(buildError);
+      Logger.error(`Failed to build XML for ${filePath}`, buildError);
+      throw new XmlWriteError(`Failed to generate XML content for: ${filePath}. ${msg}`);
+    }
+
+    await writeUtf8FileWithBackup(filePath, xmlContent, xmlString);
+    Logger.info(`Successfully wrote properties for ${elementType} '${elementName}' to ${filePath}`);
+  }
 
 }
