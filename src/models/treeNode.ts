@@ -1,4 +1,56 @@
 /**
+ * Typed property bag for TreeNode.
+ *
+ * Known keys are declared explicitly for autocomplete and documentation.
+ * The index signature `[key: string]: unknown` keeps backward compatibility —
+ * all existing consumers compile without changes.
+ */
+export interface TreeNodeProperties {
+  /** Synonym (human-readable name) of the metadata object. */
+  synonym?: string;
+  /** Comment for the metadata object. */
+  comment?: string;
+  /** Marks the node as lazily loaded — children not yet fetched. */
+  _lazy?: boolean;
+  /** UUID of the metadata object. Stored as-is from the parsed XML (may be any scalar). */
+  uuid?: unknown;
+  /**
+   * Indicates whether the object was borrowed from a base configuration.
+   * Values: `'Own'` | `'Adopted'` | `'OwnWithBorrow'`.
+   */
+  objectBelonging?: string;
+  /** Full name of the base configuration object this extension object extends. */
+  extendedConfigurationObject?: string;
+  /** Extension purpose, e.g. `'Patch'` | `'Modification'` | `'Adaptation'`. */
+  extensionPurpose?: string;
+  /** Name prefix for extension objects. */
+  namePrefix?: string;
+  /** Whether the root node represents an extension configuration. */
+  isExtension?: boolean;
+  /** File type marker used in template/layout nodes. */
+  fileType?: string;
+  /**
+   * Parent subsystem reference for Subsystem nodes.
+   * Either a plain string (MDO path), an object `{filePath, name}`, or `null` (no parent).
+   */
+  parentSubsystemRef?: string | { filePath: string | undefined; name?: string } | null;
+  /**
+   * Raw parent subsystem value from EDT format (normalised into parentSubsystemRef).
+   * Present only transiently during parsing.
+   */
+  ParentSubsystem?: unknown;
+  /**
+   * Subsystem content list (array of child object references).
+   * Present on Subsystem nodes when content is loaded.
+   */
+  Content?: unknown;
+  /** Marks a node as virtual (e.g. a virtual attribute node). */
+  isVirtual?: boolean;
+  /** Arbitrary extra keys — preserved for backward compatibility. */
+  [key: string]: unknown;
+}
+
+/**
  * Represents a node in the metadata tree.
  *
  * Subsystem hierarchy (ADR 0001):
@@ -13,7 +65,7 @@ export interface TreeNode {
   type: MetadataType;
   parent?: TreeNode;
   children?: TreeNode[];
-  properties: Record<string, unknown>;
+  properties: TreeNodeProperties;
   filePath?: string;
   parentFilePath?: string; // Path to parent XML file for nested elements (Attributes, etc.)
   isExpanded?: boolean;
