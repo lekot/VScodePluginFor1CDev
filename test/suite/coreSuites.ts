@@ -122,6 +122,7 @@ export const coreSuiteFiles: string[] = [
   'suite/rules/metadataConverter.test.js',
   'suite/rules/xmlSnapshot.test.js',
   'suite/rules/rulesE2ePipeline.test.js',
+  'suite/rules/yamlRoundTrip.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
