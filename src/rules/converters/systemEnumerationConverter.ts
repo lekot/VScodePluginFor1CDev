@@ -9,6 +9,7 @@ export const systemEnumerationConverter: IPropertyConverter = {
         return String(xmlValue);
     },
     toXml(irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
+        if (irValue === null || irValue === undefined) { return ''; }
         return String(irValue);
     },
     toYaml(_irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): undefined {

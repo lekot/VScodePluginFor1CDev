@@ -161,8 +161,13 @@ export class MetadataConverter implements IMetadataConverter {
         const uuid = (rootElement['@_uuid'] as string | undefined) ?? '';
         const propertiesNode = (rootElement['Properties'] as Record<string, unknown> | undefined) ?? {};
 
+        // Extract name early so context.objectName is populated before converters run
+        const nameEntry = Object.entries(rules.properties).find(([key, r]) => r.xml === 'Name' || (r.xml === undefined && key === 'name'));
+        const nameXmlTag = nameEntry ? (nameEntry[1].xml ?? capitalize(nameEntry[0])) : 'Name';
+        const earlyName = (propertiesNode[nameXmlTag] as string | undefined) ?? '';
+
         const context: ConversionContext = {
-            objectName: '',
+            objectName: earlyName,
             objectType: rules.rootTag,
             defaultLanguage: 'ru',
         };

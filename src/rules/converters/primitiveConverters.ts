@@ -25,7 +25,9 @@ export const numberConverter: IPropertyConverter = {
         return isNaN(n) ? 0 : n;
     },
     toXml(irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
-        return Number(irValue);
+        if (irValue === null || irValue === undefined) { return 0; }
+        const n = Number(irValue);
+        return isNaN(n) ? 0 : n;
     },
     toYaml(_irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): undefined {
         return undefined;

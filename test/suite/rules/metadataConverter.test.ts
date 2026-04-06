@@ -218,6 +218,27 @@ suite('MetadataConverter', () => {
             assert.strictEqual(parsedIr.properties['synonym'], originalIr.properties['synonym']);
             assert.strictEqual(parsedIr.properties['comment'], originalIr.properties['comment']);
         });
+
+        test('_unknown round-trip: unknown tags preserved through xmlToIr → irToXml', () => {
+            const converter = new MetadataConverter(makeRegistry());
+            const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="unknown-uuid">
+    <Properties>
+      <Name>TestObj</Name>
+      <Synonym/>
+      <Comment/>
+      <CustomTag>CustomValue</CustomTag>
+    </Properties>
+  </Catalog>
+</MetaDataObject>`;
+            const ir = converter.xmlToIr(xml, richRules);
+            assert.ok(ir._unknown, 'IR should have _unknown field');
+            assert.strictEqual((ir._unknown as Record<string, unknown>)['CustomTag'], 'CustomValue', '_unknown should contain CustomTag');
+
+            const rebuilt = converter.irToXml(ir, richRules);
+            assert.ok(rebuilt.includes('<CustomTag>CustomValue</CustomTag>'), 'rebuilt XML should contain CustomTag');
+        });
     });
 
     suite('YAML stubs', () => {
