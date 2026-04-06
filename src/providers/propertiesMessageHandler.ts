@@ -442,7 +442,7 @@ export async function saveProperties(
         const changedKeys = node.properties
           ? Object.keys(properties).filter(key => {
               const newValue = properties[key];
-              const oldValue = node.properties?.[key];
+              const oldValue = (node.properties as Record<string, unknown>)?.[key];
 
               // Debug: log comparison for each property
               const newType = typeof newValue;

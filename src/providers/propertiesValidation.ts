@@ -81,7 +81,7 @@ function getExpectedType(propertyName: string, currentNode: TreeNode | undefined
   if (!currentNode) {
     return 'unknown';
   }
-  const originalValue = currentNode.properties[propertyName];
+  const originalValue = (currentNode.properties as Record<string, unknown>)[propertyName];
   return typeof originalValue;
 }
 

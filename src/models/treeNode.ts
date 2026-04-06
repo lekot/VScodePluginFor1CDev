@@ -46,8 +46,60 @@ export interface TreeNodeProperties {
   Content?: unknown;
   /** Marks a node as virtual (e.g. a virtual attribute node). */
   isVirtual?: boolean;
-  /** Arbitrary extra keys — preserved for backward compatibility. */
-  [key: string]: unknown;
+  /**
+   * Metadata type directory name (e.g. `'Catalogs'`, `'Documents'`).
+   * Set on type-folder nodes and element nodes created by parsers.
+   */
+  type?: string;
+  /** Whether the node represents a BSL module file. */
+  isModule?: boolean;
+  /** Human-readable label for virtual module nodes (e.g. `'Object module'`). */
+  label?: string;
+  /**
+   * Object Name from XML (PascalCase, used in attribute/tabular section nodes).
+   * Distinct from `TreeNode.name` which holds the display name.
+   */
+  Name?: string;
+  /** Comment from XML (PascalCase, mirrors the 1C XML attribute). */
+  Comment?: string;
+  /**
+   * Type definition of an attribute/column (may be a raw XML object or a display string).
+   * Accessed via the type editor; supports both `'Type'` and `'v8:Type'` XML variants.
+   */
+  Type?: unknown;
+  /** Alternative XML key for the type definition (`v8:Type` namespace prefix). */
+  'v8:Type'?: unknown;
+  /** Ordered list of child subsystem names used to sort subsystem children (Designer format). */
+  childSubsystemNames?: string[];
+  /**
+   * Synonym (human-readable label) stored in PascalCase XML key.
+   * Used in attribute/tabular section nodes parsed from Designer/EDT XML.
+   */
+  Synonym?: string;
+  /** Whether the attribute stores a password (hides value in UI). */
+  PasswordMode?: boolean;
+  /** Width of a form element (raw XML string value). */
+  Width?: string;
+  /** Height of a form element (raw XML string value). */
+  Height?: string;
+  /**
+   * Marker property used in tests / diffing to flag a renamed node.
+   * @internal Not a real 1C metadata property.
+   */
+  renamed?: boolean;
+  /**
+   * Lowercase `name` key — some parsers or tests store the object name under this key.
+   * Kept for backward compatibility alongside the PascalCase `Name`.
+   */
+  name?: string;
+  /** Maximum string length for string-typed attributes. */
+  maxLength?: number;
+  /** Whether auto-numbering is enabled for documents/catalogs. */
+  autoNumbering?: boolean;
+  /** Free-text description / comment field. */
+  description?: string;
+  /** Configuration version string. */
+  version?: string;
 }
 
 /**

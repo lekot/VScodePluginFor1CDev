@@ -205,7 +205,7 @@ export function renderPropertyInput(
  * Uses getPropertySectionsForType(node.type); properties not in any section go to "Прочее".
  */
 export function renderPropertiesBySections(node: TreeNode, readOnly: boolean): string {
-  const properties = node.properties || {};
+  const properties = (node.properties || {}) as Record<string, unknown>;
   const sections = getPropertySectionsForType(node.type);
   const knownNames = getKnownPropertyNamesForType(node.type);
   const allKeys = Object.keys(properties);
