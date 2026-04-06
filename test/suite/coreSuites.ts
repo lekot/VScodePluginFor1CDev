@@ -117,6 +117,7 @@ export const coreSuiteFiles: string[] = [
   'suite/fixtureMatrix.test.js',
   'suite/propertiesWebviewContent.test.js',
   'suite/metadataTreeSettings.test.js',
+  'suite/objectFileCollector.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

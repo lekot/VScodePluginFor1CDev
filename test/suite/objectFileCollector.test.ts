@@ -7,7 +7,7 @@ import {
 } from '../../src/services/ibcmd/objectFileCollector';
 
 // Absolute path to the fixture configuration root.
-const FIXTURE_ROOT = path.resolve(__dirname, '../../FormatSamples/empty_conf');
+const FIXTURE_ROOT = path.resolve(__dirname, '../../../FormatSamples/empty_conf');
 
 function makeNode(filePath?: string): TreeNode {
   return {
