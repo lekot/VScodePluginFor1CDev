@@ -6,6 +6,9 @@ import { PropertiesProvider } from '../../src/providers/propertiesProvider';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { renderPropertyInput, getWebviewScript } from '../../src/providers/propertiesWebviewContent';
+import { handleValidateMessage } from '../../src/providers/propertiesMessageHandler';
+import type { MessageHandlerContext } from '../../src/providers/propertiesMessageHandler';
 
 /**
  * Preservation Property Tests for Attribute Edit Button Bug Fix
@@ -88,7 +91,6 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
     (provider as any).currentNode = node;
 
     // Get webview script
-    const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
     const script = getWebviewScript(false);
 
     // Verify handlePropertyChange function exists
@@ -141,7 +143,6 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
     (provider as any).currentNode = node;
 
     // Get webview script
-    const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
     const script = getWebviewScript(false);
 
     // Verify handleSave function exists
@@ -190,7 +191,6 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
     (provider as any).currentNode = node;
 
     // Get webview script
-    const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
     const script = getWebviewScript(false);
 
     // Verify handleCancel function exists
@@ -238,14 +238,20 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
     (provider as any).currentNode = node;
 
-    // Test handleValidateMessage method
-    const handleValidateMessage = (provider as any).handleValidateMessage.bind(provider);
-
     // Mock postMessage to capture validation errors
     let capturedMessage: any = null;
-    const originalPostMessage = (provider as any).postMessage;
-    (provider as any).postMessage = (message: any) => {
-      capturedMessage = message;
+
+    // Build MessageHandlerContext with a capturing postMessage
+    const ctx: MessageHandlerContext = {
+      currentNode: node,
+      currentFormSelection: null,
+      currentFormSelectionRevision: 0,
+      isSaving: false,
+      treeDataProvider,
+      typeEditorProvider,
+      postMessage: (message: any) => { capturedMessage = message; },
+      updateWebviewContent: () => { /* no-op */ },
+      setIsSaving: () => { /* no-op */ },
     };
 
     try {
@@ -256,7 +262,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
           Name: '', // Invalid: Name is required
           Type: 'String(50)',
         },
-      });
+      }, ctx);
 
       // Verify validation error was sent
       assert.ok(
@@ -273,8 +279,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
         'Validation error should contain errors object'
       );
     } finally {
-      // Restore original postMessage
-      (provider as any).postMessage = originalPostMessage;
+      // No cleanup needed — ctx is local, provider's postMessage untouched
     }
   });
 
@@ -304,8 +309,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
     (provider as any).currentNode = node;
 
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'String(50)', false);
+    const html = renderPropertyInput('Type', 'String(50)', false, node);
 
     // Verify Type value is displayed (formatted or raw)
     assert.ok(
@@ -347,8 +351,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
     (provider as any).currentNode = node;
 
     // Render in read-only mode
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'String(50)', true); // globalReadOnly = true
+    const html = renderPropertyInput('Type', 'String(50)', true, node); // globalReadOnly = true
 
     // Verify edit button is NOT present in read-only mode
     assert.ok(
@@ -382,8 +385,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
     (provider as any).currentNode = catalogNode;
 
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'Catalog', false);
+    const html = renderPropertyInput('Type', 'Catalog', false, catalogNode);
 
     // Verify edit button is NOT present for root elements
     assert.ok(
@@ -404,7 +406,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
     };
 
     (provider as any).currentNode = documentNode;
-    const htmlDoc = renderPropertyInput('Type', 'Document', false);
+    const htmlDoc = renderPropertyInput('Type', 'Document', false, documentNode);
 
     assert.ok(
       !htmlDoc.includes('edit-type-btn'),
@@ -452,8 +454,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
         (provider as any).currentNode = node;
 
-        const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-        const html = renderPropertyInput(propName, propValue, false);
+        const html = renderPropertyInput(propName, propValue, false, node);
 
         // Property: Input field should exist for any non-Type property
         const hasInput = html.includes(`data-property="${propName}"`);
@@ -498,7 +499,6 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
         (provider as any).currentNode = node;
 
-        const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
         const script = getWebviewScript(false);
 
         // Property: Save and Cancel handlers should exist for any property set
@@ -555,8 +555,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
 
         (provider as any).currentNode = node;
 
-        const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-        const html = renderPropertyInput('Type', typeValue, false);
+        const html = renderPropertyInput('Type', typeValue, false, node);
 
         // Property: Type value should be displayed for ANY Type value
         const hasTypeValue = html.includes(typeValue) || html.includes(`value="`);

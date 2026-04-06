@@ -6,6 +6,9 @@ import { PropertiesProvider } from '../../src/providers/propertiesProvider';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import { TypeEditorProvider } from '../../src/providers/typeEditorProvider';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
+import { renderPropertyInput, getWebviewScript } from '../../src/providers/propertiesWebviewContent';
+import { handleMessage } from '../../src/providers/propertiesMessageHandler';
+import type { MessageHandlerContext } from '../../src/providers/propertiesMessageHandler';
 
 /**
  * Bug Condition Exploration Test for Attribute Edit Button Missing
@@ -85,8 +88,7 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
 
     (provider as any).currentNode = node;
 
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'String(50)', false);
+    const html = renderPropertyInput('Type', 'String(50)', false, node);
 
     // Verify button exists in HTML
     assert.ok(html.includes('edit-type-btn'), 'Edit button should be present in HTML markup');
@@ -100,7 +102,6 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
    * Counterexample: No event listener attached to edit-type-btn elements
    */
   test('Property 1.2: Click handler is attached to edit button in webview script', () => {
-    const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
     const script = getWebviewScript(false);
 
     // Verify click handler exists
@@ -146,15 +147,25 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
     // handleEditTypeMessage awaits typeEditorProvider.show(), so it must resolve quickly.
     (typeEditorProvider as any).show = async () => null;
 
-    // Try to handle editType message
-    const handleMessage = (provider as any).handleMessage.bind(provider);
-    
+    // Build MessageHandlerContext from provider fields
+    const ctx: MessageHandlerContext = {
+      currentNode: node,
+      currentFormSelection: null,
+      currentFormSelectionRevision: 0,
+      isSaving: false,
+      treeDataProvider,
+      typeEditorProvider,
+      postMessage: () => { /* no-op */ },
+      updateWebviewContent: () => { /* no-op */ },
+      setIsSaving: () => { /* no-op */ },
+    };
+
     let errorOccurred = false;
     let messageHandled = false;
 
     try {
       // This should handle the editType message without throwing
-      const result = handleMessage({ type: 'editType', property: 'Type' });
+      const result = handleMessage({ type: 'editType', propertyName: 'Type' }, ctx);
       // Wait for the promise if it returns one
       if (result && typeof result.then === 'function') {
         await result;
@@ -229,8 +240,7 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
 
         (provider as any).currentNode = node;
 
-        const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-        const html = renderPropertyInput('Type', typeValue, false);
+        const html = renderPropertyInput('Type', typeValue, false, node);
 
         // Property: Edit button should be present for ANY Attribute Type
         const hasEditButton = html.includes('edit-type-btn');
@@ -269,13 +279,11 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
     (provider as any).currentNode = node;
 
     // Get webview script
-    const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
     const script = getWebviewScript(false);
 
     // The bug: button exists in HTML but no click handler in script
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'String(50)', false);
-    
+    const html = renderPropertyInput('Type', 'String(50)', false, node);
+
     const buttonInHtml = html.includes('edit-type-btn');
     const handlerInScript = script.includes('edit-type-btn') && script.includes('handleEditType');
 
@@ -307,12 +315,10 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
 
     (provider as any).currentNode = node;
 
-    const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
     const script = getWebviewScript(false);
 
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'Number(10,2)', false);
-    
+    const html = renderPropertyInput('Type', 'Number(10,2)', false, node);
+
     const buttonInHtml = html.includes('edit-type-btn');
     const handlerInScript = script.includes('edit-type-btn') && script.includes('handleEditType');
 
@@ -343,12 +349,10 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
 
     (provider as any).currentNode = node;
 
-    const getWebviewScript = (provider as any).getWebviewScript.bind(provider);
     const script = getWebviewScript(false);
 
-    const renderPropertyInput = (provider as any).renderPropertyInput.bind(provider);
-    const html = renderPropertyInput('Type', 'Reference(Catalog.Номенклатура)', false);
-    
+    const html = renderPropertyInput('Type', 'Reference(Catalog.Номенклатура)', false, node);
+
     const buttonInHtml = html.includes('edit-type-btn');
     const handlerInScript = script.includes('edit-type-btn') && script.includes('handleEditType');
 
