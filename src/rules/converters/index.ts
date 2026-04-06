@@ -24,6 +24,11 @@ export function createDefaultConverterRegistry(): IPropertyConverterRegistry {
     registry.register('SystemEnumeration', systemEnumerationConverter);
     registry.register('InternalInfo', internalInfoConverter);
     registry.register('StandardAttributeDescriptions', standardAttributeDescriptionsConverter);
+    // Raw pass-through converters for complex types not yet decomposed
+    registry.register('TypeDescription', internalInfoConverter);
+    registry.register('MetadataAttributes', internalInfoConverter);
+    registry.register('MetadataTabularSections', internalInfoConverter);
+    registry.register('MetadataValueCollection', internalInfoConverter);
 
     return registry;
 }
