@@ -400,6 +400,11 @@
         "title": "Статус конфигурации (ИБ vs файлы)",
         "category": "CDT 41",
         "icon": "$(diff)"
+      },
+      {
+        "command": "1c-metadata-tree.getYaml",
+        "title": "Показать YAML",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -660,6 +665,11 @@
           "command": "1c-metadata-tree.clearSubsystemFilter",
           "when": "view == 1c-metadata-tree && subsystemFilterActive",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.getYaml",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Catalog|Document|Enum|CommonModule|Subsystem/",
+          "group": "7_yaml"
         },
         {
           "command": "1c-metadata-tree.infobase.openEnterprise",
@@ -991,6 +1001,7 @@
   },
   "devDependencies": {
     "@types/glob": "^8.0.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.80.0",
@@ -1009,7 +1020,8 @@
   "dependencies": {
     "@vscode/debugadapter": "^1.68.0",
     "fast-xml-parser": "^4.3.0",
-    "iconv-lite": "^0.6.3"
+    "iconv-lite": "^0.6.3",
+    "js-yaml": "^4.1.1"
   },
   "c8": {
     "include": [
