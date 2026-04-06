@@ -425,6 +425,46 @@
         "command": "1c-metadata-tree.agent.getProperties",
         "title": "Agent: Получить свойства объекта",
         "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.addAttribute",
+        "title": "Agent: Добавить реквизит",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.addTabularSection",
+        "title": "Agent: Добавить табличную часть",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.addTabularSectionColumn",
+        "title": "Agent: Добавить колонку табличной части",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.deleteAttribute",
+        "title": "Agent: Удалить реквизит или колонку ТЧ",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.deleteTabularSection",
+        "title": "Agent: Удалить табличную часть",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.deleteObject",
+        "title": "Agent: Удалить объект метаданных",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.renameObject",
+        "title": "Agent: Переименовать объект метаданных",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.setProperties",
+        "title": "Agent: Установить свойства объекта",
+        "category": "CDT 41 Agent"
       }
     ],
     "customEditors": [

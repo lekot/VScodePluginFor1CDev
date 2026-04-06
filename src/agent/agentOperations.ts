@@ -27,6 +27,9 @@ import type {
     ListObjectsParams,
     ObjectInfo,
     GetPropertiesParams,
+    AddAttributeParams,
+    AddTabularSectionParams,
+    AddTabularSectionColumnParams,
     DeleteAttributeParams,
     DeleteTabularSectionParams,
     DeleteObjectParams,
@@ -423,6 +426,88 @@ export class AgentOperations {
             await addRootObjectToConfiguration(this.configRootPath, rootTag, params.newName);
 
             return { success: true, data: { filePath: newFilePath } };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // addAttribute
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async addAttribute(params: AddAttributeParams): Promise<AgentResult> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath, rootTag, objectName } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            await XMLWriter.addNestedElement(filePath, 'Attribute', params.name, {}, rootTag as MetadataType, objectName);
+            return { success: true };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // addTabularSection
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async addTabularSection(params: AddTabularSectionParams): Promise<AgentResult> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath, rootTag, objectName } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            await XMLWriter.addNestedElement(filePath, 'TabularSection', params.name, {}, rootTag as MetadataType, objectName);
+            return { success: true };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // addTabularSectionColumn
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async addTabularSectionColumn(params: AddTabularSectionColumnParams): Promise<AgentResult> {
+        try {
+            const segments = params.path.split('.');
+            if (segments.length !== 4 || segments[2] !== 'TabularSection') {
+                return {
+                    success: false,
+                    error: `Некорректный путь для addTabularSectionColumn: "${params.path}". Ожидается 4 сегмента вида RootTag.ObjectName.TabularSection.TSName.`,
+                };
+            }
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath, rootTag, objectName, nestedName } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            await XMLWriter.addAttributeToTabularSection(filePath, nestedName!, params.name, rootTag as MetadataType, objectName);
+            return { success: true };
         } catch (err) {
             return {
                 success: false,
