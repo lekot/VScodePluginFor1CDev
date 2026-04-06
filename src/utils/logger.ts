@@ -110,8 +110,8 @@ export class Logger {
 
     if (level === 'ERROR') {
       console.error(logMessage);
-    } else {
-      console.log(logMessage);
+    } else if (level === 'WARN') {
+      console.warn(logMessage);
     }
   }
 

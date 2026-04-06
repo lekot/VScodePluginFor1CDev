@@ -47,7 +47,12 @@ export async function loadTreeFromCache(
       return null;
     }
     
-    // Validate cache freshness by checking Configuration.xml mtime
+    // Validate cache freshness by checking Configuration.xml mtime.
+    // Only Configuration.xml needs to be checked: the cache stores the structural tree
+    // (type folders + element names only). Individual element details (attributes,
+    // properties) are loaded lazily from per-element XML files and are never cached.
+    // Changes to e.g. Catalog.xml don't affect the cached structure — only additions
+    // or removals of root objects (reflected in Configuration.xml) require invalidation.
     const configXmlPath = path.join(configPath, CONFIGURATION_XML);
     try {
       const stats = await fs.promises.stat(configXmlPath);

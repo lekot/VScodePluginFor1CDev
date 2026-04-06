@@ -26,6 +26,9 @@ type ReloadRunner = (ctx: ReloadRunContext) => Promise<void>;
 
 const DEFAULT_DEBOUNCE_MS = 250;
 const DEFAULT_MUTATION_WINDOW_TTL_MS = 1500;
+// Results are stored per-config, up to 50 entries; oldest are evicted FIFO (insertion order).
+// Callers should retrieve operation results promptly after completion — results may be lost
+// under high-frequency reload scenarios before they are consumed.
 const OPERATION_RESULT_LIMIT = 50;
 
 export class ReloadCoordinatorService {

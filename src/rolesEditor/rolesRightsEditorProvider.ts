@@ -517,17 +517,23 @@ export class RolesRightsEditorProvider {
    * Handle toggleFilter message
    */
   /** Filter state lives in the webview; host accepts messages for protocol compatibility only. */
-  private async handleToggleFilter(_message: WebviewMessage): Promise<void> {}
+  private async handleToggleFilter(_message: WebviewMessage): Promise<void> {
+    Logger.debug('handleToggleFilter: not yet implemented');
+  }
 
   /**
    * Handle search message
    */
-  private async handleSearch(_message: WebviewMessage): Promise<void> {}
+  private async handleSearch(_message: WebviewMessage): Promise<void> {
+    Logger.debug('handleSearch: not yet implemented');
+  }
 
   /**
    * Handle filterByType message
    */
-  private async handleFilterByType(_message: WebviewMessage): Promise<void> {}
+  private async handleFilterByType(_message: WebviewMessage): Promise<void> {
+    Logger.debug('handleFilterByType: not yet implemented');
+  }
 
   /**
    * Large table renders run in the webview; reflect activity in the status bar so the window does not look hung.
