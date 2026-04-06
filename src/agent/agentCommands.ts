@@ -5,7 +5,12 @@
 import * as vscode from 'vscode';
 import { AgentOperations } from './agentOperations';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
-import type { CreateObjectParams, GetYamlParams, ListObjectsParams } from './types';
+import type {
+    CreateObjectParams,
+    GetYamlParams,
+    ListObjectsParams,
+    GetPropertiesParams,
+} from './types';
 
 /**
  * Регистрирует Agent API команды.
@@ -65,5 +70,19 @@ export function registerAgentCommands(
         }
     );
 
-    context.subscriptions.push(createObjectCommand, getYamlCommand, listObjectsCommand);
+    // ─── 1c-metadata-tree.agent.getProperties ────────────────────────────────
+
+    const getPropertiesCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getProperties',
+        async (params: GetPropertiesParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new AgentOperations(configRoot);
+            return await ops.getProperties(params);
+        }
+    );
+
+    context.subscriptions.push(createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand);
 }

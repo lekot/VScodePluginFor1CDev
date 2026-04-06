@@ -420,6 +420,11 @@
         "command": "1c-metadata-tree.agent.listObjects",
         "title": "Agent: Список объектов конфигурации",
         "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.getProperties",
+        "title": "Agent: Получить свойства объекта",
+        "category": "CDT 41 Agent"
       }
     ],
     "customEditors": [

@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { rulesRegistry, metadataConverter } from '../rules';
-import { addRootObjectToConfiguration } from '../services/configurationXmlUpdater';
+import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from '../services/configurationXmlUpdater';
 import { getDesignerTemplateXml } from '../services/designerTemplateRepository';
 import { substituteDesignerTemplate } from '../services/designerTemplateSubstitutor';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
@@ -18,12 +18,20 @@ import { MetadataType } from '../models/treeNode';
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
 const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import { resolveAgentPath } from './agentPathResolver';
+import { XMLWriter } from '../utils/XMLWriter';
 import type {
     AgentResult,
     CreateObjectParams,
     GetYamlParams,
     ListObjectsParams,
     ObjectInfo,
+    GetPropertiesParams,
+    DeleteAttributeParams,
+    DeleteTabularSectionParams,
+    DeleteObjectParams,
+    RenameObjectParams,
+    SetPropertiesParams,
 } from './types';
 
 // ─── XML-парсер для Configuration.xml (без preserveOrder — нам нужен простой доступ) ───
@@ -189,6 +197,31 @@ export class AgentOperations {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // getProperties
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async getProperties(params: GetPropertiesParams): Promise<AgentResult<{ properties: Record<string, unknown> }>> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            const properties = await XMLWriter.readProperties(filePath);
+            return { success: true, data: { properties } };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // listObjects
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -240,6 +273,185 @@ export class AgentOperations {
             }
 
             return { success: true, data: { objects } };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // deleteAttribute
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async deleteAttribute(params: DeleteAttributeParams): Promise<AgentResult> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            const segments = params.path.split('.');
+            if (segments.length === 4) {
+                // RootTag.ObjectName.Attribute.AttrName
+                await XMLWriter.removeNestedElement(filePath, 'Attribute', resolved.nestedName!);
+            } else if (segments.length === 6) {
+                // RootTag.ObjectName.TabularSection.TSName.Attribute.ColName
+                await XMLWriter.removeAttributeFromTabularSection(filePath, resolved.tabularSection!, resolved.nestedName!);
+            } else {
+                return { success: false, error: `Некорректный путь для deleteAttribute: "${params.path}". Ожидается 4 или 6 сегментов.` };
+            }
+
+            return { success: true };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // deleteTabularSection
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async deleteTabularSection(params: DeleteTabularSectionParams): Promise<AgentResult> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            await XMLWriter.removeNestedElement(filePath, 'TabularSection', resolved.nestedName!);
+            return { success: true };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // deleteObject
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async deleteObject(params: DeleteObjectParams): Promise<AgentResult> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { rootTag, objectName, filePath } = resolved;
+
+            const folderName =
+                MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
+                `${rootTag}s`;
+            const typeFolderPath = path.join(this.configRootPath, folderName);
+
+            // Удаляем XML-файл объекта
+            try {
+                await fs.promises.unlink(filePath);
+            } catch (err) {
+                if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+                    return { success: false, error: `Файл объекта не найден: ${filePath}` };
+                }
+                throw err;
+            }
+
+            // Удаляем директорию объекта если есть
+            const elementDir = path.join(typeFolderPath, objectName);
+            await fs.promises.rm(elementDir, { recursive: true, force: true });
+
+            // Снимаем регистрацию из Configuration.xml
+            await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
+
+            return { success: true };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // renameObject
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async renameObject(params: RenameObjectParams): Promise<AgentResult<{ filePath: string }>> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { rootTag, objectName, filePath } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            const folderName =
+                MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
+                `${rootTag}s`;
+            const typeFolderPath = path.join(this.configRootPath, folderName);
+
+            // Обновляем Name в XML
+            await XMLWriter.writeProperties(filePath, { Name: params.newName });
+
+            // Переименовываем XML-файл
+            const newFilePath = path.join(typeFolderPath, `${params.newName}.xml`);
+            await fs.promises.rename(filePath, newFilePath);
+
+            // Переименовываем директорию объекта если есть
+            const oldDir = path.join(typeFolderPath, objectName);
+            const newDir = path.join(typeFolderPath, params.newName);
+            try {
+                await fs.promises.access(oldDir);
+                await fs.promises.rename(oldDir, newDir);
+            } catch {
+                // Директории нет — ок
+            }
+
+            // Обновляем Configuration.xml
+            await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
+            await addRootObjectToConfiguration(this.configRootPath, rootTag, params.newName);
+
+            return { success: true, data: { filePath: newFilePath } };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // setProperties
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async setProperties(params: SetPropertiesParams): Promise<AgentResult> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            if ('Name' in params.properties) {
+                return { success: false, error: 'Нельзя менять Name через setProperties. Используйте renameObject.' };
+            }
+
+            await XMLWriter.writeProperties(filePath, params.properties);
+            return { success: true };
         } catch (err) {
             return {
                 success: false,
