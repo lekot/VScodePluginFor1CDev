@@ -1,9 +1,10 @@
 // test/suite/rules/xmlSnapshot.test.ts
-// Snapshot-тесты для CommonModule и Subsystem rules.
+// Snapshot-тесты для CommonModule, Subsystem и Enum rules.
 import * as assert from 'assert';
 import { MetadataConverter } from '../../../src/rules/MetadataConverter';
 import { createDefaultConverterRegistry } from '../../../src/rules/converters/index';
 import { commonModuleRules } from '../../../src/rules/metadata/commonModuleRules';
+import { enumRules } from '../../../src/rules/metadata/enumRules';
 import { subsystemRules } from '../../../src/rules/metadata/subsystemRules';
 
 function makeConverter(): MetadataConverter {
@@ -117,5 +118,71 @@ suite('XML Snapshot: Subsystem', () => {
         // Comment < Name < Synonym
         assert.ok(commentIdx < nameIdx, 'Comment should come before Name');
         assert.ok(nameIdx < synonymIdx, 'Name should come before Synonym');
+    });
+});
+
+suite('XML Snapshot: Enum', () => {
+    test('createDefaultIR sets name and synonym from params', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(enumRules, { name: 'ТестПеречисление', uuid: 'enum-uuid-9999' });
+        assert.strictEqual(ir.properties['name'], 'ТестПеречисление');
+        assert.strictEqual(ir.properties['synonym'], 'ТестПеречисление');
+        assert.strictEqual(ir.properties['choiceHistoryOnInput'], 'Auto');
+        assert.strictEqual(ir.properties['choiceMode'], 'BothWays');
+        assert.strictEqual(ir.properties['quickChoice'], true);
+        assert.strictEqual(ir.properties['useStandardCommands'], false);
+    });
+
+    test('irToXml generates correct root tag with uuid', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(enumRules, { name: 'ТестПеречисление', uuid: 'enum-uuid-9999' });
+        const xml = converter.irToXml(ir, enumRules);
+        assert.ok(xml.includes('<Enum uuid='), 'should have <Enum uuid= root tag');
+        assert.ok(xml.includes('enum-uuid-9999'), 'should include uuid');
+    });
+
+    test('irToXml has correct namespaces including xr and xsi', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(enumRules, { name: 'ТестПеречисление', uuid: 'enum-uuid-9999' });
+        const xml = converter.irToXml(ir, enumRules);
+        assert.ok(xml.includes('xmlns="http://v8.1c.ru/8.3/MDClasses"'), 'should have main namespace');
+        assert.ok(xml.includes('xmlns:v8="http://v8.1c.ru/8.1/data/core"'), 'should have v8 namespace');
+        assert.ok(xml.includes('xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"'), 'should have xr namespace');
+        assert.ok(xml.includes('xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'), 'should have xsi namespace');
+    });
+
+    test('irToXml contains ChoiceHistoryOnInput and QuickChoice with correct values', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(enumRules, { name: 'ТестПеречисление', uuid: 'enum-uuid-9999' });
+        const xml = converter.irToXml(ir, enumRules);
+        assert.ok(xml.includes('<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>'), 'should have ChoiceHistoryOnInput=Auto');
+        assert.ok(xml.includes('<QuickChoice>true</QuickChoice>'), 'should have QuickChoice=true');
+    });
+
+    test('irToXml generates ChildObjects', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(enumRules, { name: 'ТестПеречисление', uuid: 'enum-uuid-9999' });
+        const xml = converter.irToXml(ir, enumRules);
+        assert.ok(xml.includes('ChildObjects'), 'Enum should have ChildObjects');
+    });
+
+    test('irToXml contains name and synonym', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(enumRules, { name: 'ТестПеречисление', uuid: 'enum-uuid-9999' });
+        const xml = converter.irToXml(ir, enumRules);
+        assert.ok(xml.includes('<Name>ТестПеречисление</Name>'), 'should have Name tag with value');
+        assert.ok(xml.includes('<Synonym>'), 'should have Synonym tag');
+        assert.ok(xml.includes('<v8:content>ТестПеречисление</v8:content>'), 'should have v8:content with synonym value');
+    });
+
+    test('irToXml properties in correct order: ChoiceMode before Comment before Name', () => {
+        const converter = makeConverter();
+        const ir = converter.createDefaultIR(enumRules, { name: 'Enum', uuid: 'u3' });
+        const xml = converter.irToXml(ir, enumRules);
+        const choiceModeIdx = xml.indexOf('<ChoiceMode>');
+        const commentIdx = xml.indexOf('<Comment');
+        const nameIdx = xml.indexOf('<Name>');
+        assert.ok(choiceModeIdx < commentIdx, 'ChoiceMode should come before Comment');
+        assert.ok(commentIdx < nameIdx, 'Comment should come before Name');
     });
 });
