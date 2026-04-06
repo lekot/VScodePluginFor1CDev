@@ -17,6 +17,6 @@ export {
 } from './ibcmd/IbcmdProcessRunner';
 export type { IbcmdConsoleOutputEncoding, IbcmdRunOutcome, IbcmdStreamEncodingMode } from './ibcmd/ibcmdConsoleEncodingTypes';
 export { decodeConsoleStream, decodeConsoleStreamAuto, decodeIbcmdProcessStreams } from './ibcmd/consoleStreamDecoder';
-export { getIbcmdService, resetIbcmdServiceSingletonForTests } from './ibcmd/ibcmdServiceSingleton';
+export { getIbcmdService, resetIbcmdService, resetIbcmdServiceSingletonForTests } from './ibcmd/ibcmdServiceSingleton';
 export { registerIbcmdInfobaseHooks, IBCMD_SETUP_COMMAND } from './ibcmd/registerIbcmdInfobaseHooks';
 export { showIbcmdNotFoundDialog } from './ibcmd/showIbcmdNotFoundDialog';
