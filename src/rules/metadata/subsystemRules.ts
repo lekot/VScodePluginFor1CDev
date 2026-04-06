@@ -12,13 +12,13 @@ export const subsystemRules: MetadataObjectRules = {
     },
     hasChildObjects: true,
     properties: {
-        comment: { type: 'string', order: 1, xml: 'Comment', defaultValueXML: '' },
+        comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
         content: { type: 'InternalInfo', order: 2, xml: 'Content', defaultValueXML: '' },
         explanation: { type: 'string', order: 3, xml: 'Explanation', defaultValueXML: '' },
         includeHelpInContents: { type: 'boolean', order: 4, xml: 'IncludeHelpInContents', defaultValueXML: false },
-        includeInCommandInterface: { type: 'boolean', order: 5, xml: 'IncludeInCommandInterface', defaultValueXML: true },
-        name: { type: 'string', order: 6, xml: 'Name', required: true },
-        synonym: { type: 'I8nText', order: 7, xml: 'Synonym' },
+        includeInCommandInterface: { type: 'boolean', order: 5, xml: 'IncludeInCommandInterface', yaml: 'ВключатьВКомандныйИнтерфейс', defaultValueXML: true },
+        name: { type: 'string', order: 6, xml: 'Name', yaml: 'Имя', required: true },
+        synonym: { type: 'I8nText', order: 7, xml: 'Synonym', yaml: 'Синоним' },
         useOneCommand: { type: 'boolean', order: 8, xml: 'UseOneCommand', defaultValueXML: false },
     },
 };
