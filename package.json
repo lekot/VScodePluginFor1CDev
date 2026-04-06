@@ -405,6 +405,21 @@
         "command": "1c-metadata-tree.getYaml",
         "title": "Показать YAML",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.agent.createObject",
+        "title": "Agent: Создать объект метаданных",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.getYaml",
+        "title": "Agent: Получить YAML объекта",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.listObjects",
+        "title": "Agent: Список объектов конфигурации",
+        "category": "CDT 41 Agent"
       }
     ],
     "customEditors": [
