@@ -65,11 +65,25 @@ export const i8nTextConverter: IPropertyConverter = {
         return {};
     },
 
-    toYaml(_irValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): undefined {
+    toYaml(irValue: unknown, rule: MetadataPropertyRule, _context: ConversionContext): unknown | undefined {
+        if (typeof irValue === 'string') {
+            if (irValue === '') { return undefined; }
+            const def = rule.defaultValue ?? rule.defaultValueXML;
+            if (irValue === def) { return undefined; }
+            return irValue;
+        }
+        if (typeof irValue === 'object' && irValue !== null) {
+            if (Object.keys(irValue as Record<string, string>).length === 0) { return undefined; }
+            return irValue;
+        }
         return undefined;
     },
 
     fromYaml(yamlValue: unknown, _rule: MetadataPropertyRule, _context: ConversionContext): unknown {
-        return yamlValue;
+        if (typeof yamlValue === 'string') { return yamlValue; }
+        if (typeof yamlValue === 'object' && yamlValue !== null) {
+            return yamlValue as Record<string, string>;
+        }
+        return '';
     },
 };
