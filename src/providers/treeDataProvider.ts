@@ -3,13 +3,11 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
-import { getFormPaths } from '../formEditor/formPaths';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { MESSAGES } from '../constants/messages';
 import { CONFIGURATION_XML } from '../constants/fileNames';
-import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 import {
   ensureR6PlaceholdersForInstanceNode,
   ensureTabularSectionColumnsPlaceholder,
@@ -28,15 +26,8 @@ import {
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
-
-const REFERENCEABLE_METADATA_TYPES: ReadonlySet<MetadataType> = new Set([
-  MetadataType.Catalog,
-  MetadataType.Document,
-  MetadataType.Enum,
-  MetadataType.ChartOfCharacteristicTypes,
-  MetadataType.ChartOfAccounts,
-  MetadataType.ChartOfCalculationTypes,
-]);
+import { buildTreeItem } from './treeItemBuilder';
+import { getReferenceableObjects, getReferenceableObjectsForTypeEditor } from './treeReferenceLoader';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
@@ -684,149 +675,25 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
-    try {
-      // Collapsible: has children, or lazy type node, or lazy element node (load on expand)
-      const hasChildren =
-        (element.children && element.children.length > 0) ||
-        this.isLazyTypeNode(element) ||
-        this.isLazyElementNode(element) ||
-        this.isTabularSectionInstanceNode(element);
-      const collapsibleState = hasChildren
-        ? element.isExpanded
-          ? vscode.TreeItemCollapsibleState.Expanded
-          : vscode.TreeItemCollapsibleState.Collapsed
-        : vscode.TreeItemCollapsibleState.None;
+    const hasChildren =
+      (element.children && element.children.length > 0) ||
+      this.isLazyTypeNode(element) ||
+      this.isLazyElementNode(element) ||
+      this.isTabularSectionInstanceNode(element);
 
-      const treeItem = new vscode.TreeItem(element.name, collapsibleState);
+    const bindingDeco = this.lookupConfigurationBindingDecoration(element);
+    const isExtBindingRoot = this.isExtensionInfobaseBindingRoot(element);
+    const q = this.filter.rawSearchQuery.trim();
 
-      // Set context value for context menu (Forms folder vs concrete Form node vs BSL module leaf)
-      const props = element.properties as Record<string, unknown> | undefined;
-      if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
-        treeItem.contextValue = 'MethodBsl';
-      } else {
-        treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
-      }
-
-      // Extension: append '.Adopted' suffix to contextValue for borrowed objects
-      if (props?.objectBelonging === 'Adopted') {
-        treeItem.contextValue = `${treeItem.contextValue}.Adopted`;
-      }
-
-      const bindingDeco = this.lookupConfigurationBindingDecoration(element);
-      // WOW §2D: контекст для «Раскатать в базу/базы» (viewItem when в package.json).
-      if (element.type === MetadataType.Configuration) {
-        let cv = 'Configuration';
-        if (bindingDeco && bindingDeco.boundCount > 0) {
-          cv += ' bindingBound';
-          // Дизайн §12.5: подпись/иконка от флага массовой раскатки, не от числа баз в списке.
-          const many = bindingDeco.massDeployment === true;
-          cv += many ? ' deployMany' : ' deployOne';
-        }
-        treeItem.contextValue = cv;
-      } else if (this.isExtensionInfobaseBindingRoot(element)) {
-        let cv = 'Extension extensionBindingRoot';
-        if (bindingDeco && bindingDeco.boundCount > 0) {
-          cv += ' bindingBound';
-          const many = bindingDeco.massDeployment === true;
-          cv += many ? ' deployMany' : ' deployOne';
-        }
-        treeItem.contextValue = cv;
-      }
-
-      // Set tooltip: name, type, path (additional_req.md п.14)
-      const synonym = element.properties.synonym as string | undefined;
-      let tooltipText =
-        synonym ? `${element.type}: ${element.name}\nСиноним: ${synonym}` : `${element.type}: ${element.name}`;
-      const pathStr = this.getPathForTooltip(element);
-      if (pathStr) {tooltipText += `\n${pathStr}`;}
-      // Highlight match in tooltip when search is active (additional_req.md п.2)
-      const q = this.filter.rawSearchQuery.trim();
-      if (q && !this.filter.isRegex && this.filter.nodeMatchesSearch(element, q)) {
-        tooltipText += `\nНайдено: "${q}"`;
-      }
-      if (element.type === MetadataType.Configuration) {
-        if (bindingDeco && bindingDeco.boundCount > 0) {
-          const mass = bindingDeco.massDeployment ? '\nМассовая раскатка: да' : '';
-          tooltipText += `\n\nПривязка ИБ: ${bindingDeco.boundCount} баз(ы).${mass}\n${bindingDeco.namesPreview}`;
-        } else {
-          tooltipText +=
-            '\n\nПривязка ИБ: не настроена. Контекстное меню узла → «Привязать базы…».';
-        }
-      } else if (this.isExtensionInfobaseBindingRoot(element)) {
-        if (bindingDeco && bindingDeco.boundCount > 0) {
-          const mass = bindingDeco.massDeployment ? '\nМассовая раскатка: да' : '';
-          tooltipText += `\n\nПривязка ИБ (расширение): ${bindingDeco.boundCount} баз(ы).${mass}\n${bindingDeco.namesPreview}`;
-        } else {
-          tooltipText += '\n\nПривязка ИБ расширения: не настроена. Контекстное меню → «Привязать базы…».';
-        }
-      }
-      treeItem.tooltip = tooltipText;
-
-      // Set description (shown next to the label); для Configuration — бейдж числа привязок (§2C)
-      const descParts: string[] = [];
-      if (synonym) {
-        descParts.push(synonym);
-      }
-      if (
-        (element.type === MetadataType.Configuration || this.isExtensionInfobaseBindingRoot(element)) &&
-        bindingDeco &&
-        bindingDeco.boundCount > 0
-      ) {
-        descParts.push(`🔗${bindingDeco.boundCount}`);
-      }
-
-      // Extension decorations
-      if (props?.objectBelonging === 'Adopted') {
-        // Borrowed (adopted) object from base configuration
-        descParts.push('(заимствованный)');
-      } else if (props?.extensionPurpose) {
-        // Extension root node: show purpose and prefix
-        const purpose = props.extensionPurpose as string;
-        const prefix = props.namePrefix as string | undefined;
-        const extDesc = prefix ? `(${purpose}, ${prefix})` : `(${purpose})`;
-        descParts.push(extDesc);
-      }
-
-      if (descParts.length > 0) {
-        treeItem.description = descParts.join(' · ');
-      }
-
-      // Set icon based on metadata type
-      treeItem.iconPath = this.getIconForType(element.type);
-
-      // BSL module nodes: open module on click (creates file if virtual)
-      if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
-        treeItem.command = {
-          command: '1c-metadata-tree.openBslModule',
-          title: 'Open BSL Module',
-          arguments: [element],
-        };
-      }
-      // Other nodes: selection triggers properties panel (no command)
-
-      // Set resource URI: Configuration → Configuration.xml in configDir; Form → formXmlPath; else filePath
-      if (element.type === MetadataType.Configuration) {
-        const configDir = this.getConfigPathForNode(element);
-        if (configDir != null) {
-          treeItem.resourceUri = vscode.Uri.file(path.join(configDir, CONFIGURATION_XML));
-        }
-      } else if (this.isExtensionInfobaseBindingRoot(element) && element.filePath?.trim()) {
-        treeItem.resourceUri = vscode.Uri.file(path.join(element.filePath.trim(), CONFIGURATION_XML));
-      } else if (element.filePath) {
-        if (element.type === MetadataType.Form) {
-          const { formXmlPath } = getFormPaths(element.filePath);
-          treeItem.resourceUri = vscode.Uri.file(formXmlPath);
-        } else {
-          treeItem.resourceUri = vscode.Uri.file(element.filePath);
-        }
-      }
-
-      return treeItem;
-    } catch (error) {
-      Logger.error('Error creating tree item', error);
-      // Return minimal tree item on error
-      return new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.None);
-    }
+    return buildTreeItem(element, {
+      hasChildren,
+      bindingDeco,
+      isExtensionInfobaseBindingRoot: isExtBindingRoot,
+      rawSearchQuery: q,
+      isRegex: this.filter.isRegex,
+      nodeMatchesSearch: !!(q && this.filter.nodeMatchesSearch(element, q)),
+      configDirPath: element.type === MetadataType.Configuration ? this.getConfigPathForNode(element) : null,
+    });
   }
 
   /**
@@ -929,18 +796,6 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
   }
 
-  /** Path for tooltip: filePath if set, otherwise parent chain (e.g. "Configuration / Catalogs / MyCatalog"). */
-  private getPathForTooltip(element: TreeNode): string {
-    if (element.filePath) {return element.filePath;}
-    const parts: string[] = [];
-    let p: TreeNode | undefined = element.parent;
-    while (p) {
-      parts.unshift(p.name);
-      p = p.parent;
-    }
-    return parts.length > 0 ? parts.join(' / ') : '';
-  }
-
   /** Ordered list of visible node ids (depth-first) for next/previous match navigation. */
   getVisibleOrderedNodeIds(): string[] {
     if (this.rootNodes.length === 0) {return [];}
@@ -966,84 +821,6 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   getParent(element: TreeNode): vscode.ProviderResult<TreeNode> {
     return element.parent || null;
-  }
-
-  /**
-   * Get icon for metadata type
-   */
-  private getIconForType(type: MetadataType): vscode.ThemeIcon {
-    // Map metadata types to VS Code built-in icons
-    const iconMap: Record<MetadataType, string> = {
-      // Root
-      [MetadataType.Configuration]: 'package',
-
-      // Main types
-      [MetadataType.Catalog]: 'book',
-      [MetadataType.Document]: 'file-text',
-      [MetadataType.Enum]: 'symbol-enum',
-      [MetadataType.Report]: 'graph',
-      [MetadataType.DataProcessor]: 'gear',
-      [MetadataType.ChartOfCharacteristicTypes]: 'symbol-class',
-      [MetadataType.ChartOfAccounts]: 'symbol-numeric',
-      [MetadataType.ChartOfCalculationTypes]: 'calculator',
-      [MetadataType.InformationRegister]: 'database',
-      [MetadataType.AccumulationRegister]: 'archive',
-      [MetadataType.AccountingRegister]: 'symbol-ruler',
-      [MetadataType.CalculationRegister]: 'symbol-operator',
-      [MetadataType.BusinessProcess]: 'git-branch',
-      [MetadataType.Task]: 'checklist',
-      [MetadataType.ExternalDataSource]: 'cloud',
-      [MetadataType.Constant]: 'symbol-constant',
-      [MetadataType.SessionParameter]: 'symbol-parameter',
-      [MetadataType.FilterCriterion]: 'filter',
-      [MetadataType.ScheduledJob]: 'watch',
-      [MetadataType.FunctionalOption]: 'symbol-boolean',
-      [MetadataType.FunctionalOptionsParameter]: 'symbol-variable',
-      [MetadataType.SettingsStorage]: 'save',
-      [MetadataType.EventSubscription]: 'bell',
-      [MetadataType.CommonModule]: 'symbol-module',
-      [MetadataType.CommandGroup]: 'folder',
-      [MetadataType.Command]: 'terminal',
-      [MetadataType.Role]: 'shield',
-      [MetadataType.Interface]: 'symbol-interface',
-      [MetadataType.Style]: 'paintcan',
-      [MetadataType.WebService]: 'globe',
-      [MetadataType.HTTPService]: 'server',
-      [MetadataType.IntegrationService]: 'plug',
-      [MetadataType.Subsystem]: 'folder-library',
-      [MetadataType.ExchangePlan]: 'repo-sync',
-      [MetadataType.DocumentJournal]: 'notebook',
-      [MetadataType.DefinedType]: 'symbol-misc',
-      [MetadataType.CommonAttribute]: 'symbol-field',
-      [MetadataType.CommonCommand]: 'terminal',
-      [MetadataType.CommonForm]: 'layout',
-      [MetadataType.CommonPicture]: 'file-media',
-      [MetadataType.CommonTemplate]: 'file-code',
-      [MetadataType.DocumentNumerator]: 'list-ordered',
-      [MetadataType.Language]: 'globe',
-      [MetadataType.WSReference]: 'link',
-      [MetadataType.XDTOPackage]: 'package',
-      [MetadataType.StyleItem]: 'symbol-color',
-
-      // Sub-elements
-      [MetadataType.Attribute]: 'symbol-field',
-      [MetadataType.TabularSection]: 'table',
-      [MetadataType.Form]: 'layout',
-      [MetadataType.Template]: 'file-code',
-      [MetadataType.CommandSubElement]: 'symbol-method',
-      [MetadataType.Recurrence]: 'sync',
-      [MetadataType.Method]: 'symbol-method',
-      [MetadataType.Parameter]: 'symbol-parameter',
-
-      // Extensions
-      [MetadataType.Extension]: 'extensions',
-
-      // Unknown
-      [MetadataType.Unknown]: 'question',
-    };
-
-    const iconName = iconMap[type] || 'file';
-    return new vscode.ThemeIcon(iconName);
   }
 
   /**
@@ -1204,31 +981,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Aggregates from all configuration roots (first root used for kind order; names merged per kind).
    */
   getReferenceableObjects(): ReferenceableGroup[] {
-    const refKindOrder = [
-      'CatalogRef',
-      'DocumentRef',
-      'EnumRef',
-      'ChartOfCharacteristicTypesRef',
-      'ChartOfAccountsRef',
-      'ChartOfCalculationTypesRef',
-    ];
-    const byKind = new Map<string, Set<string>>();
-    for (const root of this.rootNodes) {
-      if (!root.children) {continue;}
-      for (const node of root.children) {
-        if (!REFERENCEABLE_METADATA_TYPES.has(node.type)) {continue;}
-        const referenceKind = METADATA_TYPE_TO_REFERENCE_KIND[node.type];
-        if (!referenceKind) {continue;}
-        const names = (node.children || []).map((c) => c.name);
-        const set = byKind.get(referenceKind) ?? new Set<string>();
-        names.forEach((n) => set.add(n));
-        byKind.set(referenceKind, set);
-      }
-    }
-    return refKindOrder.map((refKind) => ({
-      referenceKind: refKind,
-      objectNames: Array.from(byKind.get(refKind) ?? []),
-    }));
+    return getReferenceableObjects(this.rootNodes);
   }
 
   /**
@@ -1239,83 +992,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * If type editor gets an empty list, it can't offer "DocumentRef.<...>" selection.
    */
   public async getReferenceableObjectsForTypeEditor(node?: TreeNode): Promise<ReferenceableGroup[]> {
-    // Determine which configuration root we should use.
-    // If `node` is provided, we restrict loading/aggregation to that configuration only.
-    const configRoot = (() => {
-      if (!node) {return null;}
-      let cur: TreeNode | undefined = node;
-      while (cur) {
-        const curNode: TreeNode = cur;
-        if (curNode.type === MetadataType.Configuration && this.rootNodes.some((r) => r.id === curNode.id)) {
-          return curNode;
-        }
-        cur = curNode.parent;
-      }
-      return null;
-    })();
-
-    const rootsToUse = configRoot ? [configRoot] : this.rootNodes;
-
-    // Load missing type contents (if `children` are empty) so that objectNames are available.
-    for (const root of rootsToUse) {
-      if (!root.children || root.children.length === 0) {continue;}
-
-      const configPath =
-        this.cache.getLoadContext(root.id)?.configPath ??
-        (root.filePath ? path.dirname(root.filePath) : null);
-
-      if (!configPath) {continue;}
-
-      for (const typeNode of root.children) {
-        if (!REFERENCEABLE_METADATA_TYPES.has(typeNode.type)) {continue;}
-        if (typeNode.children && typeNode.children.length > 0) {continue;}
-
-        try {
-          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id);
-          for (const c of children) {c.parent = typeNode;}
-          typeNode.children = children;
-
-          // Update in-memory caches so other features can use the newly loaded nodes.
-          for (const c of children) {this.cache.buildCache(c);}
-        } catch (e) {
-          Logger.warn('Failed to eager load referenceable type contents for type editor', {
-            configPath,
-            typeNodeId: typeNode.id,
-            error: e instanceof Error ? e.message : String(e),
-          });
-        }
-      }
-    }
-
-    // Aggregate only for selected roots.
-    if (!rootsToUse.length) {return [];}
-
-    const refKindOrder = [
-      'CatalogRef',
-      'DocumentRef',
-      'EnumRef',
-      'ChartOfCharacteristicTypesRef',
-      'ChartOfAccountsRef',
-      'ChartOfCalculationTypesRef',
-    ];
-    const byKind = new Map<string, Set<string>>();
-    for (const root of rootsToUse) {
-      if (!root.children) {continue;}
-      for (const child of root.children) {
-        if (!REFERENCEABLE_METADATA_TYPES.has(child.type)) {continue;}
-        const referenceKind = METADATA_TYPE_TO_REFERENCE_KIND[child.type];
-        if (!referenceKind) {continue;}
-        const names = (child.children || []).map((c: TreeNode) => c.name);
-        const set = byKind.get(referenceKind) ?? new Set<string>();
-        names.forEach((n: string) => set.add(n));
-        byKind.set(referenceKind, set);
-      }
-    }
-
-    return refKindOrder.map((refKind) => ({
-      referenceKind: refKind,
-      objectNames: Array.from(byKind.get(refKind) ?? []),
-    }));
+    return getReferenceableObjectsForTypeEditor(node, this.rootNodes, this.cache);
   }
 
   private cloneNodeForRollback(node: TreeNode): TreeNode {
