@@ -1892,6 +1892,18 @@ function buildWebviewJs(): string {
         if (!srcId || srcId === FORM_ROOT_ID) return;
         vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: FORM_ROOT_ID, index: 0 });
       };
+      rootDiv.addEventListener('click', function(e) {
+        if (e.target.classList.contains('tree-chevron')) return;
+        e.stopPropagation();
+        selectedIds = [FORM_ROOT_ID];
+        anchorId = FORM_ROOT_ID;
+        applyTreeSelection();
+        updateToolbarState();
+        selectedAttributeId = null;
+        selectedCommandId = null;
+        updatePropsPanel();
+        vscode.postMessage({ type: 'selectElement', elementId: FORM_ROOT_ID, selectedIds: [FORM_ROOT_ID] });
+      });
       treeRoot.appendChild(rootDiv);
       var displayItems = getDisplayItems();
       var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: displayItems };

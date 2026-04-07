@@ -810,6 +810,25 @@ function handleSelectElement(
     return;
   }
 
+  if (targetId === FORM_ROOT_ID) {
+    const formEventsMap: Record<string, string> = {};
+    if (model.formEvents) {
+      for (const fe of model.formEvents) { formEventsMap[fe.name] = fe.method; }
+    }
+    ctx.onFormSelectionChanged({
+      source: 'form-editor',
+      docUri: ctx.document.uri.toString(),
+      entityType: 'element',
+      id: FORM_ROOT_ID,
+      name: 'Form',
+      tag: 'Form',
+      properties: {},
+      events: formEventsMap,
+      selectedIds,
+    });
+    return;
+  }
+
   const attribute = model.attributes.find((a) => a.id === targetId || a.name === targetId);
   if (attribute) {
     ctx.onFormSelectionChanged({
