@@ -4,7 +4,6 @@
  */
 
 import * as vscode from 'vscode';
-import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from './formEventCatalog';
 
 function hostThemeFromColorKind(kind: vscode.ColorThemeKind): 'light' | 'dark' {
   return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
@@ -1095,8 +1094,12 @@ function buildWebviewJs(): string {
         });
       }
     })();
-    var EVENT_CATALOG = ${JSON.stringify(FORM_EVENT_CATALOG)};
-    var FORM_LEVEL_EVENTS_LIST = ${JSON.stringify(FORM_LEVEL_EVENTS)};
+    function getDisplayItems() {
+      if (!formModel) return [];
+      var items = formModel.childItemsRoot || [];
+      if (formModel.autoCommandBar) return [formModel.autoCommandBar].concat(items);
+      return items;
+    }
     let formModel = null;
     let selectedIds = [];
     let anchorId = null;
@@ -1596,7 +1599,7 @@ function buildWebviewJs(): string {
           if (String(activePageIdByPagesKey[pagesKey]) === String(pid)) return;
           activePageIdByPagesKey[pagesKey] = pid;
           var root = document.getElementById('preview-form');
-          if (formModel && formModel.childItemsRoot && root) renderPreview(formModel.childItemsRoot, root);
+          if (formModel && formModel.childItemsRoot && root) renderPreview(getDisplayItems(), root);
         });
         tablist.appendChild(tab);
       });
@@ -1810,7 +1813,7 @@ function buildWebviewJs(): string {
           var ctrl = e.ctrlKey || e.metaKey;
           var shift = e.shiftKey;
           if (shift && anchorId != null) {
-            var flat = getFlatVisibleIds(formModel.childItemsRoot, expandedIds, null);
+            var flat = getFlatVisibleIds(getDisplayItems(), expandedIds, null);
             var anchorIdx = flat.indexOf(anchorId);
             var clickIdx = flat.indexOf(id);
             if (anchorIdx >= 0 && clickIdx >= 0) {
@@ -3170,11 +3173,11 @@ function buildWebviewJs(): string {
         } else {
           treeEmpty.style.display = 'none';
           expandedIds = new Set();
-          if (formModel && formModel.childItemsRoot) collectContainerIds(formModel.childItemsRoot, expandedIds);
+          if (formModel && formModel.childItemsRoot) collectContainerIds(getDisplayItems(), expandedIds);
           if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
             renderTreeWithRoot(treeRoot);
             applyTreeSelection();
-            renderPreview(formModel.childItemsRoot, document.getElementById('preview-form'));
+            renderPreview(getDisplayItems(), document.getElementById('preview-form'));
           } else {
             treeRoot.textContent = 'Нет элементов';
             var pf = document.getElementById('preview-form');

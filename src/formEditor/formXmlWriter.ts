@@ -19,7 +19,8 @@ const BUILDER_OPTIONS = {
 
 function buildEventsArray(events: FormEventItem[]): unknown[] {
   return events.map((ev) => ({
-    Event: [{ ':@': { '@_name': ev.name } }, { '#text': ev.method || '' }],
+    Event: [{ '#text': ev.method || '' }],
+    ':@': { '@_name': ev.name },
   }));
 }
 
