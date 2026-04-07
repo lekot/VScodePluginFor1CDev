@@ -4,6 +4,7 @@
  */
 
 import * as vscode from 'vscode';
+import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from './formEventCatalog';
 
 function hostThemeFromColorKind(kind: vscode.ColorThemeKind): 'light' | 'dark' {
   return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
@@ -840,7 +841,7 @@ function buildWebviewCss(): string {
       color: var(--vscode-foreground);
       opacity: 0.9;
     }
-    .btn-goto-proc {
+    .btn-goto-proc, .btn-create-handler {
       padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
@@ -850,8 +851,8 @@ function buildWebviewCss(): string {
       font-size: var(--vscode-font-size);
       border-radius: var(--fe-radius-md);
     }
-    .btn-goto-proc:hover { background: var(--vscode-button-secondaryHoverBackground); }
-    .btn-goto-proc:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .btn-goto-proc:hover, .btn-create-handler:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .btn-goto-proc:focus-visible, .btn-create-handler:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
     .add-wizard-overlay {
       position: fixed;
       inset: 0;
@@ -1091,6 +1092,8 @@ function buildWebviewJs(): string {
         });
       }
     })();
+    var EVENT_CATALOG = ${JSON.stringify(FORM_EVENT_CATALOG)};
+    var FORM_LEVEL_EVENTS_LIST = ${JSON.stringify(FORM_LEVEL_EVENTS)};
     let formModel = null;
     let selectedIds = [];
     let anchorId = null;
@@ -2679,8 +2682,17 @@ function buildWebviewJs(): string {
       if (selectedIds.length === 0) {
         renderProps(null);
       } else if (selectedIds.length === 1) {
-        var one = findElement(formModel, selectedIds[0]);
-        if (one) renderProps(one); else renderProps(null);
+        var sid = selectedIds[0];
+        if (sid === FORM_ROOT_ID) {
+          var formEvents = {};
+          if (formModel && formModel.formEvents) {
+            formModel.formEvents.forEach(function(fe) { formEvents[fe.name] = fe.method; });
+          }
+          renderProps({ tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: [], events: formEvents });
+        } else {
+          var one = findElement(formModel, sid);
+          if (one) renderProps(one); else renderProps(null);
+        }
       } else {
         var elements = selectedIds.map(function(sid) { return findElement(formModel, sid); }).filter(Boolean);
         if (elements.length) renderPropsMultiple(elements); else renderProps(null);
@@ -2782,11 +2794,29 @@ function buildWebviewJs(): string {
         }
         html += '</div>';
       }
-      if (el.events && typeof el.events === 'object' && Object.keys(el.events).length) {
+      var isFormRoot = (el.id === FORM_ROOT_ID || el.tag === 'Form');
+      var catalogEvents = isFormRoot ? FORM_LEVEL_EVENTS_LIST : (EVENT_CATALOG[el.tag] || []);
+      var assignedEvents = el.events || {};
+      var extraEvents = [];
+      if (assignedEvents) {
+        for (var ek in assignedEvents) {
+          if (catalogEvents.indexOf(ek) === -1) extraEvents.push(ek);
+        }
+      }
+      var allEventNames = catalogEvents.concat(extraEvents);
+      if (allEventNames.length > 0) {
         html += '<div class="props-block"><p class="props-block-title">События</p>';
-        for (var evName in el.events) {
-          var methodName = el.events[evName];
-          html += '<div class="prop-row"><label>' + esc(evName) + '</label> <div class="prop-input-wrap"><input class="event-method-input" data-event="' + esc(evName) + '" value="' + esc(methodName || '') + '" placeholder="Имя процедуры"></div> <button type="button" class="btn-goto-proc" data-proc="' + esc(methodName || '') + '">Перейти</button></div>';
+        for (var ei = 0; ei < allEventNames.length; ei++) {
+          var evName = allEventNames[ei];
+          var methodName = assignedEvents[evName] || '';
+          var hasHandler = methodName.length > 0;
+          html += '<div class="prop-row"><label>' + esc(evName) + '</label> <div class="prop-input-wrap"><input class="event-method-input" data-event="' + esc(evName) + '" value="' + esc(methodName) + '" placeholder="&lt;Нет&gt;"></div> ';
+          if (hasHandler) {
+            html += '<button type="button" class="btn-goto-proc" data-proc="' + esc(methodName) + '" title="Перейти к процедуре">&#x1F50D;</button>';
+          } else {
+            html += '<button type="button" class="btn-create-handler" data-event="' + esc(evName) + '" title="Создать обработчик">&#x2795;</button>';
+          }
+          html += '</div>';
         }
         html += '</div>';
       }
@@ -2809,6 +2839,20 @@ function buildWebviewJs(): string {
           var input = row ? row.querySelector('.event-method-input') : null;
           var proc = (input && input.value && input.value.trim()) ? input.value.trim() : (this.dataset.proc || '');
           if (proc) vscode.postMessage({ type: 'openModule', procedureName: proc });
+        });
+      });
+      content.querySelectorAll('.btn-create-handler').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var evName = this.dataset.event;
+          if (evName) {
+            vscode.postMessage({
+              type: 'createEventHandler',
+              elementId: el.id || el.name,
+              elementName: el.name,
+              tag: el.tag,
+              eventName: evName
+            });
+          }
         });
       });
     }

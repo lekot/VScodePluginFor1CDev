@@ -3,6 +3,8 @@ smoke-avansovyotchet-console.log
 node_modules/
 dist/
 out/
+src/**/*.js
+src/**/*.js.map
 coverage/
 *.vsix
 !releases/*.vsix

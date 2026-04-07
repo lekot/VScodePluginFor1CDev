@@ -23,7 +23,13 @@ import {
   applyDeleteAttribute,
   applyAddCommand,
   applyDeleteCommand,
+  applyAddFormEvent,
 } from './formModelCommands';
+import { generateHandlerName } from './formEventCatalog';
+import { createHandlerInModule } from './formEventHandlerCreator';
+import { parseBslModuleProcedures } from './bslModuleParser';
+import { getFormPaths } from './formPaths';
+import { FORM_ROOT_ID } from './formTreeOperations';
 import { getAddElementWizardConfigPayload } from './formAddElementWizardConfig';
 import {
   loadFormModel,
@@ -169,6 +175,9 @@ export async function handleMessage(
       break;
     case 'selectElement':
       handleSelectElement(ctx, msg);
+      break;
+    case 'createEventHandler':
+      await handleCreateEventHandler(ctx, msg);
       break;
   }
 }
@@ -847,6 +856,79 @@ function handleSelectElement(
     events: element.events ?? {},
     selectedIds,
   });
+}
+
+async function handleCreateEventHandler(
+  ctx: MessageHandlerContext,
+  msg: Record<string, unknown>
+): Promise<void> {
+  const elementId = typeof msg.elementId === 'string' ? msg.elementId.trim() : '';
+  const elementName = typeof msg.elementName === 'string' ? msg.elementName.trim() : '';
+  const tag = typeof msg.tag === 'string' ? msg.tag.trim() : '';
+  const eventName = typeof msg.eventName === 'string' ? msg.eventName.trim() : '';
+
+  if (!elementId || !elementName || !tag || !eventName) {
+    Logger.warn('handleCreateEventHandler: missing required parameters', { elementId, elementName, tag, eventName });
+    return;
+  }
+
+  const model = ctx.documentModel.get(ctx.document.uri.toString());
+  if (!model) {
+    return;
+  }
+
+  const isFormLevel = elementId === FORM_ROOT_ID;
+  const handlerName = generateHandlerName(elementName, eventName, isFormLevel);
+
+  try {
+    const modulePath = getFormPaths(ctx.document.uri.fsPath).modulePath;
+    const procedures = await parseBslModuleProcedures(modulePath);
+
+    let resolvedName = handlerName;
+    if (procedures.some((p) => p.name.toLowerCase() === resolvedName.toLowerCase())) {
+      let suffix = 1;
+      while (
+        procedures.some((p) => p.name.toLowerCase() === (handlerName + suffix).toLowerCase())
+      ) {
+        suffix++;
+        if (suffix > 999) {
+          throw new Error(`Cannot resolve unique handler name for ${handlerName}`);
+        }
+      }
+      resolvedName = handlerName + suffix;
+    }
+
+    // Verify element exists before writing BSL to avoid orphaned procedures
+    if (!isFormLevel) {
+      const el = findElementById(model.childItemsRoot, elementId);
+      if (!el) {
+        Logger.warn(`createEventHandler: element ${elementId} not found in model`);
+        return;
+      }
+    }
+
+    await createHandlerInModule(modulePath, resolvedName, eventName);
+
+    if (isFormLevel) {
+      applyAddFormEvent(model, eventName, resolvedName);
+    } else {
+      const el = findElementById(model.childItemsRoot, elementId);
+      if (el) {
+        if (!el.events) {
+          el.events = {};
+        }
+        el.events[eventName] = resolvedName;
+      }
+    }
+
+    setDirtyState(ctx, true);
+    sendFormData(ctx, model);
+    await openModuleInEditor(ctx.document.uri.fsPath, resolvedName);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    Logger.error('handleCreateEventHandler failed', err);
+    ctx.webviewPanel.webview.postMessage({ type: 'error', message });
+  }
 }
 
 function findElementById(items: FormChildItem[], targetId: string): FormChildItem | undefined {

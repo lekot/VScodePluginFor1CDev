@@ -111,6 +111,17 @@ export function collectFilesForSelection(
   const seen = new Set<string>();
   const results: string[] = [];
 
+  // ibcmd import files requires Configuration.xml (parent object) to be present
+  // for any child objects. Always include it first.
+  const configXml = 'Configuration.xml';
+  const configXmlAbs = path.join(configRoot, configXml);
+  try {
+    if (fs.statSync(configXmlAbs).isFile()) {
+      seen.add(configXml.toLowerCase());
+      results.push(configXml);
+    }
+  } catch { /* missing — skip */ }
+
   for (const node of nodes) {
     const files = collectObjectFiles(node, configRoot);
     for (const rel of files) {
