@@ -74,6 +74,12 @@ function registerMetadataTreeProviders(
     state.typeEditorProvider,
     (payload) => {
       state.formEditorProvider?.applySelectionPropertyChange(payload);
+    },
+    (payload) => {
+      state.formEditorProvider?.gotoEventHandler(payload);
+    },
+    (payload) => {
+      state.formEditorProvider?.createEventHandler(payload);
     }
   );
   context.subscriptions.push(state.propertiesProvider);

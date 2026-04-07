@@ -430,7 +430,7 @@ const ConfigurationTarget = {
 
 /** Optional override for suites that exercise `vscode.extensions.getExtension` (e.g. git integration). */
 export const vscodeExtensionsTestState: {
-  getExtensionImpl: (<T>(_id: string) => { activate(): Promise<unknown> } | undefined) | null;
+  getExtensionImpl: ((_id: string) => { activate(): Promise<unknown> } | undefined) | null;
 } = {
   getExtensionImpl: null,
 };

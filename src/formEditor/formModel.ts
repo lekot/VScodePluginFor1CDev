@@ -64,6 +64,8 @@ export interface FormModel {
   autoCommandBarName?: string;
   /** Id of the form command bar element (from root AutoCommandBar), for round-trip. */
   autoCommandBarId?: string;
+  /** Full parsed AutoCommandBar element (with children, properties, events). Stored separately from childItemsRoot. */
+  autoCommandBar?: FormChildItem;
   /** Form parameters. */
   parameters?: FormParameter[];
   /** Excluded command names from CommandSet/ExcludedCommand. */

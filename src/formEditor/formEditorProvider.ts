@@ -13,9 +13,13 @@ import {
   type MessageHandlerContext,
   type FormSelectionEntityType,
   applyExternalPropertyChange,
+  handleCreateEventHandler as handleCreateEventHandlerMsg,
 } from './formMessageHandler';
 import { FormCommandEngine } from './formCommandEngine';
+import { findElementById } from './formTreeOperations';
 import { getWebviewHtml } from './formWebviewHtml';
+import { openModuleInEditor } from './formFileIo';
+import { Logger } from '../utils/logger';
 export { moveNodeInModel } from './formTreeOperations'; // backward compat
 
 /** Minimal custom document for form editor. */
@@ -114,6 +118,56 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     if (choice === returnLabel) {
       await vscode.commands.executeCommand('vscode.openWith', documentUri, '1c-form-editor');
     }
+  }
+
+  public gotoEventHandler(payload: { docUri: string; handlerName: string }): void {
+    const ctx = this.contextByDocument.get(payload.docUri);
+    if (!ctx) {
+      return;
+    }
+    openModuleInEditor(ctx.document.uri.fsPath, payload.handlerName).catch((err) => {
+      Logger.error('gotoEventHandler: openModuleInEditor failed', err);
+    });
+  }
+
+  public createEventHandler(payload: {
+    docUri: string;
+    elementId: string;
+    elementName: string;
+    elementTag: string;
+    eventName: string;
+  }): void {
+    const ctx = this.contextByDocument.get(payload.docUri);
+    if (!ctx) {
+      return;
+    }
+    const msg = {
+      elementId: payload.elementId,
+      elementName: payload.elementName,
+      tag: payload.elementTag,
+      eventName: payload.eventName,
+    };
+    handleCreateEventHandlerMsg(ctx, msg).then(() => {
+      // Re-emit selection so Properties panel refreshes with updated events
+      const model = this.documentModel.get(payload.docUri);
+      if (!model) { return; }
+      const el = findElementById(model.childItemsRoot, payload.elementId);
+      if (el && this.onFormSelectionChanged) {
+        this.onFormSelectionChanged({
+          source: 'form-editor',
+          docUri: payload.docUri,
+          entityType: 'element',
+          id: el.id,
+          name: el.name,
+          tag: el.tag,
+          properties: el.properties ?? {},
+          events: el.events ?? {},
+          selectedIds: [payload.elementId],
+        });
+      }
+    }).catch((err) => {
+      Logger.error('createEventHandler: handleCreateEventHandler failed', err);
+    });
   }
 
   public applySelectionPropertyChange(payload: {

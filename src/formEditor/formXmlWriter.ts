@@ -19,7 +19,8 @@ const BUILDER_OPTIONS = {
 
 function buildEventsArray(events: FormEventItem[]): unknown[] {
   return events.map((ev) => ({
-    Event: [{ ':@': { '@_name': ev.name } }, { '#text': ev.method || '' }],
+    Event: [{ '#text': ev.method || '' }],
+    ':@': { '@_name': ev.name },
   }));
 }
 
@@ -95,16 +96,16 @@ function buildChildItem(item: FormChildItem): Record<string, unknown> {
     if (value === undefined) {continue;}
     content.push({ [k]: value });
   }
-  if (item.childItems && item.childItems.length) {
-    content.push({
-      ChildItems: item.childItems.map((c) => buildChildItem(c)),
-    });
-  }
   if (item.events && Object.keys(item.events).length) {
     content.push({
       Events: buildEventsArray(
         Object.entries(item.events).map(([name, method]) => ({ name, method }))
       ),
+    });
+  }
+  if (item.childItems && item.childItems.length) {
+    content.push({
+      ChildItems: item.childItems.map((c) => buildChildItem(c)),
     });
   }
   const wrap: Record<string, unknown> = { [item.tag]: content };
@@ -151,19 +152,25 @@ export function buildFormContent(model: FormModel): unknown[] {
   } else if (rawCommandSet) {
     formContent.push({ [rawCommandSet.tag]: rawCommandSet.content });
   }
-  const autoCommandBarName = model.autoCommandBarName !== undefined && model.autoCommandBarName !== ''
-    ? model.autoCommandBarName
-    : 'ФормаКоманднаяПанель';
-  const autoCommandBarId = model.autoCommandBarId !== undefined && model.autoCommandBarId !== ''
-    ? model.autoCommandBarId
-    : '-1';
-  formContent.push({
-    AutoCommandBar: [],
-    ':@': {
-      '@_name': autoCommandBarName,
-      '@_id': autoCommandBarId,
-    },
-  });
+  if (model.autoCommandBar) {
+    formContent.push(buildChildItem(model.autoCommandBar));
+  } else {
+    // Always write AutoCommandBar — it is mandatory in 1C form XML.
+    // Use metadata from model when available, fall back to defaults.
+    const autoCommandBarName = (model.autoCommandBarName !== undefined && model.autoCommandBarName !== '')
+      ? model.autoCommandBarName
+      : 'ФормаКоманднаяПанель';
+    const autoCommandBarId = (model.autoCommandBarId !== undefined && model.autoCommandBarId !== '')
+      ? model.autoCommandBarId
+      : '-1';
+    formContent.push({
+      AutoCommandBar: [],
+      ':@': {
+        '@_name': autoCommandBarName,
+        '@_id': autoCommandBarId,
+      },
+    });
+  }
   if (model.formEvents && model.formEvents.length) {
     formContent.push({ Events: buildEventsArray(model.formEvents) });
   }

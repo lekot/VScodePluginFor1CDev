@@ -583,6 +583,9 @@ function buildWebviewCss(): string {
     .preview-input { flex: 1; min-width: 120px; padding: 4px 8px; font-size: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid color-mix(in srgb, var(--vscode-input-border) 82%, var(--vscode-focusBorder) 18%); border-radius: 6px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
     .preview-button { padding: var(--fe-spacing-xs) var(--fe-spacing-md); font-size: inherit; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: var(--fe-radius-btn); cursor: default; }
     .preview-label { color: var(--vscode-foreground); padding: 1px 0; }
+    .preview-label-decoration { font-style: italic; color: var(--vscode-textLink-foreground); cursor: pointer; }
+    .preview-picture-decoration { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border: 1px dashed var(--vscode-editorWidget-border); border-radius: 4px; font-size: 20px; opacity: 0.6; }
+    .preview-commandbar { display: flex; flex-direction: row; gap: 4px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-toolbar-hoverBackground); border-radius: 4px; margin-bottom: 4px; min-height: 28px; }
     .preview-check { width: 15px; height: 15px; accent-color: var(--vscode-focusBorder); }
     .preview-radio-stack { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-md); align-items: center; }
     .preview-radio-option { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
@@ -840,7 +843,7 @@ function buildWebviewCss(): string {
       color: var(--vscode-foreground);
       opacity: 0.9;
     }
-    .btn-goto-proc {
+    .btn-goto-proc, .btn-create-handler {
       padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
@@ -850,8 +853,8 @@ function buildWebviewCss(): string {
       font-size: var(--vscode-font-size);
       border-radius: var(--fe-radius-md);
     }
-    .btn-goto-proc:hover { background: var(--vscode-button-secondaryHoverBackground); }
-    .btn-goto-proc:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+    .btn-goto-proc:hover, .btn-create-handler:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .btn-goto-proc:focus-visible, .btn-create-handler:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
     .add-wizard-overlay {
       position: fixed;
       inset: 0;
@@ -1091,6 +1094,12 @@ function buildWebviewJs(): string {
         });
       }
     })();
+    function getDisplayItems() {
+      if (!formModel) return [];
+      var items = formModel.childItemsRoot || [];
+      if (formModel.autoCommandBar) return [formModel.autoCommandBar].concat(items);
+      return items;
+    }
     let formModel = null;
     let selectedIds = [];
     let anchorId = null;
@@ -1157,7 +1166,7 @@ function buildWebviewJs(): string {
       var t = String(s);
       return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
-    var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
+    var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','CommandBar','Form','Group','CollapsibleGroup']);
     var FORM_ROOT_ID = '__form_root__';
     var expandedIds = new Set();
     /** Per-Pages active tab: key = Pages item id or name (stable within preview session). */
@@ -1261,7 +1270,6 @@ function buildWebviewJs(): string {
       return normalizeTitleLocation(raw);
     }
     var RARE_TAG_FALLBACKS = new Set([
-      'RadioButtonField',
       'TrackBarField',
       'ProgressBarField',
       'TextDocumentField',
@@ -1310,6 +1318,7 @@ function buildWebviewJs(): string {
     }
     function normalizeLayoutKey(k) { return String(k || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
     function toScalarLayoutValue(v) {
+      if (Array.isArray(v)) return toScalarLayoutValue(v[0]);
       if (v == null) return '';
       if (typeof v === 'string') return v.trim();
       if (typeof v === 'number' || typeof v === 'boolean') return String(v).trim();
@@ -1442,7 +1451,8 @@ function buildWebviewJs(): string {
         'Ориентация',
         'Группировка'
       ]);
-      var orientation = isPagesRoot ? 'vertical' : (normalizeContainerOrientation(rawOrientation) || 'vertical');
+      var isCommandBar = (tag === 'AutoCommandBar' || tag === 'CommandBar');
+      var orientation = isPagesRoot ? 'vertical' : isCommandBar ? 'horizontal' : (normalizeContainerOrientation(rawOrientation) || 'vertical');
       var rawIndent = getLayoutPropertyValueByAliases(props, [
         'IndentChildren',
         'ShouldIndentChildren',
@@ -1590,7 +1600,7 @@ function buildWebviewJs(): string {
           if (String(activePageIdByPagesKey[pagesKey]) === String(pid)) return;
           activePageIdByPagesKey[pagesKey] = pid;
           var root = document.getElementById('preview-form');
-          if (formModel && formModel.childItemsRoot && root) renderPreview(formModel.childItemsRoot, root);
+          if (formModel && formModel.childItemsRoot && root) renderPreview(getDisplayItems(), root);
         });
         tablist.appendChild(tab);
       });
@@ -1804,7 +1814,7 @@ function buildWebviewJs(): string {
           var ctrl = e.ctrlKey || e.metaKey;
           var shift = e.shiftKey;
           if (shift && anchorId != null) {
-            var flat = getFlatVisibleIds(formModel.childItemsRoot, expandedIds, null);
+            var flat = getFlatVisibleIds(getDisplayItems(), expandedIds, null);
             var anchorIdx = flat.indexOf(anchorId);
             var clickIdx = flat.indexOf(id);
             if (anchorIdx >= 0 && clickIdx >= 0) {
@@ -1882,9 +1892,22 @@ function buildWebviewJs(): string {
         if (!srcId || srcId === FORM_ROOT_ID) return;
         vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: FORM_ROOT_ID, index: 0 });
       };
+      rootDiv.addEventListener('click', function(e) {
+        if (e.target.classList.contains('tree-chevron')) return;
+        e.stopPropagation();
+        selectedIds = [FORM_ROOT_ID];
+        anchorId = FORM_ROOT_ID;
+        applyTreeSelection();
+        updateToolbarState();
+        selectedAttributeId = null;
+        selectedCommandId = null;
+        updatePropsPanel();
+        vscode.postMessage({ type: 'selectElement', elementId: FORM_ROOT_ID, selectedIds: [FORM_ROOT_ID] });
+      });
       treeRoot.appendChild(rootDiv);
-      var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: formModel.childItemsRoot };
-      renderTree(formModel.childItemsRoot, rootDiv, syntheticFormItem);
+      var displayItems = getDisplayItems();
+      var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: displayItems };
+      renderTree(displayItems, rootDiv, syntheticFormItem);
     }
 
     function createPreviewControl(item, tag) {
@@ -1915,7 +1938,7 @@ function buildWebviewJs(): string {
         lblCb.textContent = label || '\u2014';
         wrap.appendChild(lblCb);
         wrap.appendChild(cb);
-      } else if (tag === 'RadioButton') {
+      } else if (tag === 'RadioButton' || tag === 'RadioButtonField') {
         wrap.className = 'preview-control-wrap preview-field-row';
         var radioLabel = document.createElement('span');
         radioLabel.className = 'preview-field-label';
@@ -2005,6 +2028,11 @@ function buildWebviewJs(): string {
         if (pageTitle.textContent) pageBlock.appendChild(pageTitle);
         wrap.appendChild(pageBlock);
         wrap._mockupChildContainer = pageBlock;
+      } else if (tag === 'AutoCommandBar' || tag === 'CommandBar') {
+        var cmdBar = document.createElement('div');
+        cmdBar.className = 'preview-commandbar';
+        wrap.appendChild(cmdBar);
+        wrap._mockupChildContainer = cmdBar;
       } else if (isContainerTag(tag)) {
         var groupBlock = document.createElement('div');
         groupBlock.className = 'preview-group-block';
@@ -2016,6 +2044,16 @@ function buildWebviewJs(): string {
         }
         wrap.appendChild(groupBlock);
         wrap._mockupChildContainer = groupBlock;
+      } else if (tag === 'LabelDecoration') {
+        var lblDec = document.createElement('span');
+        lblDec.className = 'preview-label preview-label-decoration';
+        lblDec.textContent = label || '\u2014';
+        wrap.appendChild(lblDec);
+      } else if (tag === 'PictureDecoration') {
+        var picDec = document.createElement('span');
+        picDec.className = 'preview-picture-decoration';
+        picDec.textContent = '\uD83D\uDDBC';
+        wrap.appendChild(picDec);
       } else if (RARE_TAG_FALLBACKS.has(tag)) {
         wrap.appendChild(createRareTagFallbackWidget(label, tag));
       } else {
@@ -2036,6 +2074,8 @@ function buildWebviewJs(): string {
         return;
       }
       items.forEach(function(item) {
+        var visibleRaw = getLayoutPropertyValueByAliases(item.properties || {}, ['Visible', 'visible']);
+        if (visibleRaw.toLowerCase() === 'false') return;
         var id = (item.id != null ? String(item.id) : (item.name != null ? String(item.name) : ''));
         var tag = item.tag || '';
         var isContainer = isContainerTag(tag);
@@ -2058,9 +2098,9 @@ function buildWebviewJs(): string {
             return;
           }
           var srcId = e.dataTransfer.getData('text/plain');
-          if (!srcId || srcId === id) return;
-          if (!isContainer) return;
-          if (formModel && formModel.childItemsRoot && isDescendantOfItem(formModel.childItemsRoot, srcId, id)) return;
+          if (!srcId || srcId === id) { return; }
+          if (!isContainer) { return; }
+          if (formModel && formModel.childItemsRoot && isDescendantOfItem(formModel.childItemsRoot, srcId, id)) { return; }
           e.dataTransfer.dropEffect = 'move';
           div.classList.add('drop-target');
         };
@@ -2149,7 +2189,10 @@ function buildWebviewJs(): string {
         }
         return null;
       };
-      return find(model.childItemsRoot || []);
+      var found = find(model.childItemsRoot || []);
+      if (found) return found;
+      if (model.autoCommandBar) return find([model.autoCommandBar]);
+      return null;
     }
     function findParentAndIndex(root, elementId) {
       if (!root || !elementId) return null;
@@ -2679,8 +2722,17 @@ function buildWebviewJs(): string {
       if (selectedIds.length === 0) {
         renderProps(null);
       } else if (selectedIds.length === 1) {
-        var one = findElement(formModel, selectedIds[0]);
-        if (one) renderProps(one); else renderProps(null);
+        var sid = selectedIds[0];
+        if (sid === FORM_ROOT_ID) {
+          var formEvents = {};
+          if (formModel && formModel.formEvents) {
+            formModel.formEvents.forEach(function(fe) { formEvents[fe.name] = fe.method; });
+          }
+          renderProps({ tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: [], events: formEvents });
+        } else {
+          var one = findElement(formModel, sid);
+          if (one) renderProps(one); else renderProps(null);
+        }
       } else {
         var elements = selectedIds.map(function(sid) { return findElement(formModel, sid); }).filter(Boolean);
         if (elements.length) renderPropsMultiple(elements); else renderProps(null);
@@ -2782,33 +2834,13 @@ function buildWebviewJs(): string {
         }
         html += '</div>';
       }
-      if (el.events && typeof el.events === 'object' && Object.keys(el.events).length) {
-        html += '<div class="props-block"><p class="props-block-title">События</p>';
-        for (var evName in el.events) {
-          var methodName = el.events[evName];
-          html += '<div class="prop-row"><label>' + esc(evName) + '</label> <div class="prop-input-wrap"><input class="event-method-input" data-event="' + esc(evName) + '" value="' + esc(methodName || '') + '" placeholder="Имя процедуры"></div> <button type="button" class="btn-goto-proc" data-proc="' + esc(methodName || '') + '">Перейти</button></div>';
-        }
-        html += '</div>';
-      }
       content.innerHTML = html;
       content.style.display = 'block';
       content.querySelectorAll('input').forEach(inp => {
         inp.addEventListener('change', () => {
           var elementId = el.id || el.name;
-          if (inp.classList.contains('event-method-input') && inp.dataset.event) {
-            vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'events', key: inp.dataset.event, value: inp.value });
-            return;
-          }
           const key = inp.dataset.key ? inp.dataset.key : (inp.id ? inp.id.replace('prop-', '') : null);
           if (key) vscode.postMessage({ type: 'propertyChange', elementId: elementId, key: key, value: inp.value });
-        });
-      });
-      content.querySelectorAll('.btn-goto-proc').forEach(btn => {
-        btn.addEventListener('click', function() {
-          var row = this.closest('.prop-row');
-          var input = row ? row.querySelector('.event-method-input') : null;
-          var proc = (input && input.value && input.value.trim()) ? input.value.trim() : (this.dataset.proc || '');
-          if (proc) vscode.postMessage({ type: 'openModule', procedureName: proc });
         });
       });
     }
@@ -3105,11 +3137,11 @@ function buildWebviewJs(): string {
         } else {
           treeEmpty.style.display = 'none';
           expandedIds = new Set();
-          if (formModel && formModel.childItemsRoot) collectContainerIds(formModel.childItemsRoot, expandedIds);
+          if (formModel && formModel.childItemsRoot) collectContainerIds(getDisplayItems(), expandedIds);
           if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
             renderTreeWithRoot(treeRoot);
             applyTreeSelection();
-            renderPreview(formModel.childItemsRoot, document.getElementById('preview-form'));
+            renderPreview(getDisplayItems(), document.getElementById('preview-form'));
           } else {
             treeRoot.textContent = 'Нет элементов';
             var pf = document.getElementById('preview-form');

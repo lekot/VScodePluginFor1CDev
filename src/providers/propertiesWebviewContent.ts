@@ -12,6 +12,7 @@ import {
 import { getPropertyEnumValues } from '../constants/propertyEnumValues';
 import { MESSAGES } from '../constants/messages';
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
+import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from '../formEditor/formEventCatalog';
 
 /**
  * Escape HTML to prevent XSS
@@ -821,7 +822,6 @@ export function getFormSelectionWebviewContent(
   const entries = Object.entries(props)
     .filter(([k]) => k !== ':@' && !k.startsWith('@'))
     .slice(0, 24);
-  const events = Object.entries(selection.events || {});
   const lines = isMultiSelection
     ? `
       <div class="empty-state">
@@ -890,28 +890,66 @@ export function getFormSelectionWebviewContent(
         `;
       }).join('')
     : '<div class="empty-state"><p>Нет доступных свойств для отображения.</p></div>';
-  const eventLines = !isMultiSelection && events.length
+  const tag = selection.tag || '';
+  const catalogEvents: readonly string[] = tag === 'Form'
+    ? FORM_LEVEL_EVENTS
+    : (FORM_EVENT_CATALOG[tag] || []);
+  const assignedEvents: Record<string, string> = selection.events || {};
+  const extraEvents = Object.keys(assignedEvents).filter(k => !catalogEvents.includes(k));
+  const allEventNames = [...catalogEvents, ...extraEvents];
+  const elementId = selection.id || '';
+  const elementName = selection.name || '';
+  const elementTag = tag;
+  const eventLines = !isMultiSelection && allEventNames.length
     ? `
       <div class="property-section">
         <div class="property-section-title">События</div>
-        ${events.map(([k, v]) => `
+        ${allEventNames.map(evName => {
+          const v = assignedEvents[evName] || '';
+          const actionButton = v
+            ? `
+              <button
+                type="button"
+                class="event-action-btn goto-event-handler-btn"
+                data-proc="${escapeHtml(v)}"
+                data-doc-uri="${escapeHtml(selection.docUri)}"
+                title="Перейти к обработчику"
+                aria-label="Перейти к обработчику"
+              >&#x1F50D;</button>
+            `
+            : `
+              <button
+                type="button"
+                class="event-action-btn create-event-handler-btn"
+                data-event="${escapeHtml(evName)}"
+                data-element-id="${escapeHtml(elementId)}"
+                data-element-name="${escapeHtml(elementName)}"
+                data-element-tag="${escapeHtml(elementTag)}"
+                data-doc-uri="${escapeHtml(selection.docUri)}"
+                title="Создать обработчик"
+                aria-label="Создать обработчик"
+              >&#x2795;</button>
+            `;
+          return `
           <div class="property-row">
-            <label class="property-label">${escapeHtml(k)}</label>
+            <label class="property-label">${escapeHtml(evName)}</label>
             <input
               type="text"
               class="property-input"
               data-form-scope="event"
-              data-form-key="${escapeHtml(k)}"
+              data-form-key="${escapeHtml(evName)}"
               data-form-value-kind="primitive"
               data-form-doc-uri="${escapeHtml(selection.docUri)}"
               data-form-entity-type="${escapeHtml(selection.entityType)}"
-              data-form-entity-id="${escapeHtml(selection.id || '')}"
-              data-form-entity-name="${escapeHtml(selection.name || '')}"
+              data-form-entity-id="${escapeHtml(elementId)}"
+              data-form-entity-name="${escapeHtml(elementName)}"
               data-form-selection-revision="${String(currentFormSelectionRevision)}"
               value="${escapeHtml(v)}"
             />
+            ${actionButton}
           </div>
-        `).join('')}
+        `;
+        }).join('')}
       </div>
     `
     : '';
@@ -922,7 +960,7 @@ export function getFormSelectionWebviewContent(
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
       <title>Properties</title>
       <style>
         body {
@@ -961,6 +999,20 @@ export function getFormSelectionWebviewContent(
           cursor: pointer;
         }
         .edit-form-type-btn:hover {
+          background: var(--vscode-button-secondaryHoverBackground);
+        }
+        .event-action-btn {
+          border: none;
+          padding: 2px 6px;
+          background: var(--vscode-button-secondaryBackground);
+          color: var(--vscode-button-secondaryForeground);
+          cursor: pointer;
+          font-size: 14px;
+          line-height: 1;
+          border-radius: 2px;
+          flex-shrink: 0;
+        }
+        .event-action-btn:hover {
           background: var(--vscode-button-secondaryHoverBackground);
         }
         .property-section-title {
@@ -1031,6 +1083,27 @@ export function getFormSelectionWebviewContent(
               entityType: btn.dataset.formEntityType,
               entityId: btn.dataset.formEntityId || undefined,
               entityName: btn.dataset.formEntityName || undefined
+            });
+          });
+        });
+        document.querySelectorAll('.goto-event-handler-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            vscode.postMessage({
+              type: 'gotoEventHandler',
+              handlerName: btn.dataset.proc || '',
+              docUri: btn.dataset.docUri || ''
+            });
+          });
+        });
+        document.querySelectorAll('.create-event-handler-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            vscode.postMessage({
+              type: 'createEventHandler',
+              eventName: btn.dataset.event || '',
+              elementId: btn.dataset.elementId || '',
+              elementName: btn.dataset.elementName || '',
+              elementTag: btn.dataset.elementTag || '',
+              docUri: btn.dataset.docUri || ''
             });
           });
         });

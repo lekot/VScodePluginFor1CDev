@@ -41,6 +41,14 @@ export class PropertiesProvider {
       scope: 'property' | 'event';
       key: string;
       value: unknown;
+    }) => void,
+    private readonly onGotoEventHandler?: (payload: { docUri: string; handlerName: string }) => void,
+    private readonly onCreateEventHandler?: (payload: {
+      docUri: string;
+      elementId: string;
+      elementName: string;
+      elementTag: string;
+      eventName: string;
     }) => void
   ) {
     Logger.info('PropertiesProvider initialized');
@@ -93,11 +101,49 @@ export class PropertiesProvider {
     // For nested elements (Attributes), properties are already loaded from XML during parsing
     // Only reload from file for root elements that have a path to read (Configuration → Configuration.xml in configDir; Form → formXmlPath; else filePath).
 
+    // For Form nodes, parse Form.xml and show form-level properties with events
+    if (node.type === 'Form' && node.filePath) {
+      try {
+        const { getFormPaths } = await import('../formEditor/formPaths');
+        const { parseFormXml } = await import('../formEditor/formXmlParser');
+        const formXmlPath = getFormPaths(node.filePath).formXmlPath;
+        const { isFormParseError } = await import('../formEditor/formModel');
+        const parseResult = await parseFormXml(formXmlPath);
+        if (!isFormParseError(parseResult)) {
+          const model = parseResult.model;
+          const formEventsMap: Record<string, string> = {};
+          if (model.formEvents) {
+            for (const fe of model.formEvents) { formEventsMap[fe.name] = fe.method; }
+          }
+          // Extract top-level form properties for display
+          const formProps: Record<string, unknown> = {};
+          for (const field of model.topLevelFields ?? []) {
+            if (field && typeof field === 'object') {
+              const key = Object.keys(field as object).find(k => k !== ':@' && !k.startsWith('@'));
+              if (key) { formProps[key] = (field as Record<string, unknown>)[key]; }
+            }
+          }
+          await this.showFormSelectionProperties({
+            source: 'form-editor',
+            docUri: formXmlPath,
+            entityType: 'element',
+            id: '__form_root__',
+            name: node.name,
+            tag: 'Form',
+            properties: formProps,
+            events: formEventsMap,
+            selectedIds: ['__form_root__'],
+          });
+          return;
+        }
+      } catch (error) {
+        Logger.error(`Failed to parse Form.xml for tree node ${node.name}`, error);
+      }
+    }
+
     const pathToRead =
       getConfigurationXmlPathForNode(node, this.treeDataProvider.getConfigPathForNode.bind(this.treeDataProvider)) ??
-      (node.type === 'Form' && node.filePath
-        ? (await import('../formEditor/formPaths')).getFormPaths(node.filePath).formXmlPath
-        : node.filePath);
+      node.filePath;
 
     if (pathToRead && !node.parentFilePath) {
       try {
@@ -304,6 +350,8 @@ export class PropertiesProvider {
       treeDataProvider: this.treeDataProvider,
       typeEditorProvider: this.typeEditorProvider,
       onFormPropertyChanged: this.onFormPropertyChanged,
+      onGotoEventHandler: this.onGotoEventHandler,
+      onCreateEventHandler: this.onCreateEventHandler,
       postMessage: (msg) => this.postMessage(msg),
       updateWebviewContent: () => this.updateWebviewContent(),
       setIsSaving: (value) => { this._isSaving = value; },

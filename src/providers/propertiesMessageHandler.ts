@@ -30,6 +30,14 @@ export interface MessageHandlerContext {
     key: string;
     value: unknown;
   }) => void;
+  onGotoEventHandler?: (payload: { docUri: string; handlerName: string }) => void;
+  onCreateEventHandler?: (payload: {
+    docUri: string;
+    elementId: string;
+    elementName: string;
+    elementTag: string;
+    eventName: string;
+  }) => void;
   postMessage: (message: ExtensionMessage) => void;
   updateWebviewContent: () => void;
   setIsSaving: (value: boolean) => void;
@@ -69,6 +77,14 @@ export async function handleMessage(
 
       case 'editFormSelectionType':
         await handleEditFormSelectionTypeMessage(message, ctx);
+        break;
+
+      case 'gotoEventHandler':
+        handleGotoEventHandler(message, ctx);
+        break;
+
+      case 'createEventHandler':
+        handleCreateEventHandler(message, ctx);
         break;
 
       default:
@@ -609,6 +625,40 @@ export function parseDisplayTypeString(display: string): TypeDefinition | null {
     };
   }
   return null;
+}
+
+export function handleGotoEventHandler(
+  message: WebviewMessage,
+  ctx: MessageHandlerContext
+): void {
+  if (message.type !== 'gotoEventHandler') {
+    return;
+  }
+  if (!ctx.onGotoEventHandler) {
+    Logger.warn('gotoEventHandler: no callback registered');
+    return;
+  }
+  ctx.onGotoEventHandler({ docUri: message.docUri, handlerName: message.handlerName });
+}
+
+export function handleCreateEventHandler(
+  message: WebviewMessage,
+  ctx: MessageHandlerContext
+): void {
+  if (message.type !== 'createEventHandler') {
+    return;
+  }
+  if (!ctx.onCreateEventHandler) {
+    Logger.warn('createEventHandler: no callback registered');
+    return;
+  }
+  ctx.onCreateEventHandler({
+    docUri: message.docUri,
+    elementId: message.elementId,
+    elementName: message.elementName,
+    elementTag: message.elementTag,
+    eventName: message.eventName,
+  });
 }
 
 export function isMatchingCurrentFormSelection(

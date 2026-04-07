@@ -97,6 +97,12 @@ function parseEventsContent(content: unknown[] | undefined): FormEventItem[] {
     const evContent = Array.isArray(evContentRaw) ? evContentRaw : [evContentRaw];
     let name: string | undefined;
     let method = '';
+    // preserveOrder:true puts attrs on the outer wrapper
+    const outerAt = o[':@'];
+    if (outerAt && typeof outerAt === 'object' && !Array.isArray(outerAt)) {
+      const atObj = outerAt as Record<string, unknown>;
+      if (typeof atObj['@_name'] === 'string') {name = atObj['@_name'];}
+    }
     for (const ev of evContent) {
       if (!ev || typeof ev !== 'object') {continue;}
       const e = ev as Record<string, unknown>;
@@ -375,10 +381,10 @@ function parseRootChildItems(formContent: unknown[]): FormChildItem[] {
 }
 
 /**
- * Parse AutoCommandBar at form root: returns { name?, id? }.
- * AutoCommandBar is a single element with attributes name and/or id.
+ * Parse AutoCommandBar at form root as a full FormChildItem.
+ * Returns null when not found.
  */
-function parseAutoCommandBar(formContent: unknown[]): { name?: string; id?: string } {
+function parseAutoCommandBar(formContent: unknown[]): FormChildItem | null {
   for (const item of formContent) {
     if (!item || typeof item !== 'object') {continue;}
     const o = item as Record<string, unknown>;
@@ -386,9 +392,30 @@ function parseAutoCommandBar(formContent: unknown[]): { name?: string; id?: stri
     if (autoBar === undefined) {continue;}
     const arr = Array.isArray(autoBar) ? autoBar : [autoBar];
     const { name, id } = getAttrsFromContent(arr);
-    return { name, id };
+    const childItemsContent = findKeyInArray(arr, 'ChildItems');
+    const childItems = parseChildItemsArray(childItemsContent);
+    const eventsContent = findKeyInArray(arr, 'Events');
+    const eventList = parseEventsContent(eventsContent as unknown[]);
+    const eventsMap: Record<string, string> = {};
+    for (const e of eventList) {eventsMap[e.name] = e.method;}
+    const properties: Record<string, unknown> = {};
+    for (const prop of arr) {
+      if (!prop || typeof prop !== 'object') {continue;}
+      const p = prop as Record<string, unknown>;
+      const k = Object.keys(p)[0];
+      if (!k || k.startsWith('@') || k === '#text' || k === 'ChildItems' || k === 'Events') {continue;}
+      properties[k] = p[k];
+    }
+    return {
+      tag: 'AutoCommandBar',
+      id,
+      name: name ?? 'ФормаКоманднаяПанель',
+      properties,
+      childItems,
+      events: Object.keys(eventsMap).length > 0 ? eventsMap : undefined,
+    };
   }
-  return {};
+  return null;
 }
 
 /**
@@ -476,7 +503,7 @@ export async function parseFormXml(
   const commandSetFirstClassLossless = commandSetSection
     ? isCommandSetFirstClassLossless(commandSetSection.content, excludedCommands)
     : true;
-  const autoCommandBar = parseAutoCommandBar(formContent);
+  const autoCommandBarItem = parseAutoCommandBar(formContent);
   const model: FormModel = {
     childItemsRoot: parseRootChildItems(formContent),
     attributes: parseAttributesSection(formContent),
@@ -484,8 +511,9 @@ export async function parseFormXml(
     parameters,
     excludedCommands,
     formEvents: parseFormEventsSection(formContent),
-    autoCommandBarName: autoCommandBar.name,
-    autoCommandBarId: autoCommandBar.id,
+    autoCommandBarName: autoCommandBarItem?.name,
+    autoCommandBarId: autoCommandBarItem?.id,
+    autoCommandBar: autoCommandBarItem ?? undefined,
     parametersFirstClassLossless,
     commandSetFirstClassLossless,
   };

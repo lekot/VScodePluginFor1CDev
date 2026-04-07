@@ -357,3 +357,15 @@ export function applyDeleteCommand(model: FormModel, key: string): CommandResult
   model.commands.splice(idx, 1);
   return { ok: true };
 }
+
+/** Add a form-level event handler binding. */
+export function applyAddFormEvent(
+  model: FormModel,
+  eventName: string,
+  methodName: string
+): void {
+  if (!model.formEvents) {
+    model.formEvents = [];
+  }
+  model.formEvents.push({ name: eventName, method: methodName });
+}
