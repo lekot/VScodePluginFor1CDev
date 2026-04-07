@@ -1098,6 +1098,13 @@ function buildWebviewJs(): string {
     var EVENT_CATALOG = ${JSON.stringify(FORM_EVENT_CATALOG)};
     var FORM_LEVEL_EVENTS_LIST = ${JSON.stringify(FORM_LEVEL_EVENTS)};
     let formModel = null;
+    /** Returns AutoCommandBar (if present) prepended to childItemsRoot for display purposes. */
+    function getDisplayItems() {
+      if (!formModel) return [];
+      var items = formModel.childItemsRoot || [];
+      if (formModel.autoCommandBar) return [formModel.autoCommandBar].concat(items);
+      return items;
+    }
     let selectedIds = [];
     let anchorId = null;
     let clipboardBuffer = null;
@@ -1163,7 +1170,7 @@ function buildWebviewJs(): string {
       var t = String(s);
       return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
-    var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
+    var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','CommandBar','Form','Group','CollapsibleGroup']);
     var FORM_ROOT_ID = '__form_root__';
     var expandedIds = new Set();
     /** Per-Pages active tab: key = Pages item id or name (stable within preview session). */
@@ -1596,7 +1603,7 @@ function buildWebviewJs(): string {
           if (String(activePageIdByPagesKey[pagesKey]) === String(pid)) return;
           activePageIdByPagesKey[pagesKey] = pid;
           var root = document.getElementById('preview-form');
-          if (formModel && formModel.childItemsRoot && root) renderPreview(formModel.childItemsRoot, root);
+          if (formModel && formModel.childItemsRoot && root) renderPreview(getDisplayItems(), root);
         });
         tablist.appendChild(tab);
       });
@@ -1810,7 +1817,7 @@ function buildWebviewJs(): string {
           var ctrl = e.ctrlKey || e.metaKey;
           var shift = e.shiftKey;
           if (shift && anchorId != null) {
-            var flat = getFlatVisibleIds(formModel.childItemsRoot, expandedIds, null);
+            var flat = getFlatVisibleIds(getDisplayItems(), expandedIds, null);
             var anchorIdx = flat.indexOf(anchorId);
             var clickIdx = flat.indexOf(id);
             if (anchorIdx >= 0 && clickIdx >= 0) {
@@ -1889,8 +1896,9 @@ function buildWebviewJs(): string {
         vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: FORM_ROOT_ID, index: 0 });
       };
       treeRoot.appendChild(rootDiv);
-      var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: formModel.childItemsRoot };
-      renderTree(formModel.childItemsRoot, rootDiv, syntheticFormItem);
+      var displayItems = getDisplayItems();
+      var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: displayItems };
+      renderTree(displayItems, rootDiv, syntheticFormItem);
     }
 
     function createPreviewControl(item, tag) {
@@ -2172,7 +2180,9 @@ function buildWebviewJs(): string {
         }
         return null;
       };
-      return find(model.childItemsRoot || []);
+      var rootItems = model.childItemsRoot || [];
+      if (model.autoCommandBar) rootItems = [model.autoCommandBar].concat(rootItems);
+      return find(rootItems);
     }
     function findParentAndIndex(root, elementId) {
       if (!root || !elementId) return null;
@@ -2804,6 +2814,7 @@ function buildWebviewJs(): string {
       html += '<div class="prop-row"><label>Тип</label> <span class="fe-badge">' + esc(el.tag || '') + '</span></div>';
       html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="prop-name" value="' + esc(el.name) + '"></div></div>';
       html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="prop-id" value="' + esc(el.id) + '"></div></div></div>';
+      try {
       if (el.properties && typeof el.properties === 'object' && Object.keys(el.properties).some(function(k) { return k !== ':@' && !k.startsWith('@'); })) {
         html += '<div class="props-block"><p class="props-block-title">Свойства</p>';
         for (var k in el.properties) {
@@ -2814,8 +2825,10 @@ function buildWebviewJs(): string {
         }
         html += '</div>';
       }
+      } catch (propsErr) { console.error('renderProps properties error:', propsErr); }
       var isFormRoot = (el.id === FORM_ROOT_ID || el.tag === 'Form');
       var catalogEvents = isFormRoot ? FORM_LEVEL_EVENTS_LIST : (EVENT_CATALOG[el.tag] || []);
+      console.log('[CDT debug] renderProps events: tag=' + el.tag + ' catalogEvents=' + catalogEvents.length + ' assignedKeys=' + Object.keys(el.events || {}).length);
       var assignedEvents = el.events || {};
       var extraEvents = [];
       if (assignedEvents) {
@@ -3169,11 +3182,12 @@ function buildWebviewJs(): string {
         } else {
           treeEmpty.style.display = 'none';
           expandedIds = new Set();
-          if (formModel && formModel.childItemsRoot) collectContainerIds(formModel.childItemsRoot, expandedIds);
-          if (formModel && formModel.childItemsRoot && formModel.childItemsRoot.length) {
+          if (formModel && formModel.childItemsRoot) collectContainerIds(getDisplayItems(), expandedIds);
+          var displayItemsForRender = getDisplayItems();
+          if (formModel && displayItemsForRender.length) {
             renderTreeWithRoot(treeRoot);
             applyTreeSelection();
-            renderPreview(formModel.childItemsRoot, document.getElementById('preview-form'));
+            renderPreview(displayItemsForRender, document.getElementById('preview-form'));
           } else {
             treeRoot.textContent = 'Нет элементов';
             var pf = document.getElementById('preview-form');

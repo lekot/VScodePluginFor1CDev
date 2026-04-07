@@ -139,7 +139,7 @@ suite('form webview Pages/Page preview (1CVIEWER-36 block 2 phase A)', () => {
       'no full re-render when clicking already active tab'
     );
     assert.ok(
-      html.includes('renderPreview(formModel.childItemsRoot, root);'),
+      html.includes('renderPreview(getDisplayItems(), root);'),
       'full preview refresh after tab change'
     );
   });

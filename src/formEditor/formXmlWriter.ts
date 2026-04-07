@@ -151,19 +151,25 @@ export function buildFormContent(model: FormModel): unknown[] {
   } else if (rawCommandSet) {
     formContent.push({ [rawCommandSet.tag]: rawCommandSet.content });
   }
-  const autoCommandBarName = model.autoCommandBarName !== undefined && model.autoCommandBarName !== ''
-    ? model.autoCommandBarName
-    : 'ФормаКоманднаяПанель';
-  const autoCommandBarId = model.autoCommandBarId !== undefined && model.autoCommandBarId !== ''
-    ? model.autoCommandBarId
-    : '-1';
-  formContent.push({
-    AutoCommandBar: [],
-    ':@': {
-      '@_name': autoCommandBarName,
-      '@_id': autoCommandBarId,
-    },
-  });
+  if (model.autoCommandBar) {
+    formContent.push(buildChildItem(model.autoCommandBar));
+  } else {
+    // Always write AutoCommandBar — it is mandatory in 1C form XML.
+    // Use metadata from model when available, fall back to defaults.
+    const autoCommandBarName = (model.autoCommandBarName !== undefined && model.autoCommandBarName !== '')
+      ? model.autoCommandBarName
+      : 'ФормаКоманднаяПанель';
+    const autoCommandBarId = (model.autoCommandBarId !== undefined && model.autoCommandBarId !== '')
+      ? model.autoCommandBarId
+      : '-1';
+    formContent.push({
+      AutoCommandBar: [],
+      ':@': {
+        '@_name': autoCommandBarName,
+        '@_id': autoCommandBarId,
+      },
+    });
+  }
   if (model.formEvents && model.formEvents.length) {
     formContent.push({ Events: buildEventsArray(model.formEvents) });
   }
