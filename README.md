@@ -333,13 +333,6 @@ Workspace → FormatDetector → MetadataParser → TreeNode → TreeDataProvide
 
 Детальная карта каталогов `src/`, сервисов и тестов: [docs/architecture.md](docs/architecture.md).
 
-### Документация для разработчиков
-
-- [docs/documentation-map.md](docs/documentation-map.md) — порядок чтения (исследование → критерии → планы → код)
-- [docs/developer-backlog.md](docs/developer-backlog.md) — приоритетный backlog с ссылками на GitHub issues
-- [docs/manifest.md](docs/manifest.md) — контракт изменений на диске
-- [docs/plans/issue-bsl-common-module-tree-plan.md](docs/plans/issue-bsl-common-module-tree-plan.md) — план по дереву общих модулей / BSL (#21, #25)
-- [DEVELOPING.md](DEVELOPING.md) — сборка и тесты
 
 ## Производительность
 
