@@ -354,7 +354,6 @@ Workspace → FormatDetector → MetadataParser → TreeNode → TreeDataProvide
 ## Лицензия
 
 [MIT](LICENSE) - делайте с этим кодом все, что захотите, Open Source, but AS IS. 
-Донаты приветствуются в виде опен-роутер/антропик токенов
 
 
 ## Поддержка
