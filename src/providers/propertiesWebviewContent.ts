@@ -12,6 +12,7 @@ import {
 import { getPropertyEnumValues } from '../constants/propertyEnumValues';
 import { MESSAGES } from '../constants/messages';
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
+import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from '../formEditor/formEventCatalog';
 
 /**
  * Escape HTML to prevent XSS
@@ -821,7 +822,6 @@ export function getFormSelectionWebviewContent(
   const entries = Object.entries(props)
     .filter(([k]) => k !== ':@' && !k.startsWith('@'))
     .slice(0, 24);
-  const events = Object.entries(selection.events || {});
   const lines = isMultiSelection
     ? `
       <div class="empty-state">
@@ -890,18 +890,27 @@ export function getFormSelectionWebviewContent(
         `;
       }).join('')
     : '<div class="empty-state"><p>Нет доступных свойств для отображения.</p></div>';
-  const eventLines = !isMultiSelection && events.length
+  const tag = selection.tag || '';
+  const catalogEvents: readonly string[] = tag === 'Form'
+    ? FORM_LEVEL_EVENTS
+    : (FORM_EVENT_CATALOG[tag] || []);
+  const assignedEvents: Record<string, string> = selection.events || {};
+  const extraEvents = Object.keys(assignedEvents).filter(k => !catalogEvents.includes(k));
+  const allEventNames = [...catalogEvents, ...extraEvents];
+  const eventLines = !isMultiSelection && allEventNames.length
     ? `
       <div class="property-section">
         <div class="property-section-title">События</div>
-        ${events.map(([k, v]) => `
+        ${allEventNames.map(evName => {
+          const v = assignedEvents[evName] || '';
+          return `
           <div class="property-row">
-            <label class="property-label">${escapeHtml(k)}</label>
+            <label class="property-label">${escapeHtml(evName)}</label>
             <input
               type="text"
               class="property-input"
               data-form-scope="event"
-              data-form-key="${escapeHtml(k)}"
+              data-form-key="${escapeHtml(evName)}"
               data-form-value-kind="primitive"
               data-form-doc-uri="${escapeHtml(selection.docUri)}"
               data-form-entity-type="${escapeHtml(selection.entityType)}"
@@ -911,7 +920,8 @@ export function getFormSelectionWebviewContent(
               value="${escapeHtml(v)}"
             />
           </div>
-        `).join('')}
+        `;
+        }).join('')}
       </div>
     `
     : '';
