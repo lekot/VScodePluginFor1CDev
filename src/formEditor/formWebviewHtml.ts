@@ -1166,7 +1166,7 @@ function buildWebviewJs(): string {
       var t = String(s);
       return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
-    var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','Form','Group','CollapsibleGroup']);
+    var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','CommandBar','Form','Group','CollapsibleGroup']);
     var FORM_ROOT_ID = '__form_root__';
     var expandedIds = new Set();
     /** Per-Pages active tab: key = Pages item id or name (stable within preview session). */
@@ -1451,7 +1451,8 @@ function buildWebviewJs(): string {
         'Ориентация',
         'Группировка'
       ]);
-      var orientation = isPagesRoot ? 'vertical' : (normalizeContainerOrientation(rawOrientation) || 'vertical');
+      var isCommandBar = (tag === 'AutoCommandBar' || tag === 'CommandBar');
+      var orientation = isPagesRoot ? 'vertical' : isCommandBar ? 'horizontal' : (normalizeContainerOrientation(rawOrientation) || 'vertical');
       var rawIndent = getLayoutPropertyValueByAliases(props, [
         'IndentChildren',
         'ShouldIndentChildren',
@@ -1892,8 +1893,9 @@ function buildWebviewJs(): string {
         vscode.postMessage({ type: 'dragDrop', sourceId: srcId, targetId: FORM_ROOT_ID, index: 0 });
       };
       treeRoot.appendChild(rootDiv);
-      var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: formModel.childItemsRoot };
-      renderTree(formModel.childItemsRoot, rootDiv, syntheticFormItem);
+      var displayItems = getDisplayItems();
+      var syntheticFormItem = { tag: 'Form', id: FORM_ROOT_ID, name: 'Form', properties: {}, childItems: displayItems };
+      renderTree(displayItems, rootDiv, syntheticFormItem);
     }
 
     function createPreviewControl(item, tag) {
