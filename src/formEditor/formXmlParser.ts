@@ -97,6 +97,12 @@ function parseEventsContent(content: unknown[] | undefined): FormEventItem[] {
     const evContent = Array.isArray(evContentRaw) ? evContentRaw : [evContentRaw];
     let name: string | undefined;
     let method = '';
+    // preserveOrder:true puts attrs on the outer wrapper
+    const outerAt = o[':@'];
+    if (outerAt && typeof outerAt === 'object' && !Array.isArray(outerAt)) {
+      const atObj = outerAt as Record<string, unknown>;
+      if (typeof atObj['@_name'] === 'string') {name = atObj['@_name'];}
+    }
     for (const ev of evContent) {
       if (!ev || typeof ev !== 'object') {continue;}
       const e = ev as Record<string, unknown>;

@@ -96,16 +96,16 @@ function buildChildItem(item: FormChildItem): Record<string, unknown> {
     if (value === undefined) {continue;}
     content.push({ [k]: value });
   }
-  if (item.childItems && item.childItems.length) {
-    content.push({
-      ChildItems: item.childItems.map((c) => buildChildItem(c)),
-    });
-  }
   if (item.events && Object.keys(item.events).length) {
     content.push({
       Events: buildEventsArray(
         Object.entries(item.events).map(([name, method]) => ({ name, method }))
       ),
+    });
+  }
+  if (item.childItems && item.childItems.length) {
+    content.push({
+      ChildItems: item.childItems.map((c) => buildChildItem(c)),
     });
   }
   const wrap: Record<string, unknown> = { [item.tag]: content };

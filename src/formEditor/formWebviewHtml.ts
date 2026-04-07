@@ -2106,7 +2106,6 @@ function buildWebviewJs(): string {
             return;
           }
           var srcId = e.dataTransfer.getData('text/plain');
-          console.log('[CDT drop]', { srcId: srcId, targetId: id, isContainer: isContainer, tag: tag });
           if (!srcId || srcId === id) return;
           if (!isContainer) return;
           if (formModel && formModel.childItemsRoot && isDescendantOfItem(formModel.childItemsRoot, srcId, id)) return;
@@ -2178,7 +2177,10 @@ function buildWebviewJs(): string {
         }
         return null;
       };
-      return find(model.childItemsRoot || []);
+      var found = find(model.childItemsRoot || []);
+      if (found) return found;
+      if (model.autoCommandBar) return find([model.autoCommandBar]);
+      return null;
     }
     function findParentAndIndex(root, elementId) {
       if (!root || !elementId) return null;
@@ -2820,65 +2822,13 @@ function buildWebviewJs(): string {
         }
         html += '</div>';
       }
-      var isFormRoot = (el.id === FORM_ROOT_ID || el.tag === 'Form');
-      var catalogEvents = isFormRoot ? FORM_LEVEL_EVENTS_LIST : (EVENT_CATALOG[el.tag] || []);
-      var assignedEvents = el.events || {};
-      var extraEvents = [];
-      if (assignedEvents) {
-        for (var ek in assignedEvents) {
-          if (catalogEvents.indexOf(ek) === -1) extraEvents.push(ek);
-        }
-      }
-      var allEventNames = catalogEvents.concat(extraEvents);
-      if (allEventNames.length > 0) {
-        html += '<div class="props-block"><p class="props-block-title">События</p>';
-        for (var ei = 0; ei < allEventNames.length; ei++) {
-          var evName = allEventNames[ei];
-          var methodName = assignedEvents[evName] || '';
-          var hasHandler = methodName.length > 0;
-          html += '<div class="prop-row"><label>' + esc(evName) + '</label> <div class="prop-input-wrap"><input class="event-method-input" data-event="' + esc(evName) + '" value="' + esc(methodName) + '" placeholder="&lt;Нет&gt;"></div> ';
-          if (hasHandler) {
-            html += '<button type="button" class="btn-goto-proc" data-proc="' + esc(methodName) + '" title="Перейти к процедуре">&#x1F50D;</button>';
-          } else {
-            html += '<button type="button" class="btn-create-handler" data-event="' + esc(evName) + '" title="Создать обработчик">&#x2795;</button>';
-          }
-          html += '</div>';
-        }
-        html += '</div>';
-      }
       content.innerHTML = html;
       content.style.display = 'block';
       content.querySelectorAll('input').forEach(inp => {
         inp.addEventListener('change', () => {
           var elementId = el.id || el.name;
-          if (inp.classList.contains('event-method-input') && inp.dataset.event) {
-            vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'events', key: inp.dataset.event, value: inp.value });
-            return;
-          }
           const key = inp.dataset.key ? inp.dataset.key : (inp.id ? inp.id.replace('prop-', '') : null);
           if (key) vscode.postMessage({ type: 'propertyChange', elementId: elementId, key: key, value: inp.value });
-        });
-      });
-      content.querySelectorAll('.btn-goto-proc').forEach(btn => {
-        btn.addEventListener('click', function() {
-          var row = this.closest('.prop-row');
-          var input = row ? row.querySelector('.event-method-input') : null;
-          var proc = (input && input.value && input.value.trim()) ? input.value.trim() : (this.dataset.proc || '');
-          if (proc) vscode.postMessage({ type: 'openModule', procedureName: proc });
-        });
-      });
-      content.querySelectorAll('.btn-create-handler').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-          var evName = this.dataset.event;
-          if (evName) {
-            vscode.postMessage({
-              type: 'createEventHandler',
-              elementId: el.id || el.name,
-              elementName: el.name,
-              tag: el.tag,
-              eventName: evName
-            });
-          }
         });
       });
     }

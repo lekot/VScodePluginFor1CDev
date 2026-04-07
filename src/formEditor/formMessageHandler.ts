@@ -902,25 +902,25 @@ export async function handleCreateEventHandler(
     }
 
     // Verify element exists before writing BSL to avoid orphaned procedures
+    let targetEl: FormChildItem | undefined;
     if (!isFormLevel) {
-      const el = findElementById(model.childItemsRoot, elementId);
-      if (!el) {
+      targetEl = findElementById(model.childItemsRoot, elementId);
+      if (!targetEl) {
         Logger.warn(`createEventHandler: element ${elementId} not found in model`);
         return;
       }
     }
 
-    await createHandlerInModule(modulePath, resolvedName, eventName);
+    await createHandlerInModule(modulePath, resolvedName, eventName, isFormLevel);
 
     if (isFormLevel) {
       applyAddFormEvent(model, eventName, resolvedName);
     } else {
-      const el = findElementById(model.childItemsRoot, elementId);
-      if (el) {
-        if (!el.events) {
-          el.events = {};
+      if (targetEl) {
+        if (!targetEl.events) {
+          targetEl.events = {};
         }
-        el.events[eventName] = resolvedName;
+        targetEl.events[eventName] = resolvedName;
       }
     }
 

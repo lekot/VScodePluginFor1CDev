@@ -39,12 +39,12 @@ suite('formEventHandlerCreator — createHandlerInModule', () => {
     const filePath = uniqueTmp('handler-new');
     tempFiles.push(filePath);
 
-    const result = await createHandlerInModule(filePath, 'ПриОткрытии', 'OnOpen');
+    const result = await createHandlerInModule(filePath, 'ПриОткрытии', 'OnOpen', true);
 
     assert.ok(fs.existsSync(filePath), 'file must be created');
     const content = await fs.promises.readFile(filePath, { encoding: 'utf8' });
     assert.ok(content.startsWith('\uFEFF'), 'file must start with BOM');
-    assert.ok(content.includes('Процедура ПриОткрытии('), 'must contain procedure declaration');
+    assert.ok(content.includes('Процедура ПриОткрытии(Отказ)'), 'must contain procedure declaration with params');
     assert.ok(content.includes('КонецПроцедуры'), 'must contain КонецПроцедуры');
     assert.ok(result.line > 0, 'returned line number must be > 0');
   });
@@ -61,11 +61,11 @@ suite('formEventHandlerCreator — createHandlerInModule', () => {
     await fs.promises.writeFile(filePath, initialContent, { encoding: 'utf8' });
     const originalLineCount = initialContent.split(/\r?\n/).length;
 
-    const result = await createHandlerInModule(filePath, 'КонтрагентПриИзменении', 'OnChange');
+    const result = await createHandlerInModule(filePath, 'КонтрагентПриИзменении', 'OnChange', false);
 
     const content = await fs.promises.readFile(filePath, { encoding: 'utf8' });
     assert.ok(content.includes('// existing module content'), 'original content must be preserved');
-    assert.ok(content.includes('Процедура КонтрагентПриИзменении('), 'new procedure must be appended');
+    assert.ok(content.includes('Процедура КонтрагентПриИзменении(Элемент)'), 'new procedure must be appended with params');
     assert.ok(result.line > originalLineCount, 'new procedure line must be after original content');
   });
 
@@ -77,7 +77,7 @@ suite('formEventHandlerCreator — createHandlerInModule', () => {
     const filePath = uniqueTmp('handler-server');
     tempFiles.push(filePath);
 
-    await createHandlerInModule(filePath, 'ПриСозданииНаСервере', 'OnCreateAtServer');
+    await createHandlerInModule(filePath, 'ПриСозданииНаСервере', 'OnCreateAtServer', true);
 
     const content = await fs.promises.readFile(filePath, { encoding: 'utf8' });
     assert.ok(content.includes('&НаСервере'), 'must contain &НаСервере for server event');
@@ -88,7 +88,7 @@ suite('formEventHandlerCreator — createHandlerInModule', () => {
     const filePath = uniqueTmp('handler-client');
     tempFiles.push(filePath);
 
-    await createHandlerInModule(filePath, 'ПриИзменении', 'OnChange');
+    await createHandlerInModule(filePath, 'ПриИзменении', 'OnChange', false);
 
     const content = await fs.promises.readFile(filePath, { encoding: 'utf8' });
     assert.ok(content.includes('&НаКлиенте'), 'must contain &НаКлиенте for client event');
@@ -103,8 +103,8 @@ suite('formEventHandlerCreator — createHandlerInModule', () => {
     const filePath = uniqueTmp('handler-two');
     tempFiles.push(filePath);
 
-    await createHandlerInModule(filePath, 'ПервыйОбработчик', 'OnOpen');
-    await createHandlerInModule(filePath, 'ВторойОбработчик', 'OnChange');
+    await createHandlerInModule(filePath, 'ПервыйОбработчик', 'OnOpen', true);
+    await createHandlerInModule(filePath, 'ВторойОбработчик', 'OnChange', false);
 
     const content = await fs.promises.readFile(filePath, { encoding: 'utf8' });
     assert.ok(content.includes('Процедура ПервыйОбработчик('), 'first procedure must be present');

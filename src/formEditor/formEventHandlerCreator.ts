@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
-import { getDirective } from './formEventCatalog';
+import * as path from 'path';
+import { getDirective, getEventParams } from './formEventCatalog';
 
 const CRLF = '\r\n';
 
@@ -18,11 +19,14 @@ const CRLF = '\r\n';
 export async function createHandlerInModule(
     modulePath: string,
     handlerName: string,
-    eventName: string
+    eventName: string,
+    isFormLevel: boolean
 ): Promise<{ line: number }> {
-    // Step 1: ensure file exists; create with BOM if it does not.
+    // Step 1: ensure directory and file exist; create with BOM if it does not.
     const fileExists = await fs.access(modulePath).then(() => true, () => false);
     if (!fileExists) {
+        const dir = path.dirname(modulePath);
+        await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(modulePath, '\uFEFF', { encoding: 'utf8' });
     }
 
@@ -31,10 +35,11 @@ export async function createHandlerInModule(
 
     // Step 3: build the procedure stub with CRLF line endings.
     const directive = getDirective(eventName);
+    const params = getEventParams(eventName, isFormLevel);
     const stub =
         CRLF +
         directive + CRLF +
-        `Процедура ${handlerName}()` + CRLF +
+        `Процедура ${handlerName}(${params})` + CRLF +
         `\t// TODO: обработчик события` + CRLF +
         `КонецПроцедуры` + CRLF;
 
