@@ -137,6 +137,7 @@ export class PropertiesProvider {
   public async showFormSelectionProperties(
     selection: FormSelectionPayload | undefined
   ): Promise<void> {
+    Logger.info(`showFormSelectionProperties called: ${selection ? selection.name + '/' + selection.tag : 'undefined'}`);
     this.currentFormSelection = selection ?? null;
     this.currentFormSelectionRevision += 1;
     this.currentNode = undefined;
