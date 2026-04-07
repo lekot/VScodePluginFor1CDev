@@ -49,4 +49,4 @@
 
 ## Что пока делают в EDT или конфигураторе
 
-- СКД, конструктор запросов, отладка уровня платформы, полный паритет редакторов — см. [cdt-vs-edt-functional-gap.md](./cdt-vs-edt-functional-gap.md) и целевые уровни [edt-killer-target.md](./edt-killer-target.md).
+- СКД, конструктор запросов, полный паритет редакторов — см. [cdt-vs-edt-functional-gap.md](./cdt-vs-edt-functional-gap.md) и целевые уровни [edt-killer-target.md](./edt-killer-target.md).
