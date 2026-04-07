@@ -840,7 +840,10 @@ function handleSelectElement(
     return;
   }
 
-  const element = findElementById(model.childItemsRoot, targetId);
+  let element = findElementById(model.childItemsRoot, targetId);
+  if (!element && model.autoCommandBar) {
+    element = findElementById([model.autoCommandBar], targetId);
+  }
   if (!element) {
     ctx.onFormSelectionChanged(undefined);
     return;
