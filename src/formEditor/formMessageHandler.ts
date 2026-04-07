@@ -858,7 +858,7 @@ function handleSelectElement(
   });
 }
 
-async function handleCreateEventHandler(
+export async function handleCreateEventHandler(
   ctx: MessageHandlerContext,
   msg: Record<string, unknown>
 ): Promise<void> {

@@ -27,7 +27,20 @@ export type WebviewMessage =
       entityId?: string;
       entityName?: string;
     }
-  | { type: 'editType'; propertyName: string };
+  | { type: 'editType'; propertyName: string }
+  | {
+      type: 'gotoEventHandler';
+      handlerName: string;
+      docUri: string;
+    }
+  | {
+      type: 'createEventHandler';
+      eventName: string;
+      elementId: string;
+      elementName: string;
+      elementTag: string;
+      docUri: string;
+    };
 
 /**
  * Message types sent from extension to webview (discriminated union for type safety)
@@ -55,6 +68,6 @@ export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
 
-  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editFormSelectionType'];
+  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler'];
   return validTypes.includes(m.type);
 }

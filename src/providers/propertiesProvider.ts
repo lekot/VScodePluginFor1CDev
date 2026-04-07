@@ -41,6 +41,14 @@ export class PropertiesProvider {
       scope: 'property' | 'event';
       key: string;
       value: unknown;
+    }) => void,
+    private readonly onGotoEventHandler?: (payload: { docUri: string; handlerName: string }) => void,
+    private readonly onCreateEventHandler?: (payload: {
+      docUri: string;
+      elementId: string;
+      elementName: string;
+      elementTag: string;
+      eventName: string;
     }) => void
   ) {
     Logger.info('PropertiesProvider initialized');
@@ -304,6 +312,8 @@ export class PropertiesProvider {
       treeDataProvider: this.treeDataProvider,
       typeEditorProvider: this.typeEditorProvider,
       onFormPropertyChanged: this.onFormPropertyChanged,
+      onGotoEventHandler: this.onGotoEventHandler,
+      onCreateEventHandler: this.onCreateEventHandler,
       postMessage: (msg) => this.postMessage(msg),
       updateWebviewContent: () => this.updateWebviewContent(),
       setIsSaving: (value) => { this._isSaving = value; },
