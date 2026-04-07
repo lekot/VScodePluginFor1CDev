@@ -584,6 +584,9 @@ function buildWebviewCss(): string {
     .preview-input { flex: 1; min-width: 120px; padding: 4px 8px; font-size: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid color-mix(in srgb, var(--vscode-input-border) 82%, var(--vscode-focusBorder) 18%); border-radius: 6px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
     .preview-button { padding: var(--fe-spacing-xs) var(--fe-spacing-md); font-size: inherit; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: var(--fe-radius-btn); cursor: default; }
     .preview-label { color: var(--vscode-foreground); padding: 1px 0; }
+    .preview-label-decoration { font-style: italic; color: var(--vscode-textLink-foreground); cursor: pointer; }
+    .preview-picture-decoration { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border: 1px dashed var(--vscode-editorWidget-border); border-radius: 4px; font-size: 20px; opacity: 0.6; }
+    .preview-commandbar { display: flex; flex-direction: row; gap: 4px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-toolbar-hoverBackground); border-radius: 4px; margin-bottom: 4px; min-height: 28px; }
     .preview-check { width: 15px; height: 15px; accent-color: var(--vscode-focusBorder); }
     .preview-radio-stack { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-md); align-items: center; }
     .preview-radio-option { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
@@ -1264,7 +1267,6 @@ function buildWebviewJs(): string {
       return normalizeTitleLocation(raw);
     }
     var RARE_TAG_FALLBACKS = new Set([
-      'RadioButtonField',
       'TrackBarField',
       'ProgressBarField',
       'TextDocumentField',
@@ -1313,6 +1315,7 @@ function buildWebviewJs(): string {
     }
     function normalizeLayoutKey(k) { return String(k || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
     function toScalarLayoutValue(v) {
+      if (Array.isArray(v)) return toScalarLayoutValue(v[0]);
       if (v == null) return '';
       if (typeof v === 'string') return v.trim();
       if (typeof v === 'number' || typeof v === 'boolean') return String(v).trim();
@@ -1918,7 +1921,7 @@ function buildWebviewJs(): string {
         lblCb.textContent = label || '\u2014';
         wrap.appendChild(lblCb);
         wrap.appendChild(cb);
-      } else if (tag === 'RadioButton') {
+      } else if (tag === 'RadioButton' || tag === 'RadioButtonField') {
         wrap.className = 'preview-control-wrap preview-field-row';
         var radioLabel = document.createElement('span');
         radioLabel.className = 'preview-field-label';
@@ -2008,6 +2011,11 @@ function buildWebviewJs(): string {
         if (pageTitle.textContent) pageBlock.appendChild(pageTitle);
         wrap.appendChild(pageBlock);
         wrap._mockupChildContainer = pageBlock;
+      } else if (tag === 'AutoCommandBar' || tag === 'CommandBar') {
+        var cmdBar = document.createElement('div');
+        cmdBar.className = 'preview-commandbar';
+        wrap.appendChild(cmdBar);
+        wrap._mockupChildContainer = cmdBar;
       } else if (isContainerTag(tag)) {
         var groupBlock = document.createElement('div');
         groupBlock.className = 'preview-group-block';
@@ -2019,6 +2027,16 @@ function buildWebviewJs(): string {
         }
         wrap.appendChild(groupBlock);
         wrap._mockupChildContainer = groupBlock;
+      } else if (tag === 'LabelDecoration') {
+        var lblDec = document.createElement('span');
+        lblDec.className = 'preview-label preview-label-decoration';
+        lblDec.textContent = label || '\u2014';
+        wrap.appendChild(lblDec);
+      } else if (tag === 'PictureDecoration') {
+        var picDec = document.createElement('span');
+        picDec.className = 'preview-picture-decoration';
+        picDec.textContent = '\uD83D\uDDBC';
+        wrap.appendChild(picDec);
       } else if (RARE_TAG_FALLBACKS.has(tag)) {
         wrap.appendChild(createRareTagFallbackWidget(label, tag));
       } else {
@@ -2039,6 +2057,8 @@ function buildWebviewJs(): string {
         return;
       }
       items.forEach(function(item) {
+        var visibleRaw = getLayoutPropertyValueByAliases(item.properties || {}, ['Visible', 'visible']);
+        if (visibleRaw.toLowerCase() === 'false') return;
         var id = (item.id != null ? String(item.id) : (item.name != null ? String(item.name) : ''));
         var tag = item.tag || '';
         var isContainer = isContainerTag(tag);
