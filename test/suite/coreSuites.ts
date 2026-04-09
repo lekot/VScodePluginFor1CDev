@@ -128,6 +128,7 @@ export const coreSuiteFiles: string[] = [
   'suite/rules/agentOperations.test.js',
   'suite/rules/agentPathResolver.test.js',
   'suite/rdbgXmlCodec.test.js',
+  'suite/bslDebugSessionBreakpoints.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

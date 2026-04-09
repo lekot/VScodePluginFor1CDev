@@ -19,9 +19,126 @@ import {
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
-import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem } from './rdbg/rdbgTypes';
+import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId } from './rdbg/rdbgTypes';
 import { BslAttachConfiguration } from './types';
 import { resolveModuleId, resolveBslPathFromRdbgModule } from './moduleIdResolver';
+
+// ---------------------------------------------------------------------------
+// BpWorkspaceEntry — internal state for one BSL module's breakpoints.
+// Not exported to rdbgTypes.ts — this is session-scoped state only.
+// ---------------------------------------------------------------------------
+interface BpWorkspaceEntry {
+    source: string;         // absolute BSL file path, used for DAP response filtering
+    moduleId: RdbgModuleId;
+    bps: RdbgBreakpointRequest[];
+}
+
+// ---------------------------------------------------------------------------
+// Pure helper functions — exported for unit testing only.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the extKey string for a moduleId.
+ * Key: "${extensionName}|${objectId}|${propertyId}"
+ * Base configuration modules get extensionName="" (empty string prefix).
+ */
+export function makeExtKey(moduleId: { extensionName?: string; objectId: string; propertyId: string }): string {
+    return `${moduleId.extensionName ?? ''}|${moduleId.objectId}|${moduleId.propertyId}`;
+}
+
+/**
+ * Update the workspace snapshot map and return the full flat array of all BPs.
+ * @param state  mutable map (modified in-place)
+ * @param extKey key for the module being added/removed
+ * @param entry  new entry, or undefined to delete the key
+ */
+export function buildWorkspaceSnapshot(
+    state: Map<string, BpWorkspaceEntry>,
+    extKey: string,
+    entry: BpWorkspaceEntry | undefined
+): RdbgBreakpointRequest[] {
+    if (entry === undefined) {
+        state.delete(extKey);
+    } else {
+        state.set(extKey, entry);
+    }
+    return Array.from(state.values()).flatMap(e => e.bps);
+}
+
+/**
+ * Parse a DAP hitCondition string into a numeric hitCount.
+ * Supports:
+ *   '5'      → 5
+ *   '>= 3'   → 3
+ *   '> 3'    → 4  (strictly greater-than: first hit at 4)
+ *   '% 7'    → 7  (multiple-of: treat as count for server default)
+ * Anything else → undefined (caller should log a warning and skip hitCount).
+ */
+function parseHitCondition(raw: string): number | undefined {
+    const trimmed = raw.trim();
+
+    // Plain integer: '5'
+    if (/^\d+$/.test(trimmed)) {
+        return parseInt(trimmed, 10);
+    }
+
+    // '>= N'
+    const geMatch = /^>=\s*(\d+)$/.exec(trimmed);
+    if (geMatch) {
+        return parseInt(geMatch[1], 10);
+    }
+
+    // '> N'  — pause when hit count EXCEEDS N, so first pause at N+1
+    const gtMatch = /^>\s*(\d+)$/.exec(trimmed);
+    if (gtMatch) {
+        return parseInt(gtMatch[1], 10) + 1;
+    }
+
+    // '% N'  — every N-th hit
+    const modMatch = /^%\s*(\d+)$/.exec(trimmed);
+    if (modMatch) {
+        return parseInt(modMatch[1], 10);
+    }
+
+    return undefined;
+}
+
+/**
+ * Convert DAP SourceBreakpoint[] to RdbgBreakpointRequest[].
+ *
+ * OQ-8: hitCountVariant is intentionally NOT set — the platform decimal field
+ * would be corrupted by our string-union encoder. We rely on server default (0).
+ */
+export function dapToRdbgBreakpoints(
+    moduleId: RdbgModuleId,
+    dapBps: DebugProtocol.SourceBreakpoint[]
+): RdbgBreakpointRequest[] {
+    return dapBps.map(bp => {
+        const req: RdbgBreakpointRequest = {
+            moduleId,
+            lineNo: bp.line,
+        };
+
+        if (bp.condition && bp.condition.trim() !== '') {
+            req.condition = bp.condition;
+        }
+
+        if (bp.logMessage && bp.logMessage.trim() !== '') {
+            req.logMessage = bp.logMessage;
+        }
+
+        if (bp.hitCondition && bp.hitCondition.trim() !== '') {
+            const hitCount = parseHitCondition(bp.hitCondition);
+            if (hitCount !== undefined) {
+                req.hitCount = hitCount;
+                // hitCountVariant intentionally NOT set (OQ-8: server default=0)
+            }
+            // if parse fails, hitCount stays unset; caller will emit warning via OutputEvent
+        }
+
+        return req;
+    });
+}
 
 export class BslDebugSession extends DebugSession {
     private _client: RdbgClient | undefined;
@@ -32,7 +149,8 @@ export class BslDebugSession extends DebugSession {
     private _nextThreadId: number = 1;
     private _lastError: RdbgRuntimeError | undefined;
     private _workspaceRoot: string = '';
-    private readonly _knownBreakpoints: Map<string, { moduleId: { objectId: string; propertyId: string }; lineNos: number[] }> = new Map();
+    /** Workspace snapshot: extKey → BpWorkspaceEntry (replaces old _knownBreakpoints). */
+    private readonly _bpWorkspace: Map<string, BpWorkspaceEntry> = new Map();
     /** Frames from last DBGUIExtCmdInfoCallStackFormed (ping); 1C often does not fill HTTP getCallStack for UI. */
     private readonly _stackTraceCacheByThreadId: Map<number, RdbgCallStackItem[]> = new Map();
     /** Thread that last received `stopped` — Locals/Evaluate must use its targetId (not arbitrary Map iteration). */
@@ -58,6 +176,9 @@ export class BslDebugSession extends DebugSession {
         response.body.supportsEvaluateForHovers = true;
         response.body.supportsTerminateRequest = true;
         response.body.supportsExceptionInfoRequest = true;
+        response.body.supportsConditionalBreakpoints = true;
+        response.body.supportsHitConditionalBreakpoints = true;
+        response.body.supportsLogPoints = true;
 
         this.sendResponse(response);
     }
@@ -200,22 +321,55 @@ export class BslDebugSession extends DebugSession {
             }
 
             const moduleId = resolved.moduleId;
-            const rdbgBps: RdbgBreakpointRequest[] = requestedBps.map((bp) => ({
-                moduleId,
-                lineNo: bp.line,
-            }));
+            const extKey = makeExtKey(moduleId);
 
-            this._knownBreakpoints.set(sourcePath, {
-                moduleId: resolved.moduleId,
-                lineNos: requestedBps.map(bp => bp.line),
-            });
+            // Warn about unparseable hitCondition strings
+            for (const bp of requestedBps) {
+                if (bp.hitCondition && bp.hitCondition.trim() !== '') {
+                    const parsed = parseHitCondition(bp.hitCondition);
+                    if (parsed === undefined) {
+                        this.sendEvent(new OutputEvent(
+                            `BSL Debug: hitCondition "${bp.hitCondition}" (line ${bp.line}) could not be parsed — hitCount not set for this breakpoint.\n`,
+                            'console'
+                        ));
+                    }
+                }
+            }
 
-            const confirmed = await this._client.setBreakpoints(rdbgBps);
+            if (requestedBps.length === 0) {
+                // Clear breakpoints for this module
+                const hadEntry = this._bpWorkspace.has(extKey);
+                const allBps = buildWorkspaceSnapshot(this._bpWorkspace, extKey, undefined);
+                if (hadEntry) {
+                    await this._client.setBreakpoints(allBps);
+                }
+                response.body = { breakpoints: [] };
+                this.sendResponse(response);
+                return;
+            }
 
-            const dapBreakpoints: Breakpoint[] = confirmed.map((bp) => {
-                const b = new Breakpoint(true, bp.lineNo);
-                return b;
-            });
+            // Build converted BPs and update snapshot
+            const convertedBps = dapToRdbgBreakpoints(moduleId, requestedBps);
+            const entry: BpWorkspaceEntry = { source: sourcePath, moduleId, bps: convertedBps };
+            const allBps = buildWorkspaceSnapshot(this._bpWorkspace, extKey, entry);
+
+            // Send full workspace snapshot to server (platform treats setBreakpoints as full replacement)
+            const confirmed = await this._client.setBreakpoints(allBps);
+
+            // Build DAP response: filter confirmed BPs to those belonging to the current module
+            // Fallback: if confirmed is empty/uninformative, verify locally
+            const currentLinenos = new Set(requestedBps.map(bp => bp.line));
+            const confirmedForModule = confirmed.filter(b =>
+                makeExtKey(b.moduleId) === extKey && currentLinenos.has(b.lineNo)
+            );
+
+            let dapBreakpoints: Breakpoint[];
+            if (confirmedForModule.length > 0) {
+                dapBreakpoints = confirmedForModule.map(bp => new Breakpoint(true, bp.lineNo));
+            } else {
+                // Fallback: verify all requested BPs locally (server may return empty confirmed list)
+                dapBreakpoints = requestedBps.map(bp => new Breakpoint(true, bp.line));
+            }
 
             response.body = { breakpoints: dapBreakpoints };
         } catch (err) {
@@ -656,21 +810,22 @@ export class BslDebugSession extends DebugSession {
     }
 
     private async _reapplyBreakpoints(): Promise<void> {
-        if (!this._client || this._knownBreakpoints.size === 0) {
+        if (!this._client || this._bpWorkspace.size === 0) {
             return;
         }
-        for (const [sourcePath, entry] of this._knownBreakpoints) {
-            try {
-                const rdbgBps = entry.lineNos.map(lineNo => ({
-                    moduleId: entry.moduleId,
-                    lineNo,
-                }));
-                await this._client.setBreakpoints(rdbgBps);
-                this.sendEvent(new OutputEvent(`BSL Debug: re-set ${rdbgBps.length} breakpoint(s) for ${sourcePath}\n`, 'console'));
-            } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                this.sendEvent(new OutputEvent(`BSL Debug: failed to re-set breakpoints for ${sourcePath}: ${msg}\n`, 'stderr'));
-            }
+        // Send the full workspace snapshot in a single call.
+        // Platform treats setBreakpoints as a full replacement — sending per-module
+        // would cause each call to overwrite the previous one.
+        const allBps = Array.from(this._bpWorkspace.values()).flatMap(e => e.bps);
+        try {
+            await this._client.setBreakpoints(allBps);
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: re-applied ${allBps.length} breakpoint(s) from ${this._bpWorkspace.size} module(s)\n`,
+                'console'
+            ));
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.sendEvent(new OutputEvent(`BSL Debug: failed to re-apply breakpoints: ${msg}\n`, 'stderr'));
         }
     }
 }
