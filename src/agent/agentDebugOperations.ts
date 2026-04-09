@@ -25,6 +25,7 @@ import type {
     DebugEvaluateResult,
 } from './agentDebugTypes';
 import { DebugSessionRegistry } from './debugSessionRegistry';
+import type { LastStop } from './debugSessionRegistry';
 import type { BslLaunchConfiguration } from '../debug/types';
 
 /** Настройки, доступные для переопределения в тестах. */
@@ -37,6 +38,9 @@ export const debugStartConfig = {
 
 /** Внутренняя константа по умолчанию (используется при сборке без переопределения). */
 const BP_VERIFY_TIMEOUT_MS = 2000;
+
+/** Свежесть кэшированного lastStop: если остановка произошла менее N мс назад, используется без ожидания. */
+const WAIT_FOR_STOP_FRESHNESS_MS = 500;
 
 // ─── AgentDebugOperations ─────────────────────────────────────────────────────
 
@@ -269,8 +273,78 @@ export class AgentDebugOperations {
     // ─── Ожидание и навигация ────────────────────────────────────────────────
 
     /** Ожидает остановки отладчика (breakpoint, exception, step) с таймаутом. */
-    async debugWaitForStop(_params: DebugWaitForStopParams): Promise<AgentResult<DebugWaitForStopResult>> {
-        return { success: false, error: 'not implemented' };
+    async debugWaitForStop(params: DebugWaitForStopParams): Promise<AgentResult<DebugWaitForStopResult>> {
+        // Валидация
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+
+        let stop: LastStop | null;
+
+        // Использовать кэшированный stop если он достаточно свежий
+        if (entry.lastStop && Date.now() - entry.lastStop.receivedAt < WAIT_FOR_STOP_FRESHNESS_MS) {
+            stop = entry.lastStop;
+        } else {
+            // Ждать через Promise с добавлением в waiters
+            const timeoutMs = params.timeoutMs ?? 30_000;
+            stop = await new Promise<LastStop | null>((resolve) => {
+                let resolver: ((s: LastStop) => void) | undefined;
+                const timer = setTimeout(() => {
+                    if (resolver !== undefined) {
+                        const idx = entry.waiters.indexOf(resolver);
+                        if (idx >= 0) { entry.waiters.splice(idx, 1); }
+                    }
+                    resolve(null);
+                }, timeoutMs);
+                resolver = (s: LastStop) => {
+                    clearTimeout(timer);
+                    resolve(s);
+                };
+                entry.waiters.push(resolver);
+            });
+
+            if (!stop) {
+                return { success: false, error: 'timeout waiting for stop' };
+            }
+            if (stop.reason === 'terminated') {
+                return { success: false, error: 'session terminated while waiting for stop' };
+            }
+        }
+
+        // Получить top frame через stackTrace
+        try {
+            const trace = await entry.session.customRequest('stackTrace', {
+                threadId: stop.threadId,
+                startFrame: 0,
+                levels: 1,
+            }) as { stackFrames?: Array<{ id: number; source?: { path?: string }; line?: number }> };
+
+            const top = trace?.stackFrames?.[0];
+            if (!top) {
+                return { success: false, error: 'stackTrace returned no frames' };
+            }
+
+            return {
+                success: true,
+                data: {
+                    reason: stop.reason,
+                    threadId: stop.threadId,
+                    frameId: top.id,
+                    file: top.source?.path ?? '',
+                    line: top.line ?? 0,
+                },
+            };
+        } catch (err) {
+            return {
+                success: false,
+                error: 'stackTrace failed: ' + (err instanceof Error ? err.message : String(err)),
+            };
+        }
     }
 
     /** Возвращает стек вызовов для указанного потока. */

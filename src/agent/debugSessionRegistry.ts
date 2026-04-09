@@ -65,13 +65,14 @@ export class DebugSessionRegistry {
                         const entry = this._sessions.get(session.id);
                         if (!entry) { return; }
                         const body = m.body as Record<string, unknown> | undefined;
-                        const stop = {
+                        const stop: LastStop = {
                             reason: (body?.reason as string | undefined) ?? 'unknown',
                             threadId: (body?.threadId as number | undefined) ?? 1,
                             receivedAt: Date.now(),
                         };
                         entry.lastStop = stop;
-                        // NOTE: waiters не резолвятся здесь — это P7a-4
+                        const waiters = entry.waiters.splice(0);
+                        waiters.forEach(w => w(stop));
                     }
                 },
             }),

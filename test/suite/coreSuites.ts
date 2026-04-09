@@ -137,6 +137,7 @@ export const coreSuiteFiles: string[] = [
   'suite/debugSessionRegistry.test.js',
   'suite/agentDebugOperations.lifecycle.test.js',
   'suite/agentDebugOperations.breakpoints.test.js',
+  'suite/agentDebugOperations.waitForStop.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
