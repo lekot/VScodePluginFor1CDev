@@ -23,6 +23,25 @@ export interface RdbgCallStackItem {
 export interface RdbgBreakpointRequest {
   moduleId: RdbgModuleId;
   lineNo: number;
+  /** Whether the breakpoint is enabled. Defaults to true if omitted. */
+  isActive?: boolean;
+  /** Conditional breakpoint: BSL expression evaluated on every hit; pause only if truthy. */
+  condition?: string;
+  /** Hit-count breakpoint: integer counter. Pairs with hitCountVariant. */
+  hitCount?: number;
+  /**
+   * Hit-count comparison mode:
+   *  - 'eq'         pause when hit counter equals hitCount
+   *  - 'ge'         pause when hit counter is greater or equal
+   *  - 'multipleOf' pause every hitCount-th hit
+   */
+  hitCountVariant?: 'eq' | 'ge' | 'multipleOf';
+  /**
+   * Logpoint message rendered by the platform on hit. When set, the platform
+   * prints the rendered text to the output stream and continues execution
+   * without pausing.
+   */
+  logMessage?: string;
 }
 
 export interface RdbgBreakpoint {
