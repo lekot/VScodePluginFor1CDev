@@ -33,6 +33,7 @@ const DEBUG_COMMAND_IDS = [
     '1c-metadata-tree.agent.debug.stepOver',
     '1c-metadata-tree.agent.debug.stepIn',
     '1c-metadata-tree.agent.debug.stepOut',
+    '1c-metadata-tree.agent.debug.startFromBinding',
 ] as const;
 
 function makeContext(): { subscriptions: Array<{ dispose: () => void }> } {
@@ -58,7 +59,7 @@ suite('registerAgentCommands — debug commands registration', () => {
         resetDebugTestState();
     });
 
-    test('все 14 debug-команд зарегистрированы', () => {
+    test('все 15 debug-команд зарегистрированы', () => {
         const ctx = makeContext();
         const registry = makeRegistry();
         registerAgentCommands(ctx as never, () => null, async () => null, registry);
@@ -71,15 +72,15 @@ suite('registerAgentCommands — debug commands registration', () => {
         }
     });
 
-    test('все 14 debug-команд попадают в context.subscriptions', () => {
+    test('все 15 debug-команд попадают в context.subscriptions', () => {
         const ctx = makeContext();
         const registry = makeRegistry();
         // До регистрации: 0 подписок
         const before = ctx.subscriptions.length;
         registerAgentCommands(ctx as never, () => null, async () => null, registry);
         const after = ctx.subscriptions.length;
-        // 12 CRUD + 14 debug = 26 новых подписок
-        assert.strictEqual(after - before, 26, `Ожидалось 26 подписок, получено ${after - before}`);
+        // 12 CRUD + 15 debug = 27 новых подписок
+        assert.strictEqual(after - before, 27, `Ожидалось 27 подписок, получено ${after - before}`);
     });
 
     test('debug-команды не регистрируются в package.json contributes (только programmatic)', () => {

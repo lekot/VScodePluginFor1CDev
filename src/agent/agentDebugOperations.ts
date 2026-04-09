@@ -23,10 +23,14 @@ import type {
     DebugGetVariablesResult,
     DebugEvaluateParams,
     DebugEvaluateResult,
+    DebugStartFromBindingParams,
 } from './agentDebugTypes';
 import { DebugSessionRegistry } from './debugSessionRegistry';
 import type { LastStop } from './debugSessionRegistry';
 import type { BslLaunchConfiguration } from '../debug/types';
+import { startDebuggingFromConfigPath } from '../debug/debugLauncher';
+import type { BindingManager } from '../bindings/bindingManager';
+import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
 
 /** Настройки, доступные для переопределения в тестах. */
 export const debugStartConfig = {
@@ -44,9 +48,18 @@ const WAIT_FOR_STOP_FRESHNESS_MS = 500;
 
 // ─── AgentDebugOperations ─────────────────────────────────────────────────────
 
+/** Зависимости для операций, требующих доступа к привязкам и хранилищу инфобаз. */
+export interface AgentDebugOperationsDeps {
+    bindingManager: BindingManager;
+    infobaseStorage: InfobaseStorageService;
+}
+
 /** Класс операций Agent Debug API. Инстанциируется в extension.ts с общим реестром сессий. */
 export class AgentDebugOperations {
-    constructor(private readonly registry: DebugSessionRegistry) {}
+    constructor(
+        private readonly registry: DebugSessionRegistry,
+        private readonly deps?: AgentDebugOperationsDeps,
+    ) {}
 
     // ─── Запуск / остановка ──────────────────────────────────────────────────
 
@@ -550,6 +563,80 @@ export class AgentDebugOperations {
             return { success: true };
         } catch (err) {
             return { success: false, error: 'stepOut failed: ' + (err instanceof Error ? err.message : String(err)) };
+        }
+    }
+
+    // ─── Запуск по привязке ───────────────────────────────────────────────────
+
+    /** Запускает отладочную сессию по configPath, автоматически резолвя binding и инфобазу. */
+    async debugStartFromBinding(params: DebugStartFromBindingParams): Promise<AgentResult<DebugStartResult>> {
+        // 1. Валидация
+        if (!params.configPath) {
+            return { success: false, error: 'параметр configPath обязателен' };
+        }
+
+        // 2. Проверка deps
+        if (!this.deps?.bindingManager || !this.deps?.infobaseStorage) {
+            return { success: false, error: 'AgentDebugOperations не сконфигурирован для startFromBinding (нет deps)' };
+        }
+
+        // 3. Найти workspace folder
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(params.configPath));
+        if (!workspaceFolder) {
+            return { success: false, error: 'workspace folder для configPath не найден' };
+        }
+
+        // 4. Подписаться на старт сессии ДО вызова startDebuggingFromConfigPath
+        let resolveSession: (s: vscode.DebugSession) => void;
+        let rejectTimeout: () => void;
+
+        const sessionPromise = new Promise<vscode.DebugSession>((resolve, reject) => {
+            resolveSession = resolve;
+            rejectTimeout = () => reject(new Error('timeout'));
+        });
+
+        const disposable = vscode.debug.onDidStartDebugSession((session) => {
+            if (session.type === 'bsl') {
+                disposable.dispose();
+                resolveSession(session);
+            }
+        });
+
+        const timeoutHandle = setTimeout(() => {
+            disposable.dispose();
+            rejectTimeout();
+        }, debugStartConfig.timeoutMs);
+
+        // 5. Вызвать startDebuggingFromConfigPath
+        let started: boolean;
+        try {
+            started = await startDebuggingFromConfigPath({
+                configPath: params.configPath,
+                workspaceFolder,
+                bindingManager: this.deps.bindingManager,
+                infobaseStorage: this.deps.infobaseStorage,
+            });
+        } catch (err) {
+            // 6. Ошибка из startDebuggingFromConfigPath
+            clearTimeout(timeoutHandle);
+            disposable.dispose();
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+
+        // 7. startDebugging вернул false
+        if (!started) {
+            clearTimeout(timeoutHandle);
+            disposable.dispose();
+            return { success: false, error: 'startDebugging вернул false' };
+        }
+
+        // 8. Дождаться сессии или таймаута
+        try {
+            const session = await sessionPromise;
+            clearTimeout(timeoutHandle);
+            return { success: true, data: { sessionId: session.id } };
+        } catch {
+            return { success: false, error: 'timeout waiting for session start' };
         }
     }
 }

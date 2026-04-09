@@ -194,3 +194,11 @@ export interface DebugEvaluateResult {
     /** Ссылка для разворачивания (0 если нет). */
     varRef: number;
 }
+
+// ─── Запуск по привязке ───────────────────────────────────────────────────────
+
+/** Параметры запуска отладочной сессии по уже привязанной конфигурации. */
+export interface DebugStartFromBindingParams {
+    /** Абсолютный путь к Configuration.xml или к корню конфигурации (binding резолвится по нему). */
+    configPath: string;
+}

@@ -48,6 +48,12 @@ export function registerAllCommands({
       return configs.length > 0 ? configs[0].configPath : null;
     },
     debugRegistry,
+    () => {
+      const bm = state.bindingManager;
+      const is = state.infobaseStorage;
+      if (!bm || !is) {return undefined;}
+      return { bindingManager: bm, infobaseStorage: is };
+    },
   );
 
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code

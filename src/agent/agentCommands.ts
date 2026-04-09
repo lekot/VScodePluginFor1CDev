@@ -4,7 +4,7 @@
 
 import * as vscode from 'vscode';
 import { AgentOperations } from './agentOperations';
-import { AgentDebugOperations } from './agentDebugOperations';
+import { AgentDebugOperations, AgentDebugOperationsDeps } from './agentDebugOperations';
 import { DebugSessionRegistry } from './debugSessionRegistry';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type {
@@ -32,6 +32,7 @@ import type {
     DebugFrameParams,
     DebugGetVariablesParams,
     DebugEvaluateParams,
+    DebugStartFromBindingParams,
 } from './agentDebugTypes';
 
 /**
@@ -40,12 +41,15 @@ import type {
  * @param context - ExtensionContext для подписок.
  * @param getTreeDataProvider - Геттер провайдера дерева (может быть null до инициализации).
  * @param getConfigRoot - Асинхронный геттер пути к корню конфигурации.
+ * @param debugRegistry - Реестр отладочных сессий.
+ * @param getDebugDeps - Опциональный геттер зависимостей для debug.startFromBinding.
  */
 export function registerAgentCommands(
     context: vscode.ExtensionContext,
     getTreeDataProvider: () => MetadataTreeDataProvider | null,
     getConfigRoot: () => Promise<string | null>,
     debugRegistry: DebugSessionRegistry,
+    getDebugDeps?: () => AgentDebugOperationsDeps | undefined,
 ): void {
     // ─── 1c-metadata-tree.agent.createObject ─────────────────────────────────
 
@@ -391,6 +395,16 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.debug.startFromBinding ───────────────────────
+
+    const debugStartFromBindingCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.startFromBinding',
+        async (params: DebugStartFromBindingParams) => {
+            const ops = new AgentDebugOperations(debugRegistry, getDebugDeps?.());
+            return await ops.debugStartFromBinding(params);
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -401,5 +415,6 @@ export function registerAgentCommands(
         debugGetStackTraceCommand, debugGetScopesCommand, debugGetVariablesCommand,
         debugEvaluateCommand, debugContinueCommand, debugStepOverCommand,
         debugStepInCommand, debugStepOutCommand,
+        debugStartFromBindingCommand,
     );
 }

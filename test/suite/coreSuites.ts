@@ -141,6 +141,8 @@ export const coreSuiteFiles: string[] = [
   'suite/agentDebugOperations.inspection.test.js',
   'suite/agentDebugOperations.controlFlow.test.js',
   'suite/agentCommands.debug.test.js',
+  'suite/startDebuggingFromConfigPath.test.js',
+  'suite/agentDebugOperations.startFromBinding.test.js',
   'suite/agentBridge.test.js',
   'suite/agentBridgeActivation.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
