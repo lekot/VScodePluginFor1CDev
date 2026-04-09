@@ -287,27 +287,60 @@ export function encodeSetBreakpoints(
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
 
-  // Group breakpoints by module (objectId + propertyId)
-  const byModule = new Map<string, { moduleId: RdbgModuleId; lines: number[] }>();
+  // Group breakpoints by module (extensionName + objectId + propertyId).
+  // extensionName is included in the key so that a BP in an extension module
+  // and a BP in the base config module with the same objectId/propertyId are
+  // not merged into the same moduleBPInfo block.
+  const byModule = new Map<string, { moduleId: RdbgModuleId; bps: RdbgBreakpointRequest[] }>();
   for (const bp of bps) {
-    const key = `${bp.moduleId.objectId}:${bp.moduleId.propertyId}`;
+    const key = `${bp.moduleId.extensionName ?? ''}|${bp.moduleId.objectId}|${bp.moduleId.propertyId}`;
     let entry = byModule.get(key);
     if (!entry) {
-      entry = { moduleId: bp.moduleId, lines: [] };
+      entry = { moduleId: bp.moduleId, bps: [] };
       byModule.set(key, entry);
     }
-    entry.lines.push(bp.lineNo);
+    entry.bps.push(bp);
   }
 
   if (byModule.size > 0) {
     fields += `  <${P_RDBG}:bpWorkspace xsi:type="${P_BP}:BPWorkspaceInternal">\n`;
-    for (const { moduleId, lines } of byModule.values()) {
+    for (const { moduleId, bps: moduleBps } of byModule.values()) {
       fields += `    <${P_BP}:moduleBPInfo>\n` +
         moduleIdToXml(moduleId, '      ');
-      for (const line of lines) {
+      for (const bp of moduleBps) {
         fields += `      <${P_BP}:bpInfo>\n` +
-          `        <${P_BP}:line>${line}</${P_BP}:line>\n` +
-          `      </${P_BP}:bpInfo>\n`;
+          `        <${P_BP}:line>${bp.lineNo}</${P_BP}:line>\n`;
+        // isActive — only emit if explicitly set (platform defaults to true)
+        if (bp.isActive !== undefined) {
+          fields += `        <${P_BP}:isActive>${bp.isActive}</${P_BP}:isActive>\n`;
+        }
+        // Condition
+        if (bp.condition !== undefined && bp.condition !== '') {
+          fields += `        <${P_BP}:breakOnCondition>true</${P_BP}:breakOnCondition>\n` +
+            `        <${P_BP}:condition>${escapeXml(bp.condition)}</${P_BP}:condition>\n`;
+        }
+        // Hit count — hitCountVariant comes BEFORE hitCount (per Messages.cs XmlElement order).
+        // FIXME(hitCountVariant) OQ-8: Messages.cs:3535 declares hitCountVariant as `decimal`,
+        // but RdbgBreakpointRequest.hitCountVariant is a string union ('eq'|'ge'|'multipleOf').
+        // Sending a string into a decimal field will be rejected by the platform XSD.
+        // akpaevj StoppingManager never sets this field — leaves the server default of 0.
+        // Until we can map our string variants to real numeric codes (Wireshark trace needed),
+        // BslDebugSession (P2C3) MUST NOT pass hitCountVariant in RdbgBreakpointRequest.
+        // The encoder still emits it if explicitly set so that future fixes can use one place.
+        if (bp.hitCount !== undefined && bp.hitCount > 0) {
+          fields += `        <${P_BP}:breakOnHitCount>true</${P_BP}:breakOnHitCount>\n`;
+          if (bp.hitCountVariant !== undefined) {
+            fields += `        <${P_BP}:hitCountVariant>${escapeXml(bp.hitCountVariant)}</${P_BP}:hitCountVariant>\n`;
+          }
+          fields += `        <${P_BP}:hitCount>${bp.hitCount}</${P_BP}:hitCount>\n`;
+        }
+        // Log message / logpoint
+        if (bp.logMessage !== undefined && bp.logMessage !== '') {
+          fields += `        <${P_BP}:showOutputMessage>true</${P_BP}:showOutputMessage>\n` +
+            `        <${P_BP}:putExpressionResult>${escapeXml(bp.logMessage)}</${P_BP}:putExpressionResult>\n` +
+            `        <${P_BP}:continueExecution>true</${P_BP}:continueExecution>\n`;
+        }
+        fields += `      </${P_BP}:bpInfo>\n`;
       }
       fields += `    </${P_BP}:moduleBPInfo>\n`;
     }

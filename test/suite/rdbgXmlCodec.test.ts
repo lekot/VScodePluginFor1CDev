@@ -109,6 +109,83 @@ suite('rdbgXmlCodec — encoders', () => {
       const xml = encodeSetBreakpoints(DBG_UI_ID, []);
       assert.ok(!xml.includes('bpWorkspace'), 'bpWorkspace should be absent for empty BP list');
     });
+
+    // B.1 — Conditional BP
+    test('conditional BP — snapshot + contains', () => {
+      const xml = encodeSetBreakpoints(DBG_UI_ID, [{ moduleId: MOD1, lineNo: 10, condition: 'i > 5' }]);
+      const expected = readFixture('setBreakpoints-conditional.xml');
+      assert.strictEqual(normalizeXml(xml), normalizeXml(expected));
+      assert.ok(xml.includes('<debugBreakpoints:breakOnCondition>true</debugBreakpoints:breakOnCondition>'),
+        'breakOnCondition must be true');
+      assert.ok(xml.includes('i &gt; 5'), 'condition expression must be XML-escaped');
+    });
+
+    // B.2 — Hit count BP
+    test('hitCount BP — snapshot + contains', () => {
+      const xml = encodeSetBreakpoints(DBG_UI_ID, [{ moduleId: MOD1, lineNo: 10, hitCount: 3 }]);
+      const expected = readFixture('setBreakpoints-hitcount.xml');
+      assert.strictEqual(normalizeXml(xml), normalizeXml(expected));
+      assert.ok(xml.includes('<debugBreakpoints:breakOnHitCount>true</debugBreakpoints:breakOnHitCount>'),
+        'breakOnHitCount must be true');
+      assert.ok(xml.includes('<debugBreakpoints:hitCount>3</debugBreakpoints:hitCount>'),
+        'hitCount element must be present');
+    });
+
+    // B.3 — Logpoint BP
+    test('logpoint BP — snapshot + continueExecution present', () => {
+      const xml = encodeSetBreakpoints(DBG_UI_ID, [{ moduleId: MOD1, lineNo: 10, logMessage: 'Значение: {x}' }]);
+      const expected = readFixture('setBreakpoints-logpoint.xml');
+      assert.strictEqual(normalizeXml(xml), normalizeXml(expected));
+      assert.ok(xml.includes('<debugBreakpoints:showOutputMessage>true</debugBreakpoints:showOutputMessage>'),
+        'showOutputMessage must be true');
+      assert.ok(xml.includes('Значение: {x}'), 'log message must be present in XML');
+      assert.ok(xml.includes('<debugBreakpoints:continueExecution>true</debugBreakpoints:continueExecution>'),
+        'continueExecution=true is critical for logpoint — execution must not stop');
+    });
+
+    // B.4 — Combo: condition + hitCount + hitCountVariant
+    // FIXME(hitCountVariant) OQ-8: this test asserts the wire format we *currently* emit
+    // ('ge' as a string), but Messages.cs:3535 declares the field as `decimal`. Real platform
+    // will likely reject this XML. P2C3 must avoid passing hitCountVariant from BslDebugSession
+    // until a real numeric mapping is established. See codec-audit-debugger-parity.md OQ-8.
+    test('combo BP (condition + hitCount + hitCountVariant) — contains all elements', () => {
+      const xml = encodeSetBreakpoints(DBG_UI_ID, [{
+        moduleId: MOD1,
+        lineNo: 7,
+        condition: 'x = 1',
+        hitCount: 5,
+        hitCountVariant: 'ge',
+      }]);
+      assert.ok(xml.includes('<debugBreakpoints:breakOnCondition>true</debugBreakpoints:breakOnCondition>'),
+        'breakOnCondition');
+      assert.ok(xml.includes('<debugBreakpoints:condition>x = 1</debugBreakpoints:condition>'),
+        'condition value');
+      assert.ok(xml.includes('<debugBreakpoints:breakOnHitCount>true</debugBreakpoints:breakOnHitCount>'),
+        'breakOnHitCount');
+      assert.ok(xml.includes('<debugBreakpoints:hitCountVariant>ge</debugBreakpoints:hitCountVariant>'),
+        'hitCountVariant');
+      assert.ok(xml.includes('<debugBreakpoints:hitCount>5</debugBreakpoints:hitCount>'),
+        'hitCount value');
+      // hitCountVariant must come before hitCount (per Messages.cs XmlElement order)
+      const variantIdx = xml.indexOf('<debugBreakpoints:hitCountVariant>');
+      const countIdx = xml.indexOf('<debugBreakpoints:hitCount>5');
+      assert.ok(variantIdx < countIdx, 'hitCountVariant must precede hitCount in XML');
+    });
+
+    // B.5 — Extension key separation (the most important new test)
+    test('extension key separation — same objectId/propertyId in base vs extension → two moduleBPInfo', () => {
+      const MOD_BASE = { objectId: 'OBJ-1', propertyId: 'PROP-1' };
+      const MOD_EXT_SAME = { objectId: 'OBJ-1', propertyId: 'PROP-1', extensionName: 'МоёРасширение' };
+      const xml = encodeSetBreakpoints(DBG_UI_ID, [
+        { moduleId: MOD_BASE, lineNo: 10 },
+        { moduleId: MOD_EXT_SAME, lineNo: 20 },
+      ]);
+      // Two separate moduleBPInfo blocks (2 opening + 2 closing = 4 occurrences of the tag name)
+      const tagCount = (xml.match(/moduleBPInfo>/g) || []).length;
+      assert.strictEqual(tagCount, 4,
+        `Expected 4 moduleBPInfo tag occurrences (2 open + 2 close), got ${tagCount}`);
+      assert.ok(xml.includes('МоёРасширение'), 'extensionName must appear in XML');
+    });
   });
 
   suite('encodeStep', () => {
