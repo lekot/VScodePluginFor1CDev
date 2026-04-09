@@ -24,30 +24,106 @@ import type {
     DebugEvaluateResult,
 } from './agentDebugTypes';
 import { DebugSessionRegistry } from './debugSessionRegistry';
+import type { BslLaunchConfiguration } from '../debug/types';
 
-// Подавляем предупреждение об неиспользуемом импорте vscode — он потребуется в реализации P7a-3+.
-void vscode;
+/** Настройки, доступные для переопределения в тестах. */
+export const debugStartConfig = {
+    /** Таймаут ожидания старта сессии (в мс). */
+    timeoutMs: 5000,
+};
 
 // ─── AgentDebugOperations ─────────────────────────────────────────────────────
 
 /** Класс операций Agent Debug API. Инстанциируется в extension.ts с общим реестром сессий. */
 export class AgentDebugOperations {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(private readonly registry: DebugSessionRegistry) {
-        // registry используется в реализации методов P7a-3+
-        void this.registry;
-    }
+    constructor(private readonly registry: DebugSessionRegistry) {}
 
     // ─── Запуск / остановка ──────────────────────────────────────────────────
 
     /** Запускает отладочную сессию 1С с заданными параметрами. */
-    async debugStart(_params: DebugStartParams): Promise<AgentResult<DebugStartResult>> {
-        return { success: false, error: 'not implemented' };
+    async debugStart(params: DebugStartParams): Promise<AgentResult<DebugStartResult>> {
+        // Валидация обязательных параметров
+        if (!params.rootProject) {
+            return { success: false, error: 'параметр rootProject обязателен' };
+        }
+        if (!params.infobase) {
+            return { success: false, error: 'параметр infobase обязателен' };
+        }
+        if (!params.platformPath) {
+            return { success: false, error: 'параметр platformPath обязателен' };
+        }
+
+        // Найти workspace folder
+        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(params.rootProject));
+        if (!folder) {
+            return { success: false, error: 'workspace folder для rootProject не найден' };
+        }
+
+        // Построить конфигурацию запуска
+        const launchConfig: BslLaunchConfiguration = {
+            type: 'bsl',
+            request: 'launch',
+            name: 'Agent Debug Session',
+            rootProject: params.rootProject,
+            infobase: params.infobase,
+            platformPath: params.platformPath,
+            debugServerHost: params.debugServerHost ?? 'localhost',
+            debugServerPort: params.debugServerPort ?? 1550,
+            ...(params.extensions ? { extensions: params.extensions } : {}),
+        };
+
+        // Подписаться на старт сессии ДО вызова startDebugging
+        let resolveSession: (s: vscode.DebugSession) => void;
+        let rejectTimeout: () => void;
+
+        const sessionPromise = new Promise<vscode.DebugSession>((resolve, reject) => {
+            resolveSession = resolve;
+            rejectTimeout = () => reject(new Error('timeout'));
+        });
+
+        const disposable = vscode.debug.onDidStartDebugSession((session) => {
+            if (session.type === 'bsl') {
+                disposable.dispose();
+                resolveSession(session);
+            }
+        });
+
+        const timeoutHandle = setTimeout(() => {
+            disposable.dispose();
+            rejectTimeout();
+        }, debugStartConfig.timeoutMs);
+
+        // Запустить отладку
+        const started = await vscode.debug.startDebugging(folder, launchConfig);
+        if (!started) {
+            clearTimeout(timeoutHandle);
+            disposable.dispose();
+            return { success: false, error: 'vscode.debug.startDebugging вернул false' };
+        }
+
+        // Дождаться сессии или таймаута
+        try {
+            const session = await sessionPromise;
+            clearTimeout(timeoutHandle);
+            return { success: true, data: { sessionId: session.id } };
+        } catch {
+            return { success: false, error: 'timeout waiting for session start' };
+        }
     }
 
     /** Останавливает отладочную сессию по идентификатору. */
-    async debugStop(_params: DebugStopParams): Promise<AgentResult<void>> {
-        return { success: false, error: 'not implemented' };
+    async debugStop(params: DebugStopParams): Promise<AgentResult<void>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+
+        await vscode.debug.stopDebugging(entry.session);
+        return { success: true };
     }
 
     // ─── Точки останова ──────────────────────────────────────────────────────

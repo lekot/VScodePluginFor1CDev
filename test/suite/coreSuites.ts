@@ -134,6 +134,8 @@ export const coreSuiteFiles: string[] = [
   'suite/bslDebugSessionExceptionBp.test.js',
   'suite/bslDebugSessionVariables.test.js',
   'suite/debuggeeLauncher.test.js',
+  'suite/debugSessionRegistry.test.js',
+  'suite/agentDebugOperations.lifecycle.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

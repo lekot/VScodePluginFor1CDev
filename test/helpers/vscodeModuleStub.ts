@@ -393,6 +393,79 @@ export function resetVscodeTestState(): void {
   restoreVscodeWorkspaceFoldersGetter();
 }
 
+// ─── vscode.debug stub ───────────────────────────────────────────────────────
+
+/** Mutable state for vscode.debug stub — reset in teardown. */
+export const debugTestState = {
+  startDebuggingResult: true,
+  startDebuggingCalled: false,
+  startDebuggingArgs: undefined as unknown[] | undefined,
+  stopDebuggingCalled: false,
+  stopDebuggingSession: undefined as unknown,
+  onDidStartDebugSessionListeners: [] as Array<(s: unknown) => void>,
+  onDidTerminateDebugSessionListeners: [] as Array<(s: unknown) => void>,
+  registeredTrackerFactories: [] as Array<{ type: string; factory: unknown }>,
+};
+
+export function resetDebugTestState(): void {
+  debugTestState.startDebuggingResult = true;
+  debugTestState.startDebuggingCalled = false;
+  debugTestState.startDebuggingArgs = undefined;
+  debugTestState.stopDebuggingCalled = false;
+  debugTestState.stopDebuggingSession = undefined;
+  debugTestState.onDidStartDebugSessionListeners = [];
+  debugTestState.onDidTerminateDebugSessionListeners = [];
+  debugTestState.registeredTrackerFactories = [];
+}
+
+/** Fire onDidStartDebugSession event for all listeners. */
+export function fireDidStartDebugSession(session: unknown): void {
+  for (const l of [...debugTestState.onDidStartDebugSessionListeners]) {
+    l(session);
+  }
+}
+
+/** Fire onDidTerminateDebugSession event for all listeners. */
+export function fireDidTerminateDebugSession(session: unknown): void {
+  for (const l of [...debugTestState.onDidTerminateDebugSessionListeners]) {
+    l(session);
+  }
+}
+
+const debugStub = {
+  startDebugging: async (_folder: unknown, _config: unknown): Promise<boolean> => {
+    debugTestState.startDebuggingCalled = true;
+    debugTestState.startDebuggingArgs = [_folder, _config];
+    return debugTestState.startDebuggingResult;
+  },
+  stopDebugging: async (session: unknown): Promise<void> => {
+    debugTestState.stopDebuggingCalled = true;
+    debugTestState.stopDebuggingSession = session;
+  },
+  onDidStartDebugSession: (listener: (s: unknown) => void): { dispose: () => void } => {
+    debugTestState.onDidStartDebugSessionListeners.push(listener);
+    return {
+      dispose: () => {
+        const i = debugTestState.onDidStartDebugSessionListeners.indexOf(listener);
+        if (i >= 0) { debugTestState.onDidStartDebugSessionListeners.splice(i, 1); }
+      },
+    };
+  },
+  onDidTerminateDebugSession: (listener: (s: unknown) => void): { dispose: () => void } => {
+    debugTestState.onDidTerminateDebugSessionListeners.push(listener);
+    return {
+      dispose: () => {
+        const i = debugTestState.onDidTerminateDebugSessionListeners.indexOf(listener);
+        if (i >= 0) { debugTestState.onDidTerminateDebugSessionListeners.splice(i, 1); }
+      },
+    };
+  },
+  registerDebugAdapterTrackerFactory: (type: string, factory: unknown): { dispose: () => void } => {
+    debugTestState.registeredTrackerFactories.push({ type, factory });
+    return { dispose: () => undefined };
+  },
+};
+
 /** Shared by core tests; `import * as vscode` binds getters to these objects. */
 const commandsStub = {
   registerCommand: (_id: string, _callback?: unknown): { dispose: () => void } => ({
@@ -455,6 +528,7 @@ const vscodeStub = {
   Disposable,
   window: windowStub,
   workspace: workspaceStub,
+  debug: debugStub,
   extensions: {
     getExtension: <T>(id: string): { activate(): Promise<unknown>; exports: T } | undefined => {
       const impl = vscodeExtensionsTestState.getExtensionImpl;
