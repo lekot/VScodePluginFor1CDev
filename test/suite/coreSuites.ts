@@ -129,6 +129,7 @@ export const coreSuiteFiles: string[] = [
   'suite/rules/agentPathResolver.test.js',
   'suite/rdbgXmlCodec.test.js',
   'suite/referencesTable.test.js',
+  'suite/moduleIdResolver.test.js',
   'suite/bslDebugSessionBreakpoints.test.js',
   'suite/bslDebugSessionExceptionBp.test.js',
   'suite/bslDebugSessionVariables.test.js',
