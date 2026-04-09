@@ -1020,8 +1020,87 @@
                 "default": 5000
               }
             }
+          },
+          "launch": {
+            "required": ["rootProject", "infobase"],
+            "properties": {
+              "rootProject": {
+                "type": "string",
+                "description": "Путь к корню выгруженной конфигурации 1С"
+              },
+              "infobase": {
+                "type": "string",
+                "description": "Имя информационной базы или строка соединения"
+              },
+              "platformPath": {
+                "type": "string",
+                "description": "Каталог установки 1С (если не указан — discover)",
+                "default": ""
+              },
+              "platformVersion": {
+                "type": "string",
+                "description": "Версия платформы 1С (если установлено несколько)",
+                "default": ""
+              },
+              "debugServerHost": {
+                "type": "string",
+                "description": "Хост сервера отладки",
+                "default": "localhost"
+              },
+              "debugServerPort": {
+                "type": "number",
+                "description": "Порт сервера отладки",
+                "default": 1550
+              },
+              "extensions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Пути к корням расширений конфигурации",
+                "default": []
+              },
+              "autoAttachTypes": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Типы автоподключения: Client, Server, WebClient и др.",
+                "default": ["Client", "Server"]
+              },
+              "infobaseAlias": {
+                "type": "string",
+                "description": "Псевдоним информационной базы для фильтрации",
+                "default": ""
+              },
+              "pingIntervalMs": {
+                "type": "number",
+                "description": "Интервал опроса событий (мс)",
+                "default": 1000
+              },
+              "connectTimeoutMs": {
+                "type": "number",
+                "description": "Таймаут HTTP-запросов (мс), 0 — без таймаута",
+                "default": 0
+              }
+            }
           }
         },
+        "initialConfigurations": [
+          {
+            "type": "bsl",
+            "request": "attach",
+            "name": "Attach to 1C",
+            "host": "localhost",
+            "port": 1550
+          },
+          {
+            "type": "bsl",
+            "request": "launch",
+            "name": "Запуск 1С с отладчиком",
+            "rootProject": "${workspaceFolder}",
+            "infobase": "MyBase",
+            "platformPath": "",
+            "debugServerHost": "localhost",
+            "debugServerPort": 1550
+          }
+        ],
         "configurationSnippets": [
           {
             "label": "BSL: Attach to 1C Debug Server",
@@ -1032,6 +1111,20 @@
               "name": "Attach to 1C",
               "host": "localhost",
               "port": 1550
+            }
+          },
+          {
+            "label": "BSL: Launch 1C with Debugger",
+            "description": "Launch 1C:Enterprise client with integrated debug server",
+            "body": {
+              "type": "bsl",
+              "request": "launch",
+              "name": "Запуск 1С с отладчиком",
+              "rootProject": "${workspaceFolder}",
+              "infobase": "MyBase",
+              "platformPath": "",
+              "debugServerHost": "localhost",
+              "debugServerPort": 1550
             }
           }
         ]
