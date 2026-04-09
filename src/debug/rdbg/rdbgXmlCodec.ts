@@ -174,8 +174,9 @@ function parseXml(xml: string): Record<string, unknown> {
 function parseModuleId(raw: Record<string, unknown>): RdbgModuleId {
   const version = raw['version'] !== undefined ? String(raw['version']) : undefined;
   return {
-    objectId: String(raw['objectID'] ?? raw['objectId'] ?? ''),
-    propertyId: String(raw['propertyID'] ?? raw['propertyId'] ?? ''),
+    // Canonical field names from BslModuleIdInternal: XmlElementAttribute("objectID") / XmlElementAttribute("propertyID")
+    objectId: String(raw['objectID'] ?? ''),
+    propertyId: String(raw['propertyID'] ?? ''),
     extensionName: raw['extensionName'] as string | undefined,
     version,
   };
@@ -188,7 +189,8 @@ function parseTargetId(raw: Record<string, unknown>): RdbgTargetInfo {
     seanceId: String(raw['seanceId'] ?? ''),
     userName: String(raw['userName'] ?? ''),
     targetType: raw['targetType'] !== undefined ? String(raw['targetType']) : 0,
-    infobaseAlias: String(raw['infoBaseAlias'] ?? raw['infobaseAlias'] ?? DEF_ALIAS),
+    // Canonical: XmlElementAttribute("infoBaseAlias") in DebugTargetId
+    infobaseAlias: String(raw['infoBaseAlias'] ?? DEF_ALIAS),
   };
 }
 
@@ -482,57 +484,67 @@ export function encodeAttachTargets(
 
 /**
  * Decode the list of debug targets from a GetTargets response.
- * Confirmed: RdbgsGetDbgTargetsResponse (Messages.cs line 5365) uses repeated <id> elements
- * of type DebugTargetId. The fallback chain handles platform variants.
+ * Canonical: RdbgsGetDbgTargetsResponse (Messages.cs line 5383) uses repeated <id> elements
+ * of type DebugTargetId (which extends DebugTargetIdLight with <id>).
+ * Fields of DebugTargetId: id, seanceId, infoBaseAlias, userName, targetType.
  */
 export function decodeTargets(xml: string): RdbgTargetInfo[] {
   const root = parseXml(xml);
   const response = (root['response'] ?? root['result'] ?? {}) as Record<string, unknown>;
-  const items = toArray(response['item'] ?? response['targets'] ?? response['target']);
+  // Canonical element name is "id" (XmlElementAttribute("id") on the DebugTargetId collection)
+  const items = toArray(response['id']);
 
   return items.map((raw) => {
     const r = raw as Record<string, unknown>;
-    const targetIdEl = (r['targetID'] ?? r['id'] ?? {}) as Record<string, unknown>;
     return {
-      id: String(targetIdEl['id'] ?? r['id'] ?? ''),
-      seanceId: String(targetIdEl['seanceId'] ?? r['seanceId'] ?? ''),
-      userName: String(r['userName'] ?? r['user'] ?? ''),
-      targetType: Number(r['targetType'] ?? r['type'] ?? 0),
-      infobaseAlias: String(r['infoBaseAlias'] ?? r['infobaseAlias'] ?? DEF_ALIAS),
+      id: String(r['id'] ?? ''),
+      seanceId: String(r['seanceId'] ?? ''),
+      userName: String(r['userName'] ?? ''),
+      targetType: Number(r['targetType'] ?? 0),
+      infobaseAlias: String(r['infoBaseAlias'] ?? DEF_ALIAS),
     };
   });
 }
 
 /**
  * Decode confirmed breakpoints from a SetBreakpoints response.
- * Confirmed: RdbgGetBreakpointsResponse (Messages.cs line 5689) uses XmlArray("bpWorkspace")
- * with XmlArrayItem("moduleBPInfo"). The fallback chain handles platform variants.
+ * Canonical: RdbgGetBreakpointsResponse (Messages.cs line 5700) uses XmlArray("bpWorkspace")
+ * with XmlArrayItem("moduleBPInfo"). Each moduleBPInfo (ModuleBPInfoInternal) has:
+ *   - <id> (BslModuleIdInternal) — the module id
+ *   - <bpInfo>[] (BreakpointInfo) — each with <line> and <isActive>
+ * Note: BreakpointInfo uses <line> (not lineNo) and <isActive> (not enable).
  */
 export function decodeBreakpoints(xml: string): RdbgBreakpoint[] {
   const root = parseXml(xml);
   const response = (root['response'] ?? root['result'] ?? {}) as Record<string, unknown>;
-  const items = toArray(
-    response['item'] ??
-    response['breakpoints'] ??
-    response['bpWorkspace'] ??
-    response['bpWorkspaceInternal']
-  );
+  // Canonical: bpWorkspace is an XmlArray wrapper containing moduleBPInfo elements
+  const bpWorkspace = (response['bpWorkspace'] ?? {}) as Record<string, unknown>;
+  const moduleBpInfoItems = toArray(bpWorkspace['moduleBPInfo']);
 
-  return items.map((raw) => {
+  const result: RdbgBreakpoint[] = [];
+  for (const raw of moduleBpInfoItems) {
     const r = raw as Record<string, unknown>;
-    const bpEl = (r['breakpoint'] ?? r) as Record<string, unknown>;
-    const moduleRaw = (bpEl['moduleID'] ?? bpEl['moduleId'] ?? {}) as Record<string, unknown>;
-    return {
-      moduleId: parseModuleId(moduleRaw),
-      lineNo: Number(bpEl['lineNo'] ?? 0),
-      enabled: bpEl['enable'] !== 'false' && bpEl['enable'] !== false,
-    };
-  });
+    // Canonical: ModuleBPInfoInternal.Id uses XmlElementAttribute("id")
+    const moduleRaw = (r['id'] ?? {}) as Record<string, unknown>;
+    const moduleId = parseModuleId(moduleRaw);
+    const bpInfoItems = toArray(r['bpInfo']);
+    for (const bpRaw of bpInfoItems) {
+      const bp = bpRaw as Record<string, unknown>;
+      result.push({
+        moduleId,
+        // Canonical: BreakpointInfo uses <line> (not lineNo) and <isActive> (not enable)
+        lineNo: Number(bp['line'] ?? 0),
+        enabled: bp['isActive'] !== 'false' && bp['isActive'] !== false,
+      });
+    }
+  }
+  return result;
 }
 
 /** Map one RDBG stack frame element (ping or getCallStack) to RdbgCallStackItem. */
 function mapRawCallStackFrame(raw: Record<string, unknown>): RdbgCallStackItem {
-  const moduleRaw = (raw['moduleID'] ?? raw['moduleId'] ?? {}) as Record<string, unknown>;
+  // Canonical: XmlElementAttribute("moduleID") in StackItemViewInfoData; XmlElementAttribute("presentation", base64Binary)
+  const moduleRaw = (raw['moduleID'] ?? {}) as Record<string, unknown>;
   const presentationRaw = String(raw['presentation'] ?? '');
   const presentation = presentationRaw ? decodeBase64Utf8(presentationRaw) : '';
   return {
@@ -550,9 +562,9 @@ function flattenCallStackElements(callStackField: unknown): Record<string, unkno
   if (callStackField === undefined || callStackField === null) {
     return [];
   }
+  // Canonical field names from StackItemViewInfoData: moduleID, lineNo, presentation
   const isFrameLike = (o: Record<string, unknown>): boolean =>
     o['moduleID'] !== undefined ||
-    o['moduleId'] !== undefined ||
     o['lineNo'] !== undefined ||
     o['presentation'] !== undefined;
 
@@ -631,9 +643,13 @@ export function decodeVariables(xml: string): RdbgVariable[] {
       const presRaw = valueInfo['pres'];
       const fromPres =
         typeof presRaw === 'string' && presRaw.length > 0 ? decodeBase64Utf8(presRaw) : '';
-      const value = String(
-        valueInfo['valueString'] ?? valueInfo['presentation'] ?? (fromPres || '')
-      );
+      // valueString is base64Binary per BaseValueInfoData — decode if present, else fall back to pres
+      const valueStringRaw = valueInfo['valueString'];
+      const fromValueString =
+        typeof valueStringRaw === 'string' && valueStringRaw.length > 0
+          ? decodeBase64Utf8(valueStringRaw)
+          : '';
+      const value = String(fromValueString || fromPres || '');
       const typeName = String(valueInfo['typeName'] ?? '');
       const isExpandable =
         valueInfo['isExpandable'] === true || valueInfo['isExpandable'] === 'true';
@@ -680,29 +696,27 @@ export function decodeEvalResult(xml: string): RdbgEvalResult {
   const result = (items[0] ?? {}) as Record<string, unknown>;
 
   const errOccurred = result['errorOccurred'] === true || result['errorOccurred'] === 'true';
-  const exceptionStr = result['exceptionStr'];
+  // exceptionStr is base64Binary per CalculationResultBaseData — decode it
+  const exceptionStrRaw = result['exceptionStr'];
   const rvi = (result['resultValueInfo'] ?? {}) as Record<string, unknown>;
   const presRaw = rvi['pres'];
   const fromPres =
     typeof presRaw === 'string' && presRaw.length > 0 ? decodeBase64Utf8(presRaw) : '';
-  const value = String(
-    rvi['valueString'] ??
-      rvi['presentation'] ??
-      result['value'] ??
-      result['presentation'] ??
-      (fromPres || '')
-  );
-  const typeName = String(rvi['typeName'] ?? result['typeName'] ?? result['type'] ?? '');
+  // valueString is base64Binary per BaseValueInfoData — decode if present, then fall back to pres
+  const valueStringRaw = rvi['valueString'];
+  const fromValueString =
+    typeof valueStringRaw === 'string' && valueStringRaw.length > 0
+      ? decodeBase64Utf8(valueStringRaw)
+      : '';
+  const value = String(fromValueString || fromPres || '');
+  const typeName = String(rvi['typeName'] ?? '');
   const isExpandable = rvi['isExpandable'] === true || rvi['isExpandable'] === 'true';
-  const legacyErr = result['error'] ?? result['errorDescription'];
-
+  // No legacy fallback fields in canonical CalculationResultBaseData — errorOccurred + exceptionStr is the only error path
   let error: string | undefined;
-  if (legacyErr !== undefined && legacyErr !== null && String(legacyErr).length > 0) {
-    error = String(legacyErr);
-  } else if (errOccurred) {
+  if (errOccurred) {
     const ex =
-      typeof exceptionStr === 'string' && exceptionStr.length > 0
-        ? decodeBase64Utf8(exceptionStr)
+      typeof exceptionStrRaw === 'string' && exceptionStrRaw.length > 0
+        ? decodeBase64Utf8(exceptionStrRaw)
         : '';
     error = ex.length > 0 ? ex : 'Evaluation error';
   }
@@ -750,15 +764,12 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
 
     switch (xsiType) {
       case 'DBGUIExtCmdInfoCallStackFormed': {
-        // stopByBP: true → breakpoint, false → step; rteInfo present → exception
-        let reason: RdbgStoppedEvent['reason'];
-        if (r['rteInfo']) {
-          reason = 'exception';
-        } else if (String(r['stopByBP']) === 'true') {
-          reason = 'breakpoint';
-        } else {
-          reason = 'step';
-        }
+        // stopByBP: true → breakpoint, false → step.
+        // Exceptions arrive via separate DBGUIExtCmdInfoRte event (Messages.cs:4248),
+        // not via this CallStackFormed event — etalon DbguiExtCmdInfoCallStackFormed
+        // (Messages.cs:4325) does not contain any exception field.
+        const reason: RdbgStoppedEvent['reason'] =
+          String(r['stopByBP']) === 'true' ? 'breakpoint' : 'step';
 
         const frameRaws = flattenCallStackElements(r['callStack']);
         const callStack = frameRaws.map((cs) => mapRawCallStackFrame(cs));
@@ -788,12 +799,16 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
       }
 
       case 'DBGUIExtCmdInfoRte': {
-        const rteEl = (r['rteInfo'] ?? r) as Record<string, unknown>;
-        const moduleRaw = (rteEl['moduleID'] ?? rteEl['moduleId'] ?? {}) as Record<string, unknown>;
+        // Canonical: DbguiExtCmdInfoRte has <exception> (RuntimeException, GenericException base)
+        // and repeated <callStack> (StackItemViewInfoData). moduleId/lineNo come from callStack[0].
+        const exceptionEl = (r['exception'] ?? {}) as Record<string, unknown>;
+        const rteFrames = flattenCallStackElements(r['callStack']);
+        const rteTopFrame = rteFrames[0];
         const rteError: RdbgRuntimeError = {
-          description: String(rteEl['description'] ?? rteEl['errorDescription'] ?? ''),
-          moduleId: parseModuleId(moduleRaw),
-          lineNo: Number(rteEl['lineNo'] ?? 0),
+          // GenericException uses <descr> (XmlElementAttribute("descr"))
+          description: String(exceptionEl['descr'] ?? ''),
+          moduleId: rteTopFrame ? parseModuleId((rteTopFrame['moduleID'] ?? {}) as Record<string, unknown>) : parseModuleId({}),
+          lineNo: rteTopFrame ? Number(rteTopFrame['lineNo'] ?? 0) : 0,
         };
         return [{
           type: 'runtimeError',
@@ -803,34 +818,59 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
       }
 
       case 'DBGUIExtCmdInfoExprEvaluated': {
-        const evalRaw = (r['expressionResultID'] ?? r['result'] ?? r) as Record<string, unknown>;
+        // Canonical: DbguiExtCmdInfoExprEvaluated has <evalExprResBaseData> (CalculationResultBaseData)
+        // which contains <resultValueInfo> (BaseValueInfoData) and <errorOccurred> + <exceptionStr>
+        const calcResult = (r['evalExprResBaseData'] ?? {}) as Record<string, unknown>;
+        const rvi2 = (calcResult['resultValueInfo'] ?? {}) as Record<string, unknown>;
+        const pres2Raw = rvi2['pres'];
+        const fromPres2 =
+          typeof pres2Raw === 'string' && pres2Raw.length > 0 ? decodeBase64Utf8(pres2Raw) : '';
+        const vsRaw2 = rvi2['valueString'];
+        const fromVs2 =
+          typeof vsRaw2 === 'string' && vsRaw2.length > 0 ? decodeBase64Utf8(vsRaw2) : '';
+        const errOccurred2 = calcResult['errorOccurred'] === true || calcResult['errorOccurred'] === 'true';
+        const exStr2 = calcResult['exceptionStr'];
+        let evalError: string | undefined;
+        if (errOccurred2) {
+          const ex2 =
+            typeof exStr2 === 'string' && exStr2.length > 0 ? decodeBase64Utf8(exStr2) : '';
+          evalError = ex2.length > 0 ? ex2 : 'Evaluation error';
+        }
         return [{
           type: 'expressionEvaluated',
           targetId,
           result: {
-            value: String(evalRaw['value'] ?? evalRaw['presentation'] ?? ''),
-            typeName: String(evalRaw['typeName'] ?? evalRaw['type'] ?? ''),
-            isExpandable: evalRaw['isExpandable'] === true || evalRaw['isExpandable'] === 'true',
-            error: evalRaw['error'] ? String(evalRaw['error']) : undefined,
+            value: String(fromVs2 || fromPres2 || ''),
+            typeName: String(rvi2['typeName'] ?? ''),
+            isExpandable: rvi2['isExpandable'] === true || rvi2['isExpandable'] === 'true',
+            error: evalError,
           },
         }];
       }
 
       case 'DBGUIExtCmdInfoCorrectedBP': {
-        const srcBp = (r['bpSource'] ?? r['original'] ?? {}) as Record<string, unknown>;
-        const dstBp = (r['bpTarget'] ?? r['corrected'] ?? {}) as Record<string, unknown>;
-        const srcModule = parseModuleId((srcBp['moduleID'] ?? srcBp['moduleId'] ?? {}) as Record<string, unknown>);
-        const dstModule = parseModuleId((dstBp['moduleID'] ?? dstBp['moduleId'] ?? {}) as Record<string, unknown>);
+        // Canonical: DbguiExtCmdInfoCorrectedBp has <bpWorkspace> XmlArray → <moduleBPInfo>[] (ModuleBPInfoInternal).
+        // Each moduleBPInfo has <id> (BslModuleIdInternal) and <bpInfo>[] (BreakpointInfo with <line> and <isActive>).
+        // There is no bpSource/bpTarget in the etalon — bpWorkspace is the list of corrected breakpoints.
+        // For now, emit one event using the first moduleBPInfo/bpInfo pair as a best-effort mapping.
+        const bpWs = (r['bpWorkspace'] ?? {}) as Record<string, unknown>;
+        const mods = toArray(bpWs['moduleBPInfo']);
+        if (mods.length === 0) { return []; }
+        const firstMod = mods[0] as Record<string, unknown>;
+        const modId = parseModuleId((firstMod['id'] ?? {}) as Record<string, unknown>);
+        const bpInfos = toArray(firstMod['bpInfo']);
+        const firstBp = bpInfos.length > 0 ? bpInfos[0] as Record<string, unknown> : {};
         return [{
           type: 'breakpointCorrected',
           original: {
-            moduleId: srcModule,
-            lineNo: Number(srcBp['lineNo'] ?? 0),
+            moduleId: modId,
+            lineNo: Number(firstBp['line'] ?? 0),
           },
           corrected: {
-            moduleId: dstModule,
-            lineNo: Number(dstBp['lineNo'] ?? 0),
-            enabled: dstBp['enable'] !== 'false' && dstBp['enable'] !== false,
+            moduleId: modId,
+            // Canonical: BreakpointInfo uses <line> and <isActive>
+            lineNo: Number(firstBp['line'] ?? 0),
+            enabled: firstBp['isActive'] !== 'false' && firstBp['isActive'] !== false,
           },
         }];
       }
