@@ -21,7 +21,8 @@ import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
 import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode } from './rdbg/rdbgTypes';
 import { ReferencesTable } from './referencesTable';
-import { BslAttachConfiguration } from './types';
+import { BslAttachConfiguration, BslLaunchConfiguration } from './types';
+import { DebuggeeLauncher } from './debuggeeLauncher';
 import { resolveModuleId, resolveBslPathFromRdbgModule, readExtensionName, ResolverConfigRoot } from './moduleIdResolver';
 
 // ---------------------------------------------------------------------------
@@ -262,6 +263,8 @@ export class BslDebugSession extends DebugSession {
     private readonly _stackTraceCacheByThreadId: Map<number, RdbgCallStackItem[]> = new Map();
     /** Thread that last received `stopped` — Locals/Evaluate must use its targetId (not arbitrary Map iteration). */
     private _pausedThreadId: number | undefined;
+    /** DebuggeeLauncher instance for DAP launch sessions (null for attach sessions). */
+    private _launcher: DebuggeeLauncher | undefined;
     /** Dedup key for last StoppedEvent — prevents repeated UI refresh on each ping tick while paused. */
     private _lastStoppedKey: string = '';
     /** Maps DAP frameId → {threadId, frameLevel}. Cleared on continued for the relevant thread. */
@@ -291,6 +294,7 @@ export class BslDebugSession extends DebugSession {
         response.body.supportsHitConditionalBreakpoints = true;
         response.body.supportsLogPoints = true;
         response.body.supportsExceptionFilterOptions = true;
+        response.body.supportsSingleThreadExecutionRequests = true;
         response.body.exceptionBreakpointFilters = [
             {
                 filter: 'all',
@@ -301,6 +305,141 @@ export class BslDebugSession extends DebugSession {
             },
         ];
 
+        this.sendResponse(response);
+    }
+
+    // -------------------------------------------------------------------------
+    // Launch
+    // -------------------------------------------------------------------------
+
+    protected async launchRequest(
+        response: DebugProtocol.LaunchResponse,
+        args: DebugProtocol.LaunchRequestArguments
+    ): Promise<void> {
+        const cfg = args as unknown as BslLaunchConfiguration;
+
+        // 1. Resolve platformBin — required field
+        const platformBin = cfg.platformPath ?? '';
+        if (!platformBin) {
+            this.sendErrorResponse(
+                response, 1100,
+                'platformPath не задан. Укажите каталог установки 1С в launch.json.'
+            );
+            return;
+        }
+
+        // 2. Setup DebuggeeLauncher
+        this._launcher = new DebuggeeLauncher();
+        this._launcher.onDbgsExit((code) => {
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: dbgs завершился с кодом ${code}\n`, 'console'
+            ));
+            this.sendEvent(new TerminatedEvent());
+        });
+        this._launcher.onDebuggeeExit((code) => {
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: 1С клиент завершился с кодом ${code}\n`, 'console'
+            ));
+            this.sendEvent(new TerminatedEvent());
+        });
+
+        // 3. Start dbgs
+        const host = cfg.debugServerHost ?? 'localhost';
+        const port = cfg.debugServerPort ?? 1550;
+        try {
+            await this._launcher.startDbgs({ platformBin, host, port });
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: dbgs запущен на http://${host}:${port}\n`, 'console'
+            ));
+        } catch (err) {
+            await this._launcher.dispose();
+            this._launcher = undefined;
+            this.sendErrorResponse(
+                response, 1101,
+                `Не удалось запустить dbgs: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return;
+        }
+
+        // 4. Build _configRoots
+        this._configRoots = [cfg.rootProject, ...(cfg.extensions ?? [])].filter(
+            (r): r is string => typeof r === 'string' && r.length > 0
+        );
+
+        // 5. Setup transport + client
+        this._transport = new RdbgTransport(
+            `http://${host}:${port}`,
+            this._debugUiId,
+            undefined,
+            cfg.connectTimeoutMs
+        );
+        this._client = new RdbgClient(this._transport, this._debugUiId);
+        this._setupClientListeners(this._client);
+
+        // 6. Attach to debug server
+        try {
+            await this._client.attach(cfg.infobaseAlias);
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: подключено к серверу отладки, UI=${this._debugUiId}\n`, 'console'
+            ));
+        } catch (err) {
+            await this._launcher.dispose();
+            this._launcher = undefined;
+            this._transport?.dispose();
+            this._client = undefined;
+            this._transport = undefined;
+            this.sendErrorResponse(
+                response, 1102,
+                `Ошибка подключения к серверу отладки: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return;
+        }
+
+        // 7. Spawn 1cv8c.exe
+        // Determine connection argument based on infobase string format.
+        // If it contains "Srvr=" or "File=" — treat as connection string,
+        // otherwise treat as named infobase (/IBNAME).
+        const debugServerUrl = `http://${host}:${port}`;
+        const exeName = process.platform === 'win32' ? '1cv8c.exe' : '1cv8c';
+        const exe = path.join(platformBin, exeName);
+        const ib = cfg.infobase;
+        const isConnStr = /Srvr\s*=/i.test(ib) || /File\s*=/i.test(ib);
+        const baseArgs = isConnStr
+            ? ['/IBConnectionString', ib]
+            : ['/IBNAME', ib];
+
+        try {
+            await this._launcher.startDebuggee({ exe, args: baseArgs, debugServerUrl });
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: 1С клиент запущен: ${exe}\n`, 'console'
+            ));
+        } catch (err) {
+            await this._launcher.dispose();
+            this._launcher = undefined;
+            this._transport?.dispose();
+            this._client = undefined;
+            this._transport = undefined;
+            this.sendErrorResponse(
+                response, 1103,
+                `Не удалось запустить 1С: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return;
+        }
+
+        // 8. OQ-1: autoAttachTypes not yet fully implemented — log warning and skip
+        if (cfg.autoAttachTypes && cfg.autoAttachTypes.length > 0) {
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: autoAttachTypes указан, но encoder OQ-1 не реализован; ` +
+                `используется поведение платформы по умолчанию\n`,
+                'console'
+            ));
+        }
+
+        // 9. Start polling
+        this._client.startPolling(cfg.pingIntervalMs ?? 1000);
+
+        // 10. Signal DAP client that we are ready
+        this.sendEvent(new InitializedEvent());
         this.sendResponse(response);
     }
 
@@ -398,6 +537,10 @@ export class BslDebugSession extends DebugSession {
             this._client = undefined;
             this._transport = undefined;
             this._pausedThreadId = undefined;
+            if (this._launcher) {
+                await this._launcher.dispose();
+                this._launcher = undefined;
+            }
         }
     }
 
