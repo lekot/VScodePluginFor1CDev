@@ -140,6 +140,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentDebugOperations.waitForStop.test.js',
   'suite/agentDebugOperations.inspection.test.js',
   'suite/agentDebugOperations.controlFlow.test.js',
+  'suite/agentCommands.debug.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

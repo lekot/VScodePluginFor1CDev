@@ -191,6 +191,10 @@ const ProgressLocation = {
 /** Mutable hooks for core tests (workspace keys, dialog results, command log). */
 export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
+  /** Список id команд, зарегистрированных через vscode.commands.registerCommand (P7a-7). */
+  registeredCommandIds: [] as string[],
+  /** Хэндлеры зарегистрированных команд по id (P7a-7). */
+  registeredCommandHandlers: new Map<string, (...args: unknown[]) => unknown>(),
   /** When set, `showInformationMessage` returns this instead of `undefined`. */
   informationMessageResult: undefined as string | undefined,
   executedCommands: [] as unknown[][],
@@ -429,6 +433,8 @@ export function restoreVscodeWorkspaceFoldersGetter(): void {
 export function resetVscodeTestState(): void {
   vscodeExtensionsTestState.getExtensionImpl = null;
   vscodeTestState.workspaceConfig = {};
+  vscodeTestState.registeredCommandIds = [];
+  vscodeTestState.registeredCommandHandlers = new Map();
   vscodeTestState.vscodeVersion = undefined;
   vscodeTestState.filesReadonlyIncludeUpdateThrows = false;
   vscodeTestState.informationMessageResult = undefined;
@@ -657,9 +663,11 @@ const debugStub = {
 
 /** Shared by core tests; `import * as vscode` binds getters to these objects. */
 const commandsStub = {
-  registerCommand: (_id: string, _callback?: unknown): { dispose: () => void } => ({
-    dispose: () => undefined,
-  }),
+  registerCommand: (id: string, callback?: unknown): { dispose: () => void } => {
+    vscodeTestState.registeredCommandIds.push(id);
+    vscodeTestState.registeredCommandHandlers.set(id, callback as (...args: unknown[]) => unknown);
+    return { dispose: () => undefined };
+  },
   executeCommand: async (...args: unknown[]): Promise<unknown> => {
     vscodeTestState.executedCommands.push(args);
     return undefined;
