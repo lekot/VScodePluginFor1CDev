@@ -474,22 +474,82 @@ export class AgentDebugOperations {
     // ─── Управление выполнением ───────────────────────────────────────────────
 
     /** Продолжает выполнение после остановки для указанного потока. */
-    async debugContinue(_params: DebugThreadParams): Promise<AgentResult<void>> {
-        return { success: false, error: 'not implemented' };
+    async debugContinue(params: DebugThreadParams): Promise<AgentResult<void>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.threadId !== 'number') {
+            return { success: false, error: 'параметр threadId обязателен' };
+        }
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+        try {
+            await entry.session.customRequest('continue', { threadId: params.threadId });
+            return { success: true };
+        } catch (err) {
+            return { success: false, error: 'continue failed: ' + (err instanceof Error ? err.message : String(err)) };
+        }
     }
 
     /** Выполняет шаг через строку (step over) в указанном потоке. */
-    async debugStepOver(_params: DebugThreadParams): Promise<AgentResult<void>> {
-        return { success: false, error: 'not implemented' };
+    async debugStepOver(params: DebugThreadParams): Promise<AgentResult<void>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.threadId !== 'number') {
+            return { success: false, error: 'параметр threadId обязателен' };
+        }
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+        try {
+            await entry.session.customRequest('next', { threadId: params.threadId });
+            return { success: true };
+        } catch (err) {
+            return { success: false, error: 'stepOver failed: ' + (err instanceof Error ? err.message : String(err)) };
+        }
     }
 
     /** Выполняет шаг внутрь вызова (step in) в указанном потоке. */
-    async debugStepIn(_params: DebugThreadParams): Promise<AgentResult<void>> {
-        return { success: false, error: 'not implemented' };
+    async debugStepIn(params: DebugThreadParams): Promise<AgentResult<void>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.threadId !== 'number') {
+            return { success: false, error: 'параметр threadId обязателен' };
+        }
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+        try {
+            await entry.session.customRequest('stepIn', { threadId: params.threadId });
+            return { success: true };
+        } catch (err) {
+            return { success: false, error: 'stepIn failed: ' + (err instanceof Error ? err.message : String(err)) };
+        }
     }
 
     /** Выполняет шаг из текущей процедуры (step out) в указанном потоке. */
-    async debugStepOut(_params: DebugThreadParams): Promise<AgentResult<void>> {
-        return { success: false, error: 'not implemented' };
+    async debugStepOut(params: DebugThreadParams): Promise<AgentResult<void>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.threadId !== 'number') {
+            return { success: false, error: 'параметр threadId обязателен' };
+        }
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+        try {
+            await entry.session.customRequest('stepOut', { threadId: params.threadId });
+            return { success: true };
+        } catch (err) {
+            return { success: false, error: 'stepOut failed: ' + (err instanceof Error ? err.message : String(err)) };
+        }
     }
 }
