@@ -3,6 +3,7 @@
 // Полная реализация методов — в коммитах P7a-3..P7a-6.
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 import type { AgentResult } from './types';
 import type {
     DebugStartParams,
@@ -30,7 +31,12 @@ import type { BslLaunchConfiguration } from '../debug/types';
 export const debugStartConfig = {
     /** Таймаут ожидания старта сессии (в мс). */
     timeoutMs: 5000,
+    /** Таймаут ожидания верификации точки останова (в мс). */
+    bpVerifyTimeoutMs: 2000,
 };
+
+/** Внутренняя константа по умолчанию (используется при сборке без переопределения). */
+const BP_VERIFY_TIMEOUT_MS = 2000;
 
 // ─── AgentDebugOperations ─────────────────────────────────────────────────────
 
@@ -129,18 +135,135 @@ export class AgentDebugOperations {
     // ─── Точки останова ──────────────────────────────────────────────────────
 
     /** Устанавливает точку останова в файле на указанной строке. */
-    async debugSetBreakpoint(_params: DebugSetBreakpointParams): Promise<AgentResult<DebugSetBreakpointResult>> {
-        return { success: false, error: 'not implemented' };
+    async debugSetBreakpoint(params: DebugSetBreakpointParams): Promise<AgentResult<DebugSetBreakpointResult>> {
+        // Валидация
+        if (!params.file) {
+            return { success: false, error: 'параметр file обязателен' };
+        }
+        if (!params.line || !Number.isInteger(params.line) || params.line <= 0) {
+            return { success: false, error: 'параметр line обязателен и должен быть целым числом > 0' };
+        }
+
+        // Создаём BP
+        const bp = new vscode.SourceBreakpoint(
+            new vscode.Location(vscode.Uri.file(params.file), new vscode.Position(params.line - 1, 0)),
+            true,
+            params.condition,
+            params.hitCondition,
+            params.logMessage,
+        );
+
+        const timeoutMs = debugStartConfig.bpVerifyTimeoutMs ?? BP_VERIFY_TIMEOUT_MS;
+
+        return new Promise<AgentResult<DebugSetBreakpointResult>>((resolve) => {
+            let listener: vscode.Disposable | undefined;
+            let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+            let settled = false;
+
+            const finish = (verified: boolean, id: string) => {
+                if (settled) { return; }
+                settled = true;
+                if (timeoutHandle !== undefined) { clearTimeout(timeoutHandle); }
+                listener?.dispose();
+                resolve({ success: true, data: { verified, id } });
+            };
+
+            // Подписываемся ДО addBreakpoints
+            listener = vscode.debug.onDidChangeBreakpoints((e) => {
+                // Проверяем added — ищем наш BP по содержимому (VS Code может вернуть новый instance)
+                const findOurBp = (arr: readonly vscode.Breakpoint[]): vscode.SourceBreakpoint | undefined => {
+                    for (const item of arr) {
+                        if (
+                            item instanceof vscode.SourceBreakpoint &&
+                            item.location.uri.fsPath === params.file &&
+                            item.location.range.start.line === params.line - 1
+                        ) {
+                            return item;
+                        }
+                    }
+                    return undefined;
+                };
+
+                // Сначала ищем в added — обновляем id
+                const addedMatch = findOurBp(e.added);
+                if (addedMatch) {
+                    // Если уже verified — завершаемся
+                    if ((addedMatch as any).verified) {
+                        finish(true, (addedMatch as any).id ?? bp.id ?? '');
+                        return;
+                    }
+                    // Обновляем id у нашего bp
+                    (bp as any).id = (addedMatch as any).id ?? bp.id;
+                }
+
+                // Ищем в changed — verified обновился
+                const changedMatch = findOurBp(e.changed);
+                if (changedMatch && (changedMatch as any).verified) {
+                    finish(true, (changedMatch as any).id ?? (bp as any).id ?? '');
+                }
+            });
+
+            timeoutHandle = setTimeout(() => {
+                finish(false, (bp as any).id ?? '');
+            }, timeoutMs);
+
+            // Вызываем addBreakpoints
+            vscode.debug.addBreakpoints([bp]);
+        });
     }
 
     /** Очищает точки останова в файле или все точки если файл не задан. */
-    async debugClearBreakpoints(_params: DebugClearBreakpointsParams): Promise<AgentResult<void>> {
-        return { success: false, error: 'not implemented' };
+    async debugClearBreakpoints(params: DebugClearBreakpointsParams): Promise<AgentResult<void>> {
+        const all = [...vscode.debug.breakpoints];
+
+        let toRemove: vscode.Breakpoint[];
+        if (params.file) {
+            const normalized = path.resolve(params.file);
+            toRemove = all.filter(
+                (bp): bp is vscode.SourceBreakpoint =>
+                    bp instanceof vscode.SourceBreakpoint &&
+                    path.resolve(bp.location.uri.fsPath) === normalized,
+            );
+        } else {
+            toRemove = all;
+        }
+
+        if (toRemove.length > 0) {
+            vscode.debug.removeBreakpoints(toRemove);
+        }
+
+        return { success: true };
     }
 
     /** Настраивает фильтр остановки при исключениях 1С. */
-    async debugSetExceptionFilter(_params: DebugSetExceptionFilterParams): Promise<AgentResult<void>> {
-        return { success: false, error: 'not implemented' };
+    async debugSetExceptionFilter(params: DebugSetExceptionFilterParams): Promise<AgentResult<void>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.enabled !== 'boolean') {
+            return { success: false, error: 'параметр enabled обязателен (boolean)' };
+        }
+
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+
+        let args: { filters: string[]; filterOptions: Array<{ filterId: string; condition?: string }> };
+        if (!params.enabled) {
+            args = { filters: [], filterOptions: [] };
+        } else if (params.substring) {
+            args = { filters: [], filterOptions: [{ filterId: 'all', condition: params.substring }] };
+        } else {
+            args = { filters: ['all'], filterOptions: [] };
+        }
+
+        try {
+            await entry.session.customRequest('setExceptionBreakpoints', args);
+            return { success: true };
+        } catch (err) {
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
     }
 
     // ─── Ожидание и навигация ────────────────────────────────────────────────

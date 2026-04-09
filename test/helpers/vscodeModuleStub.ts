@@ -70,6 +70,64 @@ class ThemeIcon {
   constructor(public readonly id: string) {}
 }
 
+class Position {
+  constructor(
+    public readonly line: number,
+    public readonly character: number,
+  ) {}
+}
+
+class Range {
+  public readonly start: Position;
+  public readonly end: Position;
+  constructor(startOrLine: Position | number, startCharOrEnd?: Position | number, endLine?: number, endCharacter?: number) {
+    if (startOrLine instanceof Position) {
+      this.start = startOrLine;
+      this.end = startCharOrEnd instanceof Position ? startCharOrEnd : startOrLine;
+    } else {
+      this.start = new Position(startOrLine as number, startCharOrEnd as number);
+      this.end = new Position(endLine ?? startOrLine as number, endCharacter ?? startCharOrEnd as number);
+    }
+  }
+}
+
+class Location {
+  public readonly range: Range;
+  constructor(
+    public readonly uri: { fsPath: string; scheme: string },
+    rangeOrPosition: Range | Position,
+  ) {
+    if (rangeOrPosition instanceof Position) {
+      this.range = new Range(rangeOrPosition, rangeOrPosition);
+    } else {
+      this.range = rangeOrPosition;
+    }
+  }
+}
+
+class Breakpoint {
+  public id: string = '';
+  public verified: boolean = false;
+  constructor(
+    public readonly enabled: boolean = true,
+    public readonly condition?: string,
+    public readonly hitCondition?: string,
+    public readonly logMessage?: string,
+  ) {}
+}
+
+class SourceBreakpoint extends Breakpoint {
+  constructor(
+    public readonly location: Location,
+    enabled?: boolean,
+    condition?: string,
+    hitCondition?: string,
+    logMessage?: string,
+  ) {
+    super(enabled ?? true, condition, hitCondition, logMessage);
+  }
+}
+
 class VSCodeEventEmitter<T> {
   private listeners: Array<(e: T) => void> = [];
   readonly event = (listener: (e: T) => void) => {
@@ -405,6 +463,14 @@ export const debugTestState = {
   onDidStartDebugSessionListeners: [] as Array<(s: unknown) => void>,
   onDidTerminateDebugSessionListeners: [] as Array<(s: unknown) => void>,
   registeredTrackerFactories: [] as Array<{ type: string; factory: unknown }>,
+  // Breakpoints state
+  breakpoints: [] as any[],
+  bpIdCounter: 0,
+  bpListeners: [] as Array<(e: { added: any[]; removed: any[]; changed: any[] }) => void>,
+  // Session mock for customRequest
+  mockSession: null as {
+    customRequest: (command: string, args?: unknown) => Promise<unknown>;
+  } | null,
 };
 
 export function resetDebugTestState(): void {
@@ -416,6 +482,10 @@ export function resetDebugTestState(): void {
   debugTestState.onDidStartDebugSessionListeners = [];
   debugTestState.onDidTerminateDebugSessionListeners = [];
   debugTestState.registeredTrackerFactories = [];
+  debugTestState.breakpoints = [];
+  debugTestState.bpIdCounter = 0;
+  debugTestState.bpListeners = [];
+  debugTestState.mockSession = null;
 }
 
 /** Fire onDidStartDebugSession event for all listeners. */
@@ -430,6 +500,83 @@ export function fireDidTerminateDebugSession(session: unknown): void {
   for (const l of [...debugTestState.onDidTerminateDebugSessionListeners]) {
     l(session);
   }
+}
+
+/**
+ * Fires onDidChangeBreakpoints with changed event to simulate verified status update.
+ * Sets bp.verified and fires changed event.
+ */
+export function fireBreakpointVerified(bp: any, verified: boolean): void {
+  bp.verified = verified;
+  const event = { added: [], removed: [], changed: [bp] };
+  for (const l of [...debugTestState.bpListeners]) {
+    l(event);
+  }
+}
+
+/**
+ * Creates a mock session with configurable customRequest behavior.
+ * Use setNextCustomRequestResponse() or setCustomRequestHandler() to control responses.
+ */
+let _nextCustomRequestResponse: unknown = undefined;
+let _nextCustomRequestIsError = false;
+let _customRequestHandler: ((command: string, args?: unknown) => Promise<unknown>) | null = null;
+
+export function setNextCustomRequestResponse(response: unknown, isError = false): void {
+  _nextCustomRequestResponse = response;
+  _nextCustomRequestIsError = isError;
+  _customRequestHandler = null;
+}
+
+export function setCustomRequestHandler(fn: (command: string, args?: unknown) => Promise<unknown>): void {
+  _customRequestHandler = fn;
+  _nextCustomRequestResponse = undefined;
+  _nextCustomRequestIsError = false;
+}
+
+export function resetCustomRequestState(): void {
+  _nextCustomRequestResponse = undefined;
+  _nextCustomRequestIsError = false;
+  _customRequestHandler = null;
+}
+
+/** Creates a mock DebugSession with controllable customRequest. */
+export function makeMockSession(id: string, type = 'bsl'): {
+  id: string;
+  type: string;
+  name: string;
+  workspaceFolder: undefined;
+  configuration: Record<string, unknown>;
+  customRequest: (command: string, args?: unknown) => Promise<unknown>;
+  lastCustomRequest: { command: string; args: unknown } | null;
+} {
+  const session = {
+    id,
+    type,
+    name: `mock-session-${id}`,
+    workspaceFolder: undefined as undefined,
+    configuration: {} as Record<string, unknown>,
+    lastCustomRequest: null as { command: string; args: unknown } | null,
+    customRequest: async (command: string, args?: unknown): Promise<unknown> => {
+      session.lastCustomRequest = { command, args: args ?? null };
+      if (_customRequestHandler) {
+        return _customRequestHandler(command, args);
+      }
+      if (_nextCustomRequestIsError) {
+        const err = new Error(String(_nextCustomRequestResponse));
+        _nextCustomRequestResponse = undefined;
+        _nextCustomRequestIsError = false;
+        throw err;
+      }
+      if (_nextCustomRequestResponse !== undefined) {
+        const resp = _nextCustomRequestResponse;
+        _nextCustomRequestResponse = undefined;
+        return resp;
+      }
+      throw new Error(`customRequest '${command}' not configured in test`);
+    },
+  };
+  return session;
 }
 
 const debugStub = {
@@ -463,6 +610,48 @@ const debugStub = {
   registerDebugAdapterTrackerFactory: (type: string, factory: unknown): { dispose: () => void } => {
     debugTestState.registeredTrackerFactories.push({ type, factory });
     return { dispose: () => undefined };
+  },
+  addBreakpoints: (bps: any[]): void => {
+    const added: any[] = [];
+    for (const bp of bps) {
+      if (!bp.id) {
+        bp.id = String(++debugTestState.bpIdCounter);
+      }
+      debugTestState.breakpoints.push(bp);
+      added.push(bp);
+    }
+    const event = { added, removed: [], changed: [] };
+    for (const l of [...debugTestState.bpListeners]) {
+      l(event);
+    }
+  },
+  removeBreakpoints: (bps: any[]): void => {
+    const removed: any[] = [];
+    for (const bp of bps) {
+      const i = debugTestState.breakpoints.indexOf(bp);
+      if (i >= 0) {
+        debugTestState.breakpoints.splice(i, 1);
+        removed.push(bp);
+      }
+    }
+    if (removed.length > 0) {
+      const event = { added: [], removed, changed: [] };
+      for (const l of [...debugTestState.bpListeners]) {
+        l(event);
+      }
+    }
+  },
+  get breakpoints(): any[] {
+    return [...debugTestState.breakpoints];
+  },
+  onDidChangeBreakpoints: (cb: (e: { added: any[]; removed: any[]; changed: any[] }) => void): { dispose: () => void } => {
+    debugTestState.bpListeners.push(cb);
+    return {
+      dispose: () => {
+        const i = debugTestState.bpListeners.indexOf(cb);
+        if (i >= 0) { debugTestState.bpListeners.splice(i, 1); }
+      },
+    };
   },
 };
 
@@ -523,6 +712,11 @@ const vscodeStub = {
   ExtensionMode,
   ViewColumn,
   ProgressLocation,
+  Position,
+  Range,
+  Location,
+  Breakpoint,
+  SourceBreakpoint,
   commands: commandsStub,
   env: envStub,
   Disposable,
