@@ -19,7 +19,7 @@ import {
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
-import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId } from './rdbg/rdbgTypes';
+import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem } from './rdbg/rdbgTypes';
 import { BslAttachConfiguration } from './types';
 import { resolveModuleId, resolveBslPathFromRdbgModule } from './moduleIdResolver';
 
@@ -140,6 +140,44 @@ export function dapToRdbgBreakpoints(
     });
 }
 
+/**
+ * Transform DAP setExceptionBreakpoints arguments into RdbgExceptionBreakpointState.
+ * Exported for unit testing.
+ *
+ * Rules:
+ *  - stopOnErrors = true if any filter is selected (filterOptions or legacyFilters).
+ *  - analyzeErrorStr = true only if at least one filterOption has a non-empty condition.
+ *  - Each filterOption with a non-empty condition → RdbgExceptionFilterItem { include: true, text: condition }.
+ *  - Empty condition strings are ignored (no filter entry added).
+ */
+export function dapToExceptionState(
+    filterOptions: DebugProtocol.ExceptionFilterOptions[] | undefined,
+    legacyFilters: string[] | undefined
+): RdbgExceptionBreakpointState {
+    const opts = filterOptions ?? [];
+    const legacy = legacyFilters ?? [];
+
+    const stopOnErrors = opts.length > 0 || legacy.length > 0;
+
+    const filters: RdbgExceptionFilterItem[] = [];
+    for (const opt of opts) {
+        if (opt.condition && opt.condition.trim() !== '') {
+            filters.push({ include: true, text: opt.condition });
+        }
+    }
+
+    const analyzeErrorStr = filters.length > 0 ? true : undefined;
+
+    const state: RdbgExceptionBreakpointState = { stopOnErrors };
+    if (analyzeErrorStr !== undefined) {
+        state.analyzeErrorStr = analyzeErrorStr;
+    }
+    if (filters.length > 0) {
+        state.filters = filters;
+    }
+    return state;
+}
+
 export class BslDebugSession extends DebugSession {
     private _client: RdbgClient | undefined;
     private _transport: RdbgTransport | undefined;
@@ -179,6 +217,16 @@ export class BslDebugSession extends DebugSession {
         response.body.supportsConditionalBreakpoints = true;
         response.body.supportsHitConditionalBreakpoints = true;
         response.body.supportsLogPoints = true;
+        response.body.supportsExceptionFilterOptions = true;
+        response.body.exceptionBreakpointFilters = [
+            {
+                filter: 'all',
+                label: 'Остановка по ошибке',
+                description: 'Останов при возникновении исключения времени выполнения',
+                supportsCondition: true,
+                conditionDescription: 'Подстрока текста ошибки',
+            },
+        ];
 
         this.sendResponse(response);
     }
@@ -376,6 +424,42 @@ export class BslDebugSession extends DebugSession {
             const message = err instanceof Error ? err.message : String(err);
             this.sendErrorResponse(response, 1002, `Ошибка установки точек останова: ${message}`);
             return;
+        }
+
+        this.sendResponse(response);
+    }
+
+    // -------------------------------------------------------------------------
+    // Exception breakpoints
+    // -------------------------------------------------------------------------
+
+    protected async setExceptionBreakPointsRequest(
+        response: DebugProtocol.SetExceptionBreakpointsResponse,
+        args: DebugProtocol.SetExceptionBreakpointsArguments
+    ): Promise<void> {
+        if (!this._client) {
+            response.body = { breakpoints: [] };
+            this.sendResponse(response);
+            return;
+        }
+
+        try {
+            const state = dapToExceptionState(args.filterOptions, args.filters);
+            await this._client.setExceptionBreakpoints(state);
+
+            const filterCount = state.filters?.length ?? 0;
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: exception breakpoints updated — stopOnErrors=${state.stopOnErrors}` +
+                (filterCount > 0 ? `, ${filterCount} filter(s)` : '') +
+                '\n',
+                'console'
+            ));
+
+            response.body = { breakpoints: [{ verified: true }] };
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.sendEvent(new OutputEvent(`BSL Debug: ошибка установки exception breakpoint: ${message}\n`, 'stderr'));
+            response.body = { breakpoints: [] };
         }
 
         this.sendResponse(response);
