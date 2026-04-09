@@ -198,6 +198,10 @@ export const vscodeTestState = {
   /** When set, `showInformationMessage` returns this instead of `undefined`. */
   informationMessageResult: undefined as string | undefined,
   executedCommands: [] as unknown[][],
+  /** Handler for executeCommand — если задан, вызывается вместо дефолтного undefined (P7b-2). */
+  executeCommandHandler: undefined as ((name: string, args: unknown) => unknown | Promise<unknown>) | undefined,
+  /** История вызовов executeCommand (P7b-2). */
+  executeCommandHistory: [] as Array<{ name: string; args: unknown }>,
   /** Captured messages (Infobase Manager / dialog tests). */
   warningLog: [] as string[],
   errorLog: [] as string[],
@@ -439,6 +443,8 @@ export function resetVscodeTestState(): void {
   vscodeTestState.filesReadonlyIncludeUpdateThrows = false;
   vscodeTestState.informationMessageResult = undefined;
   vscodeTestState.executedCommands = [];
+  vscodeTestState.executeCommandHandler = undefined;
+  vscodeTestState.executeCommandHistory = [];
   vscodeTestState.warningLog = [];
   vscodeTestState.errorLog = [];
   vscodeTestState.informationLog = [];
@@ -455,6 +461,16 @@ export function resetVscodeTestState(): void {
   vscodeTestState.outputChannelLines = [];
   vscodeTestState.outputChannelChunks = [];
   restoreVscodeWorkspaceFoldersGetter();
+}
+
+/** Задаёт handler для vscode.commands.executeCommand в тестах (P7b-2). */
+export function setExecuteCommandHandler(fn: ((name: string, args: unknown) => unknown | Promise<unknown>) | undefined): void {
+  vscodeTestState.executeCommandHandler = fn;
+}
+
+/** Возвращает историю вызовов vscode.commands.executeCommand (P7b-2). */
+export function getExecuteCommandHistory(): Array<{ name: string; args: unknown }> {
+  return vscodeTestState.executeCommandHistory;
 }
 
 // ─── vscode.debug stub ───────────────────────────────────────────────────────
@@ -668,8 +684,13 @@ const commandsStub = {
     vscodeTestState.registeredCommandHandlers.set(id, callback as (...args: unknown[]) => unknown);
     return { dispose: () => undefined };
   },
-  executeCommand: async (...args: unknown[]): Promise<unknown> => {
-    vscodeTestState.executedCommands.push(args);
+  executeCommand: async (name: string, ...args: unknown[]): Promise<unknown> => {
+    vscodeTestState.executedCommands.push([name, ...args]);
+    const firstArg = args[0];
+    vscodeTestState.executeCommandHistory.push({ name, args: firstArg });
+    if (vscodeTestState.executeCommandHandler) {
+      return vscodeTestState.executeCommandHandler(name, firstArg);
+    }
     return undefined;
   },
 };

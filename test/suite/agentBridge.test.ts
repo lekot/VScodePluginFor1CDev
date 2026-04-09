@@ -1,5 +1,5 @@
 /**
- * Unit-тесты для AgentBridge (P7b-1).
+ * Unit-тесты для AgentBridge (P7b-1 + P7b-2).
  * Реальные HTTP запросы к реальному серверу на random port.
  * Работают без VS Code runtime (core suite / mocha TDD).
  */
@@ -7,6 +7,11 @@
 import * as assert from 'assert';
 import * as http from 'http';
 import { AgentBridge } from '../../src/agent/agentBridge';
+import {
+    setExecuteCommandHandler,
+    getExecuteCommandHistory,
+    resetVscodeTestState,
+} from '../helpers/vscodeModuleStub';
 
 // ---------------------------------------------------------------------------
 // HTTP helper
@@ -56,6 +61,9 @@ function httpRequest(opts: HttpRequestOptions): Promise<HttpResponse> {
     });
 }
 
+// Whitelist для тестов — разрешает test.allowed.<lowercase>
+const TEST_PATTERN = /^test\.allowed\.[a-z]+$/;
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -66,11 +74,13 @@ suite('AgentBridge — HTTP server', () => {
     let token: string;
 
     setup(async () => {
-        bridge = new AgentBridge();
+        bridge = new AgentBridge({ commandPattern: TEST_PATTERN });
         ({ port, token } = await bridge.start());
     });
 
     teardown(async () => {
+        setExecuteCommandHandler(undefined);
+        resetVscodeTestState();
         await bridge?.stop();
         bridge = undefined;
     });
@@ -128,10 +138,10 @@ suite('AgentBridge — HTTP server', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 5. POST /command с правильным token
+    // 5. POST /command — whitelisted команда без handler → undefined → 200
     // -------------------------------------------------------------------------
 
-    test('POST /command с правильным token → 200 { success: false, error: "not implemented" }', async () => {
+    test('POST /command с whitelisted name → 200, тело undefined (executeCommand не задан)', async () => {
         const res = await httpRequest({
             port,
             method: 'POST',
@@ -140,12 +150,11 @@ suite('AgentBridge — HTTP server', () => {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ name: 'listObjects', args: {} }),
+            body: JSON.stringify({ name: 'test.allowed.foo', args: {} }),
         });
         assert.strictEqual(res.status, 200);
-        const json = JSON.parse(res.body) as Record<string, unknown>;
-        assert.strictEqual(json['success'], false);
-        assert.strictEqual(json['error'], 'not implemented');
+        // executeCommand возвращает undefined → JSON.stringify(undefined) ?? 'null' → тело 'null'
+        assert.strictEqual(res.body, 'null', `ожидалось "null", получено: ${res.body}`);
     });
 
     // -------------------------------------------------------------------------
@@ -158,7 +167,7 @@ suite('AgentBridge — HTTP server', () => {
             method: 'POST',
             path: '/command',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: 'listObjects' }),
+            body: JSON.stringify({ name: 'test.allowed.foo' }),
         });
         assert.strictEqual(res.status, 401);
         const json = JSON.parse(res.body) as Record<string, unknown>;
@@ -178,7 +187,7 @@ suite('AgentBridge — HTTP server', () => {
                 'Authorization': 'Bearer invalidtoken',
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ name: 'listObjects' }),
+            body: JSON.stringify({ name: 'test.allowed.foo' }),
         });
         assert.strictEqual(res.status, 401);
         const json = JSON.parse(res.body) as Record<string, unknown>;
@@ -262,7 +271,7 @@ suite('AgentBridge — HTTP server', () => {
     test('после stop() новые соединения отбиваются (ECONNREFUSED)', async () => {
         const stoppedPort = port;
         await bridge!.stop();
-        bridge = undefined; // afterEach не будет вызывать stop() повторно
+        bridge = undefined; // teardown не будет вызывать stop() повторно
 
         let connectionError: Error | undefined;
         try {
@@ -279,5 +288,238 @@ suite('AgentBridge — HTTP server', () => {
             code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ECONNRESET',
             `Ожидался ECONNREFUSED/ETIMEDOUT/ECONNRESET, получено: ${code}`
         );
+    });
+
+    // =========================================================================
+    // P7b-2: Новые тесты — whitelist + executeCommand dispatch
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // 13. Whitelisted команда вызывает executeCommand и возвращает результат
+    // -------------------------------------------------------------------------
+
+    test('whitelisted команда → executeCommand вызван → результат проксируется в response', async () => {
+        setExecuteCommandHandler((_name, _args) => ({ success: true, data: { x: 1 } }));
+
+        const res = await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: 'test.allowed.run', args: {} }),
+        });
+
+        assert.strictEqual(res.status, 200);
+        const json = JSON.parse(res.body) as Record<string, unknown>;
+        assert.strictEqual(json['success'], true);
+        const data = json['data'] as Record<string, unknown>;
+        assert.strictEqual(data['x'], 1);
+    });
+
+    // -------------------------------------------------------------------------
+    // 14. executeCommand вызывается с правильным name и args
+    // -------------------------------------------------------------------------
+
+    test('executeCommand вызывается с правильным name и args', async () => {
+        let capturedName: string | undefined;
+        let capturedArgs: unknown;
+
+        setExecuteCommandHandler((name, args) => {
+            capturedName = name;
+            capturedArgs = args;
+            return { ok: true };
+        });
+
+        const res = await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: 'test.allowed.check', args: { foo: 'bar' } }),
+        });
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(capturedName, 'test.allowed.check');
+        assert.deepStrictEqual(capturedArgs, { foo: 'bar' });
+
+        const history = getExecuteCommandHistory();
+        assert.strictEqual(history.length, 1);
+        assert.strictEqual(history[0].name, 'test.allowed.check');
+        assert.deepStrictEqual(history[0].args, { foo: 'bar' });
+    });
+
+    // -------------------------------------------------------------------------
+    // 15. args undefined → executeCommand вызывается с {}
+    // -------------------------------------------------------------------------
+
+    test('POST без args → executeCommand вызывается с {}', async () => {
+        let capturedArgs: unknown = 'not-set';
+
+        setExecuteCommandHandler((_name, args) => {
+            capturedArgs = args;
+            return null;
+        });
+
+        await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: 'test.allowed.noargs' }),
+        });
+
+        assert.deepStrictEqual(capturedArgs, {});
+    });
+
+    // -------------------------------------------------------------------------
+    // 16. Non-whitelisted команда → 403
+    // -------------------------------------------------------------------------
+
+    test('non-whitelisted команда → 403 с error и name', async () => {
+        const res = await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: 'evil.command', args: {} }),
+        });
+
+        assert.strictEqual(res.status, 403);
+        const json = JSON.parse(res.body) as Record<string, unknown>;
+        assert.strictEqual(json['error'], 'forbidden command');
+        assert.strictEqual(json['name'], 'evil.command');
+    });
+
+    // -------------------------------------------------------------------------
+    // 17. executeCommand бросает Error → 200 + { success: false, error: msg }
+    // -------------------------------------------------------------------------
+
+    test('executeCommand бросает Error → 200 + { success: false, error: "msg" }', async () => {
+        setExecuteCommandHandler((_name, _args) => {
+            throw new Error('command failed for testing');
+        });
+
+        const res = await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: 'test.allowed.throw', args: {} }),
+        });
+
+        assert.strictEqual(res.status, 200);
+        const json = JSON.parse(res.body) as Record<string, unknown>;
+        assert.strictEqual(json['success'], false);
+        assert.strictEqual(json['error'], 'command failed for testing');
+    });
+
+    // -------------------------------------------------------------------------
+    // 18. executeCommand бросает не-Error (строку) → 200 + { success: false, error: '<строка>' }
+    // -------------------------------------------------------------------------
+
+    test('executeCommand бросает строку → 200 + { success: false, error: "<строка>" }', async () => {
+        setExecuteCommandHandler((_name, _args) => {
+            // eslint-disable-next-line no-throw-literal
+            throw 'string error thrown';
+        });
+
+        const res = await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: 'test.allowed.throwstr', args: {} }),
+        });
+
+        assert.strictEqual(res.status, 200);
+        const json = JSON.parse(res.body) as Record<string, unknown>;
+        assert.strictEqual(json['success'], false);
+        assert.strictEqual(json['error'], 'string error thrown');
+    });
+
+    // -------------------------------------------------------------------------
+    // 19. Body > 1MB → 413 + { error: 'payload too large' }
+    // -------------------------------------------------------------------------
+
+    test('body > 1MB → 413 + { error: "payload too large" }', async () => {
+        const hugeValue = 'x'.repeat(1024 * 1024 + 100);
+        const largeBody = JSON.stringify({ name: 'test.allowed.big', data: hugeValue });
+
+        const res = await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: largeBody,
+        });
+
+        assert.strictEqual(res.status, 413);
+        const json = JSON.parse(res.body) as Record<string, unknown>;
+        assert.strictEqual(json['error'], 'payload too large');
+    });
+
+    // -------------------------------------------------------------------------
+    // 20. Разные regex: whitelist принимает foo.bar, отбивает bar.foo
+    // -------------------------------------------------------------------------
+
+    test('разные commandPattern: /^foo\\.\\w+$/ принимает foo.bar, отбивает bar.foo', async () => {
+        // Отдельный bridge с другим паттерном
+        const fooBridge = new AgentBridge({ commandPattern: /^foo\.\w+$/ });
+        const { port: fooPort, token: fooToken } = await fooBridge.start();
+
+        try {
+            setExecuteCommandHandler(() => ({ matched: true }));
+
+            // foo.bar — должен пройти
+            const resOk = await httpRequest({
+                port: fooPort,
+                method: 'POST',
+                path: '/command',
+                headers: {
+                    'Authorization': `Bearer ${fooToken}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: 'foo.bar', args: {} }),
+            });
+            assert.strictEqual(resOk.status, 200, 'foo.bar должен вернуть 200');
+
+            // bar.foo — должен быть отбит
+            const resFail = await httpRequest({
+                port: fooPort,
+                method: 'POST',
+                path: '/command',
+                headers: {
+                    'Authorization': `Bearer ${fooToken}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: 'bar.foo', args: {} }),
+            });
+            assert.strictEqual(resFail.status, 403, 'bar.foo должен вернуть 403');
+            const failJson = JSON.parse(resFail.body) as Record<string, unknown>;
+            assert.strictEqual(failJson['name'], 'bar.foo');
+        } finally {
+            await fooBridge.stop();
+        }
     });
 });
