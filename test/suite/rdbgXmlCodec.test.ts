@@ -24,6 +24,7 @@ import {
   encodeInitSettings,
   encodeGetTargets,
   encodeSetBreakpoints,
+  encodeSetBreakOnRTE,
   encodeStep,
   encodeContinue,
   encodeGetCallStack,
@@ -378,6 +379,62 @@ suite('rdbgXmlCodec — encoders', () => {
     test('escapes XML special chars in expression', () => {
       const xml = encodeEvaluate(DBG_UI_ID, TARGET_ID, SEANCE_ID, 'a<b&c', 0);
       assert.ok(xml.includes('a&lt;b&amp;c'), 'special chars escaped');
+    });
+  });
+
+  suite('encodeSetBreakOnRTE', () => {
+    test('disabled — stopOnErrors=false, no filters — snapshot', () => {
+      const xml = encodeSetBreakOnRTE(DBG_UI_ID, { stopOnErrors: false });
+      const expected = readFixture('setBreakOnRTE-disabled.xml');
+      assert.strictEqual(normalizeXml(xml), normalizeXml(expected));
+    });
+
+    test('enabled — stopOnErrors=true, no filters — snapshot', () => {
+      const xml = encodeSetBreakOnRTE(DBG_UI_ID, { stopOnErrors: true });
+      const expected = readFixture('setBreakOnRTE-enabled-no-filters.xml');
+      assert.strictEqual(normalizeXml(xml), normalizeXml(expected));
+    });
+
+    test('enabled with one filter — russian text, analyzeErrorStr=true — snapshot', () => {
+      const xml = encodeSetBreakOnRTE(DBG_UI_ID, {
+        stopOnErrors: true,
+        analyzeErrorStr: true,
+        filters: [{ include: true, text: 'Деление на' }],
+      });
+      const expected = readFixture('setBreakOnRTE-enabled-one-filter.xml');
+      assert.strictEqual(normalizeXml(xml), normalizeXml(expected));
+    });
+
+    test('enabled with two filters (include + exclude) — snapshot', () => {
+      const xml = encodeSetBreakOnRTE(DBG_UI_ID, {
+        stopOnErrors: true,
+        analyzeErrorStr: true,
+        filters: [
+          { include: true,  text: 'Деление на' },
+          { include: false, text: 'Доступ к полям' },
+        ],
+      });
+      const expected = readFixture('setBreakOnRTE-enabled-two-filters.xml');
+      assert.strictEqual(normalizeXml(xml), normalizeXml(expected));
+    });
+
+    test('uses RDBGSetRunTimeErrorProcessingRequest type', () => {
+      const xml = encodeSetBreakOnRTE(DBG_UI_ID, { stopOnErrors: false });
+      assert.ok(xml.includes('RDBGSetRunTimeErrorProcessingRequest'), 'request type present');
+    });
+
+    test('filter text is XML-escaped — special chars', () => {
+      const xml = encodeSetBreakOnRTE(DBG_UI_ID, {
+        stopOnErrors: true,
+        analyzeErrorStr: true,
+        filters: [{ include: true, text: 'a<b&c' }],
+      });
+      assert.ok(xml.includes('a&lt;b&amp;c'), 'special chars must be XML-escaped in filter text');
+    });
+
+    test('debugRTEFilter namespace present in output', () => {
+      const xml = encodeSetBreakOnRTE(DBG_UI_ID, { stopOnErrors: false });
+      assert.ok(xml.includes('http://v8.1c.ru/8.3/debugger/debugRTEFilter'), 'RTE namespace must be declared');
     });
   });
 

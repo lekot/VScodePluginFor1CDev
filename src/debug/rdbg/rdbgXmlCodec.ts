@@ -33,6 +33,7 @@ import {
   RdbgEvalResult,
   RdbgModuleId,
   RdbgRuntimeError,
+  RdbgExceptionBreakpointState,
 } from './rdbgTypes';
 import {
   RdbgEvent,
@@ -47,6 +48,7 @@ const NS_BASE = 'http://v8.1c.ru/8.3/debugger/debugBaseData';
 const NS_RDBG = 'http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse';
 const NS_CALC = 'http://v8.1c.ru/8.3/debugger/debugCalculations';
 const NS_BP   = 'http://v8.1c.ru/8.3/debugger/debugBreakpoints';
+const NS_RTE  = 'http://v8.1c.ru/8.3/debugger/debugRTEFilter';
 const NS_CFG  = 'http://v8.1c.ru/8.1/data/enterprise/current-config';
 const NS_V8   = 'http://v8.1c.ru/8.1/data/core';
 const NS_XS   = 'http://www.w3.org/2001/XMLSchema';
@@ -57,6 +59,7 @@ const DEF_ALIAS = 'DefAlias';
 const P_RDBG = 'debugRDBGRequestResponse';
 const P_CALC = 'debugCalculations';
 const P_BP   = 'debugBreakpoints';
+const P_RTE  = 'debugRTEFilter';
 
 /** Standard namespace declarations for the <request> root element. */
 const REQUEST_NS_ATTRS =
@@ -64,6 +67,7 @@ const REQUEST_NS_ATTRS =
   ` xmlns:${P_RDBG}="${NS_RDBG}"` +
   ` xmlns:${P_BP}="${NS_BP}"` +
   ` xmlns:${P_CALC}="${NS_CALC}"` +
+  ` xmlns:${P_RTE}="${NS_RTE}"` +
   ` xmlns:cfg="${NS_CFG}"` +
   ` xmlns:v8="${NS_V8}"` +
   ` xmlns:xs="${NS_XS}"` +
@@ -509,6 +513,50 @@ export function encodeAttachTargets(
   }
 
   return wrapRequest(fields, `${P_RDBG}:RDBGAttachDetachDebugTargetsRequest`);
+}
+
+/**
+ * SetBreakOnRTE — configure "stop on runtime error" with optional substring filters.
+ * HTTP cmd: "setBreakOnRTE".
+ * Maps to RDBGSetRunTimeErrorProcessingRequest (Messages.cs, namespace debugRDBGRequestResponse).
+ * The <state> element is of type RteFilterStorage (namespace debugRTEFilter).
+ * Each <strTemplate> entry is of type RteFilterItem (namespace debugRTEFilter) with
+ * <include> (bool) and <str> (substring to match against the error description).
+ *
+ * Note: analyzeErrorStr and strTemplate are both required in the XSD even when empty.
+ * When state.analyzeErrorStr is undefined, it defaults to false.
+ * When state.filters is undefined or empty, no <strTemplate> elements are emitted.
+ */
+export function encodeSetBreakOnRTE(
+  debugUiId: string,
+  state: RdbgExceptionBreakpointState,
+  infobaseAlias?: string
+): string {
+  const alias = infobaseAlias ?? DEF_ALIAS;
+  const analyzeErrorStr = state.analyzeErrorStr === true ? 'true' : 'false';
+
+  let stateXml =
+    `    <${P_RTE}:stopOnErrors>${state.stopOnErrors}</${P_RTE}:stopOnErrors>\n` +
+    `    <${P_RTE}:analyzeErrorStr>${analyzeErrorStr}</${P_RTE}:analyzeErrorStr>\n`;
+
+  if (state.filters && state.filters.length > 0) {
+    for (const f of state.filters) {
+      stateXml +=
+        `    <${P_RTE}:strTemplate>\n` +
+        `      <${P_RTE}:include>${f.include}</${P_RTE}:include>\n` +
+        `      <${P_RTE}:str>${escapeXml(f.text)}</${P_RTE}:str>\n` +
+        `    </${P_RTE}:strTemplate>\n`;
+    }
+  }
+
+  const fields =
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:state>\n` +
+    stateXml +
+    `  </${P_RDBG}:state>\n`;
+
+  return wrapRequest(fields, `${P_RDBG}:RDBGSetRunTimeErrorProcessingRequest`);
 }
 
 // ---------------------------------------------------------------------------

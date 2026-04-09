@@ -70,3 +70,29 @@ export interface RdbgRuntimeError {
   moduleId: RdbgModuleId;
   lineNo: number;
 }
+
+/**
+ * One filter entry for exception breakpoints.
+ * Maps to RteFilterItem in Messages.cs (namespace debugRTEFilter).
+ *  include: true  → stop only when error text contains `text`
+ *  include: false → stop when error text does NOT contain `text`
+ * Corresponds to DAP ExceptionFilterOptions.condition.
+ */
+export interface RdbgExceptionFilterItem {
+  include: boolean;  // include (true) or exclude (false) mode
+  text: string;      // substring to match against the runtime error description
+}
+
+/**
+ * State for the "stop on runtime error" setting.
+ * Maps to RteFilterStorage in Messages.cs (namespace debugRTEFilter).
+ *  stopOnErrors    — master switch; sent as cmd=setBreakOnRTE.
+ *  analyzeErrorStr — enable substring filtering (required when filters are present).
+ *  filters         — list of include/exclude substring filters (maps to strTemplate[]).
+ * Corresponds to DAP SetExceptionBreakpointsArguments.
+ */
+export interface RdbgExceptionBreakpointState {
+  stopOnErrors: boolean;
+  analyzeErrorStr?: boolean;    // enable only when filters are present
+  filters?: RdbgExceptionFilterItem[];
+}
