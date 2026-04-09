@@ -22,7 +22,7 @@ import { RdbgTransport } from './rdbg/rdbgTransport';
 import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode } from './rdbg/rdbgTypes';
 import { ReferencesTable } from './referencesTable';
 import { BslAttachConfiguration } from './types';
-import { resolveModuleId, resolveBslPathFromRdbgModule } from './moduleIdResolver';
+import { resolveModuleId, resolveBslPathFromRdbgModule, readExtensionName, ResolverConfigRoot } from './moduleIdResolver';
 
 // ---------------------------------------------------------------------------
 // BpWorkspaceEntry — internal state for one BSL module's breakpoints.
@@ -254,7 +254,8 @@ export class BslDebugSession extends DebugSession {
     private readonly _reverseThreadMap: Map<string, number> = new Map();
     private _nextThreadId: number = 1;
     private _lastError: RdbgRuntimeError | undefined;
-    private _workspaceRoot: string = '';
+    /** Ordered list of configuration roots: [mainRoot, ...extensionRoots] */
+    private _configRoots: string[] = [];
     /** Workspace snapshot: extKey → BpWorkspaceEntry (replaces old _knownBreakpoints). */
     private readonly _bpWorkspace: Map<string, BpWorkspaceEntry> = new Map();
     /** Frames from last DBGUIExtCmdInfoCallStackFormed (ping); 1C often does not fill HTTP getCallStack for UI. */
@@ -351,9 +352,13 @@ export class BslDebugSession extends DebugSession {
 
         this._client.startPolling(cfg.pingIntervalMs ?? 1000);
 
-        // Store workspace root for module ID resolution
-        if ((cfg as Record<string, unknown>)['workspaceRoot']) {
-            this._workspaceRoot = String((cfg as Record<string, unknown>)['workspaceRoot']);
+        // Build config roots list for module ID resolution
+        {
+            const workspaceRoot = (cfg as Record<string, unknown>)['workspaceRoot'] as string | undefined;
+            const extensions = cfg.extensions ?? [];
+            this._configRoots = [workspaceRoot, ...extensions].filter(
+                (r): r is string => typeof r === 'string' && r.length > 0
+            );
         }
 
         this.sendEvent(new InitializedEvent());
@@ -415,9 +420,9 @@ export class BslDebugSession extends DebugSession {
             const requestedBps = args.breakpoints ?? [];
 
             // Resolve BSL file path to RDBG module ID (objectUUID + propertyId suffix)
-            const resolved = await resolveModuleId(sourcePath, this._workspaceRoot);
+            const resolved = await resolveModuleId(sourcePath, this._configRoots);
             this.sendEvent(new OutputEvent(
-                `[bsl-debug] setBreakpoints: source=${sourcePath} workspaceRoot=${this._workspaceRoot} resolved=${resolved ? `${resolved.label} (${resolved.moduleId.objectId}:${resolved.moduleId.propertyId})` : 'UNRESOLVED'}\n`,
+                `[bsl-debug] setBreakpoints: source=${sourcePath} configRoots=${JSON.stringify(this._configRoots)} resolved=${resolved ? `${resolved.label} (${resolved.moduleId.objectId}:${resolved.moduleId.propertyId})` : 'UNRESOLVED'}\n`,
                 'console'
             ));
 
@@ -876,11 +881,12 @@ export class BslDebugSession extends DebugSession {
                       ? path.basename(item.moduleId.objectId)
                       : `Frame ${index + 1}`;
             let resolvedPath: string | undefined;
-            if (this._workspaceRoot.length > 0) {
+            if (this._configRoots.length > 0) {
                 try {
+                    const resolverRoots = await this._buildResolverRoots();
                     resolvedPath = await resolveBslPathFromRdbgModule(
                         item.moduleId,
-                        this._workspaceRoot
+                        resolverRoots
                     );
                 } catch {
                     resolvedPath = undefined;
@@ -895,6 +901,19 @@ export class BslDebugSession extends DebugSession {
             out.push(new StackFrame(frameId, label, source, item.lineNo));
         }
         return out;
+    }
+
+    /**
+     * Build an array of ResolverConfigRoot by reading extensionName from each config root.
+     * Cached by readExtensionName — repeated calls are cheap.
+     */
+    private async _buildResolverRoots(): Promise<ResolverConfigRoot[]> {
+        const result: ResolverConfigRoot[] = [];
+        for (const root of this._configRoots) {
+            const extensionName = await readExtensionName(root);
+            result.push({ extensionName, root });
+        }
+        return result;
     }
 
     private _setupClientListeners(client: RdbgClient): void {
