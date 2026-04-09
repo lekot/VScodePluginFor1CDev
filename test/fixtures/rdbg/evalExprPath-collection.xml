@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<request xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:debugBreakpoints="http://v8.1c.ru/8.3/debugger/debugBreakpoints" xmlns:debugCalculations="http://v8.1c.ru/8.3/debugger/debugCalculations" xmlns:debugRTEFilter="http://v8.1c.ru/8.3/debugger/debugRTEFilter" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:infoBaseAlias>DefAlias</debugRDBGRequestResponse:infoBaseAlias>
+  <debugRDBGRequestResponse:idOfDebuggerUI>aaaaaaaa-0000-0000-0000-000000000001</debugRDBGRequestResponse:idOfDebuggerUI>
+  <debugRDBGRequestResponse:calcWaitingTime>100</debugRDBGRequestResponse:calcWaitingTime>
+  <debugRDBGRequestResponse:targetID>
+    <id>bbbbbbbb-0000-0000-0000-000000000001</id>
+  </debugRDBGRequestResponse:targetID>
+  <debugRDBGRequestResponse:expr>
+    <debugCalculations:srcCalcInfo>
+      <debugCalculations:expressionID>__UUID__</debugCalculations:expressionID>
+      <debugCalculations:expressionResultID>__UUID__</debugCalculations:expressionResultID>
+      <debugCalculations:stackLevel>2</debugCalculations:stackLevel>
+      <debugCalculations:calcItem>
+        <debugCalculations:itemType>expression</debugCalculations:itemType>
+        <debugCalculations:expression>МойМассив</debugCalculations:expression>
+      </debugCalculations:calcItem>
+      <debugCalculations:interfaces>collection</debugCalculations:interfaces>
+    </debugCalculations:srcCalcInfo>
+  </debugRDBGRequestResponse:expr>
+</request>

@@ -1,7 +1,6 @@
 import {
   RdbgTargetInfo,
   RdbgRuntimeError,
-  RdbgBreakpointRequest,
   RdbgBreakpoint,
   RdbgEvalResult,
   RdbgCallStackItem,
@@ -36,10 +35,15 @@ export interface RdbgRuntimeErrorEvent {
   error: RdbgRuntimeError;
 }
 
+/**
+ * Phase 4 (OQ-5): redesigned to match the etalon DbguiExtCmdInfoCorrectedBp (Messages.cs:4213).
+ * The etalon carries bpWorkspace → moduleBPInfo[] (canonical corrected state of BPs for modules).
+ * There is no original/corrected pair distinction in the protocol — only the corrected set.
+ */
 export interface RdbgBreakpointCorrectedEvent {
   type: 'breakpointCorrected';
-  original: RdbgBreakpointRequest;
-  corrected: RdbgBreakpoint;
+  /** Canonical: list of corrected breakpoints from bpWorkspace[].moduleBPInfo[].bpInfo[] */
+  bps: RdbgBreakpoint[];
 }
 
 export interface RdbgExpressionEvaluatedEvent {

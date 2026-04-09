@@ -30,12 +30,14 @@ import {
   encodeGetCallStack,
   encodeEvalLocalVariables,
   encodeEvaluate,
+  encodeEvalExpressionPath,
   encodeAttachTargets,
   decodeTargets,
   decodeBreakpoints,
   decodeCallStack,
   decodeVariables,
   decodeEvalResult,
+  decodeEvalResultExpanded,
   decodePingEvents,
 } from '../../src/debug/rdbg/rdbgXmlCodec';
 
@@ -46,6 +48,16 @@ import {
 /** Collapse all whitespace runs to a single space and trim. Used for snapshot comparison. */
 function normalizeXml(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Replace all UUID patterns with __UUID__ for deterministic snapshot comparison
+ * of functions that call crypto.randomUUID() internally.
+ */
+function normalizeXmlForSnapshot(s: string): string {
+  return normalizeXml(
+    s.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '__UUID__')
+  );
 }
 
 /** Read a fixture file from test/fixtures/rdbg/ */
@@ -684,6 +696,152 @@ suite('rdbgXmlCodec — decoders', () => {
       assert.strictEqual(bps[0].lineNo, 42);
       assert.strictEqual(bps[0].enabled, true);
       assert.strictEqual(bps[0].moduleId.objectId, '11111111-0000-0000-0000-000000000001');
+    });
+  });
+
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4: encodeEvalExpressionPath and decodeEvalResultExpanded
+// ---------------------------------------------------------------------------
+
+suite('rdbgXmlCodec — Phase 4 encodeEvalExpressionPath', () => {
+
+  suite('encodeEvalExpressionPath', () => {
+    test('single expression — view=context — snapshot', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'expression', expression: 'МояПеременная' }], 'context');
+      const expected = readFixture('evalExprPath-context-only.xml');
+      assert.strictEqual(normalizeXmlForSnapshot(xml), normalizeXmlForSnapshot(expected));
+    });
+
+    test('expression + property → drilldown into structure field — snapshot', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [
+        { type: 'expression', expression: 'МояСтруктура' },
+        { type: 'property',   property: 'Контрагент' },
+      ], 'context');
+      const expected = readFixture('evalExprPath-property-drilldown.xml');
+      assert.strictEqual(normalizeXmlForSnapshot(xml), normalizeXmlForSnapshot(expected));
+    });
+
+    test('expression + index — view=collection — snapshot', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 2, [
+        { type: 'expression', expression: 'МойМассив' },
+      ], 'collection');
+      const expected = readFixture('evalExprPath-collection.xml');
+      assert.strictEqual(normalizeXmlForSnapshot(xml), normalizeXmlForSnapshot(expected));
+    });
+
+    test('expression + property + index → 3-level path — snapshot', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 1, [
+        { type: 'expression', expression: 'Структура' },
+        { type: 'property',   property: 'Строки' },
+        { type: 'index',      index: 0 },
+      ], 'context');
+      const expected = readFixture('evalExprPath-multilevel.xml');
+      assert.strictEqual(normalizeXmlForSnapshot(xml), normalizeXmlForSnapshot(expected));
+    });
+
+    test('view=collection — interfaces element contains "collection"', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'expression', expression: 'x' }], 'collection');
+      assert.ok(xml.includes('>collection<'), 'interfaces=collection present');
+      assert.ok(!xml.includes('>context<'), 'interfaces≠context');
+    });
+
+    test('view=enum — interfaces element contains "enum"', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'expression', expression: 'x' }], 'enum');
+      assert.ok(xml.includes('>enum<'), 'interfaces=enum present');
+    });
+
+    test('stackLevel is emitted inside srcCalcInfo', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 3, [{ type: 'expression', expression: 'x' }], 'context');
+      assert.ok(xml.includes(':stackLevel>3<'), 'stackLevel=3 present');
+    });
+
+    test('property step uses itemType=property and <property> element', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'property', property: 'МоёПоле' }], 'context');
+      assert.ok(xml.includes('>property<'), 'itemType=property');
+      assert.ok(xml.includes('>МоёПоле<'),  '<property> value present');
+    });
+
+    test('index step uses itemType=index and <index> element', () => {
+      const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'index', index: 7 }], 'collection');
+      assert.ok(xml.includes('>index<'), 'itemType=index');
+      assert.ok(xml.includes('>7<'),     '<index> value present');
+    });
+
+    test('encodeEvaluate is a thin wrapper — produces equivalent XML to encodeEvalExpressionPath', () => {
+      const via = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'expression', expression: 'МоёВыражение' }], 'context');
+      const direct = encodeEvaluate(DBG_UI_ID, TARGET_ID, SEANCE_ID, 'МоёВыражение', 0);
+      // Both should produce structurally identical XML (minus random UUIDs)
+      assert.strictEqual(normalizeXmlForSnapshot(via), normalizeXmlForSnapshot(direct));
+    });
+  });
+
+});
+
+suite('rdbgXmlCodec — Phase 4 decodeEvalResultExpanded', () => {
+
+  suite('decodeEvalResultExpanded', () => {
+    test('context view: parses ValueOfContextPropInfo[] into children', () => {
+      const xml = readFixture('evalExpr-response-context-properties.xml');
+      const result = decodeEvalResultExpanded(xml);
+      // Root
+      assert.strictEqual(result.root.typeName,     'Структура');
+      assert.strictEqual(result.root.isExpandable, true);
+      assert.strictEqual(result.root.error,        undefined);
+      // Children
+      assert.strictEqual(result.children.length, 2);
+      assert.strictEqual(result.children[0].name,     'Контрагент');
+      assert.strictEqual(result.children[0].typeName, 'Строка');
+      assert.ok(result.children[0].value.length > 0, 'value is decoded');
+      assert.strictEqual(result.children[1].name,     'Сумма');
+      assert.strictEqual(result.children[1].typeName, 'Число');
+      assert.strictEqual(result.children[1].value,    '42');
+    });
+
+    test('collection view: parses ValueOfCollectionInfo[] with collectionSize', () => {
+      const xml = readFixture('evalExpr-response-collection-items.xml');
+      const result = decodeEvalResultExpanded(xml);
+      // Root
+      assert.strictEqual(result.root.typeName,          'Список');
+      assert.strictEqual(result.root.isIndexedCollection, true);
+      assert.strictEqual(result.root.collectionSize,    3);
+      // Children
+      assert.strictEqual(result.children.length, 3);
+      assert.strictEqual(result.children[0].typeName, 'Строка');
+      assert.strictEqual(result.children[2].typeName, 'Число');
+      assert.strictEqual(result.children[2].value,    '42');
+    });
+
+    test('enum view: parses ValueOfEnumInfo[]', () => {
+      const xml = readFixture('evalExpr-response-enum.xml');
+      const result = decodeEvalResultExpanded(xml);
+      assert.strictEqual(result.root.typeName, 'Булево');
+      assert.strictEqual(result.children.length, 2);
+      // ordinal used as name
+      assert.strictEqual(result.children[0].name, '0');
+      assert.strictEqual(result.children[1].name, '1');
+    });
+
+    test('error result: errorOccurred=true with exceptionStr', () => {
+      const xml = readFixture('evalExpr-response-error.xml');
+      const result = decodeEvalResultExpanded(xml);
+      assert.ok(result.root.error, 'error must be set');
+      assert.strictEqual(result.root.error, 'Ошибка выражения');
+      assert.deepStrictEqual(result.children, []);
+    });
+
+    test('isIndexedCollection=true flagged in root.isIndexedCollection', () => {
+      const xml = readFixture('evalExpr-response-collection-items.xml');
+      const result = decodeEvalResultExpanded(xml);
+      assert.strictEqual(result.root.isIndexedCollection, true);
+    });
+
+    test('backward compat: decodeEvalResult returns same root as decodeEvalResultExpanded', () => {
+      const xml = readFixture('evalExpr-response-simple.xml');
+      const expanded = decodeEvalResultExpanded(xml);
+      const legacy   = decodeEvalResult(xml);
+      assert.deepStrictEqual(legacy, expanded.root);
     });
   });
 
