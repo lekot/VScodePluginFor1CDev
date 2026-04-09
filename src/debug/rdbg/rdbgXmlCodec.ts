@@ -343,8 +343,9 @@ export function encodeStep(
 
 /**
  * Continue — resume execution after a break.
- * Fallback: uses step endpoint with action=Continue until the exact command is confirmed.
- * TODO: verify whether this is a separate command or action value "Continue"/"go".
+ * Uses the same "step" endpoint as encodeStep, with action=Continue.
+ * Confirmed: DebugStepAction enum in Messages.cs lists {Unknown, Step, StepIn, StepOut, Continue}.
+ * There is no separate HTTP command for continue — "step" cmd with action Continue is the protocol.
  */
 export function encodeContinue(
   debugUiId: string,
@@ -357,13 +358,14 @@ export function encodeContinue(
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
     targetIdTypedToXml(targetId, '  ') +
-    `  <${P_RDBG}:action>Continue</${P_RDBG}:action>\n`; // TODO: may be "go", "resume", or numeric
+    `  <${P_RDBG}:action>Continue</${P_RDBG}:action>\n`;
   return wrapRequest(fields, `${P_RDBG}:RDBGStepRequest`);
 }
 
 /**
  * GetCallStack — request the current call stack for a target.
- * TODO: exact field set not yet confirmed with a live response.
+ * Confirmed: RDBGGetCallStackRequest (Messages.cs line 5836) contains a single <id> element
+ * of type DebugTargetIdLight — matched by targetIdAsIdToXml.
  */
 export function encodeGetCallStack(
   debugUiId: string,
@@ -447,7 +449,10 @@ export interface RdbgTargetRef {
 
 /**
  * AttachTargets / DetachTargets — attach or detach specific debug targets.
- * TODO: exact structure of targetID list and attach/detach flag not yet confirmed.
+ * Confirmed: RDBGAttachDetachDebugTargetsRequest (Messages.cs line 5574) uses:
+ *   - <attach> bool flag (not separate attach/detach commands)
+ *   - repeated <id> elements of type DebugTargetIdLight
+ * HTTP cmd: "attachDetachDbgTargets" (DebugServerClient.cs line 159).
  */
 export function encodeAttachTargets(
   debugUiId: string,
@@ -459,7 +464,7 @@ export function encodeAttachTargets(
   let fields =
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:attach>${attach}</${P_RDBG}:attach>\n`; // TODO: may be separate attach/detach commands
+    `  <${P_RDBG}:attach>${attach}</${P_RDBG}:attach>\n`;
 
   for (const target of targets) {
     fields +=
@@ -477,7 +482,8 @@ export function encodeAttachTargets(
 
 /**
  * Decode the list of debug targets from a GetTargets response.
- * TODO: exact wrapper element name (item / targets / target) not yet confirmed.
+ * Confirmed: RdbgsGetDbgTargetsResponse (Messages.cs line 5365) uses repeated <id> elements
+ * of type DebugTargetId. The fallback chain handles platform variants.
  */
 export function decodeTargets(xml: string): RdbgTargetInfo[] {
   const root = parseXml(xml);
@@ -499,7 +505,8 @@ export function decodeTargets(xml: string): RdbgTargetInfo[] {
 
 /**
  * Decode confirmed breakpoints from a SetBreakpoints response.
- * TODO: wrapper element name not yet confirmed.
+ * Confirmed: RdbgGetBreakpointsResponse (Messages.cs line 5689) uses XmlArray("bpWorkspace")
+ * with XmlArrayItem("moduleBPInfo"). The fallback chain handles platform variants.
  */
 export function decodeBreakpoints(xml: string): RdbgBreakpoint[] {
   const root = parseXml(xml);
