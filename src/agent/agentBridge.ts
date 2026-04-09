@@ -1,9 +1,11 @@
 // src/agent/agentBridge.ts
 // HTTP-bridge для Agent API — принимает JSON-команды на 127.0.0.1:<random-port>.
-// P7b-2: whitelist + executeCommand dispatch.
+// P7b-3: bridge discovery file (write/remove .vscode/cdt-agent-bridge.json).
 
+import * as fs from 'fs';
 import * as http from 'http';
 import * as net from 'net';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
 
@@ -20,6 +22,8 @@ const BODY_LIMIT_BYTES = 1024 * 1024; // 1 MB
 export interface AgentBridgeOptions {
     /** Whitelist regex для имён команд. Команды НЕ соответствующие паттерну будут отбиты с 403. */
     commandPattern: RegExp;
+    /** Папка workspace для записи bridge.json. Если не задана — bridge file НЕ создаётся. */
+    workspaceFolder?: string;
 }
 
 export interface AgentBridgeStartResult {
@@ -36,9 +40,12 @@ export class AgentBridge {
     private _token: string | undefined;
     private _port: number | undefined;
     private _commandPattern: RegExp;
+    private _workspaceFolder?: string;
+    private _bridgeFilePath?: string;
 
     constructor(opts: AgentBridgeOptions) {
         this._commandPattern = opts.commandPattern;
+        this._workspaceFolder = opts.workspaceFolder;
     }
 
     /**
@@ -62,6 +69,21 @@ export class AgentBridge {
         this._port = (server.address() as net.AddressInfo).port;
         this._server = server;
 
+        if (this._workspaceFolder) {
+            const vscodeDir = path.join(this._workspaceFolder, '.vscode');
+            await fs.promises.mkdir(vscodeDir, { recursive: true });
+            const bridgeFile = path.join(vscodeDir, 'cdt-agent-bridge.json');
+            const content = {
+                port: this._port,
+                token: this._token,
+                pid: process.pid,
+                workspaceFolder: this._workspaceFolder,
+                createdAt: new Date().toISOString(),
+            };
+            await fs.promises.writeFile(bridgeFile, JSON.stringify(content, null, 2), 'utf8');
+            this._bridgeFilePath = bridgeFile;
+        }
+
         return { port: this._port, token: this._token };
     }
 
@@ -78,6 +100,19 @@ export class AgentBridge {
         this._server = undefined;
         this._token = undefined;
         this._port = undefined;
+
+        if (this._bridgeFilePath) {
+            try {
+                await fs.promises.unlink(this._bridgeFilePath);
+            } catch (err: unknown) {
+                // Игнорируем ENOENT — файл уже удалён
+                if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+                    // Логируем но не пробрасываем
+                    console.error('[AgentBridge] failed to remove bridge file:', err);
+                }
+            }
+            this._bridgeFilePath = undefined;
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -61,3 +61,6 @@ scripts/va-features/va.epf
 scripts/rdbg-*.mjs
 /FormatSamples/empty_conf_reexport/
 out-test-bsl/
+
+# CDT Agent Bridge discovery file (per-workspace runtime data)
+.vscode/cdt-agent-bridge.json

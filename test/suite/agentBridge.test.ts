@@ -1,11 +1,14 @@
 /**
- * Unit-тесты для AgentBridge (P7b-1 + P7b-2).
+ * Unit-тесты для AgentBridge (P7b-1 + P7b-2 + P7b-3).
  * Реальные HTTP запросы к реальному серверу на random port.
  * Работают без VS Code runtime (core suite / mocha TDD).
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
+import * as path from 'path';
 import { AgentBridge } from '../../src/agent/agentBridge';
 import {
     setExecuteCommandHandler,
@@ -65,6 +68,12 @@ function httpRequest(opts: HttpRequestOptions): Promise<HttpResponse> {
 const TEST_PATTERN = /^test\.allowed\.[a-z]+$/;
 
 // ---------------------------------------------------------------------------
+// Tmp dir для discovery file тестов
+// ---------------------------------------------------------------------------
+
+let tmpDir: string;
+
+// ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
 
@@ -72,6 +81,14 @@ suite('AgentBridge — HTTP server', () => {
     let bridge: AgentBridge | undefined;
     let port: number;
     let token: string;
+
+    suiteSetup(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cdt-bridge-test-'));
+    });
+
+    suiteTeardown(() => {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
 
     setup(async () => {
         bridge = new AgentBridge({ commandPattern: TEST_PATTERN });
@@ -520,6 +537,157 @@ suite('AgentBridge — HTTP server', () => {
             assert.strictEqual(failJson['name'], 'bar.foo');
         } finally {
             await fooBridge.stop();
+        }
+    });
+
+    // =========================================================================
+    // P7b-3: Новые тесты — bridge discovery file
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // 21. Bridge file создаётся после start() с правильным содержимым
+    // -------------------------------------------------------------------------
+
+    test('P7b-3: bridge file создаётся после start() с правильными полями', async () => {
+        const wsDir = path.join(tmpDir, 'test-21');
+        fs.mkdirSync(wsDir, { recursive: true });
+
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN, workspaceFolder: wsDir });
+        try {
+            const { port: p, token: t } = await b.start();
+            const bridgeFile = path.join(wsDir, '.vscode', 'cdt-agent-bridge.json');
+
+            assert.ok(fs.existsSync(bridgeFile), 'bridge file должен существовать после start()');
+
+            const raw = fs.readFileSync(bridgeFile, 'utf8');
+            const content = JSON.parse(raw) as Record<string, unknown>;
+
+            assert.strictEqual(typeof content['port'], 'number', 'port должен быть числом');
+            assert.ok((content['port'] as number) > 0, 'port должен быть > 0');
+            assert.strictEqual(content['port'], p, 'port в файле совпадает с возвращённым');
+
+            assert.strictEqual(typeof content['token'], 'string', 'token должен быть строкой');
+            assert.ok(/^[0-9a-f]{64}$/.test(content['token'] as string), 'token должен быть 64-char hex');
+            assert.strictEqual(content['token'], t, 'token в файле совпадает с возвращённым');
+
+            assert.strictEqual(typeof content['pid'], 'number', 'pid должен быть числом');
+            assert.strictEqual(content['pid'], process.pid, 'pid в файле совпадает с process.pid');
+
+            assert.strictEqual(content['workspaceFolder'], wsDir, 'workspaceFolder совпадает');
+
+            assert.strictEqual(typeof content['createdAt'], 'string', 'createdAt должен быть строкой');
+            const dt = new Date(content['createdAt'] as string);
+            assert.ok(!isNaN(dt.getTime()), 'createdAt должен быть валидной ISO датой');
+        } finally {
+            await b.stop();
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // 22. Bridge file удаляется после stop()
+    // -------------------------------------------------------------------------
+
+    test('P7b-3: bridge file удаляется после stop()', async () => {
+        const wsDir = path.join(tmpDir, 'test-22');
+        fs.mkdirSync(wsDir, { recursive: true });
+
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN, workspaceFolder: wsDir });
+        await b.start();
+        const bridgeFile = path.join(wsDir, '.vscode', 'cdt-agent-bridge.json');
+        assert.ok(fs.existsSync(bridgeFile), 'bridge file должен существовать после start()');
+
+        await b.stop();
+        assert.ok(!fs.existsSync(bridgeFile), 'bridge file должен быть удалён после stop()');
+    });
+
+    // -------------------------------------------------------------------------
+    // 23. Без workspaceFolder bridge file НЕ создаётся
+    // -------------------------------------------------------------------------
+
+    test('P7b-3: без workspaceFolder bridge file не создаётся', async () => {
+        // bridge из setup() запущен без workspaceFolder — проверяем что никаких файлов нет
+        // (bridge уже запущен в setup, port/token заданы)
+        // Дополнительно создаём отдельный для изоляции:
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN });
+        try {
+            await b.start();
+            // Нет workspaceFolder — нечего проверять по пути,
+            // убеждаемся что stop() не упадёт
+            await b.stop();
+        } catch (err) {
+            assert.fail(`bridge без workspaceFolder не должен падать: ${String(err)}`);
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // 24. Двойной start: файл переписывается с новыми port/token
+    // -------------------------------------------------------------------------
+
+    test('P7b-3: двойной start (с остановкой между) переписывает bridge file', async () => {
+        const wsDir = path.join(tmpDir, 'test-24');
+        fs.mkdirSync(wsDir, { recursive: true });
+        const bridgeFile = path.join(wsDir, '.vscode', 'cdt-agent-bridge.json');
+
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN, workspaceFolder: wsDir });
+
+        // Первый запуск
+        const { port: port1, token: token1 } = await b.start();
+        const content1 = JSON.parse(fs.readFileSync(bridgeFile, 'utf8')) as Record<string, unknown>;
+        assert.strictEqual(content1['port'], port1);
+        assert.strictEqual(content1['token'], token1);
+
+        await b.stop();
+
+        // Второй запуск — новый port/token
+        const { port: port2, token: token2 } = await b.start();
+        const content2 = JSON.parse(fs.readFileSync(bridgeFile, 'utf8')) as Record<string, unknown>;
+        assert.strictEqual(content2['port'], port2);
+        assert.strictEqual(content2['token'], token2);
+
+        // port/token должны отличаться (с очень высокой вероятностью)
+        assert.notStrictEqual(token2, token1, 'token должен быть разным при каждом запуске');
+
+        await b.stop();
+    });
+
+    // -------------------------------------------------------------------------
+    // 25. stop() при отсутствующем bridge file (ручное удаление) — не падает
+    // -------------------------------------------------------------------------
+
+    test('P7b-3: stop() при удалённом bridge file не падает (ENOENT)', async () => {
+        const wsDir = path.join(tmpDir, 'test-25');
+        fs.mkdirSync(wsDir, { recursive: true });
+
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN, workspaceFolder: wsDir });
+        await b.start();
+        const bridgeFile = path.join(wsDir, '.vscode', 'cdt-agent-bridge.json');
+
+        // Удаляем файл вручную до stop()
+        fs.unlinkSync(bridgeFile);
+        assert.ok(!fs.existsSync(bridgeFile), 'файл удалён вручную');
+
+        // stop() должен не упасть, несмотря на отсутствие файла
+        await assert.doesNotReject(async () => { await b.stop(); }, 'stop() при ENOENT не должен бросать');
+    });
+
+    // -------------------------------------------------------------------------
+    // 26. Папка .vscode создаётся если её не было
+    // -------------------------------------------------------------------------
+
+    test('P7b-3: папка .vscode создаётся если её не было', async () => {
+        const wsDir = path.join(tmpDir, 'test-26');
+        fs.mkdirSync(wsDir, { recursive: true });
+        // Убеждаемся что .vscode не существует
+        const vscodeDir = path.join(wsDir, '.vscode');
+        assert.ok(!fs.existsSync(vscodeDir), 'папки .vscode не должно быть до start()');
+
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN, workspaceFolder: wsDir });
+        try {
+            await b.start();
+            assert.ok(fs.existsSync(vscodeDir), 'папка .vscode должна быть создана после start()');
+            assert.ok(fs.existsSync(path.join(vscodeDir, 'cdt-agent-bridge.json')), 'bridge file должен существовать');
+        } finally {
+            await b.stop();
         }
     });
 });
