@@ -1,18 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs';
-import { spawn } from 'child_process';
 import { TreeNode } from '../models/treeNode';
 import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
-import { resolveLaunchExecutable, buildLaunchArgs } from '../services/platformLauncher';
+import { resolveLaunchExecutable } from '../services/platformLauncher';
 import { resolveConfigurationXmlDirectory } from '../bindings/deployService';
-import { Logger } from '../utils/logger';
-
-const DBGS_PORT = 1550;
-const DBGS_POLL_INTERVAL_MS = 500;
-const DBGS_POLL_TIMEOUT_MS = 5000;
+import { BslLaunchConfiguration } from './types';
 
 export type StartDebuggingDeps = {
   node: TreeNode;
@@ -21,26 +15,13 @@ export type StartDebuggingDeps = {
   treeDataProvider: MetadataTreeDataProvider;
 };
 
-async function waitForDbgs(port: number, timeoutMs: number, exitSignal: { exited: boolean }): Promise<boolean> {
-  const url = `http://localhost:${port}/e1crdbg/rdbg`;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (exitSignal.exited) {
-      return false;
-    }
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(DBGS_POLL_INTERVAL_MS) });
-      if (res.status < 600) {
-        return true;
-      }
-    } catch {
-      // not ready yet
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, DBGS_POLL_INTERVAL_MS));
-  }
-  return false;
-}
-
+/**
+ * Facade: resolves all needed info from the tree node and infobase catalog,
+ * then starts a standard DAP "launch" session (type=bsl, request=launch).
+ *
+ * All process lifecycle (dbgs + 1cv8c) is managed inside BslDebugSession.launchRequest
+ * via DebuggeeLauncher. This function does NOT spawn any processes.
+ */
 export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
   const { node, bindingManager, infobaseStorage, treeDataProvider } = deps;
 
@@ -76,7 +57,6 @@ export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
         break;
       }
     } else {
-      // fallback: match by node filePath
       const nodeDir = path.resolve(path.dirname(node.filePath));
       if (nodeDir === src || nodeDir.startsWith(src + path.sep)) {
         matchedBinding = b;
@@ -122,135 +102,49 @@ export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
     return;
   }
 
-  // 8. Resolve platform executable
+  // 8. Resolve platform executable to get platformBin
   const exe = await resolveLaunchExecutable(entry, 'enterprise');
   if (!exe) {
-    // resolveLaunchExecutable already shows an error
+    // resolveLaunchExecutable already shows an error message
     return;
   }
+  const platformBin = path.dirname(exe);
 
-  // 10. Derive dbgs path
-  const binDir = path.dirname(exe);
-  const dbgsName = process.platform === 'win32' ? 'dbgs.exe' : 'dbgs';
-  const dbgsPath = path.join(binDir, dbgsName);
-  if (!fs.existsSync(dbgsPath)) {
-    void vscode.window.showErrorMessage(`dbgs не найден рядом с платформой: ${dbgsPath}`);
-    return;
+  // 9. Build infobase connection string or name
+  // For file infobase: use File=<path> connection string
+  // For server infobase: use Srvr=<server>;Ref=<name> connection string
+  let infobaseArg: string;
+  if (entry.type === 'file') {
+    infobaseArg = `File=${entry.filePath}`;
+  } else {
+    // server type
+    const serverEntry = entry as { server?: string; name?: string };
+    if (serverEntry.server && serverEntry.name) {
+      infobaseArg = `Srvr=${serverEntry.server};Ref=${serverEntry.name}`;
+    } else {
+      infobaseArg = entry.name ?? '';
+    }
   }
 
-  // 12. Pick port
-  const port = DBGS_PORT;
-
-  // 13. Spawn dbgs
-  Logger.info(`[debugLauncher] Запуск dbgs: ${dbgsPath} --port=${port}`);
-  const exitSignal = { exited: false };
-  const dbgsProcess = spawn(dbgsPath, [`--port=${port}`], {
-    detached: false,
-    stdio: 'pipe',
-    windowsHide: true,
-  });
-
-  dbgsProcess.on('exit', (code) => {
-    exitSignal.exited = true;
-    Logger.info(`[debugLauncher] dbgs завершился с кодом ${code}`);
-  });
-
-  dbgsProcess.on('error', (err) => {
-    exitSignal.exited = true;
-    Logger.error('[debugLauncher] Ошибка запуска dbgs', err);
-  });
-
-  // 14. Wait for dbgs readiness
-  const ready = await waitForDbgs(port, DBGS_POLL_TIMEOUT_MS, exitSignal);
-  if (!ready) {
-    dbgsProcess.kill();
-    void vscode.window.showErrorMessage(
-      `Сервер отладки (dbgs) не запустился за ${DBGS_POLL_TIMEOUT_MS / 1000} секунд. Проверьте, не занят ли порт ${port}.`,
-    );
-    return;
-  }
-
-  // 15. Start DAP session
-  const debugConfig: vscode.DebugConfiguration = {
+  // 10. Build BslLaunchConfiguration. Intentionally NOT setting autoAttachTypes —
+  // OQ-1 in the codec audit means encodeSetAutoAttachSettings does not yet match
+  // the canonical Messages.cs schema. Setting it here would only trigger a
+  // diagnostic warning in BslDebugSession.launchRequest without any benefit.
+  // The platform applies its own default once the first target attaches.
+  const launchConfig: BslLaunchConfiguration = {
     type: 'bsl',
-    request: 'attach',
+    request: 'launch',
     name: 'Отладка 1С',
-    host: 'localhost',
-    port: port,
-    infobaseAlias: undefined,
-    autoAttachTargets: true,
-    _dbgsPort: port,
-    workspaceRoot: configPath ?? node.filePath,
+    rootProject: configPath ?? node.filePath ?? '',
+    infobase: infobaseArg,
+    platformPath: platformBin,
+    debugServerHost: 'localhost',
+    debugServerPort: 1550,
   };
 
-  const started = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
-
-  // 16. If not started — cleanup
+  // 11. Start DAP launch session — process lifecycle is owned by BslDebugSession
+  const started = await vscode.debug.startDebugging(workspaceFolder, launchConfig);
   if (!started) {
-    dbgsProcess.kill();
-    void vscode.window.showErrorMessage('Не удалось запустить сеанс отладки BSL. Проверьте настройки отладчика.');
-    return;
+    void vscode.window.showErrorMessage('Не удалось запустить отладку 1С');
   }
-
-  // 17-19. Build 1C client args with credentials and debug flags
-  const password = await infobaseStorage.readPasswordSecret(entry.id);
-  const creds = entry.user || password
-    ? { user: entry.user, password: password ?? undefined }
-    : undefined;
-
-  let launchArgs: string[];
-  try {
-    launchArgs = buildLaunchArgs(entry, 'enterprise', process.platform, creds);
-  } catch (err) {
-    dbgsProcess.kill();
-    void vscode.window.showErrorMessage(
-      `Ошибка построения аргументов запуска 1С: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return;
-  }
-
-  launchArgs.push('/Debug', '-http', '-attach', '/DebuggerURL', `http://localhost:${port}`);
-
-  // 20. Launch 1C client (tracked so we can kill dbgs when 1C exits)
-  Logger.info(`[debugLauncher] Запуск 1С клиента: ${exe}`);
-  const onecProcess = spawn(exe, launchArgs, {
-    detached: false,
-    stdio: 'ignore',
-    windowsHide: false,
-    shell: false,
-  });
-  onecProcess.on('error', (err) => {
-    Logger.error('[debugLauncher] Ошибка запуска 1С клиента', err);
-  });
-
-  // 21. Register cleanup on session termination
-  let sessionEnded = false;
-  const disposable = vscode.debug.onDidTerminateDebugSession((session) => {
-    if (
-      session.configuration.type === 'bsl' &&
-      session.configuration._dbgsPort === port
-    ) {
-      sessionEnded = true;
-      Logger.info('[debugLauncher] Сеанс отладки завершён, останавливаем dbgs');
-      dbgsProcess.kill();
-      disposable.dispose();
-    }
-  });
-
-  // 22. When 1C client exits — terminate the debug session and kill dbgs
-  onecProcess.on('exit', (code) => {
-    Logger.info(`[debugLauncher] 1С клиент завершился с кодом ${code}`);
-    if (!sessionEnded) {
-      sessionEnded = true;
-      disposable.dispose();
-      // Give the DAP session a moment to process any pending events, then kill dbgs
-      setTimeout(() => {
-        if (!dbgsProcess.killed) {
-          Logger.info('[debugLauncher] 1С закрыт, принудительно останавливаем dbgs');
-          dbgsProcess.kill();
-        }
-      }, 2000);
-      void vscode.debug.stopDebugging();
-    }
-  });
 }
