@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result>
+    <errorOccurred>false</errorOccurred>
+    <resultValueInfo>
+      <pres>NDI=</pres>
+      <typeName>Число</typeName>
+      <isExpandable>false</isExpandable>
+    </resultValueInfo>
+  </debugRDBGRequestResponse:result>
+</response>

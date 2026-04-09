@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result>
+    <errorOccurred>true</errorOccurred>
+    <exceptionStr>0J7RiNC40LHQutCwINCy0YvRgNCw0LbQtdC90LjRjw==</exceptionStr>
+    <resultValueInfo>
+      <pres></pres>
+      <typeName></typeName>
+      <isExpandable>false</isExpandable>
+    </resultValueInfo>
+  </debugRDBGRequestResponse:result>
+</response>

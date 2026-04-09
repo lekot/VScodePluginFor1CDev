@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:id>
+    <id>13df3ee2-367c-4c50-9392-5be102ebd1e2</id>
+    <seanceId>828dde1f-247a-4ead-9284-a3fdb21e6750</seanceId>
+    <infoBaseAlias>DefAlias</infoBaseAlias>
+    <userName>Администратор</userName>
+    <targetType>Client</targetType>
+  </debugRDBGRequestResponse:id>
+  <debugRDBGRequestResponse:id>
+    <id>22222222-367c-4c50-9392-5be102ebd1e2</id>
+    <seanceId>33333333-247a-4ead-9284-a3fdb21e6750</seanceId>
+    <infoBaseAlias>DefAlias</infoBaseAlias>
+    <userName>Пользователь2</userName>
+    <targetType>Server</targetType>
+  </debugRDBGRequestResponse:id>
+</response>
