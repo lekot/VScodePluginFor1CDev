@@ -12,6 +12,7 @@ import {
 import { registerExtensionCommands } from '../extensionSupport/extensionCommands';
 import { registerAgentCommands } from '../agent/agentCommands';
 import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
+import { activateAgentBridge } from '../agent/agentBridgeActivation';
 import { FormatDetector } from '../parsers/formatDetector';
 
 export type RegisterAllCommandsArgs = {
@@ -48,6 +49,10 @@ export function registerAllCommands({
     },
     debugRegistry,
   );
+
+  // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code
+  const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  activateAgentBridge(context, wsFolder);
 
   return [
     ...registerUtilityCommandsLeading(utilityDeps),
