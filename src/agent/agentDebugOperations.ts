@@ -348,25 +348,127 @@ export class AgentDebugOperations {
     }
 
     /** Возвращает стек вызовов для указанного потока. */
-    async debugGetStackTrace(_params: DebugThreadParams): Promise<AgentResult<DebugGetStackTraceResult>> {
-        return { success: false, error: 'not implemented' };
+    async debugGetStackTrace(params: DebugThreadParams): Promise<AgentResult<DebugGetStackTraceResult>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.threadId !== 'number') {
+            return { success: false, error: 'параметр threadId обязателен (число)' };
+        }
+
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+
+        try {
+            const trace = await entry.session.customRequest('stackTrace', {
+                threadId: params.threadId,
+                startFrame: 0,
+                levels: 1000,
+            }) as { stackFrames?: Array<{ id: number; name?: string; source?: { path?: string }; line?: number }> };
+
+            const frames = (trace?.stackFrames ?? []).map(f => ({
+                id: f.id,
+                name: f.name ?? '',
+                file: f.source?.path ?? '',
+                line: f.line ?? 0,
+            }));
+
+            return { success: true, data: { frames } };
+        } catch (err) {
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
     }
 
     // ─── Переменные и выражения ───────────────────────────────────────────────
 
     /** Возвращает области видимости переменных для указанного фрейма. */
-    async debugGetScopes(_params: DebugFrameParams): Promise<AgentResult<DebugGetScopesResult>> {
-        return { success: false, error: 'not implemented' };
+    async debugGetScopes(params: DebugFrameParams): Promise<AgentResult<DebugGetScopesResult>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.frameId !== 'number') {
+            return { success: false, error: 'параметр frameId обязателен (число)' };
+        }
+
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+
+        try {
+            const resp = await entry.session.customRequest('scopes', { frameId: params.frameId }) as { scopes?: Array<{ name: string; variablesReference: number }> };
+
+            const scopes = (resp?.scopes ?? []).map(s => ({ name: s.name, varRef: s.variablesReference }));
+            return { success: true, data: { scopes } };
+        } catch (err) {
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
     }
 
     /** Возвращает переменные по ссылке (varRef) из области видимости или дочернего объекта. */
-    async debugGetVariables(_params: DebugGetVariablesParams): Promise<AgentResult<DebugGetVariablesResult>> {
-        return { success: false, error: 'not implemented' };
+    async debugGetVariables(params: DebugGetVariablesParams): Promise<AgentResult<DebugGetVariablesResult>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (typeof params.varRef !== 'number') {
+            return { success: false, error: 'параметр varRef обязателен (число)' };
+        }
+
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+
+        try {
+            const resp = await entry.session.customRequest('variables', { variablesReference: params.varRef }) as { variables?: Array<{ name: string; type?: string; value: string; variablesReference: number }> };
+
+            const vars = (resp?.variables ?? []).map(v => ({
+                name: v.name,
+                type: v.type ?? '',
+                value: v.value,
+                varRef: v.variablesReference,
+            }));
+
+            return { success: true, data: { vars } };
+        } catch (err) {
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
     }
 
     /** Вычисляет BSL-выражение в контексте указанного фрейма. */
-    async debugEvaluate(_params: DebugEvaluateParams): Promise<AgentResult<DebugEvaluateResult>> {
-        return { success: false, error: 'not implemented' };
+    async debugEvaluate(params: DebugEvaluateParams): Promise<AgentResult<DebugEvaluateResult>> {
+        if (!params.sessionId) {
+            return { success: false, error: 'параметр sessionId обязателен' };
+        }
+        if (!params.expression) {
+            return { success: false, error: 'параметр expression обязателен' };
+        }
+
+        const entry = this.registry.get(params.sessionId);
+        if (!entry) {
+            return { success: false, error: 'session not found in registry' };
+        }
+
+        try {
+            const resp = await entry.session.customRequest('evaluate', {
+                expression: params.expression,
+                frameId: params.frameId,
+                context: 'watch',
+            }) as { result: string; type?: string; variablesReference?: number };
+
+            return {
+                success: true,
+                data: {
+                    value: resp?.result ?? '',
+                    type: resp?.type ?? '',
+                    varRef: resp?.variablesReference ?? 0,
+                },
+            };
+        } catch (err) {
+            return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
     }
 
     // ─── Управление выполнением ───────────────────────────────────────────────
