@@ -17,6 +17,7 @@ import {
     RdbgCallStackItem,
     RdbgVariable,
     RdbgEvalResult,
+    RdbgExceptionBreakpointState,
 } from './rdbgTypes';
 import {
     RdbgEvent,
@@ -237,6 +238,19 @@ export class RdbgClient extends EventEmitter {
         // Reuse the set-breakpoints encoder; an empty list signals removal in the codec
         const body = codec.encodeSetBreakpoints(this.debugUiId, bps, this._infobaseAlias);
         await this.transport.send('setBreakpoints', body);
+    }
+
+    /**
+     * Send the exception breakpoint (stop-on-RTE) state to the server.
+     * Maps to the RDBG command `setBreakOnRTE` / RDBGSetRunTimeErrorProcessingRequest.
+     * The server returns an empty body on success.
+     */
+    async setExceptionBreakpoints(state: RdbgExceptionBreakpointState): Promise<void> {
+        this.requireAttached('setExceptionBreakpoints');
+        const body = codec.encodeSetBreakOnRTE(this.debugUiId, state, this._infobaseAlias);
+        this.emit('log', `[setExceptionBreakpoints] REQUEST: stopOnErrors=${state.stopOnErrors} analyzeErrorStr=${state.analyzeErrorStr ?? false} filters=${state.filters?.length ?? 0}`);
+        await this.transport.send('setBreakOnRTE', body);
+        this.emit('log', `[setExceptionBreakpoints] done`);
     }
 
     // -----------------------------------------------------------------------
