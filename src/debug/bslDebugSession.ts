@@ -11,7 +11,7 @@ import {
     Thread,
     StackFrame,
     Scope,
-    // Variable,  // TODO: re-enable when Locals via evalExpr is implemented
+    Variable,
     Source,
     Breakpoint,
     Event,
@@ -19,7 +19,8 @@ import {
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
-import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem } from './rdbg/rdbgTypes';
+import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode } from './rdbg/rdbgTypes';
+import { ReferencesTable } from './referencesTable';
 import { BslAttachConfiguration } from './types';
 import { resolveModuleId, resolveBslPathFromRdbgModule } from './moduleIdResolver';
 
@@ -31,6 +32,73 @@ interface BpWorkspaceEntry {
     source: string;         // absolute BSL file path, used for DAP response filtering
     moduleId: RdbgModuleId;
     bps: RdbgBreakpointRequest[];
+}
+
+// ---------------------------------------------------------------------------
+// FrameRef — payload stored in _frameRefs for each DAP frameId.
+// ---------------------------------------------------------------------------
+interface FrameRef {
+    threadId: number;
+    frameLevel: number;
+}
+
+// ---------------------------------------------------------------------------
+// VariableRef — payload stored in _variableRefs for each variablesReference.
+// ---------------------------------------------------------------------------
+export interface VariableRef {
+    threadId: number;
+    frameLevel: number;
+    path: SourceCalcItem[];
+    view: ViewInterface;
+}
+
+// ---------------------------------------------------------------------------
+// buildDapVariables — pure mapping function, exported for unit testing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Map an array of RdbgVariableNode to DAP Variable objects.
+ * For expandable nodes, adds a new entry to variableRefs and sets variablesReference > 0.
+ * Pure function w.r.t. business logic; has a side effect on variableRefs (adds entries).
+ */
+export function buildDapVariables(
+    parent: VariableRef,
+    children: RdbgVariableNode[],
+    variableRefs: ReferencesTable<VariableRef>
+): DebugProtocol.Variable[] {
+    return children.map((node, i) => {
+        let variablesReference = 0;
+        if (node.isIndexedCollection && parent.view === 'context') {
+            // Switch to collection view for this node
+            variablesReference = variableRefs.add({
+                threadId: parent.threadId,
+                frameLevel: parent.frameLevel,
+                path: [...parent.path, { type: 'property', property: node.name }],
+                view: 'collection',
+            });
+        } else if (node.isExpandable && !node.isIndexedCollection) {
+            // Drill down into object properties
+            variablesReference = variableRefs.add({
+                threadId: parent.threadId,
+                frameLevel: parent.frameLevel,
+                path: [...parent.path, { type: 'property', property: node.name }],
+                view: 'context',
+            });
+        } else if (node.isIndexedCollection && parent.view === 'collection') {
+            // Nested collection inside a collection — use index path
+            variablesReference = variableRefs.add({
+                threadId: parent.threadId,
+                frameLevel: parent.frameLevel,
+                path: [...parent.path, { type: 'index', index: i }],
+                view: 'collection',
+            });
+        }
+        return new Variable(
+            `${node.name} (${node.typeName})`,
+            node.value,
+            variablesReference
+        ) as DebugProtocol.Variable;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +263,10 @@ export class BslDebugSession extends DebugSession {
     private _pausedThreadId: number | undefined;
     /** Dedup key for last StoppedEvent — prevents repeated UI refresh on each ping tick while paused. */
     private _lastStoppedKey: string = '';
+    /** Maps DAP frameId → {threadId, frameLevel}. Cleared on continued for the relevant thread. */
+    private readonly _frameRefs = new ReferencesTable<FrameRef>();
+    /** Maps DAP variablesReference → {threadId, frameLevel, path, view}. Cleared on continued. */
+    private readonly _variableRefs = new ReferencesTable<VariableRef>();
 
     constructor() {
         super();
@@ -510,7 +582,7 @@ export class BslDebugSession extends DebugSession {
                 }
             }
 
-            const stackFrames = await this._rdbgItemsToStackFramesAsync(callStack);
+            const stackFrames = await this._rdbgItemsToStackFramesAsync(callStack, args.threadId);
 
             response.body = { stackFrames, totalFrames: stackFrames.length };
         } catch (err) {
@@ -530,9 +602,21 @@ export class BslDebugSession extends DebugSession {
         response: DebugProtocol.ScopesResponse,
         args: DebugProtocol.ScopesArguments
     ): void {
-        // variablesReference must be > 0; use frameId + 1
-        const variablesReference = args.frameId + 1;
-        const scope = new Scope('Locals', variablesReference, false);
+        const frameRef = this._frameRefs.get(args.frameId);
+        if (!frameRef) {
+            // Fallback: unknown frameId — return empty scopes
+            response.body = { scopes: [] };
+            this.sendResponse(response);
+            return;
+        }
+        // Create a variableRef for the "Locals" scope (empty path = all local variables)
+        const varRef = this._variableRefs.add({
+            threadId: frameRef.threadId,
+            frameLevel: frameRef.frameLevel,
+            path: [],
+            view: 'context',
+        });
+        const scope = new Scope('Локальные', varRef, false);
         response.body = { scopes: [scope] };
         this.sendResponse(response);
     }
@@ -543,7 +627,7 @@ export class BslDebugSession extends DebugSession {
 
     protected async variablesRequest(
         response: DebugProtocol.VariablesResponse,
-        _args: DebugProtocol.VariablesArguments
+        args: DebugProtocol.VariablesArguments
     ): Promise<void> {
         if (!this._client) {
             response.body = { variables: [] };
@@ -551,23 +635,43 @@ export class BslDebugSession extends DebugSession {
             return;
         }
 
-        const threadIdForVars = this._pausedThreadId;
-        const targetId =
-            threadIdForVars !== undefined
-                ? this._threadMap.get(threadIdForVars)
-                : this._threadMap.size > 0
-                  ? (this._threadMap.values().next().value as string)
-                  : undefined;
+        // Resolve the variable reference to its stored state
+        const state = this._variableRefs.get(args.variablesReference);
+        if (!state) {
+            response.body = { variables: [] };
+            this.sendResponse(response);
+            return;
+        }
 
+        const targetId = this._threadMap.get(state.threadId);
         if (!targetId) {
             response.body = { variables: [] };
             this.sendResponse(response);
             return;
         }
 
-        // evalLocalVariables crashes dbgs (CalculationSourceDataStorage namespace bug in 8.3.27).
-        // Configurator uses evalExpr instead. TODO: implement Locals via evalExpr.
-        response.body = { variables: [] };
+        try {
+            let children: RdbgVariableNode[];
+            if (state.path.length === 0) {
+                // Top-level locals scope: use evalLocalVariables (with ADR-1 fallback)
+                children = await this._client.evalLocalVariables(targetId, state.frameLevel);
+            } else {
+                // Drilldown: evaluate path to get nested properties/elements
+                const result = await this._client.evalExpressionPath(
+                    targetId, state.frameLevel, state.path, state.view
+                );
+                children = result.children;
+            }
+
+            const variables = buildDapVariables(state, children, this._variableRefs);
+            response.body = { variables };
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: ошибка получения переменных: ${message}\n`, 'stderr'
+            ));
+            response.body = { variables: [] };
+        }
 
         this.sendResponse(response);
     }
@@ -599,7 +703,14 @@ export class BslDebugSession extends DebugSession {
         }
 
         try {
-            const result = await this._client.evaluate(targetId, args.expression, args.frameId ?? 0);
+            // args.frameId is a DAP-side identifier (a value handed out by _frameRefs.add()),
+            // NOT a stack-frame index. Resolve it back to the real frameLevel before sending
+            // to the platform — otherwise hover-evaluate hits the wrong stack frame and reads
+            // variables from the wrong activation.
+            const frameRef = args.frameId !== undefined ? this._frameRefs.get(args.frameId) : undefined;
+            const frameLevel = frameRef?.frameLevel ?? 0;
+
+            const result = await this._client.evaluate(targetId, args.expression, frameLevel);
 
             if (result.error) {
                 this.sendErrorResponse(response, 1006, result.error);
@@ -751,7 +862,7 @@ export class BslDebugSession extends DebugSession {
     // Client event listeners
     // -------------------------------------------------------------------------
 
-    private async _rdbgItemsToStackFramesAsync(items: RdbgCallStackItem[]): Promise<StackFrame[]> {
+    private async _rdbgItemsToStackFramesAsync(items: RdbgCallStackItem[], threadId: number): Promise<StackFrame[]> {
         // 1C platform sends call stack bottom-up (caller first, current frame last).
         // DAP expects top-down (current frame first). Reverse.
         const reversed = [...items].reverse();
@@ -779,7 +890,9 @@ export class BslDebugSession extends DebugSession {
             const source = resolvedPath
                 ? new Source(sourceName, resolvedPath)
                 : new Source(label);
-            out.push(new StackFrame(index, label, source, item.lineNo));
+            // Phase 4: use ReferencesTable for frameId (1-based, monotonic, thread-aware)
+            const frameId = this._frameRefs.add({ threadId, frameLevel: index });
+            out.push(new StackFrame(frameId, label, source, item.lineNo));
         }
         return out;
     }
@@ -844,6 +957,9 @@ export class BslDebugSession extends DebugSession {
                 this._pausedThreadId = undefined;
             }
             this._lastStoppedKey = '';
+            // Phase 4: clear stale frame/variable references for this thread
+            this._frameRefs.clear(f => f.threadId === threadId);
+            this._variableRefs.clear(v => v.threadId === threadId);
             this.sendEvent(new ContinuedEvent(threadId));
         });
 
