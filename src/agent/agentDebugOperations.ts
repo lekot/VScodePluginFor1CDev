@@ -26,6 +26,7 @@ import type {
     DebugStartFromBindingParams,
 } from './agentDebugTypes';
 import { DebugSessionRegistry } from './debugSessionRegistry';
+import { Logger } from '../utils/logger';
 import type { LastStop } from './debugSessionRegistry';
 import type { BslLaunchConfiguration } from '../debug/types';
 import { startDebuggingFromConfigPath } from '../debug/debugLauncher';
@@ -34,8 +35,8 @@ import type { InfobaseStorageService } from '../infobases/infobaseStorageService
 
 /** Настройки, доступные для переопределения в тестах. */
 export const debugStartConfig = {
-    /** Таймаут ожидания старта сессии (в мс). */
-    timeoutMs: 5000,
+    /** Таймаут ожидания старта сессии (в мс). Реальный launch dbgs+1cv8c занимает 10-20с. */
+    timeoutMs: 30000,
     /** Таймаут ожидания верификации точки останова (в мс). */
     bpVerifyTimeoutMs: 2000,
 };
@@ -52,6 +53,7 @@ const WAIT_FOR_STOP_FRESHNESS_MS = 500;
 export interface AgentDebugOperationsDeps {
     bindingManager: BindingManager;
     infobaseStorage: InfobaseStorageService;
+    getConfigPath: () => string | null;
 }
 
 /** Класс операций Agent Debug API. Инстанциируется в extension.ts с общим реестром сессий. */
@@ -76,10 +78,16 @@ export class AgentDebugOperations {
             return { success: false, error: 'параметр platformPath обязателен' };
         }
 
-        // Найти workspace folder
-        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(params.rootProject));
+        // Нормализовать пути — через JSON/HTTP backslashes могут быть съедены.
+        const rootProject = path.resolve(params.rootProject);
+        const platformPath = path.resolve(params.platformPath);
+
+        // Найти workspace folder — getWorkspaceFolder может не сматчить путь в некоторых
+        // редакторах (Cursor, Kiro), поэтому fallback на первый workspace folder.
+        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(rootProject))
+            ?? vscode.workspace.workspaceFolders?.[0];
         if (!folder) {
-            return { success: false, error: 'workspace folder для rootProject не найден' };
+            return { success: false, error: 'workspace folder для rootProject не найден (нет открытых workspace folders)' };
         }
 
         // Построить конфигурацию запуска
@@ -87,9 +95,9 @@ export class AgentDebugOperations {
             type: 'bsl',
             request: 'launch',
             name: 'Agent Debug Session',
-            rootProject: params.rootProject,
+            rootProject,
             infobase: params.infobase,
-            platformPath: params.platformPath,
+            platformPath,
             debugServerHost: params.debugServerHost ?? 'localhost',
             debugServerPort: params.debugServerPort ?? 1550,
             ...(params.extensions ? { extensions: params.extensions } : {}),
@@ -117,11 +125,21 @@ export class AgentDebugOperations {
         }, debugStartConfig.timeoutMs);
 
         // Запустить отладку
+        Logger.info('AgentDebug.debugStart pre-call', {
+            folderName: folder.name,
+            folderFsPath: folder.uri.fsPath,
+            launchConfig,
+        });
         const started = await vscode.debug.startDebugging(folder, launchConfig);
+        Logger.info('AgentDebug.debugStart post-call', { started });
         if (!started) {
             clearTimeout(timeoutHandle);
             disposable.dispose();
-            return { success: false, error: 'vscode.debug.startDebugging вернул false' };
+            return {
+                success: false,
+                error: `vscode.debug.startDebugging вернул false. folder: ${folder.uri.toString()}, ` +
+                    `config: ${JSON.stringify(launchConfig)}`,
+            };
         }
 
         // Дождаться сессии или таймаута
@@ -570,20 +588,25 @@ export class AgentDebugOperations {
 
     /** Запускает отладочную сессию по configPath, автоматически резолвя binding и инфобазу. */
     async debugStartFromBinding(params: DebugStartFromBindingParams): Promise<AgentResult<DebugStartResult>> {
-        // 1. Валидация
-        if (!params.configPath) {
-            return { success: false, error: 'параметр configPath обязателен' };
-        }
-
-        // 2. Проверка deps
+        // 1. Проверка deps
         if (!this.deps?.bindingManager || !this.deps?.infobaseStorage) {
             return { success: false, error: 'AgentDebugOperations не сконфигурирован для startFromBinding (нет deps)' };
         }
 
-        // 3. Найти workspace folder
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(params.configPath));
+        // 2. Resolve configPath — from params or from active tree config.
+        // path.resolve нормализует слеши и делает путь абсолютным — нужно для путей
+        // пришедших через JSON/HTTP где backslashes могут быть съедены.
+        const rawConfigPath = params.configPath ?? this.deps.getConfigPath?.();
+        if (!rawConfigPath) {
+            return { success: false, error: 'configPath не указан и нет активной конфигурации в дереве' };
+        }
+        const configPath = path.resolve(rawConfigPath);
+
+        // 3. Найти workspace folder — fallback на первый (Cursor/Kiro могут не матчить URI)
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(configPath))
+            ?? vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
-            return { success: false, error: 'workspace folder для configPath не найден' };
+            return { success: false, error: 'workspace folder не найден (нет открытых workspace folders)' };
         }
 
         // 4. Подписаться на старт сессии ДО вызова startDebuggingFromConfigPath
@@ -611,7 +634,7 @@ export class AgentDebugOperations {
         let started: boolean;
         try {
             started = await startDebuggingFromConfigPath({
-                configPath: params.configPath,
+                configPath,
                 workspaceFolder,
                 bindingManager: this.deps.bindingManager,
                 infobaseStorage: this.deps.infobaseStorage,

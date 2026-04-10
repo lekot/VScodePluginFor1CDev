@@ -3,6 +3,7 @@
 
 import * as vscode from 'vscode';
 import { AgentBridge } from './agentBridge';
+import { Logger } from '../utils/logger';
 
 /**
  * Создаёт и стартует AgentBridge если задана папка workspace.
@@ -15,7 +16,9 @@ export function activateAgentBridge(
   context: vscode.ExtensionContext,
   workspaceFolder?: string,
 ): AgentBridge | undefined {
+  Logger.info('AgentBridge activation invoked', { workspaceFolder: workspaceFolder ?? '<undefined>' });
   if (!workspaceFolder) {
+    Logger.warn('AgentBridge: workspaceFolder absent — bridge will NOT start');
     return undefined;
   }
 
@@ -25,10 +28,10 @@ export function activateAgentBridge(
   });
 
   bridge.start().then(({ port }) => {
-    console.log(`[CDT Agent Bridge] listening on 127.0.0.1:${port}`);
+    Logger.info('AgentBridge started', { port, workspaceFolder });
   }).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[CDT Agent Bridge] failed to start:', msg);
+    Logger.error('AgentBridge failed to start', { error: msg });
     void vscode.window.showWarningMessage(`CDT Agent Bridge не запустился: ${msg}`);
   });
 

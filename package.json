@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.41.7",
+  "version": "0.42.7",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -1022,7 +1022,10 @@
             }
           },
           "launch": {
-            "required": ["rootProject", "infobase"],
+            "required": [
+              "rootProject",
+              "infobase"
+            ],
             "properties": {
               "rootProject": {
                 "type": "string",
@@ -1054,15 +1057,22 @@
               },
               "extensions": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "description": "Пути к корням расширений конфигурации",
                 "default": []
               },
               "autoAttachTypes": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "description": "Типы автоподключения: Client, Server, WebClient и др.",
-                "default": ["Client", "Server"]
+                "default": [
+                  "Client",
+                  "Server"
+                ]
               },
               "infobaseAlias": {
                 "type": "string",

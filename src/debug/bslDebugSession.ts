@@ -330,6 +330,11 @@ export class BslDebugSession extends DebugSession {
 
         // 2. Setup DebuggeeLauncher
         this._launcher = new DebuggeeLauncher();
+        this._launcher.onDbgsOutput((chunk, stream) => {
+            // Префикс [dbgs:stderr]/[dbgs:stdout] чтобы было видно происхождение в Debug Console.
+            const prefix = stream === 'stderr' ? '[dbgs:stderr]' : '[dbgs:stdout]';
+            this.sendEvent(new OutputEvent(`${prefix} ${chunk}`, stream === 'stderr' ? 'stderr' : 'console'));
+        });
         this._launcher.onDbgsExit((code) => {
             this.sendEvent(new OutputEvent(
                 `BSL Debug: dbgs завершился с кодом ${code}\n`, 'console'
@@ -348,11 +353,14 @@ export class BslDebugSession extends DebugSession {
         const port = cfg.debugServerPort ?? 1550;
         try {
             await this._launcher.startDbgs({ platformBin, host, port });
-            this.sendEvent(new OutputEvent(
-                `BSL Debug: dbgs запущен на http://${host}:${port}\n`, 'console'
-            ));
+            const dbgsMsg = this._launcher.isExternalDbgs
+                ? `BSL Debug: подключение к существующему dbgs на http://${host}:${port}\n`
+                : `BSL Debug: dbgs запущен на http://${host}:${port}\n`;
+            this.sendEvent(new OutputEvent(dbgsMsg, 'console'));
         } catch (err) {
-            await this._launcher.dispose();
+            if (this._launcher) {
+                try { await this._launcher.dispose(); } catch {}
+            }
             this._launcher = undefined;
             this.sendErrorResponse(
                 response, 1101,
@@ -383,7 +391,9 @@ export class BslDebugSession extends DebugSession {
                 `BSL Debug: подключено к серверу отладки, UI=${this._debugUiId}\n`, 'console'
             ));
         } catch (err) {
-            await this._launcher.dispose();
+            if (this._launcher) {
+                try { await this._launcher.dispose(); } catch {}
+            }
             this._launcher = undefined;
             this._transport?.dispose();
             this._client = undefined;
@@ -408,13 +418,23 @@ export class BslDebugSession extends DebugSession {
             ? ['/IBConnectionString', ib]
             : ['/IBNAME', ib];
 
+        // Defensive: _launcher could be nulled by a concurrent disconnect/exit handler
+        // (race during async startDbgs/attach phases). Capture local reference.
+        const launcherForDebuggee = this._launcher;
+        if (!launcherForDebuggee) {
+            this.sendErrorResponse(
+                response, 1104,
+                'Внутренняя ошибка: launcher был сброшен до запуска 1С (возможно, dbgs упал или сессия отключена).'
+            );
+            return;
+        }
         try {
-            await this._launcher.startDebuggee({ exe, args: baseArgs, debugServerUrl });
+            await launcherForDebuggee.startDebuggee({ exe, args: baseArgs, debugServerUrl });
             this.sendEvent(new OutputEvent(
                 `BSL Debug: 1С клиент запущен: ${exe}\n`, 'console'
             ));
         } catch (err) {
-            await this._launcher.dispose();
+            try { await launcherForDebuggee.dispose(); } catch {}
             this._launcher = undefined;
             this._transport?.dispose();
             this._client = undefined;

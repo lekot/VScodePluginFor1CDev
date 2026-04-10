@@ -3,6 +3,7 @@
 // Хранит сессии VS Code Debug API и последние события остановки.
 
 import * as vscode from 'vscode';
+import { Logger } from '../utils/logger';
 
 // ─── Типы ────────────────────────────────────────────────────────────────────
 
@@ -42,9 +43,12 @@ export class DebugSessionRegistry {
             return;
         }
 
+        Logger.info('DebugSessionRegistry.activate() — subscribing');
         const startSub = vscode.debug.onDidStartDebugSession((session) => {
+            Logger.info('Registry: onDidStartDebugSession', { id: session.id, type: session.type, name: session.name });
             if (session.type === 'bsl') {
                 this._sessions.set(session.id, { session, waiters: [] });
+                Logger.info('Registry: bsl session added', { id: session.id, total: this._sessions.size });
             }
         });
 

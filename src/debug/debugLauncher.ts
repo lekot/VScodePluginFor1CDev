@@ -37,14 +37,22 @@ export async function startDebuggingFromConfigPath(deps: StartDebuggingFromConfi
   const allBindings = await bindingManager.listAll();
   const localBindings = allBindings.filter((b) => b.workspaceFolder === workspaceFolder.name);
 
+  // На Windows пути case-insensitive — драйв буква может прийти как C:\ или c:\
+  // (vscode workspaceFolder.uri.fsPath нормализует drive letter в нижний регистр).
+  const isWin = process.platform === 'win32';
+  const norm = (p: string): string => {
+    const r = path.resolve(p);
+    return isWin ? r.toLowerCase() : r;
+  };
+
   let matchedBinding: (typeof localBindings)[number] | undefined;
+  const configResolved = norm(configPath);
   for (const b of localBindings) {
     const resolved = resolveConfigurationXmlDirectory(workspaceFolder.uri.fsPath, b.configRelativePath);
     if (!resolved.ok) {
       continue;
     }
-    const src = path.resolve(resolved.sourceDir);
-    const configResolved = path.resolve(configPath);
+    const src = norm(resolved.sourceDir);
     if (configResolved === src || configResolved.startsWith(src + path.sep)) {
       matchedBinding = b;
       break;

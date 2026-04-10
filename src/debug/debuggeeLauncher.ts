@@ -60,8 +60,13 @@ const PROCESS_KILL_TIMEOUT_MS = 2_000;
 export class DebuggeeLauncher {
   private _dbgsProcess: ChildProcess | undefined;
   private _debuggeeProcess: ChildProcess | undefined;
+  private _externalDbgs = false;
   private _onDbgsExitHandler: ((code: number | null) => void) | undefined;
   private _onDebuggeeExitHandler: ((code: number | null) => void) | undefined;
+  private _onDbgsOutputHandler: ((chunk: string, stream: 'stdout' | 'stderr') => void) | undefined;
+
+  /** true if startDbgs() reused an externally-running dbgs rather than spawning its own. */
+  get isExternalDbgs(): boolean { return this._externalDbgs; }
 
   // -------------------------------------------------------------------------
   // Public API
@@ -83,6 +88,14 @@ export class DebuggeeLauncher {
       );
     }
 
+    // Preflight: если порт уже отвечает по HTTP — dbgs уже запущен (платформенный сервис
+    // или прошлая сессия). Переиспользуем его: не спавним свой, _dbgsProcess остаётся undefined,
+    // dispose() не будет убивать чужой процесс.
+    if (await this._isPortAlreadyServingDbgs(opts.host, opts.port)) {
+      this._externalDbgs = true;
+      return;
+    }
+
     const args = buildDbgsArgs(opts.host, opts.port);
     const proc = spawn(dbgsPath, args, {
       detached: false,
@@ -91,6 +104,16 @@ export class DebuggeeLauncher {
     });
 
     this._dbgsProcess = proc;
+
+    // Capture dbgs stdout/stderr — без этого диагностика падений теряется (exit code 1 без объяснения).
+    const forward = (stream: 'stdout' | 'stderr') => (buf: Buffer | string) => {
+      const text = typeof buf === 'string' ? buf : buf.toString('utf8');
+      if (text) {
+        this._onDbgsOutputHandler?.(text, stream);
+      }
+    };
+    proc.stdout?.on('data', forward('stdout'));
+    proc.stderr?.on('data', forward('stderr'));
 
     proc.on('exit', (code) => {
       this._onDbgsExitHandler?.(code);
@@ -156,6 +179,11 @@ export class DebuggeeLauncher {
     this._onDbgsExitHandler = handler;
   }
 
+  /** Register a handler that receives raw dbgs stdout/stderr chunks (UTF-8 best-effort). */
+  onDbgsOutput(handler: (chunk: string, stream: 'stdout' | 'stderr') => void): void {
+    this._onDbgsOutputHandler = handler;
+  }
+
   /** Register a handler called when the 1C debuggee process exits. */
   onDebuggeeExit(handler: (code: number | null) => void): void {
     this._onDebuggeeExitHandler = handler;
@@ -164,6 +192,17 @@ export class DebuggeeLauncher {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /** Однократный HTTP-зонд: возвращает true, если кто-то уже отвечает по `/e1crdbg/rdbg`. */
+  private async _isPortAlreadyServingDbgs(host: string, port: number): Promise<boolean> {
+    const url = `http://${host}:${port}/e1crdbg/rdbg`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(DBGS_POLL_INTERVAL_MS) });
+      return res.status < 600;
+    } catch {
+      return false;
+    }
+  }
 
   private async _waitForDbgs(
     host: string,

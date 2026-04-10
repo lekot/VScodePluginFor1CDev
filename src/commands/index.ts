@@ -52,7 +52,11 @@ export function registerAllCommands({
       const bm = state.bindingManager;
       const is = state.infobaseStorage;
       if (!bm || !is) {return undefined;}
-      return { bindingManager: bm, infobaseStorage: is };
+      return {
+        bindingManager: bm,
+        infobaseStorage: is,
+        getConfigPath: () => state.treeDataProvider?.getConfigPath() ?? null,
+      };
     },
   );
 

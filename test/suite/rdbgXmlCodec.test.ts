@@ -354,9 +354,9 @@ suite('rdbgXmlCodec — encoders', () => {
       assert.strictEqual(normalizeXml(actual), normalizeXml(expected));
     });
 
-    test('contains calcWaitingTime 100', () => {
+    test('contains calcWaitingTime 5000', () => {
       const xml = encodeEvalLocalVariables(DBG_UI_ID, TARGET_ID, SEANCE_ID, 0);
-      assert.ok(xml.includes('>100<'), 'calcWaitingTime=100 present');
+      assert.ok(xml.includes('>5000<'), 'calcWaitingTime=5000 present');
     });
 
     test('contains stackLevel 0', () => {
@@ -371,16 +371,16 @@ suite('rdbgXmlCodec — encoders', () => {
       assert.ok(xml.includes('СтрокаКоличества'), 'expression text present');
     });
 
-    test('contains expressionID and expressionResultID elements', () => {
+    test('does not contain expressionID or expressionResultID elements', () => {
       const xml = encodeEvaluate(DBG_UI_ID, TARGET_ID, SEANCE_ID, 'x', 0);
-      assert.ok(xml.includes('expressionID'),       'expressionID present');
-      assert.ok(xml.includes('expressionResultID'), 'expressionResultID present');
+      assert.ok(!xml.includes('expressionID'),       'expressionID absent');
+      assert.ok(!xml.includes('expressionResultID'), 'expressionResultID absent');
     });
 
-    test('contains srcCalcInfo with context interfaces', () => {
+    test('contains srcCalcInfo without interfaces element', () => {
       const xml = encodeEvaluate(DBG_UI_ID, TARGET_ID, SEANCE_ID, 'x', 0);
       assert.ok(xml.includes('srcCalcInfo'), 'srcCalcInfo present');
-      assert.ok(xml.includes('>context<'),   'interfaces=context present');
+      assert.ok(!xml.includes('>context<'), 'interfaces=context absent');
     });
 
     test('contains itemType=expression', () => {
@@ -741,18 +741,18 @@ suite('rdbgXmlCodec — Phase 4 encodeEvalExpressionPath', () => {
       assert.strictEqual(normalizeXmlForSnapshot(xml), normalizeXmlForSnapshot(expected));
     });
 
-    test('view=collection — interfaces element contains "collection"', () => {
+    test('view=collection — no interfaces element emitted', () => {
       const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'expression', expression: 'x' }], 'collection');
-      assert.ok(xml.includes('>collection<'), 'interfaces=collection present');
-      assert.ok(!xml.includes('>context<'), 'interfaces≠context');
+      assert.ok(!xml.includes('>collection<'), 'interfaces=collection absent');
+      assert.ok(!xml.includes('>context<'), 'interfaces=context absent');
     });
 
-    test('view=enum — interfaces element contains "enum"', () => {
+    test('view=enum — no interfaces element emitted', () => {
       const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'expression', expression: 'x' }], 'enum');
-      assert.ok(xml.includes('>enum<'), 'interfaces=enum present');
+      assert.ok(!xml.includes('>enum<'), 'interfaces=enum absent');
     });
 
-    test('stackLevel is emitted inside srcCalcInfo', () => {
+    test('stackLevel is emitted directly inside expr, outside srcCalcInfo', () => {
       const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 3, [{ type: 'expression', expression: 'x' }], 'context');
       assert.ok(xml.includes(':stackLevel>3<'), 'stackLevel=3 present');
     });

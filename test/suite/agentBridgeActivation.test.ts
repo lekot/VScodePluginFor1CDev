@@ -2,6 +2,7 @@
 // Unit-тесты для activateAgentBridge (P7b-4).
 
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -29,6 +30,10 @@ suite('activateAgentBridge', () => {
 
   suiteSetup(() => {
     tmpDir = path.join(os.tmpdir(), `p7b4-test-${Date.now()}`);
+  });
+
+  suiteTeardown(() => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   teardown(() => {

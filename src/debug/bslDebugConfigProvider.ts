@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { BslAttachConfiguration } from './types';
+import { Logger } from '../utils/logger';
 
 /**
  * Resolve `${workspaceFolder:Name}` variable in a path string.
@@ -21,6 +22,13 @@ export class BslDebugConfigProvider implements vscode.DebugConfigurationProvider
         _folder: vscode.WorkspaceFolder | undefined,
         config: vscode.DebugConfiguration
     ): vscode.ProviderResult<vscode.DebugConfiguration> {
+        Logger.info('BslDebugConfigProvider.resolveDebugConfiguration entry', {
+            folder: _folder?.uri.fsPath ?? '<undefined>',
+            configKeys: Object.keys(config ?? {}),
+            type: config?.type,
+            request: (config as Record<string, unknown>)?.request,
+            name: (config as Record<string, unknown>)?.name,
+        });
         const cfg = config as BslAttachConfiguration;
 
         // Apply defaults

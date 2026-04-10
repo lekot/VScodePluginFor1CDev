@@ -22,7 +22,6 @@
  * confirmed with a real server response.
  */
 
-import * as crypto from 'crypto';
 import { XMLParser } from 'fast-xml-parser';
 import {
   RdbgTargetInfo,
@@ -443,7 +442,7 @@ export function encodeEvalLocalVariables(
   const fields =
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:calcWaitingTime>100</${P_RDBG}:calcWaitingTime>\n` +
+    `  <${P_RDBG}:calcWaitingTime>5000</${P_RDBG}:calcWaitingTime>\n` +
     targetIdToXml(targetId, '  ') +
     `  <${P_RDBG}:expr>\n` +
     `    <${P_CALC}:stackLevel>${frameIndex}</${P_CALC}:stackLevel>\n` +
@@ -472,12 +471,10 @@ export function encodeEvalExpressionPath(
   targetId: string,
   frameLevel: number,
   path: SourceCalcItem[],
-  view: ViewInterface,
+  _view: ViewInterface,
   infobaseAlias?: string
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
-  const exprId = crypto.randomUUID();
-  const resultId = crypto.randomUUID();
 
   // Build calcItem elements for each step in the path
   let calcItems = '';
@@ -500,19 +497,18 @@ export function encodeEvalExpressionPath(
     calcItems += `      </${P_CALC}:calcItem>\n`;
   }
 
+  // Структура по эталону Конфигуратора (Wireshark capture, commit b3c5263):
+  // stackLevel СНАРУЖИ srcCalcInfo, НЕТ expressionID/expressionResultID/interfaces.
   const fields =
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:calcWaitingTime>100</${P_RDBG}:calcWaitingTime>\n` +
+    `  <${P_RDBG}:calcWaitingTime>5000</${P_RDBG}:calcWaitingTime>\n` +
     targetIdToXml(targetId, '  ') +
     `  <${P_RDBG}:expr>\n` +
-    `    <${P_CALC}:srcCalcInfo>\n` +
-    `      <${P_CALC}:expressionID>${exprId}</${P_CALC}:expressionID>\n` +
-    `      <${P_CALC}:expressionResultID>${resultId}</${P_CALC}:expressionResultID>\n` +
-    `      <${P_CALC}:stackLevel>${frameLevel}</${P_CALC}:stackLevel>\n` +
-    calcItems +
-    `      <${P_CALC}:interfaces>${view}</${P_CALC}:interfaces>\n` +
-    `    </${P_CALC}:srcCalcInfo>\n` +
+    `    <${P_CALC}:stackLevel>${frameLevel}</${P_CALC}:stackLevel>\n` +
+    (calcItems
+      ? `    <${P_CALC}:srcCalcInfo>\n${calcItems}    </${P_CALC}:srcCalcInfo>\n`
+      : '') +
     `  </${P_RDBG}:expr>\n`;
   return wrapRequest(fields);
 }

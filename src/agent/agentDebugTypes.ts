@@ -199,6 +199,7 @@ export interface DebugEvaluateResult {
 
 /** Параметры запуска отладочной сессии по уже привязанной конфигурации. */
 export interface DebugStartFromBindingParams {
-    /** Абсолютный путь к Configuration.xml или к корню конфигурации (binding резолвится по нему). */
-    configPath: string;
+    /** Абсолютный путь к Configuration.xml или к корню конфигурации (binding резолвится по нему).
+     *  Если не указан — берётся из активной конфигурации дерева (treeDataProvider.getConfigPath). */
+    configPath?: string;
 }
