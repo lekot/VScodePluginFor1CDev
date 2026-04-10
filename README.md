@@ -355,7 +355,8 @@ Workspace → FormatDetector → MetadataParser → TreeNode → TreeDataProvide
 
 ## Благодарности
 
-Отладка 1С из VS Code реализована на основе изысканий проекта [onec-debug-adapter](https://github.com/akpaevj/onec-debug-adapter) — реверс-инжиниринг протокола RDBG и взаимодействия с dbgs.
+- [onec-debug-adapter](https://github.com/akpaevj/onec-debug-adapter) — реверс-инжиниринг протокола RDBG и взаимодействия с dbgs, на основе которого реализована отладка 1С из VS Code.
+- [1c-syntax](https://github.com/1c-syntax/1c-syntax) — грамматики и шаблоны для подсветки синтаксиса BSL/SDBL.
 
 ## Вклад в проект
 
