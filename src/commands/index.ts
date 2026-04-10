@@ -58,6 +58,17 @@ export function registerAllCommands({
         getConfigPath: () => state.treeDataProvider?.getConfigPath() ?? null,
       };
     },
+    // Deploy deps — same shape as debug deps
+    () => {
+      const bm = state.bindingManager;
+      const is = state.infobaseStorage;
+      if (!bm || !is) {return undefined;}
+      return {
+        bindingManager: bm,
+        infobaseStorage: is,
+        getConfigPath: () => state.treeDataProvider?.getConfigPath() ?? null,
+      };
+    },
   );
 
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code

@@ -214,7 +214,12 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            const properties = await XMLWriter.readProperties(filePath);
+            let properties: Record<string, unknown>;
+            if (resolved.nestedType && resolved.nestedName) {
+                properties = await XMLWriter.readNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName);
+            } else {
+                properties = await XMLWriter.readProperties(filePath);
+            }
             return { success: true, data: { properties } };
         } catch (err) {
             return {
@@ -325,6 +330,11 @@ export class AgentOperations {
 
     async deleteTabularSection(params: DeleteTabularSectionParams): Promise<AgentResult> {
         try {
+            const segments = params.path.split('.');
+            if (segments.length !== 4 || segments[2] !== 'TabularSection') {
+                return { success: false, error: `Неверный path для deleteTabularSection: "${params.path}". Ожидается формат: RootTag.ObjectName.TabularSection.TSName` };
+            }
+
             const resolved = resolveAgentPath(this.configRootPath, params.path);
             const { filePath } = resolved;
 
@@ -535,7 +545,13 @@ export class AgentOperations {
                 return { success: false, error: 'Нельзя менять Name через setProperties. Используйте renameObject.' };
             }
 
-            await XMLWriter.writeProperties(filePath, params.properties);
+            const props = this.normalizeTypeProperty(params.properties);
+
+            if (resolved.nestedType && resolved.nestedName) {
+                await XMLWriter.writeNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName, props);
+            } else {
+                await XMLWriter.writeProperties(filePath, props);
+            }
             return { success: true };
         } catch (err) {
             return {
@@ -543,6 +559,22 @@ export class AgentOperations {
                 error: err instanceof Error ? err.message : String(err),
             };
         }
+    }
+
+    /**
+     * If properties contain a bare `Type` string (e.g. "cfg:DocumentRef.Больше"),
+     * wrap it in the XML structure that writeNestedElementProperties expects:
+     * `<Type><v8:Type>cfg:DocumentRef.Больше</v8:Type></Type>`.
+     */
+    private normalizeTypeProperty(properties: Record<string, unknown>): Record<string, unknown> {
+        const typeVal = properties['Type'];
+        if (typeof typeVal !== 'string' || typeVal.trim().startsWith('<')) {
+            return properties;
+        }
+        return {
+            ...properties,
+            Type: `<Type><v8:Type>${typeVal}</v8:Type></Type>`,
+        };
     }
 }
 

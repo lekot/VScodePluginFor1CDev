@@ -5,6 +5,7 @@
 import * as vscode from 'vscode';
 import { AgentOperations } from './agentOperations';
 import { AgentDebugOperations, AgentDebugOperationsDeps } from './agentDebugOperations';
+import { AgentDeployOperations, AgentDeployOperationsDeps, DeployParams } from './agentDeployOperations';
 import { DebugSessionRegistry } from './debugSessionRegistry';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type {
@@ -50,6 +51,7 @@ export function registerAgentCommands(
     getConfigRoot: () => Promise<string | null>,
     debugRegistry: DebugSessionRegistry,
     getDebugDeps?: () => AgentDebugOperationsDeps | undefined,
+    getDeployDeps?: () => AgentDeployOperationsDeps | undefined,
 ): void {
     // ─── 1c-metadata-tree.agent.createObject ─────────────────────────────────
 
@@ -405,6 +407,20 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.deploy ───────────────────────────────────
+
+    const deployCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.deploy',
+        async (params: DeployParams = {}) => {
+            const deps = getDeployDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
+            }
+            const ops = new AgentDeployOperations(deps);
+            return await ops.deploy(params);
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -416,5 +432,6 @@ export function registerAgentCommands(
         debugEvaluateCommand, debugContinueCommand, debugStepOverCommand,
         debugStepInCommand, debugStepOutCommand,
         debugStartFromBindingCommand,
+        deployCommand,
     );
 }
