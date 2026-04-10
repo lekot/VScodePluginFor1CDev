@@ -47,6 +47,7 @@ function makeDeps(overrides?: Partial<AgentDebugOperationsDeps>): AgentDebugOper
     return {
         bindingManager: makeEmptyBindingManager(),
         infobaseStorage: makeEmptyInfobaseStorage(),
+        getConfigPath: () => null,
         ...overrides,
     };
 }
@@ -198,6 +199,7 @@ suite('AgentDebugOperations — debugStartFromBinding', () => {
         ops = new AgentDebugOperations(makeRegistry(), {
             bindingManager: { listAll: async () => [] } as unknown as BindingManager,
             infobaseStorage: makeEmptyInfobaseStorage(),
+            getConfigPath: () => null,
         });
 
         const startPromise = ops.debugStartFromBinding({ configPath: '/c/project/cf' });
@@ -214,6 +216,7 @@ suite('AgentDebugOperations — debugStartFromBinding', () => {
         ops = new AgentDebugOperations(makeRegistry(), {
             bindingManager: null as unknown as BindingManager,
             infobaseStorage: makeEmptyInfobaseStorage(),
+            getConfigPath: () => null,
         });
         const result = await ops.debugStartFromBinding({ configPath: '/c/project/cf' });
         assert.strictEqual(result.success, false);
@@ -227,6 +230,7 @@ suite('AgentDebugOperations — debugStartFromBinding', () => {
         ops = new AgentDebugOperations(makeRegistry(), {
             bindingManager: makeEmptyBindingManager(),
             infobaseStorage: null as unknown as InfobaseStorageService,
+            getConfigPath: () => null,
         });
         const result = await ops.debugStartFromBinding({ configPath: '/c/project/cf' });
         assert.strictEqual(result.success, false);

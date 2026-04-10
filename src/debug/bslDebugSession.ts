@@ -359,7 +359,7 @@ export class BslDebugSession extends DebugSession {
             this.sendEvent(new OutputEvent(dbgsMsg, 'console'));
         } catch (err) {
             if (this._launcher) {
-                try { await this._launcher.dispose(); } catch {}
+                try { await this._launcher.dispose(); } catch { /* no-op */ }
             }
             this._launcher = undefined;
             this.sendErrorResponse(
@@ -392,7 +392,7 @@ export class BslDebugSession extends DebugSession {
             ));
         } catch (err) {
             if (this._launcher) {
-                try { await this._launcher.dispose(); } catch {}
+                try { await this._launcher.dispose(); } catch { /* no-op */ }
             }
             this._launcher = undefined;
             this._transport?.dispose();
@@ -434,7 +434,7 @@ export class BslDebugSession extends DebugSession {
                 `BSL Debug: 1С клиент запущен: ${exe}\n`, 'console'
             ));
         } catch (err) {
-            try { await launcherForDebuggee.dispose(); } catch {}
+            try { await launcherForDebuggee.dispose(); } catch { /* no-op */ }
             this._launcher = undefined;
             this._transport?.dispose();
             this._client = undefined;

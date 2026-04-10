@@ -79,8 +79,8 @@ suite('registerAgentCommands — debug commands registration', () => {
         const before = ctx.subscriptions.length;
         registerAgentCommands(ctx as never, () => null, async () => null, registry);
         const after = ctx.subscriptions.length;
-        // 12 CRUD + 15 debug = 27 новых подписок
-        assert.strictEqual(after - before, 27, `Ожидалось 27 подписок, получено ${after - before}`);
+        // 12 CRUD + 15 debug + 1 deploy = 28 новых подписок
+        assert.strictEqual(after - before, 28, `Ожидалось 28 подписок, получено ${after - before}`);
     });
 
     test('debug-команды не регистрируются в package.json contributes (только programmatic)', () => {

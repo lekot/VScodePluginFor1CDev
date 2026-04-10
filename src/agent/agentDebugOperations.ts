@@ -191,20 +191,18 @@ export class AgentDebugOperations {
         const timeoutMs = debugStartConfig.bpVerifyTimeoutMs ?? BP_VERIFY_TIMEOUT_MS;
 
         return new Promise<AgentResult<DebugSetBreakpointResult>>((resolve) => {
-            let listener: vscode.Disposable | undefined;
-            let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-            let settled = false;
+            const state = { settled: false, listener: undefined as vscode.Disposable | undefined, timeoutHandle: undefined as ReturnType<typeof setTimeout> | undefined };
 
             const finish = (verified: boolean, id: string) => {
-                if (settled) { return; }
-                settled = true;
-                if (timeoutHandle !== undefined) { clearTimeout(timeoutHandle); }
-                listener?.dispose();
+                if (state.settled) { return; }
+                state.settled = true;
+                if (state.timeoutHandle !== undefined) { clearTimeout(state.timeoutHandle); }
+                state.listener?.dispose();
                 resolve({ success: true, data: { verified, id } });
             };
 
             // Подписываемся ДО addBreakpoints
-            listener = vscode.debug.onDidChangeBreakpoints((e) => {
+            const listener = vscode.debug.onDidChangeBreakpoints((e) => {
                 // Проверяем added — ищем наш BP по содержимому (VS Code может вернуть новый instance)
                 const findOurBp = (arr: readonly vscode.Breakpoint[]): vscode.SourceBreakpoint | undefined => {
                     for (const item of arr) {
@@ -223,24 +221,30 @@ export class AgentDebugOperations {
                 const addedMatch = findOurBp(e.added);
                 if (addedMatch) {
                     // Если уже verified — завершаемся
-                    if ((addedMatch as any).verified) {
-                        finish(true, (addedMatch as any).id ?? bp.id ?? '');
+                    const addedBp = addedMatch as unknown as { verified?: boolean; id?: string };
+                    if (addedBp.verified) {
+                        finish(true, addedBp.id ?? bp.id ?? '');
                         return;
                     }
                     // Обновляем id у нашего bp
-                    (bp as any).id = (addedMatch as any).id ?? bp.id;
+                    (bp as unknown as { id?: string }).id = addedBp.id ?? bp.id;
                 }
 
                 // Ищем в changed — verified обновился
                 const changedMatch = findOurBp(e.changed);
-                if (changedMatch && (changedMatch as any).verified) {
-                    finish(true, (changedMatch as any).id ?? (bp as any).id ?? '');
+                if (changedMatch) {
+                    const changedBp = changedMatch as unknown as { verified?: boolean; id?: string };
+                    if (changedBp.verified) {
+                        finish(true, changedBp.id ?? (bp as unknown as { id?: string }).id ?? '');
+                    }
                 }
             });
+            state.listener = listener;
 
-            timeoutHandle = setTimeout(() => {
-                finish(false, (bp as any).id ?? '');
+            const timeoutHandle = setTimeout(() => {
+                finish(false, (bp as unknown as { id?: string }).id ?? '');
             }, timeoutMs);
+            state.timeoutHandle = timeoutHandle;
 
             // Вызываем addBreakpoints
             vscode.debug.addBreakpoints([bp]);
@@ -324,18 +328,19 @@ export class AgentDebugOperations {
             // Ждать через Promise с добавлением в waiters
             const timeoutMs = params.timeoutMs ?? 30_000;
             stop = await new Promise<LastStop | null>((resolve) => {
-                let resolver: ((s: LastStop) => void) | undefined;
+                const resolverHolder: { fn: ((s: LastStop) => void) | undefined } = { fn: undefined };
                 const timer = setTimeout(() => {
-                    if (resolver !== undefined) {
-                        const idx = entry.waiters.indexOf(resolver);
+                    if (resolverHolder.fn !== undefined) {
+                        const idx = entry.waiters.indexOf(resolverHolder.fn);
                         if (idx >= 0) { entry.waiters.splice(idx, 1); }
                     }
                     resolve(null);
                 }, timeoutMs);
-                resolver = (s: LastStop) => {
+                const resolver = (s: LastStop) => {
                     clearTimeout(timer);
                     resolve(s);
                 };
+                resolverHolder.fn = resolver;
                 entry.waiters.push(resolver);
             });
 
