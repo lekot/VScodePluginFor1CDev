@@ -16,51 +16,55 @@ suite('Integration', () => {
   test('createElement creates missing type folder (Documents)', async () => {
     // Arrange: copy fixture to temp dir and remove Documents folder
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), '1cviewer-doc-create-'));
-    const tmpConfigPath = path.join(tmpRoot, 'designer-config-copy');
-    await fs.promises.mkdir(tmpConfigPath, { recursive: true });
+    try {
+      const tmpConfigPath = path.join(tmpRoot, 'designer-config-copy');
+      await fs.promises.mkdir(tmpConfigPath, { recursive: true });
 
-    // Copy fixture (simple recursive copy using native fs.cp APIs)
-    if ((fs.promises as any).cp) {
-      await (fs.promises as any).cp(fixturesPath, tmpConfigPath, { recursive: true });
-    } else if ((fs as any).cpSync) {
-      (fs as any).cpSync(fixturesPath, tmpConfigPath, { recursive: true });
-    } else {
-      throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
+      // Copy fixture (simple recursive copy using native fs.cp APIs)
+      if ((fs.promises as any).cp) {
+        await (fs.promises as any).cp(fixturesPath, tmpConfigPath, { recursive: true });
+      } else if ((fs as any).cpSync) {
+        (fs as any).cpSync(fixturesPath, tmpConfigPath, { recursive: true });
+      } else {
+        throw new Error('Neither fs.promises.cp nor fs.cpSync is available in this Node runtime');
+      }
+
+      const removedDir = path.join(tmpConfigPath, 'Documents');
+      if (fs.existsSync(removedDir)) {
+        await fs.promises.rm(removedDir, { recursive: true, force: true });
+      }
+
+      // Build a placeholder Documents type-node
+      const rootNode: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join(tmpConfigPath, 'Configuration.xml'),
+        children: [],
+      };
+
+      const documentsNode: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: { type: 'Documents' },
+        filePath: path.join(tmpConfigPath, 'Documents'), // expected type folder for Designer
+        children: [],
+        parent: rootNode,
+      };
+
+      // Act: create a new document element under placeholder
+      const newName = `TestDocument_${Date.now()}`;
+      await createElement(documentsNode, newName);
+
+      // Assert: type folder and file exist
+      assert.ok(fs.existsSync(path.join(tmpConfigPath, 'Documents')), 'Documents type folder must be created');
+      const expectedXmlPath = path.join(tmpConfigPath, 'Documents', `${newName}.xml`);
+      assert.ok(fs.existsSync(expectedXmlPath), 'New document XML must be written');
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }
-
-    const removedDir = path.join(tmpConfigPath, 'Documents');
-    if (fs.existsSync(removedDir)) {
-      await fs.promises.rm(removedDir, { recursive: true, force: true });
-    }
-
-    // Build a placeholder Documents type-node
-    const rootNode: TreeNode = {
-      id: 'root',
-      name: 'Configuration',
-      type: MetadataType.Configuration,
-      properties: {},
-      filePath: path.join(tmpConfigPath, 'Configuration.xml'),
-      children: [],
-    };
-
-    const documentsNode: TreeNode = {
-      id: 'Documents',
-      name: 'Documents',
-      type: MetadataType.Document,
-      properties: { type: 'Documents' },
-      filePath: path.join(tmpConfigPath, 'Documents'), // expected type folder for Designer
-      children: [],
-      parent: rootNode,
-    };
-
-    // Act: create a new document element under placeholder
-    const newName = `TestDocument_${Date.now()}`;
-    await createElement(documentsNode, newName);
-
-    // Assert: type folder and file exist
-    assert.ok(fs.existsSync(path.join(tmpConfigPath, 'Documents')), 'Documents type folder must be created');
-    const expectedXmlPath = path.join(tmpConfigPath, 'Documents', `${newName}.xml`);
-    assert.ok(fs.existsSync(expectedXmlPath), 'New document XML must be written');
   });
 
   test('load designer config and display in tree', async () => {

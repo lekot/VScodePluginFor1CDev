@@ -30,6 +30,44 @@ export type { WriteNestedElementOptions };
 export { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from './xml/xmlChildObjectsService';
 export { XmlReadError, XmlParseError, XmlWriteError } from './xml/xmlErrors';
 
+function searchInChildObjects(
+  childObjectsValue: unknown,
+  elementType: string,
+  elementName: string,
+  matchesKey: (k: string, target: string) => boolean,
+  extractName: (el: unknown) => string
+): unknown {
+  const searchArray = (arr: unknown[]): unknown => {
+    for (const item of arr) {
+      if (!item || typeof item !== 'object') {continue;}
+      const o = item as Record<string, unknown>;
+      for (const [key, val] of Object.entries(o)) {
+        if (!matchesKey(key, elementType)) {continue;}
+        const elements = Array.isArray(val) ? val : [val];
+        for (const el of elements) {
+          if (extractName(el) === elementName) {return el;}
+        }
+      }
+    }
+    return undefined;
+  };
+
+  if (Array.isArray(childObjectsValue)) {
+    return searchArray(childObjectsValue);
+  }
+  if (childObjectsValue && typeof childObjectsValue === 'object') {
+    const obj = childObjectsValue as Record<string, unknown>;
+    for (const [key, val] of Object.entries(obj)) {
+      if (!matchesKey(key, elementType)) {continue;}
+      const elements = Array.isArray(val) ? val : [val];
+      for (const el of elements) {
+        if (extractName(el) === elementName) {return el;}
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * XMLWriter utility class for reading and writing XML files
  * while preserving structure and formatting
@@ -443,6 +481,73 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
    * @param properties Properties object to write
    * @throws Error if file cannot be written
    */
+  static async readNestedElementProperties(
+    filePath: string,
+    elementType: string,
+    elementName: string
+  ): Promise<Record<string, unknown>> {
+    const { parsed } = await this.readUtf8AndParse(filePath);
+    const element = this.findNestedElement(parsed, elementType, elementName);
+    if (!element) {
+      throw new XmlReadError(`Nested element ${elementType} '${elementName}' not found in ${filePath}`);
+    }
+    return extractProperties(element);
+  }
+
+  private static findNestedElement(
+    parsed: unknown,
+    elementType: string,
+    elementName: string
+  ): unknown {
+    if (!parsed || typeof parsed !== 'object') {
+      return undefined;
+    }
+
+    const matchesKey = (k: string, target: string) => k === target || k.endsWith(':' + target);
+
+    const extractName = (el: unknown): string => {
+      if (!el || typeof el !== 'object') {return '';}
+      const o = el as Record<string, unknown>;
+      const props = o.Properties ?? Object.values(o).find((v) => v && typeof v === 'object' && !Array.isArray(v) && 'Name' in (v as object));
+      if (!props) {return '';}
+      const propsObj = Array.isArray(props) ? props[0] : props;
+      if (!propsObj || typeof propsObj !== 'object') {return '';}
+      const nameVal = (propsObj as Record<string, unknown>).Name;
+      if (typeof nameVal === 'string') {return nameVal;}
+      if (Array.isArray(nameVal) && nameVal.length > 0) {
+        const first = nameVal[0];
+        if (first && typeof first === 'object' && '#text' in (first as object)) {
+          return String((first as Record<string, unknown>)['#text']);
+        }
+      }
+      return '';
+    };
+
+    const searchInValue = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object') {return undefined;}
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const found = searchInValue(item);
+          if (found !== undefined) {return found;}
+        }
+        return undefined;
+      }
+      const obj = value as Record<string, unknown>;
+      for (const [key, val] of Object.entries(obj)) {
+        if (matchesKey(key, 'ChildObjects')) {
+          const found = searchInChildObjects(val, elementType, elementName, matchesKey, extractName);
+          if (found !== undefined) {return found;}
+        } else if (key !== ':@') {
+          const found = searchInValue(val);
+          if (found !== undefined) {return found;}
+        }
+      }
+      return undefined;
+    };
+
+    return searchInValue(parsed);
+  }
+
   static async writeNestedElementProperties(
     filePath: string,
     elementType: string,

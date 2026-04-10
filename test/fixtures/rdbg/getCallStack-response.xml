@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:callStack>
+    <moduleID>
+      <objectID>498ce97d-6689-44e1-a350-7d98de25218c</objectID>
+      <propertyID>d22e852a-cf8a-4f77-8ccb-3548e7792bea</propertyID>
+    </moduleID>
+    <lineNo>42</lineNo>
+    <presentation>0J/RgNC40LLQtdGCINC80LjRgA==</presentation>
+  </debugRDBGRequestResponse:callStack>
+  <debugRDBGRequestResponse:callStack>
+    <moduleID>
+      <objectID>11111111-6689-44e1-a350-7d98de25218c</objectID>
+      <propertyID>22222222-cf8a-4f77-8ccb-3548e7792bea</propertyID>
+    </moduleID>
+    <lineNo>10</lineNo>
+    <presentation>NDI=</presentation>
+  </debugRDBGRequestResponse:callStack>
+</response>

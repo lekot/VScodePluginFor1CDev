@@ -4,6 +4,9 @@
 
 import * as vscode from 'vscode';
 import { AgentOperations } from './agentOperations';
+import { AgentDebugOperations, AgentDebugOperationsDeps } from './agentDebugOperations';
+import { AgentDeployOperations, AgentDeployOperationsDeps, DeployParams } from './agentDeployOperations';
+import { DebugSessionRegistry } from './debugSessionRegistry';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type {
     CreateObjectParams,
@@ -19,6 +22,19 @@ import type {
     RenameObjectParams,
     SetPropertiesParams,
 } from './types';
+import type {
+    DebugStartParams,
+    DebugStopParams,
+    DebugSetBreakpointParams,
+    DebugClearBreakpointsParams,
+    DebugSetExceptionFilterParams,
+    DebugWaitForStopParams,
+    DebugThreadParams,
+    DebugFrameParams,
+    DebugGetVariablesParams,
+    DebugEvaluateParams,
+    DebugStartFromBindingParams,
+} from './agentDebugTypes';
 
 /**
  * Регистрирует Agent API команды.
@@ -26,11 +42,16 @@ import type {
  * @param context - ExtensionContext для подписок.
  * @param getTreeDataProvider - Геттер провайдера дерева (может быть null до инициализации).
  * @param getConfigRoot - Асинхронный геттер пути к корню конфигурации.
+ * @param debugRegistry - Реестр отладочных сессий.
+ * @param getDebugDeps - Опциональный геттер зависимостей для debug.startFromBinding.
  */
 export function registerAgentCommands(
     context: vscode.ExtensionContext,
     getTreeDataProvider: () => MetadataTreeDataProvider | null,
     getConfigRoot: () => Promise<string | null>,
+    debugRegistry: DebugSessionRegistry,
+    getDebugDeps?: () => AgentDebugOperationsDeps | undefined,
+    getDeployDeps?: () => AgentDeployOperationsDeps | undefined,
 ): void {
     // ─── 1c-metadata-tree.agent.createObject ─────────────────────────────────
 
@@ -236,10 +257,181 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.debug.start ──────────────────────────────────
+
+    const debugStartCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.start',
+        async (params: DebugStartParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugStart(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.stop ───────────────────────────────────
+
+    const debugStopCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.stop',
+        async (params: DebugStopParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugStop(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.setBreakpoint ──────────────────────────
+
+    const debugSetBreakpointCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.setBreakpoint',
+        async (params: DebugSetBreakpointParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugSetBreakpoint(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.clearBreakpoints ───────────────────────
+
+    const debugClearBreakpointsCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.clearBreakpoints',
+        async (params: DebugClearBreakpointsParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugClearBreakpoints(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.setExceptionFilter ─────────────────────
+
+    const debugSetExceptionFilterCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.setExceptionFilter',
+        async (params: DebugSetExceptionFilterParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugSetExceptionFilter(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.waitForStop ────────────────────────────
+
+    const debugWaitForStopCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.waitForStop',
+        async (params: DebugWaitForStopParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugWaitForStop(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.getStackTrace ──────────────────────────
+
+    const debugGetStackTraceCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.getStackTrace',
+        async (params: DebugThreadParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugGetStackTrace(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.getScopes ──────────────────────────────
+
+    const debugGetScopesCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.getScopes',
+        async (params: DebugFrameParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugGetScopes(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.getVariables ───────────────────────────
+
+    const debugGetVariablesCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.getVariables',
+        async (params: DebugGetVariablesParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugGetVariables(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.evaluate ───────────────────────────────
+
+    const debugEvaluateCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.evaluate',
+        async (params: DebugEvaluateParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugEvaluate(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.continue ───────────────────────────────
+
+    const debugContinueCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.continue',
+        async (params: DebugThreadParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugContinue(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.stepOver ───────────────────────────────
+
+    const debugStepOverCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.stepOver',
+        async (params: DebugThreadParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugStepOver(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.stepIn ─────────────────────────────────
+
+    const debugStepInCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.stepIn',
+        async (params: DebugThreadParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugStepIn(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.stepOut ────────────────────────────────
+
+    const debugStepOutCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.stepOut',
+        async (params: DebugThreadParams) => {
+            const ops = new AgentDebugOperations(debugRegistry);
+            return await ops.debugStepOut(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.debug.startFromBinding ───────────────────────
+
+    const debugStartFromBindingCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.debug.startFromBinding',
+        async (params: DebugStartFromBindingParams) => {
+            const ops = new AgentDebugOperations(debugRegistry, getDebugDeps?.());
+            return await ops.debugStartFromBinding(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.deploy ───────────────────────────────────
+
+    const deployCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.deploy',
+        async (params: DeployParams = {}) => {
+            const deps = getDeployDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
+            }
+            const ops = new AgentDeployOperations(deps);
+            return await ops.deploy(params);
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,
         renameObjectCommand, setPropertiesCommand,
+        debugStartCommand, debugStopCommand, debugSetBreakpointCommand,
+        debugClearBreakpointsCommand, debugSetExceptionFilterCommand, debugWaitForStopCommand,
+        debugGetStackTraceCommand, debugGetScopesCommand, debugGetVariablesCommand,
+        debugEvaluateCommand, debugContinueCommand, debugStepOverCommand,
+        debugStepInCommand, debugStepOutCommand,
+        debugStartFromBindingCommand,
+        deployCommand,
     );
 }

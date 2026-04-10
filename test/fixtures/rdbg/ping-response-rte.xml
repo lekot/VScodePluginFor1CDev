@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:debugDBGUICommands="http://v8.1c.ru/8.3/debugger/debugDBGUICommands" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result xsi:type="debugDBGUICommands:DBGUIExtCmdInfoRte">
+    <debugDBGUICommands:targetID>
+      <id>13df3ee2-367c-4c50-9392-5be102ebd1e2</id>
+      <seanceId>828dde1f-247a-4ead-9284-a3fdb21e6750</seanceId>
+      <infoBaseAlias>DefAlias</infoBaseAlias>
+      <userName>Администратор</userName>
+      <targetType>Client</targetType>
+    </debugDBGUICommands:targetID>
+    <debugDBGUICommands:exception>
+      <descr>Деление на ноль</descr>
+    </debugDBGUICommands:exception>
+    <debugDBGUICommands:callStack>
+      <moduleID>
+        <objectID>498ce97d-6689-44e1-a350-7d98de25218c</objectID>
+        <propertyID>d22e852a-cf8a-4f77-8ccb-3548e7792bea</propertyID>
+      </moduleID>
+      <lineNo>55</lineNo>
+      <presentation>NDI=</presentation>
+    </debugDBGUICommands:callStack>
+  </debugRDBGRequestResponse:result>
+</response>

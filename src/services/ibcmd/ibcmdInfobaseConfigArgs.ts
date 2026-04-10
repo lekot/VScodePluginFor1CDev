@@ -121,6 +121,11 @@ export function buildInfobaseConfigImportArgs(
   return args;
 }
 
+/**
+ * Apply config to DB. Безусловное принятие предупреждений (`--force`) и принудительное завершение
+ * активных сеансов (`--session-terminate=force`) — иначе ibcmd зависает на интерактивных промптах
+ * «Принять изменения и продолжить обновление [y/n]» / «Завершить сеансы».
+ */
 export function buildInfobaseConfigApplyArgs(
   connection: IbcmdOfflineConnection,
   options?: { credentials?: IbcmdConfigCliCredentials; extension?: string },
@@ -131,6 +136,8 @@ export function buildInfobaseConfigApplyArgs(
   if (ext) {
     args.push(`--extension=${ext}`);
   }
+  args.push('--force');
+  args.push('--session-terminate=force');
   return args;
 }
 

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:debugDBGUICommands="http://v8.1c.ru/8.3/debugger/debugDBGUICommands" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result xsi:type="debugDBGUICommands:DBGUIExtCmdInfoStarted">
+    <debugDBGUICommands:targetID>
+      <id>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</id>
+      <seanceId>11111111-2222-3333-4444-555555555555</seanceId>
+      <infoBaseAlias>DefAlias</infoBaseAlias>
+      <userName>Администратор</userName>
+      <targetType>Client</targetType>
+    </debugDBGUICommands:targetID>
+  </debugRDBGRequestResponse:result>
+</response>

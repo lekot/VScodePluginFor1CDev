@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.16">
+	<CommonModule uuid="33333333-3333-3333-3333-333333333333">
+		<Properties>
+			<Name>MainModule</Name>
+		</Properties>
+	</CommonModule>
+</MetaDataObject>

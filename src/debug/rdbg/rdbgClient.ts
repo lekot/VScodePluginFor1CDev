@@ -17,6 +17,11 @@ import {
     RdbgCallStackItem,
     RdbgVariable,
     RdbgEvalResult,
+    RdbgExceptionBreakpointState,
+    ViewInterface,
+    SourceCalcItem,
+    RdbgVariableNode,
+    DecodedEvalResult,
 } from './rdbgTypes';
 import {
     RdbgEvent,
@@ -239,6 +244,19 @@ export class RdbgClient extends EventEmitter {
         await this.transport.send('setBreakpoints', body);
     }
 
+    /**
+     * Send the exception breakpoint (stop-on-RTE) state to the server.
+     * Maps to the RDBG command `setBreakOnRTE` / RDBGSetRunTimeErrorProcessingRequest.
+     * The server returns an empty body on success.
+     */
+    async setExceptionBreakpoints(state: RdbgExceptionBreakpointState): Promise<void> {
+        this.requireAttached('setExceptionBreakpoints');
+        const body = codec.encodeSetBreakOnRTE(this.debugUiId, state, this._infobaseAlias);
+        this.emit('log', `[setExceptionBreakpoints] REQUEST: stopOnErrors=${state.stopOnErrors} analyzeErrorStr=${state.analyzeErrorStr ?? false} filters=${state.filters?.length ?? 0}`);
+        await this.transport.send('setBreakOnRTE', body);
+        this.emit('log', `[setExceptionBreakpoints] done`);
+    }
+
     // -----------------------------------------------------------------------
     // Execution control
     // -----------------------------------------------------------------------
@@ -273,26 +291,81 @@ export class RdbgClient extends EventEmitter {
         return codec.decodeCallStack(xml);
     }
 
-    async getLocalVariables(targetId: string, frameIndex: number): Promise<RdbgVariable[]> {
-        this.requireAttached('getLocalVariables');
-        const seanceId = this._seanceMap.get(targetId) ?? '';
-        const body = codec.encodeEvalLocalVariables(this.debugUiId, targetId, seanceId, frameIndex, this._infobaseAlias);
-        this.emit('log', `[evalLocalVariables] REQUEST (target=${targetId}, frame=${frameIndex}): ${body.slice(0, 500)}`);
-        const xml = await this.transport.send('evalLocalVariables', body);
-        this.emit('log', `[evalLocalVariables] RESPONSE (${xml.length} bytes): ${xml.slice(0, 500)}`);
-        return codec.decodeVariables(xml);
+    /**
+     * Evaluate a path-based expression and return root result + direct children.
+     * Phase 4: path-based drilldown into object properties and collection elements.
+     */
+    async evalExpressionPath(
+        targetId: string,
+        frameLevel: number,
+        path: SourceCalcItem[],
+        view: ViewInterface
+    ): Promise<DecodedEvalResult> {
+        this.requireAttached('evalExpressionPath');
+        const body = codec.encodeEvalExpressionPath(
+            this.debugUiId, targetId, frameLevel, path, view, this._infobaseAlias
+        );
+        this.emit('log', `[evalExpressionPath] path=${path.length} view=${view} target=${targetId} frame=${frameLevel}`);
+        const xml = await this.transport.send('evalExpr', body);
+        return codec.decodeEvalResultExpanded(xml);
     }
 
+    /**
+     * Get local variables at a specific stack frame.
+     * Phase 4 (ADR-1): first attempts evalLocalVariables (direct platform call).
+     * If that fails (HTTP error / parse error), falls back to evalExpressionPath
+     * with an empty path and view=context (equivalent to local context).
+     */
+    async evalLocalVariables(targetId: string, frameLevel: number): Promise<RdbgVariableNode[]> {
+        this.requireAttached('evalLocalVariables');
+        const seanceId = this._seanceMap.get(targetId) ?? '';
+        const body = codec.encodeEvalLocalVariables(this.debugUiId, targetId, seanceId, frameLevel, this._infobaseAlias);
+        this.emit('log', `[evalLocalVariables] REQUEST target=${targetId} frame=${frameLevel}`);
+        try {
+            const xml = await this.transport.send('evalLocalVariables', body);
+            this.emit('log', `[evalLocalVariables] RESPONSE ${xml.length} bytes`);
+            const expanded = codec.decodeEvalResultExpanded(xml);
+            // Local variables come back as children of the context result
+            return expanded.children;
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.emit('log', `[evalLocalVariables] failed, falling back to evalExpr with empty path: ${msg}`);
+            console.warn(`[RdbgClient] evalLocalVariables failed (ADR-1 fallback): ${msg}`);
+            const fallback = await this.evalExpressionPath(targetId, frameLevel, [], 'context');
+            return fallback.children;
+        }
+    }
+
+    /**
+     * Evaluate a single expression and return the result.
+     * Signature preserved for backward compatibility — existing consumers unchanged.
+     */
     async evaluate(
         targetId: string,
         expression: string,
         frameIndex: number
     ): Promise<RdbgEvalResult> {
         this.requireAttached('evaluate');
-        const seanceId = this._seanceMap.get(targetId) ?? '';
-        const body = codec.encodeEvaluate(this.debugUiId, targetId, seanceId, expression, frameIndex, this._infobaseAlias);
-        const xml = await this.transport.send('evalExpr', body);
-        return codec.decodeEvalResult(xml);
+        const result = await this.evalExpressionPath(
+            targetId,
+            frameIndex,
+            [{ type: 'expression', expression }],
+            'context'
+        );
+        return result.root;
+    }
+
+    /** @deprecated Use evalLocalVariables(). Kept for test backward compatibility. */
+    async getLocalVariables(targetId: string, frameIndex: number): Promise<RdbgVariable[]> {
+        const nodes = await this.evalLocalVariables(targetId, frameIndex);
+        // Map RdbgVariableNode → legacy RdbgVariable shape
+        return nodes.map(n => ({
+            name: n.name,
+            typeName: n.typeName,
+            value: n.value,
+            isExpandable: n.isExpandable,
+            variableReference: 0,
+        }));
     }
 
     // -----------------------------------------------------------------------

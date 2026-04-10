@@ -341,6 +341,7 @@ function fixtureSmallMatrixRoot(): string {
 suite('WOW §2D runDeployForConfigurationFromTree', () => {
   let mockContext: vscode.ExtensionContext;
   let tree: MetadataTreeDataProvider;
+  const tempDirs: string[] = [];
 
   setup(() => {
     resetVscodeTestState();
@@ -369,6 +370,10 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
   });
 
   teardown(() => {
+    for (const dir of tempDirs) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+    tempDirs.length = 0;
     resetIbcmdServiceSingletonForTests();
     resetVscodeTestState();
   });
@@ -442,13 +447,16 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
 
   test('when ibcmd unresolved shows ibcmd dialog and does not run deploy', async () => {
     const wsRoot = fixtureSmallMatrixRoot();
-    const missing = path.join(fs.mkdtempSync(path.join(os.tmpdir(), '1cv-ibcmd-abs-')), 'no-ibcmd');
+    const missingParent = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-ibcmd-abs-'));
+    tempDirs.push(missingParent);
+    const missing = path.join(missingParent, 'no-ibcmd');
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = missing;
     vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
     resetIbcmdServiceSingletonForTests();
 
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-cmd-'));
+    tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
     const state = {
@@ -495,6 +503,7 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
     vscodeTestState.warningMessageReturnQueue = [undefined];
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-dlg-copy-'));
+    tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
     const state = {
@@ -543,6 +552,7 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
     vscodeTestState.warningMessageReturnQueue = [undefined];
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-dlg-block-'));
+    tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
     const state = {
@@ -591,6 +601,7 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
     vscodeTestState.warningMessageReturnQueue = [undefined];
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-dlg-blockold-'));
+    tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
     const state = {
@@ -637,6 +648,7 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
     vscodeTestState.warningMessageReturnQueue = [undefined];
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-dismiss-'));
+    tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
     const state = {
@@ -683,6 +695,7 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
     vscodeTestState.warningMessageReturnQueue = ['Продолжить'];
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-go-'));
+    tempDirs.push(work);
     const ibPath = path.join(work, 'p.1cd');
     fs.writeFileSync(ibPath, '');
     const state = {

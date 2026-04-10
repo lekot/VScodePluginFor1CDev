@@ -22,7 +22,6 @@
  * confirmed with a real server response.
  */
 
-import * as crypto from 'crypto';
 import { XMLParser } from 'fast-xml-parser';
 import {
   RdbgTargetInfo,
@@ -33,6 +32,11 @@ import {
   RdbgEvalResult,
   RdbgModuleId,
   RdbgRuntimeError,
+  RdbgExceptionBreakpointState,
+  ViewInterface,
+  SourceCalcItem,
+  RdbgVariableNode,
+  DecodedEvalResult,
 } from './rdbgTypes';
 import {
   RdbgEvent,
@@ -47,6 +51,7 @@ const NS_BASE = 'http://v8.1c.ru/8.3/debugger/debugBaseData';
 const NS_RDBG = 'http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse';
 const NS_CALC = 'http://v8.1c.ru/8.3/debugger/debugCalculations';
 const NS_BP   = 'http://v8.1c.ru/8.3/debugger/debugBreakpoints';
+const NS_RTE  = 'http://v8.1c.ru/8.3/debugger/debugRTEFilter';
 const NS_CFG  = 'http://v8.1c.ru/8.1/data/enterprise/current-config';
 const NS_V8   = 'http://v8.1c.ru/8.1/data/core';
 const NS_XS   = 'http://www.w3.org/2001/XMLSchema';
@@ -57,6 +62,7 @@ const DEF_ALIAS = 'DefAlias';
 const P_RDBG = 'debugRDBGRequestResponse';
 const P_CALC = 'debugCalculations';
 const P_BP   = 'debugBreakpoints';
+const P_RTE  = 'debugRTEFilter';
 
 /** Standard namespace declarations for the <request> root element. */
 const REQUEST_NS_ATTRS =
@@ -64,6 +70,7 @@ const REQUEST_NS_ATTRS =
   ` xmlns:${P_RDBG}="${NS_RDBG}"` +
   ` xmlns:${P_BP}="${NS_BP}"` +
   ` xmlns:${P_CALC}="${NS_CALC}"` +
+  ` xmlns:${P_RTE}="${NS_RTE}"` +
   ` xmlns:cfg="${NS_CFG}"` +
   ` xmlns:v8="${NS_V8}"` +
   ` xmlns:xs="${NS_XS}"` +
@@ -173,11 +180,15 @@ function parseXml(xml: string): Record<string, unknown> {
 /** Parse a module ID element from the parsed XML (after removeNSPrefix). */
 function parseModuleId(raw: Record<string, unknown>): RdbgModuleId {
   const version = raw['version'] !== undefined ? String(raw['version']) : undefined;
+  // Phase 4 (OQ-6): BslModuleIdInternal.type — BslModuleType enum value as string
+  const type = raw['type'] !== undefined ? String(raw['type']) : undefined;
   return {
-    objectId: String(raw['objectID'] ?? raw['objectId'] ?? ''),
-    propertyId: String(raw['propertyID'] ?? raw['propertyId'] ?? ''),
+    // Canonical field names from BslModuleIdInternal: XmlElementAttribute("objectID") / XmlElementAttribute("propertyID")
+    objectId: String(raw['objectID'] ?? ''),
+    propertyId: String(raw['propertyID'] ?? ''),
     extensionName: raw['extensionName'] as string | undefined,
     version,
+    type,
   };
 }
 
@@ -188,7 +199,8 @@ function parseTargetId(raw: Record<string, unknown>): RdbgTargetInfo {
     seanceId: String(raw['seanceId'] ?? ''),
     userName: String(raw['userName'] ?? ''),
     targetType: raw['targetType'] !== undefined ? String(raw['targetType']) : 0,
-    infobaseAlias: String(raw['infoBaseAlias'] ?? raw['infobaseAlias'] ?? DEF_ALIAS),
+    // Canonical: XmlElementAttribute("infoBaseAlias") in DebugTargetId
+    infobaseAlias: String(raw['infoBaseAlias'] ?? DEF_ALIAS),
   };
 }
 
@@ -285,27 +297,60 @@ export function encodeSetBreakpoints(
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
 
-  // Group breakpoints by module (objectId + propertyId)
-  const byModule = new Map<string, { moduleId: RdbgModuleId; lines: number[] }>();
+  // Group breakpoints by module (extensionName + objectId + propertyId).
+  // extensionName is included in the key so that a BP in an extension module
+  // and a BP in the base config module with the same objectId/propertyId are
+  // not merged into the same moduleBPInfo block.
+  const byModule = new Map<string, { moduleId: RdbgModuleId; bps: RdbgBreakpointRequest[] }>();
   for (const bp of bps) {
-    const key = `${bp.moduleId.objectId}:${bp.moduleId.propertyId}`;
+    const key = `${bp.moduleId.extensionName ?? ''}|${bp.moduleId.objectId}|${bp.moduleId.propertyId}`;
     let entry = byModule.get(key);
     if (!entry) {
-      entry = { moduleId: bp.moduleId, lines: [] };
+      entry = { moduleId: bp.moduleId, bps: [] };
       byModule.set(key, entry);
     }
-    entry.lines.push(bp.lineNo);
+    entry.bps.push(bp);
   }
 
   if (byModule.size > 0) {
     fields += `  <${P_RDBG}:bpWorkspace xsi:type="${P_BP}:BPWorkspaceInternal">\n`;
-    for (const { moduleId, lines } of byModule.values()) {
+    for (const { moduleId, bps: moduleBps } of byModule.values()) {
       fields += `    <${P_BP}:moduleBPInfo>\n` +
         moduleIdToXml(moduleId, '      ');
-      for (const line of lines) {
+      for (const bp of moduleBps) {
         fields += `      <${P_BP}:bpInfo>\n` +
-          `        <${P_BP}:line>${line}</${P_BP}:line>\n` +
-          `      </${P_BP}:bpInfo>\n`;
+          `        <${P_BP}:line>${bp.lineNo}</${P_BP}:line>\n`;
+        // isActive — only emit if explicitly set (platform defaults to true)
+        if (bp.isActive !== undefined) {
+          fields += `        <${P_BP}:isActive>${bp.isActive}</${P_BP}:isActive>\n`;
+        }
+        // Condition
+        if (bp.condition !== undefined && bp.condition !== '') {
+          fields += `        <${P_BP}:breakOnCondition>true</${P_BP}:breakOnCondition>\n` +
+            `        <${P_BP}:condition>${escapeXml(bp.condition)}</${P_BP}:condition>\n`;
+        }
+        // Hit count — hitCountVariant comes BEFORE hitCount (per Messages.cs XmlElement order).
+        // FIXME(hitCountVariant) OQ-8: Messages.cs:3535 declares hitCountVariant as `decimal`,
+        // but RdbgBreakpointRequest.hitCountVariant is a string union ('eq'|'ge'|'multipleOf').
+        // Sending a string into a decimal field will be rejected by the platform XSD.
+        // akpaevj StoppingManager never sets this field — leaves the server default of 0.
+        // Until we can map our string variants to real numeric codes (Wireshark trace needed),
+        // BslDebugSession (P2C3) MUST NOT pass hitCountVariant in RdbgBreakpointRequest.
+        // The encoder still emits it if explicitly set so that future fixes can use one place.
+        if (bp.hitCount !== undefined && bp.hitCount > 0) {
+          fields += `        <${P_BP}:breakOnHitCount>true</${P_BP}:breakOnHitCount>\n`;
+          if (bp.hitCountVariant !== undefined) {
+            fields += `        <${P_BP}:hitCountVariant>${escapeXml(bp.hitCountVariant)}</${P_BP}:hitCountVariant>\n`;
+          }
+          fields += `        <${P_BP}:hitCount>${bp.hitCount}</${P_BP}:hitCount>\n`;
+        }
+        // Log message / logpoint
+        if (bp.logMessage !== undefined && bp.logMessage !== '') {
+          fields += `        <${P_BP}:showOutputMessage>true</${P_BP}:showOutputMessage>\n` +
+            `        <${P_BP}:putExpressionResult>${escapeXml(bp.logMessage)}</${P_BP}:putExpressionResult>\n` +
+            `        <${P_BP}:continueExecution>true</${P_BP}:continueExecution>\n`;
+        }
+        fields += `      </${P_BP}:bpInfo>\n`;
       }
       fields += `    </${P_BP}:moduleBPInfo>\n`;
     }
@@ -343,8 +388,9 @@ export function encodeStep(
 
 /**
  * Continue — resume execution after a break.
- * Fallback: uses step endpoint with action=Continue until the exact command is confirmed.
- * TODO: verify whether this is a separate command or action value "Continue"/"go".
+ * Uses the same "step" endpoint as encodeStep, with action=Continue.
+ * Confirmed: DebugStepAction enum in Messages.cs lists {Unknown, Step, StepIn, StepOut, Continue}.
+ * There is no separate HTTP command for continue — "step" cmd with action Continue is the protocol.
  */
 export function encodeContinue(
   debugUiId: string,
@@ -357,13 +403,14 @@ export function encodeContinue(
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
     targetIdTypedToXml(targetId, '  ') +
-    `  <${P_RDBG}:action>Continue</${P_RDBG}:action>\n`; // TODO: may be "go", "resume", or numeric
+    `  <${P_RDBG}:action>Continue</${P_RDBG}:action>\n`;
   return wrapRequest(fields, `${P_RDBG}:RDBGStepRequest`);
 }
 
 /**
  * GetCallStack — request the current call stack for a target.
- * TODO: exact field set not yet confirmed with a live response.
+ * Confirmed: RDBGGetCallStackRequest (Messages.cs line 5836) contains a single <id> element
+ * of type DebugTargetIdLight — matched by targetIdAsIdToXml.
  */
 export function encodeGetCallStack(
   debugUiId: string,
@@ -395,7 +442,7 @@ export function encodeEvalLocalVariables(
   const fields =
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:calcWaitingTime>100</${P_RDBG}:calcWaitingTime>\n` +
+    `  <${P_RDBG}:calcWaitingTime>5000</${P_RDBG}:calcWaitingTime>\n` +
     targetIdToXml(targetId, '  ') +
     `  <${P_RDBG}:expr>\n` +
     `    <${P_CALC}:stackLevel>${frameIndex}</${P_CALC}:stackLevel>\n` +
@@ -404,39 +451,90 @@ export function encodeEvalLocalVariables(
 }
 
 /**
+ * EvalExpressionPath — path-based evaluation request (Phase 4).
+ * HTTP cmd: "evalExpr".
+ * Encodes a SourceCalculationDataStorage with:
+ *   - stackLevel (frame index inside <srcCalcInfo>)
+ *   - one <calcItem> per path step (expression / property / index)
+ *   - <interfaces> specifying view type (context / collection / enum)
+ *
+ * UUID strategy: expressionID and expressionResultID are random per call.
+ * Tests should use normalizeXmlForSnapshot() to replace UUIDs before comparison.
+ *
+ * References: Messages.cs RDBGEvalExprRequest (line 5894),
+ *   SourceCalculationDataStorage (CalculationSourceDataStorage),
+ *   SourceCalculationDataInfo (SourceCalculationDataItem),
+ *   ViewInterface enum.
+ */
+export function encodeEvalExpressionPath(
+  debugUiId: string,
+  targetId: string,
+  frameLevel: number,
+  path: SourceCalcItem[],
+  _view: ViewInterface,
+  infobaseAlias?: string
+): string {
+  const alias = infobaseAlias ?? DEF_ALIAS;
+
+  // Build calcItem elements for each step in the path
+  let calcItems = '';
+  for (const step of path) {
+    calcItems += `      <${P_CALC}:calcItem>\n`;
+    if (step.type === 'expression') {
+      calcItems +=
+        `        <${P_CALC}:itemType>expression</${P_CALC}:itemType>\n` +
+        `        <${P_CALC}:expression>${escapeXml(step.expression)}</${P_CALC}:expression>\n`;
+    } else if (step.type === 'property') {
+      calcItems +=
+        `        <${P_CALC}:itemType>property</${P_CALC}:itemType>\n` +
+        `        <${P_CALC}:property>${escapeXml(step.property)}</${P_CALC}:property>\n`;
+    } else {
+      // index
+      calcItems +=
+        `        <${P_CALC}:itemType>index</${P_CALC}:itemType>\n` +
+        `        <${P_CALC}:index>${step.index}</${P_CALC}:index>\n`;
+    }
+    calcItems += `      </${P_CALC}:calcItem>\n`;
+  }
+
+  // Структура по эталону Конфигуратора (Wireshark capture, commit b3c5263):
+  // stackLevel СНАРУЖИ srcCalcInfo, НЕТ expressionID/expressionResultID/interfaces.
+  const fields =
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:calcWaitingTime>5000</${P_RDBG}:calcWaitingTime>\n` +
+    targetIdToXml(targetId, '  ') +
+    `  <${P_RDBG}:expr>\n` +
+    `    <${P_CALC}:stackLevel>${frameLevel}</${P_CALC}:stackLevel>\n` +
+    (calcItems
+      ? `    <${P_CALC}:srcCalcInfo>\n${calcItems}    </${P_CALC}:srcCalcInfo>\n`
+      : '') +
+    `  </${P_RDBG}:expr>\n`;
+  return wrapRequest(fields);
+}
+
+/**
  * Evaluate — evalExpr request matching the 1C Configurator Wireshark reference.
  * HTTP cmd: "evalExpr".
- * Format: srcCalcInfo with expressionID + expressionResultID (UUIDs) + interfaces=context.
- * No stackLevel in evalExpr — only srcCalcInfo (Configurator reference does not include it).
+ * Thin wrapper around encodeEvalExpressionPath with a single expression step and view=context.
+ * Signature unchanged from Phase 1/2 — existing callers continue to work.
  */
 export function encodeEvaluate(
   debugUiId: string,
   targetId: string,
   _seanceId: string,
   expression: string,
-  _frameIndex: number,
+  frameIndex: number,
   infobaseAlias?: string
 ): string {
-  const alias = infobaseAlias ?? DEF_ALIAS;
-  const exprId = crypto.randomUUID();
-  const resultId = crypto.randomUUID();
-  const fields =
-    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
-    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:calcWaitingTime>100</${P_RDBG}:calcWaitingTime>\n` +
-    targetIdToXml(targetId, '  ') +
-    `  <${P_RDBG}:expr>\n` +
-    `    <${P_CALC}:srcCalcInfo>\n` +
-    `      <${P_CALC}:expressionID>${exprId}</${P_CALC}:expressionID>\n` +
-    `      <${P_CALC}:expressionResultID>${resultId}</${P_CALC}:expressionResultID>\n` +
-    `      <${P_CALC}:calcItem>\n` +
-    `        <${P_CALC}:itemType>expression</${P_CALC}:itemType>\n` +
-    `        <${P_CALC}:expression>${escapeXml(expression)}</${P_CALC}:expression>\n` +
-    `      </${P_CALC}:calcItem>\n` +
-    `      <${P_CALC}:interfaces>context</${P_CALC}:interfaces>\n` +
-    `    </${P_CALC}:srcCalcInfo>\n` +
-    `  </${P_RDBG}:expr>\n`;
-  return wrapRequest(fields);
+  return encodeEvalExpressionPath(
+    debugUiId,
+    targetId,
+    frameIndex,
+    [{ type: 'expression', expression }],
+    'context',
+    infobaseAlias
+  );
 }
 
 /** Target identifier carrying both id and seanceId for attach/detach operations. */
@@ -447,7 +545,10 @@ export interface RdbgTargetRef {
 
 /**
  * AttachTargets / DetachTargets — attach or detach specific debug targets.
- * TODO: exact structure of targetID list and attach/detach flag not yet confirmed.
+ * Confirmed: RDBGAttachDetachDebugTargetsRequest (Messages.cs line 5574) uses:
+ *   - <attach> bool flag (not separate attach/detach commands)
+ *   - repeated <id> elements of type DebugTargetIdLight
+ * HTTP cmd: "attachDetachDbgTargets" (DebugServerClient.cs line 159).
  */
 export function encodeAttachTargets(
   debugUiId: string,
@@ -459,7 +560,7 @@ export function encodeAttachTargets(
   let fields =
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:attach>${attach}</${P_RDBG}:attach>\n`; // TODO: may be separate attach/detach commands
+    `  <${P_RDBG}:attach>${attach}</${P_RDBG}:attach>\n`;
 
   for (const target of targets) {
     fields +=
@@ -471,61 +572,117 @@ export function encodeAttachTargets(
   return wrapRequest(fields, `${P_RDBG}:RDBGAttachDetachDebugTargetsRequest`);
 }
 
+/**
+ * SetBreakOnRTE — configure "stop on runtime error" with optional substring filters.
+ * HTTP cmd: "setBreakOnRTE".
+ * Maps to RDBGSetRunTimeErrorProcessingRequest (Messages.cs, namespace debugRDBGRequestResponse).
+ * The <state> element is of type RteFilterStorage (namespace debugRTEFilter).
+ * Each <strTemplate> entry is of type RteFilterItem (namespace debugRTEFilter) with
+ * <include> (bool) and <str> (substring to match against the error description).
+ *
+ * Note: analyzeErrorStr and strTemplate are both required in the XSD even when empty.
+ * When state.analyzeErrorStr is undefined, it defaults to false.
+ * When state.filters is undefined or empty, no <strTemplate> elements are emitted.
+ */
+export function encodeSetBreakOnRTE(
+  debugUiId: string,
+  state: RdbgExceptionBreakpointState,
+  infobaseAlias?: string
+): string {
+  const alias = infobaseAlias ?? DEF_ALIAS;
+  const analyzeErrorStr = state.analyzeErrorStr === true ? 'true' : 'false';
+
+  let stateXml =
+    `    <${P_RTE}:stopOnErrors>${state.stopOnErrors}</${P_RTE}:stopOnErrors>\n` +
+    `    <${P_RTE}:analyzeErrorStr>${analyzeErrorStr}</${P_RTE}:analyzeErrorStr>\n`;
+
+  if (state.filters && state.filters.length > 0) {
+    for (const f of state.filters) {
+      stateXml +=
+        `    <${P_RTE}:strTemplate>\n` +
+        `      <${P_RTE}:include>${f.include}</${P_RTE}:include>\n` +
+        `      <${P_RTE}:str>${escapeXml(f.text)}</${P_RTE}:str>\n` +
+        `    </${P_RTE}:strTemplate>\n`;
+    }
+  }
+
+  const fields =
+    `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
+    `  <${P_RDBG}:state>\n` +
+    stateXml +
+    `  </${P_RDBG}:state>\n`;
+
+  return wrapRequest(fields, `${P_RDBG}:RDBGSetRunTimeErrorProcessingRequest`);
+}
+
 // ---------------------------------------------------------------------------
 // DECODE — XML string → TypeScript types (XMLParser with removeNSPrefix: true)
 // ---------------------------------------------------------------------------
 
 /**
  * Decode the list of debug targets from a GetTargets response.
- * TODO: exact wrapper element name (item / targets / target) not yet confirmed.
+ * Canonical: RdbgsGetDbgTargetsResponse (Messages.cs line 5383) uses repeated <id> elements
+ * of type DebugTargetId (which extends DebugTargetIdLight with <id>).
+ * Fields of DebugTargetId: id, seanceId, infoBaseAlias, userName, targetType.
  */
 export function decodeTargets(xml: string): RdbgTargetInfo[] {
   const root = parseXml(xml);
   const response = (root['response'] ?? root['result'] ?? {}) as Record<string, unknown>;
-  const items = toArray(response['item'] ?? response['targets'] ?? response['target']);
+  // Canonical element name is "id" (XmlElementAttribute("id") on the DebugTargetId collection)
+  const items = toArray(response['id']);
 
   return items.map((raw) => {
     const r = raw as Record<string, unknown>;
-    const targetIdEl = (r['targetID'] ?? r['id'] ?? {}) as Record<string, unknown>;
     return {
-      id: String(targetIdEl['id'] ?? r['id'] ?? ''),
-      seanceId: String(targetIdEl['seanceId'] ?? r['seanceId'] ?? ''),
-      userName: String(r['userName'] ?? r['user'] ?? ''),
-      targetType: Number(r['targetType'] ?? r['type'] ?? 0),
-      infobaseAlias: String(r['infoBaseAlias'] ?? r['infobaseAlias'] ?? DEF_ALIAS),
+      id: String(r['id'] ?? ''),
+      seanceId: String(r['seanceId'] ?? ''),
+      userName: String(r['userName'] ?? ''),
+      targetType: Number(r['targetType'] ?? 0),
+      infobaseAlias: String(r['infoBaseAlias'] ?? DEF_ALIAS),
     };
   });
 }
 
 /**
  * Decode confirmed breakpoints from a SetBreakpoints response.
- * TODO: wrapper element name not yet confirmed.
+ * Canonical: RdbgGetBreakpointsResponse (Messages.cs line 5700) uses XmlArray("bpWorkspace")
+ * with XmlArrayItem("moduleBPInfo"). Each moduleBPInfo (ModuleBPInfoInternal) has:
+ *   - <id> (BslModuleIdInternal) — the module id
+ *   - <bpInfo>[] (BreakpointInfo) — each with <line> and <isActive>
+ * Note: BreakpointInfo uses <line> (not lineNo) and <isActive> (not enable).
  */
 export function decodeBreakpoints(xml: string): RdbgBreakpoint[] {
   const root = parseXml(xml);
   const response = (root['response'] ?? root['result'] ?? {}) as Record<string, unknown>;
-  const items = toArray(
-    response['item'] ??
-    response['breakpoints'] ??
-    response['bpWorkspace'] ??
-    response['bpWorkspaceInternal']
-  );
+  // Canonical: bpWorkspace is an XmlArray wrapper containing moduleBPInfo elements
+  const bpWorkspace = (response['bpWorkspace'] ?? {}) as Record<string, unknown>;
+  const moduleBpInfoItems = toArray(bpWorkspace['moduleBPInfo']);
 
-  return items.map((raw) => {
+  const result: RdbgBreakpoint[] = [];
+  for (const raw of moduleBpInfoItems) {
     const r = raw as Record<string, unknown>;
-    const bpEl = (r['breakpoint'] ?? r) as Record<string, unknown>;
-    const moduleRaw = (bpEl['moduleID'] ?? bpEl['moduleId'] ?? {}) as Record<string, unknown>;
-    return {
-      moduleId: parseModuleId(moduleRaw),
-      lineNo: Number(bpEl['lineNo'] ?? 0),
-      enabled: bpEl['enable'] !== 'false' && bpEl['enable'] !== false,
-    };
-  });
+    // Canonical: ModuleBPInfoInternal.Id uses XmlElementAttribute("id")
+    const moduleRaw = (r['id'] ?? {}) as Record<string, unknown>;
+    const moduleId = parseModuleId(moduleRaw);
+    const bpInfoItems = toArray(r['bpInfo']);
+    for (const bpRaw of bpInfoItems) {
+      const bp = bpRaw as Record<string, unknown>;
+      result.push({
+        moduleId,
+        // Canonical: BreakpointInfo uses <line> (not lineNo) and <isActive> (not enable)
+        lineNo: Number(bp['line'] ?? 0),
+        enabled: bp['isActive'] !== 'false' && bp['isActive'] !== false,
+      });
+    }
+  }
+  return result;
 }
 
 /** Map one RDBG stack frame element (ping or getCallStack) to RdbgCallStackItem. */
 function mapRawCallStackFrame(raw: Record<string, unknown>): RdbgCallStackItem {
-  const moduleRaw = (raw['moduleID'] ?? raw['moduleId'] ?? {}) as Record<string, unknown>;
+  // Canonical: XmlElementAttribute("moduleID") in StackItemViewInfoData; XmlElementAttribute("presentation", base64Binary)
+  const moduleRaw = (raw['moduleID'] ?? {}) as Record<string, unknown>;
   const presentationRaw = String(raw['presentation'] ?? '');
   const presentation = presentationRaw ? decodeBase64Utf8(presentationRaw) : '';
   return {
@@ -543,9 +700,9 @@ function flattenCallStackElements(callStackField: unknown): Record<string, unkno
   if (callStackField === undefined || callStackField === null) {
     return [];
   }
+  // Canonical field names from StackItemViewInfoData: moduleID, lineNo, presentation
   const isFrameLike = (o: Record<string, unknown>): boolean =>
     o['moduleID'] !== undefined ||
-    o['moduleId'] !== undefined ||
     o['lineNo'] !== undefined ||
     o['presentation'] !== undefined;
 
@@ -624,9 +781,13 @@ export function decodeVariables(xml: string): RdbgVariable[] {
       const presRaw = valueInfo['pres'];
       const fromPres =
         typeof presRaw === 'string' && presRaw.length > 0 ? decodeBase64Utf8(presRaw) : '';
-      const value = String(
-        valueInfo['valueString'] ?? valueInfo['presentation'] ?? (fromPres || '')
-      );
+      // valueString is base64Binary per BaseValueInfoData — decode if present, else fall back to pres
+      const valueStringRaw = valueInfo['valueString'];
+      const fromValueString =
+        typeof valueStringRaw === 'string' && valueStringRaw.length > 0
+          ? decodeBase64Utf8(valueStringRaw)
+          : '';
+      const value = String(fromValueString || fromPres || '');
       const typeName = String(valueInfo['typeName'] ?? '');
       const isExpandable =
         valueInfo['isExpandable'] === true || valueInfo['isExpandable'] === 'true';
@@ -663,9 +824,99 @@ export function decodeVariables(xml: string): RdbgVariable[] {
 }
 
 /**
- * Decode RDBGEvalExprResponse: result is CalculationResultBaseData[] (yukon39).
+ * Extract BaseValueInfoData fields from a parsed rvi record.
+ * Used by both decodeEvalResultExpanded and decodeVariables.
  */
-export function decodeEvalResult(xml: string): RdbgEvalResult {
+function parseBaseValueInfo(rvi: Record<string, unknown>): {
+  value: string;
+  typeName: string;
+  isExpandable: boolean;
+  isIndexedCollection: boolean;
+  collectionSize: number | undefined;
+} {
+  const presRaw = rvi['pres'];
+  const fromPres =
+    typeof presRaw === 'string' && presRaw.length > 0 ? decodeBase64Utf8(presRaw) : '';
+  // valueString is base64Binary per BaseValueInfoData — decode if present, then fall back to pres
+  const valueStringRaw = rvi['valueString'];
+  const fromValueString =
+    typeof valueStringRaw === 'string' && valueStringRaw.length > 0
+      ? decodeBase64Utf8(valueStringRaw)
+      : '';
+  const value = String(fromValueString || fromPres || '');
+  const typeName = String(rvi['typeName'] ?? '');
+  const isExpandable = rvi['isExpandable'] === true || rvi['isExpandable'] === 'true';
+  // Phase 4 (OQ-7): BaseValueInfoData.isIIndexedCollectionRo and collectionSize
+  const isIndexedCollection =
+    rvi['isIIndexedCollectionRo'] === true || rvi['isIIndexedCollectionRo'] === 'true';
+  const rawCollectionSize = rvi['collectionSize'];
+  const collectionSize =
+    rawCollectionSize !== undefined && rawCollectionSize !== null
+      ? Number(rawCollectionSize)
+      : undefined;
+  return { value, typeName, isExpandable, isIndexedCollection, collectionSize };
+}
+
+/**
+ * Parse one child node from a valueOfContextPropInfo element.
+ */
+function parseContextPropNode(raw: Record<string, unknown>, idx: number): RdbgVariableNode {
+  const propInfo = (raw['propInfo'] ?? {}) as Record<string, unknown>;
+  const valueInfo = (raw['valueInfo'] ?? {}) as Record<string, unknown>;
+  const name = String(propInfo['propName'] ?? `var${idx}`);
+  const vi = parseBaseValueInfo(valueInfo);
+  return { name, typeName: vi.typeName, value: vi.value, isExpandable: vi.isExpandable, isIndexedCollection: vi.isIndexedCollection, collectionSize: vi.collectionSize };
+}
+
+/**
+ * Parse one child node from a valueOfCollectionInfo element.
+ * Name is the 1-based index, matching the way 1C Configurator displays
+ * collection elements in its variable inspector.
+ */
+function parseCollectionItemNode(raw: Record<string, unknown>, idx: number): RdbgVariableNode {
+  const valueInfo = (raw['valueInfo'] ?? {}) as Record<string, unknown>;
+  const vi = parseBaseValueInfo(valueInfo);
+  const name = String(idx + 1);
+  return { name, typeName: vi.typeName, value: vi.value, isExpandable: vi.isExpandable, isIndexedCollection: vi.isIndexedCollection, collectionSize: vi.collectionSize };
+}
+
+/**
+ * Parse one child node from a valueOfEnumInfo element.
+ */
+function parseEnumItemNode(raw: Record<string, unknown>, idx: number): RdbgVariableNode {
+  const valueInfo = (raw['valueInfo'] ?? {}) as Record<string, unknown>;
+  const vi = parseBaseValueInfo(valueInfo);
+  // For enum values, name from ordinal or index
+  const name = String(raw['ordinal'] ?? idx);
+  return { name, typeName: vi.typeName, value: vi.value, isExpandable: vi.isExpandable, isIndexedCollection: vi.isIndexedCollection, collectionSize: vi.collectionSize };
+}
+
+/**
+ * Parse children from a CalculationResultBaseData (calculationResult) element.
+ * Handles context (ValueOfContextPropInfo[]), collection (ValueOfCollectionInfo[]), enum (ValueOfEnumInfo[]).
+ */
+function parseCalculationResultChildren(calcResult: Record<string, unknown>): RdbgVariableNode[] {
+  const fromContext = toArray(calcResult['valueOfContextPropInfo']);
+  if (fromContext.length > 0) {
+    return fromContext.map((raw, idx) => parseContextPropNode(raw as Record<string, unknown>, idx));
+  }
+  const fromCollection = toArray(calcResult['valueOfCollectionInfo']);
+  if (fromCollection.length > 0) {
+    return fromCollection.map((raw, idx) => parseCollectionItemNode(raw as Record<string, unknown>, idx));
+  }
+  const fromEnum = toArray(calcResult['valueOfEnumInfo']);
+  if (fromEnum.length > 0) {
+    return fromEnum.map((raw, idx) => parseEnumItemNode(raw as Record<string, unknown>, idx));
+  }
+  return [];
+}
+
+/**
+ * Decode RDBGEvalExprResponse with expanded children (Phase 4).
+ * Returns root RdbgEvalResult plus direct children (properties / collection items / enum values).
+ * This is the new preferred decoder; decodeEvalResult is a backward-compatible wrapper.
+ */
+export function decodeEvalResultExpanded(xml: string): DecodedEvalResult {
   const root = parseXml(xml);
   const response = (root['response'] ?? {}) as Record<string, unknown>;
   const rawResult = response['result'] ?? response;
@@ -673,39 +924,43 @@ export function decodeEvalResult(xml: string): RdbgEvalResult {
   const result = (items[0] ?? {}) as Record<string, unknown>;
 
   const errOccurred = result['errorOccurred'] === true || result['errorOccurred'] === 'true';
-  const exceptionStr = result['exceptionStr'];
+  // exceptionStr is base64Binary per CalculationResultBaseData — decode it
+  const exceptionStrRaw = result['exceptionStr'];
   const rvi = (result['resultValueInfo'] ?? {}) as Record<string, unknown>;
-  const presRaw = rvi['pres'];
-  const fromPres =
-    typeof presRaw === 'string' && presRaw.length > 0 ? decodeBase64Utf8(presRaw) : '';
-  const value = String(
-    rvi['valueString'] ??
-      rvi['presentation'] ??
-      result['value'] ??
-      result['presentation'] ??
-      (fromPres || '')
-  );
-  const typeName = String(rvi['typeName'] ?? result['typeName'] ?? result['type'] ?? '');
-  const isExpandable = rvi['isExpandable'] === true || rvi['isExpandable'] === 'true';
-  const legacyErr = result['error'] ?? result['errorDescription'];
+  const vi = parseBaseValueInfo(rvi);
 
   let error: string | undefined;
-  if (legacyErr !== undefined && legacyErr !== null && String(legacyErr).length > 0) {
-    error = String(legacyErr);
-  } else if (errOccurred) {
+  if (errOccurred) {
     const ex =
-      typeof exceptionStr === 'string' && exceptionStr.length > 0
-        ? decodeBase64Utf8(exceptionStr)
+      typeof exceptionStrRaw === 'string' && exceptionStrRaw.length > 0
+        ? decodeBase64Utf8(exceptionStrRaw)
         : '';
     error = ex.length > 0 ? ex : 'Evaluation error';
   }
 
-  return {
-    value,
-    typeName,
-    isExpandable,
+  const rootResult: RdbgEvalResult = {
+    value: vi.value,
+    typeName: vi.typeName,
+    isExpandable: vi.isExpandable,
+    isIndexedCollection: vi.isIndexedCollection || undefined,
+    collectionSize: vi.collectionSize,
     error,
   };
+
+  // Children: may come from calculationResult (local variables path)
+  //   or directly from result (evalExpr path)
+  const calcResult = (result['calculationResult'] ?? result) as Record<string, unknown>;
+  const children = parseCalculationResultChildren(calcResult);
+
+  return { root: rootResult, children };
+}
+
+/**
+ * Decode RDBGEvalExprResponse: result is CalculationResultBaseData[].
+ * Backward-compatible wrapper around decodeEvalResultExpanded — returns only root.
+ */
+export function decodeEvalResult(xml: string): RdbgEvalResult {
+  return decodeEvalResultExpanded(xml).root;
 }
 
 /**
@@ -743,15 +998,12 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
 
     switch (xsiType) {
       case 'DBGUIExtCmdInfoCallStackFormed': {
-        // stopByBP: true → breakpoint, false → step; rteInfo present → exception
-        let reason: RdbgStoppedEvent['reason'];
-        if (r['rteInfo']) {
-          reason = 'exception';
-        } else if (String(r['stopByBP']) === 'true') {
-          reason = 'breakpoint';
-        } else {
-          reason = 'step';
-        }
+        // stopByBP: true → breakpoint, false → step.
+        // Exceptions arrive via separate DBGUIExtCmdInfoRte event (Messages.cs:4248),
+        // not via this CallStackFormed event — etalon DbguiExtCmdInfoCallStackFormed
+        // (Messages.cs:4325) does not contain any exception field.
+        const reason: RdbgStoppedEvent['reason'] =
+          String(r['stopByBP']) === 'true' ? 'breakpoint' : 'step';
 
         const frameRaws = flattenCallStackElements(r['callStack']);
         const callStack = frameRaws.map((cs) => mapRawCallStackFrame(cs));
@@ -781,12 +1033,16 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
       }
 
       case 'DBGUIExtCmdInfoRte': {
-        const rteEl = (r['rteInfo'] ?? r) as Record<string, unknown>;
-        const moduleRaw = (rteEl['moduleID'] ?? rteEl['moduleId'] ?? {}) as Record<string, unknown>;
+        // Canonical: DbguiExtCmdInfoRte has <exception> (RuntimeException, GenericException base)
+        // and repeated <callStack> (StackItemViewInfoData). moduleId/lineNo come from callStack[0].
+        const exceptionEl = (r['exception'] ?? {}) as Record<string, unknown>;
+        const rteFrames = flattenCallStackElements(r['callStack']);
+        const rteTopFrame = rteFrames[0];
         const rteError: RdbgRuntimeError = {
-          description: String(rteEl['description'] ?? rteEl['errorDescription'] ?? ''),
-          moduleId: parseModuleId(moduleRaw),
-          lineNo: Number(rteEl['lineNo'] ?? 0),
+          // GenericException uses <descr> (XmlElementAttribute("descr"))
+          description: String(exceptionEl['descr'] ?? ''),
+          moduleId: rteTopFrame ? parseModuleId((rteTopFrame['moduleID'] ?? {}) as Record<string, unknown>) : parseModuleId({}),
+          lineNo: rteTopFrame ? Number(rteTopFrame['lineNo'] ?? 0) : 0,
         };
         return [{
           type: 'runtimeError',
@@ -796,35 +1052,61 @@ export function decodePingEvents(xml: string): RdbgEvent[] {
       }
 
       case 'DBGUIExtCmdInfoExprEvaluated': {
-        const evalRaw = (r['expressionResultID'] ?? r['result'] ?? r) as Record<string, unknown>;
+        // Canonical: DbguiExtCmdInfoExprEvaluated has <evalExprResBaseData> (CalculationResultBaseData)
+        // which contains <resultValueInfo> (BaseValueInfoData) and <errorOccurred> + <exceptionStr>
+        const calcResult = (r['evalExprResBaseData'] ?? {}) as Record<string, unknown>;
+        const rvi2 = (calcResult['resultValueInfo'] ?? {}) as Record<string, unknown>;
+        const pres2Raw = rvi2['pres'];
+        const fromPres2 =
+          typeof pres2Raw === 'string' && pres2Raw.length > 0 ? decodeBase64Utf8(pres2Raw) : '';
+        const vsRaw2 = rvi2['valueString'];
+        const fromVs2 =
+          typeof vsRaw2 === 'string' && vsRaw2.length > 0 ? decodeBase64Utf8(vsRaw2) : '';
+        const errOccurred2 = calcResult['errorOccurred'] === true || calcResult['errorOccurred'] === 'true';
+        const exStr2 = calcResult['exceptionStr'];
+        let evalError: string | undefined;
+        if (errOccurred2) {
+          const ex2 =
+            typeof exStr2 === 'string' && exStr2.length > 0 ? decodeBase64Utf8(exStr2) : '';
+          evalError = ex2.length > 0 ? ex2 : 'Evaluation error';
+        }
         return [{
           type: 'expressionEvaluated',
           targetId,
           result: {
-            value: String(evalRaw['value'] ?? evalRaw['presentation'] ?? ''),
-            typeName: String(evalRaw['typeName'] ?? evalRaw['type'] ?? ''),
-            isExpandable: evalRaw['isExpandable'] === true || evalRaw['isExpandable'] === 'true',
-            error: evalRaw['error'] ? String(evalRaw['error']) : undefined,
+            value: String(fromVs2 || fromPres2 || ''),
+            typeName: String(rvi2['typeName'] ?? ''),
+            isExpandable: rvi2['isExpandable'] === true || rvi2['isExpandable'] === 'true',
+            error: evalError,
           },
         }];
       }
 
       case 'DBGUIExtCmdInfoCorrectedBP': {
-        const srcBp = (r['bpSource'] ?? r['original'] ?? {}) as Record<string, unknown>;
-        const dstBp = (r['bpTarget'] ?? r['corrected'] ?? {}) as Record<string, unknown>;
-        const srcModule = parseModuleId((srcBp['moduleID'] ?? srcBp['moduleId'] ?? {}) as Record<string, unknown>);
-        const dstModule = parseModuleId((dstBp['moduleID'] ?? dstBp['moduleId'] ?? {}) as Record<string, unknown>);
+        // Canonical: DbguiExtCmdInfoCorrectedBp (Messages.cs:4213) has <bpWorkspace> XmlArray
+        // → <moduleBPInfo>[] (ModuleBPInfoInternal).
+        // Each moduleBPInfo has <id> (BslModuleIdInternal) and <bpInfo>[] (BreakpointInfo with <line> and <isActive>).
+        // Phase 4 (OQ-5): redesigned to carry all corrected BPs (not a single original/corrected pair).
+        const bpWs = (r['bpWorkspace'] ?? {}) as Record<string, unknown>;
+        const mods = toArray(bpWs['moduleBPInfo']);
+        const correctedBps: RdbgBreakpoint[] = [];
+        for (const mod of mods) {
+          const m = mod as Record<string, unknown>;
+          const modId = parseModuleId((m['id'] ?? {}) as Record<string, unknown>);
+          const bpInfos = toArray(m['bpInfo']);
+          for (const bpRaw of bpInfos) {
+            const bp = bpRaw as Record<string, unknown>;
+            correctedBps.push({
+              moduleId: modId,
+              // Canonical: BreakpointInfo uses <line> and <isActive>
+              lineNo: Number(bp['line'] ?? 0),
+              enabled: bp['isActive'] !== 'false' && bp['isActive'] !== false,
+            });
+          }
+        }
         return [{
           type: 'breakpointCorrected',
-          original: {
-            moduleId: srcModule,
-            lineNo: Number(srcBp['lineNo'] ?? 0),
-          },
-          corrected: {
-            moduleId: dstModule,
-            lineNo: Number(dstBp['lineNo'] ?? 0),
-            enabled: dstBp['enable'] !== 'false' && dstBp['enable'] !== false,
-          },
+          bps: correctedBps,
         }];
       }
 

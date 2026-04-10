@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result>
+    <errorOccurred>false</errorOccurred>
+    <resultValueInfo>
+      <pres>0KHRgtGA0YPQutGC0YPRgNCw</pres>
+      <typeName>Структура</typeName>
+      <isExpandable>true</isExpandable>
+      <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+      <collectionSize>2</collectionSize>
+    </resultValueInfo>
+    <calculationResult>
+      <valueOfContextPropInfo>
+        <propInfo>
+          <propName>Контрагент</propName>
+        </propInfo>
+        <valueInfo>
+          <pres>0KHRgtGA0L7QutCw</pres>
+          <typeName>Строка</typeName>
+          <isExpandable>false</isExpandable>
+          <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+        </valueInfo>
+      </valueOfContextPropInfo>
+      <valueOfContextPropInfo>
+        <propInfo>
+          <propName>Сумма</propName>
+        </propInfo>
+        <valueInfo>
+          <pres>NDI=</pres>
+          <typeName>Число</typeName>
+          <isExpandable>false</isExpandable>
+          <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+        </valueInfo>
+      </valueOfContextPropInfo>
+    </calculationResult>
+  </debugRDBGRequestResponse:result>
+</response>

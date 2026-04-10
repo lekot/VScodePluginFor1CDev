@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result>
+    <calculationResult>
+      <valueOfContextPropInfo>
+        <propInfo>
+          <propName>СтрокаКоличества</propName>
+        </propInfo>
+        <valueInfo>
+          <pres>NDI=</pres>
+          <typeName>Число</typeName>
+          <isExpandable>false</isExpandable>
+        </valueInfo>
+      </valueOfContextPropInfo>
+      <valueOfContextPropInfo>
+        <propInfo>
+          <propName>ТекстПеременной</propName>
+        </propInfo>
+        <valueInfo>
+          <pres>0J/RgNC40LLQtdGCINC80LjRgA==</pres>
+          <typeName>Строка</typeName>
+          <isExpandable>false</isExpandable>
+        </valueInfo>
+      </valueOfContextPropInfo>
+    </calculationResult>
+  </debugRDBGRequestResponse:result>
+</response>

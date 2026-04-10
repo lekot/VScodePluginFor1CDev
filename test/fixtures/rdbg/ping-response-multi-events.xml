@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:debugDBGUICommands="http://v8.1c.ru/8.3/debugger/debugDBGUICommands" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result xsi:type="debugDBGUICommands:DBGUIExtCmdInfoStarted">
+    <debugDBGUICommands:targetID>
+      <id>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</id>
+      <seanceId>11111111-2222-3333-4444-555555555555</seanceId>
+      <infoBaseAlias>DefAlias</infoBaseAlias>
+      <userName>Администратор</userName>
+      <targetType>Client</targetType>
+    </debugDBGUICommands:targetID>
+  </debugRDBGRequestResponse:result>
+  <debugRDBGRequestResponse:result xsi:type="debugDBGUICommands:DBGUIExtCmdInfoCallStackFormed">
+    <debugDBGUICommands:targetID>
+      <id>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</id>
+      <seanceId>11111111-2222-3333-4444-555555555555</seanceId>
+      <infoBaseAlias>DefAlias</infoBaseAlias>
+      <userName>Администратор</userName>
+      <targetType>Client</targetType>
+    </debugDBGUICommands:targetID>
+    <debugDBGUICommands:stopByBP>false</debugDBGUICommands:stopByBP>
+    <debugDBGUICommands:callStack>
+      <moduleID>
+        <objectID>498ce97d-6689-44e1-a350-7d98de25218c</objectID>
+        <propertyID>d22e852a-cf8a-4f77-8ccb-3548e7792bea</propertyID>
+      </moduleID>
+      <lineNo>7</lineNo>
+      <presentation>NDI=</presentation>
+    </debugDBGUICommands:callStack>
+  </debugRDBGRequestResponse:result>
+</response>

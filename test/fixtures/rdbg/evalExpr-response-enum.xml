@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result>
+    <errorOccurred>false</errorOccurred>
+    <resultValueInfo>
+      <pres>0JHRg9C70LXQstC+</pres>
+      <typeName>Булево</typeName>
+      <isExpandable>true</isExpandable>
+      <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+    </resultValueInfo>
+    <calculationResult>
+      <valueOfEnumInfo>
+        <ordinal>0</ordinal>
+        <valueInfo>
+          <pres>0JTQsA==</pres>
+          <typeName>Булево</typeName>
+          <isExpandable>false</isExpandable>
+          <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+        </valueInfo>
+      </valueOfEnumInfo>
+      <valueOfEnumInfo>
+        <ordinal>1</ordinal>
+        <valueInfo>
+          <pres>0J3QtdGC</pres>
+          <typeName>Булево</typeName>
+          <isExpandable>false</isExpandable>
+          <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+        </valueInfo>
+      </valueOfEnumInfo>
+    </calculationResult>
+  </debugRDBGRequestResponse:result>
+</response>

@@ -1,18 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs';
-import { spawn } from 'child_process';
 import { TreeNode } from '../models/treeNode';
 import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
-import { resolveLaunchExecutable, buildLaunchArgs } from '../services/platformLauncher';
+import { resolveLaunchExecutable } from '../services/platformLauncher';
 import { resolveConfigurationXmlDirectory } from '../bindings/deployService';
-import { Logger } from '../utils/logger';
-
-const DBGS_PORT = 1550;
-const DBGS_POLL_INTERVAL_MS = 500;
-const DBGS_POLL_TIMEOUT_MS = 5000;
+import { BslLaunchConfiguration } from './types';
 
 export type StartDebuggingDeps = {
   node: TreeNode;
@@ -21,84 +15,58 @@ export type StartDebuggingDeps = {
   treeDataProvider: MetadataTreeDataProvider;
 };
 
-async function waitForDbgs(port: number, timeoutMs: number, exitSignal: { exited: boolean }): Promise<boolean> {
-  const url = `http://localhost:${port}/e1crdbg/rdbg`;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (exitSignal.exited) {
-      return false;
-    }
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(DBGS_POLL_INTERVAL_MS) });
-      if (res.status < 600) {
-        return true;
-      }
-    } catch {
-      // not ready yet
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, DBGS_POLL_INTERVAL_MS));
-  }
-  return false;
-}
+export type StartDebuggingFromConfigPathDeps = {
+  configPath: string;
+  workspaceFolder: vscode.WorkspaceFolder;
+  bindingManager: BindingManager;
+  infobaseStorage: InfobaseStorageService;
+};
 
-export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
-  const { node, bindingManager, infobaseStorage, treeDataProvider } = deps;
-
-  // 1. Get workspace folder from node's filePath
-  if (!node.filePath) {
-    void vscode.window.showWarningMessage('Не удалось определить путь конфигурации.');
-    return;
-  }
-  const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(node.filePath));
-  if (!workspaceFolder) {
-    void vscode.window.showWarningMessage('Не удалось определить папку workspace для выбранного узла.');
-    return;
-  }
-
-  // 2. Get config path for node
-  const configPath = treeDataProvider.getConfigPathForNode(node) ?? treeDataProvider.getConfigPath();
+/**
+ * Core logic: запускает DAP launch session по configPath. Резолвит binding,
+ * достаёт инфобазу из каталога, строит BslLaunchConfiguration, вызывает
+ * vscode.debug.startDebugging. Возвращает true если startDebugging вернул true.
+ *
+ * Бросает Error с описательным сообщением если что-то не найдено.
+ * Не показывает UI — это ответственность caller'а.
+ */
+export async function startDebuggingFromConfigPath(deps: StartDebuggingFromConfigPathDeps): Promise<boolean> {
+  const { configPath, workspaceFolder, bindingManager, infobaseStorage } = deps;
 
   // 3. Find matching binding
   const allBindings = await bindingManager.listAll();
   const localBindings = allBindings.filter((b) => b.workspaceFolder === workspaceFolder.name);
 
+  // На Windows пути case-insensitive — драйв буква может прийти как C:\ или c:\
+  // (vscode workspaceFolder.uri.fsPath нормализует drive letter в нижний регистр).
+  const isWin = process.platform === 'win32';
+  const norm = (p: string): string => {
+    const r = path.resolve(p);
+    return isWin ? r.toLowerCase() : r;
+  };
+
   let matchedBinding: (typeof localBindings)[number] | undefined;
+  const configResolved = norm(configPath);
   for (const b of localBindings) {
     const resolved = resolveConfigurationXmlDirectory(workspaceFolder.uri.fsPath, b.configRelativePath);
     if (!resolved.ok) {
       continue;
     }
-    const src = path.resolve(resolved.sourceDir);
-    if (configPath) {
-      const configResolved = path.resolve(configPath);
-      if (configResolved === src || configResolved.startsWith(src + path.sep)) {
-        matchedBinding = b;
-        break;
-      }
-    } else {
-      // fallback: match by node filePath
-      const nodeDir = path.resolve(path.dirname(node.filePath));
-      if (nodeDir === src || nodeDir.startsWith(src + path.sep)) {
-        matchedBinding = b;
-        break;
-      }
+    const src = norm(resolved.sourceDir);
+    if (configResolved === src || configResolved.startsWith(src + path.sep)) {
+      matchedBinding = b;
+      break;
     }
   }
 
   // 4. No binding found
   if (!matchedBinding) {
-    void vscode.window.showWarningMessage(
-      'Для конфигурации не найдена привязка базы. Привяжите базу через «Привязать базы…»',
-    );
-    return;
+    throw new Error('Для конфигурации не найдена привязка базы. Привяжите базу через «Привязать базы…»');
   }
 
   // 5. Binding has no infobaseIds
   if (matchedBinding.infobaseIds.length === 0) {
-    void vscode.window.showWarningMessage(
-      'Для конфигурации нет привязанных баз. Добавьте базу в диалоге привязки.',
-    );
-    return;
+    throw new Error('Для конфигурации нет привязанных баз. Добавьте базу в диалоге привязки.');
   }
 
   // 6. Load infobase catalog and find first file/server entry
@@ -116,141 +84,83 @@ export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
 
   // 7. No suitable entry
   if (!entry) {
-    void vscode.window.showWarningMessage(
+    throw new Error(
       'Среди привязанных баз нет подходящей для отладки (требуется файловая или серверная база).',
     );
-    return;
   }
 
-  // 8. Resolve platform executable
+  // 8. Resolve platform executable to get platformBin
   const exe = await resolveLaunchExecutable(entry, 'enterprise');
   if (!exe) {
-    // resolveLaunchExecutable already shows an error
-    return;
+    throw new Error('Не удалось определить путь к платформе 1С для запуска отладки.');
+  }
+  const platformBin = path.dirname(exe);
+
+  // 9. Build infobase connection string or name
+  let infobaseArg: string;
+  if (entry.type === 'file') {
+    infobaseArg = `File=${entry.filePath}`;
+  } else {
+    // server type
+    const serverEntry = entry as { server?: string; name?: string };
+    if (serverEntry.server && serverEntry.name) {
+      infobaseArg = `Srvr=${serverEntry.server};Ref=${serverEntry.name}`;
+    } else {
+      infobaseArg = entry.name ?? '';
+    }
   }
 
-  // 10. Derive dbgs path
-  const binDir = path.dirname(exe);
-  const dbgsName = process.platform === 'win32' ? 'dbgs.exe' : 'dbgs';
-  const dbgsPath = path.join(binDir, dbgsName);
-  if (!fs.existsSync(dbgsPath)) {
-    void vscode.window.showErrorMessage(`dbgs не найден рядом с платформой: ${dbgsPath}`);
-    return;
-  }
-
-  // 12. Pick port
-  const port = DBGS_PORT;
-
-  // 13. Spawn dbgs
-  Logger.info(`[debugLauncher] Запуск dbgs: ${dbgsPath} --port=${port}`);
-  const exitSignal = { exited: false };
-  const dbgsProcess = spawn(dbgsPath, [`--port=${port}`], {
-    detached: false,
-    stdio: 'pipe',
-    windowsHide: true,
-  });
-
-  dbgsProcess.on('exit', (code) => {
-    exitSignal.exited = true;
-    Logger.info(`[debugLauncher] dbgs завершился с кодом ${code}`);
-  });
-
-  dbgsProcess.on('error', (err) => {
-    exitSignal.exited = true;
-    Logger.error('[debugLauncher] Ошибка запуска dbgs', err);
-  });
-
-  // 14. Wait for dbgs readiness
-  const ready = await waitForDbgs(port, DBGS_POLL_TIMEOUT_MS, exitSignal);
-  if (!ready) {
-    dbgsProcess.kill();
-    void vscode.window.showErrorMessage(
-      `Сервер отладки (dbgs) не запустился за ${DBGS_POLL_TIMEOUT_MS / 1000} секунд. Проверьте, не занят ли порт ${port}.`,
-    );
-    return;
-  }
-
-  // 15. Start DAP session
-  const debugConfig: vscode.DebugConfiguration = {
+  // 10. Build BslLaunchConfiguration
+  const launchConfig: BslLaunchConfiguration = {
     type: 'bsl',
-    request: 'attach',
+    request: 'launch',
     name: 'Отладка 1С',
-    host: 'localhost',
-    port: port,
-    infobaseAlias: undefined,
-    autoAttachTargets: true,
-    _dbgsPort: port,
-    workspaceRoot: configPath ?? node.filePath,
+    rootProject: configPath,
+    infobase: infobaseArg,
+    platformPath: platformBin,
+    debugServerHost: 'localhost',
+    debugServerPort: 1550,
   };
 
-  const started = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
+  // 11. Start DAP launch session
+  return vscode.debug.startDebugging(workspaceFolder, launchConfig);
+}
 
-  // 16. If not started — cleanup
-  if (!started) {
-    dbgsProcess.kill();
-    void vscode.window.showErrorMessage('Не удалось запустить сеанс отладки BSL. Проверьте настройки отладчика.');
+/**
+ * Facade: resolves all needed info from the tree node and infobase catalog,
+ * then starts a standard DAP "launch" session (type=bsl, request=launch).
+ *
+ * All process lifecycle (dbgs + 1cv8c) is managed inside BslDebugSession.launchRequest
+ * via DebuggeeLauncher. This function does NOT spawn any processes.
+ */
+export async function startDebugging(deps: StartDebuggingDeps): Promise<void> {
+  const { node, bindingManager, infobaseStorage, treeDataProvider } = deps;
+
+  // 1. Get workspace folder from node's filePath
+  if (!node.filePath) {
+    void vscode.window.showWarningMessage('Не удалось определить путь конфигурации.');
+    return;
+  }
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(node.filePath));
+  if (!workspaceFolder) {
+    void vscode.window.showWarningMessage('Не удалось определить папку workspace для выбранного узла.');
     return;
   }
 
-  // 17-19. Build 1C client args with credentials and debug flags
-  const password = await infobaseStorage.readPasswordSecret(entry.id);
-  const creds = entry.user || password
-    ? { user: entry.user, password: password ?? undefined }
-    : undefined;
+  // 2. Get config path for node
+  const configPath = treeDataProvider.getConfigPathForNode(node) ?? treeDataProvider.getConfigPath();
 
-  let launchArgs: string[];
+  if (!configPath) {
+    void vscode.window.showWarningMessage('Не удалось определить путь конфигурации.');
+    return;
+  }
+
   try {
-    launchArgs = buildLaunchArgs(entry, 'enterprise', process.platform, creds);
+    const started = await startDebuggingFromConfigPath({ configPath, workspaceFolder, bindingManager, infobaseStorage });
+    if (!started) {
+      void vscode.window.showErrorMessage('Не удалось запустить отладку 1С');
+    }
   } catch (err) {
-    dbgsProcess.kill();
-    void vscode.window.showErrorMessage(
-      `Ошибка построения аргументов запуска 1С: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return;
+    void vscode.window.showWarningMessage(err instanceof Error ? err.message : String(err));
   }
-
-  launchArgs.push('/Debug', '-http', '-attach', '/DebuggerURL', `http://localhost:${port}`);
-
-  // 20. Launch 1C client (tracked so we can kill dbgs when 1C exits)
-  Logger.info(`[debugLauncher] Запуск 1С клиента: ${exe}`);
-  const onecProcess = spawn(exe, launchArgs, {
-    detached: false,
-    stdio: 'ignore',
-    windowsHide: false,
-    shell: false,
-  });
-  onecProcess.on('error', (err) => {
-    Logger.error('[debugLauncher] Ошибка запуска 1С клиента', err);
-  });
-
-  // 21. Register cleanup on session termination
-  let sessionEnded = false;
-  const disposable = vscode.debug.onDidTerminateDebugSession((session) => {
-    if (
-      session.configuration.type === 'bsl' &&
-      session.configuration._dbgsPort === port
-    ) {
-      sessionEnded = true;
-      Logger.info('[debugLauncher] Сеанс отладки завершён, останавливаем dbgs');
-      dbgsProcess.kill();
-      disposable.dispose();
-    }
-  });
-
-  // 22. When 1C client exits — terminate the debug session and kill dbgs
-  onecProcess.on('exit', (code) => {
-    Logger.info(`[debugLauncher] 1С клиент завершился с кодом ${code}`);
-    if (!sessionEnded) {
-      sessionEnded = true;
-      disposable.dispose();
-      // Give the DAP session a moment to process any pending events, then kill dbgs
-      setTimeout(() => {
-        if (!dbgsProcess.killed) {
-          Logger.info('[debugLauncher] 1С закрыт, принудительно останавливаем dbgs');
-          dbgsProcess.kill();
-        }
-      }, 2000);
-      void vscode.debug.stopDebugging();
-    }
-  });
 }

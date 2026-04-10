@@ -11,7 +11,7 @@ import {
     Thread,
     StackFrame,
     Scope,
-    // Variable,  // TODO: re-enable when Locals via evalExpr is implemented
+    Variable,
     Source,
     Breakpoint,
     Event,
@@ -19,9 +19,233 @@ import {
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
-import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem } from './rdbg/rdbgTypes';
-import { BslAttachConfiguration } from './types';
-import { resolveModuleId, resolveBslPathFromRdbgModule } from './moduleIdResolver';
+import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode } from './rdbg/rdbgTypes';
+import { ReferencesTable } from './referencesTable';
+import { BslAttachConfiguration, BslLaunchConfiguration } from './types';
+import { DebuggeeLauncher } from './debuggeeLauncher';
+import { resolveModuleId, resolveBslPathFromRdbgModule, readExtensionName, ResolverConfigRoot } from './moduleIdResolver';
+
+// ---------------------------------------------------------------------------
+// BpWorkspaceEntry — internal state for one BSL module's breakpoints.
+// Not exported to rdbgTypes.ts — this is session-scoped state only.
+// ---------------------------------------------------------------------------
+interface BpWorkspaceEntry {
+    source: string;         // absolute BSL file path, used for DAP response filtering
+    moduleId: RdbgModuleId;
+    bps: RdbgBreakpointRequest[];
+}
+
+// ---------------------------------------------------------------------------
+// FrameRef — payload stored in _frameRefs for each DAP frameId.
+// ---------------------------------------------------------------------------
+interface FrameRef {
+    threadId: number;
+    frameLevel: number;
+}
+
+// ---------------------------------------------------------------------------
+// VariableRef — payload stored in _variableRefs for each variablesReference.
+// ---------------------------------------------------------------------------
+export interface VariableRef {
+    threadId: number;
+    frameLevel: number;
+    path: SourceCalcItem[];
+    view: ViewInterface;
+}
+
+// ---------------------------------------------------------------------------
+// buildDapVariables — pure mapping function, exported for unit testing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Map an array of RdbgVariableNode to DAP Variable objects.
+ * For expandable nodes, adds a new entry to variableRefs and sets variablesReference > 0.
+ * Pure function w.r.t. business logic; has a side effect on variableRefs (adds entries).
+ */
+export function buildDapVariables(
+    parent: VariableRef,
+    children: RdbgVariableNode[],
+    variableRefs: ReferencesTable<VariableRef>
+): DebugProtocol.Variable[] {
+    return children.map((node, i) => {
+        let variablesReference = 0;
+        if (node.isIndexedCollection && parent.view === 'context') {
+            // Switch to collection view for this node
+            variablesReference = variableRefs.add({
+                threadId: parent.threadId,
+                frameLevel: parent.frameLevel,
+                path: [...parent.path, { type: 'property', property: node.name }],
+                view: 'collection',
+            });
+        } else if (node.isExpandable && !node.isIndexedCollection) {
+            // Drill down into object properties
+            variablesReference = variableRefs.add({
+                threadId: parent.threadId,
+                frameLevel: parent.frameLevel,
+                path: [...parent.path, { type: 'property', property: node.name }],
+                view: 'context',
+            });
+        } else if (node.isIndexedCollection && parent.view === 'collection') {
+            // Nested collection inside a collection — use index path
+            variablesReference = variableRefs.add({
+                threadId: parent.threadId,
+                frameLevel: parent.frameLevel,
+                path: [...parent.path, { type: 'index', index: i }],
+                view: 'collection',
+            });
+        }
+        return new Variable(
+            `${node.name} (${node.typeName})`,
+            node.value,
+            variablesReference
+        ) as DebugProtocol.Variable;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Pure helper functions — exported for unit testing only.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the extKey string for a moduleId.
+ * Key: "${extensionName}|${objectId}|${propertyId}"
+ * Base configuration modules get extensionName="" (empty string prefix).
+ */
+export function makeExtKey(moduleId: { extensionName?: string; objectId: string; propertyId: string }): string {
+    return `${moduleId.extensionName ?? ''}|${moduleId.objectId}|${moduleId.propertyId}`;
+}
+
+/**
+ * Update the workspace snapshot map and return the full flat array of all BPs.
+ * @param state  mutable map (modified in-place)
+ * @param extKey key for the module being added/removed
+ * @param entry  new entry, or undefined to delete the key
+ */
+export function buildWorkspaceSnapshot(
+    state: Map<string, BpWorkspaceEntry>,
+    extKey: string,
+    entry: BpWorkspaceEntry | undefined
+): RdbgBreakpointRequest[] {
+    if (entry === undefined) {
+        state.delete(extKey);
+    } else {
+        state.set(extKey, entry);
+    }
+    return Array.from(state.values()).flatMap(e => e.bps);
+}
+
+/**
+ * Parse a DAP hitCondition string into a numeric hitCount.
+ * Supports:
+ *   '5'      → 5
+ *   '>= 3'   → 3
+ *   '> 3'    → 4  (strictly greater-than: first hit at 4)
+ *   '% 7'    → 7  (multiple-of: treat as count for server default)
+ * Anything else → undefined (caller should log a warning and skip hitCount).
+ */
+function parseHitCondition(raw: string): number | undefined {
+    const trimmed = raw.trim();
+
+    // Plain integer: '5'
+    if (/^\d+$/.test(trimmed)) {
+        return parseInt(trimmed, 10);
+    }
+
+    // '>= N'
+    const geMatch = /^>=\s*(\d+)$/.exec(trimmed);
+    if (geMatch) {
+        return parseInt(geMatch[1], 10);
+    }
+
+    // '> N'  — pause when hit count EXCEEDS N, so first pause at N+1
+    const gtMatch = /^>\s*(\d+)$/.exec(trimmed);
+    if (gtMatch) {
+        return parseInt(gtMatch[1], 10) + 1;
+    }
+
+    // '% N'  — every N-th hit
+    const modMatch = /^%\s*(\d+)$/.exec(trimmed);
+    if (modMatch) {
+        return parseInt(modMatch[1], 10);
+    }
+
+    return undefined;
+}
+
+/**
+ * Convert DAP SourceBreakpoint[] to RdbgBreakpointRequest[].
+ *
+ * OQ-8: hitCountVariant is intentionally NOT set — the platform decimal field
+ * would be corrupted by our string-union encoder. We rely on server default (0).
+ */
+export function dapToRdbgBreakpoints(
+    moduleId: RdbgModuleId,
+    dapBps: DebugProtocol.SourceBreakpoint[]
+): RdbgBreakpointRequest[] {
+    return dapBps.map(bp => {
+        const req: RdbgBreakpointRequest = {
+            moduleId,
+            lineNo: bp.line,
+        };
+
+        if (bp.condition && bp.condition.trim() !== '') {
+            req.condition = bp.condition;
+        }
+
+        if (bp.logMessage && bp.logMessage.trim() !== '') {
+            req.logMessage = bp.logMessage;
+        }
+
+        if (bp.hitCondition && bp.hitCondition.trim() !== '') {
+            const hitCount = parseHitCondition(bp.hitCondition);
+            if (hitCount !== undefined) {
+                req.hitCount = hitCount;
+                // hitCountVariant intentionally NOT set (OQ-8: server default=0)
+            }
+            // if parse fails, hitCount stays unset; caller will emit warning via OutputEvent
+        }
+
+        return req;
+    });
+}
+
+/**
+ * Transform DAP setExceptionBreakpoints arguments into RdbgExceptionBreakpointState.
+ * Exported for unit testing.
+ *
+ * Rules:
+ *  - stopOnErrors = true if any filter is selected (filterOptions or legacyFilters).
+ *  - analyzeErrorStr = true only if at least one filterOption has a non-empty condition.
+ *  - Each filterOption with a non-empty condition → RdbgExceptionFilterItem { include: true, text: condition }.
+ *  - Empty condition strings are ignored (no filter entry added).
+ */
+export function dapToExceptionState(
+    filterOptions: DebugProtocol.ExceptionFilterOptions[] | undefined,
+    legacyFilters: string[] | undefined
+): RdbgExceptionBreakpointState {
+    const opts = filterOptions ?? [];
+    const legacy = legacyFilters ?? [];
+
+    const stopOnErrors = opts.length > 0 || legacy.length > 0;
+
+    const filters: RdbgExceptionFilterItem[] = [];
+    for (const opt of opts) {
+        if (opt.condition && opt.condition.trim() !== '') {
+            filters.push({ include: true, text: opt.condition });
+        }
+    }
+
+    const analyzeErrorStr = filters.length > 0 ? true : undefined;
+
+    const state: RdbgExceptionBreakpointState = { stopOnErrors };
+    if (analyzeErrorStr !== undefined) {
+        state.analyzeErrorStr = analyzeErrorStr;
+    }
+    if (filters.length > 0) {
+        state.filters = filters;
+    }
+    return state;
+}
 
 export class BslDebugSession extends DebugSession {
     private _client: RdbgClient | undefined;
@@ -31,14 +255,22 @@ export class BslDebugSession extends DebugSession {
     private readonly _reverseThreadMap: Map<string, number> = new Map();
     private _nextThreadId: number = 1;
     private _lastError: RdbgRuntimeError | undefined;
-    private _workspaceRoot: string = '';
-    private readonly _knownBreakpoints: Map<string, { moduleId: { objectId: string; propertyId: string }; lineNos: number[] }> = new Map();
+    /** Ordered list of configuration roots: [mainRoot, ...extensionRoots] */
+    private _configRoots: string[] = [];
+    /** Workspace snapshot: extKey → BpWorkspaceEntry (replaces old _knownBreakpoints). */
+    private readonly _bpWorkspace: Map<string, BpWorkspaceEntry> = new Map();
     /** Frames from last DBGUIExtCmdInfoCallStackFormed (ping); 1C often does not fill HTTP getCallStack for UI. */
     private readonly _stackTraceCacheByThreadId: Map<number, RdbgCallStackItem[]> = new Map();
     /** Thread that last received `stopped` — Locals/Evaluate must use its targetId (not arbitrary Map iteration). */
     private _pausedThreadId: number | undefined;
+    /** DebuggeeLauncher instance for DAP launch sessions (null for attach sessions). */
+    private _launcher: DebuggeeLauncher | undefined;
     /** Dedup key for last StoppedEvent — prevents repeated UI refresh on each ping tick while paused. */
     private _lastStoppedKey: string = '';
+    /** Maps DAP frameId → {threadId, frameLevel}. Cleared on continued for the relevant thread. */
+    private readonly _frameRefs = new ReferencesTable<FrameRef>();
+    /** Maps DAP variablesReference → {threadId, frameLevel, path, view}. Cleared on continued. */
+    private readonly _variableRefs = new ReferencesTable<VariableRef>();
 
     constructor() {
         super();
@@ -58,7 +290,176 @@ export class BslDebugSession extends DebugSession {
         response.body.supportsEvaluateForHovers = true;
         response.body.supportsTerminateRequest = true;
         response.body.supportsExceptionInfoRequest = true;
+        response.body.supportsConditionalBreakpoints = true;
+        response.body.supportsHitConditionalBreakpoints = true;
+        response.body.supportsLogPoints = true;
+        response.body.supportsExceptionFilterOptions = true;
+        response.body.supportsSingleThreadExecutionRequests = true;
+        response.body.exceptionBreakpointFilters = [
+            {
+                filter: 'all',
+                label: 'Остановка по ошибке',
+                description: 'Останов при возникновении исключения времени выполнения',
+                supportsCondition: true,
+                conditionDescription: 'Подстрока текста ошибки',
+            },
+        ];
 
+        this.sendResponse(response);
+    }
+
+    // -------------------------------------------------------------------------
+    // Launch
+    // -------------------------------------------------------------------------
+
+    protected async launchRequest(
+        response: DebugProtocol.LaunchResponse,
+        args: DebugProtocol.LaunchRequestArguments
+    ): Promise<void> {
+        const cfg = args as unknown as BslLaunchConfiguration;
+
+        // 1. Resolve platformBin — required field
+        const platformBin = cfg.platformPath ?? '';
+        if (!platformBin) {
+            this.sendErrorResponse(
+                response, 1100,
+                'platformPath не задан. Укажите каталог установки 1С в launch.json.'
+            );
+            return;
+        }
+
+        // 2. Setup DebuggeeLauncher
+        this._launcher = new DebuggeeLauncher();
+        this._launcher.onDbgsOutput((chunk, stream) => {
+            // Префикс [dbgs:stderr]/[dbgs:stdout] чтобы было видно происхождение в Debug Console.
+            const prefix = stream === 'stderr' ? '[dbgs:stderr]' : '[dbgs:stdout]';
+            this.sendEvent(new OutputEvent(`${prefix} ${chunk}`, stream === 'stderr' ? 'stderr' : 'console'));
+        });
+        this._launcher.onDbgsExit((code) => {
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: dbgs завершился с кодом ${code}\n`, 'console'
+            ));
+            this.sendEvent(new TerminatedEvent());
+        });
+        this._launcher.onDebuggeeExit((code) => {
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: 1С клиент завершился с кодом ${code}\n`, 'console'
+            ));
+            this.sendEvent(new TerminatedEvent());
+        });
+
+        // 3. Start dbgs
+        const host = cfg.debugServerHost ?? 'localhost';
+        const port = cfg.debugServerPort ?? 1550;
+        try {
+            await this._launcher.startDbgs({ platformBin, host, port });
+            const dbgsMsg = this._launcher.isExternalDbgs
+                ? `BSL Debug: подключение к существующему dbgs на http://${host}:${port}\n`
+                : `BSL Debug: dbgs запущен на http://${host}:${port}\n`;
+            this.sendEvent(new OutputEvent(dbgsMsg, 'console'));
+        } catch (err) {
+            if (this._launcher) {
+                try { await this._launcher.dispose(); } catch { /* no-op */ }
+            }
+            this._launcher = undefined;
+            this.sendErrorResponse(
+                response, 1101,
+                `Не удалось запустить dbgs: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return;
+        }
+
+        // 4. Build _configRoots
+        this._configRoots = [cfg.rootProject, ...(cfg.extensions ?? [])].filter(
+            (r): r is string => typeof r === 'string' && r.length > 0
+        );
+
+        // 5. Setup transport + client
+        this._transport = new RdbgTransport(
+            `http://${host}:${port}`,
+            this._debugUiId,
+            undefined,
+            cfg.connectTimeoutMs
+        );
+        this._client = new RdbgClient(this._transport, this._debugUiId);
+        this._setupClientListeners(this._client);
+
+        // 6. Attach to debug server
+        try {
+            await this._client.attach(cfg.infobaseAlias);
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: подключено к серверу отладки, UI=${this._debugUiId}\n`, 'console'
+            ));
+        } catch (err) {
+            if (this._launcher) {
+                try { await this._launcher.dispose(); } catch { /* no-op */ }
+            }
+            this._launcher = undefined;
+            this._transport?.dispose();
+            this._client = undefined;
+            this._transport = undefined;
+            this.sendErrorResponse(
+                response, 1102,
+                `Ошибка подключения к серверу отладки: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return;
+        }
+
+        // 7. Spawn 1cv8c.exe
+        // Determine connection argument based on infobase string format.
+        // If it contains "Srvr=" or "File=" — treat as connection string,
+        // otherwise treat as named infobase (/IBNAME).
+        const debugServerUrl = `http://${host}:${port}`;
+        const exeName = process.platform === 'win32' ? '1cv8c.exe' : '1cv8c';
+        const exe = path.join(platformBin, exeName);
+        const ib = cfg.infobase;
+        const isConnStr = /Srvr\s*=/i.test(ib) || /File\s*=/i.test(ib);
+        const baseArgs = isConnStr
+            ? ['/IBConnectionString', ib]
+            : ['/IBNAME', ib];
+
+        // Defensive: _launcher could be nulled by a concurrent disconnect/exit handler
+        // (race during async startDbgs/attach phases). Capture local reference.
+        const launcherForDebuggee = this._launcher;
+        if (!launcherForDebuggee) {
+            this.sendErrorResponse(
+                response, 1104,
+                'Внутренняя ошибка: launcher был сброшен до запуска 1С (возможно, dbgs упал или сессия отключена).'
+            );
+            return;
+        }
+        try {
+            await launcherForDebuggee.startDebuggee({ exe, args: baseArgs, debugServerUrl });
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: 1С клиент запущен: ${exe}\n`, 'console'
+            ));
+        } catch (err) {
+            try { await launcherForDebuggee.dispose(); } catch { /* no-op */ }
+            this._launcher = undefined;
+            this._transport?.dispose();
+            this._client = undefined;
+            this._transport = undefined;
+            this.sendErrorResponse(
+                response, 1103,
+                `Не удалось запустить 1С: ${err instanceof Error ? err.message : String(err)}`
+            );
+            return;
+        }
+
+        // 8. OQ-1: autoAttachTypes not yet fully implemented — log warning and skip
+        if (cfg.autoAttachTypes && cfg.autoAttachTypes.length > 0) {
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: autoAttachTypes указан, но encoder OQ-1 не реализован; ` +
+                `используется поведение платформы по умолчанию\n`,
+                'console'
+            ));
+        }
+
+        // 9. Start polling
+        this._client.startPolling(cfg.pingIntervalMs ?? 1000);
+
+        // 10. Signal DAP client that we are ready
+        this.sendEvent(new InitializedEvent());
         this.sendResponse(response);
     }
 
@@ -110,9 +511,13 @@ export class BslDebugSession extends DebugSession {
 
         this._client.startPolling(cfg.pingIntervalMs ?? 1000);
 
-        // Store workspace root for module ID resolution
-        if ((cfg as Record<string, unknown>)['workspaceRoot']) {
-            this._workspaceRoot = String((cfg as Record<string, unknown>)['workspaceRoot']);
+        // Build config roots list for module ID resolution
+        {
+            const workspaceRoot = (cfg as Record<string, unknown>)['workspaceRoot'] as string | undefined;
+            const extensions = cfg.extensions ?? [];
+            this._configRoots = [workspaceRoot, ...extensions].filter(
+                (r): r is string => typeof r === 'string' && r.length > 0
+            );
         }
 
         this.sendEvent(new InitializedEvent());
@@ -152,6 +557,10 @@ export class BslDebugSession extends DebugSession {
             this._client = undefined;
             this._transport = undefined;
             this._pausedThreadId = undefined;
+            if (this._launcher) {
+                await this._launcher.dispose();
+                this._launcher = undefined;
+            }
         }
     }
 
@@ -174,9 +583,9 @@ export class BslDebugSession extends DebugSession {
             const requestedBps = args.breakpoints ?? [];
 
             // Resolve BSL file path to RDBG module ID (objectUUID + propertyId suffix)
-            const resolved = await resolveModuleId(sourcePath, this._workspaceRoot);
+            const resolved = await resolveModuleId(sourcePath, this._configRoots);
             this.sendEvent(new OutputEvent(
-                `[bsl-debug] setBreakpoints: source=${sourcePath} workspaceRoot=${this._workspaceRoot} resolved=${resolved ? `${resolved.label} (${resolved.moduleId.objectId}:${resolved.moduleId.propertyId})` : 'UNRESOLVED'}\n`,
+                `[bsl-debug] setBreakpoints: source=${sourcePath} configRoots=${JSON.stringify(this._configRoots)} resolved=${resolved ? `${resolved.label} (${resolved.moduleId.objectId}:${resolved.moduleId.propertyId})` : 'UNRESOLVED'}\n`,
                 'console'
             ));
 
@@ -200,28 +609,97 @@ export class BslDebugSession extends DebugSession {
             }
 
             const moduleId = resolved.moduleId;
-            const rdbgBps: RdbgBreakpointRequest[] = requestedBps.map((bp) => ({
-                moduleId,
-                lineNo: bp.line,
-            }));
+            const extKey = makeExtKey(moduleId);
 
-            this._knownBreakpoints.set(sourcePath, {
-                moduleId: resolved.moduleId,
-                lineNos: requestedBps.map(bp => bp.line),
-            });
+            // Warn about unparseable hitCondition strings
+            for (const bp of requestedBps) {
+                if (bp.hitCondition && bp.hitCondition.trim() !== '') {
+                    const parsed = parseHitCondition(bp.hitCondition);
+                    if (parsed === undefined) {
+                        this.sendEvent(new OutputEvent(
+                            `BSL Debug: hitCondition "${bp.hitCondition}" (line ${bp.line}) could not be parsed — hitCount not set for this breakpoint.\n`,
+                            'console'
+                        ));
+                    }
+                }
+            }
 
-            const confirmed = await this._client.setBreakpoints(rdbgBps);
+            if (requestedBps.length === 0) {
+                // Clear breakpoints for this module
+                const hadEntry = this._bpWorkspace.has(extKey);
+                const allBps = buildWorkspaceSnapshot(this._bpWorkspace, extKey, undefined);
+                if (hadEntry) {
+                    await this._client.setBreakpoints(allBps);
+                }
+                response.body = { breakpoints: [] };
+                this.sendResponse(response);
+                return;
+            }
 
-            const dapBreakpoints: Breakpoint[] = confirmed.map((bp) => {
-                const b = new Breakpoint(true, bp.lineNo);
-                return b;
-            });
+            // Build converted BPs and update snapshot
+            const convertedBps = dapToRdbgBreakpoints(moduleId, requestedBps);
+            const entry: BpWorkspaceEntry = { source: sourcePath, moduleId, bps: convertedBps };
+            const allBps = buildWorkspaceSnapshot(this._bpWorkspace, extKey, entry);
+
+            // Send full workspace snapshot to server (platform treats setBreakpoints as full replacement)
+            const confirmed = await this._client.setBreakpoints(allBps);
+
+            // Build DAP response: filter confirmed BPs to those belonging to the current module
+            // Fallback: if confirmed is empty/uninformative, verify locally
+            const currentLinenos = new Set(requestedBps.map(bp => bp.line));
+            const confirmedForModule = confirmed.filter(b =>
+                makeExtKey(b.moduleId) === extKey && currentLinenos.has(b.lineNo)
+            );
+
+            let dapBreakpoints: Breakpoint[];
+            if (confirmedForModule.length > 0) {
+                dapBreakpoints = confirmedForModule.map(bp => new Breakpoint(true, bp.lineNo));
+            } else {
+                // Fallback: verify all requested BPs locally (server may return empty confirmed list)
+                dapBreakpoints = requestedBps.map(bp => new Breakpoint(true, bp.line));
+            }
 
             response.body = { breakpoints: dapBreakpoints };
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.sendErrorResponse(response, 1002, `Ошибка установки точек останова: ${message}`);
             return;
+        }
+
+        this.sendResponse(response);
+    }
+
+    // -------------------------------------------------------------------------
+    // Exception breakpoints
+    // -------------------------------------------------------------------------
+
+    protected async setExceptionBreakPointsRequest(
+        response: DebugProtocol.SetExceptionBreakpointsResponse,
+        args: DebugProtocol.SetExceptionBreakpointsArguments
+    ): Promise<void> {
+        if (!this._client) {
+            response.body = { breakpoints: [] };
+            this.sendResponse(response);
+            return;
+        }
+
+        try {
+            const state = dapToExceptionState(args.filterOptions, args.filters);
+            await this._client.setExceptionBreakpoints(state);
+
+            const filterCount = state.filters?.length ?? 0;
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: exception breakpoints updated — stopOnErrors=${state.stopOnErrors}` +
+                (filterCount > 0 ? `, ${filterCount} filter(s)` : '') +
+                '\n',
+                'console'
+            ));
+
+            response.body = { breakpoints: [{ verified: true }] };
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.sendEvent(new OutputEvent(`BSL Debug: ошибка установки exception breakpoint: ${message}\n`, 'stderr'));
+            response.body = { breakpoints: [] };
         }
 
         this.sendResponse(response);
@@ -272,7 +750,7 @@ export class BslDebugSession extends DebugSession {
                 }
             }
 
-            const stackFrames = await this._rdbgItemsToStackFramesAsync(callStack);
+            const stackFrames = await this._rdbgItemsToStackFramesAsync(callStack, args.threadId);
 
             response.body = { stackFrames, totalFrames: stackFrames.length };
         } catch (err) {
@@ -292,9 +770,21 @@ export class BslDebugSession extends DebugSession {
         response: DebugProtocol.ScopesResponse,
         args: DebugProtocol.ScopesArguments
     ): void {
-        // variablesReference must be > 0; use frameId + 1
-        const variablesReference = args.frameId + 1;
-        const scope = new Scope('Locals', variablesReference, false);
+        const frameRef = this._frameRefs.get(args.frameId);
+        if (!frameRef) {
+            // Fallback: unknown frameId — return empty scopes
+            response.body = { scopes: [] };
+            this.sendResponse(response);
+            return;
+        }
+        // Create a variableRef for the "Locals" scope (empty path = all local variables)
+        const varRef = this._variableRefs.add({
+            threadId: frameRef.threadId,
+            frameLevel: frameRef.frameLevel,
+            path: [],
+            view: 'context',
+        });
+        const scope = new Scope('Локальные', varRef, false);
         response.body = { scopes: [scope] };
         this.sendResponse(response);
     }
@@ -305,7 +795,7 @@ export class BslDebugSession extends DebugSession {
 
     protected async variablesRequest(
         response: DebugProtocol.VariablesResponse,
-        _args: DebugProtocol.VariablesArguments
+        args: DebugProtocol.VariablesArguments
     ): Promise<void> {
         if (!this._client) {
             response.body = { variables: [] };
@@ -313,23 +803,43 @@ export class BslDebugSession extends DebugSession {
             return;
         }
 
-        const threadIdForVars = this._pausedThreadId;
-        const targetId =
-            threadIdForVars !== undefined
-                ? this._threadMap.get(threadIdForVars)
-                : this._threadMap.size > 0
-                  ? (this._threadMap.values().next().value as string)
-                  : undefined;
+        // Resolve the variable reference to its stored state
+        const state = this._variableRefs.get(args.variablesReference);
+        if (!state) {
+            response.body = { variables: [] };
+            this.sendResponse(response);
+            return;
+        }
 
+        const targetId = this._threadMap.get(state.threadId);
         if (!targetId) {
             response.body = { variables: [] };
             this.sendResponse(response);
             return;
         }
 
-        // evalLocalVariables crashes dbgs (CalculationSourceDataStorage namespace bug in 8.3.27).
-        // Configurator uses evalExpr instead. TODO: implement Locals via evalExpr.
-        response.body = { variables: [] };
+        try {
+            let children: RdbgVariableNode[];
+            if (state.path.length === 0) {
+                // Top-level locals scope: use evalLocalVariables (with ADR-1 fallback)
+                children = await this._client.evalLocalVariables(targetId, state.frameLevel);
+            } else {
+                // Drilldown: evaluate path to get nested properties/elements
+                const result = await this._client.evalExpressionPath(
+                    targetId, state.frameLevel, state.path, state.view
+                );
+                children = result.children;
+            }
+
+            const variables = buildDapVariables(state, children, this._variableRefs);
+            response.body = { variables };
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: ошибка получения переменных: ${message}\n`, 'stderr'
+            ));
+            response.body = { variables: [] };
+        }
 
         this.sendResponse(response);
     }
@@ -361,7 +871,14 @@ export class BslDebugSession extends DebugSession {
         }
 
         try {
-            const result = await this._client.evaluate(targetId, args.expression, args.frameId ?? 0);
+            // args.frameId is a DAP-side identifier (a value handed out by _frameRefs.add()),
+            // NOT a stack-frame index. Resolve it back to the real frameLevel before sending
+            // to the platform — otherwise hover-evaluate hits the wrong stack frame and reads
+            // variables from the wrong activation.
+            const frameRef = args.frameId !== undefined ? this._frameRefs.get(args.frameId) : undefined;
+            const frameLevel = frameRef?.frameLevel ?? 0;
+
+            const result = await this._client.evaluate(targetId, args.expression, frameLevel);
 
             if (result.error) {
                 this.sendErrorResponse(response, 1006, result.error);
@@ -513,7 +1030,7 @@ export class BslDebugSession extends DebugSession {
     // Client event listeners
     // -------------------------------------------------------------------------
 
-    private async _rdbgItemsToStackFramesAsync(items: RdbgCallStackItem[]): Promise<StackFrame[]> {
+    private async _rdbgItemsToStackFramesAsync(items: RdbgCallStackItem[], threadId: number): Promise<StackFrame[]> {
         // 1C platform sends call stack bottom-up (caller first, current frame last).
         // DAP expects top-down (current frame first). Reverse.
         const reversed = [...items].reverse();
@@ -527,11 +1044,12 @@ export class BslDebugSession extends DebugSession {
                       ? path.basename(item.moduleId.objectId)
                       : `Frame ${index + 1}`;
             let resolvedPath: string | undefined;
-            if (this._workspaceRoot.length > 0) {
+            if (this._configRoots.length > 0) {
                 try {
+                    const resolverRoots = await this._buildResolverRoots();
                     resolvedPath = await resolveBslPathFromRdbgModule(
                         item.moduleId,
-                        this._workspaceRoot
+                        resolverRoots
                     );
                 } catch {
                     resolvedPath = undefined;
@@ -541,9 +1059,24 @@ export class BslDebugSession extends DebugSession {
             const source = resolvedPath
                 ? new Source(sourceName, resolvedPath)
                 : new Source(label);
-            out.push(new StackFrame(index, label, source, item.lineNo));
+            // Phase 4: use ReferencesTable for frameId (1-based, monotonic, thread-aware)
+            const frameId = this._frameRefs.add({ threadId, frameLevel: index });
+            out.push(new StackFrame(frameId, label, source, item.lineNo));
         }
         return out;
+    }
+
+    /**
+     * Build an array of ResolverConfigRoot by reading extensionName from each config root.
+     * Cached by readExtensionName — repeated calls are cheap.
+     */
+    private async _buildResolverRoots(): Promise<ResolverConfigRoot[]> {
+        const result: ResolverConfigRoot[] = [];
+        for (const root of this._configRoots) {
+            const extensionName = await readExtensionName(root);
+            result.push({ extensionName, root });
+        }
+        return result;
     }
 
     private _setupClientListeners(client: RdbgClient): void {
@@ -606,6 +1139,9 @@ export class BslDebugSession extends DebugSession {
                 this._pausedThreadId = undefined;
             }
             this._lastStoppedKey = '';
+            // Phase 4: clear stale frame/variable references for this thread
+            this._frameRefs.clear(f => f.threadId === threadId);
+            this._variableRefs.clear(v => v.threadId === threadId);
             this.sendEvent(new ContinuedEvent(threadId));
         });
 
@@ -656,21 +1192,22 @@ export class BslDebugSession extends DebugSession {
     }
 
     private async _reapplyBreakpoints(): Promise<void> {
-        if (!this._client || this._knownBreakpoints.size === 0) {
+        if (!this._client || this._bpWorkspace.size === 0) {
             return;
         }
-        for (const [sourcePath, entry] of this._knownBreakpoints) {
-            try {
-                const rdbgBps = entry.lineNos.map(lineNo => ({
-                    moduleId: entry.moduleId,
-                    lineNo,
-                }));
-                await this._client.setBreakpoints(rdbgBps);
-                this.sendEvent(new OutputEvent(`BSL Debug: re-set ${rdbgBps.length} breakpoint(s) for ${sourcePath}\n`, 'console'));
-            } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                this.sendEvent(new OutputEvent(`BSL Debug: failed to re-set breakpoints for ${sourcePath}: ${msg}\n`, 'stderr'));
-            }
+        // Send the full workspace snapshot in a single call.
+        // Platform treats setBreakpoints as a full replacement — sending per-module
+        // would cause each call to overwrite the previous one.
+        const allBps = Array.from(this._bpWorkspace.values()).flatMap(e => e.bps);
+        try {
+            await this._client.setBreakpoints(allBps);
+            this.sendEvent(new OutputEvent(
+                `BSL Debug: re-applied ${allBps.length} breakpoint(s) from ${this._bpWorkspace.size} module(s)\n`,
+                'console'
+            ));
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.sendEvent(new OutputEvent(`BSL Debug: failed to re-apply breakpoints: ${msg}\n`, 'stderr'));
         }
     }
 }

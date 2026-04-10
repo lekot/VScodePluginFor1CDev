@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response xmlns="http://v8.1c.ru/8.3/debugger/debugBaseData" xmlns:debugRDBGRequestResponse="http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <debugRDBGRequestResponse:result>
+    <errorOccurred>false</errorOccurred>
+    <resultValueInfo>
+      <pres>0KHQv9C40YHQvtC6</pres>
+      <typeName>Список</typeName>
+      <isExpandable>true</isExpandable>
+      <isIIndexedCollectionRo>true</isIIndexedCollectionRo>
+      <collectionSize>3</collectionSize>
+    </resultValueInfo>
+    <calculationResult>
+      <valueOfCollectionInfo>
+        <valueInfo>
+          <pres>0K3Qu9C10LzQtdC90YIw</pres>
+          <typeName>Строка</typeName>
+          <isExpandable>false</isExpandable>
+          <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+        </valueInfo>
+      </valueOfCollectionInfo>
+      <valueOfCollectionInfo>
+        <valueInfo>
+          <pres>0K3Qu9C10LzQtdC90YIx</pres>
+          <typeName>Строка</typeName>
+          <isExpandable>false</isExpandable>
+          <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+        </valueInfo>
+      </valueOfCollectionInfo>
+      <valueOfCollectionInfo>
+        <valueInfo>
+          <pres>NDI=</pres>
+          <typeName>Число</typeName>
+          <isExpandable>false</isExpandable>
+          <isIIndexedCollectionRo>false</isIIndexedCollectionRo>
+        </valueInfo>
+      </valueOfCollectionInfo>
+    </calculationResult>
+  </debugRDBGRequestResponse:result>
+</response>
