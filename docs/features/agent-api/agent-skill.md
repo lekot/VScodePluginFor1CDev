@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет 28 команд для программного управления метаданными и отладкой конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand`.
+Расширение CDT 41 для VS Code предоставляет 30 команд для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand`.
 
 ## Адресация объектов (dot-path)
 
@@ -196,6 +196,34 @@ uuid: a1b2c3d4-...
 
 ---
 
+### Привязки
+
+#### `1c-metadata-tree.agent.resolveBinding`
+
+Резолвит фикстуру конфигурации в информационную базу. Принимает полный путь, относительный, или просто имя фикстуры.
+
+```json
+{ "configPath": "uh" }
+```
+
+- `configPath` — имя фикстуры ("uh", "empty_conf"), относительный путь ("FormatSamples/uh") или полный путь (необязательно, по умолчанию — из дерева)
+
+Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
+
+Возвращает: `{ configPath, configRelativePath, workspaceFolder, infobase: { id, name, type, filePath?, server?, database?, webUrl? } }`.
+
+#### `1c-metadata-tree.agent.listBindings`
+
+Список всех привязок с резолвленными инфобазами.
+
+```json
+{}
+```
+
+Возвращает: `[{ configRelativePath, workspaceFolder, infobaseCount, infobases: [...] }]`.
+
+---
+
 ### Раскатка
 
 #### `1c-metadata-tree.agent.deploy`
@@ -383,8 +411,30 @@ uuid: a1b2c3d4-...
 7. debug.stop({ sessionId: '...' })
 ```
 
+### Формы enterprise (через skill /1c-forms)
+
+Работа с формами 1С в режиме предприятия выполняется через отдельный skill `/1c-forms` (Playwright + ibsrv), а не через VS Code bridge. Skill автоматически запускает ibsrv и подключает браузер:
+
+```bash
+# Резолвить базу по фикстуре (через bridge):
+bash .claude/skills/cdt-agent/scripts/call.sh resolveBinding '{"configPath":"uh"}'
+
+# Запустить сессию (ibsrv + Playwright автоматически):
+bash .claude/skills/1c-forms/scripts/call.sh start "C:/path/to/infobase"
+
+# Навигация, заполнение, чтение:
+bash .claude/skills/1c-forms/scripts/call.sh exec 'await navigateLink("Справочник.Контрагенты"); const t = await readTable(); console.log(JSON.stringify(t));'
+
+# Остановить всё:
+bash .claude/skills/1c-forms/scripts/call.sh stop
+```
+
+Подробнее: `.claude/skills/1c-forms/SKILL.md`.
+
+---
+
 ## Ограничения
 
-- Формы через Agent API не создаются/редактируются (используйте UI)
+- Формы конфигуратора через Agent API не создаются/редактируются (используйте UI). Формы enterprise — через skill /1c-forms
 - Для InformationRegister и AccumulationRegister при `createObject` создаются дефолтные Измерение+Ресурс (шаблонный fallback)
 - Тип реквизита при `addAttribute` задаётся дефолтный (строка 50); для изменения используйте `setProperties` с `Type: "cfg:DocumentRef.Больше"` или `Type: "xs:boolean"` и т.д.
