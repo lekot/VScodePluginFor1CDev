@@ -431,6 +431,35 @@ bash .claude/skills/1c-forms/scripts/call.sh stop
 
 Подробнее: `.claude/skills/1c-forms/SKILL.md`.
 
+### СКД (через skill /skd)
+
+Создание, анализ и редактирование схем компоновки данных (DataCompositionSchema). Построен поверх cc-1c-skills.
+
+```bash
+# Скомпилировать СКД из JSON DSL:
+bash .claude/skills/skd/scripts/call.sh compile -Value '{
+  "dataSets": [{"query": "ВЫБРАТЬ Товары.Наименование, Товары.Цена ИЗ Справочник.Товары КАК Товары", "fields": ["Наименование", "Цена: decimal(15,2)"]}],
+  "totalFields": ["Цена: Сумма"],
+  "parameters": ["Период: StandardPeriod = LastMonth @autoDates"]
+}' -OutputPath Template.xml
+
+# Анализ существующей СКД (11 режимов):
+bash .claude/skills/skd/scripts/call.sh info Template.xml                    # overview
+bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode query -Name НаборДанных1  # текст запроса
+bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode params       # параметры
+bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode full         # полная сводка
+
+# Точечное редактирование (25 операций):
+bash .claude/skills/skd/scripts/call.sh edit Template.xml -Op add-field -DataSet НаборДанных1 -Field "НовоеПоле: decimal(15,2)"
+
+# Валидация (~30 проверок):
+bash .claude/skills/skd/scripts/call.sh validate Template.xml
+```
+
+JSON DSL поддерживает shorthand: `"Количество: decimal(15,2) @dimension #noFilter"`, русские синонимы типов (`число`, `строка`, `дата`), `@autoDates` для автогенерации ДатаНачала/ДатаОкончания.
+
+Подробнее: `.claude/skills/skd/SKILL.md`.
+
 ---
 
 ## Ограничения
