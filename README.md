@@ -227,6 +227,7 @@ Workspace → FormatDetector → MetadataParser → TreeNode → TreeDataProvide
 - [onec-debug-adapter](https://github.com/akpaevj/onec-debug-adapter) — реверс-инжиниринг протокола RDBG и взаимодействия с dbgs, на основе которого реализована отладка 1С из VS Code.
 - [1c-syntax](https://github.com/1c-syntax/1c-syntax) — грамматики и шаблоны для подсветки синтаксиса BSL/SDBL.
 - [cc-1c-skills](https://github.com/Nikolay-Shirokov/cc-1c-skills) — навыки и спецификации для AI-агентов, работающих с платформой 1С.
+- [1c-agent-based-dev-framework](https://github.com/SteelMorgan/1c-agent-based-dev-framework) — фреймворк агентной разработки для 1С, идеи по работе с формами enterprise и СКД через Playwright.
 
 ## Вклад в проект
 
