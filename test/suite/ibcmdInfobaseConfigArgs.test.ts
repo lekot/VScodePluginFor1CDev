@@ -10,7 +10,7 @@ import {
   resolveIbcmdCliPathForWindowsSpawn,
 } from '../../src/services/ibcmd/ibcmdInfobaseConfigArgs';
 
-const DATA = '/tmp/ibcmd-data';
+const DATA = path.resolve('/tmp/ibcmd-data');
 
 suite('ibcmdInfobaseConfigArgs', () => {
   test('resolveIbcmdCliPathForWindowsSpawn: non-existent path unchanged', () => {
