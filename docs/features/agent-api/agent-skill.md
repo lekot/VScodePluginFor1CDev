@@ -1,6 +1,66 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет 30 команд для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand`.
+Расширение CDT 41 для VS Code предоставляет 30 команд для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
+
+## HTTP Bridge
+
+Расширение поднимает HTTP-сервер на рандомном порту при активации. Координаты записываются в файл:
+
+```
+<workspaceFolder>/.vscode/cdt-agent-bridge.json
+```
+
+Формат:
+```json
+{
+  "port": 63088,
+  "token": "baf0b38e...hex64...",
+  "pid": 42144,
+  "workspaceFolder": "c:\\reps\\1cviewer",
+  "createdAt": "2026-04-13T08:56:08.711Z"
+}
+```
+
+### Протокол
+
+- **Health check:** `GET /health` → `{ "ok": true, "pid": ... }`
+- **Команда:** `POST /command` с JSON-телом `{ "name": "...", "args": { ... } }`
+- **Аутентификация:** заголовок `Authorization: Bearer <token>`
+- **Content-Type:** `application/json; charset=utf-8` (важно для кириллицы)
+
+Пример вызова через curl:
+```bash
+curl -X POST "http://127.0.0.1:$PORT/command" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json; charset=utf-8" \
+  -d '{"name":"1c-metadata-tree.agent.listObjects","args":{"type":"Catalog"}}'
+```
+
+Пример вызова через Node.js (корректная кодировка для кириллицы):
+```javascript
+const data = JSON.stringify({
+  name: '1c-metadata-tree.agent.debug.evaluate',
+  args: { sessionId, frameId: 1, expression: 'Сумма' }
+});
+const req = http.request({
+  hostname: '127.0.0.1', port: PORT, path: '/command', method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${TOKEN}`,
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(data)
+  }
+}, res => { /* ... */ });
+req.end(data);
+```
+
+### Whitelist команд
+
+Через bridge доступны только команды, соответствующие паттерну:
+```
+/^1c-metadata-tree\.agent(\.debug|\.forms)?\.[a-zA-Z]+$/
+```
+
+---
 
 ## Адресация объектов (dot-path)
 
@@ -250,8 +310,9 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 
 #### `1c-metadata-tree.agent.debug.start`
 
-Запуск отладочной сессии (dbgs.exe + 1cv8c.exe).
+Запуск отладочной сессии. Два режима:
 
+**thinClient** (по умолчанию) — dbgs.exe + 1cv8c.exe:
 ```json
 {
   "rootProject": "C:/reps/project/conf",
@@ -260,7 +321,39 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 }
 ```
 
-Возвращает: `{ sessionId: string }`.
+**webServer** — ibsrv с встроенным RDBG (для Playwright / агентской работы с формами):
+```json
+{
+  "rootProject": "C:/reps/project/conf",
+  "infobase": "File=C:/Users/User/Documents/InfoBase",
+  "platformPath": "C:/Program Files/1cv8/8.3.27.1859/bin",
+  "debuggeeType": "webServer",
+  "databasePath": "C:/Users/User/Documents/InfoBase"
+}
+```
+
+- `debuggeeType` — `"thinClient"` (default) или `"webServer"`
+- `databasePath` — путь к файловой ИБ (обязателен для webServer, можно опустить если есть в `infobase` как `File=...`)
+
+Возвращает: `{ sessionId: string, webServerUrl?: string }`.
+
+`webServerUrl` — URL веб-клиента ibsrv (только для webServer). Открыть в Playwright для навигации и взаимодействия.
+
+#### `1c-metadata-tree.agent.debug.startFromBinding`
+
+Запуск отладки через привязку (без ручного указания путей).
+
+```json
+{
+  "binding": "empty_conf",
+  "debuggeeType": "webServer"
+}
+```
+
+- `binding` — имя фикстуры (fuzzy match: `"uh"`, `"empty_conf"`), относительный или абсолютный путь
+- `debuggeeType` — `"thinClient"` (default) или `"webServer"`
+
+Резолвит binding → rootProject, infobase, platformPath автоматически. Возвращает то же, что `debug.start`.
 
 #### `1c-metadata-tree.agent.debug.stop`
 
@@ -399,7 +492,7 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 6. getYaml({ path: 'Catalog.Товары' })            → проверить результат
 ```
 
-### Сценарий B: отладка
+### Сценарий B: отладка (thin client)
 
 ```
 1. debug.start({ rootProject: '...', infobase: 'File=...', platformPath: '...' })
@@ -407,9 +500,33 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 3. debug.waitForStop({ sessionId: '...' })         → дождаться breakpoint
 4. debug.getScopes({ sessionId: '...', frameId: 1 })
 5. debug.getVariables({ sessionId: '...', varRef: 1 })  → прочитать переменные
-6. debug.continue({ sessionId: '...', threadId: 1 })
-7. debug.stop({ sessionId: '...' })
+6. debug.evaluate({ sessionId: '...', frameId: 1, expression: 'МояПеременная' })
+7. debug.continue({ sessionId: '...', threadId: 1 })
+8. debug.stop({ sessionId: '...' })
 ```
+
+### Сценарий C: отладка через ibsrv + Playwright
+
+Для агентской работы с формами — ibsrv поднимает веб-клиент и встроенный отладчик.
+
+```
+1. debug.startFromBinding({ binding: 'empty_conf', debuggeeType: 'webServer' })
+   → { sessionId, webServerUrl: 'http://localhost:52570' }
+2. debug.setBreakpoint({ file: '...ObjectModule.bsl', line: 4 })
+3. Playwright: открыть webServerUrl, навигировать к форме, выполнить действие (Записать)
+4. debug.waitForStop({ sessionId, timeoutMs: 30000 })
+   → { reason: 'breakpoint', threadId: 1, frameId: 1, file: '...', line: 4 }
+5. debug.evaluate({ sessionId, frameId: 1, expression: 'Сч' })
+   → { value: '1', type: 'Число', varRef: 0 }
+6. debug.continue({ sessionId, threadId: 1 })
+7. debug.stop({ sessionId })
+```
+
+**Особенности webServer режима:**
+- `verified: false` при setBreakpoint — нормально, BP сработает после подключения браузера
+- `getVariables` (панель Locals) — пусто; используйте `evaluate` для конкретных переменных
+- ibsrv создаёт новые target'ы динамически при серверных операциях — расширение обнаруживает и подключает их автоматически
+- `waitForStop` нужно вызывать **до** или **одновременно** с действием Playwright (иначе stop event будет потерян)
 
 ### Формы enterprise (через skill /1c-forms)
 
