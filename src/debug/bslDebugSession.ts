@@ -274,6 +274,7 @@ export class BslDebugSession extends DebugSession {
     private readonly _frameRefs = new ReferencesTable<FrameRef>();
     /** Maps DAP variablesReference → {threadId, frameLevel, path, view}. Cleared on continued. */
     private readonly _variableRefs = new ReferencesTable<VariableRef>();
+    private _isWebServer = false;
 
     constructor() {
         super();
@@ -356,6 +357,7 @@ export class BslDebugSession extends DebugSession {
         let port = cfg.debugServerPort ?? 1550;
 
         if (cfg.debuggeeType === 'webServer') {
+            this._isWebServer = true;
             // ibsrv with --debug=http --debug-port=<free> acts as its own RDBG server.
             // No external dbgs needed. Start ibsrv first, then attach DAP transport to debug-port.
             const ibsrvName = process.platform === 'win32' ? 'ibsrv.exe' : 'ibsrv';
@@ -895,7 +897,11 @@ export class BslDebugSession extends DebugSession {
 
         try {
             let children: RdbgVariableNode[];
-            if (state.path.length === 0) {
+            if (state.path.length === 0 && this._isWebServer) {
+                // ibsrv crashes on evalLocalVariables — skip locals enumeration.
+                // Individual expressions work via evaluateRequest (evalExpr).
+                children = [];
+            } else if (state.path.length === 0) {
                 // Top-level locals scope: use evalLocalVariables (with ADR-1 fallback)
                 children = await this._client.evalLocalVariables(targetId, state.frameLevel);
             } else {
