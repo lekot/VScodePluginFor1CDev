@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { BslAttachConfiguration } from './types';
+import { BslAttachConfiguration, BslLaunchConfiguration } from './types';
 import { Logger } from '../utils/logger';
 
 /**
@@ -70,6 +70,25 @@ export class BslDebugConfigProvider implements vscode.DebugConfigurationProvider
                     .filter((p) => p !== activeFolderPath);
             } else {
                 cfg.extensions = [];
+            }
+        }
+
+        // Validate webServer debuggee type
+        if ((config as BslLaunchConfiguration).debuggeeType === 'webServer') {
+            const launchCfg = config as BslLaunchConfiguration;
+            // Resolve databasePath from infobase connection string if not explicitly set
+            if (!launchCfg.databasePath) {
+                const fileMatch = /File\s*=\s*([^;]+)/i.exec(launchCfg.infobase ?? '');
+                if (fileMatch) {
+                    launchCfg.databasePath = fileMatch[1].trim().replace(/^"+|"+$/g, '');
+                }
+            }
+            if (!launchCfg.databasePath) {
+                void vscode.window.showErrorMessage(
+                    'BSL Debug: debuggeeType=webServer поддерживает только файловые ИБ. ' +
+                    'Укажите databasePath или используйте строку подключения с File=<путь>.'
+                );
+                return undefined;
             }
         }
 

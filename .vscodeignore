@@ -56,3 +56,5 @@ CLAUDE.md
 AGENTS.md
 shcntx_help_db_path.txt
 coverage/
+*.py
+GUARD.md

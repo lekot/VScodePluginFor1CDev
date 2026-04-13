@@ -1,4 +1,7 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as http from 'http';
+import * as os from 'os';
 import * as path from 'path';
 import {
     DebugSession,
@@ -22,7 +25,7 @@ import { RdbgTransport } from './rdbg/rdbgTransport';
 import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode } from './rdbg/rdbgTypes';
 import { ReferencesTable } from './referencesTable';
 import { BslAttachConfiguration, BslLaunchConfiguration } from './types';
-import { DebuggeeLauncher } from './debuggeeLauncher';
+import { DebuggeeLauncher, getFreePort } from './debuggeeLauncher';
 import { resolveModuleId, resolveBslPathFromRdbgModule, readExtensionName, ResolverConfigRoot } from './moduleIdResolver';
 
 // ---------------------------------------------------------------------------
@@ -348,25 +351,90 @@ export class BslDebugSession extends DebugSession {
             this.sendEvent(new TerminatedEvent());
         });
 
-        // 3. Start dbgs
+        // 3. Start debug server
         const host = cfg.debugServerHost ?? 'localhost';
-        const port = cfg.debugServerPort ?? 1550;
-        try {
-            await this._launcher.startDbgs({ platformBin, host, port });
-            const dbgsMsg = this._launcher.isExternalDbgs
-                ? `BSL Debug: подключение к существующему dbgs на http://${host}:${port}\n`
-                : `BSL Debug: dbgs запущен на http://${host}:${port}\n`;
-            this.sendEvent(new OutputEvent(dbgsMsg, 'console'));
-        } catch (err) {
-            if (this._launcher) {
-                try { await this._launcher.dispose(); } catch { /* no-op */ }
+        let port = cfg.debugServerPort ?? 1550;
+
+        if (cfg.debuggeeType === 'webServer') {
+            // ibsrv with --debug=http --debug-port=<free> acts as its own RDBG server.
+            // No external dbgs needed. Start ibsrv first, then attach DAP transport to debug-port.
+            const ibsrvName = process.platform === 'win32' ? 'ibsrv.exe' : 'ibsrv';
+            const exe = path.join(platformBin, ibsrvName);
+
+            let databasePath = cfg.databasePath ?? '';
+            if (!databasePath) {
+                const fileMatch = /File\s*=\s*([^;]+)/i.exec(cfg.infobase);
+                if (fileMatch) {
+                    databasePath = fileMatch[1].trim().replace(/^"+|"+$/g, '');
+                }
             }
-            this._launcher = undefined;
-            this.sendErrorResponse(
-                response, 1101,
-                `Не удалось запустить dbgs: ${err instanceof Error ? err.message : String(err)}`
-            );
-            return;
+            if (!databasePath) {
+                if (this._launcher) { try { await this._launcher.dispose(); } catch { /* */ } }
+                this._launcher = undefined;
+                this.sendErrorResponse(response, 1105,
+                    'debuggeeType=webServer требует databasePath.');
+                return;
+            }
+
+            const httpPort = cfg.webServerHttpPort ?? 8080;
+            const debugPort = await getFreePort();
+            let dataDir: string;
+            try {
+                dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ibsrv-'));
+            } catch (err) {
+                if (this._launcher) { try { await this._launcher.dispose(); } catch { /* */ } }
+                this._launcher = undefined;
+                this.sendErrorResponse(response, 1106,
+                    `Не удалось создать tmpdir: ${err instanceof Error ? err.message : String(err)}`);
+                return;
+            }
+
+            try {
+                this._launcher.startWebServerDebuggee({ exe, databasePath, debugPort, httpPort, dataDir });
+                this.sendEvent(new OutputEvent(
+                    `BSL Debug: ibsrv запущен: ${exe} (http=${httpPort}, debug=${debugPort})\n`, 'console'));
+            } catch (err) {
+                if (this._launcher) { try { await this._launcher.dispose(); } catch { /* */ } }
+                this._launcher = undefined;
+                this.sendErrorResponse(response, 1107,
+                    `Не удалось запустить ibsrv: ${err instanceof Error ? err.message : String(err)}`);
+                return;
+            }
+
+            // Wait for ibsrv HTTP + RDBG readiness
+            try {
+                await this._waitForHttpReady(`http://${host}:${httpPort}/`, 30000, 500);
+                await this._waitForHttpReady(`http://${host}:${debugPort}/e1crdbg/rdbg`, 10000, 500);
+                this.sendEvent(new OutputEvent('BSL Debug: ibsrv ready\n', 'console'));
+            } catch (err) {
+                if (this._launcher) { try { await this._launcher.dispose(); } catch { /* */ } }
+                this._launcher = undefined;
+                this.sendErrorResponse(response, 1108,
+                    `ibsrv не готов: ${err instanceof Error ? err.message : String(err)}`);
+                return;
+            }
+
+            // DAP transport connects to ibsrv debug-port (built-in RDBG)
+            port = debugPort;
+        } else {
+            // thinClient: start external dbgs
+            try {
+                await this._launcher.startDbgs({ platformBin, host, port });
+                const dbgsMsg = this._launcher.isExternalDbgs
+                    ? `BSL Debug: подключение к существующему dbgs на http://${host}:${port}\n`
+                    : `BSL Debug: dbgs запущен на http://${host}:${port}\n`;
+                this.sendEvent(new OutputEvent(dbgsMsg, 'console'));
+            } catch (err) {
+                if (this._launcher) {
+                    try { await this._launcher.dispose(); } catch { /* no-op */ }
+                }
+                this._launcher = undefined;
+                this.sendErrorResponse(
+                    response, 1101,
+                    `Не удалось запустить dbgs: ${err instanceof Error ? err.message : String(err)}`
+                );
+                return;
+            }
         }
 
         // 4. Build _configRoots
@@ -381,7 +449,8 @@ export class BslDebugSession extends DebugSession {
             undefined,
             cfg.connectTimeoutMs
         );
-        this._client = new RdbgClient(this._transport, this._debugUiId);
+        const discoveryInterval = cfg.debuggeeType === 'webServer' ? 1 : 5;
+        this._client = new RdbgClient(this._transport, this._debugUiId, discoveryInterval);
         this._setupClientListeners(this._client);
 
         // 6. Attach to debug server
@@ -405,21 +474,10 @@ export class BslDebugSession extends DebugSession {
             return;
         }
 
-        // 7. Spawn 1cv8c.exe
-        // Determine connection argument based on infobase string format.
-        // If it contains "Srvr=" or "File=" — treat as connection string,
-        // otherwise treat as named infobase (/IBNAME).
+        // 7. Spawn debuggee (thinClient only; ibsrv is already started in step 3)
         const debugServerUrl = `http://${host}:${port}`;
-        const exeName = process.platform === 'win32' ? '1cv8c.exe' : '1cv8c';
-        const exe = path.join(platformBin, exeName);
-        const ib = cfg.infobase;
-        const isConnStr = /Srvr\s*=/i.test(ib) || /File\s*=/i.test(ib);
-        const baseArgs = isConnStr
-            ? ['/IBConnectionString', ib]
-            : ['/IBNAME', ib];
 
         // Defensive: _launcher could be nulled by a concurrent disconnect/exit handler
-        // (race during async startDbgs/attach phases). Capture local reference.
         const launcherForDebuggee = this._launcher;
         if (!launcherForDebuggee) {
             this.sendErrorResponse(
@@ -428,22 +486,39 @@ export class BslDebugSession extends DebugSession {
             );
             return;
         }
-        try {
-            await launcherForDebuggee.startDebuggee({ exe, args: baseArgs, debugServerUrl });
-            this.sendEvent(new OutputEvent(
-                `BSL Debug: 1С клиент запущен: ${exe}\n`, 'console'
-            ));
-        } catch (err) {
-            try { await launcherForDebuggee.dispose(); } catch { /* no-op */ }
-            this._launcher = undefined;
-            this._transport?.dispose();
-            this._client = undefined;
-            this._transport = undefined;
-            this.sendErrorResponse(
-                response, 1103,
-                `Не удалось запустить 1С: ${err instanceof Error ? err.message : String(err)}`
-            );
-            return;
+
+        if (cfg.debuggeeType === 'webServer') {
+            // ibsrv already started in step 3 with built-in RDBG — nothing to do here.
+        } else {
+            // --- default: thin client (1cv8c.exe) ---
+            // Determine connection argument based on infobase string format.
+            // If it contains "Srvr=" or "File=" — treat as connection string,
+            // otherwise treat as named infobase (/IBNAME).
+            const exeName = process.platform === 'win32' ? '1cv8c.exe' : '1cv8c';
+            const exe = path.join(platformBin, exeName);
+            const ib = cfg.infobase;
+            const isConnStr = /Srvr\s*=/i.test(ib) || /File\s*=/i.test(ib);
+            const baseArgs = isConnStr
+                ? ['/IBConnectionString', ib]
+                : ['/IBNAME', ib];
+
+            try {
+                await launcherForDebuggee.startDebuggee({ exe, args: baseArgs, debugServerUrl });
+                this.sendEvent(new OutputEvent(
+                    `BSL Debug: 1С клиент запущен: ${exe}\n`, 'console'
+                ));
+            } catch (err) {
+                try { await launcherForDebuggee.dispose(); } catch { /* no-op */ }
+                this._launcher = undefined;
+                this._transport?.dispose();
+                this._client = undefined;
+                this._transport = undefined;
+                this.sendErrorResponse(
+                    response, 1103,
+                    `Не удалось запустить 1С: ${err instanceof Error ? err.message : String(err)}`
+                );
+                return;
+            }
         }
 
         // 8. OQ-1: autoAttachTypes not yet fully implemented — log warning and skip
@@ -1188,6 +1263,37 @@ export class BslDebugSession extends DebugSession {
 
         client.on('log', (msg: string) => {
             this.sendEvent(new OutputEvent(`BSL Debug: ${msg}\n`, 'console'));
+        });
+    }
+
+    /**
+     * Poll the given URL via HTTP GET until it responds (any status < 600),
+     * or until timeoutMs elapses. Returns true if the server became ready.
+     */
+    private _waitForHttpReady(url: string, timeoutMs: number, intervalMs: number): Promise<boolean> {
+        return new Promise<boolean>((resolve) => {
+            const deadline = Date.now() + timeoutMs;
+
+            const probe = () => {
+                if (Date.now() >= deadline) {
+                    resolve(false);
+                    return;
+                }
+                const req = http.get(url, (res) => {
+                    res.resume(); // consume response to free socket
+                    if (res.statusCode !== undefined && res.statusCode < 600) {
+                        resolve(true);
+                    } else {
+                        setTimeout(probe, intervalMs);
+                    }
+                });
+                req.on('error', () => {
+                    setTimeout(probe, intervalMs);
+                });
+                req.end();
+            };
+
+            probe();
         });
     }
 

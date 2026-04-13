@@ -56,8 +56,6 @@ suite('AgentDebugOperations — debugStart', () => {
         const folder = makeWorkspaceFolder('/c/project');
         vscodeTestState.mockWorkspaceFolders = [folder];
 
-        const session = makeSession('sess-ok', 'bsl');
-
         // Запустим debugStart, и одновременно эмулируем старт сессии
         const startPromise = ops.debugStart({
             rootProject: '/c/project/src',
@@ -67,6 +65,10 @@ suite('AgentDebugOperations — debugStart', () => {
 
         // Дадим Promise зарегистрировать listener
         await new Promise(resolve => setImmediate(resolve));
+
+        // Достаём уникальное имя сессии из конфига, переданного в startDebugging (корреляция по name)
+        const launchConfig = debugTestState.startDebuggingArgs?.[1] as { name?: string } | undefined;
+        const session = { id: 'sess-ok', type: 'bsl', name: launchConfig?.name ?? 'test', workspaceFolder: undefined, configuration: {} };
         fireDidStartDebugSession(session);
 
         const result = await startPromise;
@@ -148,7 +150,6 @@ suite('AgentDebugOperations — debugStart', () => {
         const folder = makeWorkspaceFolder('/c/project');
         vscodeTestState.mockWorkspaceFolders = [folder];
 
-        const session = makeSession('sess-params', 'bsl');
         const startPromise = ops.debugStart({
             rootProject: '/c/project/src',
             infobase: 'File=/c/db',
@@ -159,6 +160,8 @@ suite('AgentDebugOperations — debugStart', () => {
         });
 
         await new Promise(resolve => setImmediate(resolve));
+        const launchConfig = debugTestState.startDebuggingArgs?.[1] as { name?: string } | undefined;
+        const session = { id: 'sess-params', type: 'bsl', name: launchConfig?.name ?? 'test', workspaceFolder: undefined, configuration: {} };
         fireDidStartDebugSession(session);
 
         const result = await startPromise;

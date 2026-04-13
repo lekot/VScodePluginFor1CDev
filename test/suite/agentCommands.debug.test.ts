@@ -9,6 +9,7 @@ import {
     vscodeTestState,
     resetVscodeTestState,
     resetDebugTestState,
+    debugTestState,
     fireDidStartDebugSession,
 } from '../helpers/vscodeModuleStub';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
@@ -185,8 +186,6 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
         const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.start');
         assert.ok(handler);
 
-        const session = { id: 'test-session', type: 'bsl', name: 'test', workspaceFolder: undefined, configuration: {} };
-
         const startPromise = (handler as (p: unknown) => Promise<{ success: boolean; data?: { sessionId: string }; error?: string }>)({
             rootProject: '/c/project/src',
             infobase: 'File=/c/db',
@@ -195,6 +194,10 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
 
         // Дать listener зарегистрироваться
         await new Promise(resolve => setImmediate(resolve));
+
+        // Достаём имя сессии из конфига, переданного в startDebugging (корреляция по name)
+        const launchConfig = debugTestState.startDebuggingArgs?.[1] as { name?: string } | undefined;
+        const session = { id: 'test-session', type: 'bsl', name: launchConfig?.name ?? 'test', workspaceFolder: undefined, configuration: {} };
         fireDidStartDebugSession(session);
 
         const result = await startPromise;

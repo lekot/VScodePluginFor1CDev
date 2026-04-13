@@ -1,6 +1,8 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import * as net from 'net';
 import { spawn, ChildProcess } from 'child_process';
+import { Logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -22,6 +24,19 @@ export interface DebuggeeArgs {
   args: string[];
   /** HTTP URL of the debug server, e.g. "http://localhost:1550". */
   debugServerUrl: string;
+}
+
+export interface WebServerDebuggeeArgs {
+  /** Absolute path to ibsrv.exe. */
+  exe: string;
+  /** Absolute path to the file infobase directory (--database-path). */
+  databasePath: string;
+  /** Port for ibsrv built-in RDBG server (--debug-port). DAP transport connects here. */
+  debugPort: number;
+  /** HTTP port for the web server (--http-port). */
+  httpPort: number;
+  /** Directory for ibsrv data files (--data). */
+  dataDir: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +62,39 @@ export function buildDbgsArgs(host: string, port: number): string[] {
  */
 export function buildDebuggeeArgs(baseArgs: string[], debugServerUrl: string): string[] {
   return [...baseArgs, '/Debug', '-http', '-attach', '/DebuggerURL', debugServerUrl];
+}
+
+export function buildIbsrvArgs(opts: WebServerDebuggeeArgs): string[] {
+  return [
+    `--database-path=${opts.databasePath}`,
+    `--http-port=${opts.httpPort}`,
+    '--http-address=localhost',
+    '--enable-http-gate',
+    '--disable-direct-gate',
+    '--disable-ssh-gate',
+    `--data=${opts.dataDir}`,
+    '--debug=http',
+    `--debug-port=${opts.debugPort}`,
+  ];
+}
+
+/** Returns a free TCP port by binding to port 0 and reading the assigned port. */
+export function getFreePort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      server.close((err) => {
+        if (err) { reject(err); return; }
+        if (!addr || typeof addr === 'string') {
+          reject(new Error('Unexpected server address format'));
+          return;
+        }
+        resolve(addr.port);
+      });
+    });
+    server.on('error', reject);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +200,36 @@ export class DebuggeeLauncher {
 
     proc.on('exit', (code) => {
       this._onDebuggeeExitHandler?.(code);
+    });
+
+    proc.on('error', (_err) => {
+      // error event is informational — exit fires next
+    });
+  }
+
+  /**
+   * Spawn ibsrv.exe for web-server debuggee mode.
+   */
+  startWebServerDebuggee(opts: WebServerDebuggeeArgs): void {
+    const args = buildIbsrvArgs(opts);
+
+    const proc = spawn(opts.exe, args, {
+      detached: false,
+      stdio: 'pipe',
+      windowsHide: true,
+    });
+
+    this._debuggeeProcess = proc;
+
+    proc.stderr?.on('data', (buf: Buffer | string) => {
+      const text = typeof buf === 'string' ? buf : buf.toString('utf8');
+      if (text) {
+        Logger.warn(`[ibsrv] ${text.trimEnd()}`);
+      }
+    });
+
+    proc.on('exit', (code) => {
+      this._onDbgsExitHandler?.(code);
     });
 
     proc.on('error', (_err) => {

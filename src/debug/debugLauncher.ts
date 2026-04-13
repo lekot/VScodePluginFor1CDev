@@ -20,6 +20,14 @@ export type StartDebuggingFromConfigPathDeps = {
   workspaceFolder: vscode.WorkspaceFolder;
   bindingManager: BindingManager;
   infobaseStorage: InfobaseStorageService;
+  /** Уникальное имя сессии для корреляции с onDidStartDebugSession. */
+  sessionName?: string;
+  /** Debuggee type: 'thinClient' (default) or 'webServer'. */
+  debuggeeType?: 'thinClient' | 'webServer';
+  /** HTTP port for ibsrv web server (required when debuggeeType='webServer'). */
+  webServerHttpPort?: number;
+  /** Debug server port override. */
+  debugServerPort?: number;
 };
 
 /**
@@ -114,12 +122,17 @@ export async function startDebuggingFromConfigPath(deps: StartDebuggingFromConfi
   const launchConfig: BslLaunchConfiguration = {
     type: 'bsl',
     request: 'launch',
-    name: 'Отладка 1С',
+    name: deps.sessionName ?? 'Отладка 1С',
     rootProject: configPath,
     infobase: infobaseArg,
     platformPath: platformBin,
     debugServerHost: 'localhost',
-    debugServerPort: 1550,
+    debugServerPort: deps.debugServerPort ?? 1550,
+    ...(deps.debuggeeType ? { debuggeeType: deps.debuggeeType } : {}),
+    ...(deps.debuggeeType === 'webServer' && entry.type === 'file'
+      ? { databasePath: entry.filePath }
+      : {}),
+    ...(deps.webServerHttpPort !== undefined ? { webServerHttpPort: deps.webServerHttpPort } : {}),
   };
 
   // 11. Start DAP launch session
