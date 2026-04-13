@@ -1,6 +1,66 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет 28 команд для программного управления метаданными и отладкой конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand`.
+Расширение CDT 41 для VS Code предоставляет 30 команд для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
+
+## HTTP Bridge
+
+Расширение поднимает HTTP-сервер на рандомном порту при активации. Координаты записываются в файл:
+
+```
+<workspaceFolder>/.vscode/cdt-agent-bridge.json
+```
+
+Формат:
+```json
+{
+  "port": 63088,
+  "token": "baf0b38e...hex64...",
+  "pid": 42144,
+  "workspaceFolder": "c:\\reps\\1cviewer",
+  "createdAt": "2026-04-13T08:56:08.711Z"
+}
+```
+
+### Протокол
+
+- **Health check:** `GET /health` → `{ "ok": true, "pid": ... }`
+- **Команда:** `POST /command` с JSON-телом `{ "name": "...", "args": { ... } }`
+- **Аутентификация:** заголовок `Authorization: Bearer <token>`
+- **Content-Type:** `application/json; charset=utf-8` (важно для кириллицы)
+
+Пример вызова через curl:
+```bash
+curl -X POST "http://127.0.0.1:$PORT/command" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json; charset=utf-8" \
+  -d '{"name":"1c-metadata-tree.agent.listObjects","args":{"type":"Catalog"}}'
+```
+
+Пример вызова через Node.js (корректная кодировка для кириллицы):
+```javascript
+const data = JSON.stringify({
+  name: '1c-metadata-tree.agent.debug.evaluate',
+  args: { sessionId, frameId: 1, expression: 'Сумма' }
+});
+const req = http.request({
+  hostname: '127.0.0.1', port: PORT, path: '/command', method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${TOKEN}`,
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(data)
+  }
+}, res => { /* ... */ });
+req.end(data);
+```
+
+### Whitelist команд
+
+Через bridge доступны только команды, соответствующие паттерну:
+```
+/^1c-metadata-tree\.agent(\.debug|\.forms)?\.[a-zA-Z]+$/
+```
+
+---
 
 ## Адресация объектов (dot-path)
 
@@ -196,6 +256,34 @@ uuid: a1b2c3d4-...
 
 ---
 
+### Привязки
+
+#### `1c-metadata-tree.agent.resolveBinding`
+
+Резолвит фикстуру конфигурации в информационную базу. Принимает полный путь, относительный, или просто имя фикстуры.
+
+```json
+{ "configPath": "uh" }
+```
+
+- `configPath` — имя фикстуры ("uh", "empty_conf"), относительный путь ("FormatSamples/uh") или полный путь (необязательно, по умолчанию — из дерева)
+
+Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
+
+Возвращает: `{ configPath, configRelativePath, workspaceFolder, infobase: { id, name, type, filePath?, server?, database?, webUrl? } }`.
+
+#### `1c-metadata-tree.agent.listBindings`
+
+Список всех привязок с резолвленными инфобазами.
+
+```json
+{}
+```
+
+Возвращает: `[{ configRelativePath, workspaceFolder, infobaseCount, infobases: [...] }]`.
+
+---
+
 ### Раскатка
 
 #### `1c-metadata-tree.agent.deploy`
@@ -222,8 +310,9 @@ uuid: a1b2c3d4-...
 
 #### `1c-metadata-tree.agent.debug.start`
 
-Запуск отладочной сессии (dbgs.exe + 1cv8c.exe).
+Запуск отладочной сессии. Два режима:
 
+**thinClient** (по умолчанию) — dbgs.exe + 1cv8c.exe:
 ```json
 {
   "rootProject": "C:/reps/project/conf",
@@ -232,7 +321,39 @@ uuid: a1b2c3d4-...
 }
 ```
 
-Возвращает: `{ sessionId: string }`.
+**webServer** — ibsrv с встроенным RDBG (для Playwright / агентской работы с формами):
+```json
+{
+  "rootProject": "C:/reps/project/conf",
+  "infobase": "File=C:/Users/User/Documents/InfoBase",
+  "platformPath": "C:/Program Files/1cv8/8.3.27.1859/bin",
+  "debuggeeType": "webServer",
+  "databasePath": "C:/Users/User/Documents/InfoBase"
+}
+```
+
+- `debuggeeType` — `"thinClient"` (default) или `"webServer"`
+- `databasePath` — путь к файловой ИБ (обязателен для webServer, можно опустить если есть в `infobase` как `File=...`)
+
+Возвращает: `{ sessionId: string, webServerUrl?: string }`.
+
+`webServerUrl` — URL веб-клиента ibsrv (только для webServer). Открыть в Playwright для навигации и взаимодействия.
+
+#### `1c-metadata-tree.agent.debug.startFromBinding`
+
+Запуск отладки через привязку (без ручного указания путей).
+
+```json
+{
+  "binding": "empty_conf",
+  "debuggeeType": "webServer"
+}
+```
+
+- `binding` — имя фикстуры (fuzzy match: `"uh"`, `"empty_conf"`), относительный или абсолютный путь
+- `debuggeeType` — `"thinClient"` (default) или `"webServer"`
+
+Резолвит binding → rootProject, infobase, platformPath автоматически. Возвращает то же, что `debug.start`.
 
 #### `1c-metadata-tree.agent.debug.stop`
 
@@ -371,7 +492,7 @@ uuid: a1b2c3d4-...
 6. getYaml({ path: 'Catalog.Товары' })            → проверить результат
 ```
 
-### Сценарий B: отладка
+### Сценарий B: отладка (thin client)
 
 ```
 1. debug.start({ rootProject: '...', infobase: 'File=...', platformPath: '...' })
@@ -379,12 +500,87 @@ uuid: a1b2c3d4-...
 3. debug.waitForStop({ sessionId: '...' })         → дождаться breakpoint
 4. debug.getScopes({ sessionId: '...', frameId: 1 })
 5. debug.getVariables({ sessionId: '...', varRef: 1 })  → прочитать переменные
-6. debug.continue({ sessionId: '...', threadId: 1 })
-7. debug.stop({ sessionId: '...' })
+6. debug.evaluate({ sessionId: '...', frameId: 1, expression: 'МояПеременная' })
+7. debug.continue({ sessionId: '...', threadId: 1 })
+8. debug.stop({ sessionId: '...' })
 ```
+
+### Сценарий C: отладка через ibsrv + Playwright
+
+Для агентской работы с формами — ibsrv поднимает веб-клиент и встроенный отладчик.
+
+```
+1. debug.startFromBinding({ binding: 'empty_conf', debuggeeType: 'webServer' })
+   → { sessionId, webServerUrl: 'http://localhost:52570' }
+2. debug.setBreakpoint({ file: '...ObjectModule.bsl', line: 4 })
+3. Playwright: открыть webServerUrl, навигировать к форме, выполнить действие (Записать)
+4. debug.waitForStop({ sessionId, timeoutMs: 30000 })
+   → { reason: 'breakpoint', threadId: 1, frameId: 1, file: '...', line: 4 }
+5. debug.evaluate({ sessionId, frameId: 1, expression: 'Сч' })
+   → { value: '1', type: 'Число', varRef: 0 }
+6. debug.continue({ sessionId, threadId: 1 })
+7. debug.stop({ sessionId })
+```
+
+**Особенности webServer режима:**
+- `verified: false` при setBreakpoint — нормально, BP сработает после подключения браузера
+- `getVariables` (панель Locals) — пусто; используйте `evaluate` для конкретных переменных
+- ibsrv создаёт новые target'ы динамически при серверных операциях — расширение обнаруживает и подключает их автоматически
+- `waitForStop` нужно вызывать **до** или **одновременно** с действием Playwright (иначе stop event будет потерян)
+
+### Формы enterprise (через skill /1c-forms)
+
+Работа с формами 1С в режиме предприятия выполняется через отдельный skill `/1c-forms` (Playwright + ibsrv), а не через VS Code bridge. Skill автоматически запускает ibsrv и подключает браузер:
+
+```bash
+# Резолвить базу по фикстуре (через bridge):
+bash .claude/skills/cdt-agent/scripts/call.sh resolveBinding '{"configPath":"uh"}'
+
+# Запустить сессию (ibsrv + Playwright автоматически):
+bash .claude/skills/1c-forms/scripts/call.sh start "C:/path/to/infobase"
+
+# Навигация, заполнение, чтение:
+bash .claude/skills/1c-forms/scripts/call.sh exec 'await navigateLink("Справочник.Контрагенты"); const t = await readTable(); console.log(JSON.stringify(t));'
+
+# Остановить всё:
+bash .claude/skills/1c-forms/scripts/call.sh stop
+```
+
+Подробнее: `.claude/skills/1c-forms/SKILL.md`.
+
+### СКД (через skill /skd)
+
+Создание, анализ и редактирование схем компоновки данных (DataCompositionSchema). Построен поверх cc-1c-skills.
+
+```bash
+# Скомпилировать СКД из JSON DSL:
+bash .claude/skills/skd/scripts/call.sh compile -Value '{
+  "dataSets": [{"query": "ВЫБРАТЬ Товары.Наименование, Товары.Цена ИЗ Справочник.Товары КАК Товары", "fields": ["Наименование", "Цена: decimal(15,2)"]}],
+  "totalFields": ["Цена: Сумма"],
+  "parameters": ["Период: StandardPeriod = LastMonth @autoDates"]
+}' -OutputPath Template.xml
+
+# Анализ существующей СКД (11 режимов):
+bash .claude/skills/skd/scripts/call.sh info Template.xml                    # overview
+bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode query -Name НаборДанных1  # текст запроса
+bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode params       # параметры
+bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode full         # полная сводка
+
+# Точечное редактирование (25 операций):
+bash .claude/skills/skd/scripts/call.sh edit Template.xml -Op add-field -DataSet НаборДанных1 -Field "НовоеПоле: decimal(15,2)"
+
+# Валидация (~30 проверок):
+bash .claude/skills/skd/scripts/call.sh validate Template.xml
+```
+
+JSON DSL поддерживает shorthand: `"Количество: decimal(15,2) @dimension #noFilter"`, русские синонимы типов (`число`, `строка`, `дата`), `@autoDates` для автогенерации ДатаНачала/ДатаОкончания.
+
+Подробнее: `.claude/skills/skd/SKILL.md`.
+
+---
 
 ## Ограничения
 
-- Формы через Agent API не создаются/редактируются (используйте UI)
+- Формы конфигуратора через Agent API не создаются/редактируются (используйте UI). Формы enterprise — через skill /1c-forms
 - Для InformationRegister и AccumulationRegister при `createObject` создаются дефолтные Измерение+Ресурс (шаблонный fallback)
 - Тип реквизита при `addAttribute` задаётся дефолтный (строка 50); для изменения используйте `setProperties` с `Type: "cfg:DocumentRef.Больше"` или `Type: "xs:boolean"` и т.д.

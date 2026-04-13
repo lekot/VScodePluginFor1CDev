@@ -20,15 +20,18 @@ VS Code расширение для визуализации и редактир
 
 ### Agent API (для AI-агентов)
 
-CDT 41 предоставляет 28 VS Code commands для программного управления метаданными и отладкой 1С. AI-агент (Claude Code, Copilot, MCP-клиент) может:
+CDT 41 предоставляет 30 VS Code commands для программного управления метаданными, отладкой и формами 1С. AI-агент (Claude Code, Copilot, MCP-клиент) может:
 - **CRUD метаданных** (12 команд) — создавать объекты, добавлять реквизиты, читать/писать свойства, устанавливать типы
+- **Привязки** (2 команды) — resolveBinding (фикстура→база), listBindings (все привязки с базами)
 - **Отладка** (14 команд) — запускать отладочную сессию, ставить breakpoints, читать переменные, шагать по коду
 - **Раскатка** (1 команда) — deploy конфигурации в привязанные информационные базы через ibcmd
 - **Навигация** (1 команда) — startFromBinding для автономного запуска отладки по привязке
+- **Формы enterprise** — работа с формами 1С через веб-клиент (Playwright + ibsrv): навигация, заполнение, табличные части, отчёты
+- **СКД** — создание, анализ и редактирование схем компоновки данных: JSON DSL → Template.xml, 25 атомарных операций, 11 режимов анализа
 
 Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`. Подробнее: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md)
 
-Чего нет: конструктора запроса (есть внешние в режиме предприятия), СКД-редактора, состава планов обмена и много чего еще нет. Включайся в разработку - будет
+Чего нет: конструктора запроса (есть внешние в режиме предприятия), состава планов обмена и много чего еще нет. Включайся в разработку - будет
 <img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />
 <img width="1092" height="450" alt="image" src="https://github.com/user-attachments/assets/755d5a95-4088-4567-89ba-8d6ffe38d670" />
 <img width="1159" height="885" alt="image" src="https://github.com/user-attachments/assets/7f608dee-7a6d-46a9-aac8-f86e52e55433" />
@@ -224,6 +227,8 @@ Workspace → FormatDetector → MetadataParser → TreeNode → TreeDataProvide
 
 - [onec-debug-adapter](https://github.com/akpaevj/onec-debug-adapter) — реверс-инжиниринг протокола RDBG и взаимодействия с dbgs, на основе которого реализована отладка 1С из VS Code.
 - [1c-syntax](https://github.com/1c-syntax/1c-syntax) — грамматики и шаблоны для подсветки синтаксиса BSL/SDBL.
+- [cc-1c-skills](https://github.com/Nikolay-Shirokov/cc-1c-skills) — навыки и спецификации для AI-агентов, работающих с платформой 1С.
+- [1c-agent-based-dev-framework](https://github.com/SteelMorgan/1c-agent-based-dev-framework) — фреймворк агентной разработки для 1С, идеи по работе с формами enterprise и СКД через Playwright.
 
 ## Вклад в проект
 

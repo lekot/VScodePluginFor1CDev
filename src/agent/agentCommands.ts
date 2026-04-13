@@ -35,6 +35,7 @@ import type {
     DebugEvaluateParams,
     DebugStartFromBindingParams,
 } from './agentDebugTypes';
+import { resolveBindingCommand, listBindingsCommand } from './agentBindingResolver';
 
 /**
  * Регистрирует Agent API команды.
@@ -407,6 +408,32 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.resolveBinding ────────────────────────────
+
+    const resolveBindingCmd = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.resolveBinding',
+        async (params: { configPath?: string } = {}) => {
+            const deps = getDebugDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Привязки не инициализированы (нет deps).' };
+            }
+            return await resolveBindingCommand(params, deps);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.listBindings ────────────────────────────
+
+    const listBindingsCmd = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.listBindings',
+        async () => {
+            const deps = getDebugDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Привязки не инициализированы (нет deps).' };
+            }
+            return await listBindingsCommand(deps);
+        }
+    );
+
     // ─── 1c-metadata-tree.agent.deploy ───────────────────────────────────
 
     const deployCommand = vscode.commands.registerCommand(
@@ -432,6 +459,7 @@ export function registerAgentCommands(
         debugEvaluateCommand, debugContinueCommand, debugStepOverCommand,
         debugStepInCommand, debugStepOutCommand,
         debugStartFromBindingCommand,
+        resolveBindingCmd, listBindingsCmd,
         deployCommand,
     );
 }

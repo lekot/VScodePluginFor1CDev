@@ -9,6 +9,7 @@ import {
     vscodeTestState,
     resetVscodeTestState,
     resetDebugTestState,
+    debugTestState,
     fireDidStartDebugSession,
 } from '../helpers/vscodeModuleStub';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
@@ -79,8 +80,8 @@ suite('registerAgentCommands — debug commands registration', () => {
         const before = ctx.subscriptions.length;
         registerAgentCommands(ctx as never, () => null, async () => null, registry);
         const after = ctx.subscriptions.length;
-        // 12 CRUD + 15 debug + 1 deploy = 28 новых подписок
-        assert.strictEqual(after - before, 28, `Ожидалось 28 подписок, получено ${after - before}`);
+        // 12 CRUD + 15 debug + 2 binding + 1 deploy = 30 новых подписок
+        assert.strictEqual(after - before, 30, `Ожидалось 30 подписок, получено ${after - before}`);
     });
 
     test('debug-команды не регистрируются в package.json contributes (только programmatic)', () => {
@@ -185,8 +186,6 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
         const handler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.start');
         assert.ok(handler);
 
-        const session = { id: 'test-session', type: 'bsl', name: 'test', workspaceFolder: undefined, configuration: {} };
-
         const startPromise = (handler as (p: unknown) => Promise<{ success: boolean; data?: { sessionId: string }; error?: string }>)({
             rootProject: '/c/project/src',
             infobase: 'File=/c/db',
@@ -195,6 +194,10 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
 
         // Дать listener зарегистрироваться
         await new Promise(resolve => setImmediate(resolve));
+
+        // Достаём имя сессии из конфига, переданного в startDebugging (корреляция по name)
+        const launchConfig = debugTestState.startDebuggingArgs?.[1] as { name?: string } | undefined;
+        const session = { id: 'test-session', type: 'bsl', name: launchConfig?.name ?? 'test', workspaceFolder: undefined, configuration: {} };
         fireDidStartDebugSession(session);
 
         const result = await startPromise;

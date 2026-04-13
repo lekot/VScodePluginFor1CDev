@@ -88,11 +88,13 @@ export class RdbgClient extends EventEmitter {
     private _sessionLost = false;
     /** Maps targetId → seanceId, populated from getTargets() and targetStarted events. */
     private readonly _seanceMap = new Map<string, string>();
+    private readonly _targetDiscoveryInterval: number;
 
-    constructor(transport: RdbgTransport, debugUiId: string) {
+    constructor(transport: RdbgTransport, debugUiId: string, targetDiscoveryInterval = 5) {
         super();
         this.transport = transport;
         this.debugUiId = debugUiId;
+        this._targetDiscoveryInterval = targetDiscoveryInterval;
     }
 
     // -----------------------------------------------------------------------
@@ -427,7 +429,7 @@ export class RdbgClient extends EventEmitter {
             }
 
             // Periodic target discovery
-            if (this._pollCount % 5 === 0 && this._state === 'attached') {
+            if (this._pollCount % this._targetDiscoveryInterval === 0 && this._state === 'attached') {
                 try {
                     const knownBefore = new Set(this._seanceMap.keys());
                     const targets = await this.getTargets();

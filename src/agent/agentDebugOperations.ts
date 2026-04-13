@@ -5,6 +5,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { AgentResult } from './types';
+import { resolveBindingCommand } from './agentBindingResolver';
 import type {
     DebugStartParams,
     DebugStartResult,
@@ -30,6 +31,7 @@ import { Logger } from '../utils/logger';
 import type { LastStop } from './debugSessionRegistry';
 import type { BslLaunchConfiguration } from '../debug/types';
 import { startDebuggingFromConfigPath } from '../debug/debugLauncher';
+import { getFreePort } from '../debug/debuggeeLauncher';
 import type { BindingManager } from '../bindings/bindingManager';
 import type { InfobaseStorageService } from '../infobases/infobaseStorageService';
 
@@ -90,17 +92,37 @@ export class AgentDebugOperations {
             return { success: false, error: 'workspace folder для rootProject не найден (нет открытых workspace folders)' };
         }
 
-        // Построить конфигурацию запуска
+        // Построить конфигурацию запуска (уникальное имя для корреляции с onDidStartDebugSession)
+        const sessionName = `Agent Debug Session ${Date.now()}`;
+
+        // Resolve databasePath for webServer: explicit param or extract from File= connection string
+        let resolvedDatabasePath = params.databasePath;
+        if (params.debuggeeType === 'webServer' && !resolvedDatabasePath) {
+            const fileMatch = /File=([^;]+)/i.exec(params.infobase);
+            if (fileMatch) {
+                resolvedDatabasePath = fileMatch[1].trim();
+            }
+        }
+
+        // Pick a free HTTP port for ibsrv when webServer mode is requested
+        let webServerHttpPort: number | undefined;
+        if (params.debuggeeType === 'webServer') {
+            webServerHttpPort = await getFreePort();
+        }
+
         const launchConfig: BslLaunchConfiguration = {
             type: 'bsl',
             request: 'launch',
-            name: 'Agent Debug Session',
+            name: sessionName,
             rootProject,
             infobase: params.infobase,
             platformPath,
             debugServerHost: params.debugServerHost ?? 'localhost',
             debugServerPort: params.debugServerPort ?? 1550,
             ...(params.extensions ? { extensions: params.extensions } : {}),
+            ...(params.debuggeeType ? { debuggeeType: params.debuggeeType } : {}),
+            ...(resolvedDatabasePath ? { databasePath: resolvedDatabasePath } : {}),
+            ...(webServerHttpPort !== undefined ? { webServerHttpPort } : {}),
         };
 
         // Подписаться на старт сессии ДО вызова startDebugging
@@ -113,7 +135,7 @@ export class AgentDebugOperations {
         });
 
         const disposable = vscode.debug.onDidStartDebugSession((session) => {
-            if (session.type === 'bsl') {
+            if (session.type === 'bsl' && session.name === sessionName) {
                 disposable.dispose();
                 resolveSession(session);
             }
@@ -146,7 +168,11 @@ export class AgentDebugOperations {
         try {
             const session = await sessionPromise;
             clearTimeout(timeoutHandle);
-            return { success: true, data: { sessionId: session.id } };
+            const data: DebugStartResult = { sessionId: session.id };
+            if (webServerHttpPort !== undefined) {
+                data.webServerUrl = `http://localhost:${webServerHttpPort}`;
+            }
+            return { success: true, data };
         } catch {
             return { success: false, error: 'timeout waiting for session start' };
         }
@@ -598,14 +624,23 @@ export class AgentDebugOperations {
             return { success: false, error: 'AgentDebugOperations не сконфигурирован для startFromBinding (нет deps)' };
         }
 
-        // 2. Resolve configPath — from params or from active tree config.
-        // path.resolve нормализует слеши и делает путь абсолютным — нужно для путей
-        // пришедших через JSON/HTTP где backslashes могут быть съедены.
+        // 2. Resolve configPath — поддерживает короткие имена ("empty_conf", "uh")
+        // через resolveBindingCommand (fuzzy match), а также полные/относительные пути.
         const rawConfigPath = params.configPath ?? this.deps.getConfigPath?.();
         if (!rawConfigPath) {
             return { success: false, error: 'configPath не указан и нет активной конфигурации в дереве' };
         }
-        const configPath = path.resolve(rawConfigPath);
+
+        // Попробуем fuzzy-резолв через resolveBinding — он знает короткие имена фикстур.
+        let configPath: string;
+        const resolved = await resolveBindingCommand({ configPath: rawConfigPath }, this.deps);
+        if (resolved.success && resolved.data) {
+            // Убираем /Configuration.xml из конца — startDebuggingFromConfigPath ожидает каталог.
+            configPath = resolved.data.configPath.replace(/[/\\]Configuration\.xml$/i, '');
+        } else {
+            // Fallback: path.resolve для абсолютных путей.
+            configPath = path.resolve(rawConfigPath);
+        }
 
         // 3. Найти workspace folder — fallback на первый (Cursor/Kiro могут не матчить URI)
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(configPath))
@@ -615,6 +650,7 @@ export class AgentDebugOperations {
         }
 
         // 4. Подписаться на старт сессии ДО вызова startDebuggingFromConfigPath
+        const sessionName = `Agent Debug FromBinding ${Date.now()}`;
         let resolveSession: (s: vscode.DebugSession) => void;
         let rejectTimeout: () => void;
 
@@ -624,7 +660,7 @@ export class AgentDebugOperations {
         });
 
         const disposable = vscode.debug.onDidStartDebugSession((session) => {
-            if (session.type === 'bsl') {
+            if (session.type === 'bsl' && session.name === sessionName) {
                 disposable.dispose();
                 resolveSession(session);
             }
@@ -635,6 +671,14 @@ export class AgentDebugOperations {
             rejectTimeout();
         }, debugStartConfig.timeoutMs);
 
+        // Pick free ports for ibsrv when webServer mode is requested
+        let webServerHttpPort: number | undefined;
+        let debugServerPort: number | undefined;
+        if (params.debuggeeType === 'webServer') {
+            webServerHttpPort = await getFreePort();
+            debugServerPort = await getFreePort();
+        }
+
         // 5. Вызвать startDebuggingFromConfigPath
         let started: boolean;
         try {
@@ -643,6 +687,10 @@ export class AgentDebugOperations {
                 workspaceFolder,
                 bindingManager: this.deps.bindingManager,
                 infobaseStorage: this.deps.infobaseStorage,
+                sessionName,
+                ...(params.debuggeeType ? { debuggeeType: params.debuggeeType } : {}),
+                ...(webServerHttpPort !== undefined ? { webServerHttpPort } : {}),
+                ...(debugServerPort !== undefined ? { debugServerPort } : {}),
             });
         } catch (err) {
             // 6. Ошибка из startDebuggingFromConfigPath
@@ -662,7 +710,11 @@ export class AgentDebugOperations {
         try {
             const session = await sessionPromise;
             clearTimeout(timeoutHandle);
-            return { success: true, data: { sessionId: session.id } };
+            const data: DebugStartResult = { sessionId: session.id };
+            if (webServerHttpPort !== undefined) {
+                data.webServerUrl = `http://localhost:${webServerHttpPort}`;
+            }
+            return { success: true, data };
         } catch {
             return { success: false, error: 'timeout waiting for session start' };
         }

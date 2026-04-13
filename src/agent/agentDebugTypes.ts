@@ -18,12 +18,18 @@ export interface DebugStartParams {
     debugServerHost?: string;
     /** Порт отладочного сервера. */
     debugServerPort?: number;
+    /** Тип debuggee: тонкий клиент (default) или ibsrv веб-сервер. */
+    debuggeeType?: 'thinClient' | 'webServer';
+    /** Абсолютный путь к каталогу файловой базы. Обязателен для webServer. */
+    databasePath?: string;
 }
 
 /** Результат запуска отладочной сессии. */
 export interface DebugStartResult {
     /** Идентификатор созданной сессии. */
     sessionId: string;
+    /** URL ibsrv веб-клиента (только для debuggeeType='webServer'). */
+    webServerUrl?: string;
 }
 
 /** Параметры остановки отладочной сессии. */
@@ -202,4 +208,6 @@ export interface DebugStartFromBindingParams {
     /** Абсолютный путь к Configuration.xml или к корню конфигурации (binding резолвится по нему).
      *  Если не указан — берётся из активной конфигурации дерева (treeDataProvider.getConfigPath). */
     configPath?: string;
+    /** Тип debuggee: тонкий клиент (default) или ibsrv веб-сервер. */
+    debuggeeType?: 'thinClient' | 'webServer';
 }

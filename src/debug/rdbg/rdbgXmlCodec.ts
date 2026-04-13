@@ -264,10 +264,11 @@ export function encodeInitSettings(debugUiId: string, infobaseAlias?: string): s
  */
 export function encodeSetAutoAttachSettings(debugUiId: string, infobaseAlias?: string): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
+  // 8.3.27 XDTO rejects autoAttachIdleTargets and autoAttachTargetType fields.
+  // Minimal request (alias + debugUiId only) registers for auto-attach of all target types.
   const fields =
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
-    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:autoAttachIdleTargets>true</${P_RDBG}:autoAttachIdleTargets>\n`;
+    `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n`;
   return wrapRequest(fields, `${P_RDBG}:RDBGSetAutoAttachSettingsRequest`);
 }
 

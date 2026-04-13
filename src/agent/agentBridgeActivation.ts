@@ -23,7 +23,7 @@ export function activateAgentBridge(
   }
 
   const bridge = new AgentBridge({
-    commandPattern: /^1c-metadata-tree\.agent(\.debug)?\.[a-zA-Z]+$/,
+    commandPattern: /^1c-metadata-tree\.agent(\.debug|\.forms)?\.[a-zA-Z]+$/,
     workspaceFolder,
   });
 

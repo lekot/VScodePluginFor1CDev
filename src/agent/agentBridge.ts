@@ -213,16 +213,19 @@ export class AgentBridge {
         return new Promise((resolve, reject) => {
             const chunks: Buffer[] = [];
             let totalBytes = 0;
+            let rejected = false;
             req.on('data', (c: Buffer) => {
+                if (rejected) { return; }
                 totalBytes += c.length;
                 if (totalBytes > BODY_LIMIT_BYTES) {
+                    rejected = true;
                     reject(new Error('body too large'));
                     return;
                 }
                 chunks.push(c);
             });
-            req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-            req.on('error', reject);
+            req.on('end', () => { if (!rejected) { resolve(Buffer.concat(chunks).toString('utf8')); } });
+            req.on('error', (err) => { if (!rejected) { reject(err); } });
         });
     }
 
