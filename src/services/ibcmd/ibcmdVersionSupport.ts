@@ -147,33 +147,34 @@ export async function probeIncrementalSupport(
       maxBuffer: 64 * 1024,
     };
 
-    async function getHelpText(args: readonly string[]): Promise<string> {
+    /**
+     * Проверяет поддержку подкоманды, запуская её без аргументов.
+     * ibcmd возвращает exit 2 (usage error) если команда распознана, но аргументы неверны.
+     * Любой числовой exit code означает, что команда существует;
+     * null/undefined (spawn error, signal kill) — не существует.
+     */
+    async function isSubcommandSupported(args: readonly string[]): Promise<boolean> {
       try {
-        const result = await execImpl(executablePath, args, execOpts);
-        const out = typeof result.stdout === 'string' ? result.stdout : result.stdout.toString('utf8');
-        const err = typeof result.stderr === 'string' ? result.stderr : result.stderr.toString('utf8');
-        return out + err;
+        await execImpl(executablePath, args, execOpts);
+        return true; // exit 0 — command exists and succeeded
       } catch (e: unknown) {
-        // ibcmd exits with non-zero for --help; capture output from the error object
         if (e && typeof e === 'object') {
-          const ex = e as { stdout?: string | Buffer; stderr?: string | Buffer };
-          const out = ex.stdout ? (typeof ex.stdout === 'string' ? ex.stdout : ex.stdout.toString('utf8')) : '';
-          const err = ex.stderr ? (typeof ex.stderr === 'string' ? ex.stderr : ex.stderr.toString('utf8')) : '';
-          return out + err;
+          const ex = e as { code?: number | null; status?: number | null };
+          const exitCode = ex.status ?? ex.code;
+          return exitCode !== null && exitCode !== undefined;
         }
-        return '';
+        return false;
       }
     }
 
-    const importHelp = await getHelpText(['infobase', 'config', 'import', '--help']);
-    const exportHelp = await getHelpText(['infobase', 'config', 'export', '--help']);
+    const [importFiles, exportStatus, exportSync, exportObjects] = await Promise.all([
+      isSubcommandSupported(['infobase', 'config', 'import', 'files']),
+      isSubcommandSupported(['infobase', 'config', 'export', 'status']),
+      isSubcommandSupported(['infobase', 'config', 'export', 'sync']),
+      isSubcommandSupported(['infobase', 'config', 'export', 'objects']),
+    ]);
 
-    return {
-      importFiles: importHelp.includes('files'),
-      exportStatus: exportHelp.includes('status'),
-      exportSync: exportHelp.includes('sync'),
-      exportObjects: exportHelp.includes('objects'),
-    };
+    return { importFiles, exportStatus, exportSync, exportObjects };
   })();
 
   incrementalProbeByPath.set(executablePath, run);

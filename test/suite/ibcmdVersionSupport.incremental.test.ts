@@ -7,25 +7,50 @@ import {
 
 const FAKE_PATH = 'C:/fake/ibcmd.exe';
 
-/** Build a mock execImpl that returns the given text for all calls. */
-function makeExec(text: string): IbcmdVersionExecFn {
-  return async (_file, _args, _opts) => ({ stdout: text, stderr: '' });
+/**
+ * Build a mock execImpl that simulates ibcmd subcommand behaviour.
+ * @param exitCode — numeric exit code means command is recognised (e.g. 2 = usage error).
+ *                    `null` simulates a spawn/signal failure (command not found).
+ */
+function makeExecWithExit(exitCode: number | null): IbcmdVersionExecFn {
+  return async (_file, _args, _opts) => {
+    if (exitCode === null) {
+      // Simulate spawn failure: code is null (signal kill / ENOENT)
+      const err: Error & { code?: number | null; status?: number | null } = new Error('spawn error');
+      err.code = null;
+      err.status = null;
+      throw err;
+    }
+    if (exitCode !== 0) {
+      const err: Error & { code?: number | null; status?: number | null; stdout?: string; stderr?: string } =
+        new Error(`exit ${exitCode}`);
+      err.status = exitCode;
+      err.code = exitCode;
+      err.stdout = '';
+      err.stderr = 'usage error';
+      throw err;
+    }
+    return { stdout: '', stderr: '' };
+  };
 }
 
-/** Build a mock execImpl that counts invocations. */
-function makeCountingExec(
-  text: string,
-): { exec: IbcmdVersionExecFn; callCount: () => number } {
+/** Build a mock execImpl that counts invocations and returns exit 2 (supported). */
+function makeCountingExec(): { exec: IbcmdVersionExecFn; callCount: () => number } {
   let count = 0;
   const exec: IbcmdVersionExecFn = async (_file, _args, _opts) => {
     count++;
-    return { stdout: text, stderr: '' };
+    const err: Error & { code?: number; status?: number; stdout?: string; stderr?: string } =
+      new Error('exit 2');
+    err.status = 2;
+    err.code = 2;
+    err.stdout = '';
+    err.stderr = '';
+    throw err;
   };
   return { exec, callCount: () => count };
 }
 
 suite('ibcmdVersionSupport — incremental probe', () => {
-  // Reset cache before each test so tests are isolated.
   setup(() => {
     invalidateIncrementalSupportProbeCache();
   });
@@ -35,50 +60,48 @@ suite('ibcmdVersionSupport — incremental probe', () => {
   });
 
   // 1 ─────────────────────────────────────────────────────────────────────────
-  test('probeIncrementalSupport: stdout containing "files" → importFiles: true', async () => {
-    const exec = makeExec('Available subcommands: import export files status sync objects');
+  test('probeIncrementalSupport: exit code 2 (usage error) → all supported', async () => {
+    const exec = makeExecWithExit(2);
     const probe = await probeIncrementalSupport(FAKE_PATH, exec);
     assert.strictEqual(probe.importFiles, true);
+    assert.strictEqual(probe.exportStatus, true);
+    assert.strictEqual(probe.exportSync, true);
+    assert.strictEqual(probe.exportObjects, true);
   });
 
   // 2 ─────────────────────────────────────────────────────────────────────────
-  test('probeIncrementalSupport: stdout without "files" → importFiles: false', async () => {
-    const exec = makeExec('Available subcommands: import export');
+  test('probeIncrementalSupport: exit code 0 → all supported', async () => {
+    const exec = makeExecWithExit(0);
     const probe = await probeIncrementalSupport(FAKE_PATH, exec);
-    assert.strictEqual(probe.importFiles, false);
+    assert.strictEqual(probe.importFiles, true);
+    assert.strictEqual(probe.exportObjects, true);
   });
 
   // 3 ─────────────────────────────────────────────────────────────────────────
-  test('probeIncrementalSupport: stdout with "status" → exportStatus: true', async () => {
-    // import help has no "files", export help has "status"
-    // The implementation calls import --help then export --help.
-    // We return a text that contains "status" from both calls so exportStatus is true.
-    const exec = makeExec('status');
+  test('probeIncrementalSupport: null exit (spawn error) → not supported', async () => {
+    const exec = makeExecWithExit(null);
     const probe = await probeIncrementalSupport(FAKE_PATH, exec);
-    assert.strictEqual(probe.exportStatus, true);
+    assert.strictEqual(probe.importFiles, false);
+    assert.strictEqual(probe.exportStatus, false);
+    assert.strictEqual(probe.exportSync, false);
+    assert.strictEqual(probe.exportObjects, false);
   });
 
   // 4 ─────────────────────────────────────────────────────────────────────────
   test('probeIncrementalSupport: caching — execImpl called only once for same path', async () => {
-    const { exec, callCount } = makeCountingExec('files status sync objects');
+    const { exec, callCount } = makeCountingExec();
 
     await probeIncrementalSupport(FAKE_PATH, exec);
-    await probeIncrementalSupport(FAKE_PATH, exec);
-
-    // The implementation makes 2 execImpl calls internally (import --help + export --help),
-    // but those happen once per path due to caching of the Promise.
-    // The total call count should not grow on the second probeIncrementalSupport call.
     const countAfterFirst = callCount();
     assert.ok(countAfterFirst >= 1, 'execImpl should have been called at least once');
 
-    // A third call must NOT trigger more execImpl invocations.
     await probeIncrementalSupport(FAKE_PATH, exec);
     assert.strictEqual(callCount(), countAfterFirst, 'execImpl should not be called again after caching');
   });
 
   // 5 ─────────────────────────────────────────────────────────────────────────
   test('invalidateIncrementalSupportProbeCache: clears cache so next call re-probes', async () => {
-    const { exec, callCount } = makeCountingExec('files status sync objects');
+    const { exec, callCount } = makeCountingExec();
 
     await probeIncrementalSupport(FAKE_PATH, exec);
     const countAfterFirst = callCount();
