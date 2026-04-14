@@ -804,16 +804,16 @@ export async function runInfobaseConfigIncrementalImport(
 }
 
 /** Recursively copies all files from srcDir into destDir, creating subdirectories and overwriting existing files. */
-function copyTreeOverwrite(srcDir: string, destDir: string): number {
+async function copyTreeOverwrite(srcDir: string, destDir: string): Promise<number> {
   let count = 0;
-  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+  for (const entry of await fs.promises.readdir(srcDir, { withFileTypes: true })) {
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
     if (entry.isDirectory()) {
-      fs.mkdirSync(destPath, { recursive: true });
-      count += copyTreeOverwrite(srcPath, destPath);
+      await fs.promises.mkdir(destPath, { recursive: true });
+      count += await copyTreeOverwrite(srcPath, destPath);
     } else if (entry.isFile()) {
-      fs.copyFileSync(srcPath, destPath);
+      await fs.promises.copyFile(srcPath, destPath);
       count++;
     }
   }
@@ -940,7 +940,7 @@ export async function runInfobaseConfigExportObjects(
 
     // Copy exported files from temp to workspace configRoot.
     if (result.status === 'success') {
-      const copied = copyTreeOverwrite(tempExportDir, params.configRoot);
+      const copied = await copyTreeOverwrite(tempExportDir, params.configRoot);
       ch.appendLine(`[export objects${ctx}] Скопировано файлов: ${copied}`);
     }
 

@@ -156,14 +156,27 @@ const NON_EXPORTABLE_ROOT_TYPES = new Set<MetadataType>([
  * Resolves the ibcmd object identifier for a tree node.
  * Format: `{MetadataType}.{name}` — e.g. `Catalog.Справочник55`, `CommonModule.тестМодуль`.
  *
- * Sub-elements (Attribute, Form, TabularSection, etc.) resolve to their parent object,
+ * Sub-elements (Attribute, Form, TabularSection, etc.) resolve to their parent object
+ * by walking up the `parent` chain until an exportable root type is found,
  * since ibcmd exports entire objects, not individual sub-elements.
  *
- * Returns undefined if the node type is not an exportable root metadata type.
+ * Returns undefined if the node type is not an exportable root metadata type
+ * and no suitable parent is found.
  */
 export function resolveIbcmdObjectId(node: TreeNode): string | undefined {
-  if (NON_EXPORTABLE_ROOT_TYPES.has(node.type) || SUB_ELEMENT_TYPES.has(node.type)) {
+  if (NON_EXPORTABLE_ROOT_TYPES.has(node.type)) {
     return undefined;
   }
-  return `${node.type}.${node.name}`;
+  if (!SUB_ELEMENT_TYPES.has(node.type)) {
+    return `${node.type}.${node.name}`;
+  }
+  // Sub-element: walk up the parent chain to find an exportable root.
+  let current: TreeNode | undefined = node.parent;
+  while (current !== undefined) {
+    if (!SUB_ELEMENT_TYPES.has(current.type) && !NON_EXPORTABLE_ROOT_TYPES.has(current.type)) {
+      return `${current.type}.${current.name}`;
+    }
+    current = current.parent;
+  }
+  return undefined;
 }

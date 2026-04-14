@@ -100,21 +100,45 @@ suite('objectFileCollector', () => {
     assert.strictEqual(resolveIbcmdObjectId(node), 'CommonModule.тестМодуль');
   });
 
-  test('resolveIbcmdObjectId: Attribute sub-element returns undefined', () => {
+  test('resolveIbcmdObjectId: Attribute sub-element resolves to parent', () => {
+    const parent: TreeNode = {
+      id: 'Catalog.Справочник55',
+      name: 'Справочник55',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
     const node: TreeNode = {
       id: 'attr1',
       name: 'Реквизит1',
       type: MetadataType.Attribute,
       properties: {},
+      parent,
     };
-    assert.strictEqual(resolveIbcmdObjectId(node), undefined);
+    assert.strictEqual(resolveIbcmdObjectId(node), 'Catalog.Справочник55');
   });
 
-  test('resolveIbcmdObjectId: Form sub-element returns undefined', () => {
+  test('resolveIbcmdObjectId: Form sub-element resolves to parent', () => {
+    const parent: TreeNode = {
+      id: 'Catalog.Справочник55',
+      name: 'Справочник55',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
     const node: TreeNode = {
       id: 'form1',
       name: 'ФормаСписка',
       type: MetadataType.Form,
+      properties: {},
+      parent,
+    };
+    assert.strictEqual(resolveIbcmdObjectId(node), 'Catalog.Справочник55');
+  });
+
+  test('resolveIbcmdObjectId: sub-element without parent returns undefined', () => {
+    const node: TreeNode = {
+      id: 'attr1',
+      name: 'Реквизит1',
+      type: MetadataType.Attribute,
       properties: {},
     };
     assert.strictEqual(resolveIbcmdObjectId(node), undefined);

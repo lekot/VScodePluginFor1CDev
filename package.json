@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.44.9",
+  "version": "0.45.0",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -59,38 +59,38 @@
     "commands": [
       {
         "command": "1c-metadata-tree.openPanel",
-        "title": "CDT 41: Open Metadata Tree",
+        "title": "CDT 41: Открыть дерево метаданных",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.openIbcmdCheckReport",
-        "title": "CDT 41: Open last ibcmd check report",
+        "title": "CDT 41: Открыть последний отчёт ibcmd check",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.openIbcmdImportReport",
-        "title": "CDT 41: Open last ibcmd import report",
+        "title": "CDT 41: Открыть последний отчёт ibcmd import",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.focus",
-        "title": "Focus CDT 41",
+        "title": "Перейти к CDT 41",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.refresh",
-        "title": "Refresh",
+        "title": "Обновить",
         "category": "CDT 41",
         "icon": "$(refresh)"
       },
       {
         "command": "1c-metadata-tree.showProperties",
-        "title": "Show Properties",
+        "title": "Свойства",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.openXML",
-        "title": "Open XML File",
+        "title": "Открыть XML",
         "category": "CDT 41"
       },
       {
@@ -100,69 +100,69 @@
       },
       {
         "command": "1c-metadata-tree.createElement",
-        "title": "Create Element",
+        "title": "Создать элемент",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.duplicateElement",
-        "title": "Duplicate Element",
+        "title": "Дублировать элемент",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.deleteElement",
-        "title": "Delete Element",
+        "title": "Удалить элемент",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.renameElement",
-        "title": "Rename Element",
+        "title": "Переименовать элемент",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.copyPathOrName",
-        "title": "Copy Path / Name",
+        "title": "Копировать путь / имя",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.focusSearch",
-        "title": "Search in tree",
+        "title": "Поиск по дереву",
         "category": "CDT 41",
         "icon": "$(search)"
       },
       {
         "command": "1c-metadata-tree.clearSearch",
-        "title": "Clear search and filters",
+        "title": "Очистить поиск и фильтры",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.filterByType",
-        "title": "Filter by metadata type",
+        "title": "Фильтр по типу метаданных",
         "category": "CDT 41",
         "icon": "$(filter)"
       },
       {
         "command": "1c-metadata-tree.nextMatch",
-        "title": "Next search result",
+        "title": "Следующий результат",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.previousMatch",
-        "title": "Previous search result",
+        "title": "Предыдущий результат",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.clearCache",
-        "title": "Clear tree cache",
+        "title": "Очистить кэш дерева",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.exportLogs",
-        "title": "Export logs",
+        "title": "Экспорт логов",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.copyDiagnosticsSummary",
-        "title": "Copy diagnostics summary",
+        "title": "Копировать диагностику",
         "category": "CDT 41"
       },
       {
@@ -172,7 +172,7 @@
       },
       {
         "command": "1c-metadata-tree.openRightsEditor",
-        "title": "Open Rights Editor",
+        "title": "Открыть редактор прав",
         "category": "CDT 41"
       },
       {
@@ -182,7 +182,7 @@
       },
       {
         "command": "1c-metadata-tree.saveRightsEditor",
-        "title": "Save Rights (Editor)",
+        "title": "Сохранить права (редактор)",
         "category": "CDT 41"
       },
       {
@@ -192,12 +192,12 @@
       },
       {
         "command": "1c-metadata-tree.filterBySubsystem",
-        "title": "Filter by Subsystem",
+        "title": "Фильтр по подсистеме",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.clearSubsystemFilter",
-        "title": "Clear Subsystem Filter",
+        "title": "Сбросить фильтр подсистемы",
         "category": "CDT 41"
       },
       {
@@ -217,42 +217,42 @@
       },
       {
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
-        "title": "CDT 41: Configure ibcmd…",
+        "title": "CDT 41: Настройка ibcmd…",
         "category": "CDT 41"
       },
       {
         "command": "1c-metadata-tree.infobases.refresh",
-        "title": "Infobase Manager: обновить список",
+        "title": "Менеджер ИБ: обновить список",
         "category": "CDT 41",
         "icon": "$(refresh)"
       },
       {
         "command": "1c-metadata-tree.infobases.create",
-        "title": "Infobase Manager: создать базу",
+        "title": "Менеджер ИБ: создать базу",
         "category": "CDT 41",
         "icon": "$(add)"
       },
       {
         "command": "1c-metadata-tree.infobases.add",
-        "title": "Infobase Manager: добавить существующую",
+        "title": "Менеджер ИБ: добавить существующую",
         "category": "CDT 41",
         "icon": "$(folder-opened)"
       },
       {
         "command": "1c-metadata-tree.infobases.importV8i",
-        "title": "Infobase Manager: импорт из .v8i",
+        "title": "Менеджер ИБ: импорт из .v8i",
         "category": "CDT 41",
         "icon": "$(file)"
       },
       {
         "command": "1c-metadata-tree.infobases.exportV8i",
-        "title": "Infobase Manager: экспорт в .v8i",
+        "title": "Менеджер ИБ: экспорт в .v8i",
         "category": "CDT 41",
         "icon": "$(export)"
       },
       {
         "command": "1c-metadata-tree.infobases.newFolder",
-        "title": "Infobase Manager: новая папка",
+        "title": "Менеджер ИБ: новая папка",
         "category": "CDT 41",
         "icon": "$(new-folder)"
       },
@@ -330,7 +330,7 @@
       },
       {
         "command": "1c-metadata-tree.bindings.openDialog",
-        "title": "Infobase Manager: привязка баз к конфигурации…",
+        "title": "Менеджер ИБ: привязка баз к конфигурации…",
         "category": "CDT 41",
         "icon": "$(link)"
       },
@@ -354,7 +354,7 @@
       },
       {
         "command": "1c-metadata-tree.validateCurrentXml",
-        "title": "CDT 41: Validate current XML (ibcmd preflight)",
+        "title": "CDT 41: Проверить XML (ibcmd preflight)",
         "category": "CDT 41"
       },
       {
@@ -471,6 +471,26 @@
         "command": "1c-metadata-tree.agent.setProperties",
         "title": "Agent: Установить свойства объекта",
         "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.deploySelectedObjects",
+        "title": "Agent: Раскатка выбранных файлов",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.agent.deployChangedFiles",
+        "title": "Agent: Раскатка изменённых файлов (git)",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.agent.pullSelectedObjects",
+        "title": "Agent: Выгрузить объекты из ИБ",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.agent.exportStatus",
+        "title": "Agent: Статус конфигурации",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -531,6 +551,22 @@
         },
         {
           "command": "1c-metadata-tree.config.configExportStatus",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.agent.deploySelectedObjects",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.agent.deployChangedFiles",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.agent.pullSelectedObjects",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.agent.exportStatus",
           "when": "false"
         }
       ],
@@ -638,22 +674,22 @@
         },
         {
           "command": "1c-metadata-tree.config.deploySelectedObjects",
-          "when": "view == 1c-metadata-tree",
+          "when": "view == 1c-metadata-tree && viewItem =~ /bindingBound/",
           "group": "infobase@2"
         },
         {
           "command": "1c-metadata-tree.config.pullSelectedObjects",
-          "when": "view == 1c-metadata-tree",
+          "when": "view == 1c-metadata-tree && viewItem =~ /bindingBound/",
           "group": "infobase@2"
         },
         {
           "command": "1c-metadata-tree.config.deployChangedFiles",
-          "when": "view == 1c-metadata-tree",
+          "when": "view == 1c-metadata-tree && viewItem =~ /bindingBound/",
           "group": "infobase@3"
         },
         {
           "command": "1c-metadata-tree.config.configExportStatus",
-          "when": "view == 1c-metadata-tree",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Configuration.*bindingBound/",
           "group": "infobase@4"
         },
         {

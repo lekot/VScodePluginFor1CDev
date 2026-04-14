@@ -5,7 +5,15 @@
 import * as vscode from 'vscode';
 import { AgentOperations } from './agentOperations';
 import { AgentDebugOperations, AgentDebugOperationsDeps } from './agentDebugOperations';
-import { AgentDeployOperations, AgentDeployOperationsDeps, DeployParams } from './agentDeployOperations';
+import {
+    AgentDeployOperations,
+    AgentDeployOperationsDeps,
+    DeployParams,
+    DeploySelectedObjectsParams,
+    DeployChangedFilesParams,
+    PullSelectedObjectsParams as AgentPullParams,
+    ExportStatusAgentParams,
+} from './agentDeployOperations';
 import { DebugSessionRegistry } from './debugSessionRegistry';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import type {
@@ -448,6 +456,62 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.deploySelectedObjects ────────────────────
+
+    const deploySelectedObjectsCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.deploySelectedObjects',
+        async (params: DeploySelectedObjectsParams) => {
+            const deps = getDeployDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
+            }
+            const ops = new AgentDeployOperations(deps);
+            return await ops.deploySelectedObjects(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.deployChangedFiles ───────────────────────
+
+    const deployChangedFilesCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.deployChangedFiles',
+        async (params: DeployChangedFilesParams = {}) => {
+            const deps = getDeployDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
+            }
+            const ops = new AgentDeployOperations(deps);
+            return await ops.deployChangedFiles(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.pullSelectedObjects ──────────────────────
+
+    const pullSelectedObjectsCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.pullSelectedObjects',
+        async (params: AgentPullParams) => {
+            const deps = getDeployDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Выгрузка недоступна: хранилище или привязки не инициализированы.' };
+            }
+            const ops = new AgentDeployOperations(deps);
+            return await ops.pullSelectedObjects(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.exportStatus ─────────────────────────────
+
+    const exportStatusCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.exportStatus',
+        async (params: ExportStatusAgentParams = {}) => {
+            const deps = getDeployDeps?.();
+            if (!deps) {
+                return { success: false, error: 'Статус недоступен: хранилище или привязки не инициализированы.' };
+            }
+            const ops = new AgentDeployOperations(deps);
+            return await ops.exportStatus(params);
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -461,5 +525,7 @@ export function registerAgentCommands(
         debugStartFromBindingCommand,
         resolveBindingCmd, listBindingsCmd,
         deployCommand,
+        deploySelectedObjectsCommand, deployChangedFilesCommand,
+        pullSelectedObjectsCommand, exportStatusCommand,
     );
 }
