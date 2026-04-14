@@ -11,7 +11,7 @@ export const commonFormRules: MetadataObjectRules = {
     hasChildObjects: false,
     properties: {
         comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
-        formType: { type: 'SystemEnumeration', order: 2, xml: 'FormType', yaml: 'ТипФормы', defaultValueXML: 'Ordinary', typeSE: 'FormType' },
+        formType: { type: 'SystemEnumeration', order: 2, xml: 'FormType', yaml: 'ТипФормы', defaultValueXML: 'Managed', typeSE: 'FormType' },
         name: { type: 'string', order: 3, xml: 'Name', yaml: 'Имя', required: true },
         synonym: { type: 'I8nText', order: 4, xml: 'Synonym', yaml: 'Синоним' },
     },

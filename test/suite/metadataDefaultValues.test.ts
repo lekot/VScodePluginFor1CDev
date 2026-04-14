@@ -23,7 +23,7 @@ suite('metadataDefaultValues', () => {
 
   test('returns Form root defaults including FormType for ibcmd', () => {
     const form = getDefaultPropertiesForRootTag('Form');
-    assert.deepStrictEqual(form, { FormType: 'Ordinary' });
+    assert.deepStrictEqual(form, { FormType: 'Managed' });
   });
 
   test('returns cloned object for root defaults', () => {

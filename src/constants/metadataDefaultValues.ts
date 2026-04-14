@@ -57,7 +57,7 @@ const ROOT_TAG_DEFAULTS: Record<string, DefaultProperties> = {
   CommonForm: {},
   /** Метаданные встроенной формы (Forms/*.xml); ibcmd требует FormType. */
   Form: {
-    FormType: 'Ordinary',
+    FormType: 'Managed',
   },
   CommonPicture: {},
   CommonTemplate: {},
@@ -87,7 +87,7 @@ const ATTRIBUTE_DEFAULTS: DefaultProperties = {
   FillFromFillingValue: true,
   // FillValue will be set based on type in the UI, for now empty
   FillValue: null,
-  FillChecking: 'ShowError',
+  FillChecking: 'DontCheck',
   ChoiceFoldersAndItems: 'Items',
   ChoiceParameterLinks: '',
   ChoiceParameters: '',

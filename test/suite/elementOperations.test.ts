@@ -289,7 +289,7 @@ suite('elementOperations', () => {
     const metaContent = await readFileContent(formMetaPath);
     assert.ok(metaContent.includes('<Name>НоваяФорма</Name>'));
     assert.ok(
-      metaContent.includes('<FormType>Ordinary</FormType>'),
+      metaContent.includes('<FormType>Managed</FormType>'),
       'Designer/ibcmd: у метаданных формы должно быть FormType'
     );
     assert.ok(
@@ -468,7 +468,7 @@ suite('elementOperations', () => {
     assert.ok(content.includes('<MinValue xsi:nil="true"/>'));
     assert.ok(content.includes('<MaxValue xsi:nil="true"/>'));
     assert.ok(content.includes('<FillFromFillingValue>true</FillFromFillingValue>'));
-    assert.ok(content.includes('<FillChecking>ShowError</FillChecking>'));
+    assert.ok(content.includes('<FillChecking>DontCheck</FillChecking>'));
     assert.ok(content.includes('<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>'));
     assert.ok(content.includes('<ChoiceParameterLinks/>') || content.includes('<ChoiceParameterLinks></ChoiceParameterLinks>'));
     assert.ok(content.includes('<ChoiceParameters/>') || content.includes('<ChoiceParameters></ChoiceParameters>'));

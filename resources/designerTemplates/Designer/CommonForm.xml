@@ -3,7 +3,7 @@
   <CommonForm uuid="{uuid}">
     <Properties>
       <Comment />
-      <FormType>Ordinary</FormType>
+      <FormType>Managed</FormType>
       <Name>{Name}</Name>
       <Synonym>
         <v8:item>
