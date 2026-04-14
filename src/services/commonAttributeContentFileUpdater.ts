@@ -6,48 +6,9 @@ import * as fs from 'fs';
 import { XmlParser } from '../parsers/xmlParser';
 import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
 import type { ContentReadResult, ContentUpdateDiff } from '../compositionEditor/compositionContracts';
+import { getValueByLocalName, getPropertiesFromParsed } from '../parsers/xmlNavHelpers';
 
-function localName(key: string): string {
-  return key.includes(':') ? key.split(':').pop()! : key;
-}
-
-function getValueByLocalName(obj: Record<string, unknown>, name: string): unknown {
-  for (const [k, v] of Object.entries(obj)) {
-    if (k === ':@' || k === '@_' || k.startsWith('#')) {
-      continue;
-    }
-    if (localName(k) === name) {
-      return v;
-    }
-  }
-  return undefined;
-}
-
-function getCommonAttributePropertiesFromParsed(parsed: Record<string, unknown>): Record<string, unknown> | null {
-  const metaRaw = getValueByLocalName(parsed, 'MetaDataObject');
-  if (metaRaw === undefined || metaRaw === null) {
-    return null;
-  }
-  const meta = Array.isArray(metaRaw) ? metaRaw[0] : metaRaw;
-  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
-    return null;
-  }
-  const caRaw = getValueByLocalName(meta as Record<string, unknown>, 'CommonAttribute');
-  if (caRaw === undefined || caRaw === null) {
-    return null;
-  }
-  const caObj = Array.isArray(caRaw) ? caRaw[0] : caRaw;
-  if (!caObj || typeof caObj !== 'object' || Array.isArray(caObj)) {
-    return null;
-  }
-  const propsRaw = getValueByLocalName(caObj as Record<string, unknown>, 'Properties');
-  if (!propsRaw || typeof propsRaw !== 'object' || Array.isArray(propsRaw)) {
-    return null;
-  }
-  return propsRaw as Record<string, unknown>;
-}
-
-function extractItems(contentRaw: unknown): Array<{ ref: string; use: string }> {
+function extractItems(contentRaw: unknown): Array<{ ref: string; use: string; condSep: string }> {
   if (!contentRaw || typeof contentRaw !== 'object') {
     return [];
   }
@@ -60,44 +21,46 @@ function extractItems(contentRaw: unknown): Array<{ ref: string; use: string }> 
     return [];
   }
   const items = Array.isArray(itemsRaw) ? itemsRaw : [itemsRaw];
-  const result: Array<{ ref: string; use: string }> = [];
+  const result: Array<{ ref: string; use: string; condSep: string }> = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') {
       continue;
     }
     const metadataRaw = getValueByLocalName(item as Record<string, unknown>, 'Metadata');
     const useRaw = getValueByLocalName(item as Record<string, unknown>, 'Use');
+    const condSepRaw = getValueByLocalName(item as Record<string, unknown>, 'ConditionalSeparation');
     const ref = typeof metadataRaw === 'string' ? metadataRaw.trim() : '';
     const use = typeof useRaw === 'string' ? useRaw.trim() : 'Use';
+    const condSep = typeof condSepRaw === 'string' ? condSepRaw : '';
     if (ref) {
-      result.push({ ref, use });
+      result.push({ ref, use, condSep });
     }
   }
   return result;
 }
 
 function buildContentItems(
-  refsWithUse: Array<{ ref: string; use: string }>,
+  refsWithSettings: Array<{ ref: string; use: string; condSep: string }>,
 ): unknown {
-  const items = refsWithUse.map(({ ref, use }) => ({
+  const items = refsWithSettings.map(({ ref, use, condSep }) => ({
     'xr:Metadata': ref,
     'xr:Use': use,
-    'xr:ConditionalSeparation': '',
+    'xr:ConditionalSeparation': condSep,
   }));
   return { 'xr:Item': items };
 }
 
 export async function readCommonAttributeContent(filePath: string): Promise<ContentReadResult> {
   const parsed = await XmlParser.parseFileAsync(filePath);
-  const props = getCommonAttributePropertiesFromParsed(parsed);
+  const props = getPropertiesFromParsed(parsed, 'CommonAttribute');
   if (!props) {
     return { refs: [], itemSettings: new Map() };
   }
   const items = extractItems(props.Content);
   const refs = items.map((i) => i.ref);
   const itemSettings = new Map<string, Record<string, string>>();
-  for (const { ref, use } of items) {
-    itemSettings.set(ref, { Use: use });
+  for (const { ref, use, condSep } of items) {
+    itemSettings.set(ref, { Use: use, ConditionalSeparation: condSep });
   }
   return { refs, itemSettings };
 }
@@ -107,7 +70,7 @@ export async function applyCommonAttributeContentUpdate(
   diff: ContentUpdateDiff,
 ): Promise<{ rejected: Array<{ ref: string; reason: string }> }> {
   const parsed = await XmlParser.parseFileAsync(filePath);
-  const props = getCommonAttributePropertiesFromParsed(parsed);
+  const props = getPropertiesFromParsed(parsed, 'CommonAttribute');
   if (!props) {
     throw new Error(
       `Not a CommonAttribute metadata file (expected MetaDataObject/CommonAttribute/Properties): ${filePath}`,
@@ -117,8 +80,10 @@ export async function applyCommonAttributeContentUpdate(
   const currentItems = extractItems(props.Content);
   const rejected: Array<{ ref: string; reason: string }> = [];
 
-  // Build working map: ref → use value
-  const workingMap = new Map<string, string>(currentItems.map(({ ref, use }) => [ref, use]));
+  // Build working map: ref → { use, condSep }
+  const workingMap = new Map<string, { use: string; condSep: string }>(
+    currentItems.map(({ ref, use, condSep }) => [ref, { use, condSep }]),
+  );
 
   // Apply removals
   for (const ref of diff.remove) {
@@ -134,19 +99,20 @@ export async function applyCommonAttributeContentUpdate(
       continue;
     }
     if (!workingMap.has(ref)) {
-      workingMap.set(ref, 'Use');
+      workingMap.set(ref, { use: 'Use', condSep: '' });
     }
   }
 
-  // Apply settings changes
+  // Apply settings changes (only update Use; condSep is not user-editable)
   for (const [ref, settings] of diff.settingsChanged) {
-    if (workingMap.has(ref) && settings.Use !== undefined) {
-      workingMap.set(ref, settings.Use);
+    const current = workingMap.get(ref);
+    if (current !== undefined && settings.Use !== undefined) {
+      workingMap.set(ref, { use: settings.Use, condSep: current.condSep });
     }
   }
 
-  const refsWithUse = Array.from(workingMap.entries()).map(([ref, use]) => ({ ref, use }));
-  props.Content = buildContentItems(refsWithUse);
+  const refsWithSettings = Array.from(workingMap.entries()).map(([ref, { use, condSep }]) => ({ ref, use, condSep }));
+  props.Content = buildContentItems(refsWithSettings);
 
   const xml = XmlParser.objectToXml(parsed);
   await fs.promises.writeFile(filePath, xml, 'utf-8');

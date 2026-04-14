@@ -5,47 +5,7 @@
 import * as fs from 'fs';
 import { XmlParser } from '../parsers/xmlParser';
 import type { ContentReadResult, ContentUpdateDiff } from '../compositionEditor/compositionContracts';
-
-function localName(key: string): string {
-  return key.includes(':') ? key.split(':').pop()! : key;
-}
-
-function getValueByLocalName(obj: Record<string, unknown>, name: string): unknown {
-  for (const [k, v] of Object.entries(obj)) {
-    if (k === ':@' || k === '@_' || k.startsWith('#')) {
-      continue;
-    }
-    if (localName(k) === name) {
-      return v;
-    }
-  }
-  return undefined;
-}
-
-/** Navigate to FunctionalOption `<Properties>` object inside parsed root (MetaDataObject). */
-function getFunctionalOptionPropertiesFromParsed(parsed: Record<string, unknown>): Record<string, unknown> | null {
-  const metaRaw = getValueByLocalName(parsed, 'MetaDataObject');
-  if (metaRaw === undefined || metaRaw === null) {
-    return null;
-  }
-  const meta = Array.isArray(metaRaw) ? metaRaw[0] : metaRaw;
-  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
-    return null;
-  }
-  const foRaw = getValueByLocalName(meta as Record<string, unknown>, 'FunctionalOption');
-  if (foRaw === undefined || foRaw === null) {
-    return null;
-  }
-  const foObj = Array.isArray(foRaw) ? foRaw[0] : foRaw;
-  if (!foObj || typeof foObj !== 'object' || Array.isArray(foObj)) {
-    return null;
-  }
-  const propsRaw = getValueByLocalName(foObj as Record<string, unknown>, 'Properties');
-  if (!propsRaw || typeof propsRaw !== 'object' || Array.isArray(propsRaw)) {
-    return null;
-  }
-  return propsRaw as Record<string, unknown>;
-}
+import { localName, getPropertiesFromParsed } from '../parsers/xmlNavHelpers';
 
 /** Collect text values from xr:Object / Object elements inside Content. */
 function extractFunctionalOptionRefs(content: unknown): string[] {
@@ -102,7 +62,7 @@ function validateFunctionalOptionRef(ref: string): string | null {
  */
 export async function readFunctionalOptionContent(filePath: string): Promise<ContentReadResult> {
   const parsed = await XmlParser.parseFileAsync(filePath);
-  const props = getFunctionalOptionPropertiesFromParsed(parsed);
+  const props = getPropertiesFromParsed(parsed, 'FunctionalOption');
   if (!props) {
     return { refs: [], itemSettings: new Map() };
   }
@@ -118,7 +78,7 @@ export async function applyFunctionalOptionContentUpdate(
   diff: ContentUpdateDiff,
 ): Promise<{ rejected: Array<{ ref: string; reason: string }> }> {
   const parsed = await XmlParser.parseFileAsync(filePath);
-  const props = getFunctionalOptionPropertiesFromParsed(parsed);
+  const props = getPropertiesFromParsed(parsed, 'FunctionalOption');
   if (!props) {
     throw new Error(
       `Not a FunctionalOption metadata file (expected MetaDataObject/FunctionalOption/Properties): ${filePath}`,

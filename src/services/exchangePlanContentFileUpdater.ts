@@ -6,22 +6,7 @@ import * as path from 'path';
 import { XmlParser } from '../parsers/xmlParser';
 import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
 import type { ContentReadResult, ContentUpdateDiff } from '../compositionEditor/compositionContracts';
-
-function localName(key: string): string {
-  return key.includes(':') ? key.split(':').pop()! : key;
-}
-
-function getValueByLocalName(obj: Record<string, unknown>, name: string): unknown {
-  for (const [k, v] of Object.entries(obj)) {
-    if (k === ':@' || k === '@_' || k.startsWith('#')) {
-      continue;
-    }
-    if (localName(k) === name) {
-      return v;
-    }
-  }
-  return undefined;
-}
+import { localName, getValueByLocalName } from '../parsers/xmlNavHelpers';
 
 /**
  * Navigate to the Item array inside the parsed ExchangePlanContent root.
