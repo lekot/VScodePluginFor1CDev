@@ -15,10 +15,11 @@ import {
   appendIbcmdOutputLine,
   runInfobaseConfigImportFromDirectory,
   runInfobaseConfigIncrementalImport,
+  runInfobaseConfigExportObjects,
   serializeInfobaseConfigIbcmdOp,
 } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
-import { collectFilesForSelection } from '../services/ibcmd/objectFileCollector';
+import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import type { TreeNode } from '../models/treeNode';
 
@@ -232,6 +233,16 @@ export interface DeployChangedFilesParams {
   storage: InfobaseStorageService;
   catalog: readonly InfobaseEntry[];
   relativeFiles: readonly string[];
+  progress: DeployProgressSink;
+  token: vscode.CancellationToken;
+}
+
+export interface PullSelectedObjectsParams {
+  binding: ConfigurationBinding;
+  workspaceFolderRoot: string;
+  storage: InfobaseStorageService;
+  entry: InfobaseEntry;
+  selectedNodes: readonly TreeNode[];
   progress: DeployProgressSink;
   token: vscode.CancellationToken;
 }
@@ -668,6 +679,91 @@ export class DeployService {
     }
 
     const s = summarizeDeployRun(results, cancelledMidChain);
+    appendDeployRunSummaryLine(s);
+    return s;
+  }
+
+  /**
+   * Выгрузка отдельных объектов метаданных из базы в файлы конфигурации.
+   * Использует `ibcmd infobase config export objects`.
+   * Не оборачивается в serializeInfobaseConfigIbcmdOp — это делает вызывающая сторона.
+   */
+  async pullSelectedObjects(params: PullSelectedObjectsParams): Promise<DeployRunSummary> {
+    const resolved = resolveConfigurationXmlDirectory(params.workspaceFolderRoot, params.binding.configRelativePath);
+    if (!resolved.ok) {
+      const s = summarizeDeployRun([{ infobaseId: '', name: '', status: 'error', message: resolved.message }], false);
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+    const configRoot = resolved.sourceDir;
+
+    const ibcmd = getIbcmdService();
+    if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: 'Исполняемый файл ibcmd не найден. Укажите путь в настройках или переменную IBCMD_PATH.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    const seen = new Set<string>();
+    const objectIds: string[] = [];
+    for (const node of params.selectedNodes) {
+      const id = resolveIbcmdObjectId(node);
+      if (id !== undefined) {
+        const key = id.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          objectIds.push(id);
+        }
+      }
+    }
+
+    if (objectIds.length === 0) {
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'error', message: 'Не найдено объектов для выгрузки.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    appendIbcmdOutputLine(`[выгрузка объектов] Объектов: ${objectIds.length}`);
+    for (const id of objectIds) {
+      appendIbcmdOutputLine(`  ${id}`);
+    }
+
+    params.progress.report({ message: `Выгрузка объектов из: ${params.entry.name}`, increment: 0 });
+
+    const interpreted = await runInfobaseConfigExportObjects({
+      storage: params.storage,
+      entry: params.entry,
+      configRoot,
+      objectIds,
+      token: params.token,
+      logContext: 'выгрузка',
+      ibcmdExtensionName: params.binding.ibcmdExtensionName,
+    });
+
+    const results: DeployItemResult[] = [];
+    if (interpreted.status === 'cancelled') {
+      appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: отменено — ${interpreted.userMessage}`);
+      results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'skipped', message: interpreted.userMessage });
+      const s = summarizeDeployRun(results, true);
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    if (interpreted.status === 'success') {
+      appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: успех — ${interpreted.userMessage}`);
+      results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'success', message: interpreted.userMessage });
+    } else {
+      appendIbcmdOutputLine(`[выгрузка объектов] ${params.entry.name}: ошибка — ${interpreted.userMessage}`);
+      results.push({ infobaseId: params.entry.id, name: params.entry.name, status: 'error', message: interpreted.userMessage });
+    }
+
+    const s = summarizeDeployRun(results, false);
     appendDeployRunSummaryLine(s);
     return s;
   }

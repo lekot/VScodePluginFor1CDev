@@ -390,6 +390,12 @@
         "icon": "$(cloud-upload)"
       },
       {
+        "command": "1c-metadata-tree.config.pullSelectedObjects",
+        "title": "Выгрузить выбранные из ИБ",
+        "category": "CDT 41",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "1c-metadata-tree.config.deployChangedFiles",
         "title": "Раскатка изменённых файлов (git)",
         "category": "CDT 41",
@@ -516,6 +522,10 @@
           "when": "false"
         },
         {
+          "command": "1c-metadata-tree.config.pullSelectedObjects",
+          "when": "false"
+        },
+        {
           "command": "1c-metadata-tree.config.deployChangedFiles",
           "when": "false"
         },
@@ -628,6 +638,11 @@
         },
         {
           "command": "1c-metadata-tree.config.deploySelectedObjects",
+          "when": "view == 1c-metadata-tree",
+          "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.config.pullSelectedObjects",
           "when": "view == 1c-metadata-tree",
           "group": "infobase@2"
         },

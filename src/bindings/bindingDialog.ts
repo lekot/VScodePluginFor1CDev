@@ -17,6 +17,7 @@ import {
   runDeploySelectedObjectsFromTree,
   runDeployChangedFilesFromTree,
   runConfigExportStatusFromTree,
+  runPullSelectedObjectsFromTree,
 } from './bindingCommands';
 
 const VIEW_TYPE = '1c-binding-dialog';
@@ -711,6 +712,9 @@ export function registerBindingDialogCommands(
       }),
       vscode.commands.registerCommand('1c-metadata-tree.config.deploySelectedObjects', async (arg: unknown) => {
         await runDeploySelectedObjectsFromTree(arg, state.treeView?.selection ?? [], state, treeDataProvider);
+      }),
+      vscode.commands.registerCommand('1c-metadata-tree.config.pullSelectedObjects', async (arg: unknown) => {
+        await runPullSelectedObjectsFromTree(arg, state.treeView?.selection ?? [], state, treeDataProvider);
       }),
       vscode.commands.registerCommand('1c-metadata-tree.config.deployChangedFiles', async (arg: unknown) => {
         await runDeployChangedFilesFromTree(arg, state, treeDataProvider);

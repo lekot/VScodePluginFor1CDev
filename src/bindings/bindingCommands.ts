@@ -19,7 +19,7 @@ import {
   resolveDeployTargetsForBinding,
   vscodeSupportsDeployReadonlyLock,
 } from './deployService';
-import { showIbcmdInfobaseOutputChannel, runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
+import { showIbcmdInfobaseOutputChannel, runInfobaseConfigExportStatus, serializeInfobaseConfigIbcmdOp } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
 import { detectChangedConfigFiles } from '../services/ibcmd/incrementalChangeDetector';
@@ -394,6 +394,116 @@ export async function runDeploySelectedObjectsFromTree(
         progress,
         token,
       }),
+  );
+
+  showDeployRunSummaryToast(summary);
+}
+
+/**
+ * Выгрузка выбранных объектов из ИБ в файлы конфигурации (pull из базы).
+ */
+export async function runPullSelectedObjectsFromTree(
+  arg: unknown,
+  allSelected: readonly TreeNode[],
+  state: ExtensionState,
+  treeDataProvider: MetadataTreeDataProvider,
+): Promise<void> {
+  if (!state.bindingManager || !state.infobaseStorage) {
+    void vscode.window.showErrorMessage('Выгрузка недоступна: хранилище или привязки не инициализированы.');
+    return;
+  }
+  const node = arg as TreeNode | undefined;
+  if (!node) {
+    void vscode.window.showErrorMessage('Выберите узел в дереве метаданных.');
+    return;
+  }
+  const active = treeDataProvider.resolveNodeForUi(node);
+  const target = resolveConfigRootFromAnyNode(active, treeDataProvider);
+  if (!target) {
+    void vscode.window.showErrorMessage(
+      'Не удалось сопоставить выгрузку с workspace. Выберите узел внутри конфигурации с привязанной базой.',
+    );
+    return;
+  }
+
+  const binding = await state.bindingManager.get(
+    target.workspaceFolderName,
+    target.configRelativePath,
+    target.ibcmdExtensionName,
+  );
+  if (!binding || binding.infobaseIds.length === 0) {
+    void vscode.window.showWarningMessage(
+      'Для этой конфигурации нет привязанных баз. Сначала выполните «Привязать базы…».',
+    );
+    return;
+  }
+
+  let catalog;
+  try {
+    catalog = await state.infobaseStorage.load();
+  } catch {
+    void vscode.window.showErrorMessage('Не удалось загрузить каталог информационных баз.');
+    return;
+  }
+
+  const ibcmd = getIbcmdService();
+  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+    await showIbcmdNotFoundDialog();
+    return;
+  }
+
+  const catalogById = new Map(catalog.map((e) => [e.id, e] as const));
+  const { entries } = resolveDeployTargetsForBinding(binding, catalogById);
+  if (entries.length === 0) {
+    void vscode.window.showWarningMessage('Нет доступных баз для выгрузки.');
+    return;
+  }
+
+  let selectedEntry = entries[0]!;
+  if (entries.length > 1) {
+    const items = entries.map((e) => ({ label: e.name, entry: e }));
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Выберите базу-источник для выгрузки' });
+    if (!picked) {
+      return;
+    }
+    selectedEntry = picked.entry;
+  }
+
+  const selectedNodes = allSelected.length > 0 ? allSelected : [active];
+  const ok = await vscode.window.showWarningMessage(
+    `Файлы выбранных объектов будут перезаписаны из базы. Продолжить?`,
+    { modal: true },
+    'Продолжить',
+  );
+  if (ok !== 'Продолжить') {
+    return;
+  }
+
+  const wf = vscode.workspace.workspaceFolders?.find((f) => f.name === target.workspaceFolderName);
+  if (!wf) {
+    void vscode.window.showErrorMessage(`Папка workspace не найдена: «${target.workspaceFolderName}».`);
+    return;
+  }
+
+  const deployService = new DeployService();
+  const summary = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Выгрузка выбранных объектов из базы',
+      cancellable: true,
+    },
+    async (progress, token) =>
+      serializeInfobaseConfigIbcmdOp(() =>
+        deployService.pullSelectedObjects({
+          binding,
+          workspaceFolderRoot: wf.uri.fsPath,
+          storage: state.infobaseStorage!,
+          entry: selectedEntry,
+          selectedNodes,
+          progress,
+          token,
+        }),
+      ),
   );
 
   showDeployRunSummaryToast(summary);
