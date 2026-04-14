@@ -111,16 +111,9 @@ export function collectFilesForSelection(
   const seen = new Set<string>();
   const results: string[] = [];
 
-  // ibcmd import files requires Configuration.xml (parent object) to be present
-  // for any child objects. Always include it first.
-  const configXml = 'Configuration.xml';
-  const configXmlAbs = path.join(configRoot, configXml);
-  try {
-    if (fs.statSync(configXmlAbs).isFile()) {
-      seen.add(configXml.toLowerCase());
-      results.push(configXml);
-    }
-  } catch { /* missing — skip */ }
+  // Configuration.xml NOT included: ibcmd import files works without it,
+  // and including it causes ALL metadata changes (not just selected objects)
+  // to be applied — e.g. a new attribute on an unrelated document.
 
   for (const node of nodes) {
     const files = collectObjectFiles(node, configRoot);

@@ -74,9 +74,9 @@ suite('objectFileCollector', () => {
   });
 
   // 4 ─────────────────────────────────────────────────────────────────────────
-  test('collectFilesForSelection: empty nodes array returns only Configuration.xml', () => {
+  test('collectFilesForSelection: empty nodes array returns empty (no Configuration.xml)', () => {
     const files = collectFilesForSelection([], FIXTURE_ROOT);
-    assert.deepStrictEqual(files, ['Configuration.xml']);
+    assert.deepStrictEqual(files, []);
   });
 
   // 5 ─────────────────────────────────────────────────────────────────────────
