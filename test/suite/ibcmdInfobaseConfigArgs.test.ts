@@ -5,6 +5,7 @@ import * as path from 'path';
 import {
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
+  buildInfobaseConfigExportObjectsArgs,
   buildInfobaseConfigImportArgs,
   ibcmdOfflineConnectionFromPrepared,
   resolveIbcmdCliPathForWindowsSpawn,
@@ -140,5 +141,60 @@ suite('ibcmdInfobaseConfigArgs', () => {
     );
     assert.ok(args.some((a) => a.startsWith('--db-path=')));
     assert.strictEqual(args[args.length - 1], 'D:\\My Dump\\ERP');
+  });
+
+  test('buildInfobaseConfigExportObjectsArgs: builds correct arguments', () => {
+    const connection = {
+      kind: 'yaml' as const,
+      absoluteConfigPath: '/x/y.yaml',
+      offlineDataDir: DATA,
+    };
+    const objectIds = ['Catalog.Справочник55', 'CommonModule.тестМодуль'];
+    const args = buildInfobaseConfigExportObjectsArgs(connection, '/project/ERP', objectIds);
+
+    // Command prefix
+    assert.ok(args[0] === 'infobase');
+    assert.ok(args[1] === 'config');
+    assert.ok(args[2] === 'export');
+    assert.ok(args[3] === 'objects');
+
+    // Connection args before --out=
+    assert.ok(args.includes('--config=/x/y.yaml'));
+    assert.ok(args.includes(`--data=${DATA}`));
+
+    // --out= present and before object ids
+    const outIdx = args.findIndex((a) => a.startsWith('--out='));
+    assert.ok(outIdx !== -1, '--out= argument must be present');
+
+    // Object ids at the end, in order
+    const cat55Idx = args.indexOf('Catalog.Справочник55');
+    const modIdx = args.indexOf('CommonModule.тестМодуль');
+    assert.ok(cat55Idx !== -1, 'Catalog.Справочник55 must be present');
+    assert.ok(modIdx !== -1, 'CommonModule.тестМодуль must be present');
+    assert.ok(cat55Idx > outIdx, 'object ids must come after --out=');
+    assert.ok(modIdx > outIdx, 'object ids must come after --out=');
+    assert.ok(cat55Idx < modIdx, 'order of object ids must be preserved');
+
+    // No positional out (as in export args)
+    assert.ok(!args.some((a) => a === '/project/ERP'), 'out dir must not appear as positional arg');
+  });
+
+  test('buildInfobaseConfigExportObjectsArgs: with extension and credentials', () => {
+    const args = buildInfobaseConfigExportObjectsArgs(
+      { kind: 'fileDb', dbCatalogPath: '/ib', offlineDataDir: DATA },
+      '/out',
+      ['Document.Накладная'],
+      { extension: 'MyExt', credentials: { user: 'Admin', password: 'secret' } },
+    );
+    assert.ok(args.includes('--db-path=/ib'));
+    assert.ok(args.includes('--user=Admin'));
+    assert.ok(args.includes('--password=secret'));
+    assert.ok(args.includes('--extension=MyExt'));
+    assert.ok(args.some((a) => a.startsWith('--out=')));
+    assert.ok(args.includes('Document.Накладная'));
+    // extension must come before --out=
+    const extIdx = args.indexOf('--extension=MyExt');
+    const outIdx = args.findIndex((a) => a.startsWith('--out='));
+    assert.ok(extIdx < outIdx, '--extension= must come before --out=');
   });
 });

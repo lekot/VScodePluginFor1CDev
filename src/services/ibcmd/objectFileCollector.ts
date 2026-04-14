@@ -7,7 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { TreeNode } from '../../models/treeNode';
+import { MetadataType, type TreeNode } from '../../models/treeNode';
 
 const COLLECTED_EXTENSIONS = new Set(['.xml', '.bsl', '.os', '.mxl', '.bin']);
 
@@ -134,4 +134,43 @@ export function collectFilesForSelection(
   }
 
   return results;
+}
+
+/**
+ * Sub-element types that cannot be exported independently — ibcmd exports entire parent objects.
+ */
+const SUB_ELEMENT_TYPES = new Set<MetadataType>([
+  MetadataType.Attribute,
+  MetadataType.TabularSection,
+  MetadataType.Form,
+  MetadataType.Template,
+  MetadataType.CommandSubElement,
+  MetadataType.Recurrence,
+  MetadataType.Method,
+  MetadataType.Parameter,
+]);
+
+/**
+ * Non-exportable root types (cannot be exported via `ibcmd config export objects`).
+ */
+const NON_EXPORTABLE_ROOT_TYPES = new Set<MetadataType>([
+  MetadataType.Configuration,
+  MetadataType.Extension,
+  MetadataType.Unknown,
+]);
+
+/**
+ * Resolves the ibcmd object identifier for a tree node.
+ * Format: `{MetadataType}.{name}` — e.g. `Catalog.Справочник55`, `CommonModule.тестМодуль`.
+ *
+ * Sub-elements (Attribute, Form, TabularSection, etc.) resolve to their parent object,
+ * since ibcmd exports entire objects, not individual sub-elements.
+ *
+ * Returns undefined if the node type is not an exportable root metadata type.
+ */
+export function resolveIbcmdObjectId(node: TreeNode): string | undefined {
+  if (NON_EXPORTABLE_ROOT_TYPES.has(node.type) || SUB_ELEMENT_TYPES.has(node.type)) {
+    return undefined;
+  }
+  return `${node.type}.${node.name}`;
 }

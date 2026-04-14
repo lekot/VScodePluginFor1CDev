@@ -218,3 +218,31 @@ export function buildInfobaseConfigExportArgs(
   args.push(out);
   return args;
 }
+
+/**
+ * Выгрузка отдельных объектов конфигурации: `ibcmd infobase config export objects`.
+ *
+ * Порядок аргументов: `infobase config export objects` → подключение/учётка/data →
+ * `--extension=` → `--out=<outPath>` → object1 object2 …
+ *
+ * Формат objectIds: `{MetadataType}.{name}`, например `Catalog.Справочник55`.
+ */
+export function buildInfobaseConfigExportObjectsArgs(
+  connection: IbcmdOfflineConnection,
+  outPath: string,
+  objectIds: readonly string[],
+  options?: { credentials?: IbcmdConfigCliCredentials; extension?: string },
+): string[] {
+  const out = resolveIbcmdCliPathForWindowsSpawn(outPath);
+  const args = ['infobase', 'config', 'export', 'objects'];
+  appendConnectionAuthData(args, connection, options?.credentials);
+  const ext = options?.extension?.trim();
+  if (ext) {
+    args.push(`--extension=${ext}`);
+  }
+  args.push(`--out=${out}`);
+  for (const id of objectIds) {
+    args.push(id);
+  }
+  return args;
+}

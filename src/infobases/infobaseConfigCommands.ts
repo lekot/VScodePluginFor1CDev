@@ -19,6 +19,7 @@ import {
   buildInfobaseConfigApplyArgs,
   buildInfobaseConfigCheckArgs,
   buildInfobaseConfigExportArgs,
+  buildInfobaseConfigExportObjectsArgs,
   buildInfobaseConfigImportArgs,
   buildInfobaseConfigImportFilesArgs,
   buildInfobaseConfigExportStatusArgs,
@@ -795,6 +796,125 @@ export async function runInfobaseConfigIncrementalImport(
     }
 
     return interpretIbcmdInfobaseOutcome('apply', applyOutcome);
+  } finally {
+    flushOutputChannel();
+    await prep.dispose();
+  }
+}
+
+export interface ExportObjectsParams {
+  storage: InfobaseStorageService;
+  entry: InfobaseEntry;
+  /** Целевой каталог конфигурации — ibcmd выгружает объекты прямо в workspace. */
+  configRoot: string;
+  /** Идентификаторы объектов в формате `{MetadataType}.{name}`, например `Catalog.Справочник55`. */
+  objectIds: readonly string[];
+  token: vscode.CancellationToken;
+  /** Подзаголовок в канале вывода. */
+  logContext?: string;
+  /** WOW Phase 4 — `ibcmd --extension` при работе с расширением. */
+  ibcmdExtensionName?: string;
+}
+
+/**
+ * Выгрузка отдельных объектов конфигурации через `ibcmd infobase config export objects`.
+ * Read-only — apply не запускается.
+ */
+export async function runInfobaseConfigExportObjects(
+  params: ExportObjectsParams,
+): Promise<IbcmdInfobaseOperationResult> {
+  const ibcmd = getIbcmdService();
+  const pathResult = ibcmd.resolveExecutablePath();
+  if (pathResult.kind !== 'resolved') {
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage:
+        'Исполняемый файл ibcmd не найден. Укажите путь в настройках или переменную IBCMD_PATH.',
+      logExcerpt: '',
+    };
+  }
+
+  const yamlUnsupported = await getIbcmdYamlInfobaseConfigUnsupportedMessage(pathResult.path);
+  if (yamlUnsupported) {
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage: yamlUnsupported,
+      logExcerpt: '',
+    };
+  }
+
+  const prep = await prepareIbcmdConfigYaml(params.entry, (id) => params.storage.readPasswordSecret(id));
+  if (!prep.ok) {
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage: prep.userMessage,
+      logExcerpt: '',
+    };
+  }
+
+  const probe = await probeIncrementalSupport(pathResult.path);
+  if (!probe.exportObjects) {
+    await prep.dispose();
+    return {
+      status: 'error',
+      exitCode: null,
+      userMessage:
+        'Команда `ibcmd infobase config export objects` не поддерживается текущей версией ibcmd.',
+      logExcerpt: '',
+    };
+  }
+
+  const ch = getOutputChannel();
+  const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
+  ch.appendLine(`[export objects${ctx}] ${params.entry.name} (${new Date().toISOString()})\n`);
+  await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
+
+  let exportCredentials: IbcmdConfigCliCredentials | undefined;
+  const entryUser = params.entry.user?.trim();
+  let entryPassword: string | undefined;
+  if (params.entry.hasStoredPassword) {
+    entryPassword = (await params.storage.readPasswordSecret(params.entry.id)) ?? undefined;
+  }
+  if (entryUser || (entryPassword !== undefined && entryPassword.length > 0)) {
+    exportCredentials = { user: entryUser || undefined, password: entryPassword };
+  }
+
+  const connection = ibcmdOfflineConnectionFromPrepared(prep);
+  const exportObjectsArgs = buildInfobaseConfigExportObjectsArgs(
+    connection,
+    params.configRoot,
+    params.objectIds,
+    {
+      extension: params.ibcmdExtensionName?.trim() || undefined,
+      credentials: exportCredentials,
+    },
+  );
+
+  try {
+    const outcome = await runIbcmdStreaming({
+      executablePath: pathResult.path,
+      args: exportObjectsArgs,
+      timeoutMs: ibcmd.getTimeoutMs(),
+      cancellation: vscodeCancellation(params.token),
+      consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
+    });
+
+    flushOutputChannel();
+
+    if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
+      ibcmd.invalidatePathCache();
+    }
+
+    if (outcome.logTruncated) {
+      ch.appendLine(TRUNCATION_WARNING);
+    }
+
+    return interpretIbcmdInfobaseOutcome('export', outcome);
   } finally {
     flushOutputChannel();
     await prep.dispose();

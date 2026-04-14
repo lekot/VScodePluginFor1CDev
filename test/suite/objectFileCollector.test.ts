@@ -4,6 +4,7 @@ import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   collectFilesForSelection,
   collectObjectFiles,
+  resolveIbcmdObjectId,
 } from '../../src/services/ibcmd/objectFileCollector';
 
 // Absolute path to the fixture configuration root.
@@ -76,5 +77,66 @@ suite('objectFileCollector', () => {
   test('collectFilesForSelection: empty nodes array returns only Configuration.xml', () => {
     const files = collectFilesForSelection([], FIXTURE_ROOT);
     assert.deepStrictEqual(files, ['Configuration.xml']);
+  });
+
+  // 5 ─────────────────────────────────────────────────────────────────────────
+  test('resolveIbcmdObjectId: root type returns Type.Name', () => {
+    const node: TreeNode = {
+      id: 'Catalog.Справочник55',
+      name: 'Справочник55',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    assert.strictEqual(resolveIbcmdObjectId(node), 'Catalog.Справочник55');
+  });
+
+  test('resolveIbcmdObjectId: CommonModule root type returns Type.Name', () => {
+    const node: TreeNode = {
+      id: 'CommonModule.тестМодуль',
+      name: 'тестМодуль',
+      type: MetadataType.CommonModule,
+      properties: {},
+    };
+    assert.strictEqual(resolveIbcmdObjectId(node), 'CommonModule.тестМодуль');
+  });
+
+  test('resolveIbcmdObjectId: Attribute sub-element returns undefined', () => {
+    const node: TreeNode = {
+      id: 'attr1',
+      name: 'Реквизит1',
+      type: MetadataType.Attribute,
+      properties: {},
+    };
+    assert.strictEqual(resolveIbcmdObjectId(node), undefined);
+  });
+
+  test('resolveIbcmdObjectId: Form sub-element returns undefined', () => {
+    const node: TreeNode = {
+      id: 'form1',
+      name: 'ФормаСписка',
+      type: MetadataType.Form,
+      properties: {},
+    };
+    assert.strictEqual(resolveIbcmdObjectId(node), undefined);
+  });
+
+  test('resolveIbcmdObjectId: Configuration returns undefined', () => {
+    const node: TreeNode = {
+      id: 'config',
+      name: 'MyConfig',
+      type: MetadataType.Configuration,
+      properties: {},
+    };
+    assert.strictEqual(resolveIbcmdObjectId(node), undefined);
+  });
+
+  test('resolveIbcmdObjectId: Extension returns undefined', () => {
+    const node: TreeNode = {
+      id: 'ext1',
+      name: 'MyExtension',
+      type: MetadataType.Extension,
+      properties: {},
+    };
+    assert.strictEqual(resolveIbcmdObjectId(node), undefined);
   });
 });
