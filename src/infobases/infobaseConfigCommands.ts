@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CONFIGURATION_XML } from '../constants/fileNames';
@@ -802,10 +803,27 @@ export async function runInfobaseConfigIncrementalImport(
   }
 }
 
+/** Recursively copies all files from srcDir into destDir, creating subdirectories and overwriting existing files. */
+function copyTreeOverwrite(srcDir: string, destDir: string): number {
+  let count = 0;
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(destPath, { recursive: true });
+      count += copyTreeOverwrite(srcPath, destPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(srcPath, destPath);
+      count++;
+    }
+  }
+  return count;
+}
+
 export interface ExportObjectsParams {
   storage: InfobaseStorageService;
   entry: InfobaseEntry;
-  /** Целевой каталог конфигурации — ibcmd выгружает объекты прямо в workspace. */
+  /** Целевой каталог конфигурации — файлы копируются сюда после выгрузки из temp. */
   configRoot: string;
   /** Идентификаторы объектов в формате `{MetadataType}.{name}`, например `Catalog.Справочник55`. */
   objectIds: readonly string[];
@@ -882,10 +900,14 @@ export async function runInfobaseConfigExportObjects(
     exportCredentials = { user: entryUser || undefined, password: entryPassword };
   }
 
+  // Export to a temp directory (ibcmd requires --out= to be empty), then copy to workspace.
+  const tempExportDir = path.join(os.tmpdir(), `1cviewer-export-objects-${Date.now()}`);
+  fs.mkdirSync(tempExportDir, { recursive: true });
+
   const connection = ibcmdOfflineConnectionFromPrepared(prep);
   const exportObjectsArgs = buildInfobaseConfigExportObjectsArgs(
     connection,
-    params.configRoot,
+    tempExportDir,
     params.objectIds,
     {
       extension: params.ibcmdExtensionName?.trim() || undefined,
@@ -914,10 +936,22 @@ export async function runInfobaseConfigExportObjects(
       ch.appendLine(TRUNCATION_WARNING);
     }
 
-    return interpretIbcmdInfobaseOutcome('export', outcome);
+    const result = interpretIbcmdInfobaseOutcome('export', outcome);
+
+    // Copy exported files from temp to workspace configRoot.
+    if (result.status === 'success') {
+      const copied = copyTreeOverwrite(tempExportDir, params.configRoot);
+      ch.appendLine(`[export objects${ctx}] Скопировано файлов: ${copied}`);
+    }
+
+    return result;
   } finally {
     flushOutputChannel();
     await prep.dispose();
+    // Clean up temp directory.
+    try {
+      fs.rmSync(tempExportDir, { recursive: true, force: true });
+    } catch { /* best effort */ }
   }
 }
 
