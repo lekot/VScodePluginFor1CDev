@@ -4,7 +4,7 @@ import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
-import type { SubsystemCompositionEditorProvider } from '../subsystemCompositionEditor/subsystemCompositionEditorProvider';
+import type { CompositionEditorProvider } from '../compositionEditor/compositionEditorProvider';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
 import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
@@ -25,7 +25,10 @@ export class ExtensionState {
   private _propertiesProvider: PropertiesProvider | null = null;
   private _typeEditorProvider: TypeEditorProvider | null = null;
   private _rolesRightsEditorProvider: RolesRightsEditorProvider | null = null;
-  private _subsystemCompositionEditorProvider: SubsystemCompositionEditorProvider | null = null;
+  private _subsystemCompositionEditorProvider: CompositionEditorProvider | null = null;
+  private _exchangePlanCompositionEditorProvider: CompositionEditorProvider | null = null;
+  private _commonAttributeCompositionEditorProvider: CompositionEditorProvider | null = null;
+  private _functionalOptionCompositionEditorProvider: CompositionEditorProvider | null = null;
   private _formEditorProvider: FormEditorProvider | null = null;
   private _mxlPreviewProvider: MxlPreviewProvider | null = null;
   private _extensionContext: vscode.ExtensionContext | undefined;
@@ -45,7 +48,10 @@ export class ExtensionState {
   get propertiesProvider(): PropertiesProvider | null { return this._propertiesProvider; }
   get typeEditorProvider(): TypeEditorProvider | null { return this._typeEditorProvider; }
   get rolesRightsEditorProvider(): RolesRightsEditorProvider | null { return this._rolesRightsEditorProvider; }
-  get subsystemCompositionEditorProvider(): SubsystemCompositionEditorProvider | null { return this._subsystemCompositionEditorProvider; }
+  get subsystemCompositionEditorProvider(): CompositionEditorProvider | null { return this._subsystemCompositionEditorProvider; }
+  get exchangePlanCompositionEditorProvider(): CompositionEditorProvider | null { return this._exchangePlanCompositionEditorProvider; }
+  get commonAttributeCompositionEditorProvider(): CompositionEditorProvider | null { return this._commonAttributeCompositionEditorProvider; }
+  get functionalOptionCompositionEditorProvider(): CompositionEditorProvider | null { return this._functionalOptionCompositionEditorProvider; }
   get formEditorProvider(): FormEditorProvider | null { return this._formEditorProvider; }
   get mxlPreviewProvider(): MxlPreviewProvider | null { return this._mxlPreviewProvider; }
   get extensionContext(): vscode.ExtensionContext | undefined { return this._extensionContext; }
@@ -66,7 +72,10 @@ export class ExtensionState {
   set propertiesProvider(v: PropertiesProvider | null) { this._propertiesProvider = v; }
   set typeEditorProvider(v: TypeEditorProvider | null) { this._typeEditorProvider = v; }
   set rolesRightsEditorProvider(v: RolesRightsEditorProvider | null) { this._rolesRightsEditorProvider = v; }
-  set subsystemCompositionEditorProvider(v: SubsystemCompositionEditorProvider | null) { this._subsystemCompositionEditorProvider = v; }
+  set subsystemCompositionEditorProvider(v: CompositionEditorProvider | null) { this._subsystemCompositionEditorProvider = v; }
+  set exchangePlanCompositionEditorProvider(v: CompositionEditorProvider | null) { this._exchangePlanCompositionEditorProvider = v; }
+  set commonAttributeCompositionEditorProvider(v: CompositionEditorProvider | null) { this._commonAttributeCompositionEditorProvider = v; }
+  set functionalOptionCompositionEditorProvider(v: CompositionEditorProvider | null) { this._functionalOptionCompositionEditorProvider = v; }
   set formEditorProvider(v: FormEditorProvider | null) { this._formEditorProvider = v; }
   set mxlPreviewProvider(v: MxlPreviewProvider | null) { this._mxlPreviewProvider = v; }
   set metadataWatchers(v: MetadataWatcherService[]) { this._metadataWatchers = v; }
@@ -96,6 +105,12 @@ export class ExtensionState {
     this._reloadCoordinator = null;
     this._subsystemCompositionEditorProvider?.dispose();
     this._subsystemCompositionEditorProvider = null;
+    this._exchangePlanCompositionEditorProvider?.dispose();
+    this._exchangePlanCompositionEditorProvider = null;
+    this._commonAttributeCompositionEditorProvider?.dispose();
+    this._commonAttributeCompositionEditorProvider = null;
+    this._functionalOptionCompositionEditorProvider?.dispose();
+    this._functionalOptionCompositionEditorProvider = null;
     this._infobaseTreeProvider = null;
     this._infobaseTreeView = null;
     this._refreshBindingTreeDecorations = null;

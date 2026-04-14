@@ -1,6 +1,12 @@
 import * as assert from 'assert';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
-import { collectCompositionEligibleObjects } from '../../src/subsystemCompositionEditor/compositionObjectCollector';
+import {
+  collectTypeFolders,
+  collectObjectsForType,
+  buildAncestorIds,
+  SUBSYSTEM_ELIGIBLE_TYPES,
+} from '../../src/compositionEditor/compositionObjectCollector';
+import type { CompositionObjectEntry } from '../../src/compositionEditor/compositionContracts';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -80,6 +86,48 @@ function makeTree(configPath: string): { root: TreeNode; subsystem: TreeNode } {
   return { root, subsystem: childSub };
 }
 
+/**
+ * Collect all composition-eligible objects for a subsystem, mimicking
+ * SubsystemStrategy behaviour (excludes ancestors AND the node itself).
+ */
+function collectAll(
+  roots: TreeNode[],
+  subsystem: TreeNode,
+  configPath: string,
+): CompositionObjectEntry[] {
+  const excludedIds = buildAncestorIds(subsystem);
+
+  const containers = collectTypeFolders(
+    roots,
+    subsystem,
+    configPath,
+    new Set(),
+    SUBSYSTEM_ELIGIBLE_TYPES,
+    true,
+  );
+
+  const result: CompositionObjectEntry[] = [];
+  for (const c of containers) {
+    result.push(
+      ...collectObjectsForType(
+        roots,
+        configPath,
+        c.typeFolderId,
+        excludedIds,
+        SUBSYSTEM_ELIGIBLE_TYPES,
+        true,
+      ),
+    );
+  }
+
+  result.sort((a, b) => {
+    const typeCmp = a.type.localeCompare(b.type);
+    return typeCmp !== 0 ? typeCmp : a.displayName.localeCompare(b.displayName);
+  });
+
+  return result;
+}
+
 // ── suite ─────────────────────────────────────────────────────────────────────
 
 suite('compositionObjectCollector', () => {
@@ -88,7 +136,7 @@ suite('compositionObjectCollector', () => {
     const configPath = 'C:/cfg/main';
     const { root, subsystem } = makeTree(configPath);
 
-    const result = collectCompositionEligibleObjects([root], subsystem, configPath);
+    const result = collectAll([root], subsystem, configPath);
 
     const refs = result.map((e) => e.ref);
     assert.ok(refs.includes('Catalog.Items'), 'should include Catalog.Items');
@@ -101,7 +149,7 @@ suite('compositionObjectCollector', () => {
     const configPath = 'C:/cfg/main';
     const { root, subsystem } = makeTree(configPath);
 
-    const result = collectCompositionEligibleObjects([root], subsystem, configPath);
+    const result = collectAll([root], subsystem, configPath);
 
     // `Parent` is an ancestor of `Child` — must not appear
     const refs = result.map((e) => e.ref);
@@ -153,7 +201,7 @@ suite('compositionObjectCollector', () => {
     );
 
     // target's ancestors: Parent, GrandParent
-    const result = collectCompositionEligibleObjects([root], target, configPath);
+    const result = collectAll([root], target, configPath);
     const refs = result.map((e) => e.ref);
 
     // Child of Target must appear
@@ -165,11 +213,11 @@ suite('compositionObjectCollector', () => {
     const configPath = 'C:/cfg/main';
     const { root, subsystem } = makeTree(configPath);
 
-    const result = collectCompositionEligibleObjects([root], subsystem, configPath);
+    const result = collectAll([root], subsystem, configPath);
 
     const refs = result.map((e) => e.ref);
     // `Child` subsystem is the current subsystem — it is not in the ancestor set,
-    // so it SHOULD appear in the result (that is the real behaviour).
+    // so it SHOULD appear in the result.
     assert.ok(refs.includes('Subsystem.Child'), 'current subsystem should appear in result');
   });
 
@@ -191,7 +239,7 @@ suite('compositionObjectCollector', () => {
       `${configPath}/Subsystems/Alone.xml`,
     );
 
-    const result = collectCompositionEligibleObjects([emptyRoot], orphanSub, configPath);
+    const result = collectAll([emptyRoot], orphanSub, configPath);
     assert.deepStrictEqual(result, []);
   });
 
@@ -233,7 +281,7 @@ suite('compositionObjectCollector', () => {
     );
 
     // extSub belongs to extension (extPath ≠ mainPath → not main config)
-    const result = collectCompositionEligibleObjects([mainRoot, extRoot], extSub, extPath);
+    const result = collectAll([mainRoot, extRoot], extSub, extPath);
     const refs = result.map((e) => e.ref);
 
     assert.ok(refs.includes('Catalog.MainCat'), 'extension should see main config objects');
@@ -277,7 +325,7 @@ suite('compositionObjectCollector', () => {
     );
 
     // mainSub belongs to main config
-    const result = collectCompositionEligibleObjects([mainRoot, extRoot], mainSub, mainPath);
+    const result = collectAll([mainRoot, extRoot], mainSub, mainPath);
     const refs = result.map((e) => e.ref);
 
     assert.ok(!refs.includes('Catalog.ExtCat'), 'main config must NOT see extension objects');

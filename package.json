@@ -216,6 +216,21 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.editExchangePlanContent",
+        "title": "Редактор состава плана обмена",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.editCommonAttributeContent",
+        "title": "Редактор состава общего реквизита",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.editFunctionalOptionContent",
+        "title": "Редактор состава функциональной опции",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
         "title": "CDT 41: Настройка ibcmd…",
         "category": "CDT 41"
@@ -771,6 +786,21 @@
           "command": "1c-metadata-tree.editSubsystemComposition",
           "when": "view == 1c-metadata-tree && viewItem =~ /Subsystem/",
           "group": "2_subsystem@0"
+        },
+        {
+          "command": "1c-metadata-tree.editExchangePlanContent",
+          "when": "view == 1c-metadata-tree && viewItem == 'ExchangePlan'",
+          "group": "2_composition@0"
+        },
+        {
+          "command": "1c-metadata-tree.editCommonAttributeContent",
+          "when": "view == 1c-metadata-tree && viewItem == 'CommonAttribute'",
+          "group": "2_composition@0"
+        },
+        {
+          "command": "1c-metadata-tree.editFunctionalOptionContent",
+          "when": "view == 1c-metadata-tree && viewItem == 'FunctionalOption'",
+          "group": "2_composition@0"
         },
         {
           "command": "1c-metadata-tree.clearSubsystemFilter",

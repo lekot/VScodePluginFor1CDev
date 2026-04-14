@@ -11,24 +11,22 @@ import type {
   CompositionTypeContainer,
   ObjectsLoadedPayload,
   AllObjectsLoadedPayload,
-} from './compositionTypes';
+  CompositionStrategy,
+  ContentUpdateDiff,
+} from './compositionContracts';
 import {
   collectTypeFolders,
   collectObjectsForType,
   buildOrphanEntries,
 } from './compositionObjectCollector';
-import {
-  readSubsystemCompositionRefsFromFile,
-  applySubsystemCompositionFileUpdate,
-} from '../services/subsystemCompositionFileUpdater';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 
-export class SubsystemCompositionEditorProvider implements vscode.Disposable {
-  private static readonly VALID_COMMANDS = new Set(['toggle', 'save', 'cancel', 'selectAll', 'deselectAll', 'expand', 'expandAll']);
+export class CompositionEditorProvider implements vscode.Disposable {
+  private static readonly VALID_COMMANDS = new Set(['toggle', 'save', 'cancel', 'selectAll', 'deselectAll', 'expand', 'expandAll', 'settingChange']);
 
   private panel: vscode.WebviewPanel | undefined;
-  private subsystemFilePath: string | undefined;
+  private contentFilePath: string | undefined;
   private configPath: string | null = null;
   private initialChecked = new Set<string>();
   private currentChecked = new Set<string>();
@@ -36,8 +34,11 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
   private loadedObjects = new Map<string, CompositionObjectEntry[]>();
   private containers: CompositionTypeContainer[] = [];
   private treeProvider: MetadataTreeDataProvider | undefined;
-  private subsystemNode: TreeNode | undefined;
+  private node: TreeNode | undefined;
   private loadingTypes = new Set<string>();
+  private excludedNodeIds = new Set<string>();
+  private initialItemSettings = new Map<string, Record<string, string>>();
+  private currentItemSettings = new Map<string, Record<string, string>>();
   private disposables: vscode.Disposable[] = [];
 
   constructor(
@@ -45,36 +46,37 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
     private readonly deps: {
       loadMetadataTree: () => Promise<void>;
       invalidateTreeCacheOnly: (configPath: string) => Promise<void>;
-    }
+    },
+    private readonly strategy: CompositionStrategy
   ) {}
 
   /**
-   * Resolve path to subsystemCompositionWebview.html.
+   * Resolve path to compositionWebview.html.
    * Primary: next to the compiled JS (__dirname).
    * Fallback: extensionPath-based path for VSIX production layout.
    */
   private resolveWebviewHtmlPath(): string {
-    const primary = path.join(__dirname, 'subsystemCompositionWebview.html');
+    const primary = path.join(__dirname, 'compositionWebview.html');
     if (fs.existsSync(primary)) {
       return primary;
     }
     const fallback = path.join(
       this.context.extensionPath,
       'dist',
-      'subsystemCompositionEditor',
-      'subsystemCompositionWebview.html'
+      'compositionEditor',
+      'compositionWebview.html'
     );
     if (fs.existsSync(fallback)) {
       return fallback;
     }
-    Logger.warn(`subsystemCompositionWebview.html not found; falling back to ${primary}`);
+    Logger.warn(`compositionWebview.html not found; falling back to ${primary}`);
     return primary;
   }
 
   private isValidMessage(msg: unknown): msg is CompositionWebviewMessage {
     if (!msg || typeof msg !== 'object') { return false; }
     const m = msg as Record<string, unknown>;
-    if (typeof m.command !== 'string' || !SubsystemCompositionEditorProvider.VALID_COMMANDS.has(m.command)) { return false; }
+    if (typeof m.command !== 'string' || !CompositionEditorProvider.VALID_COMMANDS.has(m.command)) { return false; }
     if (m.command === 'toggle') {
       const data = m.data as Record<string, unknown> | undefined;
       return !!data && typeof data.ref === 'string' && typeof data.checked === 'boolean';
@@ -87,51 +89,65 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       const data = m.data as Record<string, unknown> | undefined;
       return !!data && typeof data.typeFolderId === 'string';
     }
+    if (m.command === 'settingChange') {
+      const data = m.data as Record<string, unknown> | undefined;
+      return !!data && typeof data.ref === 'string' && typeof data.key === 'string' && typeof data.value === 'string';
+    }
     return true; // save, cancel, expandAll have no data
   }
 
   /**
-   * Open the subsystem composition editor for a given subsystem node.
+   * Open the composition editor for a given node.
    */
   public async show(
-    subsystemNode: TreeNode,
+    node: TreeNode,
     treeProvider: MetadataTreeDataProvider,
     configPath: string | null
   ): Promise<void> {
-    if (!subsystemNode.filePath) {
-      void vscode.window.showErrorMessage('Не удалось открыть редактор: путь к файлу подсистемы не найден.');
+    const contentFilePath = this.strategy.getContentFilePath(node);
+    if (!contentFilePath) {
+      void vscode.window.showErrorMessage('Не удалось открыть редактор: путь к файлу не найден.');
       return;
     }
 
     try {
-      const currentRefs = await readSubsystemCompositionRefsFromFile(subsystemNode.filePath);
+      const { refs: currentRefs, itemSettings } = await this.strategy.readContent(contentFilePath);
       const checkedSet = new Set(currentRefs);
+
+      const excludedNodeIds = this.strategy.getExcludedNodeIds?.(node, treeProvider.getRootNodes()) ?? new Set<string>();
 
       // Lazy: collect type-folder containers without loading their children
       const containers: CompositionTypeContainer[] = collectTypeFolders(
         treeProvider.getRootNodes(),
-        subsystemNode,
+        node,
         configPath,
         checkedSet,
+        this.strategy.eligibleTypes,
+        this.strategy.showNestedSubsystems,
       );
 
-      this.subsystemFilePath = subsystemNode.filePath;
+      this.contentFilePath = contentFilePath;
       this.configPath = configPath;
       this.treeProvider = treeProvider;
-      this.subsystemNode = subsystemNode;
+      this.node = node;
       this.containers = containers;
       this.loadedObjects.clear();
       this.loadingTypes.clear();
+      this.excludedNodeIds = excludedNodeIds;
       this.initialChecked = new Set(currentRefs);
       this.currentChecked = new Set(currentRefs);
+      this.initialItemSettings = new Map(itemSettings);
+      this.currentItemSettings = new Map(
+        [...itemSettings.entries()].map(([k, v]) => [k, { ...v }])
+      );
 
       if (this.panel) {
         this.panel.reveal(vscode.ViewColumn.Beside);
-        this.panel.title = `Состав: ${subsystemNode.name}`;
+        this.panel.title = `${this.strategy.titlePrefix}: ${node.name}`;
       } else {
         this.panel = vscode.window.createWebviewPanel(
-          '1c-subsystem-composition',
-          `Состав: ${subsystemNode.name}`,
+          this.strategy.panelTypeId,
+          `${this.strategy.titlePrefix}: ${node.name}`,
           vscode.ViewColumn.Beside,
           {
             enableScripts: true,
@@ -143,7 +159,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
         this.panel.onDidDispose(
           () => {
             this.panel = undefined;
-            this.subsystemFilePath = undefined;
+            this.contentFilePath = undefined;
             this.configPath = null;
             this.initialChecked.clear();
             this.currentChecked.clear();
@@ -152,7 +168,10 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
             this.loadingTypes.clear();
             this.containers = [];
             this.treeProvider = undefined;
-            this.subsystemNode = undefined;
+            this.node = undefined;
+            this.excludedNodeIds.clear();
+            this.initialItemSettings.clear();
+            this.currentItemSettings.clear();
           },
           null,
           this.disposables
@@ -169,9 +188,12 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       }
 
       const payload: CompositionInitPayload = {
-        subsystemName: subsystemNode.name,
+        titlePrefix: this.strategy.titlePrefix,
+        entityName: node.name,
         containers,
         checkedRefs: currentRefs,
+        itemSettingsSchema: this.strategy.itemSettingsSchema,
+        itemSettings: Object.fromEntries(itemSettings),
       };
 
       const htmlPath = this.resolveWebviewHtmlPath();
@@ -184,7 +206,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
 
       this.panel.webview.html = html;
     } catch (err) {
-      Logger.error('Failed to open subsystem composition editor', err);
+      Logger.error('Failed to open composition editor', err);
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`Ошибка открытия редактора состава: ${message}`);
     }
@@ -220,6 +242,9 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       case 'expandAll':
         void this.handleExpandAll();
         break;
+      case 'settingChange':
+        this.handleSettingChange(msg.data.ref, msg.data.key, msg.data.value);
+        break;
     }
   }
 
@@ -229,6 +254,15 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
     } else {
       this.currentChecked.delete(ref);
     }
+  }
+
+  private handleSettingChange(ref: string, key: string, value: string): void {
+    let settings = this.currentItemSettings.get(ref);
+    if (!settings) {
+      settings = {};
+      this.currentItemSettings.set(ref, settings);
+    }
+    settings[key] = value;
   }
 
   private async handleExpand(typeFolderId: string): Promise<void> {
@@ -246,7 +280,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
     this.loadingTypes.add(typeFolderId);
 
     try {
-      if (!this.treeProvider || !this.subsystemNode) { return; }
+      if (!this.treeProvider || !this.node) { return; }
 
       // Find typeFolder in the tree and lazy-load children if needed
       const roots = this.treeProvider.getRootNodes();
@@ -263,9 +297,11 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
 
       const objects = collectObjectsForType(
         roots,
-        this.subsystemNode,
         this.configPath,
         typeFolderId,
+        this.excludedNodeIds,
+        this.strategy.eligibleTypes,
+        this.strategy.showNestedSubsystems,
       );
 
       const container = this.containers.find(c => c.typeFolderId === typeFolderId);
@@ -284,7 +320,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
   }
 
   private async handleExpandAll(): Promise<void> {
-    if (!this.treeProvider || !this.subsystemNode) { return; }
+    if (!this.treeProvider || !this.node) { return; }
 
     const roots = this.treeProvider.getRootNodes();
     const result: Record<string, CompositionObjectEntry[]> = {};
@@ -308,9 +344,11 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
           }
           const objects = collectObjectsForType(
             roots,
-            this.subsystemNode,
             this.configPath,
             typeFolder.id,
+            this.excludedNodeIds,
+            this.strategy.eligibleTypes,
+            this.strategy.showNestedSubsystems,
           );
           const container = this.containers.find(c => c.typeFolderId === typeFolder.id);
           const orphans = container
@@ -331,7 +369,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
   }
 
   private async handleSave(): Promise<void> {
-    if (this.saveInProgress || !this.subsystemFilePath) {
+    if (this.saveInProgress || !this.contentFilePath) {
       return;
     }
     this.saveInProgress = true;
@@ -339,15 +377,30 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       const toAdd = [...this.currentChecked].filter(r => !this.initialChecked.has(r));
       const toRemove = [...this.initialChecked].filter(r => !this.currentChecked.has(r));
 
-      if (toAdd.length === 0 && toRemove.length === 0) {
+      const settingsChanged = new Map<string, Record<string, string>>();
+      for (const [ref, current] of this.currentItemSettings) {
+        const initial = this.initialItemSettings.get(ref);
+        if (!initial) { continue; }
+        const changed: Record<string, string> = {};
+        let hasChange = false;
+        for (const [k, v] of Object.entries(current)) {
+          if (initial[k] !== v) { changed[k] = v; hasChange = true; }
+        }
+        if (hasChange) { settingsChanged.set(ref, changed); }
+      }
+
+      if (toAdd.length === 0 && toRemove.length === 0 && settingsChanged.size === 0) {
         this.panel?.dispose();
         return;
       }
 
-      const result = await applySubsystemCompositionFileUpdate(this.subsystemFilePath, {
+      const diff: ContentUpdateDiff = {
         add: toAdd,
         remove: toRemove,
-      });
+        settingsChanged,
+      };
+
+      const result = await this.strategy.applyUpdate(this.contentFilePath, diff);
 
       if (result.rejected.length > 0) {
         const msg = result.rejected.map(r => `${r.ref} (${r.reason})`).join('; ');
@@ -363,7 +416,7 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
       this.postMessage({ command: 'saveSuccess' });
       this.panel?.dispose();
     } catch (err) {
-      Logger.error('Failed to save subsystem composition', err);
+      Logger.error('Failed to save composition', err);
       this.postMessage({
         command: 'saveError',
         data: { message: `Ошибка сохранения: ${err instanceof Error ? err.message : String(err)}` },
@@ -378,12 +431,22 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
   }
 
   /**
-   * Returns the number of unsaved changes (added + removed refs).
+   * Returns the number of unsaved changes (added + removed refs + changed settings).
    */
   getDirtyCount(): number {
     const added = [...this.currentChecked].filter(r => !this.initialChecked.has(r)).length;
     const removed = [...this.initialChecked].filter(r => !this.currentChecked.has(r)).length;
-    return added + removed;
+
+    let settingsChangedCount = 0;
+    for (const [ref, current] of this.currentItemSettings) {
+      const initial = this.initialItemSettings.get(ref);
+      if (!initial) { continue; }
+      for (const [k, v] of Object.entries(current)) {
+        if (initial[k] !== v) { settingsChangedCount++; break; }
+      }
+    }
+
+    return added + removed + settingsChangedCount;
   }
 
   dispose(): void {
@@ -395,7 +458,10 @@ export class SubsystemCompositionEditorProvider implements vscode.Disposable {
     this.loadingTypes.clear();
     this.containers = [];
     this.treeProvider = undefined;
-    this.subsystemNode = undefined;
+    this.node = undefined;
+    this.excludedNodeIds.clear();
+    this.initialItemSettings.clear();
+    this.currentItemSettings.clear();
     for (const d of this.disposables) {
       d.dispose();
     }
