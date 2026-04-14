@@ -506,7 +506,7 @@ export class DeployService {
       return s;
     }
 
-    const relativeFiles = collectFilesForSelection(params.selectedNodes, configRoot);
+    let relativeFiles = collectFilesForSelection(params.selectedNodes, configRoot);
     if (relativeFiles.length === 0) {
       const s = summarizeDeployRun(
         [{ infobaseId: '', name: '', status: 'error', message: 'Не найдено файлов для выбранных объектов.' }],
@@ -514,6 +514,26 @@ export class DeployService {
       );
       appendDeployRunSummaryLine(s);
       return s;
+    }
+
+    // If selected files include XML descriptors (structural changes like attributes, forms, etc.),
+    // ask the user whether to include Configuration.xml for full structure sync.
+    const hasStructuralFiles = relativeFiles.some((f) => f.endsWith('.xml'));
+    if (hasStructuralFiles) {
+      const choice = await vscode.window.showWarningMessage(
+        'Раскатка включает XML-дескрипторы объектов (структурные изменения). ' +
+          'Включить Configuration.xml для полной синхронизации структуры?',
+        'Включить',
+        'Пропустить',
+      );
+      if (choice === undefined) {
+        // Dialog closed — user cancelled
+        const s = summarizeDeployRun([], false);
+        return s;
+      }
+      if (choice === 'Включить') {
+        relativeFiles = ['Configuration.xml', ...relativeFiles];
+      }
     }
 
     appendIbcmdOutputLine(`[раскатка выбранных] Найдено файлов: ${relativeFiles.length}`);
