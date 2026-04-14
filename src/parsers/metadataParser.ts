@@ -9,11 +9,25 @@ import {
 } from '../utils/treeNormalization';
 
 const R6_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
+/** Types with R6 placeholder children (Forms, Attributes, etc.) — must match treeNormalization.ts R6_OBJECT_TYPES. */
 const R6_OBJECT_TYPES = new Set<MetadataType>([
   MetadataType.Catalog,
   MetadataType.Document,
   MetadataType.DataProcessor,
+  MetadataType.Report,
+  MetadataType.BusinessProcess,
+  MetadataType.Task,
+  MetadataType.ExchangePlan,
   MetadataType.ChartOfCharacteristicTypes,
+  MetadataType.ChartOfCalculationTypes,
+  MetadataType.InformationRegister,
+  MetadataType.AccumulationRegister,
+  MetadataType.AccountingRegister,
+  MetadataType.CalculationRegister,
+  MetadataType.ChartOfAccounts,
+  MetadataType.FilterCriterion,
+  MetadataType.DocumentJournal,
+  MetadataType.SettingsStorage,
 ]);
 
 /**

@@ -277,17 +277,61 @@ function fixR6PlaceholderFilePaths(instanceNode: TreeNode, ctx: NormalizeContext
   }
 }
 
-const R6_OBJECT_TYPES: ReadonlySet<MetadataType> = new Set([
-  MetadataType.Catalog,
-  MetadataType.Document,
-  MetadataType.DataProcessor,
-  MetadataType.ChartOfCharacteristicTypes,
+/**
+ * Map: metadata type → which R6 placeholder child IDs it supports.
+ * Source: 1C platform spec (1c-config-objects-spec.md) + real ERP fixtures (FormatSamples/uh).
+ *
+ * Full set (Attribute, TabularSection, Form, Command, Template):
+ *   Catalog, Document, DataProcessor, Report, BusinessProcess, Task,
+ *   ExchangePlan, ChartOfCharacteristicTypes, ChartOfCalculationTypes
+ *
+ * Subset — registers have Dimension/Resource instead of Attribute/TabularSection:
+ *   InformationRegister: Form, Command, Template
+ *   AccumulationRegister, AccountingRegister, CalculationRegister: Form, Template
+ *
+ * Form + Command only:
+ *   FilterCriterion, DocumentJournal, ChartOfAccounts
+ *
+ * Form only:
+ *   SettingsStorage
+ *
+ * None (own child structure: EnumValue, URLTemplate, Operation, etc.):
+ *   Enum, HTTPService, WebService, IntegrationService, ExternalDataSource
+ */
+const ALL_R6: string[] = ['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates'];
+const FORMS_COMMANDS_TEMPLATES: string[] = ['Forms', 'Commands', 'Templates'];
+const FORMS_COMMANDS: string[] = ['Forms', 'Commands'];
+const FORMS_ONLY: string[] = ['Forms'];
+
+const R6_ALLOWED_CHILDREN = new Map<MetadataType, string[]>([
+  [MetadataType.Catalog, ALL_R6],
+  [MetadataType.Document, ALL_R6],
+  [MetadataType.DataProcessor, ALL_R6],
+  [MetadataType.Report, ALL_R6],
+  [MetadataType.BusinessProcess, ALL_R6],
+  [MetadataType.Task, ALL_R6],
+  [MetadataType.ExchangePlan, ALL_R6],
+  [MetadataType.ChartOfCharacteristicTypes, ALL_R6],
+  [MetadataType.ChartOfCalculationTypes, ALL_R6],
+  [MetadataType.InformationRegister, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.AccumulationRegister, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.AccountingRegister, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.CalculationRegister, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.ChartOfAccounts, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.FilterCriterion, FORMS_COMMANDS],
+  [MetadataType.DocumentJournal, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.SettingsStorage, FORMS_ONLY],
 ]);
 
+const R6_OBJECT_TYPES: ReadonlySet<MetadataType> = new Set(R6_ALLOWED_CHILDREN.keys());
+const R6_ALLOWED_SETS = new Map<MetadataType, ReadonlySet<string>>(
+  [...R6_ALLOWED_CHILDREN.entries()].map(([k, v]) => [k, new Set(v)])
+);
+
 /**
- * Ensures that an object instance node (Catalog, Document, DataProcessor, ChartOfCharacteristicTypes)
- * has R6 placeholder children (Attributes, TabularSections, Forms, Commands, Templates).
- * Used when returning children in the tree provider so placeholders appear after lazy-loaded instances.
+ * Ensures that an object instance node has R6 placeholder children appropriate for its type.
+ * Which placeholders are added is governed by R6_ALLOWED_CHILDREN (e.g. Catalog gets all 5,
+ * InformationRegister gets Forms+Commands+Templates, SettingsStorage gets Forms only).
  */
 export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: NormalizeContext): void {
   if (!node || !R6_OBJECT_TYPES.has(node.type)) {
@@ -299,14 +343,16 @@ export function ensureR6PlaceholdersForInstanceNode(node: TreeNode, ctx: Normali
   if (node.parent && node.parent.type === MetadataType.Configuration) {
     return;
   }
+  const allowedSet = R6_ALLOWED_SETS.get(node.type)!;
+  const applicableDefs = R6_OBJECT_CHILDREN.filter((def) => allowedSet.has(def.id));
   ensureChildrenArray(node);
-  for (const def of R6_OBJECT_CHILDREN) {
+  for (const def of applicableDefs) {
     upsertChildNode(node, def, ctx);
   }
-  reorderChildrenByIds(node, R6_OBJECT_CHILDREN.map((x) => x.id));
+  reorderChildrenByIds(node, applicableDefs.map((x) => x.id));
   fixR6PlaceholderFilePaths(node, ctx);
   // Mark R6 placeholders as lazy so the provider calls loadElementChildren on expand.
-  for (const def of R6_OBJECT_CHILDREN) {
+  for (const def of applicableDefs) {
     const child = node.children!.find((c) => c.id === def.id);
     if (child) {
       (child.properties as Record<string, unknown>)._lazy = true;
@@ -460,33 +506,30 @@ export function normalizeEmptyPlaceholderTree(rootNode: TreeNode, ctx: Normalize
 
   normalizeTabularSectionColumnPlaceholders(rootNode);
 
-  // Process only the four R6 object type folders to add placeholders to their instance nodes
-  const r6TypeFolders = R4_TOP_LEVEL_ORDER.filter(def => 
-    def.type === MetadataType.Catalog ||
-    def.type === MetadataType.Document ||
-    def.type === MetadataType.DataProcessor ||
-    def.type === MetadataType.ChartOfCharacteristicTypes
-  );
+  // Process R6 object type folders to add placeholders to their instance nodes.
+  // Collect all type folder nodes (R4 top-level + R5 under «Общие») whose type is in R6_OBJECT_TYPES.
+  const allTypeFolderNodes: TreeNode[] = [];
+  const commonNode = rootNode.children?.find((c) => c.id === 'Common');
+  for (const searchRoot of [rootNode, commonNode]) {
+    if (!searchRoot?.children) { continue; }
+    for (const child of searchRoot.children) {
+      if (R6_OBJECT_TYPES.has(child.type)) {
+        allTypeFolderNodes.push(child);
+      }
+    }
+  }
 
   // Process instance nodes under R6 type folders and add R6 placeholders to each instance.
   // This ensures placeholders like 'Реквизиты', 'Табличные части' etc. appear only under
   // concrete object instances (e.g., Document11, Документ12), not in the type folders themselves.
-  for (const typeDef of r6TypeFolders) {
-    const typeFolderNode = rootNode.children?.find((c) => c.id === typeDef.id);
-    if (!typeFolderNode) {
-      continue;
-    }
-
-    // Process only the instance nodes (children of the type folder), not the folder itself
+  for (const typeFolderNode of allTypeFolderNodes) {
     ensureChildrenArray(typeFolderNode);
-    
+
     for (const instanceNode of typeFolderNode.children ?? []) {
-      // Skip if this is not a real R6 object instance (has wrong type)
       if (!R6_OBJECT_TYPES.has(instanceNode.type)) {
         continue;
       }
       ensureChildrenArray(instanceNode);
-      // Same as provider path: placeholders + корректные filePath рядом с Object.xml (Forms/, Attributes/, …)
       ensureR6PlaceholdersForInstanceNode(instanceNode, ctx);
     }
   }
