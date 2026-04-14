@@ -14,6 +14,66 @@ function isValidUtf8Buffer(buf: Buffer): boolean {
 }
 
 /**
+ * Heuristic check: returns true if the buffer looks like valid UTF-8.
+ * Trailing incomplete multi-byte sequences (chunk boundary) are tolerated and not counted as errors.
+ * Exported for unit testing.
+ */
+export function isLikelyUtf8(buf: Buffer): boolean {
+  let i = 0;
+  let invalidCount = 0;
+
+  while (i < buf.length) {
+    const b = buf[i];
+
+    if (b <= 0x7f) {
+      // ASCII single byte — always valid
+      i++;
+      continue;
+    }
+
+    // Determine expected continuation bytes
+    let seqLen: number;
+    if (b >= 0xc2 && b <= 0xdf) {
+      seqLen = 2;
+    } else if (b >= 0xe0 && b <= 0xef) {
+      seqLen = 3;
+    } else if (b >= 0xf0 && b <= 0xf4) {
+      seqLen = 4;
+    } else {
+      // 0x80-0xBF without a lead, 0xC0-0xC1 (overlong), 0xF5+ — invalid
+      invalidCount++;
+      i++;
+      continue;
+    }
+
+    const remaining = buf.length - i;
+    if (remaining < seqLen) {
+      // Trailing incomplete sequence at chunk boundary — tolerate, stop here
+      break;
+    }
+
+    // Validate continuation bytes
+    let valid = true;
+    for (let k = 1; k < seqLen; k++) {
+      const cb = buf[i + k];
+      if (cb < 0x80 || cb > 0xbf) {
+        valid = false;
+        break;
+      }
+    }
+
+    if (valid) {
+      i += seqLen;
+    } else {
+      invalidCount++;
+      i++;
+    }
+  }
+
+  return invalidCount === 0;
+}
+
+/**
  * Full-buffer heuristic: prefer UTF-8 when the byte sequence is valid UTF-8; on Windows otherwise use CP866 (typical console).
  */
 export function decodeConsoleStreamAuto(raw: Buffer): string {
@@ -71,8 +131,14 @@ export interface IbcmdStreamChunkDecoders {
 /**
  * Per-chunk decoding for spawn streams. CP866 / windows-1251 are single-byte; UTF-8 uses TextDecoder `{ stream: true }` per stream.
  *
- * `auto` uses **UTF-8 streaming** on all platforms: piped ibcmd often emits UTF-8 `[INFO] …` lines; decoding those chunks as CP866
- * produced mojibake in the Output channel. For legacy OEM-only ibcmd, set `oem866` (or `windows1251`) in settings.
+ * `auto` mode detects encoding on the first chunk containing non-ASCII bytes (≥ 0x80).
+ * If that chunk is valid UTF-8, all subsequent chunks are decoded as UTF-8 streaming.
+ * Otherwise the fallback encoding is CP1251 on Windows or CP866 on other platforms.
+ * If no non-ASCII bytes appear before the stream ends, UTF-8 is used throughout.
+ *
+ * The encoding decision is shared between stdout and stderr: the first non-ASCII chunk
+ * from either stream determines the encoding for both.
+ *
  * `utf16le` uses UTF-16 LE streaming (e.g. some wide-character pipes / tools on Windows).
  */
 export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding): IbcmdStreamChunkDecoders {
@@ -101,7 +167,39 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
     };
   }
 
-  if (mode === 'utf8' || mode === 'auto') {
+  if (mode === 'auto') {
+    let decided = false;
+    let useUtf8 = true;
+    const utf8Out = new TextDecoder('utf-8', { fatal: false });
+    const utf8Err = new TextDecoder('utf-8', { fatal: false });
+    const fallbackEnc = process.platform === 'win32' ? 'cp1251' : 'cp866';
+
+    const decodeAuto = (chunk: Buffer, utf8Dec: InstanceType<typeof TextDecoder>): string => {
+      if (!decided) {
+        const hasHighBytes = chunk.some(b => b >= 0x80);
+        if (hasHighBytes) {
+          decided = true;
+          useUtf8 = isLikelyUtf8(chunk);
+          if (!useUtf8) {
+            return iconv.decode(chunk, fallbackEnc);
+          }
+        }
+      }
+      if (useUtf8) {
+        return utf8Dec.decode(chunk, { stream: true });
+      }
+      return iconv.decode(chunk, fallbackEnc);
+    };
+
+    return {
+      decodeStdout: (chunk: Buffer) => decodeAuto(chunk, utf8Out),
+      decodeStderr: (chunk: Buffer) => decodeAuto(chunk, utf8Err),
+      flushStdout: () => (useUtf8 ? utf8Out.decode() : ''),
+      flushStderr: () => (useUtf8 ? utf8Err.decode() : ''),
+    };
+  }
+
+  if (mode === 'utf8') {
     const dOut = new TextDecoder('utf-8', { fatal: false });
     const dErr = new TextDecoder('utf-8', { fatal: false });
     return {

@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет 30 команд для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
+Расширение CDT 41 для VS Code предоставляет 34 команды для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
 
 ## HTTP Bridge
 
@@ -302,6 +302,70 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 
 Требует предварительной привязки базы через UI («Привязать базы…»).
 
+#### `1c-metadata-tree.agent.deploySelectedObjects`
+
+Раскатка указанных файлов конфигурации в привязанные ИБ (ibcmd import files + apply).
+
+```json
+{
+  "configPath": "C:/reps/project/conf",
+  "files": ["Catalogs/Товары.xml", "Catalogs/Товары/Ext/ObjectModule.bsl"]
+}
+```
+
+- `configPath` — путь к каталогу конфигурации (необязательно)
+- `files` — массив относительных путей файлов от корня конфигурации (forward slashes, обязательно)
+
+Возвращает: `{ summary: { success, error, skipped }, results: [{ infobase, status, message }] }`.
+
+#### `1c-metadata-tree.agent.deployChangedFiles`
+
+Раскатка файлов, изменённых в git working tree. Автоматически определяет изменённые файлы конфигурации.
+
+```json
+{
+  "configPath": "C:/reps/project/conf"
+}
+```
+
+- `configPath` — путь к каталогу конфигурации (необязательно)
+
+Возвращает тот же формат.
+
+#### `1c-metadata-tree.agent.pullSelectedObjects`
+
+Выгрузка объектов из информационной базы в файлы конфигурации (ibcmd config export objects).
+
+```json
+{
+  "configPath": "C:/reps/project/conf",
+  "objectIds": ["Catalog.Товары", "CommonModule.ОбщийМодуль"],
+  "infobaseName": "МояБаза"
+}
+```
+
+- `configPath` — путь к каталогу конфигурации (необязательно)
+- `objectIds` — массив идентификаторов объектов в формате `Type.Name` (обязательно)
+- `infobaseName` — имя базы-источника, если привязано несколько (необязательно, по умолчанию — первая)
+
+Возвращает тот же формат.
+
+#### `1c-metadata-tree.agent.exportStatus`
+
+Статус конфигурации: сравнение файлов конфигурации с состоянием в ИБ (ibcmd config export status).
+
+```json
+{
+  "configPath": "C:/reps/project/conf"
+}
+```
+
+- `configPath` — путь к каталогу конфигурации (необязательно)
+
+Возвращает: `{ message: string }` — текстовый отчёт.
+
+Требует наличия `ConfigDumpInfo.xml` в каталоге конфигурации (создаётся при полной выгрузке).
+
 ---
 
 ### Отладка (14 команд)
@@ -488,7 +552,9 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 2. createObject({ type: 'Catalog', name: 'Товары' })  → создать справочник
 3. addAttribute({ path: 'Catalog.Товары', name: 'Артикул' })
 4. setProperties({ path: 'Catalog.Товары.Attribute.Артикул', properties: { Type: 'cfg:CatalogRef.Номенклатура' } })
-5. deploy({})                                     → раскатать в базу
+5a. deploy({})                                     → раскатать всю конфигурацию
+5b. deploySelectedObjects({ files: ['Catalogs/Товары.xml', ...] })  → или только изменённые файлы
+5c. deployChangedFiles({})                          → или автодетект из git
 6. getYaml({ path: 'Catalog.Товары' })            → проверить результат
 ```
 

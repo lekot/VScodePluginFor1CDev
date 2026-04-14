@@ -4,7 +4,34 @@ import {
   createIbcmdStreamChunkDecoders,
   decodeConsoleStream,
   decodeConsoleStreamAuto,
+  isLikelyUtf8,
 } from '../../src/services/ibcmd/consoleStreamDecoder';
+
+suite('consoleStreamDecoder isLikelyUtf8', () => {
+  test('ASCII-only buffer returns true', () => {
+    assert.strictEqual(isLikelyUtf8(Buffer.from('hello world', 'ascii')), true);
+  });
+
+  test('valid UTF-8 Cyrillic returns true', () => {
+    assert.strictEqual(isLikelyUtf8(Buffer.from('Справочник', 'utf8')), true);
+  });
+
+  test('CP1251 Cyrillic returns false', () => {
+    const raw = iconv.encode('Справочник', 'cp1251');
+    assert.strictEqual(isLikelyUtf8(raw), false);
+  });
+
+  test('trailing incomplete UTF-8 sequence returns true', () => {
+    // 'Справочник' in UTF-8, truncate last byte (mid-character)
+    const full = Buffer.from('Справочник', 'utf8');
+    const truncated = full.subarray(0, full.length - 1);
+    assert.strictEqual(isLikelyUtf8(truncated), true);
+  });
+
+  test('empty buffer returns true', () => {
+    assert.strictEqual(isLikelyUtf8(Buffer.alloc(0)), true);
+  });
+});
 
 suite('consoleStreamDecoder decodeConsoleStream', () => {
   test('utf8 mode decodes UTF-8 bytes', () => {
@@ -100,10 +127,28 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     assert.strictEqual(win.decodeStderr(b2), 'Y');
   });
 
-  test('auto uses UTF-8 streaming decoder (all platforms)', () => {
+  test('auto: UTF-8 Cyrillic chunk decoded correctly', () => {
     const dec = createIbcmdStreamChunkDecoders('auto');
     const buf = Buffer.from('Импорт конфигурации из XML', 'utf8');
     assert.strictEqual(dec.decodeStdout(buf), 'Импорт конфигурации из XML');
+  });
+
+  test('auto: CP1251 chunk decoded correctly on Windows', () => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const dec = createIbcmdStreamChunkDecoders('auto');
+    const raw = iconv.encode('Справочник', 'cp1251');
+    assert.strictEqual(dec.decodeStdout(raw), 'Справочник');
+  });
+
+  test('auto: ASCII-only chunks defer decision and decode as UTF-8', () => {
+    const dec = createIbcmdStreamChunkDecoders('auto');
+    const ascii = Buffer.from('hello world', 'ascii');
+    assert.strictEqual(dec.decodeStdout(ascii), 'hello world');
+    // After ASCII chunks, UTF-8 should still work
+    const utf8chunk = Buffer.from('Тест', 'utf8');
+    assert.strictEqual(dec.decodeStdout(utf8chunk), 'Тест');
   });
 
   test('oem866 on Windows decodes CP866 chunks', () => {
