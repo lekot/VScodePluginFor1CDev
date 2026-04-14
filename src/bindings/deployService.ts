@@ -506,7 +506,7 @@ export class DeployService {
       return s;
     }
 
-    let relativeFiles = collectFilesForSelection(params.selectedNodes, configRoot);
+    const relativeFiles = collectFilesForSelection(params.selectedNodes, configRoot);
     if (relativeFiles.length === 0) {
       const s = summarizeDeployRun(
         [{ infobaseId: '', name: '', status: 'error', message: 'Не найдено файлов для выбранных объектов.' }],
@@ -516,25 +516,7 @@ export class DeployService {
       return s;
     }
 
-    // If selected files include XML descriptors (structural changes like attributes, forms, etc.),
-    // ask the user whether to include Configuration.xml for full structure sync.
     const hasStructuralFiles = relativeFiles.some((f) => f.endsWith('.xml'));
-    if (hasStructuralFiles) {
-      const choice = await vscode.window.showWarningMessage(
-        'Раскатка включает XML-дескрипторы объектов (структурные изменения). ' +
-          'Включить Configuration.xml для полной синхронизации структуры?',
-        'Включить',
-        'Пропустить',
-      );
-      if (choice === undefined) {
-        // Dialog closed — user cancelled
-        const s = summarizeDeployRun([], false);
-        return s;
-      }
-      if (choice === 'Включить') {
-        relativeFiles = ['Configuration.xml', ...relativeFiles];
-      }
-    }
 
     appendIbcmdOutputLine(`[раскатка выбранных] Найдено файлов: ${relativeFiles.length}`);
     for (const f of relativeFiles) {
@@ -566,7 +548,7 @@ export class DeployService {
       const entry = entries[i]!;
       params.progress.report({ message: `Раскатка выбранных: ${entry.name} (${i + 1}/${total})`, increment });
 
-      const interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+      let interpreted = await serializeInfobaseConfigIbcmdOp(() =>
         runInfobaseConfigIncrementalImport({
           storage: params.storage,
           entry,
@@ -577,6 +559,31 @@ export class DeployService {
           ibcmdExtensionName: params.binding.ibcmdExtensionName,
         }),
       );
+
+      // Fallback: if import failed and we have structural (.xml) files,
+      // offer to retry with Configuration.xml included.
+      if (interpreted.status === 'error' && hasStructuralFiles) {
+        const retry = await vscode.window.showWarningMessage(
+          `Раскатка в «${entry.name}» не удалась. Повторить с Configuration.xml? ` +
+            '(будут применены ВСЕ структурные изменения конфигурации)',
+          'Повторить с Configuration.xml',
+          'Пропустить',
+        );
+        if (retry === 'Повторить с Configuration.xml') {
+          appendIbcmdOutputLine(`[раскатка выбранных] Повтор с Configuration.xml...`);
+          interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+            runInfobaseConfigIncrementalImport({
+              storage: params.storage,
+              entry,
+              configRoot,
+              relativeFiles: ['Configuration.xml', ...relativeFiles],
+              token: params.token,
+              logContext: 'выбранные объекты + Configuration.xml',
+              ibcmdExtensionName: params.binding.ibcmdExtensionName,
+            }),
+          );
+        }
+      }
 
       if (interpreted.status === 'cancelled') {
         cancelledMidChain = true;
