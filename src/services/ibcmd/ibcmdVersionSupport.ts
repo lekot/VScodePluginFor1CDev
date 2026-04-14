@@ -148,30 +148,38 @@ export async function probeIncrementalSupport(
     };
 
     /**
-     * Проверяет поддержку подкоманды, запуская её без аргументов.
-     * ibcmd возвращает exit 2 (usage error) если команда распознана, но аргументы неверны.
-     * Любой числовой exit code означает, что команда существует;
-     * null/undefined (spawn error, signal kill) — не существует.
+     * Проверяет поддержку подкоманды, подавая фейковый --db-path.
+     *
+     * Без --db-path ibcmd ждёт интерактивного ввода и зависает (→ SIGTERM по таймауту).
+     * С --db-path=<несуществующий> ibcmd:
+     *   - для реальной подкоманды: возвращает числовой exit code (ошибка подключения)
+     *   - для несуществующей: зависает → killed + code=null
      */
     async function isSubcommandSupported(args: readonly string[]): Promise<boolean> {
       try {
         await execImpl(executablePath, args, execOpts);
-        return true; // exit 0 — command exists and succeeded
+        return true;
       } catch (e: unknown) {
         if (e && typeof e === 'object') {
-          const ex = e as { code?: number | null; status?: number | null };
-          const exitCode = ex.status ?? ex.code;
-          return exitCode !== null && exitCode !== undefined;
+          const ex = e as { code?: number | null; killed?: boolean };
+          // killed === true → ibcmd завис и убит по таймауту → подкоманда не существует
+          if (ex.killed) {
+            return false;
+          }
+          // числовой code (включая 4294967295) → ibcmd распознал подкоманду, но упал на подключении
+          return typeof ex.code === 'number';
         }
         return false;
       }
     }
 
+    const fakeDb = '--db-path=C:\\__ibcmd_probe_nonexistent__';
+
     const [importFiles, exportStatus, exportSync, exportObjects] = await Promise.all([
-      isSubcommandSupported(['infobase', 'config', 'import', 'files']),
-      isSubcommandSupported(['infobase', 'config', 'export', 'status']),
-      isSubcommandSupported(['infobase', 'config', 'export', 'sync']),
-      isSubcommandSupported(['infobase', 'config', 'export', 'objects']),
+      isSubcommandSupported(['infobase', 'config', 'import', 'files', fakeDb, '--base-dir=.', 'probe.xml']),
+      isSubcommandSupported(['infobase', 'config', 'export', 'status', fakeDb, '--base=.']),
+      isSubcommandSupported(['infobase', 'config', 'export', 'sync', fakeDb]),
+      isSubcommandSupported(['infobase', 'config', 'export', 'objects', fakeDb, '--out=.', 'Probe.Test']),
     ]);
 
     return { importFiles, exportStatus, exportSync, exportObjects };

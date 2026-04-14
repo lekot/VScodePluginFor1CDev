@@ -12,22 +12,26 @@ const FAKE_PATH = 'C:/fake/ibcmd.exe';
  * @param exitCode — numeric exit code means command is recognised (e.g. 2 = usage error).
  *                    `null` simulates a spawn/signal failure (command not found).
  */
-function makeExecWithExit(exitCode: number | null): IbcmdVersionExecFn {
+function makeExecWithExit(exitCode: number | 'killed'): IbcmdVersionExecFn {
   return async (_file, _args, _opts) => {
-    if (exitCode === null) {
-      // Simulate spawn failure: code is null (signal kill / ENOENT)
-      const err: Error & { code?: number | null; status?: number | null } = new Error('spawn error');
+    if (exitCode === 'killed') {
+      // Simulate timeout kill: ibcmd hung waiting for input → killed by Node timeout
+      const err: Error & { code?: number | null; killed?: boolean; stdout?: string; stderr?: string } =
+        new Error('killed by timeout');
       err.code = null;
-      err.status = null;
+      err.killed = true;
+      err.stdout = '';
+      err.stderr = '';
       throw err;
     }
     if (exitCode !== 0) {
-      const err: Error & { code?: number | null; status?: number | null; stdout?: string; stderr?: string } =
+      // Simulate ibcmd recognising the subcommand but failing (e.g. db not found)
+      const err: Error & { code?: number; killed?: boolean; stdout?: string; stderr?: string } =
         new Error(`exit ${exitCode}`);
-      err.status = exitCode;
       err.code = exitCode;
+      err.killed = false;
       err.stdout = '';
-      err.stderr = 'usage error';
+      err.stderr = 'db not found';
       throw err;
     }
     return { stdout: '', stderr: '' };
@@ -60,8 +64,9 @@ suite('ibcmdVersionSupport — incremental probe', () => {
   });
 
   // 1 ─────────────────────────────────────────────────────────────────────────
-  test('probeIncrementalSupport: exit code 2 (usage error) → all supported', async () => {
-    const exec = makeExecWithExit(2);
+  test('probeIncrementalSupport: numeric exit code (db not found) → all supported', async () => {
+    // ibcmd returns 4294967295 when subcommand is valid but db-path is wrong
+    const exec = makeExecWithExit(4294967295);
     const probe = await probeIncrementalSupport(FAKE_PATH, exec);
     assert.strictEqual(probe.importFiles, true);
     assert.strictEqual(probe.exportStatus, true);
@@ -78,8 +83,9 @@ suite('ibcmdVersionSupport — incremental probe', () => {
   });
 
   // 3 ─────────────────────────────────────────────────────────────────────────
-  test('probeIncrementalSupport: null exit (spawn error) → not supported', async () => {
-    const exec = makeExecWithExit(null);
+  test('probeIncrementalSupport: killed by timeout → not supported', async () => {
+    // ibcmd hangs waiting for input when subcommand is unknown → Node kills it
+    const exec = makeExecWithExit('killed');
     const probe = await probeIncrementalSupport(FAKE_PATH, exec);
     assert.strictEqual(probe.importFiles, false);
     assert.strictEqual(probe.exportStatus, false);
