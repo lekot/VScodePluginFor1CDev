@@ -380,6 +380,9 @@ export class TreeFilterService {
       [MetadataType.Recurrence]: 'Повторение',
       [MetadataType.Method]: 'Метод',
       [MetadataType.Parameter]: 'Параметр',
+      [MetadataType.EnumValue]: 'Значение перечисления',
+      [MetadataType.Dimension]: 'Измерение',
+      [MetadataType.Resource]: 'Ресурс',
       [MetadataType.Extension]: 'Расширение',
       [MetadataType.Unknown]: 'Неизвестный',
     };

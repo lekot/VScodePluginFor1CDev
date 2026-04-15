@@ -227,6 +227,8 @@ export function mergeR5TypeFoldersUnderCommon(rootNode: TreeNode, ctx: Normalize
 }
 
 const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
+  { id: 'Dimensions', name: 'Измерения', type: MetadataType.Dimension, typeDirName: 'Dimensions' },
+  { id: 'Resources', name: 'Ресурсы', type: MetadataType.Resource, typeDirName: 'Resources' },
   { id: 'Attributes', name: 'Реквизиты', type: MetadataType.Attribute, typeDirName: 'Attributes' },
   { id: 'TabularSections', name: 'Табличные части', type: MetadataType.TabularSection, typeDirName: 'TabularSections' },
   { id: 'Forms', name: 'Формы', type: MetadataType.Form, typeDirName: 'Forms' },
@@ -313,10 +315,10 @@ const R6_ALLOWED_CHILDREN = new Map<MetadataType, string[]>([
   [MetadataType.ExchangePlan, ALL_R6],
   [MetadataType.ChartOfCharacteristicTypes, ALL_R6],
   [MetadataType.ChartOfCalculationTypes, ALL_R6],
-  [MetadataType.InformationRegister, FORMS_COMMANDS_TEMPLATES],
-  [MetadataType.AccumulationRegister, FORMS_COMMANDS_TEMPLATES],
-  [MetadataType.AccountingRegister, FORMS_COMMANDS_TEMPLATES],
-  [MetadataType.CalculationRegister, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.InformationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
+  [MetadataType.AccumulationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
+  [MetadataType.AccountingRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
+  [MetadataType.CalculationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
   [MetadataType.ChartOfAccounts, FORMS_COMMANDS_TEMPLATES],
   [MetadataType.FilterCriterion, FORMS_COMMANDS],
   [MetadataType.DocumentJournal, FORMS_COMMANDS_TEMPLATES],

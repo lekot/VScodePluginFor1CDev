@@ -9,6 +9,9 @@ import {
   findChildObjects,
   extractAttributes,
   extractTabularSections,
+  extractEnumValues,
+  extractDimensions,
+  extractResources,
   flattenAttributeProperties,
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
@@ -196,6 +199,15 @@ export class EdtParser {
       await fs.promises.access(mdoPath);
       const mdoContent = await XmlParser.parseFileAsync(mdoPath);
       const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath);
+      if (fromMdo.enumValuesNode?.children?.length) {
+        children.push(fromMdo.enumValuesNode);
+      }
+      if (fromMdo.dimensionsNode?.children?.length) {
+        children.push(fromMdo.dimensionsNode);
+      }
+      if (fromMdo.resourcesNode?.children?.length) {
+        children.push(fromMdo.resourcesNode);
+      }
       if (fromMdo.attributesNode?.children?.length) {
         children.push(fromMdo.attributesNode);
       }
@@ -246,16 +258,23 @@ export class EdtParser {
   }
 
   /**
-   * Build Attributes and TabularSections tree nodes from parsed .mdo ChildObjects.
+   * Build Attributes, TabularSections, EnumValues, Dimensions, and Resources tree nodes from parsed .mdo ChildObjects.
    */
   private static buildAttributesAndTabularFromMdo(
     mdoContent: Record<string, unknown>,
     mdoPath: string
-  ): { attributesNode: TreeNode | null; tabularNode: TreeNode | null } {
+  ): {
+    attributesNode: TreeNode | null;
+    tabularNode: TreeNode | null;
+    enumValuesNode: TreeNode | null;
+    dimensionsNode: TreeNode | null;
+    resourcesNode: TreeNode | null;
+  } {
     const childObjects = findChildObjects(mdoContent);
     if (!childObjects) {
-      return { attributesNode: null, tabularNode: null };
+      return { attributesNode: null, tabularNode: null, enumValuesNode: null, dimensionsNode: null, resourcesNode: null };
     }
+    const co = childObjects as Record<string, unknown>;
 
     const attributesNode: TreeNode = {
       id: 'Attributes',
@@ -325,9 +344,93 @@ export class EdtParser {
       tabularNode.children!.push(tsNode);
     }
 
+    // EnumValues
+    const enumValuesList = extractEnumValues(co);
+    let enumValuesNode: TreeNode | null = null;
+    if (enumValuesList.length > 0) {
+      enumValuesNode = {
+        id: 'EnumValues',
+        name: 'Значения',
+        type: MetadataType.EnumValue,
+        properties: {},
+        children: [],
+        parentFilePath: mdoPath,
+      };
+      for (const ev of enumValuesList) {
+        const props = (ev as Record<string, unknown>).Properties ?? ev;
+        const name = (props as Record<string, unknown>)?.Name ?? (props as Record<string, unknown>)?.name ?? 'Unknown';
+        const evNode: TreeNode = {
+          id: `EnumValues.${String(name)}`,
+          name: String(name),
+          type: MetadataType.EnumValue,
+          properties: flattenAttributeProperties(ev),
+          parentFilePath: mdoPath,
+        };
+        evNode.parent = enumValuesNode;
+        enumValuesNode.children!.push(evNode);
+      }
+    }
+
+    // Dimensions
+    const dimensionsList = extractDimensions(co);
+    let dimensionsNode: TreeNode | null = null;
+    if (dimensionsList.length > 0) {
+      dimensionsNode = {
+        id: 'Dimensions',
+        name: 'Измерения',
+        type: MetadataType.Dimension,
+        properties: {},
+        children: [],
+        parentFilePath: mdoPath,
+      };
+      for (const dim of dimensionsList) {
+        const a = dim as Record<string, unknown>;
+        const dimName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? a.Name ?? 'Unknown';
+        const dimNode: TreeNode = {
+          id: `Dimensions.${String(dimName)}`,
+          name: String(dimName),
+          type: MetadataType.Dimension,
+          properties: flattenAttributeProperties(a),
+          parentFilePath: mdoPath,
+        };
+        dimNode.parent = dimensionsNode;
+        dimensionsNode.children!.push(dimNode);
+      }
+    }
+
+    // Resources
+    const resourcesList = extractResources(co);
+    let resourcesNode: TreeNode | null = null;
+    if (resourcesList.length > 0) {
+      resourcesNode = {
+        id: 'Resources',
+        name: 'Ресурсы',
+        type: MetadataType.Resource,
+        properties: {},
+        children: [],
+        parentFilePath: mdoPath,
+      };
+      for (const res of resourcesList) {
+        const a = res as Record<string, unknown>;
+        const resName = (a.Properties && (a.Properties as Record<string, unknown>).Name) ?? a.Name ?? 'Unknown';
+        const resNode: TreeNode = {
+          id: `Resources.${String(resName)}`,
+          name: String(resName),
+          type: MetadataType.Resource,
+          properties: flattenAttributeProperties(a),
+          parentFilePath: mdoPath,
+        };
+        resNode.parent = resourcesNode;
+        resourcesNode.children!.push(resNode);
+      }
+    }
+
     return {
       attributesNode: attributesNode.children!.length > 0 ? attributesNode : null,
       tabularNode: tabularNode.children!.length > 0 ? tabularNode : null,
+      enumValuesNode,
+      dimensionsNode,
+      resourcesNode,
     };
   }
 
@@ -502,6 +605,18 @@ export class EdtParser {
 
     if (mdoContent) {
       const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath);
+      if (fromMdo.enumValuesNode?.children?.length) {
+        fromMdo.enumValuesNode.parent = elementNode;
+        elementNode.children?.push(fromMdo.enumValuesNode);
+      }
+      if (fromMdo.dimensionsNode?.children?.length) {
+        fromMdo.dimensionsNode.parent = elementNode;
+        elementNode.children?.push(fromMdo.dimensionsNode);
+      }
+      if (fromMdo.resourcesNode?.children?.length) {
+        fromMdo.resourcesNode.parent = elementNode;
+        elementNode.children?.push(fromMdo.resourcesNode);
+      }
       if (fromMdo.attributesNode?.children?.length) {
         fromMdo.attributesNode.parent = elementNode;
         elementNode.children?.push(fromMdo.attributesNode);

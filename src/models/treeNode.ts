@@ -69,6 +69,11 @@ export interface TreeNodeProperties {
   Type?: unknown;
   /** Alternative XML key for the type definition (`v8:Type` namespace prefix). */
   'v8:Type'?: unknown;
+  /**
+   * Source type definition for EventSubscription (TypeDescription, like `Type`).
+   * Accessed via the type editor.
+   */
+  Source?: unknown;
   /** Ordered list of child subsystem names used to sort subsystem children (Designer format). */
   childSubsystemNames?: string[];
   /**
@@ -190,6 +195,9 @@ export enum MetadataType {
   Recurrence = 'Recurrence',
   Method = 'Method',
   Parameter = 'Parameter',
+  EnumValue = 'EnumValue',
+  Dimension = 'Dimension',
+  Resource = 'Resource',
 
   // Extensions
   Extension = 'Extension',

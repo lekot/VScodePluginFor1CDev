@@ -9,6 +9,9 @@ import {
   findChildObjects,
   extractAttributes,
   extractTabularSections,
+  extractEnumValues,
+  extractDimensions,
+  extractResources,
   extractChildSubsystems,
   flattenAttributeProperties,
 } from './xmlChildObjects';
@@ -953,6 +956,33 @@ export class DesignerParser {
     if (tabularNode && tabularNode.children && tabularNode.children.length > 0) {
       this.mergeTabularNode(parent, tabularNode);
     }
+
+    if (parent.type === MetadataType.Enum) {
+      const enumValuesNode = this.parseEnumValuesFromXML(xmlContent, parent.id, xmlPath);
+      if (enumValuesNode && enumValuesNode.children && enumValuesNode.children.length > 0) {
+        enumValuesNode.parent = parent;
+        parent.children!.push(enumValuesNode);
+      }
+    }
+
+    const registerTypes = [
+      MetadataType.InformationRegister,
+      MetadataType.AccumulationRegister,
+      MetadataType.AccountingRegister,
+      MetadataType.CalculationRegister,
+    ];
+    if (registerTypes.includes(parent.type)) {
+      const dimensionsNode = this.parseDimensionsFromXML(xmlContent, parent.id, xmlPath);
+      if (dimensionsNode && dimensionsNode.children && dimensionsNode.children.length > 0) {
+        dimensionsNode.parent = parent;
+        parent.children!.push(dimensionsNode);
+      }
+      const resourcesNode = this.parseResourcesFromXML(xmlContent, parent.id, xmlPath);
+      if (resourcesNode && resourcesNode.children && resourcesNode.children.length > 0) {
+        resourcesNode.parent = parent;
+        parent.children!.push(resourcesNode);
+      }
+    }
   }
 
   /**
@@ -1231,6 +1261,114 @@ export class DesignerParser {
     }
 
     return tabularNode;
+  }
+
+  /**
+   * Parse enum values from XML ChildObjects section.
+   */
+  private static parseEnumValuesFromXML(
+    xmlContent: Record<string, unknown>,
+    parentId: string,
+    xmlPath: string
+  ): TreeNode | null {
+    const childObjects = findChildObjects(xmlContent);
+    if (!childObjects) {return null;}
+    const enumValues = extractEnumValues(childObjects as Record<string, unknown>);
+    if (enumValues.length === 0) {return null;}
+
+    const containerId = `${parentId}.EnumValues`;
+    const container: TreeNode = {
+      id: containerId,
+      name: 'Значения',
+      type: MetadataType.EnumValue,
+      properties: {},
+      children: [],
+    };
+
+    for (const ev of enumValues) {
+      const props = (ev as Record<string, unknown>).Properties ?? ev;
+      const name = (props as Record<string, unknown>)?.Name ?? (props as Record<string, unknown>)?.name ?? 'Unknown';
+      const node: TreeNode = {
+        id: `${containerId}.${String(name)}`,
+        name: String(name),
+        type: MetadataType.EnumValue,
+        properties: flattenAttributeProperties(ev),
+        parentFilePath: xmlPath,
+      };
+      node.parent = container;
+      container.children!.push(node);
+    }
+    return container;
+  }
+
+  /**
+   * Parse dimensions from XML ChildObjects section (registers).
+   */
+  private static parseDimensionsFromXML(
+    xmlContent: Record<string, unknown>,
+    parentId: string,
+    xmlPath: string
+  ): TreeNode | null {
+    const childObjects = findChildObjects(xmlContent);
+    if (!childObjects) {return null;}
+    const dimensions = extractDimensions(childObjects as Record<string, unknown>);
+    if (dimensions.length === 0) {return null;}
+
+    const containerId = `${parentId}.Dimensions`;
+    const container: TreeNode = {
+      id: containerId,
+      name: 'Измерения',
+      type: MetadataType.Dimension,
+      properties: {},
+      children: [],
+    };
+
+    for (const dim of dimensions) {
+      const attrNode = this.buildAttributeNodeFromRaw(
+        dim as Record<string, unknown>,
+        containerId,
+        xmlPath
+      );
+      attrNode.type = MetadataType.Dimension;
+      attrNode.parent = container;
+      container.children!.push(attrNode);
+    }
+    return container;
+  }
+
+  /**
+   * Parse resources from XML ChildObjects section (registers).
+   */
+  private static parseResourcesFromXML(
+    xmlContent: Record<string, unknown>,
+    parentId: string,
+    xmlPath: string
+  ): TreeNode | null {
+    const childObjects = findChildObjects(xmlContent);
+    if (!childObjects) {return null;}
+    const resources = extractResources(childObjects as Record<string, unknown>);
+    if (resources.length === 0) {return null;}
+
+    const containerId = `${parentId}.Resources`;
+    const container: TreeNode = {
+      id: containerId,
+      name: 'Ресурсы',
+      type: MetadataType.Resource,
+      properties: {},
+      children: [],
+    };
+
+    for (const res of resources) {
+      const attrNode = this.buildAttributeNodeFromRaw(
+        res as Record<string, unknown>,
+        containerId,
+        xmlPath
+      );
+      attrNode.type = MetadataType.Resource;
+      attrNode.parent = container;
+      container.children!.push(attrNode);
+    }
+    return container;
   }
 
   /**

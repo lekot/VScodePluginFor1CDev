@@ -67,6 +67,9 @@ export function getIconForType(type: MetadataType): vscode.ThemeIcon {
     [MetadataType.Recurrence]: 'sync',
     [MetadataType.Method]: 'symbol-method',
     [MetadataType.Parameter]: 'symbol-parameter',
+    [MetadataType.EnumValue]: 'symbol-enum-member',
+    [MetadataType.Dimension]: 'symbol-ruler',
+    [MetadataType.Resource]: 'symbol-numeric',
 
     // Extensions
     [MetadataType.Extension]: 'extensions',
