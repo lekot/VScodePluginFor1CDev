@@ -290,8 +290,9 @@ export class AgentDeployOperations {
             const gitDeps: IncrementalChangeDetectorDeps = {
                 getGitRepository: () => {
                     if (!gitApi) { return undefined; }
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- vscode.git extension API is untyped
                     const repos: any[] = gitApi.repositories ?? [];
-                    return repos.find((r: any) => {
+                    return repos.find((r: { rootUri?: { fsPath?: string } }) => {
                         const rootPath: string = r?.rootUri?.fsPath ?? '';
                         const normalRoot = rootPath.replace(/\\/g, '/').toLowerCase();
                         const normalConfig = configRoot.replace(/\\/g, '/').toLowerCase();
