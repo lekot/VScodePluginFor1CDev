@@ -74,6 +74,9 @@ export function getIconForType(type: MetadataType): vscode.ThemeIcon {
     // Extensions
     [MetadataType.Extension]: 'extensions',
 
+    // Predefined data
+    [MetadataType.PredefinedItem]: 'symbol-constant',
+
     // Unknown
     [MetadataType.Unknown]: 'question',
   };

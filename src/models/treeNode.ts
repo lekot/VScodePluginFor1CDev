@@ -202,6 +202,9 @@ export enum MetadataType {
   // Extensions
   Extension = 'Extension',
 
+  // Predefined data
+  PredefinedItem = 'PredefinedItem',
+
   // Unknown
   Unknown = 'Unknown',
 }

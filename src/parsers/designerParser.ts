@@ -650,6 +650,9 @@ export class DesignerParser {
                 },
                 filePath: itemPath,
               };
+            } else if (stat.isFile() && item === 'Predefined.xml') {
+              // Parse predefined data items
+              return this.parsePredefinedData(itemPath, qp);
             }
           } catch (error) {
             Logger.debug(`Error processing extension ${itemPath}`, error);
@@ -698,6 +701,69 @@ export class DesignerParser {
     }
 
     return extNode;
+  }
+
+  /**
+   * Parse Predefined.xml and return a container node with predefined item children.
+   * Returns null (not a node) when the file has no items or cannot be parsed.
+   * @param filePath Absolute path to Predefined.xml
+   * @param qp Id prefix (e.g. "Catalogs.MyName.")
+   */
+  private static async parsePredefinedData(filePath: string, qp: string): Promise<TreeNode | null> {
+    try {
+      const parsed = await XmlParser.parseFileAsync(filePath);
+      if (!parsed) { return null; }
+
+      // Find PredefinedData root — may carry a namespace prefix
+      let predefinedData: Record<string, unknown> | null = null;
+      for (const [key, val] of Object.entries(parsed)) {
+        if (key === 'PredefinedData' || key.endsWith(':PredefinedData')) {
+          predefinedData = val as Record<string, unknown>;
+          break;
+        }
+      }
+      if (!predefinedData) { return null; }
+
+      const rawItems = predefinedData['Item'];
+      if (!rawItems) { return null; }
+      const items = Array.isArray(rawItems) ? rawItems : [rawItems];
+      if (items.length === 0) { return null; }
+
+      const containerId = `${qp}Ext.PredefinedData`;
+      const container: TreeNode = {
+        id: containerId,
+        name: 'Предопределённые',
+        type: MetadataType.PredefinedItem,
+        properties: {},
+        children: [],
+        filePath,
+      };
+
+      for (const item of items) {
+        if (!item || typeof item !== 'object') { continue; }
+        const obj = item as Record<string, unknown>;
+        const name = String(obj['Name'] ?? 'Unknown');
+        const isFolder = String(obj['IsFolder'] ?? 'false') === 'true';
+        const node: TreeNode = {
+          id: `${containerId}.${name}`,
+          name,
+          type: MetadataType.PredefinedItem,
+          properties: {
+            ...(obj['Code'] != null ? { code: String(obj['Code']) } : {}),
+            ...(obj['Description'] != null ? { description: String(obj['Description']) } : {}),
+            ...(isFolder ? { isFolder: true } : {}),
+          },
+          parentFilePath: filePath,
+          parent: container,
+        };
+        container.children!.push(node);
+      }
+
+      return container;
+    } catch (error) {
+      Logger.debug(`Error parsing predefined data from ${filePath}`, error);
+      return null;
+    }
   }
 
   /**

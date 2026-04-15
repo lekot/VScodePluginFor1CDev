@@ -384,6 +384,7 @@ export class TreeFilterService {
       [MetadataType.Dimension]: 'Измерение',
       [MetadataType.Resource]: 'Ресурс',
       [MetadataType.Extension]: 'Расширение',
+      [MetadataType.PredefinedItem]: 'Предопределённый элемент',
       [MetadataType.Unknown]: 'Неизвестный',
     };
     return FILTERABLE_METADATA_TYPES.map((type) => ({ type, label: labels[type] ?? type }));
