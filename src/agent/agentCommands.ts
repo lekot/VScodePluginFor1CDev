@@ -29,6 +29,8 @@ import type {
     DeleteObjectParams,
     RenameObjectParams,
     SetPropertiesParams,
+    GetTypeParams,
+    SetTypeParams,
 } from './types';
 import type {
     DebugStartParams,
@@ -512,6 +514,38 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.getType ─────────────────────────────────
+
+    const getTypeCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getType',
+        async (params: GetTypeParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new AgentOperations(configRoot);
+            return await ops.getType(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.setType ─────────────────────────────────
+
+    const setTypeCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setType',
+        async (params: SetTypeParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new AgentOperations(configRoot);
+            const result = await ops.setType(params);
+            if (result.success) {
+                getTreeDataProvider()?.refresh();
+            }
+            return result;
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -527,5 +561,6 @@ export function registerAgentCommands(
         deployCommand,
         deploySelectedObjectsCommand, deployChangedFilesCommand,
         pullSelectedObjectsCommand, exportStatusCommand,
+        getTypeCommand, setTypeCommand,
     );
 }

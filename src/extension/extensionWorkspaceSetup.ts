@@ -4,7 +4,11 @@ import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
 import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
-import { SubsystemCompositionEditorProvider } from '../subsystemCompositionEditor/subsystemCompositionEditorProvider';
+import { CompositionEditorProvider } from '../compositionEditor/compositionEditorProvider';
+import { SubsystemStrategy } from '../compositionEditor/strategies/subsystemStrategy';
+import { ExchangePlanStrategy } from '../compositionEditor/strategies/exchangePlanStrategy';
+import { CommonAttributeStrategy } from '../compositionEditor/strategies/commonAttributeStrategy';
+import { FunctionalOptionStrategy } from '../compositionEditor/strategies/functionalOptionStrategy';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
 import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
@@ -62,11 +66,22 @@ function registerMetadataTreeProviders(
   state.rolesRightsEditorProvider = new RolesRightsEditorProvider(context);
   context.subscriptions.push(state.rolesRightsEditorProvider);
 
-  state.subsystemCompositionEditorProvider = new SubsystemCompositionEditorProvider(context, {
+  const compositionDeps = {
     loadMetadataTree: () => lifecycle.loadMetadataTree(),
     invalidateTreeCacheOnly: (cp: string) => lifecycle.invalidateTreeCacheOnly(cp),
-  });
+  };
+
+  state.subsystemCompositionEditorProvider = new CompositionEditorProvider(context, compositionDeps, SubsystemStrategy);
   context.subscriptions.push(state.subsystemCompositionEditorProvider);
+
+  state.exchangePlanCompositionEditorProvider = new CompositionEditorProvider(context, compositionDeps, ExchangePlanStrategy);
+  context.subscriptions.push(state.exchangePlanCompositionEditorProvider);
+
+  state.commonAttributeCompositionEditorProvider = new CompositionEditorProvider(context, compositionDeps, CommonAttributeStrategy);
+  context.subscriptions.push(state.commonAttributeCompositionEditorProvider);
+
+  state.functionalOptionCompositionEditorProvider = new CompositionEditorProvider(context, compositionDeps, FunctionalOptionStrategy);
+  context.subscriptions.push(state.functionalOptionCompositionEditorProvider);
 
   state.propertiesProvider = new PropertiesProvider(
     context,

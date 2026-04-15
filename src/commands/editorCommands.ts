@@ -340,6 +340,90 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const editExchangePlanContentCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.editExchangePlanContent',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.ExchangePlan) {
+        vscode.window.showWarningMessage('Выберите узел плана обмена в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.treeDataProvider || !state.exchangePlanCompositionEditorProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава плана обмена.');
+        return;
+      }
+      const configPath = state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
+      if (!configPath) {
+        vscode.window.showErrorMessage('CDT 41: не удалось определить путь к конфигурации.');
+        return;
+      }
+      try {
+        await state.exchangePlanCompositionEditorProvider.show(target, state.treeDataProvider, configPath);
+      } catch (err) {
+        Logger.error('Failed to open exchange plan content editor', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ошибка открытия редактора состава: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
+  const editCommonAttributeContentCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.editCommonAttributeContent',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.CommonAttribute) {
+        vscode.window.showWarningMessage('Выберите узел общего реквизита в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.treeDataProvider || !state.commonAttributeCompositionEditorProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава общего реквизита.');
+        return;
+      }
+      const configPath = state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
+      if (!configPath) {
+        vscode.window.showErrorMessage('CDT 41: не удалось определить путь к конфигурации.');
+        return;
+      }
+      try {
+        await state.commonAttributeCompositionEditorProvider.show(target, state.treeDataProvider, configPath);
+      } catch (err) {
+        Logger.error('Failed to open common attribute content editor', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ошибка открытия редактора состава: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
+  const editFunctionalOptionContentCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.editFunctionalOptionContent',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.FunctionalOption) {
+        vscode.window.showWarningMessage('Выберите узел функциональной опции в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.treeDataProvider || !state.functionalOptionCompositionEditorProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава функциональной опции.');
+        return;
+      }
+      const configPath = state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
+      if (!configPath) {
+        vscode.window.showErrorMessage('CDT 41: не удалось определить путь к конфигурации.');
+        return;
+      }
+      try {
+        await state.functionalOptionCompositionEditorProvider.show(target, state.treeDataProvider, configPath);
+      } catch (err) {
+        Logger.error('Failed to open functional option content editor', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ошибка открытия редактора состава: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
   const startDebuggingCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.startDebugging',
     async (node?: TreeNode) => {
@@ -371,6 +455,9 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     saveRightsEditorCommand,
     validateCurrentXmlCommand,
     editSubsystemCompositionCommand,
+    editExchangePlanContentCommand,
+    editCommonAttributeContentCommand,
+    editFunctionalOptionContentCommand,
     startDebuggingCommand,
   ];
 }

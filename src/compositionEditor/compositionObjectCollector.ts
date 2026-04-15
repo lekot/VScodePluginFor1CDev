@@ -1,11 +1,12 @@
 import * as path from 'path';
 import { MetadataType, TreeNode } from '../models/treeNode';
-import type { CompositionObjectEntry, CompositionTypeContainer } from './compositionTypes';
+import type { CompositionObjectEntry, CompositionTypeContainer } from './compositionContracts';
 
 /**
- * Top-level metadata types that can be included in a subsystem composition.
+ * Top-level metadata types eligible for subsystem composition.
+ * Exported so SubsystemStrategy can import and pass it as `eligibleTypes`.
  */
-const COMPOSITION_ELIGIBLE_TYPES = new Set<MetadataType>([
+export const SUBSYSTEM_ELIGIBLE_TYPES: ReadonlySet<string> = new Set<string>([
   MetadataType.Catalog,
   MetadataType.Document,
   MetadataType.Enum,
@@ -56,27 +57,27 @@ function normalisePath(p: string): string {
 }
 
 /**
- * Recursively collect all Subsystem nodes, skipping ancestors of the current subsystem.
+ * Recursively collect all Subsystem nodes, skipping excluded node ids.
  */
 function collectSubsystems(
   node: TreeNode,
-  ancestorIds: Set<string>,
+  excludedNodeIds: ReadonlySet<string>,
   result: CompositionObjectEntry[],
 ): void {
   if (node.type === MetadataType.Subsystem) {
-    if (!ancestorIds.has(node.id)) {
+    if (!excludedNodeIds.has(node.id)) {
       result.push({
         ref: `Subsystem.${node.name}`,
         displayName: node.name,
         type: MetadataType.Subsystem,
       });
     }
-    // Recurse into child subsystems regardless of ancestor status
-    // (children of an ancestor may still be valid composition targets)
+    // Recurse into child subsystems regardless of exclusion status
+    // (children of an excluded ancestor may still be valid composition targets)
     if (node.children) {
       for (const child of node.children) {
         if (child.type === MetadataType.Subsystem) {
-          collectSubsystems(child, ancestorIds, result);
+          collectSubsystems(child, excludedNodeIds, result);
         }
       }
     }
@@ -84,39 +85,40 @@ function collectSubsystems(
 }
 
 /**
- * Determine which root nodes are visible for the given subsystem.
+ * Determine which root nodes are visible for the given config path.
  *
- * - Subsystem in main config → only main config roots visible.
- * - Subsystem in extension → all roots visible.
+ * - Node in main config → only main config roots visible.
+ * - Node in extension → all roots visible.
  */
-function resolveVisibleRoots(
+export function resolveVisibleRoots(
   rootNodes: readonly TreeNode[],
-  subsystemConfigPath: string | null,
+  nodeConfigPath: string | null,
 ): TreeNode[] {
   const firstRootConfigPath =
     rootNodes[0]?.filePath ? normalisePath(path.dirname(rootNodes[0].filePath)) : null;
 
-  const normalisedSubsystemConfigPath =
-    subsystemConfigPath ? normalisePath(subsystemConfigPath) : null;
+  const normalisedNodeConfigPath =
+    nodeConfigPath ? normalisePath(nodeConfigPath) : null;
 
-  const isSubsystemInMainConfig =
-    normalisedSubsystemConfigPath !== null &&
-    normalisedSubsystemConfigPath === firstRootConfigPath;
+  const isNodeInMainConfig =
+    normalisedNodeConfigPath !== null &&
+    normalisedNodeConfigPath === firstRootConfigPath;
 
-  return isSubsystemInMainConfig
+  return isNodeInMainConfig
     ? rootNodes.filter((r) => {
         const rcp = r.filePath ? normalisePath(path.dirname(r.filePath)) : null;
-        return rcp === normalisedSubsystemConfigPath;
+        return rcp === normalisedNodeConfigPath;
       })
     : [...rootNodes]; // extension sees all configurations
 }
 
 /**
- * Build ancestor id set from the given subsystem node upward.
+ * Build ancestor id set from the given node upward through Subsystem ancestors.
+ * Exported for use by SubsystemStrategy.
  */
-function buildAncestorIds(subsystemNode: TreeNode): Set<string> {
+export function buildAncestorIds(node: TreeNode): Set<string> {
   const ancestorIds = new Set<string>();
-  let p: TreeNode | undefined = subsystemNode.parent;
+  let p: TreeNode | undefined = node.parent;
   while (p) {
     if (p.type === MetadataType.Subsystem) {
       ancestorIds.add(p.id);
@@ -132,19 +134,23 @@ function buildAncestorIds(subsystemNode: TreeNode): Set<string> {
  * Fast and synchronous — does NOT load children. If a type folder's children
  * are not yet loaded, `objectCount` will be `null`.
  *
- * @param rootNodes           All configuration root nodes from the tree provider.
- * @param subsystemNode       The subsystem being edited.
- * @param subsystemConfigPath Config path for the subsystem's configuration (may be null).
- * @param checkedRefs         Currently checked refs (for `checkedCount` approximation).
+ * @param rootNodes            All configuration root nodes from the tree provider.
+ * @param node                 The node being edited (used only for config path resolution).
+ * @param configPath           Config path for the node's configuration (may be null).
+ * @param checkedRefs          Currently checked refs (for `checkedCount` approximation).
+ * @param eligibleTypes        Set of MetadataType strings that are eligible for this composition.
+ * @param showNestedSubsystems When true, the Subsystem type folder is included.
  * @returns Sorted list of CompositionTypeContainer items.
  */
 export function collectTypeFolders(
   rootNodes: readonly TreeNode[],
-  _subsystemNode: TreeNode,
-  subsystemConfigPath: string | null,
+  _node: TreeNode,
+  configPath: string | null,
   checkedRefs: ReadonlySet<string>,
+  eligibleTypes: ReadonlySet<string>,
+  showNestedSubsystems?: boolean,
 ): CompositionTypeContainer[] {
-  const visibleRoots = resolveVisibleRoots(rootNodes, subsystemConfigPath);
+  const visibleRoots = resolveVisibleRoots(rootNodes, configPath);
 
   const seen = new Map<string, CompositionTypeContainer>();
 
@@ -158,9 +164,15 @@ export function collectTypeFolders(
         continue;
       }
 
-      // Determine if this type folder is eligible
       const isSubsystemFolder = typeFolder.type === MetadataType.Subsystem;
-      if (!isSubsystemFolder && !COMPOSITION_ELIGIBLE_TYPES.has(typeFolder.type)) {
+
+      // Skip Subsystem folder when showNestedSubsystems is not enabled
+      if (isSubsystemFolder && !showNestedSubsystems) {
+        continue;
+      }
+
+      // Skip non-eligible type folders
+      if (!isSubsystemFolder && !eligibleTypes.has(typeFolder.type)) {
         continue;
       }
 
@@ -208,20 +220,23 @@ export function collectTypeFolders(
  * Synchronous — works only with already-loaded children. If children are not
  * loaded yet, returns []. Call treeProvider.getChildren(typeFolder) first.
  *
- * @param rootNodes           All configuration root nodes from the tree provider.
- * @param subsystemNode       The subsystem being edited.
- * @param subsystemConfigPath Config path for the subsystem's configuration (may be null).
- * @param typeFolderId        ID of the type folder to collect objects from.
+ * @param rootNodes            All configuration root nodes from the tree provider.
+ * @param configPath           Config path for the node's configuration (may be null).
+ * @param typeFolderId         ID of the type folder to collect objects from.
+ * @param excludedNodeIds      Node IDs to exclude from the result (e.g. ancestor subsystems).
+ * @param eligibleTypes        Set of MetadataType strings that are eligible for this composition.
+ * @param showNestedSubsystems When true, subsystem objects use recursive collectSubsystems logic.
  * @returns Sorted list of CompositionObjectEntry items.
  */
 export function collectObjectsForType(
   rootNodes: readonly TreeNode[],
-  subsystemNode: TreeNode,
-  subsystemConfigPath: string | null,
+  configPath: string | null,
   typeFolderId: string,
+  excludedNodeIds: ReadonlySet<string>,
+  eligibleTypes: ReadonlySet<string>,
+  showNestedSubsystems?: boolean,
 ): CompositionObjectEntry[] {
-  const ancestorIds = buildAncestorIds(subsystemNode);
-  const visibleRoots = resolveVisibleRoots(rootNodes, subsystemConfigPath);
+  const visibleRoots = resolveVisibleRoots(rootNodes, configPath);
 
   let typeFolder: TreeNode | undefined;
   for (const root of visibleRoots) {
@@ -237,16 +252,16 @@ export function collectObjectsForType(
 
   const result: CompositionObjectEntry[] = [];
 
-  if (typeFolder.type === MetadataType.Subsystem) {
+  if (typeFolder.type === MetadataType.Subsystem && showNestedSubsystems) {
     for (const child of typeFolder.children) {
-      collectSubsystems(child, ancestorIds, result);
+      collectSubsystems(child, excludedNodeIds, result);
     }
   } else {
     for (const element of typeFolder.children) {
-      if (!COMPOSITION_ELIGIBLE_TYPES.has(element.type)) {
+      if (!eligibleTypes.has(element.type)) {
         continue;
       }
-      if (ancestorIds.has(element.id)) {
+      if (excludedNodeIds.has(element.id)) {
         continue;
       }
       result.push({
@@ -262,10 +277,10 @@ export function collectObjectsForType(
 }
 
 /**
- * Build orphan entries — refs that are checked in the subsystem XML but whose
+ * Build orphan entries — refs that are checked in the composition XML but whose
  * objects are not found in the metadata tree for the given metadataType.
  *
- * @param checkedRefs   Currently checked refs from the subsystem XML.
+ * @param checkedRefs   Currently checked refs from the composition XML.
  * @param metadataType  Metadata type prefix (e.g. "Catalog").
  * @param knownObjects  Objects already collected from the tree for this type.
  * @returns Sorted list of orphan CompositionObjectEntry items.
@@ -289,38 +304,5 @@ export function buildOrphanEntries(
     }
   }
   result.sort((a, b) => a.displayName.localeCompare(b.displayName));
-  return result;
-}
-
-/**
- * Collect all metadata objects that can be included in a subsystem composition.
- *
- * @deprecated Используйте collectTypeFolders + collectObjectsForType
- *
- * Visibility rules:
- * - If the subsystem belongs to the main (first) configuration, only objects from
- *   that configuration are visible (extensions are not visible from the main config).
- * - If the subsystem belongs to an extension (not the first root), objects from all
- *   configurations are visible (extension sees the main config and its own objects).
- *
- * @param rootNodes   All configuration root nodes from the tree provider.
- * @param subsystemNode  The subsystem being edited.
- * @param subsystemConfigPath  Config path for the subsystem's configuration (may be null).
- * @returns Sorted list of eligible CompositionObjectEntry items.
- */
-export function collectCompositionEligibleObjects(
-  rootNodes: readonly TreeNode[],
-  subsystemNode: TreeNode,
-  subsystemConfigPath: string | null,
-): CompositionObjectEntry[] {
-  const containers = collectTypeFolders(rootNodes, subsystemNode, subsystemConfigPath, new Set());
-  const result: CompositionObjectEntry[] = [];
-  for (const c of containers) {
-    result.push(...collectObjectsForType(rootNodes, subsystemNode, subsystemConfigPath, c.typeFolderId));
-  }
-  result.sort((a, b) => {
-    const typeCmp = a.type.localeCompare(b.type);
-    return typeCmp !== 0 ? typeCmp : a.displayName.localeCompare(b.displayName);
-  });
   return result;
 }

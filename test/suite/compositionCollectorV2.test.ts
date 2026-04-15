@@ -3,9 +3,10 @@ import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   collectTypeFolders,
   collectObjectsForType,
-  collectCompositionEligibleObjects,
-} from '../../src/subsystemCompositionEditor/compositionObjectCollector';
-import type { CompositionObjectEntry } from '../../src/subsystemCompositionEditor/compositionTypes';
+  buildAncestorIds,
+  SUBSYSTEM_ELIGIBLE_TYPES,
+} from '../../src/compositionEditor/compositionObjectCollector';
+import type { CompositionObjectEntry } from '../../src/compositionEditor/compositionContracts';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
   // 1 ─────────────────────────────────────────────────────────────────────────
   test('empty roots returns []', () => {
     const dummySub = makeNode('Subsystems.X', 'X', MetadataType.Subsystem, []);
-    const result = collectTypeFolders([], dummySub, null, new Set());
+    const result = collectTypeFolders([], dummySub, null, new Set(), SUBSYSTEM_ELIGIBLE_TYPES, true);
     assert.deepStrictEqual(result, []);
   });
 
@@ -105,7 +106,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
     );
     const sub = makeNode('Subsystems.S', 'S', MetadataType.Subsystem, []);
 
-    const result = collectTypeFolders([root], sub, configPath, new Set());
+    const result = collectTypeFolders([root], sub, configPath, new Set(), SUBSYSTEM_ELIGIBLE_TYPES, true);
     assert.strictEqual(result.length, 1);
     assert.strictEqual(result[0].objectCount, null);
   });
@@ -115,7 +116,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
     const configPath = 'C:/cfg/main';
     const { root, childSub } = makeMainTree(configPath);
 
-    const result = collectTypeFolders([root], childSub, configPath, new Set());
+    const result = collectTypeFolders([root], childSub, configPath, new Set(), SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     const catalogsContainer = result.find(c => c.displayName === 'Catalogs');
     assert.ok(catalogsContainer, 'Catalogs container must exist');
@@ -138,7 +139,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
       'Subsystem.Child',
     ]);
 
-    const result = collectTypeFolders([root], childSub, configPath, checkedRefs);
+    const result = collectTypeFolders([root], childSub, configPath, checkedRefs, SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     const catalogsContainer = result.find(c => c.displayName === 'Catalogs');
     assert.strictEqual(catalogsContainer!.checkedCount, 2, 'Two catalogs checked');
@@ -168,7 +169,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
     );
 
     // mainSub belongs to main config → configPath === mainPath
-    const result = collectTypeFolders([mainRoot, extRoot], mainSub, mainPath, new Set());
+    const result = collectTypeFolders([mainRoot, extRoot], mainSub, mainPath, new Set(), SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     const displayNames = result.map(c => c.displayName);
     assert.ok(!displayNames.includes('ExtCatalogs'), 'Main config subsystem must NOT see extension folders');
@@ -203,7 +204,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
     );
 
     // extSub belongs to extension (extPath ≠ mainPath)
-    const result = collectTypeFolders([mainRoot, extRoot], extSub, extPath, new Set());
+    const result = collectTypeFolders([mainRoot, extRoot], extSub, extPath, new Set(), SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     const displayNames = result.map(c => c.displayName);
     assert.ok(displayNames.includes('MainCatalogs'), 'Extension subsystem must see main config folders');
@@ -214,7 +215,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
   test('non-eligible type folder — not included in result', () => {
     const configPath = 'C:/cfg/main';
 
-    // Interface is NOT in COMPOSITION_ELIGIBLE_TYPES
+    // Interface is NOT in SUBSYSTEM_ELIGIBLE_TYPES
     const ifaceChild = makeNode('Interfaces.Iface1', 'Iface1', MetadataType.Interface, undefined);
     const ifaceFolder = makeNode('Interfaces', 'Interfaces', MetadataType.Interface, [ifaceChild]);
     const catChild = makeNode('Catalogs.Cat1', 'Cat1', MetadataType.Catalog, undefined);
@@ -228,7 +229,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
     );
     const sub = makeNode('Subsystems.S', 'S', MetadataType.Subsystem, []);
 
-    const result = collectTypeFolders([root], sub, configPath, new Set());
+    const result = collectTypeFolders([root], sub, configPath, new Set(), SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     const displayNames = result.map(c => c.displayName);
     assert.ok(!displayNames.includes('Interfaces'), 'Interface folder must be excluded');
@@ -242,9 +243,9 @@ suite('compositionCollectorV2 — collectObjectsForType', () => {
   // 1 ─────────────────────────────────────────────────────────────────────────
   test('typeFolderId not found → []', () => {
     const configPath = 'C:/cfg/main';
-    const { root, childSub } = makeMainTree(configPath);
+    const { root } = makeMainTree(configPath);
 
-    const result = collectObjectsForType([root], childSub, configPath, 'NonExistent.Folder');
+    const result = collectObjectsForType([root], configPath, 'NonExistent.Folder', new Set<string>(), SUBSYSTEM_ELIGIBLE_TYPES, true);
     assert.deepStrictEqual(result, []);
   });
 
@@ -261,18 +262,17 @@ suite('compositionCollectorV2 — collectObjectsForType', () => {
       [folderNoChildren],
       `${configPath}/Configuration.xml`,
     );
-    const sub = makeNode('Subsystems.S', 'S', MetadataType.Subsystem, []);
 
-    const result = collectObjectsForType([root], sub, configPath, 'Catalogs');
+    const result = collectObjectsForType([root], configPath, 'Catalogs', new Set<string>(), SUBSYSTEM_ELIGIBLE_TYPES, true);
     assert.deepStrictEqual(result, []);
   });
 
   // 3 ─────────────────────────────────────────────────────────────────────────
   test('regular type — returns correct CompositionObjectEntry[]', () => {
     const configPath = 'C:/cfg/main';
-    const { root, childSub } = makeMainTree(configPath);
+    const { root } = makeMainTree(configPath);
 
-    const result = collectObjectsForType([root], childSub, configPath, 'Catalogs');
+    const result = collectObjectsForType([root], configPath, 'Catalogs', new Set<string>(), SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     assert.strictEqual(result.length, 2);
     const refs = result.map(e => e.ref);
@@ -289,8 +289,10 @@ suite('compositionCollectorV2 — collectObjectsForType', () => {
     const configPath = 'C:/cfg/main';
     const { root, childSub } = makeMainTree(configPath);
 
-    // childSub's parent is parentSub — parentSub must be excluded
-    const result = collectObjectsForType([root], childSub, configPath, 'Subsystems');
+    // Build excludedIds as SubsystemStrategy does: ancestors only (not the node itself)
+    const excludedIds = buildAncestorIds(childSub);
+
+    const result = collectObjectsForType([root], configPath, 'Subsystems', excludedIds, SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     const refs = result.map(e => e.ref);
     assert.ok(!refs.includes('Subsystem.Parent'), 'Parent (ancestor) must be excluded');
@@ -316,10 +318,8 @@ suite('compositionCollectorV2 — collectObjectsForType', () => {
       `${configPath}/Configuration.xml`,
     );
 
-    // Use a fresh subsystem with no ancestors
-    const targetSub = makeNode('Subsystems.Target', 'Target', MetadataType.Subsystem, []);
-
-    const result = collectObjectsForType([root], targetSub, configPath, 'Subsystems');
+    // Use a fresh subsystem with no ancestors — no exclusions needed
+    const result = collectObjectsForType([root], configPath, 'Subsystems', new Set<string>(), SUBSYSTEM_ELIGIBLE_TYPES, true);
 
     const refs = result.map(e => e.ref);
     // Top-level subsystems A and B
@@ -328,41 +328,5 @@ suite('compositionCollectorV2 — collectObjectsForType', () => {
     // Nested subsystems A1, A2 (recursive)
     assert.ok(refs.includes('Subsystem.A1'), 'A1 must be included (recursive)');
     assert.ok(refs.includes('Subsystem.A2'), 'A2 must be included (recursive)');
-  });
-});
-
-// ── suite: deprecated wrapper ─────────────────────────────────────────────────
-
-suite('compositionCollectorV2 — deprecated wrapper', () => {
-  // 1 ─────────────────────────────────────────────────────────────────────────
-  test('collectCompositionEligibleObjects matches manual collectTypeFolders + collectObjectsForType', () => {
-    const configPath = 'C:/cfg/main';
-    const { root, childSub } = makeMainTree(configPath);
-    const roots = [root];
-
-    // Manual approach
-    const containers = collectTypeFolders(roots, childSub, configPath, new Set());
-    const manualResult: CompositionObjectEntry[] = [];
-    for (const c of containers) {
-      manualResult.push(...collectObjectsForType(roots, childSub, configPath, c.typeFolderId));
-    }
-    manualResult.sort((a, b) => {
-      const typeCmp = a.type.localeCompare(b.type);
-      return typeCmp !== 0 ? typeCmp : a.displayName.localeCompare(b.displayName);
-    });
-
-    // Wrapper
-    const wrapperResult = collectCompositionEligibleObjects(roots, childSub, configPath);
-
-    assert.deepStrictEqual(
-      wrapperResult.map(e => e.ref),
-      manualResult.map(e => e.ref),
-      'deprecated wrapper must produce same refs as manual call',
-    );
-    assert.deepStrictEqual(
-      wrapperResult.map(e => e.type),
-      manualResult.map(e => e.type),
-      'deprecated wrapper must produce same types as manual call',
-    );
   });
 });

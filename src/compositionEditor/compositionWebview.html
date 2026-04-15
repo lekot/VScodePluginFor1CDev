@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-    <title>Состав подсистемы</title>
+    <title>Состав</title>
     <style>
         * {
             box-sizing: border-box;
@@ -174,6 +174,10 @@
             /* fills remaining space */
         }
 
+        th.col-setting {
+            white-space: nowrap;
+        }
+
         tbody tr {
             border-bottom: 1px solid var(--vscode-panel-border);
         }
@@ -200,6 +204,16 @@
 
         td.col-name {
             word-break: break-word;
+        }
+
+        td.col-setting select {
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+            padding: 2px 4px;
+            border-radius: 2px;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
         }
 
         .footer {
@@ -366,7 +380,7 @@
 </head>
 <body>
     <header>
-        <h2 id="subsystem-title">Состав подсистемы</h2>
+        <h2 id="entity-title">Состав</h2>
     </header>
 
     <div id="banner" class="banner" aria-live="polite"></div>
@@ -393,7 +407,7 @@
         </div>
         <table id="composition-table">
             <thead>
-                <tr>
+                <tr id="header-row">
                     <th class="col-check"></th>
                     <th class="col-name">Имя</th>
                 </tr>
@@ -429,6 +443,10 @@
             let bulkLoadInProgress = false;
             let pendingAfterLoad = null;
 
+            let itemSettings = {};        // ref → { key → value }
+            let settingsSchema = [];      // ItemSettingSchema[]
+            let initialItemSettings = {}; // deep clone of itemSettings at init
+
             let searchQuery = '';
             let showCheckedOnly = false;
             let renderSeq = 0;
@@ -440,12 +458,27 @@
                 const data = window.__compositionData;
                 if (!data) { return; }
 
-                document.getElementById('subsystem-title').textContent =
-                    'Состав подсистемы: ' + data.subsystemName;
+                document.getElementById('entity-title').textContent =
+                    data.titlePrefix + ': ' + data.entityName;
 
                 containers = data.containers || [];
                 checkedSet = new Set(data.checkedRefs || []);
                 initialChecked = new Set(data.checkedRefs || []);
+
+                settingsSchema = data.itemSettingsSchema || [];
+                itemSettings = data.itemSettings ? JSON.parse(JSON.stringify(data.itemSettings)) : {};
+                initialItemSettings = JSON.parse(JSON.stringify(itemSettings));
+
+                // Render additional header columns for settings schema
+                if (settingsSchema.length > 0) {
+                    const headerRow = document.getElementById('header-row');
+                    for (const schema of settingsSchema) {
+                        const th = document.createElement('th');
+                        th.className = 'col-setting';
+                        th.textContent = schema.label || schema.key;
+                        headerRow.appendChild(th);
+                    }
+                }
 
                 renderTree();
                 updateBadge();
@@ -561,6 +594,13 @@
                 tr.appendChild(tdCheck);
                 tr.appendChild(tdName);
 
+                // Empty cells for settings columns to keep alignment
+                for (var i = 0; i < settingsSchema.length; i++) {
+                    const tdEmpty = document.createElement('td');
+                    tdEmpty.className = 'col-setting';
+                    tr.appendChild(tdEmpty);
+                }
+
                 tr.addEventListener('click', function () { toggleExpand(container.typeFolderId); });
                 return tr;
             }
@@ -599,6 +639,46 @@
 
                 tr.appendChild(tdCheck);
                 tr.appendChild(tdName);
+
+                // Settings columns
+                for (var si = 0; si < settingsSchema.length; si++) {
+                    (function (schema) {
+                        const tdSetting = document.createElement('td');
+                        tdSetting.className = 'col-setting';
+
+                        const select = document.createElement('select');
+                        const currentValue = (itemSettings[obj.ref] && itemSettings[obj.ref][schema.key] !== undefined)
+                            ? itemSettings[obj.ref][schema.key]
+                            : schema.defaultValue;
+
+                        for (var oi = 0; oi < schema.options.length; oi++) {
+                            const optValue = schema.options[oi];
+                            const option = document.createElement('option');
+                            option.value = optValue;
+                            option.textContent = optValue;
+                            if (optValue === currentValue) {
+                                option.selected = true;
+                            }
+                            select.appendChild(option);
+                        }
+
+                        select.addEventListener('change', function () {
+                            if (!itemSettings[obj.ref]) {
+                                itemSettings[obj.ref] = {};
+                            }
+                            itemSettings[obj.ref][schema.key] = select.value;
+                            vscode.postMessage({
+                                command: 'settingChange',
+                                data: { ref: obj.ref, key: schema.key, value: select.value }
+                            });
+                            updateBadge();
+                        });
+
+                        tdSetting.appendChild(select);
+                        tr.appendChild(tdSetting);
+                    })(settingsSchema[si]);
+                }
+
                 return tr;
             }
 
@@ -721,7 +801,21 @@
             function updateBadge() {
                 const added = Array.from(checkedSet).filter(function (r) { return !initialChecked.has(r); }).length;
                 const removed = Array.from(initialChecked).filter(function (r) { return !checkedSet.has(r); }).length;
-                const total = added + removed;
+                let settingsChanged = 0;
+                // Count settings changes per ref (one ref with N changed fields = 1 change)
+                for (const ref of checkedSet) {
+                    const current = itemSettings[ref];
+                    const initial = initialItemSettings[ref];
+                    if (!current || !initial) { continue; }
+                    for (var ki = 0; ki < settingsSchema.length; ki++) {
+                        const key = settingsSchema[ki].key;
+                        if (current[key] !== initial[key]) {
+                            settingsChanged++;
+                            break;
+                        }
+                    }
+                }
+                const total = added + removed + settingsChanged;
                 const badge = document.getElementById('changes-badge');
                 if (total > 0) {
                     badge.textContent = total + '\u00a0изм.';

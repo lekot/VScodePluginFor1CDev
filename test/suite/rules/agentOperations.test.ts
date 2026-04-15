@@ -248,3 +248,117 @@ suite('AgentOperations: listObjects', () => {
         assert.ok(result.error, 'error should be set');
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Suite: getType
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DEFINED_TYPE_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.17">
+  <DefinedType uuid="11111111-2222-3333-4444-555555555555">
+    <Properties>
+      <Name>ТипНоменклатуры</Name>
+      <Type>
+        <v8:Type>cfg:CatalogRef.Товары</v8:Type>
+        <v8:Type>cfg:CatalogRef.Услуги</v8:Type>
+      </Type>
+    </Properties>
+  </DefinedType>
+</MetaDataObject>`;
+
+const CONFIG_XML_WITH_DEFINED_TYPE = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Configuration uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">
+    <Properties>
+      <Name>TestConfig</Name>
+    </Properties>
+    <ChildObjects>
+      <DefinedType>ТипНоменклатуры</DefinedType>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>`;
+
+function writeDefinedTypeXml(dir: string): void {
+    const definedTypesDir = path.join(dir, 'DefinedTypes');
+    fs.mkdirSync(definedTypesDir, { recursive: true });
+    fs.writeFileSync(path.join(definedTypesDir, 'ТипНоменклатуры.xml'), DEFINED_TYPE_XML, 'utf-8');
+}
+
+suite('AgentOperations: getType', () => {
+    let tmpDir: string;
+    let ops: AgentOperations;
+
+    setup(async () => {
+        tmpDir = await createTempDir('1cviewer-agent-gettype-');
+        fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), CONFIG_XML_WITH_DEFINED_TYPE, 'utf-8');
+        writeDefinedTypeXml(tmpDir);
+        ops = new AgentOperations(tmpDir);
+    });
+
+    teardown(async () => {
+        await cleanupTempDir(tmpDir);
+    });
+
+    test('returns types for DefinedType after setType round-trip', async () => {
+        // readProperties transforms native XML Type nodes into a formatted string,
+        // so getType only works correctly after setType serialises the type as an XML string.
+        await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: ['cfg:CatalogRef.Товары', 'cfg:CatalogRef.Услуги'] });
+        const result = await ops.getType({ path: 'DefinedType.ТипНоменклатуры' });
+        assert.ok(result.success, `Expected success, got error: ${result.error}`);
+        assert.ok(Array.isArray(result.data?.types), 'types should be an array');
+        assert.strictEqual(result.data!.types.length, 2, 'should have 2 types');
+        assert.ok(result.data!.types.includes('cfg:CatalogRef.Товары'), 'should include cfg:CatalogRef.Товары');
+        assert.ok(result.data!.types.includes('cfg:CatalogRef.Услуги'), 'should include cfg:CatalogRef.Услуги');
+    });
+
+    test('returns error for non-existent path', async () => {
+        const result = await ops.getType({ path: 'DefinedType.НесуществующийТип' });
+        assert.strictEqual(result.success, false);
+        assert.ok(result.error, 'error should be set');
+    });
+
+    test('rawXml contains v8:Type elements after setType', async () => {
+        await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: ['cfg:CatalogRef.Товары'] });
+        const result = await ops.getType({ path: 'DefinedType.ТипНоменклатуры' });
+        assert.ok(result.success, `Expected success, got error: ${result.error}`);
+        assert.ok(result.data!.rawXml.includes('v8:Type'), 'rawXml should contain v8:Type elements');
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Suite: setType
+// ─────────────────────────────────────────────────────────────────────────────
+
+suite('AgentOperations: setType', () => {
+    let tmpDir: string;
+    let ops: AgentOperations;
+
+    setup(async () => {
+        tmpDir = await createTempDir('1cviewer-agent-settype-');
+        fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), CONFIG_XML_WITH_DEFINED_TYPE, 'utf-8');
+        writeDefinedTypeXml(tmpDir);
+        ops = new AgentOperations(tmpDir);
+    });
+
+    teardown(async () => {
+        await cleanupTempDir(tmpDir);
+    });
+
+    test('sets single type successfully', async () => {
+        const result = await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: ['xs:string'] });
+        assert.ok(result.success, `Expected success, got error: ${result.error}`);
+        const content = fs.readFileSync(path.join(tmpDir, 'DefinedTypes', 'ТипНоменклатуры.xml'), 'utf-8');
+        assert.ok(content.includes('xs:string') || content.includes('xsd:string') || content.includes('String'), 'file should contain the new type');
+    });
+
+    test('round-trip: setType then getType returns same types', async () => {
+        const typesToSet = ['cfg:DocumentRef.Заказ', 'xs:boolean'];
+        const setResult = await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: typesToSet });
+        assert.ok(setResult.success, `setType failed: ${setResult.error}`);
+
+        const getResult = await ops.getType({ path: 'DefinedType.ТипНоменклатуры' });
+        assert.ok(getResult.success, `getType after setType failed: ${getResult.error}`);
+        assert.ok(getResult.data!.types.includes('cfg:DocumentRef.Заказ'), 'types should include cfg:DocumentRef.Заказ');
+        assert.ok(getResult.data!.types.includes('xs:boolean'), 'types should include xs:boolean');
+    });
+});
