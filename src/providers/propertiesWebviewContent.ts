@@ -148,7 +148,7 @@ export function renderPropertyInput(
 
   // Determine if this specific property should be read-only
   const nodeIsRoot = isRootElement(currentNode);
-  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion'];
+  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion', 'CommonAttribute'];
   const propertyReadOnly = globalReadOnly || (nodeIsRoot && isTypeProperty && !typeEditableRootTypes.includes(currentNode?.type ?? ''));
   const disabled = propertyReadOnly ? 'disabled' : '';
 
