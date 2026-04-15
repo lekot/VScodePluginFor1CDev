@@ -107,6 +107,7 @@ export const coreSuiteFiles: string[] = [
   'suite/ibcmdMatrixAdapter.test.js',
   'suite/ibcmdCliScript.test.js',
   'suite/ibcmdReportPaths.test.js',
+  'suite/treeStructureRegression.test.js',
   'suite/treeNormalization.test.js',
   'suite/typeFormatterAndFilterState.test.js',
   'suite/configurationXmlUpdater.test.js',
