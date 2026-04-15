@@ -119,7 +119,7 @@ export function renderPropertyInput(
 ): string {
   // Format Type property if it's an object (defensive fallback)
   let displayValue = value;
-  const isTypeProperty = name.toLowerCase() === 'type';
+  const isTypeProperty = name.toLowerCase() === 'type' || name.toLowerCase() === 'source';
 
   if (isTypeProperty && (value === null || value === undefined)) {
     displayValue = 'Not set';
@@ -167,7 +167,7 @@ export function renderPropertyInput(
 
   // Determine if this specific property should be read-only
   const nodeIsRoot = isRootElement(currentNode);
-  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion', 'CommonAttribute'];
+  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion', 'CommonAttribute', 'EventSubscription'];
   const propertyReadOnly = globalReadOnly || (nodeIsRoot && isTypeProperty && !typeEditableRootTypes.includes(currentNode?.type ?? ''));
   const disabled = propertyReadOnly ? 'disabled' : '';
 
