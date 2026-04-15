@@ -9,6 +9,7 @@ import { SubsystemStrategy } from '../compositionEditor/strategies/subsystemStra
 import { ExchangePlanStrategy } from '../compositionEditor/strategies/exchangePlanStrategy';
 import { CommonAttributeStrategy } from '../compositionEditor/strategies/commonAttributeStrategy';
 import { FunctionalOptionStrategy } from '../compositionEditor/strategies/functionalOptionStrategy';
+import { FilterCriterionStrategy } from '../compositionEditor/strategies/filterCriterionStrategy';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
 import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { ReloadCoordinatorService } from '../services/reloadCoordinatorService';
@@ -82,6 +83,9 @@ function registerMetadataTreeProviders(
 
   state.functionalOptionCompositionEditorProvider = new CompositionEditorProvider(context, compositionDeps, FunctionalOptionStrategy);
   context.subscriptions.push(state.functionalOptionCompositionEditorProvider);
+
+  state.filterCriterionCompositionEditorProvider = new CompositionEditorProvider(context, compositionDeps, FilterCriterionStrategy);
+  context.subscriptions.push(state.filterCriterionCompositionEditorProvider);
 
   state.propertiesProvider = new PropertiesProvider(
     context,

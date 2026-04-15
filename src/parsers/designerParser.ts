@@ -229,7 +229,7 @@ export class DesignerParser {
     const container: TreeNode = {
       id: `${typeName}.${elementName}`,
       name: elementName,
-      type: MetadataType.Configuration,
+      type: MetadataTypeMapper.map(typeName),
       properties: {},
       children,
     };

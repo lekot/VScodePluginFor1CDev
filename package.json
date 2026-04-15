@@ -231,6 +231,10 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.editFilterCriterionContent",
+        "title": "CDT 41: Редактировать состав критерия отбора"
+      },
+      {
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
         "title": "CDT 41: Настройка ibcmd…",
         "category": "CDT 41"
@@ -810,6 +814,11 @@
         {
           "command": "1c-metadata-tree.editFunctionalOptionContent",
           "when": "view == 1c-metadata-tree && viewItem == 'FunctionalOption'",
+          "group": "2_composition@0"
+        },
+        {
+          "command": "1c-metadata-tree.editFilterCriterionContent",
+          "when": "view == 1c-metadata-tree && viewItem == 'FilterCriterion'",
           "group": "2_composition@0"
         },
         {

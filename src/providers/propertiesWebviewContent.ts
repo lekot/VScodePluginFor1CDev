@@ -22,6 +22,7 @@ export const CONTENT_EDITOR_COMMANDS = new Map<string, string>([
   ['ExchangePlan', '1c-metadata-tree.editExchangePlanContent'],
   ['CommonAttribute', '1c-metadata-tree.editCommonAttributeContent'],
   ['FunctionalOption', '1c-metadata-tree.editFunctionalOptionContent'],
+  ['FilterCriterion', '1c-metadata-tree.editFilterCriterionContent'],
 ]);
 
 /**

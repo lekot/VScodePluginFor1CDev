@@ -424,6 +424,34 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const editFilterCriterionContentCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.editFilterCriterionContent',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.FilterCriterion) {
+        vscode.window.showWarningMessage('Выберите узел критерия отбора в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.treeDataProvider || !state.filterCriterionCompositionEditorProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор состава критерия отбора.');
+        return;
+      }
+      const configPath = state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
+      if (!configPath) {
+        vscode.window.showErrorMessage('CDT 41: не удалось определить путь к конфигурации.');
+        return;
+      }
+      try {
+        await state.filterCriterionCompositionEditorProvider.show(target, state.treeDataProvider, configPath);
+      } catch (err) {
+        Logger.error('Failed to open filter criterion content editor', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ошибка открытия редактора состава: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
   const startDebuggingCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.startDebugging',
     async (node?: TreeNode) => {
@@ -458,6 +486,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     editExchangePlanContentCommand,
     editCommonAttributeContentCommand,
     editFunctionalOptionContentCommand,
+    editFilterCriterionContentCommand,
     startDebuggingCommand,
   ];
 }
