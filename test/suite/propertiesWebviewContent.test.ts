@@ -220,6 +220,12 @@ suite('propertiesWebviewContent — renderPropertyInput', () => {
     filePath: '/test/Catalog.xml',
   });
 
+  const definedTypeNode = makeNode({
+    type: MetadataType.DefinedType,
+    parent: makeConfigParent(),
+    filePath: '/test/DefinedType.xml',
+  });
+
   test('returns a string for a simple string property', () => {
     const html = renderPropertyInput('name', 'TestValue', false, attrNode);
     assert.ok(typeof html === 'string' && html.length > 0);
@@ -291,6 +297,16 @@ suite('propertiesWebviewContent — renderPropertyInput', () => {
     const html = renderPropertyInput('type', 'xs:string', false, attrNode);
     assert.ok(html.includes('edit-type-btn'));
     assert.ok(html.includes('aria-label="Редактировать тип"'));
+  });
+
+  test('type property on DefinedType root element is enabled', () => {
+    const html = renderPropertyInput('type', 'xs:string', false, definedTypeNode);
+    assert.ok(!html.includes('disabled'));
+  });
+
+  test('type property on DefinedType root element shows edit button', () => {
+    const html = renderPropertyInput('type', 'xs:string', false, definedTypeNode);
+    assert.ok(html.includes('edit-type-btn'));
   });
 
   test('type as null shows Not set', () => {

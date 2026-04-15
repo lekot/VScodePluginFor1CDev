@@ -95,3 +95,22 @@ export interface SetPropertiesParams {
     path: string;
     properties: Record<string, unknown>;
 }
+
+export interface GetTypeParams {
+    /** Agent path, e.g. 'DefinedType.ТипНоменклатуры' or 'Catalog.Товары.Attribute.Цена' */
+    path: string;
+}
+
+export interface SetTypeParams {
+    /** Agent path, e.g. 'DefinedType.ТипНоменклатуры' or 'Catalog.Товары.Attribute.Цена' */
+    path: string;
+    /** Array of type strings, e.g. ['xs:string', 'cfg:CatalogRef.Товары'] */
+    types: string[];
+}
+
+export interface GetTypeResult {
+    /** Array of type strings, e.g. ['xs:string', 'cfg:CatalogRef.Товары'] */
+    types: string[];
+    /** Raw XML of the Type element */
+    rawXml: string;
+}

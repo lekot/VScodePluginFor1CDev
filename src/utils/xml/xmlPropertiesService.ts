@@ -285,7 +285,8 @@ function updatePropertiesObject(
       if ('#text' in rec) {
         result[key] = { ...rec, '#text': textVal };
       } else {
-        result[key] = existing;
+        // Object without #text (e.g. complex Type node like { 'v8:Type': [...] }) — replace with new value
+        result[key] = { '#text': textVal };
       }
     } else {
       result[key] = [{ '#text': textVal }];

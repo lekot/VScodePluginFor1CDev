@@ -14,6 +14,6 @@ export const definedTypeRules: MetadataObjectRules = {
         comment: { type: 'string', order: 1, xml: 'Comment', yaml: 'Комментарий', defaultValueXML: '' },
         name: { type: 'string', order: 2, xml: 'Name', yaml: 'Имя', required: true },
         synonym: { type: 'I8nText', order: 3, xml: 'Synonym', yaml: 'Синоним' },
-        type: { type: 'InternalInfo', order: 4, xml: 'Type', defaultValueXML: {} },
+        type: { type: 'TypeDescription', order: 4, xml: 'Type', defaultValueXML: {} },
     },
 };

@@ -20,6 +20,8 @@ const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegiste
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { resolveAgentPath } from './agentPathResolver';
 import { XMLWriter } from '../utils/XMLWriter';
+import { TypeParser } from '../parsers/typeParser';
+import { TypeSerializer } from '../serializers/typeSerializer';
 import type {
     AgentResult,
     CreateObjectParams,
@@ -35,6 +37,9 @@ import type {
     DeleteObjectParams,
     RenameObjectParams,
     SetPropertiesParams,
+    GetTypeParams,
+    SetTypeParams,
+    GetTypeResult,
 } from './types';
 
 // ─── XML-парсер для Configuration.xml (без preserveOrder — нам нужен простой доступ) ───
@@ -575,6 +580,151 @@ export class AgentOperations {
             ...properties,
             Type: `<Type><v8:Type>${typeVal}</v8:Type></Type>`,
         };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // getType
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async getType(params: GetTypeParams): Promise<AgentResult<GetTypeResult>> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            let properties: Record<string, unknown>;
+            if (resolved.nestedType && resolved.nestedName) {
+                properties = await XMLWriter.readNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName);
+            } else {
+                properties = await XMLWriter.readProperties(filePath);
+            }
+
+            const typeVal = properties['Type'];
+
+            // Пустой тип
+            if (typeVal === undefined || typeVal === null || typeVal === '') {
+                return { success: true, data: { types: [], rawXml: '' } };
+            }
+
+            let parsed;
+            let rawXml: string;
+
+            if (typeof typeVal === 'string' && typeVal.includes('<')) {
+                // Строка содержит XML — парсим напрямую
+                parsed = TypeParser.parse(typeVal);
+                rawXml = typeVal;
+            } else if (typeof typeVal === 'object') {
+                // Уже распарсенный объект
+                parsed = TypeParser.parseFromObject(typeVal as Record<string, unknown>);
+                rawXml = TypeSerializer.serialize(parsed);
+            } else {
+                // Пустая или нераспознанная строка
+                return { success: true, data: { types: [], rawXml: '' } };
+            }
+
+            // Преобразуем TypeEntry[] в массив строк
+            const types: string[] = parsed.types.map(entry => {
+                switch (entry.kind) {
+                    case 'string':
+                        return 'xs:string';
+                    case 'number':
+                        return 'xs:decimal';
+                    case 'boolean':
+                        return 'xs:boolean';
+                    case 'date': {
+                        const dateFractions = (entry.qualifiers as { dateFractions?: string } | undefined)?.dateFractions;
+                        if (dateFractions === 'DateTime') { return 'xs:dateTime'; }
+                        if (dateFractions === 'Time') { return 'xs:time'; }
+                        return 'xs:dateTime';
+                    }
+                    case 'reference':
+                        return `cfg:${entry.referenceType!.referenceKind}.${entry.referenceType!.objectName}`;
+                    default:
+                        return '';
+                }
+            }).filter(Boolean);
+
+            return { success: true, data: { types, rawXml } };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // setType
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async setType(params: SetTypeParams): Promise<AgentResult> {
+        try {
+            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const { filePath } = resolved;
+
+            try {
+                await fs.promises.access(filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${filePath}` };
+            }
+
+            // Строим TypeDefinition из массива строк
+            const typeEntries = params.types.map(typeStr => {
+                if (typeStr === 'xs:string') { return { kind: 'string' as const }; }
+                if (typeStr === 'xs:decimal') { return { kind: 'number' as const }; }
+                if (typeStr === 'xs:boolean') { return { kind: 'boolean' as const }; }
+                if (typeStr === 'xs:date' || typeStr === 'xs:dateTime' || typeStr === 'xs:time') {
+                    return { kind: 'date' as const };
+                }
+                if (typeStr.startsWith('cfg:')) {
+                    const withoutPrefix = typeStr.slice(4); // убираем 'cfg:'
+                    const dotIdx = withoutPrefix.indexOf('.');
+                    if (dotIdx === -1) {
+                        throw new Error(`Некорректный формат типа-ссылки: "${typeStr}". Ожидается cfg:ReferenceKind.ObjectName`);
+                    }
+                    const referenceKind = withoutPrefix.slice(0, dotIdx);
+                    const objectName = withoutPrefix.slice(dotIdx + 1);
+                    return {
+                        kind: 'reference' as const,
+                        referenceType: {
+                            referenceKind: referenceKind as import('../types/typeDefinitions').ReferenceTypeInfo['referenceKind'],
+                            objectName,
+                        },
+                    };
+                }
+                throw new Error(`Неизвестный тип: "${typeStr}". Поддерживаются xs:string, xs:decimal, xs:boolean, xs:date, xs:dateTime, xs:time, cfg:Kind.Name`);
+            });
+
+            let category: 'primitive' | 'reference' | 'composite';
+            if (typeEntries.length === 0) {
+                category = 'primitive';
+            } else if (typeEntries.length === 1 && typeEntries[0].kind === 'reference') {
+                category = 'reference';
+            } else {
+                category = typeEntries.length === 1 ? 'primitive' : 'composite';
+            }
+
+            const definition = { category, types: typeEntries };
+            const xml = TypeSerializer.serialize(definition);
+
+            if (resolved.nestedType && resolved.nestedName) {
+                await XMLWriter.writeNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName, { Type: xml });
+            } else {
+                await XMLWriter.writeProperties(filePath, { Type: xml });
+            }
+
+            return { success: true };
+        } catch (err) {
+            return {
+                success: false,
+                error: err instanceof Error ? err.message : String(err),
+            };
+        }
     }
 }
 

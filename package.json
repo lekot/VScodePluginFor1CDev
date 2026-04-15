@@ -488,6 +488,16 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.getType",
+        "title": "Agent: Получить тип объекта",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.setType",
+        "title": "Agent: Установить тип объекта",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.deploySelectedObjects",
         "title": "Agent: Раскатка выбранных файлов",
         "category": "CDT 41"
