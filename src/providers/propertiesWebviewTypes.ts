@@ -28,6 +28,7 @@ export type WebviewMessage =
       entityName?: string;
     }
   | { type: 'editType'; propertyName: string }
+  | { type: 'editContent'; nodeType: string }
   | {
       type: 'gotoEventHandler';
       handlerName: string;
@@ -68,6 +69,6 @@ export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
 
-  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler'];
+  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler'];
   return validTypes.includes(m.type);
 }

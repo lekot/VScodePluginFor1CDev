@@ -10,6 +10,7 @@ import type { MetadataTreeDataProvider } from './treeDataProvider';
 import type { TypeEditorProvider } from './typeEditorProvider';
 import { validateProperties } from './propertiesValidation';
 import type { WebviewMessage, ExtensionMessage } from './propertiesWebviewTypes';
+import { CONTENT_EDITOR_COMMANDS } from './propertiesWebviewContent';
 
 /**
  * Context passed to all message handlers — replaces class `this`.
@@ -69,6 +70,11 @@ export async function handleMessage(
       case 'editType':
         Logger.info('editType message received from webview');
         await handleEditTypeMessage(message, ctx);
+        break;
+
+      case 'editContent':
+        Logger.info(`editContent message received from webview: nodeType=${message.nodeType}`);
+        await handleEditContentMessage(message, ctx);
         break;
 
       case 'propertyChanged':
@@ -424,6 +430,21 @@ export async function handleEditTypeMessage(
       message: `Failed to edit type: ${error instanceof Error ? error.message : 'Unknown error'}`,
     });
   }
+}
+
+export async function handleEditContentMessage(
+  message: WebviewMessage,
+  ctx: MessageHandlerContext
+): Promise<void> {
+  if (message.type !== 'editContent') {
+    return;
+  }
+  const command = CONTENT_EDITOR_COMMANDS.get(message.nodeType);
+  if (!command) {
+    Logger.warn(`handleEditContentMessage: no command mapped for nodeType="${message.nodeType}"`);
+    return;
+  }
+  await vscode.commands.executeCommand(command, ctx.currentNode);
 }
 
 // ---------------------------------------------------------------------------

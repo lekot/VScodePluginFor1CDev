@@ -15,6 +15,16 @@ import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from '../formEditor/formEventCatalog';
 
 /**
+ * Maps metadata node type to the VS Code command that opens its composition editor.
+ */
+export const CONTENT_EDITOR_COMMANDS = new Map<string, string>([
+  ['Subsystem', '1c-metadata-tree.editSubsystemComposition'],
+  ['ExchangePlan', '1c-metadata-tree.editExchangePlanContent'],
+  ['CommonAttribute', '1c-metadata-tree.editCommonAttributeContent'],
+  ['FunctionalOption', '1c-metadata-tree.editFunctionalOptionContent'],
+]);
+
+/**
  * Escape HTML to prevent XSS
  */
 export function escapeHtml(text: string): string {
@@ -136,10 +146,18 @@ export function renderPropertyInput(
     const summary = Array.isArray(displayValue)
       ? `[${displayValue.length} элем.]`
       : '{...}';
+    // For Content fields on types that have composition editors, show an edit button
+    const isContentProperty = name.toLowerCase() === 'content';
+    const nodeType = currentNode?.type ?? '';
+    const contentEditorCommand = isContentProperty ? CONTENT_EDITOR_COMMANDS.get(nodeType) : undefined;
+    const editContentButton = contentEditorCommand
+      ? `<button type="button" class="edit-content-btn" data-node-type="${escapeHtml(nodeType)}" aria-label="Редактировать состав" title="Редактировать состав"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>`
+      : '';
     return `
       <div class="property-row">
         <label class="property-label">${escapeHtml(displayName)}</label>
         <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(summary)}" disabled />
+        ${editContentButton}
       </div>
     `;
   }
@@ -367,6 +385,13 @@ export function getWebviewScript(readOnly: boolean): string {
 
       document.querySelectorAll('.edit-type-btn').forEach(btn => {
         btn.addEventListener('click', handleEditType);
+      });
+
+      document.querySelectorAll('.edit-content-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const nodeType = btn.dataset.nodeType;
+          vscode.postMessage({ type: 'editContent', nodeType });
+        });
       });
 
       const saveBtn = document.getElementById('save-btn');
@@ -610,7 +635,7 @@ export function getWebviewContent(node: TreeNode): string {
           opacity: 0.5;
           cursor: not-allowed;
         }
-        .edit-type-btn {
+        .edit-type-btn, .edit-content-btn {
           padding: 4px 8px;
           display: inline-flex;
           align-items: center;
@@ -619,7 +644,7 @@ export function getWebviewContent(node: TreeNode): string {
           background: var(--vscode-button-secondaryBackground);
           color: var(--vscode-button-secondaryForeground);
         }
-        .edit-type-btn:hover {
+        .edit-type-btn:hover, .edit-content-btn:hover {
           background: var(--vscode-button-secondaryHoverBackground);
         }
         .edit-type-icon {
