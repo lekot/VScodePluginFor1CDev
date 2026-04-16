@@ -227,6 +227,7 @@ export function mergeR5TypeFoldersUnderCommon(rootNode: TreeNode, ctx: Normalize
 }
 
 const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
+  { id: 'EnumValues', name: 'Значения', type: MetadataType.EnumValue },
   { id: 'Dimensions', name: 'Измерения', type: MetadataType.Dimension, typeDirName: 'Dimensions' },
   { id: 'Resources', name: 'Ресурсы', type: MetadataType.Resource, typeDirName: 'Resources' },
   { id: 'Attributes', name: 'Реквизиты', type: MetadataType.Attribute, typeDirName: 'Attributes' },
@@ -315,6 +316,7 @@ const R6_ALLOWED_CHILDREN = new Map<MetadataType, string[]>([
   [MetadataType.ExchangePlan, ALL_R6],
   [MetadataType.ChartOfCharacteristicTypes, ALL_R6],
   [MetadataType.ChartOfCalculationTypes, ALL_R6],
+  [MetadataType.Enum, ['EnumValues']],
   [MetadataType.InformationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
   [MetadataType.AccumulationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
   [MetadataType.AccountingRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],

@@ -330,7 +330,7 @@ export async function handleEditTypeMessage(
 
   // Get current Type value — may be object (from XML) or XML string. Editor expects XML.
   // Support both 'Type' and 'v8:Type' keys (XML parser / format may vary).
-  const rawType = ctx.currentNode.properties['Type'] ?? ctx.currentNode.properties['v8:Type'] ?? ctx.currentNode.properties['Source'];
+  const rawType = ctx.currentNode.properties['Type'] ?? ctx.currentNode.properties['v8:Type'];
   Logger.info(`handleEditTypeMessage: rawType type=${typeof rawType}, present=${rawType !== undefined && rawType !== null}`);
   if (rawType !== undefined && rawType !== null && typeof rawType === 'string') {
     Logger.info(`handleEditTypeMessage: rawType string preview=${(rawType as string).substring(0, 80)}`);
@@ -407,12 +407,9 @@ export async function handleEditTypeMessage(
       // saveProperties' changedKeys comparison see old == new and skip the property.
       // node.properties is updated after successful save in saveProperties.
 
-      // Use the same property key that was found in node.properties
-      const typePropertyKey = ctx.currentNode.properties['Source'] !== undefined ? 'Source' : 'Type';
-
       ctx.postMessage({
         type: 'typeUpdated',
-        property: typePropertyKey,
+        property: 'Type',
         value: updatedTypeXML,
       });
 
@@ -493,10 +490,10 @@ export async function saveProperties(
                 Logger.info(`  Property "${key}" changed: old=${JSON.stringify(oldValue)} (${oldType}), new=${JSON.stringify(newValue)} (${newType})`);
               }
 
-              // Special handling for Type/Source property (TypeDescription):
+              // Special handling for Type property (TypeDescription):
               // If old value is an object (structured XML) and new value is a string (display representation),
-              // they are considered equal (not changed) - don't include Type/Source in changedKeys
-              if (key === 'Type' || key === 'Source') {
+              // they are considered equal (not changed) - don't include Type in changedKeys
+              if (key === 'Type') {
                 // If new is XML string (starts with '<'), it was explicitly changed via type editor
                 if (typeof newValue === 'string' && newValue.trim().startsWith('<')) {
                   return true;

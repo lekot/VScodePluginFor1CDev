@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DesignerParser } from '../../src/parsers/designerParser';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
+import { ensureR6PlaceholdersForInstanceNode } from '../../src/utils/treeNormalization';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
 
 const uhConf = path.resolve(__dirname, '../../..', 'FormatSamples', 'uh');
 
@@ -100,7 +102,7 @@ suite('Tree structure regression', function () {
       'ABCXYZКлассификацияКлиентов'
     );
 
-    const dimensionsNode = children.find((c) => c.id.endsWith('.Dimensions'));
+    const dimensionsNode = children.find((c) => c.id === 'Dimensions');
     assert.ok(dimensionsNode, 'Dimensions container must exist');
     assert.ok(
       dimensionsNode!.children && dimensionsNode!.children.length > 0,
@@ -110,7 +112,7 @@ suite('Tree structure regression', function () {
       assert.strictEqual(dim.type, MetadataType.Dimension, `"${dim.name}" must have type Dimension`);
     }
 
-    const resourcesNode = children.find((c) => c.id.endsWith('.Resources'));
+    const resourcesNode = children.find((c) => c.id === 'Resources');
     assert.ok(resourcesNode, 'Resources container must exist');
     assert.ok(
       resourcesNode!.children && resourcesNode!.children.length > 0,
@@ -119,6 +121,73 @@ suite('Tree structure regression', function () {
     for (const res of resourcesNode!.children!) {
       assert.strictEqual(res.type, MetadataType.Resource, `"${res.name}" must have type Resource`);
     }
+  });
+
+  test('Enum instance gets EnumValues R6 placeholder (end-to-end via treeNormalization)', async function () {
+    if (!fs.existsSync(uhConf)) {
+      this.skip();
+    }
+
+    // Simulate what happens in tree: shallow Enum instance → ensureR6PlaceholdersForInstanceNode → placeholder added
+    const enumsTypeNode: TreeNode = {
+      id: 'Enums',
+      name: 'Перечисления',
+      type: MetadataType.Enum,
+      properties: {},
+      children: [],
+    };
+    const enumInstance: TreeNode = {
+      id: 'Enums.ВажностьПроблемыУчета',
+      name: 'ВажностьПроблемыУчета',
+      type: MetadataType.Enum,
+      properties: {},
+      filePath: path.join(uhConf, 'Enums', 'ВажностьПроблемыУчета.xml'),
+      parent: enumsTypeNode,
+      children: [],
+    };
+
+    ensureR6PlaceholdersForInstanceNode(enumInstance, { format: ConfigFormat.Designer, configPath: uhConf });
+
+    const enumValuesPlaceholder = enumInstance.children?.find((c) => c.id === 'EnumValues');
+    assert.ok(enumValuesPlaceholder, 'EnumValues R6 placeholder must be added to Enum instance');
+    assert.strictEqual(enumValuesPlaceholder!.name, 'Значения');
+    assert.strictEqual(
+      (enumValuesPlaceholder!.properties as { _lazy?: boolean })._lazy,
+      true,
+      'EnumValues placeholder must be marked lazy for on-expand loading'
+    );
+  });
+
+  test('InformationRegister instance gets Dimensions/Resources R6 placeholders (end-to-end)', async function () {
+    if (!fs.existsSync(uhConf)) {
+      this.skip();
+    }
+
+    const typeNode: TreeNode = {
+      id: 'InformationRegisters',
+      name: 'Регистры сведений',
+      type: MetadataType.InformationRegister,
+      properties: {},
+      children: [],
+    };
+    const instance: TreeNode = {
+      id: 'InformationRegisters.ABCXYZКлассификацияКлиентов',
+      name: 'ABCXYZКлассификацияКлиентов',
+      type: MetadataType.InformationRegister,
+      properties: {},
+      filePath: path.join(uhConf, 'InformationRegisters', 'ABCXYZКлассификацияКлиентов.xml'),
+      parent: typeNode,
+      children: [],
+    };
+
+    ensureR6PlaceholdersForInstanceNode(instance, { format: ConfigFormat.Designer, configPath: uhConf });
+
+    const dimensions = instance.children?.find((c) => c.id === 'Dimensions');
+    const resources = instance.children?.find((c) => c.id === 'Resources');
+    assert.ok(dimensions, 'Dimensions placeholder must be added');
+    assert.ok(resources, 'Resources placeholder must be added');
+    assert.strictEqual((dimensions!.properties as { _lazy?: boolean })._lazy, true);
+    assert.strictEqual((resources!.properties as { _lazy?: boolean })._lazy, true);
   });
 
   test('CommonModule has no Attribute-type children', async function () {

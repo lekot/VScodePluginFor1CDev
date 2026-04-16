@@ -8,7 +8,7 @@ import {
   isTabularSectionColumnsContainer,
 } from '../utils/treeNormalization';
 
-const R6_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
+const R6_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues']);
 /** Types with R6 placeholder children (Forms, Attributes, etc.) — must match treeNormalization.ts R6_OBJECT_TYPES. */
 const R6_OBJECT_TYPES = new Set<MetadataType>([
   MetadataType.Catalog,
@@ -28,6 +28,7 @@ const R6_OBJECT_TYPES = new Set<MetadataType>([
   MetadataType.FilterCriterion,
   MetadataType.DocumentJournal,
   MetadataType.SettingsStorage,
+  MetadataType.Enum,
 ]);
 
 /**

@@ -14,7 +14,7 @@ export const eventSubscriptionRules: MetadataObjectRules = {
         event: { type: 'SystemEnumeration', order: 2, xml: 'Event', yaml: 'Событие', defaultValueXML: 'BeforeWrite', typeSE: 'EventSubscriptionEvent' },
         handler: { type: 'string', order: 3, xml: 'Handler', yaml: 'Обработчик', defaultValueXML: '' },
         name: { type: 'string', order: 4, xml: 'Name', yaml: 'Имя', required: true },
-        source: { type: 'TypeDescription', order: 5, xml: 'Source', defaultValueXML: {} },
+        source: { type: 'string', order: 5, xml: 'Source', yaml: 'Источник', defaultValueXML: '' },
         synonym: { type: 'I8nText', order: 6, xml: 'Synonym', yaml: 'Синоним' },
     },
 };

@@ -119,7 +119,7 @@ export function renderPropertyInput(
 ): string {
   // Format Type property if it's an object (defensive fallback)
   let displayValue = value;
-  const isTypeProperty = name.toLowerCase() === 'type' || name.toLowerCase() === 'source';
+  const isTypeProperty = name.toLowerCase() === 'type';
 
   if (isTypeProperty && (value === null || value === undefined)) {
     displayValue = 'Not set';
@@ -141,18 +141,19 @@ export function renderPropertyInput(
     }
   }
 
+  // Content property — always show edit button for types with composition editors (even when empty/string)
+  const isContentProperty = name.toLowerCase() === 'content';
+  const nodeTypeStr = currentNode?.type ?? '';
+  const contentEditorCommand = isContentProperty ? CONTENT_EDITOR_COMMANDS.get(nodeTypeStr) : undefined;
+
   // Complex objects/arrays (except Type which is handled above) — render as read-only summary
   if (!isTypeProperty && (Array.isArray(displayValue) || (typeof displayValue === 'object' && displayValue !== null))) {
     const displayName = getPropertyLabel(name);
     const summary = Array.isArray(displayValue)
       ? `[${displayValue.length} элем.]`
       : '{...}';
-    // For Content fields on types that have composition editors, show an edit button
-    const isContentProperty = name.toLowerCase() === 'content';
-    const nodeType = currentNode?.type ?? '';
-    const contentEditorCommand = isContentProperty ? CONTENT_EDITOR_COMMANDS.get(nodeType) : undefined;
     const editContentButton = contentEditorCommand
-      ? `<button type="button" class="edit-content-btn" data-node-type="${escapeHtml(nodeType)}" aria-label="Редактировать состав" title="Редактировать состав"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>`
+      ? `<button type="button" class="edit-content-btn" data-node-type="${escapeHtml(nodeTypeStr)}" aria-label="Редактировать состав" title="Редактировать состав"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>`
       : '';
     return `
       <div class="property-row">
@@ -163,11 +164,24 @@ export function renderPropertyInput(
     `;
   }
 
+  // Empty Content (string value) — show edit button anyway for types with composition editors
+  if (contentEditorCommand) {
+    const displayName = getPropertyLabel(name);
+    const summary = '[пусто]';
+    return `
+      <div class="property-row">
+        <label class="property-label">${escapeHtml(displayName)}</label>
+        <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(summary)}" disabled />
+        <button type="button" class="edit-content-btn" data-node-type="${escapeHtml(nodeTypeStr)}" aria-label="Редактировать состав" title="Редактировать состав"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>
+      </div>
+    `;
+  }
+
   const propertyType = detectPropertyType(displayValue);
 
   // Determine if this specific property should be read-only
   const nodeIsRoot = isRootElement(currentNode);
-  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion', 'CommonAttribute', 'EventSubscription'];
+  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion', 'CommonAttribute'];
   const propertyReadOnly = globalReadOnly || (nodeIsRoot && isTypeProperty && !typeEditableRootTypes.includes(currentNode?.type ?? ''));
   const disabled = propertyReadOnly ? 'disabled' : '';
 

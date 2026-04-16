@@ -1342,20 +1342,20 @@ export class DesignerParser {
     const enumValues = extractEnumValues(childObjects as Record<string, unknown>);
     if (enumValues.length === 0) {return null;}
 
-    const containerId = `${parentId}.EnumValues`;
     const container: TreeNode = {
-      id: containerId,
+      id: 'EnumValues',
       name: 'Значения',
       type: MetadataType.EnumValue,
       properties: {},
       children: [],
+      parentFilePath: xmlPath,
     };
 
     for (const ev of enumValues) {
       const props = (ev as Record<string, unknown>).Properties ?? ev;
       const name = (props as Record<string, unknown>)?.Name ?? (props as Record<string, unknown>)?.name ?? 'Unknown';
       const node: TreeNode = {
-        id: `${containerId}.${String(name)}`,
+        id: `${parentId}.EnumValues.${String(name)}`,
         name: String(name),
         type: MetadataType.EnumValue,
         properties: flattenAttributeProperties(ev),
@@ -1380,19 +1380,19 @@ export class DesignerParser {
     const dimensions = extractDimensions(childObjects as Record<string, unknown>);
     if (dimensions.length === 0) {return null;}
 
-    const containerId = `${parentId}.Dimensions`;
     const container: TreeNode = {
-      id: containerId,
+      id: 'Dimensions',
       name: 'Измерения',
       type: MetadataType.Dimension,
       properties: {},
       children: [],
+      parentFilePath: xmlPath,
     };
 
     for (const dim of dimensions) {
       const attrNode = this.buildAttributeNodeFromRaw(
         dim as Record<string, unknown>,
-        containerId,
+        `${parentId}.Dimensions`,
         xmlPath
       );
       attrNode.type = MetadataType.Dimension;
@@ -1415,19 +1415,19 @@ export class DesignerParser {
     const resources = extractResources(childObjects as Record<string, unknown>);
     if (resources.length === 0) {return null;}
 
-    const containerId = `${parentId}.Resources`;
     const container: TreeNode = {
-      id: containerId,
+      id: 'Resources',
       name: 'Ресурсы',
       type: MetadataType.Resource,
       properties: {},
       children: [],
+      parentFilePath: xmlPath,
     };
 
     for (const res of resources) {
       const attrNode = this.buildAttributeNodeFromRaw(
         res as Record<string, unknown>,
-        containerId,
+        `${parentId}.Resources`,
         xmlPath
       );
       attrNode.type = MetadataType.Resource;
