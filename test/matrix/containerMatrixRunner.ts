@@ -105,16 +105,23 @@ function nodeMatchesMatrixVictim(c: TreeNode, target: TreeNode, name2: string): 
 }
 
 /**
- * Pick node to delete after create×2. Attributes from Designer ChildObjects sit under an
- * `Attributes` folder node, not as direct children of the object (Role, CommonModule, …).
+ * Pick node to delete after create×2. R6 folders (Attributes, EnumValues, Dimensions, Resources, PredefinedData)
+ * hold created children; search inside those folders when not a direct match.
  */
 function pickVictimNodeFromList(children: TreeNode[], target: TreeNode, name2: string): TreeNode | undefined {
   const direct = children.find((c) => nodeMatchesMatrixVictim(c, target, name2));
   if (direct) {
     return direct;
   }
+  const nestedVictimFolderIds = new Set([
+    'Attributes',
+    'EnumValues',
+    'Dimensions',
+    'Resources',
+    'PredefinedData',
+  ]);
   for (const c of children) {
-    if (c.id === 'Attributes' && c.children?.length) {
+    if (nestedVictimFolderIds.has(c.id) && c.children?.length) {
       const hit = c.children.find((a) => nodeMatchesMatrixVictim(a, target, name2));
       if (hit) {
         return hit;
