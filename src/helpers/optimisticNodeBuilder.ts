@@ -86,6 +86,55 @@ function buildOptimisticCreatedNode(
     };
   }
 
+  const owner = target.parent;
+  if (target.id === 'EnumValues' && owner) {
+    return {
+      id: `${owner.id}.EnumValues.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.EnumValue,
+      parent: target,
+      properties: {},
+      children: [],
+      parentFilePath: owner.filePath,
+    };
+  }
+
+  if (target.id === 'Dimensions' && owner) {
+    return {
+      id: `${owner.id}.Dimensions.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.Dimension,
+      parent: target,
+      properties: {},
+      children: [],
+      parentFilePath: owner.filePath,
+    };
+  }
+
+  if (target.id === 'Resources' && owner) {
+    return {
+      id: `${owner.id}.Resources.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.Resource,
+      parent: target,
+      properties: {},
+      children: [],
+      parentFilePath: owner.filePath,
+    };
+  }
+
+  if (target.id === 'PredefinedData' && owner) {
+    return {
+      id: `${owner.id}.PredefinedData.${trimmed}`,
+      name: trimmed,
+      type: MetadataType.PredefinedItem,
+      parent: target,
+      properties: {},
+      children: [],
+      parentFilePath: target.filePath,
+    };
+  }
+
   if (target.type !== MetadataType.Configuration) {
     // Object-level create defaults to Attribute in elementOperations.
     return {

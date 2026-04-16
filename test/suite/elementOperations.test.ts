@@ -1348,6 +1348,158 @@ suite('elementOperations', () => {
   // ---------------------------------------------------------------------------
   // findTabularSectionInstanceForAttributeParent — exported utility
   // ---------------------------------------------------------------------------
+  // R6: EnumValue / Dimension / Resource / PredefinedItem (issue #77)
+  // ---------------------------------------------------------------------------
+
+  test('createElement adds EnumValue under EnumValues folder', async () => {
+    const dir = await createTempDir('1cviewer-enumvalue-');
+    try {
+      const enumsDir = path.join(dir, 'Enums');
+      await fs.promises.mkdir(enumsDir, { recursive: true });
+      const enumPath = path.join(enumsDir, 'TestEnum.xml');
+      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'TestEnum');
+      const enumNode: TreeNode = {
+        id: 'Enums.TestEnum',
+        name: 'TestEnum',
+        type: MetadataType.Enum,
+        filePath: enumPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const enumValuesFolder: TreeNode = {
+        id: 'EnumValues',
+        name: 'Значения',
+        type: MetadataType.EnumValue,
+        parent: enumNode,
+        properties: {},
+        children: [],
+      };
+      enumNode.children = [enumValuesFolder];
+      enumValuesFolder.parent = enumNode;
+
+      await createElement(enumValuesFolder, 'NewEnumMember');
+      const xml = await readFileContent(enumPath);
+      assert.ok(xml.includes('EnumValue'), 'EnumValue block expected');
+      assert.ok(xml.includes('<Name>NewEnumMember</Name>'), 'Name expected');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement adds Dimension under Dimensions folder (InformationRegister)', async () => {
+    const dir = await createTempDir('1cviewer-dimension-');
+    try {
+      const regsDir = path.join(dir, 'InformationRegisters');
+      await fs.promises.mkdir(regsDir, { recursive: true });
+      const regPath = path.join(regsDir, 'TestIR.xml');
+      await XMLWriter.createMinimalElementFile(regPath, 'InformationRegister', 'TestIR');
+      const regNode: TreeNode = {
+        id: 'InformationRegisters.TestIR',
+        name: 'TestIR',
+        type: MetadataType.InformationRegister,
+        filePath: regPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const dimsFolder: TreeNode = {
+        id: 'Dimensions',
+        name: 'Измерения',
+        type: MetadataType.Dimension,
+        parent: regNode,
+        properties: {},
+        children: [],
+      };
+      regNode.children = [dimsFolder];
+      dimsFolder.parent = regNode;
+
+      await createElement(dimsFolder, 'DimOne');
+      const xml = await readFileContent(regPath);
+      assert.ok(xml.includes('<Dimension'), 'Dimension block expected');
+      assert.ok(xml.includes('<Name>DimOne</Name>'), 'Dimension name expected');
+      assert.ok(xml.includes('<Master>true</Master>'), 'First dimension is master');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement adds Resource under Resources folder (AccumulationRegister)', async () => {
+    const dir = await createTempDir('1cviewer-resource-');
+    try {
+      const regsDir = path.join(dir, 'AccumulationRegisters');
+      await fs.promises.mkdir(regsDir, { recursive: true });
+      const regPath = path.join(regsDir, 'TestAR.xml');
+      await XMLWriter.createMinimalElementFile(regPath, 'AccumulationRegister', 'TestAR');
+      const regNode: TreeNode = {
+        id: 'AccumulationRegisters.TestAR',
+        name: 'TestAR',
+        type: MetadataType.AccumulationRegister,
+        filePath: regPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const resFolder: TreeNode = {
+        id: 'Resources',
+        name: 'Ресурсы',
+        type: MetadataType.Resource,
+        parent: regNode,
+        properties: {},
+        children: [],
+      };
+      regNode.children = [resFolder];
+      resFolder.parent = regNode;
+
+      await createElement(resFolder, 'ResOne');
+      const xml = await readFileContent(regPath);
+      assert.ok(xml.includes('<Resource'), 'Resource block expected');
+      assert.ok(xml.includes('<Name>ResOne</Name>'), 'Resource name expected');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement creates Predefined.xml with Item under PredefinedData (Catalog)', async () => {
+    const dir = await createTempDir('1cviewer-predef-');
+    try {
+      const catalogsDir = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(path.join(catalogsDir, 'Cat1'), { recursive: true });
+      const catPath = path.join(catalogsDir, 'Cat1.xml');
+      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Cat1');
+      const predefinedPath = path.join(catalogsDir, 'Cat1', 'Ext', 'Predefined.xml');
+      const catNode: TreeNode = {
+        id: 'Catalogs.Cat1',
+        name: 'Cat1',
+        type: MetadataType.Catalog,
+        filePath: catPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const predefFolder: TreeNode = {
+        id: 'PredefinedData',
+        name: 'Предопределённые',
+        type: MetadataType.PredefinedItem,
+        filePath: predefinedPath,
+        parent: catNode,
+        properties: {},
+        children: [],
+      };
+      catNode.children = [predefFolder];
+      predefFolder.parent = catNode;
+
+      await createElement(predefFolder, 'PredefinedOne');
+      assert.ok(fileExists(predefinedPath), 'Predefined.xml should be created');
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('CatalogPredefinedItems'), 'xsi type');
+      assert.ok(xml.includes('<Name>PredefinedOne</Name>'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
 
   test('findTabularSectionInstanceForAttributeParent returns section for columns container', async () => {
     const { findTabularSectionInstanceForAttributeParent } = await import('../../src/services/elementOperations');
