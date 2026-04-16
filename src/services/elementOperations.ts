@@ -496,6 +496,22 @@ export async function createElement(
     }
   }
 
+  // Recognize new R6 containers that don't yet have a create handler — give a precise message
+  const unsupportedContainers: Record<string, string> = {
+    EnumValues: 'значений перечисления',
+    Dimensions: 'измерений регистра',
+    Resources: 'ресурсов регистра',
+    PredefinedData: 'предопределённых элементов',
+  };
+  const reason = unsupportedContainers[parentNode.id];
+  if (reason) {
+    throw new Error(
+      `Создание ${reason} пока не поддерживается. ` +
+        `Добавьте элемент напрямую в XML файл объекта и перезагрузите конфигурацию. ` +
+        `Реализация CRUD через UI в процессе разработки.`
+    );
+  }
+
   throw new Error(
     'Создание элемента: выберите узел типа (в т.ч. под «Общие»), объект метаданных или контейнер (Атрибуты, Табличные части). ' +
       'Если выбран типовой узел, его родитель должен быть корень конфигурации или группа «Общие».'

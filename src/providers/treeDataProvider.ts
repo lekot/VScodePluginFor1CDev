@@ -30,7 +30,7 @@ import { buildTreeItem } from './treeItemBuilder';
 import { getReferenceableObjects, getReferenceableObjectsForTypeEditor } from './treeReferenceLoader';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
-const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues']);
+const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
 
 /**
  * Tree Data Provider for VS Code Tree View

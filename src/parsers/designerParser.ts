@@ -650,10 +650,9 @@ export class DesignerParser {
                 },
                 filePath: itemPath,
               };
-            } else if (stat.isFile() && item === 'Predefined.xml') {
-              // Parse predefined data items
-              return this.parsePredefinedData(itemPath, qp);
             }
+            // Predefined.xml is handled separately as a top-level "Предопределённые" R6 placeholder,
+            // not as a child of Extensions (see applyXmlDerivedChildren).
           } catch (error) {
             Logger.debug(`Error processing extension ${itemPath}`, error);
           }
@@ -707,14 +706,28 @@ export class DesignerParser {
    * Parse Predefined.xml and return a container node with predefined item children.
    * Returns null (not a node) when the file has no items or cannot be parsed.
    * @param filePath Absolute path to Predefined.xml
-   * @param qp Id prefix (e.g. "Catalogs.MyName.")
+   * @param filePath Absolute path to Ext/Predefined.xml (may or may not exist)
+   * @param parentId Parent instance id (e.g. "Catalogs.MyName") for child node ids
    */
-  private static async parsePredefinedData(filePath: string, qp: string): Promise<TreeNode | null> {
+  private static async parsePredefinedData(filePath: string, parentId: string): Promise<TreeNode> {
+    const container: TreeNode = {
+      id: 'PredefinedData',
+      name: 'Предопределённые',
+      type: MetadataType.PredefinedItem,
+      properties: {},
+      children: [],
+      filePath,
+    };
+    try {
+      await fs.promises.access(filePath);
+    } catch {
+      // No Predefined.xml on disk yet — return empty container so UI can show it for creation
+      return container;
+    }
     try {
       const parsed = await XmlParser.parseFileAsync(filePath);
-      if (!parsed) { return null; }
+      if (!parsed) { return container; }
 
-      // Find PredefinedData root — may carry a namespace prefix
       let predefinedData: Record<string, unknown> | null = null;
       for (const [key, val] of Object.entries(parsed)) {
         if (key === 'PredefinedData' || key.endsWith(':PredefinedData')) {
@@ -722,22 +735,11 @@ export class DesignerParser {
           break;
         }
       }
-      if (!predefinedData) { return null; }
+      if (!predefinedData) { return container; }
 
       const rawItems = predefinedData['Item'];
-      if (!rawItems) { return null; }
+      if (!rawItems) { return container; }
       const items = Array.isArray(rawItems) ? rawItems : [rawItems];
-      if (items.length === 0) { return null; }
-
-      const containerId = `${qp}Ext.PredefinedData`;
-      const container: TreeNode = {
-        id: containerId,
-        name: 'Предопределённые',
-        type: MetadataType.PredefinedItem,
-        properties: {},
-        children: [],
-        filePath,
-      };
 
       for (const item of items) {
         if (!item || typeof item !== 'object') { continue; }
@@ -745,7 +747,7 @@ export class DesignerParser {
         const name = String(obj['Name'] ?? 'Unknown');
         const isFolder = String(obj['IsFolder'] ?? 'false') === 'true';
         const node: TreeNode = {
-          id: `${containerId}.${name}`,
+          id: `${parentId}.PredefinedData.${name}`,
           name,
           type: MetadataType.PredefinedItem,
           properties: {
@@ -762,7 +764,7 @@ export class DesignerParser {
       return container;
     } catch (error) {
       Logger.debug(`Error parsing predefined data from ${filePath}`, error);
-      return null;
+      return container;
     }
   }
 
@@ -1048,6 +1050,20 @@ export class DesignerParser {
         resourcesNode.parent = parent;
         parent.children!.push(resourcesNode);
       }
+    }
+
+    // Predefined data for types that support it
+    const predefinedTypes = [
+      MetadataType.Catalog,
+      MetadataType.ChartOfAccounts,
+      MetadataType.ChartOfCharacteristicTypes,
+    ];
+    if (predefinedTypes.includes(parent.type)) {
+      // Determine the parent directory of the XML file to locate Ext/Predefined.xml
+      const predefinedFilePath = path.join(path.dirname(xmlPath), elementName, 'Ext', 'Predefined.xml');
+      const predefinedNode = await this.parsePredefinedData(predefinedFilePath, parent.id);
+      predefinedNode.parent = parent;
+      parent.children!.push(predefinedNode);
     }
   }
 

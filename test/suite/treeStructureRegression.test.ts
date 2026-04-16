@@ -190,6 +190,70 @@ suite('Tree structure regression', function () {
     assert.strictEqual((resources!.properties as { _lazy?: boolean })._lazy, true);
   });
 
+  test('Catalog instance gets PredefinedData R6 placeholder (end-to-end)', async function () {
+    if (!fs.existsSync(uhConf)) {
+      this.skip();
+    }
+
+    const typeNode: TreeNode = {
+      id: 'Catalogs',
+      name: 'Справочники',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [],
+    };
+    const instance: TreeNode = {
+      id: 'Catalogs.Валюты',
+      name: 'Валюты',
+      type: MetadataType.Catalog,
+      properties: {},
+      filePath: path.join(uhConf, 'Catalogs', 'Валюты.xml'),
+      parent: typeNode,
+      children: [],
+    };
+
+    ensureR6PlaceholdersForInstanceNode(instance, { format: ConfigFormat.Designer, configPath: uhConf });
+
+    const predefined = instance.children?.find((c) => c.id === 'PredefinedData');
+    assert.ok(predefined, 'PredefinedData placeholder must be added to Catalog instance (even when file is absent)');
+    assert.strictEqual(predefined!.name, 'Предопределённые');
+    assert.strictEqual((predefined!.properties as { _lazy?: boolean })._lazy, true);
+  });
+
+  test('parsePredefinedData via loadChildrenForElement returns container (empty or populated)', async function () {
+    if (!fs.existsSync(uhConf)) {
+      this.skip();
+    }
+
+    // АлгоритмыОпределенияБазовойДаты has Ext/Predefined.xml with items
+    const children = await DesignerParser.loadChildrenForElement(
+      uhConf,
+      'Catalogs',
+      'АлгоритмыОпределенияБазовойДаты'
+    );
+
+    const container = children.find((c) => c.id === 'PredefinedData');
+    assert.ok(container, 'PredefinedData container must be in loadChildrenForElement result');
+    assert.strictEqual(container!.name, 'Предопределённые');
+    // Валюты has no Predefined.xml so this one has items (different catalog chosen)
+    assert.ok(
+      container!.children && container!.children.length > 0,
+      'АлгоритмыОпределенияБазовойДаты has predefined items — container should be non-empty'
+    );
+  });
+
+  test('PredefinedData container is empty for catalog without Predefined.xml', async function () {
+    if (!fs.existsSync(uhConf)) {
+      this.skip();
+    }
+
+    // Валюты has no Ext/Predefined.xml
+    const children = await DesignerParser.loadChildrenForElement(uhConf, 'Catalogs', 'Валюты');
+    const container = children.find((c) => c.id === 'PredefinedData');
+    assert.ok(container, 'PredefinedData container must be present even without Predefined.xml');
+    assert.strictEqual(container!.children?.length ?? 0, 0, 'Container should be empty for Валюты');
+  });
+
   test('CommonModule has no Attribute-type children', async function () {
     if (!fs.existsSync(uhConf)) {
       this.skip();
