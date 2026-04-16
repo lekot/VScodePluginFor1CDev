@@ -18,6 +18,8 @@ import {
   collectTypeFolders,
   collectObjectsForType,
   buildOrphanEntries,
+  findCompositionTypeFolder,
+  resolveVisibleRoots,
 } from './compositionObjectCollector';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
@@ -282,13 +284,9 @@ export class CompositionEditorProvider implements vscode.Disposable {
     try {
       if (!this.treeProvider || !this.node) { return; }
 
-      // Find typeFolder in the tree and lazy-load children if needed
+      // Same visible roots as collectObjectsForType (multi-root order must not pick another config's folder)
       const roots = this.treeProvider.getRootNodes();
-      let typeFolder: TreeNode | undefined;
-      for (const root of roots) {
-        typeFolder = root.children?.find(c => c.id === typeFolderId);
-        if (typeFolder) { break; }
-      }
+      const typeFolder = findCompositionTypeFolder(roots, this.configPath, typeFolderId);
 
       if (typeFolder && (!typeFolder.children || typeFolder.children.length === 0)) {
         // Standard lazy load via getChildren
@@ -323,6 +321,7 @@ export class CompositionEditorProvider implements vscode.Disposable {
     if (!this.treeProvider || !this.node) { return; }
 
     const roots = this.treeProvider.getRootNodes();
+    const visibleRoots = resolveVisibleRoots(roots, this.configPath);
     const result: Record<string, CompositionObjectEntry[]> = {};
 
     // Add already loaded from cache
@@ -330,8 +329,8 @@ export class CompositionEditorProvider implements vscode.Disposable {
       result[id] = objects;
     }
 
-    // For each root — sequentially (prevent race conditions on tree mutation)
-    for (const root of roots) {
+    // For each visible root — sequentially (prevent race conditions on tree mutation)
+    for (const root of visibleRoots) {
       if (!root.children) { continue; }
       for (const typeFolder of root.children) {
         if (this.loadedObjects.has(typeFolder.id)) { continue; }
