@@ -27,7 +27,13 @@ import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
 import { buildTreeItem } from './treeItemBuilder';
-import { getReferenceableObjects, getReferenceableObjectsForTypeEditor } from './treeReferenceLoader';
+import {
+  getReferenceableObjects,
+  getReferenceableObjectsForTypeEditor,
+  getTypeEditorReferenceableScopeKey,
+  countPendingReferenceableTypeLoads,
+  cloneReferenceableGroups,
+} from './treeReferenceLoader';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
@@ -45,6 +51,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private readonly filter = new TreeFilterService();
   private readonly cache = new TreeCacheService();
+  /** Snapshot of referenceable names per scope for TypeEditor (invalidated with tree reload / structure). */
+  private readonly typeEditorReferenceableCache = new Map<string, ReferenceableGroup[]>();
 
   private messageUpdater: ((message: string | undefined) => void) | null = null;
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
@@ -450,6 +458,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (loadContext) {this.cache.setLoadContext(node.id, loadContext);}
     this.cache.clear();
     this.cache.buildCache(node);
+    this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size });
     this.filter.filterAncestorOrVisibleIds = null;
     this.refresh();
@@ -469,6 +478,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.cache.setLoadContexts(loadContextMap ?? new Map());
     this.cache.clear();
     for (const node of nodes) {this.cache.buildCache(node);}
+    this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size, roots: nodes.length });
     this.filter.filterAncestorOrVisibleIds = null;
     this.refresh();
@@ -522,6 +532,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         Logger.warn('Failed to eager load type folder', { folder: typeFolder.id, error });
       }
     }
+    this.clearTypeEditorReferenceableCache();
   }
 
   /**
@@ -583,6 +594,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       (el.properties as Record<string, unknown>)._lazy = true;
     }
     this.filter.filterAncestorOrVisibleIds = null;
+    this.clearTypeEditorReferenceableCache();
     this.refresh(el);
   }
 
@@ -976,6 +988,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.refresh(node);
   }
 
+  private clearTypeEditorReferenceableCache(): void {
+    if (this.typeEditorReferenceableCache.size === 0) {
+      return;
+    }
+    this.typeEditorReferenceableCache.clear();
+    Logger.debug('Cleared type editor referenceable cache');
+  }
+
   /**
    * Returns referenceable objects for the type editor: each reference kind with its project object names.
    * Aggregates from all configuration roots (first root used for kind order; names merged per kind).
@@ -992,7 +1012,57 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * If type editor gets an empty list, it can't offer "DocumentRef.<...>" selection.
    */
   public async getReferenceableObjectsForTypeEditor(node?: TreeNode): Promise<ReferenceableGroup[]> {
-    return getReferenceableObjectsForTypeEditor(node, this.rootNodes, this.cache);
+    const t0 = Date.now();
+    const scopeKey = getTypeEditorReferenceableScopeKey(node, this.rootNodes, this.cache);
+
+    if (scopeKey) {
+      const cached = this.typeEditorReferenceableCache.get(scopeKey);
+      if (cached) {
+        const durationMs = Date.now() - t0;
+        Logger.debug('getReferenceableObjectsForTypeEditor cache hit', { durationMs, scopeKey });
+        return cloneReferenceableGroups(cached);
+      }
+    }
+
+    const pendingLoads = countPendingReferenceableTypeLoads(node, this.rootNodes, this.cache);
+
+    const run = async (): Promise<ReferenceableGroup[]> => {
+      const groups = await getReferenceableObjectsForTypeEditor(node, this.rootNodes, this.cache);
+      if (scopeKey) {
+        this.typeEditorReferenceableCache.set(scopeKey, cloneReferenceableGroups(groups));
+      }
+      const durationMs = Date.now() - t0;
+      if (durationMs >= 500) {
+        Logger.info('getReferenceableObjectsForTypeEditor completed', {
+          durationMs,
+          scopeKey,
+          pendingLoads,
+        });
+      } else {
+        Logger.debug('getReferenceableObjectsForTypeEditor completed', {
+          durationMs,
+          scopeKey,
+          pendingLoads,
+        });
+      }
+      return groups;
+    };
+
+    if (pendingLoads > 0) {
+      return vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: MESSAGES.TYPE_EDITOR_LOADING_REFS,
+          cancellable: false,
+        },
+        async (progress) => {
+          progress.report({ increment: 0 });
+          return run();
+        }
+      );
+    }
+
+    return run();
   }
 
   private cloneNodeForRollback(node: TreeNode): TreeNode {

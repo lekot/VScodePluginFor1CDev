@@ -19,6 +19,8 @@ export const MESSAGES = {
 
   // Loading messages
   LOADING: 'Загрузка метаданных 1С...',
+  /** Shown while TypeEditor gathers referenceable object names from disk (large configs). */
+  TYPE_EDITOR_LOADING_REFS: 'Загрузка списка ссылочных типов для редактора…',
   SUCCESS: 'Метаданные 1С успешно загружены',
 
   // Error messages
