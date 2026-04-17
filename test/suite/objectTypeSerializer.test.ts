@@ -60,4 +60,44 @@ suite('ObjectTypeSerializer', () => {
     assert.ok(positions[0] < positions[1], 'first kind should appear before second');
     assert.ok(positions[1] < positions[2], 'second kind should appear before third');
   });
+
+  test('Manager kind with empty objectName serializes without dot', () => {
+    const def: ObjectTypeDefinition = {
+      types: [{ objectKind: 'CatalogManager', objectName: '' }],
+    };
+    const result = ObjectTypeSerializer.serialize(def);
+    assert.ok(result.includes('<v8:Type>cfg:CatalogManager</v8:Type>'), 'no dot after Manager kind');
+    assert.ok(!result.includes('cfg:CatalogManager.'), 'no spurious dot');
+  });
+
+  test('DocumentManager serializes as cfg:DocumentManager', () => {
+    const def: ObjectTypeDefinition = {
+      types: [{ objectKind: 'DocumentManager', objectName: '' }],
+    };
+    const result = ObjectTypeSerializer.serialize(def);
+    assert.strictEqual(result, '<Source>\n  <v8:Type>cfg:DocumentManager</v8:Type>\n</Source>');
+  });
+
+  test('DefinedType with name serializes with dot', () => {
+    const def: ObjectTypeDefinition = {
+      types: [{ objectKind: 'DefinedType', objectName: 'СсылкаНаОбъектПодразделения' }],
+    };
+    const result = ObjectTypeSerializer.serialize(def);
+    assert.ok(result.includes('<v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>'));
+  });
+
+  test('mixed: CatalogObject + DocumentManager + DefinedType', () => {
+    const def: ObjectTypeDefinition = {
+      types: [
+        { objectKind: 'CatalogObject', objectName: 'Номенклатура' },
+        { objectKind: 'DocumentManager', objectName: '' },
+        { objectKind: 'DefinedType', objectName: 'СсылкаНаОбъектПодразделения' },
+      ],
+    };
+    const result = ObjectTypeSerializer.serialize(def);
+    assert.ok(result.includes('<v8:Type>cfg:CatalogObject.Номенклатура</v8:Type>'));
+    assert.ok(result.includes('<v8:Type>cfg:DocumentManager</v8:Type>'));
+    assert.ok(!result.includes('cfg:DocumentManager.'));
+    assert.ok(result.includes('<v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>'));
+  });
 });

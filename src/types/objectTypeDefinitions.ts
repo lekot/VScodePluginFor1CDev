@@ -11,7 +11,47 @@ export type ObjectKind =
   | 'InformationRegisterRecordSet'
   | 'AccumulationRegisterRecordSet'
   | 'AccountingRegisterRecordSet'
-  | 'CalculationRegisterRecordSet';
+  | 'CalculationRegisterRecordSet'
+  | 'CatalogManager'
+  | 'DocumentManager'
+  | 'BusinessProcessManager'
+  | 'TaskManager'
+  | 'ChartOfCharacteristicTypesManager'
+  | 'ChartOfAccountsManager'
+  | 'ChartOfCalculationTypesManager'
+  | 'ExchangePlanManager'
+  | 'InformationRegisterManager'
+  | 'AccumulationRegisterManager'
+  | 'AccountingRegisterManager'
+  | 'CalculationRegisterManager'
+  | 'ConstantValueManager'
+  | 'DataProcessorManager'
+  | 'ReportManager'
+  | 'DocumentJournalManager'
+  | 'DefinedType';
+
+/**
+ * Manager-kinds that appear without an object name in XML (e.g. cfg:CatalogManager).
+ * DefinedType always has a name, so it is NOT in this set.
+ */
+export const OBJECT_KINDS_WITHOUT_NAME: ReadonlySet<ObjectKind> = new Set<ObjectKind>([
+  'CatalogManager',
+  'DocumentManager',
+  'BusinessProcessManager',
+  'TaskManager',
+  'ChartOfCharacteristicTypesManager',
+  'ChartOfAccountsManager',
+  'ChartOfCalculationTypesManager',
+  'ExchangePlanManager',
+  'InformationRegisterManager',
+  'AccumulationRegisterManager',
+  'AccountingRegisterManager',
+  'CalculationRegisterManager',
+  'ConstantValueManager',
+  'DataProcessorManager',
+  'ReportManager',
+  'DocumentJournalManager',
+]);
 
 export interface ObjectTypeInfo {
   objectKind: ObjectKind;

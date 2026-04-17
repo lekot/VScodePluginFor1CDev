@@ -3,7 +3,7 @@ import { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
-import { METADATA_TYPE_TO_OBJECT_KIND, OBJECT_KIND_ORDER } from '../constants/metadataTypeObjectKinds';
+import { METADATA_TYPE_TO_OBJECT_KIND, OBJECT_KIND_ORDER, ALL_MANAGER_KINDS } from '../constants/metadataTypeObjectKinds';
 import { resolveRootsToUse } from './treeReferenceLoader';
 import { TreeCacheService } from './treeCacheService';
 
@@ -39,6 +39,13 @@ function aggregateObjectableGroupsFromRoots(rootsToUse: readonly TreeNode[]): Ob
     }
   }
 
+  // Always add all 16 Manager-kinds with a single empty-name entry (they are "type as a whole").
+  for (const managerKind of ALL_MANAGER_KINDS) {
+    if (!byKind.has(managerKind)) {
+      byKind.set(managerKind, new Set(['']));
+    }
+  }
+
   return OBJECT_KIND_ORDER.map((objectKind) => ({
     objectKind,
     objectNames: Array.from(byKind.get(objectKind) ?? []),
@@ -65,7 +72,11 @@ export async function getObjectableObjectsForEditor(
   const rootsToUse = resolveRootsToUse(node, rootNodes);
 
   if (!rootsToUse.length) {
-    return OBJECT_KIND_ORDER.map((objectKind) => ({ objectKind, objectNames: [] }));
+    // Even with no roots, always include Manager-kinds and empty DefinedType group.
+    return OBJECT_KIND_ORDER.map((objectKind) => ({
+      objectKind,
+      objectNames: ALL_MANAGER_KINDS.includes(objectKind) ? [''] : [],
+    }));
   }
 
   type LoadTask = { typeNode: TreeNode; configPath: string };

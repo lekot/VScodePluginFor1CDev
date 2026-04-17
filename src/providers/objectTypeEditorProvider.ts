@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ObjectTypeDefinition, ObjectableGroup, ObjectTypeInfo, ObjectKind } from '../types/objectTypeDefinitions';
+import { ObjectTypeDefinition, ObjectableGroup, ObjectTypeInfo, ObjectKind, OBJECT_KINDS_WITHOUT_NAME } from '../types/objectTypeDefinitions';
 import { ObjectTypeParser } from '../parsers/objectTypeParser';
 import { OBJECT_KIND_ORDER } from '../constants/metadataTypeObjectKinds';
 import { Logger } from '../utils/logger';
@@ -22,6 +22,23 @@ const OBJECT_KIND_LABELS: Record<ObjectKind, string> = {
   AccumulationRegisterRecordSet: 'НаборЗаписей: Регистры накопления',
   AccountingRegisterRecordSet: 'НаборЗаписей: Регистры бухгалтерии',
   CalculationRegisterRecordSet: 'НаборЗаписей: Регистры расчёта',
+  CatalogManager: 'Менеджер: Справочники (тип целиком)',
+  DocumentManager: 'Менеджер: Документы (тип целиком)',
+  BusinessProcessManager: 'Менеджер: Бизнес-процессы (тип целиком)',
+  TaskManager: 'Менеджер: Задачи (тип целиком)',
+  ChartOfCharacteristicTypesManager: 'Менеджер: Планы видов характеристик (тип целиком)',
+  ChartOfAccountsManager: 'Менеджер: Планы счетов (тип целиком)',
+  ChartOfCalculationTypesManager: 'Менеджер: Планы видов расчёта (тип целиком)',
+  ExchangePlanManager: 'Менеджер: Планы обмена (тип целиком)',
+  InformationRegisterManager: 'Менеджер: Регистры сведений (тип целиком)',
+  AccumulationRegisterManager: 'Менеджер: Регистры накопления (тип целиком)',
+  AccountingRegisterManager: 'Менеджер: Регистры бухгалтерии (тип целиком)',
+  CalculationRegisterManager: 'Менеджер: Регистры расчёта (тип целиком)',
+  ConstantValueManager: 'Менеджер: Константы (тип целиком)',
+  DataProcessorManager: 'Менеджер: Обработки (тип целиком)',
+  ReportManager: 'Менеджер: Отчёты (тип целиком)',
+  DocumentJournalManager: 'Менеджер: Журналы документов (тип целиком)',
+  DefinedType: 'Определяемые типы',
 };
 
 type WebviewMessage =
@@ -115,10 +132,20 @@ export class ObjectTypeEditorProvider {
     for (const kind of OBJECT_KIND_ORDER) {
       const names = groupsByKind.get(kind);
       if (!names || names.size === 0) { continue; }
-      const children = Array.from(names).sort((a, b) => a.localeCompare(b, 'ru')).map((name) => ({
-        id: `${kind}:${name}`,
-        label: name,
-      }));
+
+      const isManagerKind = OBJECT_KINDS_WITHOUT_NAME.has(kind);
+      let children: { id: string; label: string; virtual?: boolean }[];
+
+      if (isManagerKind) {
+        // Manager kinds are "type as a whole" — show single element with the kind label as item label.
+        children = [{ id: `${kind}:`, label: OBJECT_KIND_LABELS[kind] ?? kind }];
+      } else {
+        children = Array.from(names).sort((a, b) => a.localeCompare(b, 'ru')).map((name) => ({
+          id: `${kind}:${name}`,
+          label: name,
+        }));
+      }
+
       result.push({ kind, label: OBJECT_KIND_LABELS[kind] ?? kind, children });
     }
 

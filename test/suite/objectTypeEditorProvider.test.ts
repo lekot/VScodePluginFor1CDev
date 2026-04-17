@@ -1,7 +1,9 @@
 import * as assert from 'assert';
 import type { ObjectTypeDefinition, ObjectableGroup } from '../../src/types/objectTypeDefinitions';
+import { OBJECT_KINDS_WITHOUT_NAME } from '../../src/types/objectTypeDefinitions';
 import { ObjectTypeParser } from '../../src/parsers/objectTypeParser';
 import { ObjectTypeSerializer } from '../../src/serializers/objectTypeSerializer';
+import { ALL_MANAGER_KINDS } from '../../src/constants/metadataTypeObjectKinds';
 
 // ObjectTypeEditorProvider wraps a webview which cannot be tested without VS Code runtime.
 // We test the pure helper logic: parsing, tree-building, and serialization round-trips.
@@ -140,6 +142,119 @@ suite('ObjectTypeEditorProvider (pure helpers)', () => {
     test('objectName with dots (e.g., namespace) is preserved', () => {
       const result = selectedIdsToDefinition(['CatalogObject:Some.DottedName']);
       assert.strictEqual(result.types[0].objectName, 'Some.DottedName');
+    });
+  });
+
+  suite('Manager-kind groups', () => {
+    test('OBJECT_KINDS_WITHOUT_NAME contains exactly 16 Manager kinds', () => {
+      assert.strictEqual(OBJECT_KINDS_WITHOUT_NAME.size, 16);
+    });
+
+    test('ALL_MANAGER_KINDS contains all 16 Manager kinds', () => {
+      assert.strictEqual(ALL_MANAGER_KINDS.length, 16);
+      for (const kind of ALL_MANAGER_KINDS) {
+        assert.ok(OBJECT_KINDS_WITHOUT_NAME.has(kind), `${kind} should be in OBJECT_KINDS_WITHOUT_NAME`);
+      }
+    });
+
+    test('Manager id format is "Kind:" (empty objectName after colon)', () => {
+      // Simulates what buildTreeData produces for Manager items: id = `${kind}:`
+      const managerId = 'CatalogManager:';
+      const result = selectedIdsToDefinition([managerId]);
+      assert.strictEqual(result.types.length, 1);
+      assert.strictEqual(result.types[0].objectKind, 'CatalogManager');
+      assert.strictEqual(result.types[0].objectName, '');
+    });
+
+    test('Manager id round-trip: parse Manager → id → definition → serialize → re-parse', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:CatalogManager</v8:Type>
+</Source>`;
+      const parsed = ObjectTypeParser.parse(xml);
+      assert.strictEqual(parsed.types[0].objectName, '');
+
+      // Simulate webview save with id = 'CatalogManager:'
+      const ids = buildSelectedIds(parsed, [
+        { objectKind: 'CatalogManager', objectNames: [''] },
+      ]);
+      assert.deepStrictEqual(ids, ['CatalogManager:']);
+
+      const saved = selectedIdsToDefinition(ids);
+      assert.strictEqual(saved.types[0].objectKind, 'CatalogManager');
+      assert.strictEqual(saved.types[0].objectName, '');
+
+      const serialized = ObjectTypeSerializer.serialize(saved);
+      assert.ok(serialized.includes('<v8:Type>cfg:CatalogManager</v8:Type>'));
+      assert.ok(!serialized.includes('cfg:CatalogManager.'));
+
+      const reparsed = ObjectTypeParser.parse(serialized);
+      assert.deepStrictEqual(reparsed, parsed);
+    });
+  });
+
+  suite('DefinedType groups', () => {
+    test('DefinedType id format is "DefinedType:TypeName"', () => {
+      const id = 'DefinedType:СсылкаНаОбъектПодразделения';
+      const result = selectedIdsToDefinition([id]);
+      assert.strictEqual(result.types.length, 1);
+      assert.strictEqual(result.types[0].objectKind, 'DefinedType');
+      assert.strictEqual(result.types[0].objectName, 'СсылкаНаОбъектПодразделения');
+    });
+
+    test('DefinedType round-trip: parse → id → definition → serialize → re-parse', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>
+</Source>`;
+      const parsed = ObjectTypeParser.parse(xml);
+
+      const ids = buildSelectedIds(parsed, [
+        { objectKind: 'DefinedType', objectNames: ['СсылкаНаОбъектПодразделения'] },
+      ]);
+      assert.deepStrictEqual(ids, ['DefinedType:СсылкаНаОбъектПодразделения']);
+
+      const saved = selectedIdsToDefinition(ids);
+      const serialized = ObjectTypeSerializer.serialize(saved);
+      assert.ok(serialized.includes('<v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>'));
+
+      const reparsed = ObjectTypeParser.parse(serialized);
+      assert.deepStrictEqual(reparsed, parsed);
+    });
+  });
+
+  suite('full scenario round-trip: CatalogObject + DocumentManager + DefinedType', () => {
+    test('all three type families parse, survive webview round-trip and serialize identically', () => {
+      const sourceXml = `<Source>
+  <v8:Type>cfg:CatalogObject.Номенклатура</v8:Type>
+  <v8:Type>cfg:DocumentManager</v8:Type>
+  <v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>
+</Source>`;
+      const parsed = ObjectTypeParser.parse(sourceXml);
+      assert.strictEqual(parsed.types.length, 3);
+
+      const groups: ObjectableGroup[] = [
+        { objectKind: 'CatalogObject', objectNames: ['Номенклатура'] },
+        { objectKind: 'DocumentManager', objectNames: [''] },
+        { objectKind: 'DefinedType', objectNames: ['СсылкаНаОбъектПодразделения'] },
+      ];
+
+      const ids = buildSelectedIds(parsed, groups);
+      assert.deepStrictEqual(new Set(ids), new Set([
+        'CatalogObject:Номенклатура',
+        'DocumentManager:',
+        'DefinedType:СсылкаНаОбъектПодразделения',
+      ]));
+
+      const saved = selectedIdsToDefinition(ids);
+      const serialized = ObjectTypeSerializer.serialize(saved);
+
+      assert.ok(serialized.includes('<v8:Type>cfg:CatalogObject.Номенклатура</v8:Type>'), 'CatalogObject with name');
+      assert.ok(serialized.includes('<v8:Type>cfg:DocumentManager</v8:Type>'), 'DocumentManager without dot');
+      assert.ok(!serialized.includes('cfg:DocumentManager.'), 'no spurious dot after Manager');
+      assert.ok(serialized.includes('<v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>'), 'DefinedType with name');
+
+      const reparsed = ObjectTypeParser.parse(serialized);
+      assert.deepStrictEqual(new Set(reparsed.types.map((t) => `${t.objectKind}:${t.objectName}`)),
+        new Set(parsed.types.map((t) => `${t.objectKind}:${t.objectName}`)));
     });
   });
 });

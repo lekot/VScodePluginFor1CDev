@@ -1,5 +1,6 @@
 import { XmlParser } from './xmlParser';
 import type { ObjectTypeDefinition, ObjectTypeInfo, ObjectKind } from '../types/objectTypeDefinitions';
+import { OBJECT_KINDS_WITHOUT_NAME } from '../types/objectTypeDefinitions';
 import { Logger } from '../utils/logger';
 
 const VALID_OBJECT_KINDS = new Set<string>([
@@ -15,6 +16,23 @@ const VALID_OBJECT_KINDS = new Set<string>([
   'AccumulationRegisterRecordSet',
   'AccountingRegisterRecordSet',
   'CalculationRegisterRecordSet',
+  'CatalogManager',
+  'DocumentManager',
+  'BusinessProcessManager',
+  'TaskManager',
+  'ChartOfCharacteristicTypesManager',
+  'ChartOfAccountsManager',
+  'ChartOfCalculationTypesManager',
+  'ExchangePlanManager',
+  'InformationRegisterManager',
+  'AccumulationRegisterManager',
+  'AccountingRegisterManager',
+  'CalculationRegisterManager',
+  'ConstantValueManager',
+  'DataProcessorManager',
+  'ReportManager',
+  'DocumentJournalManager',
+  'DefinedType',
 ]);
 
 function parseV8Types(raw: unknown): ObjectTypeInfo[] {
@@ -30,21 +48,46 @@ function parseV8Types(raw: unknown): ObjectTypeInfo[] {
       continue;
     }
 
-    const match = typeStr.match(/^cfg:(\w+)\.(.+)$/);
-    if (!match) {
-      Logger.warn(`ObjectTypeParser: unrecognized type format, skipping: ${typeStr}`);
+    // Try format with name: cfg:Kind.ObjectName
+    const matchWithName = typeStr.match(/^cfg:(\w+)\.(.+)$/);
+    if (matchWithName) {
+      const kind = matchWithName[1];
+      const objectName = matchWithName[2];
+
+      if (!VALID_OBJECT_KINDS.has(kind)) {
+        Logger.warn(`ObjectTypeParser: invalid object kind "${kind}", skipping: ${typeStr}`);
+        continue;
+      }
+
+      if (OBJECT_KINDS_WITHOUT_NAME.has(kind as ObjectKind)) {
+        Logger.warn(`ObjectTypeParser: Manager kind "${kind}" should not have a name, skipping: ${typeStr}`);
+        continue;
+      }
+
+      result.push({ objectKind: kind as ObjectKind, objectName });
       continue;
     }
 
-    const kind = match[1];
-    const objectName = match[2];
+    // Try format without name: cfg:Kind
+    const matchWithoutName = typeStr.match(/^cfg:(\w+)$/);
+    if (matchWithoutName) {
+      const kind = matchWithoutName[1];
 
-    if (!VALID_OBJECT_KINDS.has(kind)) {
-      Logger.warn(`ObjectTypeParser: invalid object kind "${kind}", skipping: ${typeStr}`);
+      if (!VALID_OBJECT_KINDS.has(kind)) {
+        Logger.warn(`ObjectTypeParser: invalid object kind "${kind}", skipping: ${typeStr}`);
+        continue;
+      }
+
+      if (!OBJECT_KINDS_WITHOUT_NAME.has(kind as ObjectKind)) {
+        Logger.warn(`ObjectTypeParser: non-Manager kind "${kind}" requires a name, skipping: ${typeStr}`);
+        continue;
+      }
+
+      result.push({ objectKind: kind as ObjectKind, objectName: '' });
       continue;
     }
 
-    result.push({ objectKind: kind as ObjectKind, objectName });
+    Logger.warn(`ObjectTypeParser: unrecognized type format, skipping: ${typeStr}`);
   }
 
   return result;

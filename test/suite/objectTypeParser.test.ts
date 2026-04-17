@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { ObjectTypeParser } from '../../src/parsers/objectTypeParser';
 import { ObjectTypeSerializer } from '../../src/serializers/objectTypeSerializer';
 import type { ObjectTypeDefinition } from '../../src/types/objectTypeDefinitions';
+import { OBJECT_KINDS_WITHOUT_NAME } from '../../src/types/objectTypeDefinitions';
 
 suite('ObjectTypeParser', () => {
   suite('parse', () => {
@@ -77,6 +78,72 @@ suite('ObjectTypeParser', () => {
         assert.strictEqual(result.types[i].objectName, 'TestObj');
       }
     });
+
+    test('Manager without name (cfg:CatalogManager) is accepted with empty objectName', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:CatalogManager</v8:Type>
+</Source>`;
+      const result = ObjectTypeParser.parse(xml);
+      assert.strictEqual(result.types.length, 1);
+      assert.strictEqual(result.types[0].objectKind, 'CatalogManager');
+      assert.strictEqual(result.types[0].objectName, '');
+    });
+
+    test('all 16 Manager kinds without name are accepted', () => {
+      const managerKinds = Array.from(OBJECT_KINDS_WITHOUT_NAME);
+      const xml = `<Source>\n${managerKinds.map((k) => `  <v8:Type>cfg:${k}</v8:Type>`).join('\n')}\n</Source>`;
+      const result = ObjectTypeParser.parse(xml);
+      assert.strictEqual(result.types.length, 16);
+      for (let i = 0; i < managerKinds.length; i++) {
+        assert.strictEqual(result.types[i].objectName, '', `${managerKinds[i]} should have empty objectName`);
+      }
+    });
+
+    test('Manager with a name is skipped (invalid)', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:CatalogManager.Контрагенты</v8:Type>
+  <v8:Type>cfg:CatalogObject.Номенклатура</v8:Type>
+</Source>`;
+      const result = ObjectTypeParser.parse(xml);
+      assert.strictEqual(result.types.length, 1);
+      assert.strictEqual(result.types[0].objectKind, 'CatalogObject');
+    });
+
+    test('non-Manager kind without name is skipped (invalid)', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:CatalogObject</v8:Type>
+  <v8:Type>cfg:DocumentObject.Реализация</v8:Type>
+</Source>`;
+      const result = ObjectTypeParser.parse(xml);
+      assert.strictEqual(result.types.length, 1);
+      assert.strictEqual(result.types[0].objectKind, 'DocumentObject');
+    });
+
+    test('DefinedType with name is accepted', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>
+</Source>`;
+      const result = ObjectTypeParser.parse(xml);
+      assert.strictEqual(result.types.length, 1);
+      assert.strictEqual(result.types[0].objectKind, 'DefinedType');
+      assert.strictEqual(result.types[0].objectName, 'СсылкаНаОбъектПодразделения');
+    });
+
+    test('mixed Source: CatalogObject + DocumentManager + DefinedType', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:CatalogObject.Номенклатура</v8:Type>
+  <v8:Type>cfg:DocumentManager</v8:Type>
+  <v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>
+</Source>`;
+      const result = ObjectTypeParser.parse(xml);
+      assert.strictEqual(result.types.length, 3);
+      assert.strictEqual(result.types[0].objectKind, 'CatalogObject');
+      assert.strictEqual(result.types[0].objectName, 'Номенклатура');
+      assert.strictEqual(result.types[1].objectKind, 'DocumentManager');
+      assert.strictEqual(result.types[1].objectName, '');
+      assert.strictEqual(result.types[2].objectKind, 'DefinedType');
+      assert.strictEqual(result.types[2].objectName, 'СсылкаНаОбъектПодразделения');
+    });
   });
 
   suite('parseFromObject', () => {
@@ -120,6 +187,32 @@ suite('ObjectTypeParser', () => {
       const serialized = ObjectTypeSerializer.serialize(def);
       const reparsed = ObjectTypeParser.parse(serialized);
       assert.deepStrictEqual(reparsed, def);
+    });
+
+    test('round-trip: CatalogObject + DocumentManager + DefinedType (task scenario)', () => {
+      const xml = `<Source>
+  <v8:Type>cfg:CatalogObject.Номенклатура</v8:Type>
+  <v8:Type>cfg:DocumentManager</v8:Type>
+  <v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>
+</Source>`;
+      const first = ObjectTypeParser.parse(xml);
+
+      // Verify parse
+      assert.strictEqual(first.types.length, 3);
+      assert.deepStrictEqual(first.types[0], { objectKind: 'CatalogObject', objectName: 'Номенклатура' });
+      assert.deepStrictEqual(first.types[1], { objectKind: 'DocumentManager', objectName: '' });
+      assert.deepStrictEqual(first.types[2], { objectKind: 'DefinedType', objectName: 'СсылкаНаОбъектПодразделения' });
+
+      // Verify serialize
+      const serialized = ObjectTypeSerializer.serialize(first);
+      assert.ok(serialized.includes('<v8:Type>cfg:CatalogObject.Номенклатура</v8:Type>'), 'CatalogObject preserved');
+      assert.ok(serialized.includes('<v8:Type>cfg:DocumentManager</v8:Type>'), 'DocumentManager without dot');
+      assert.ok(serialized.includes('<v8:Type>cfg:DefinedType.СсылкаНаОбъектПодразделения</v8:Type>'), 'DefinedType preserved');
+      assert.ok(!serialized.includes('cfg:DocumentManager.'), 'No spurious dot after DocumentManager');
+
+      // Verify round-trip
+      const second = ObjectTypeParser.parse(serialized);
+      assert.deepStrictEqual(second, first);
     });
   });
 });

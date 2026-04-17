@@ -14,9 +14,31 @@ export const METADATA_TYPE_TO_OBJECT_KIND: Partial<Record<MetadataType, ObjectKi
   [MetadataType.AccumulationRegister]: 'AccumulationRegisterRecordSet',
   [MetadataType.AccountingRegister]: 'AccountingRegisterRecordSet',
   [MetadataType.CalculationRegister]: 'CalculationRegisterRecordSet',
+  [MetadataType.DefinedType]: 'DefinedType',
 };
 
+/** All 16 Manager-kinds in stable UI order. */
+export const ALL_MANAGER_KINDS: readonly ObjectKind[] = [
+  'CatalogManager',
+  'DocumentManager',
+  'BusinessProcessManager',
+  'TaskManager',
+  'ChartOfCharacteristicTypesManager',
+  'ChartOfAccountsManager',
+  'ChartOfCalculationTypesManager',
+  'ExchangePlanManager',
+  'InformationRegisterManager',
+  'AccumulationRegisterManager',
+  'AccountingRegisterManager',
+  'CalculationRegisterManager',
+  'ConstantValueManager',
+  'DataProcessorManager',
+  'ReportManager',
+  'DocumentJournalManager',
+];
+
 export const OBJECT_KIND_ORDER: readonly ObjectKind[] = [
+  // Object kinds
   'CatalogObject',
   'DocumentObject',
   'BusinessProcessObject',
@@ -25,8 +47,28 @@ export const OBJECT_KIND_ORDER: readonly ObjectKind[] = [
   'ChartOfAccountsObject',
   'ChartOfCalculationTypesObject',
   'ExchangePlanObject',
+  // RecordSet kinds
   'InformationRegisterRecordSet',
   'AccumulationRegisterRecordSet',
   'AccountingRegisterRecordSet',
   'CalculationRegisterRecordSet',
+  // Manager kinds (no name, type-as-a-whole)
+  'CatalogManager',
+  'DocumentManager',
+  'BusinessProcessManager',
+  'TaskManager',
+  'ChartOfCharacteristicTypesManager',
+  'ChartOfAccountsManager',
+  'ChartOfCalculationTypesManager',
+  'ExchangePlanManager',
+  'InformationRegisterManager',
+  'AccumulationRegisterManager',
+  'AccountingRegisterManager',
+  'CalculationRegisterManager',
+  'ConstantValueManager',
+  'DataProcessorManager',
+  'ReportManager',
+  'DocumentJournalManager',
+  // DefinedType
+  'DefinedType',
 ];
