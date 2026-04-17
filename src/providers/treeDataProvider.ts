@@ -34,7 +34,7 @@ import {
   countPendingReferenceableTypeLoads,
   cloneReferenceableGroups,
 } from './treeReferenceLoader';
-import { getObjectableObjectsForEditor } from './objectTypeLoader';
+import { getObjectableObjectsForEditor, cloneObjectableGroups } from './objectTypeLoader';
 import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
@@ -55,6 +55,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private readonly cache = new TreeCacheService();
   /** Snapshot of referenceable names per scope for TypeEditor (invalidated with tree reload / structure). */
   private readonly typeEditorReferenceableCache = new Map<string, ReferenceableGroup[]>();
+  /** Snapshot of objectable object groups per scope for ObjectTypeEditor (invalidated with tree reload / structure). */
+  private readonly objectableObjectsCache = new Map<string, ObjectableGroup[]>();
 
   private messageUpdater: ((message: string | undefined) => void) | null = null;
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
@@ -991,10 +993,17 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private clearTypeEditorReferenceableCache(): void {
-    if (this.typeEditorReferenceableCache.size === 0) {
+    const hadReferenceable = this.typeEditorReferenceableCache.size > 0;
+    const hadObjectable = this.objectableObjectsCache.size > 0;
+    if (!hadReferenceable && !hadObjectable) {
       return;
     }
-    this.typeEditorReferenceableCache.clear();
+    if (hadReferenceable) {
+      this.typeEditorReferenceableCache.clear();
+    }
+    if (hadObjectable) {
+      this.objectableObjectsCache.clear();
+    }
     Logger.debug('Cleared type editor referenceable cache');
   }
 
@@ -1068,7 +1077,29 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   public async getObjectableObjectsForEditor(node?: TreeNode): Promise<ObjectableGroup[]> {
-    return getObjectableObjectsForEditor(node, this.rootNodes, this.cache);
+    const t0 = Date.now();
+    const scopeKey = getTypeEditorReferenceableScopeKey(node, this.rootNodes, this.cache);
+
+    if (scopeKey) {
+      const cached = this.objectableObjectsCache.get(scopeKey);
+      if (cached) {
+        const durationMs = Date.now() - t0;
+        Logger.debug('getObjectableObjectsForEditor cache hit', { durationMs, scopeKey });
+        return cloneObjectableGroups(cached);
+      }
+    }
+
+    const groups = await getObjectableObjectsForEditor(node, this.rootNodes, this.cache);
+    if (scopeKey) {
+      this.objectableObjectsCache.set(scopeKey, cloneObjectableGroups(groups));
+    }
+    const durationMs = Date.now() - t0;
+    if (durationMs >= 500) {
+      Logger.info('getObjectableObjectsForEditor completed', { durationMs, scopeKey });
+    } else {
+      Logger.debug('getObjectableObjectsForEditor completed', { durationMs, scopeKey });
+    }
+    return groups;
   }
 
   private cloneNodeForRollback(node: TreeNode): TreeNode {

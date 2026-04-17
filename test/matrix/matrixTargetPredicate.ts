@@ -3,6 +3,15 @@ import { isRootObjectCreateInTypeFolder, TOP_LEVEL_TYPES } from '../../src/servi
 import { MetadataTypeMapper } from '../../src/utils/metadataTypeMapper';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from '../../src/utils/XMLWriter';
 
+/**
+ * R6-placeholder containers that cannot be deleted — they are virtual grouping nodes, not real metadata elements.
+ * Attempting to delete them produces «Удаление для этого типа элемента не поддерживается».
+ */
+export function isR6ContainerNode(node: TreeNode): boolean {
+  const r6Ids = new Set(['EnumValues', 'Dimensions', 'Resources', 'PredefinedData']);
+  return r6Ids.has(node.id);
+}
+
 /** Конкретная форма (лист под «Forms»), не папка-контейнер `id === 'Forms'`. */
 function isFormInstanceNode(node: TreeNode): boolean {
   return node.type === MetadataType.Form && node.id !== 'Forms';

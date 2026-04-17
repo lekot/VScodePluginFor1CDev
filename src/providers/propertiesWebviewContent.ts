@@ -48,6 +48,13 @@ export function getEditTypePencilSvg(): string {
 }
 
 /**
+ * Inline SVG for goto-arrow (→) icon — used for "Перейти в модуль" button.
+ */
+export function getGotoArrowSvg(): string {
+  return `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.5 3.5l5 4.5-5 4.5V9H2V7h6.5V3.5z"/></svg>`;
+}
+
+/**
  * Check if node is a root metadata element (Catalog, Document, etc.)
  * Note: Attribute is NOT in this list because it's a nested element
  * and should have an editable type property
@@ -169,6 +176,23 @@ export function renderPropertyInput(
         <label class="property-label">${escapeHtml(displayName)}</label>
         <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(sourceSummary)}" disabled />
         <button type="button" class="edit-source-btn" data-action="editSource" data-property="${escapeHtml(name)}" aria-label="Редактировать источник" title="Редактировать источник"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>
+      </div>
+    `;
+  }
+
+  // Handler property on EventSubscription — render with goto-module button
+  const isHandlerProperty = name === 'Handler' && currentNode?.type === 'EventSubscription';
+  if (isHandlerProperty) {
+    const displayName = getPropertyLabel(name);
+    const handlerValue = typeof value === 'string' ? value : '';
+    const gotoButton = handlerValue.trim()
+      ? `<button type="button" class="goto-handler-btn" data-property="Handler" data-handler="${escapeHtml(handlerValue)}" aria-label="Перейти в модуль" title="Перейти в модуль"><span class="edit-type-icon" aria-hidden="true">${getGotoArrowSvg()}</span></button>`
+      : '';
+    return `
+      <div class="property-row">
+        <label class="property-label">${escapeHtml(displayName)}</label>
+        <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(handlerValue)}" ${globalReadOnly ? 'disabled' : ''} />
+        ${gotoButton}
       </div>
     `;
   }
@@ -451,6 +475,15 @@ export function getWebviewScript(readOnly: boolean): string {
         });
       });
 
+      document.querySelectorAll('.goto-handler-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const handler = btn.dataset.handler || '';
+          if (handler) {
+            vscode.postMessage({ type: 'gotoHandler', handler });
+          }
+        });
+      });
+
       const saveBtn = document.getElementById('save-btn');
       if (saveBtn) {
         saveBtn.addEventListener('click', handleSave);
@@ -709,7 +742,7 @@ export function getWebviewContent(node: TreeNode): string {
           opacity: 0.5;
           cursor: not-allowed;
         }
-        .edit-type-btn, .edit-content-btn {
+        .edit-type-btn, .edit-content-btn, .goto-handler-btn {
           padding: 4px 8px;
           display: inline-flex;
           align-items: center;
@@ -718,7 +751,7 @@ export function getWebviewContent(node: TreeNode): string {
           background: var(--vscode-button-secondaryBackground);
           color: var(--vscode-button-secondaryForeground);
         }
-        .edit-type-btn:hover, .edit-content-btn:hover {
+        .edit-type-btn:hover, .edit-content-btn:hover, .goto-handler-btn:hover {
           background: var(--vscode-button-secondaryHoverBackground);
         }
         .edit-type-icon {
