@@ -46,6 +46,36 @@ suite('metadataDefaultValues', () => {
     assert.strictEqual((dataProcessor as Record<string, unknown>).FillFromFillingValue, undefined);
   });
 
+  test('omits extended props for ChartOfCharacteristicTypes Attribute', () => {
+    const result = getDefaultPropertiesForNestedElement('Attribute', MetadataType.ChartOfCharacteristicTypes) as Record<string, unknown>;
+    assert.strictEqual(result.Indexing, undefined);
+    assert.strictEqual(result.FullTextSearch, undefined);
+    assert.strictEqual(result.DataHistory, undefined);
+    assert.strictEqual(result.FillFromFillingValue, undefined);
+    assert.strictEqual(result.FillValue, undefined);
+    assert.strictEqual(result.PasswordMode, false, 'common props preserved');
+  });
+
+  test('omits extended props for CommonAttribute Attribute', () => {
+    const result = getDefaultPropertiesForNestedElement('Attribute', MetadataType.CommonAttribute) as Record<string, unknown>;
+    assert.strictEqual(result.Indexing, undefined);
+    assert.strictEqual(result.FillFromFillingValue, undefined);
+  });
+
+  test('omits extended props for Subsystem Attribute', () => {
+    const result = getDefaultPropertiesForNestedElement('Attribute', MetadataType.Subsystem) as Record<string, unknown>;
+    assert.strictEqual(result.Indexing, undefined);
+    assert.strictEqual(result.FillFromFillingValue, undefined);
+  });
+
+  test('retains extended props for Catalog and Document Attribute', () => {
+    const catalog = getDefaultPropertiesForNestedElement('Attribute', MetadataType.Catalog) as Record<string, unknown>;
+    const doc = getDefaultPropertiesForNestedElement('Attribute', MetadataType.Document) as Record<string, unknown>;
+    assert.strictEqual(catalog.Indexing, 'DontIndex');
+    assert.strictEqual(catalog.FillFromFillingValue, true);
+    assert.strictEqual(doc.FullTextSearch, 'Use');
+  });
+
   test('returns tabular section defaults and clones nested defaults', () => {
     const ts = getDefaultPropertiesForNestedElement('TabularSection');
     assert.deepStrictEqual(ts, {});

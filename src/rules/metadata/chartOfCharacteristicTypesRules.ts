@@ -19,7 +19,18 @@ export const chartOfCharacteristicTypesRules: MetadataObjectRules = {
         useStandardCommands: { type: 'boolean', order: 4, xml: 'UseStandardCommands', defaultValueXML: true },
         includeHelpInContents: { type: 'boolean', order: 5, xml: 'IncludeHelpInContents', defaultValueXML: false },
         characteristicExtValues: { type: 'string', order: 6, xml: 'CharacteristicExtValues', defaultValueXML: '' },
-        type: { type: 'TypeDescription', order: 7, xml: 'Type', defaultValueXML: undefined },
+        type: {
+            type: 'TypeDescription',
+            order: 7,
+            xml: 'Type',
+            defaultValueXML: {
+                'v8:Type': 'xs:string',
+                'v8:StringQualifiers': {
+                    'v8:Length': 10,
+                    'v8:AllowedLength': 'Variable',
+                },
+            },
+        },
         hierarchical: { type: 'boolean', order: 8, xml: 'Hierarchical', yaml: 'Иерархический', defaultValueXML: false },
         foldersOnTop: { type: 'boolean', order: 9, xml: 'FoldersOnTop', defaultValueXML: true },
         codeLength: { type: 'number', order: 10, xml: 'CodeLength', yaml: 'ДлинаКода', defaultValueXML: 9 },

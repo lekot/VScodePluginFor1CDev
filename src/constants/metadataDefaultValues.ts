@@ -102,15 +102,43 @@ const ATTRIBUTE_DEFAULTS: DefaultProperties = {
 };
 
 /**
- * Defaults for nested Attribute when Attribute belongs to a DataProcessor (Обработка).
- *
- * In some 1C versions/configs, requisites (Attributes) inside DataProcessor don't support
- * the same set of properties as requisites inside catalogs/documents. Generating XML with
- * unsupported property names leads to "Неверное свойство объекта метаданных..."
+ * Metadata types whose Attribute elements do NOT support the extended property set
+ * (Indexing, FullTextSearch, DataHistory, FillFromFillingValue, FillValue).
+ * Derived from Designer XML templates in resources/designerTemplates/Designer/*.xml.
  */
-const ATTRIBUTE_DEFAULTS_FOR_DATAPROCESSOR: DefaultProperties = {
+const ATTRIBUTE_TYPES_WITHOUT_EXTENDED_PROPS = new Set<MetadataType>([
+  MetadataType.DataProcessor,
+  MetadataType.Report,
+  MetadataType.ChartOfCharacteristicTypes,
+  MetadataType.CommonAttribute,
+  MetadataType.Subsystem,
+  MetadataType.CommonModule,
+  MetadataType.Role,
+  MetadataType.SessionParameter,
+  MetadataType.FunctionalOption,
+  MetadataType.FunctionalOptionsParameter,
+  MetadataType.CommandGroup,
+  MetadataType.Interface,
+  MetadataType.Style,
+  MetadataType.EventSubscription,
+  MetadataType.DefinedType,
+  MetadataType.Language,
+  MetadataType.CommonPicture,
+  MetadataType.CommonForm,
+  MetadataType.WSReference,
+  MetadataType.StyleItem,
+  MetadataType.XDTOPackage,
+  MetadataType.DocumentNumerator,
+  MetadataType.ScheduledJob,
+  MetadataType.Constant,
+]);
+
+/**
+ * Defaults for nested Attribute when the parent type does not support extended
+ * properties (Indexing, FullTextSearch, DataHistory, FillFromFillingValue, FillValue).
+ */
+const ATTRIBUTE_DEFAULTS_WITHOUT_EXTENDED: DefaultProperties = {
   ...ATTRIBUTE_DEFAULTS,
-  // These properties are reported by 1C as invalid for DataProcessor requisites.
   Indexing: undefined as unknown as string,
   FullTextSearch: undefined as unknown as string,
   DataHistory: undefined as unknown as string,
@@ -143,11 +171,9 @@ export function getDefaultPropertiesForNestedElement(
   elementType: 'Attribute' | 'TabularSection',
   parentRootType?: MetadataType
 ): DefaultProperties {
-  const defaults =
-    elementType === 'Attribute'
-      ? parentRootType === MetadataType.DataProcessor
-        ? ATTRIBUTE_DEFAULTS_FOR_DATAPROCESSOR
-        : ATTRIBUTE_DEFAULTS
-      : TABULAR_SECTION_DEFAULTS;
-  return { ...defaults };
+  if (elementType !== 'Attribute') {
+    return { ...TABULAR_SECTION_DEFAULTS };
+  }
+  const useExtended = parentRootType === undefined || !ATTRIBUTE_TYPES_WITHOUT_EXTENDED_PROPS.has(parentRootType);
+  return { ...(useExtended ? ATTRIBUTE_DEFAULTS : ATTRIBUTE_DEFAULTS_WITHOUT_EXTENDED) };
 }

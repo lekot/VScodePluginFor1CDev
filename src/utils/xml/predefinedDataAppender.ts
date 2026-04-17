@@ -57,19 +57,80 @@ function buildCatalogItemObject(name: string, description: string): Record<strin
   };
 }
 
-function buildCotItemObject(name: string, description: string): Record<string, unknown> {
+const COT_FALLBACK_TYPE: Record<string, unknown> = {
+  'v8:Type': 'xs:string',
+  'v8:StringQualifiers': {
+    'v8:Length': '150',
+    'v8:AllowedLength': 'Variable',
+  },
+};
+
+function findTypeInProperties(obj: Record<string, unknown>): Record<string, unknown> | null {
+  const props = obj['Properties'];
+  if (props && typeof props === 'object' && !Array.isArray(props)) {
+    const t = (props as Record<string, unknown>)['Type'];
+    if (t && typeof t === 'object' && !Array.isArray(t)) {
+      return t as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+function extractCotTypeFromParsed(parsed: Record<string, unknown>): Record<string, unknown> | null {
+  for (const val of Object.values(parsed)) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) {
+      continue;
+    }
+    const level1 = val as Record<string, unknown>;
+    const direct = findTypeInProperties(level1);
+    if (direct) {
+      return direct;
+    }
+    for (const inner of Object.values(level1)) {
+      if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+        const found = findTypeInProperties(inner as Record<string, unknown>);
+        if (found) {
+          return found;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function readCotOwnerType(ownerFilePath: string | undefined): Promise<Record<string, unknown>> {
+  if (!ownerFilePath) {
+    return COT_FALLBACK_TYPE;
+  }
+  try {
+    const content = await fs.promises.readFile(ownerFilePath, 'utf-8');
+    const parsed = xmlParser.parse(content) as Record<string, unknown>;
+    const extracted = extractCotTypeFromParsed(parsed);
+    if (!extracted) {
+      return COT_FALLBACK_TYPE;
+    }
+    const firstType = Array.isArray(extracted['v8:Type']) ? extracted['v8:Type'][0] : extracted['v8:Type'];
+    if (!firstType || typeof firstType !== 'string') {
+      return COT_FALLBACK_TYPE;
+    }
+    const result: Record<string, unknown> = { 'v8:Type': firstType };
+    const qualifierKeys = Object.keys(extracted).filter((k) => k !== 'v8:Type');
+    for (const key of qualifierKeys) {
+      result[key] = extracted[key];
+    }
+    return result;
+  } catch {
+    return COT_FALLBACK_TYPE;
+  }
+}
+
+function buildCotItemObject(name: string, description: string, ownerType: Record<string, unknown>): Record<string, unknown> {
   return {
     '@_id': generateSimpleUuid(),
     Name: name,
     Code: name.slice(0, 9),
     Description: description || name,
-    Type: {
-      'v8:Type': 'xs:string',
-      'v8:StringQualifiers': {
-        'v8:Length': '150',
-        'v8:AllowedLength': 'Variable',
-      },
-    },
+    Type: ownerType,
     IsFolder: 'false',
   };
 }
@@ -89,7 +150,12 @@ function buildChartOfAccountsItemObject(name: string, description: string): Reco
   };
 }
 
-function buildNewPredefinedFileContent(ownerType: MetadataType, name: string, description: string): string {
+function buildNewPredefinedFileContent(
+  ownerType: MetadataType,
+  name: string,
+  description: string,
+  cotResolvedType?: Record<string, unknown>
+): string {
   const open = PREDEFINED_ROOT_OPEN[ownerType];
   if (!open) {
     throw new Error('Unsupported predefined root');
@@ -113,6 +179,7 @@ ${open}
 
   if (ownerType === MetadataType.ChartOfCharacteristicTypes) {
     const code = escapeXmlText(name.slice(0, 9));
+    const typeXml = buildCotTypeXml(cotResolvedType ?? COT_FALLBACK_TYPE);
     return `<?xml version="1.0" encoding="UTF-8"?>
 ${open}
 	<Item id="${id}">
@@ -120,11 +187,7 @@ ${open}
 		<Code>${code}</Code>
 		<Description>${ed}</Description>
 		<Type>
-			<v8:Type>xs:string</v8:Type>
-			<v8:StringQualifiers>
-				<v8:Length>150</v8:Length>
-				<v8:AllowedLength>Variable</v8:AllowedLength>
-			</v8:StringQualifiers>
+${typeXml}
 		</Type>
 		<IsFolder>false</IsFolder>
 	</Item>
@@ -150,12 +213,17 @@ ${open}
 `;
 }
 
-function buildItemObjectForMerge(ownerType: MetadataType, name: string, description: string): Record<string, unknown> {
+function buildItemObjectForMerge(
+  ownerType: MetadataType,
+  name: string,
+  description: string,
+  cotResolvedType?: Record<string, unknown>
+): Record<string, unknown> {
   switch (ownerType) {
     case MetadataType.Catalog:
       return buildCatalogItemObject(name, description);
     case MetadataType.ChartOfCharacteristicTypes:
-      return buildCotItemObject(name, description);
+      return buildCotItemObject(name, description, cotResolvedType ?? COT_FALLBACK_TYPE);
     case MetadataType.ChartOfAccounts:
       return buildChartOfAccountsItemObject(name, description);
     default:
@@ -163,26 +231,46 @@ function buildItemObjectForMerge(ownerType: MetadataType, name: string, descript
   }
 }
 
+function buildCotTypeXml(t: Record<string, unknown>): string {
+  const typeName = String(t['v8:Type'] ?? 'xs:string');
+  const qualifierKey = Object.keys(t).find((k) => k !== 'v8:Type');
+  if (!qualifierKey) {
+    return `\t\t\t<v8:Type>${escapeXmlText(typeName)}</v8:Type>`;
+  }
+  const qval = t[qualifierKey] as Record<string, unknown>;
+  const inner = Object.entries(qval)
+    .map(([k, v]) => `\t\t\t\t<${k}>${escapeXmlText(String(v))}</${k}>`)
+    .join('\n');
+  return `\t\t\t<v8:Type>${escapeXmlText(typeName)}</v8:Type>\n\t\t\t<${qualifierKey}>\n${inner}\n\t\t\t</${qualifierKey}>`;
+}
+
 /**
  * Create `Ext/Predefined.xml` if missing, or append `<Item>` for supported owner types.
+ * `ownerFilePath` — path to the owner metadata XML (e.g. COT.xml) used to read its Type.
  */
 export async function appendPredefinedDesignerItem(
   filePath: string,
   ownerType: MetadataType,
   name: string,
-  description?: string
+  description?: string,
+  ownerFilePath?: string
 ): Promise<void> {
   if (!PREDEFINED_ROOT_OPEN[ownerType]) {
     throw new Error('Предопределённые элементы для этого типа объекта создаются только в XML вручную.');
   }
   const desc = description ?? name;
 
+  const cotResolvedType =
+    ownerType === MetadataType.ChartOfCharacteristicTypes
+      ? await readCotOwnerType(ownerFilePath)
+      : undefined;
+
   let xmlContent: string;
   try {
     xmlContent = await fs.promises.readFile(filePath, 'utf-8');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-      const body = buildNewPredefinedFileContent(ownerType, name, desc);
+      const body = buildNewPredefinedFileContent(ownerType, name, desc, cotResolvedType);
       await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
       await fs.promises.writeFile(filePath, body, 'utf-8');
       return;
@@ -204,7 +292,7 @@ export async function appendPredefinedDesignerItem(
   if (!root) {
     throw new Error('В Predefined.xml не найден корень PredefinedData');
   }
-  mergeItemIntoPredefinedRoot(root, buildItemObjectForMerge(ownerType, name, desc));
+  mergeItemIntoPredefinedRoot(root, buildItemObjectForMerge(ownerType, name, desc, cotResolvedType));
   const updated = buildXmlString(parsed);
   await writeUtf8FileWithBackup(filePath, xmlContent, updated);
 }

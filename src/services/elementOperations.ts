@@ -465,7 +465,7 @@ async function handleCreatePredefinedItem(predefinedFolder: TreeNode, owner: Tre
   if (!PREDEFINED_METADATA_ROOT_TYPES.has(owner.type)) {
     throw new Error('Создание предопределённых элементов для этого типа не поддерживается.');
   }
-  await appendPredefinedDesignerItem(predefinedPath, owner.type, name, name);
+  await appendPredefinedDesignerItem(predefinedPath, owner.type, name, name, owner.filePath);
 }
 
 /** Branch: parentNode is a columns-container under a tabular section instance. */

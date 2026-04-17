@@ -80,6 +80,8 @@ export const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
   'DocumentNumerator',
   'ScheduledJob',
   'Constant',
+  // Подсистема содержит только состав (Content) и вложенные Subsystem — реквизитов нет.
+  'Subsystem',
 ]);
 
 /**

@@ -1612,4 +1612,74 @@ suite('elementOperations', () => {
     const result = findTabularSectionInstanceForAttributeParent(catalogNode);
     assert.strictEqual(result, undefined);
   });
+
+  test('createElement rejects nested attribute on Subsystem instance (no ChildObjects)', async () => {
+    const subsystemsDir = path.join(tmpDir, 'Subsystems');
+    await fs.promises.mkdir(subsystemsDir, { recursive: true });
+    const subsystemXml = path.join(subsystemsDir, 'ПодсистемаТест.xml');
+    await XMLWriter.createMinimalElementFile(subsystemXml, 'Subsystem', 'ПодсистемаТест');
+    const subsystemsTypeNode: TreeNode = {
+      id: 'Subsystems',
+      name: 'Подсистемы',
+      type: MetadataType.Subsystem,
+      properties: {},
+      filePath: subsystemsDir,
+      parent: configNode,
+      children: [],
+    };
+    const subsystemInstance: TreeNode = {
+      id: 'Subsystems.ПодсистемаТест',
+      name: 'ПодсистемаТест',
+      type: MetadataType.Subsystem,
+      properties: {},
+      filePath: subsystemXml,
+      parent: subsystemsTypeNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => createElement(subsystemInstance, 'BadAttr'),
+      /нет ChildObjects/
+    );
+  });
+
+  test('appendPredefinedDesignerItem COT: uses boolean type from owner file', async () => {
+    const { appendPredefinedDesignerItem } = await import('../../src/utils/xml/predefinedDataAppender');
+    const dir = await createTempDir('1cviewer-cot-predef-');
+    try {
+      const cotXml = path.join(dir, 'COT.xml');
+      const cotContent = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <ChartOfCharacteristicTypes uuid="test-uuid">
+    <Properties>
+      <Name>TestCOT</Name>
+      <Type>
+        <v8:Type>xs:boolean</v8:Type>
+      </Type>
+    </Properties>
+    <ChildObjects/>
+  </ChartOfCharacteristicTypes>
+</MetaDataObject>`;
+      await fs.promises.writeFile(cotXml, cotContent, 'utf-8');
+      const predefinedPath = path.join(dir, 'Ext', 'Predefined.xml');
+      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'ВидТест', 'ВидТест', cotXml);
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('xs:boolean'), 'Item Type must reflect COT owner Type (xs:boolean)');
+      assert.ok(!xml.includes('xs:string'), 'Should not fall back to xs:string when owner has xs:boolean');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('appendPredefinedDesignerItem COT: fallback to xs:string when no owner file', async () => {
+    const { appendPredefinedDesignerItem } = await import('../../src/utils/xml/predefinedDataAppender');
+    const dir = await createTempDir('1cviewer-cot-fallback-');
+    try {
+      const predefinedPath = path.join(dir, 'Ext', 'Predefined.xml');
+      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'Fallback', 'Fallback');
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('xs:string'), 'Should use xs:string fallback when no owner file provided');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
 });
