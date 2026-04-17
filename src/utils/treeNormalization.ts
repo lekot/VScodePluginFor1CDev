@@ -269,11 +269,16 @@ function fixR6PlaceholderFilePaths(instanceNode: TreeNode, ctx: NormalizeContext
     return;
   }
   for (const def of R6_OBJECT_CHILDREN) {
-    if (!def.typeDirName) {
-      continue;
-    }
     const child = instanceNode.children?.find((c) => c.id === def.id);
     if (!child) {
+      continue;
+    }
+    if (def.id === 'PredefinedData') {
+      child.filePath = path.join(baseDir, 'Ext', 'Predefined.xml');
+      child.parent = instanceNode;
+      continue;
+    }
+    if (!def.typeDirName) {
       continue;
     }
     child.filePath = path.join(baseDir, def.typeDirName);

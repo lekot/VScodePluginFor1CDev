@@ -22,6 +22,8 @@ import {
   dirExists,
   readFileContent,
 } from '../helpers/testHelpers';
+import { ensureR6PlaceholdersForInstanceNode, NormalizeContext } from '../../src/utils/treeNormalization';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
 
 suite('elementOperations', () => {
   let tmpDir: string;
@@ -1494,6 +1496,63 @@ suite('elementOperations', () => {
       const xml = await readFileContent(predefinedPath);
       assert.ok(xml.includes('CatalogPredefinedItems'), 'xsi type');
       assert.ok(xml.includes('<Name>PredefinedOne</Name>'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement creates Predefined.xml when PredefinedData filePath set via ensureR6Placeholders (no Ext dir)', async () => {
+    const dir = await createTempDir('1cviewer-predef-r6-');
+    try {
+      const catalogsDir = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(path.join(catalogsDir, 'Товары'), { recursive: true });
+      const catPath = path.join(catalogsDir, 'Товары', 'Товары.xml');
+      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Товары');
+
+      const catalogsFolder: TreeNode = {
+        id: 'Catalogs',
+        name: 'Справочники',
+        type: MetadataType.Catalog,
+        filePath: catalogsDir,
+        properties: {},
+        children: [],
+      };
+      const configRoot: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        children: [catalogsFolder],
+      };
+      catalogsFolder.parent = configRoot;
+
+      const catalogNode: TreeNode = {
+        id: 'Catalogs.Товары',
+        name: 'Товары',
+        type: MetadataType.Catalog,
+        filePath: catPath,
+        properties: {},
+        children: [],
+        parent: catalogsFolder,
+      };
+      catalogsFolder.children!.push(catalogNode);
+
+      const ctx: NormalizeContext = { configPath: dir, format: ConfigFormat.Designer };
+      ensureR6PlaceholdersForInstanceNode(catalogNode, ctx);
+
+      const predefNode = catalogNode.children!.find((c) => c.id === 'PredefinedData');
+      assert.ok(predefNode, 'PredefinedData placeholder must exist after ensureR6PlaceholdersForInstanceNode');
+      assert.ok(predefNode!.filePath, 'PredefinedData must have filePath');
+
+      const predefinedPath = path.join(catalogsDir, 'Товары', 'Ext', 'Predefined.xml');
+      assert.ok(!fileExists(predefinedPath), 'Predefined.xml must NOT exist before createElement');
+
+      await createElement(predefNode!, 'Test1');
+
+      assert.ok(fileExists(predefinedPath), 'Predefined.xml should be created by createElement');
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('CatalogPredefinedItems'), 'xsi type expected');
+      assert.ok(xml.includes('<Name>Test1</Name>'), 'Item name expected');
     } finally {
       await cleanupTempDir(dir);
     }
