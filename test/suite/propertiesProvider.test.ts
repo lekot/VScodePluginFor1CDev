@@ -424,6 +424,7 @@ function makeSaveCtx(p: PropertiesProvider): MessageHandlerContext {
     isSaving: false,
     treeDataProvider: (p as any).treeDataProvider,
     typeEditorProvider: (p as any).typeEditorProvider,
+    objectTypeEditorProvider: (p as any).objectTypeEditorProvider ?? {} as any,
     postMessage: () => undefined,
     updateWebviewContent: () => undefined,
     setIsSaving: () => undefined,

@@ -42,7 +42,7 @@ function resolveTypeEditorConfigRoot(
   return null;
 }
 
-function resolveRootsToUse(
+export function resolveRootsToUse(
   node: TreeNode | undefined,
   rootNodes: readonly TreeNode[]
 ): readonly TreeNode[] {

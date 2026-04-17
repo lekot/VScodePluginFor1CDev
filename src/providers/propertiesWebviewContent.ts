@@ -141,6 +141,38 @@ export function renderPropertyInput(
     }
   }
 
+  // Source property on EventSubscription — render with edit button
+  const isSourceProperty = name.toLowerCase() === 'source' && currentNode?.type === 'EventSubscription';
+  if (isSourceProperty) {
+    const displayName = getPropertyLabel(name);
+    let sourceSummary: string;
+    if (Array.isArray(value)) {
+      sourceSummary = `[${value.length} типов]`;
+    } else if (typeof value === 'object' && value !== null) {
+      const obj = value as Record<string, unknown>;
+      const typeArr = obj['v8:Type'];
+      if (Array.isArray(typeArr)) {
+        sourceSummary = `[${typeArr.length} типов]`;
+      } else if (typeArr !== undefined) {
+        sourceSummary = '[1 тип]';
+      } else {
+        sourceSummary = '[пусто]';
+      }
+    } else if (typeof value === 'string' && value.trim().startsWith('<')) {
+      const matches = (value.match(/<v8:Type>/g) || []).length;
+      sourceSummary = matches > 0 ? `[${matches} типов]` : '[пусто]';
+    } else {
+      sourceSummary = '[пусто]';
+    }
+    return `
+      <div class="property-row">
+        <label class="property-label">${escapeHtml(displayName)}</label>
+        <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(sourceSummary)}" disabled />
+        <button type="button" class="edit-source-btn" data-action="editSource" data-property="${escapeHtml(name)}" aria-label="Редактировать источник" title="Редактировать источник"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>
+      </div>
+    `;
+  }
+
   // Content property — always show edit button for types with composition editors (even when empty/string)
   const isContentProperty = name.toLowerCase() === 'content';
   const nodeTypeStr = currentNode?.type ?? '';
@@ -240,7 +272,10 @@ export function renderPropertyInput(
  * Uses getPropertySectionsForType(node.type); properties not in any section go to "Прочее".
  */
 export function renderPropertiesBySections(node: TreeNode, readOnly: boolean): string {
-  const properties = (node.properties || {}) as Record<string, unknown>;
+  let properties = (node.properties || {}) as Record<string, unknown>;
+  if (node.type === 'DefinedType' && !('Type' in properties) && !('type' in properties)) {
+    properties = { ...properties, Type: null };
+  }
   const sections = getPropertySectionsForType(node.type);
   const knownNames = getKnownPropertyNamesForType(node.type);
   const allKeys = Object.keys(properties);
@@ -402,6 +437,13 @@ export function getWebviewScript(readOnly: boolean): string {
         btn.addEventListener('click', handleEditType);
       });
 
+      document.querySelectorAll('.edit-source-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const propertyName = btn.dataset.property || 'Source';
+          vscode.postMessage({ type: 'editSource', propertyName });
+        });
+      });
+
       document.querySelectorAll('.edit-content-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           const nodeType = btn.dataset.nodeType;
@@ -503,6 +545,23 @@ export function getWebviewScript(readOnly: boolean): string {
             updateUI();
           }
           break;
+
+        case 'sourceUpdated': {
+          const srcProperty = message.property;
+          const srcValue = message.value;
+          const escSrc = (s) => (s || '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+          const srcInput = document.querySelector(\`.property-input[data-property="\${escSrc(srcProperty)}"]\`);
+          // Update state with raw XML string (will be sent as-is on save)
+          state.currentProperties[srcProperty] = srcValue;
+          state.changedProperties.add(srcProperty);
+          if (srcInput) {
+            const matches = (srcValue.match(/<v8:Type>/g) || []).length;
+            srcInput.value = matches > 0 ? '[' + matches + ' типов]' : '[пусто]';
+            srcInput.classList.add('changed');
+          }
+          updateUI();
+          break;
+        }
       }
     });
 

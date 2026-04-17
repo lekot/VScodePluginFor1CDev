@@ -1,6 +1,7 @@
 import { Logger } from '../logger';
 import { TypeParser } from '../../parsers/typeParser';
 import { TypeFormatter } from '../typeFormatter';
+import { xmlParser } from './xmlCore';
 
 /**
  * Convert string boolean values to actual boolean primitives.
@@ -183,12 +184,13 @@ function flattenProperties(properties: Record<string, unknown>): Record<string, 
       if ('#text' in obj) {
         flattened[key] = obj['#text'];
       } else if ('v8:Type' in obj) {
+        // Source property (and similar xml-fragment properties) — preserve as-is if TypeParser fails
         try {
           const typeDef = TypeParser.parseFromObject(obj);
           flattened[key] = TypeFormatter.formatTypeDisplay(typeDef);
         } catch (error) {
-          Logger.error('Failed to parse type in xmlPropertiesService.flattenProperties', error);
-          flattened[key] = obj['v8:Type'];
+          Logger.debug(`flattenProperties: TypeParser failed for key="${key}", preserving as object`);
+          flattened[key] = value;
         }
       } else {
         flattened[key] = value;
@@ -199,6 +201,26 @@ function flattenProperties(properties: Record<string, unknown>): Record<string, 
   }
 
   return flattened;
+}
+
+/**
+ * Try to parse an XML fragment string (e.g. "<Source><v8:Type>...</v8:Type></Source>")
+ * and return the parsed inner object for use in property update.
+ * Returns null if the value is not a valid XML fragment or parsing fails.
+ */
+function tryParseXmlFragment(xmlFragment: string): unknown | null {
+  try {
+    const wrapped = `<root xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/core/configuration">${xmlFragment}</root>`;
+    const parsed = xmlParser.parse(wrapped) as Record<string, unknown>;
+    const root = parsed['root'];
+    if (!root || typeof root !== 'object') { return null; }
+    const rootObj = root as Record<string, unknown>;
+    const keys = Object.keys(rootObj).filter(k => !k.startsWith('@_') && !k.startsWith('#'));
+    if (keys.length === 0) { return null; }
+    return rootObj;
+  } catch {
+    return null;
+  }
 }
 
 export function updatePropertiesInStructure(
@@ -270,6 +292,24 @@ function updatePropertiesObject(
 ): Record<string, unknown> {
   const result = { ...propertiesObj };
   for (const [key, newVal] of Object.entries(newProperties)) {
+    // XML fragment string for Source property (EventSubscription.Source containing v8:Type elements).
+    // Detected by matching the property key as the root tag of the fragment.
+    // Explicitly exclude 'Type' (handled by type editor via TypeSerializer — passed through as a string).
+    if (key !== 'Type' && typeof newVal === 'string' && newVal.trim().startsWith(`<${key}`)) {
+      const parsed = tryParseXmlFragment(newVal.trim());
+      if (parsed !== null) {
+        const parsedObj = parsed as Record<string, unknown>;
+        const innerKeys = Object.keys(parsedObj).filter(k => !k.startsWith('@_') && !k.startsWith('#'));
+        if (innerKeys.length === 1 && innerKeys[0] === key) {
+          result[key] = parsedObj[key];
+        } else if (innerKeys.length > 0) {
+          result[key] = parsedObj[innerKeys[0]];
+        } else {
+          result[key] = '';
+        }
+        continue;
+      }
+    }
     const textVal =
       typeof newVal === 'boolean' || typeof newVal === 'number' ? newVal : String(newVal);
     const existing = result[key];
@@ -314,6 +354,24 @@ function updatePropertiesArray(
 
       if (key in properties) {
         const newValue = properties[key];
+
+        // XML fragment string for Source-like properties — only when fragment root tag matches property key.
+        // Exclude 'Type' which is handled separately by the type editor flow.
+        if (key !== 'Type' && typeof newValue === 'string' && newValue.trim().startsWith(`<${key}`)) {
+          const parsed = tryParseXmlFragment(newValue.trim());
+          if (parsed !== null) {
+            const parsedObj = parsed as Record<string, unknown>;
+            const innerKeys = Object.keys(parsedObj).filter(k => !k.startsWith('@_') && !k.startsWith('#'));
+            if (innerKeys.length === 1 && innerKeys[0] === key) {
+              result[key] = parsedObj[key];
+            } else if (innerKeys.length > 0) {
+              result[key] = parsedObj[innerKeys[0]];
+            } else {
+              result[key] = '';
+            }
+            continue;
+          }
+        }
 
         if (Array.isArray(value) && value.length > 0) {
           const firstChild = value[0];

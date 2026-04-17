@@ -909,7 +909,9 @@ export class EdtParser {
 
             if (typeof propValue === 'object' && propValue !== null) {
               const obj = propValue as Record<string, unknown>;
-              if (obj.item) {
+              if ('v8:Type' in obj) {
+                result[propKey] = obj;
+              } else if (obj.item) {
                 result[propKey] = obj.item;
               } else {
                 result[propKey] = propValue;

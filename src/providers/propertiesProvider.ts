@@ -3,6 +3,7 @@ import { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { MetadataTreeDataProvider } from './treeDataProvider';
 import { TypeEditorProvider } from './typeEditorProvider';
+import { ObjectTypeEditorProvider } from './objectTypeEditorProvider';
 import { MESSAGES } from '../constants/messages';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
 import * as path from 'path';
@@ -29,6 +30,7 @@ export class PropertiesProvider {
   private currentFormSelectionRevision = 0;
   private disposables: vscode.Disposable[] = [];
   private _isSaving = false;
+  private objectTypeEditorProvider: ObjectTypeEditorProvider;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -53,6 +55,7 @@ export class PropertiesProvider {
     }) => void
   ) {
     Logger.info('PropertiesProvider initialized');
+    this.objectTypeEditorProvider = new ObjectTypeEditorProvider(context);
     // Store reference for future use (tree refresh will be implemented in later tasks)
     void this.treeDataProvider;
   }
@@ -360,6 +363,7 @@ export class PropertiesProvider {
       isSaving: this._isSaving,
       treeDataProvider: this.treeDataProvider,
       typeEditorProvider: this.typeEditorProvider,
+      objectTypeEditorProvider: this.objectTypeEditorProvider,
       onFormPropertyChanged: this.onFormPropertyChanged,
       onGotoEventHandler: this.onGotoEventHandler,
       onCreateEventHandler: this.onCreateEventHandler,

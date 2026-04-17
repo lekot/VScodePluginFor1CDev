@@ -96,6 +96,11 @@ export interface TreeNodeProperties {
   maxLength?: number;
   /** Whether auto-numbering is enabled for documents/catalogs. */
   autoNumbering?: boolean;
+  /**
+   * Source property for EventSubscription — list of Object-types (may be raw XML object or XML string).
+   * Edited via ObjectTypeEditorProvider.
+   */
+  Source?: unknown;
   /** Free-text description / comment field. */
   description?: string;
   /** Configuration version string. */

@@ -8,6 +8,7 @@ import { findTabularSectionInstanceForAttributeParent } from '../services/elemen
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import type { MetadataTreeDataProvider } from './treeDataProvider';
 import type { TypeEditorProvider } from './typeEditorProvider';
+import type { ObjectTypeEditorProvider } from './objectTypeEditorProvider';
 import { validateProperties } from './propertiesValidation';
 import type { WebviewMessage, ExtensionMessage } from './propertiesWebviewTypes';
 import { CONTENT_EDITOR_COMMANDS } from './propertiesWebviewContent';
@@ -22,6 +23,7 @@ export interface MessageHandlerContext {
   isSaving: boolean;
   treeDataProvider: MetadataTreeDataProvider;
   typeEditorProvider: TypeEditorProvider;
+  objectTypeEditorProvider: ObjectTypeEditorProvider;
   onFormPropertyChanged?: (payload: {
     docUri: string;
     entityType: FormSelectionPayload['entityType'];
@@ -70,6 +72,11 @@ export async function handleMessage(
       case 'editType':
         Logger.info('editType message received from webview');
         await handleEditTypeMessage(message, ctx);
+        break;
+
+      case 'editSource':
+        Logger.info('editSource message received from webview');
+        await handleEditSourceMessage(message, ctx);
         break;
 
       case 'editContent':
@@ -432,6 +439,57 @@ export async function handleEditTypeMessage(
   }
 }
 
+export async function handleEditSourceMessage(
+  _message: WebviewMessage,
+  ctx: MessageHandlerContext
+): Promise<void> {
+  void _message;
+  if (!ctx.currentNode) {
+    Logger.warn('Edit source attempted with no current node');
+    ctx.postMessage({ type: 'error', message: 'No element selected' });
+    return;
+  }
+
+  const rawSource = ctx.currentNode.properties['Source'];
+
+  let sourceXML: string;
+  if (typeof rawSource === 'object' && rawSource !== null && !Array.isArray(rawSource)) {
+    try {
+      const { ObjectTypeParser } = await import('../parsers/objectTypeParser');
+      const { ObjectTypeSerializer } = await import('../serializers/objectTypeSerializer');
+      const def = ObjectTypeParser.parseFromObject(rawSource as Record<string, unknown>);
+      sourceXML = ObjectTypeSerializer.serialize(def);
+    } catch (e) {
+      Logger.error('Failed to serialize Source object for editor', e);
+      ctx.postMessage({ type: 'error', message: 'Failed to open source editor: invalid source data' });
+      return;
+    }
+  } else if (typeof rawSource === 'string' && rawSource.includes('<')) {
+    sourceXML = rawSource;
+  } else {
+    sourceXML = '';
+  }
+
+  try {
+    const objectableGroups = await ctx.treeDataProvider.getObjectableObjectsForEditor(ctx.currentNode);
+    const result = await ctx.objectTypeEditorProvider.show(sourceXML, objectableGroups);
+    if (result !== null) {
+      const { ObjectTypeSerializer } = await import('../serializers/objectTypeSerializer');
+      const updatedSourceXML = ObjectTypeSerializer.serialize(result);
+      ctx.postMessage({ type: 'sourceUpdated', property: 'Source', value: updatedSourceXML });
+      Logger.info('Source updated successfully');
+    } else {
+      Logger.info('Source editing cancelled by user');
+    }
+  } catch (error) {
+    Logger.error(`Failed to edit source: ${error}`);
+    ctx.postMessage({
+      type: 'error',
+      message: `Failed to edit source: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    });
+  }
+}
+
 export async function handleEditContentMessage(
   message: WebviewMessage,
   ctx: MessageHandlerContext
@@ -488,6 +546,18 @@ export async function saveProperties(
 
               if (!isEqual) {
                 Logger.info(`  Property "${key}" changed: old=${JSON.stringify(oldValue)} (${oldType}), new=${JSON.stringify(newValue)} (${newType})`);
+              }
+
+              // Special handling for Source property (EventSubscription):
+              // If new value is an XML string (starts with '<'), it was explicitly changed via source editor
+              if (key === 'Source') {
+                if (typeof newValue === 'string' && newValue.trim().startsWith('<')) {
+                  return true;
+                }
+                if (typeof oldValue === 'object' && oldValue !== null && typeof newValue === 'string' && !newValue.trim().startsWith('<')) {
+                  Logger.info(`  ${key}: skipping (old is object, new is display string)`);
+                  return false;
+                }
               }
 
               // Special handling for Type property (TypeDescription):

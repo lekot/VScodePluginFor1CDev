@@ -34,6 +34,8 @@ import {
   countPendingReferenceableTypeLoads,
   cloneReferenceableGroups,
 } from './treeReferenceLoader';
+import { getObjectableObjectsForEditor } from './objectTypeLoader';
+import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
@@ -1063,6 +1065,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
 
     return run();
+  }
+
+  public async getObjectableObjectsForEditor(node?: TreeNode): Promise<ObjectableGroup[]> {
+    return getObjectableObjectsForEditor(node, this.rootNodes, this.cache);
   }
 
   private cloneNodeForRollback(node: TreeNode): TreeNode {

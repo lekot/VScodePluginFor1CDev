@@ -28,6 +28,7 @@ export type WebviewMessage =
       entityName?: string;
     }
   | { type: 'editType'; propertyName: string }
+  | { type: 'editSource'; propertyName: string }
   | { type: 'editContent'; nodeType: string }
   | {
       type: 'gotoEventHandler';
@@ -51,7 +52,8 @@ export type ExtensionMessage =
   | { type: 'saved' }
   | { type: 'error'; message: string }
   | { type: 'validationError'; errors: Record<string, string> }
-  | { type: 'typeUpdated'; property: string; value: string };
+  | { type: 'typeUpdated'; property: string; value: string }
+  | { type: 'sourceUpdated'; property: string; value: string };
 
 /**
  * Validation result
@@ -69,6 +71,6 @@ export function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
   const m = msg as { type?: unknown };
   if (typeof m.type !== 'string') {return false;}
 
-  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler'];
+  const validTypes = ['save', 'cancel', 'validate', 'propertyChanged', 'editType', 'editSource', 'editContent', 'editFormSelectionType', 'gotoEventHandler', 'createEventHandler'];
   return validTypes.includes(m.type);
 }

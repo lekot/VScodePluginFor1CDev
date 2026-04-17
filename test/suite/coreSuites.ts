@@ -148,6 +148,10 @@ export const coreSuiteFiles: string[] = [
   'suite/agentDebugOperations.startFromBinding.test.js',
   'suite/agentBridge.test.js',
   'suite/agentBridgeActivation.test.js',
+  'suite/objectTypeParser.test.js',
+  'suite/objectTypeSerializer.test.js',
+  'suite/objectTypeEditorProvider.test.js',
+  'suite/eventSubscriptionSource.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
