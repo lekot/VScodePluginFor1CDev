@@ -67,9 +67,6 @@ export const MESSAGES = {
   SUBSYSTEM_COMPOSITION_ADD_OK: 'CDT 41: объект добавлен в состав подсистемы.',
   SUBSYSTEM_COMPOSITION_REMOVE_OK: 'CDT 41: объект удалён из состава подсистемы.',
 
-  LOCKED_OBJECTS_RETRY: 'Пропустить залоченные и повторить',
-  LOCKED_OBJECTS_SHOW_LOG: 'Показать лог',
-  LOCKED_OBJECTS_CANCEL: 'Отмена',
   LOCKED_OBJECTS_ALL_FILTERED: 'Все выбранные файлы относятся к объектам на поддержке. Нечего раскатывать.',
 
   SUBSYSTEM_COMMAND_INTERFACE_TITLE: 'Командный интерфейс подсистемы',

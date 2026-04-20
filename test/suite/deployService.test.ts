@@ -927,7 +927,7 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
     return new DeployService({ runIncrementalImport });
   }
 
-  test('retry without locked: second call made with filtered files, result success', async () => {
+  test('auto-retry without locked: second call made with filtered files, result success', async () => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-locked-retry-'));
     try {
       const ibPath = path.join(work, 'p.1cd');
@@ -943,9 +943,6 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
         return successResult();
       });
 
-      vscodeTestState.warningMessageReturnQueue.push('Пропустить залоченные и повторить');
-
-      // Both Foo and Bar nodes selected; only Foo is locked
       const nodes = [makeNode(fooXml, 'Foo'), makeNode(barXml, 'Bar')];
       const summary = await svc.deploySelectedObjects({
         binding: baseBinding({ infobaseIds: ['f1'], massDeployment: false }),
@@ -957,7 +954,7 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
         token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
       });
 
-      assert.strictEqual(calls.length, 2, 'second call must be made');
+      assert.strictEqual(calls.length, 2, 'auto-retry must fire second call');
       assert.ok(
         calls[1]!.relativeFiles.every((f) => !f.toLowerCase().startsWith('commonmodules/foo')),
         'second call must not contain locked file',
@@ -968,44 +965,43 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
       );
       assert.strictEqual(summary.successCount, 1);
       assert.ok(vscodeTestState.outputChannelLines.some((l) => l.includes('[support-mode]') && l.includes('Отфильтровано')));
+      assert.strictEqual(vscodeTestState.warningMessageReturnQueue.length, 0, 'no blocking dialog must be awaited');
     } finally {
       rmDirQuiet(work);
     }
   });
 
-  test('cancel: second call not made', async () => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-locked-cancel-'));
+  test('no blocking dialog: deploy completes without queued user input', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-locked-nodialog-'));
     try {
       const ibPath = path.join(work, 'p.1cd');
       fs.writeFileSync(ibPath, '');
-      const { configRoot, fooXml } = setupConfigRoot(work);
+      const { configRoot, fooXml, barXml } = setupConfigRoot(work);
 
-      let callCount = 0;
-      const svc = makeSvc(async () => {
-        callCount += 1;
-        return lockedErrorResult('Foo');
+      const svc = makeSvc(async (p) => {
+        if (p.relativeFiles.some((f) => f.toLowerCase().startsWith('commonmodules/foo'))) {
+          return lockedErrorResult('Foo');
+        }
+        return successResult();
       });
-
-      vscodeTestState.warningMessageReturnQueue.push(undefined);
 
       const summary = await svc.deploySelectedObjects({
         binding: baseBinding({ infobaseIds: ['f1'], massDeployment: false }),
         workspaceFolderRoot: configRoot,
         storage: mockStorage,
         catalog: [fileEntry('f1', 'TestBase', ibPath)],
-        selectedNodes: [makeNode(fooXml, 'Foo')],
+        selectedNodes: [makeNode(fooXml, 'Foo'), makeNode(barXml, 'Bar')],
         progress: { report: () => undefined },
         token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
       });
 
-      assert.strictEqual(callCount, 1, 'no retry on cancel');
-      assert.strictEqual(summary.errorCount, 1);
+      assert.strictEqual(summary.successCount, 1, 'deploy must complete without any queued warningMessage reply');
     } finally {
       rmDirQuiet(work);
     }
   });
 
-  test('all files locked: showErrorMessage called, no second import call', async () => {
+  test('all files locked: warning shown, no second import call', async () => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-locked-all-'));
     try {
       const ibPath = path.join(work, 'p.1cd');
@@ -1018,9 +1014,6 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
         return lockedErrorResult('Foo');
       });
 
-      vscodeTestState.warningMessageReturnQueue.push('Пропустить залоченные и повторить');
-
-      // Only Foo selected — all files belong to locked Foo
       await svc.deploySelectedObjects({
         binding: baseBinding({ infobaseIds: ['f1'], massDeployment: false }),
         workspaceFolderRoot: configRoot,
@@ -1032,7 +1025,7 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
       });
 
       assert.strictEqual(callCount, 1, 'no second import when all files are locked');
-      assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Все выбранные файлы')));
+      assert.ok(vscodeTestState.warningLog.some((m) => m.includes('Все выбранные файлы')));
     } finally {
       rmDirQuiet(work);
     }

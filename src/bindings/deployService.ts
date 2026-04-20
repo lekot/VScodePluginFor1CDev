@@ -603,39 +603,30 @@ export class DeployService {
         }),
       );
 
-      // Support-mode locked objects: parse ibcmd stderr and offer retry without locked files.
       if (interpreted.status === 'error' && interpreted.lockedObjects && interpreted.lockedObjects.length > 0) {
         const locked = interpreted.lockedObjects;
-        const lockedList = locked.map((o) => `  • ${o.fullName}`).join('\n');
-        const choice = await vscode.window.showWarningMessage(
-          `Следующие объекты находятся на поддержке и не могут быть раскатаны:\n${lockedList}\n\nРаскатать только доступные объекты?`,
-          { modal: true },
-          MESSAGES.LOCKED_OBJECTS_RETRY,
-          MESSAGES.LOCKED_OBJECTS_SHOW_LOG,
-          MESSAGES.LOCKED_OBJECTS_CANCEL,
+        const { kept, filtered } = filterOutLockedObjectFiles(withSiblings, locked);
+        const lockedNames = locked.map((o) => o.fullName).join(', ');
+        appendIbcmdOutputLine(
+          `[support-mode] Объекты на поддержке: ${lockedNames}. Отфильтровано файлов: ${filtered.length}; оставлено: ${kept.length}.`,
         );
-        if (choice === MESSAGES.LOCKED_OBJECTS_RETRY) {
-          const { kept, filtered } = filterOutLockedObjectFiles(withSiblings, locked);
-          appendIbcmdOutputLine(
-            `[support-mode] Отфильтровано залоченных файлов: ${filtered.length}; оставлено: ${kept.length}.`,
+        if (kept.length === 0) {
+          void vscode.window.showWarningMessage(MESSAGES.LOCKED_OBJECTS_ALL_FILTERED);
+        } else {
+          void vscode.window.showWarningMessage(
+            `На поддержке и пропущены: ${lockedNames}. Продолжаем раскатку без них.`,
           );
-          if (kept.length === 0) {
-            void vscode.window.showErrorMessage(MESSAGES.LOCKED_OBJECTS_ALL_FILTERED);
-          } else {
-            interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-              doImport({
-                storage: params.storage,
-                entry,
-                configRoot,
-                relativeFiles: kept,
-                token: params.token,
-                logContext: 'выбранные объекты (без залоченных)',
-                ibcmdExtensionName: params.binding.ibcmdExtensionName,
-              }),
-            );
-          }
-        } else if (choice === MESSAGES.LOCKED_OBJECTS_SHOW_LOG) {
-          appendIbcmdOutputLine(`[support-mode] Пользователь выбрал «Показать лог».`);
+          interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+            doImport({
+              storage: params.storage,
+              entry,
+              configRoot,
+              relativeFiles: kept,
+              token: params.token,
+              logContext: 'выбранные объекты (без залоченных)',
+              ibcmdExtensionName: params.binding.ibcmdExtensionName,
+            }),
+          );
         }
       }
 
