@@ -57,6 +57,8 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
     const props = element.properties as Record<string, unknown> | undefined;
     if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
       treeItem.contextValue = 'MethodBsl';
+    } else if (props?.isVirtual && element.id.endsWith('.CommandInterface')) {
+      treeItem.contextValue = 'SubsystemCommandInterface';
     } else {
       treeItem.contextValue = element.id === 'Forms' ? 'Forms' : element.type;
     }
@@ -153,12 +155,23 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
     // Set icon based on metadata type
     treeItem.iconPath = getIconForType(element.type);
 
+    // Virtual CommandInterface node: use distinct icon
+    if (props?.isVirtual && element.id.endsWith('.CommandInterface')) {
+      treeItem.iconPath = new vscode.ThemeIcon('list-tree');
+    }
+
     // BSL module nodes: open module on click (creates file if virtual)
     if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
       treeItem.command = {
         command: '1c-metadata-tree.openBslModule',
         title: 'Open BSL Module',
         arguments: [element],
+      };
+    } else if (props?.isVirtual && element.id.endsWith('.CommandInterface')) {
+      treeItem.command = {
+        command: '1c-metadata-tree.editSubsystemCommandInterface',
+        title: 'Открыть командный интерфейс',
+        arguments: [element.parent],
       };
     }
     // Other nodes: selection triggers properties panel (no command)

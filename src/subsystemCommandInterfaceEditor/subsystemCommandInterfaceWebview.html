@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+    <title>Командный интерфейс</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        header {
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        header h2 { font-size: 16px; font-weight: 600; }
+        .tabs {
+            display: flex;
+            gap: 2px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            margin-bottom: 12px;
+            flex-shrink: 0;
+        }
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--vscode-foreground);
+            padding: 6px 14px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: inherit;
+            opacity: 0.7;
+            border-bottom: 2px solid transparent;
+        }
+        .tab-btn.active {
+            opacity: 1;
+            border-bottom-color: var(--vscode-focusBorder);
+        }
+        .tab-btn:hover { opacity: 1; }
+        .tab-panel { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+        .tab-panel.active { display: flex; }
+        .scroll-area { overflow-y: auto; flex: 1; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td {
+            text-align: left;
+            padding: 4px 8px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            font-size: var(--vscode-font-size);
+        }
+        th { font-weight: 600; background: var(--vscode-editor-background); position: sticky; top: 0; z-index: 1; }
+        tr:hover td { background: var(--vscode-list-hoverBackground); }
+        .vis-checkbox { cursor: pointer; }
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 0;
+            flex-shrink: 0;
+        }
+        button.primary {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 5px 14px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: inherit;
+        }
+        button.primary:hover { background: var(--vscode-button-hoverBackground); }
+        button.primary:disabled { opacity: 0.5; cursor: default; }
+        .status-msg {
+            font-size: 12px;
+            padding-left: 8px;
+        }
+        .status-ok { color: var(--vscode-testing-iconPassed); }
+        .status-err { color: var(--vscode-errorForeground); }
+        .empty-hint { opacity: 0.6; padding: 12px 8px; font-style: italic; }
+        select.vis-select {
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+            font-family: inherit;
+            font-size: inherit;
+            padding: 2px 4px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h2 id="headerTitle">Командный интерфейс</h2>
+    </header>
+
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="visibility" id="tabBtnVisibility">Видимость</button>
+        <button class="tab-btn" data-tab="placement" id="tabBtnPlacement">Размещение</button>
+        <button class="tab-btn" data-tab="order" id="tabBtnOrder">Порядок команд</button>
+        <button class="tab-btn" data-tab="subsystems" id="tabBtnSubsystems">Порядок подсистем</button>
+        <button class="tab-btn" data-tab="groups" id="tabBtnGroups">Порядок групп</button>
+    </div>
+
+    <!-- Видимость -->
+    <div class="tab-panel active" id="panelVisibility">
+        <div class="toolbar">
+            <button class="primary" id="btnSave" disabled>Сохранить</button>
+            <span class="status-msg" id="statusMsg"></span>
+        </div>
+        <div class="scroll-area">
+            <table id="tableVisibility">
+                <thead><tr><th>Команда</th><th>Видимость</th></tr></thead>
+                <tbody id="visibilityBody"></tbody>
+            </table>
+            <div class="empty-hint" id="visEmptyHint" style="display:none">Нет данных о видимости команд.</div>
+        </div>
+    </div>
+
+    <!-- Размещение -->
+    <div class="tab-panel" id="panelPlacement">
+        <div class="scroll-area">
+            <table>
+                <thead><tr><th>Команда</th><th>Группа</th><th>Размещение</th></tr></thead>
+                <tbody id="placementBody"></tbody>
+            </table>
+            <div class="empty-hint" id="placementEmptyHint" style="display:none">Нет данных о размещении команд.</div>
+        </div>
+    </div>
+
+    <!-- Порядок команд -->
+    <div class="tab-panel" id="panelOrder">
+        <div class="scroll-area">
+            <table>
+                <thead><tr><th>Команда</th><th>Группа</th></tr></thead>
+                <tbody id="orderBody"></tbody>
+            </table>
+            <div class="empty-hint" id="orderEmptyHint" style="display:none">Нет данных о порядке команд.</div>
+        </div>
+    </div>
+
+    <!-- Порядок подсистем -->
+    <div class="tab-panel" id="panelSubsystems">
+        <div class="scroll-area">
+            <table>
+                <thead><tr><th>Подсистема</th></tr></thead>
+                <tbody id="subsystemsBody"></tbody>
+            </table>
+            <div class="empty-hint" id="subsystemsEmptyHint" style="display:none">Нет данных о порядке подсистем.</div>
+        </div>
+    </div>
+
+    <!-- Порядок групп -->
+    <div class="tab-panel" id="panelGroups">
+        <div class="scroll-area">
+            <table>
+                <thead><tr><th>Группа</th></tr></thead>
+                <tbody id="groupsBody"></tbody>
+            </table>
+            <div class="empty-hint" id="groupsEmptyHint" style="display:none">Нет данных о порядке групп.</div>
+        </div>
+    </div>
+
+    <script>
+    // __CI_DATA_PLACEHOLDER__
+    (function() {
+        const vscode = acquireVsCodeApi();
+        const data = window.__ciData;
+        if (!data) { return; }
+
+        const model = data.model;
+        let dirty = false;
+        const visibilityChanges = {};
+
+        document.getElementById('headerTitle').textContent =
+            (data.strings && data.strings.title ? data.strings.title : 'Командный интерфейс') +
+            ': ' + (data.subsystemName || '');
+
+        // ── Tabs ─────────────────────────────────────────────────────────────
+        document.querySelectorAll('.tab-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                const tab = this.getAttribute('data-tab');
+                document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+                document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+                this.classList.add('active');
+                document.getElementById('panel' + capitalize(tab)).classList.add('active');
+            }.bind(btn));
+        });
+
+        function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+        // ── Visibility ────────────────────────────────────────────────────────
+        const visBody = document.getElementById('visibilityBody');
+        const visEmptyHint = document.getElementById('visEmptyHint');
+        if (model.visibility && model.visibility.length > 0) {
+            model.visibility.forEach(function(entry) {
+                const tr = document.createElement('tr');
+                const tdName = document.createElement('td');
+                tdName.textContent = entry.commandName;
+                const tdVis = document.createElement('td');
+                const sel = document.createElement('select');
+                sel.className = 'vis-select';
+                [
+                    { value: 'visible', label: 'Видима' },
+                    { value: 'hidden', label: 'Скрыта' }
+                ].forEach(function(opt) {
+                    const o = document.createElement('option');
+                    o.value = opt.value;
+                    o.textContent = opt.label;
+                    if (opt.value === entry.common) { o.selected = true; }
+                    sel.appendChild(o);
+                });
+                sel.addEventListener('change', function() {
+                    visibilityChanges[entry.commandName] = sel.value;
+                    dirty = true;
+                    document.getElementById('btnSave').disabled = false;
+                });
+                tdVis.appendChild(sel);
+                tr.appendChild(tdName);
+                tr.appendChild(tdVis);
+                visBody.appendChild(tr);
+            });
+        } else {
+            visEmptyHint.style.display = 'block';
+        }
+
+        // ── Placement ─────────────────────────────────────────────────────────
+        const placBody = document.getElementById('placementBody');
+        const placEmptyHint = document.getElementById('placementEmptyHint');
+        if (model.placement && model.placement.length > 0) {
+            model.placement.forEach(function(entry) {
+                const tr = document.createElement('tr');
+                [entry.commandName, entry.commandGroup, entry.placement].forEach(function(val) {
+                    const td = document.createElement('td');
+                    td.textContent = val;
+                    tr.appendChild(td);
+                });
+                placBody.appendChild(tr);
+            });
+        } else {
+            placEmptyHint.style.display = 'block';
+        }
+
+        // ── CommandsOrder ─────────────────────────────────────────────────────
+        const ordBody = document.getElementById('orderBody');
+        const ordEmptyHint = document.getElementById('orderEmptyHint');
+        if (model.commandsOrder && model.commandsOrder.length > 0) {
+            model.commandsOrder.forEach(function(entry) {
+                const tr = document.createElement('tr');
+                [entry.commandName, entry.commandGroup].forEach(function(val) {
+                    const td = document.createElement('td');
+                    td.textContent = val;
+                    tr.appendChild(td);
+                });
+                ordBody.appendChild(tr);
+            });
+        } else {
+            ordEmptyHint.style.display = 'block';
+        }
+
+        // ── SubsystemsOrder ───────────────────────────────────────────────────
+        const subBody = document.getElementById('subsystemsBody');
+        const subEmptyHint = document.getElementById('subsystemsEmptyHint');
+        if (model.subsystemsOrder && model.subsystemsOrder.length > 0) {
+            model.subsystemsOrder.forEach(function(name) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.textContent = name;
+                tr.appendChild(td);
+                subBody.appendChild(tr);
+            });
+        } else {
+            subEmptyHint.style.display = 'block';
+        }
+
+        // ── GroupsOrder ───────────────────────────────────────────────────────
+        const grpBody = document.getElementById('groupsBody');
+        const grpEmptyHint = document.getElementById('groupsEmptyHint');
+        if (model.groupsOrder && model.groupsOrder.length > 0) {
+            model.groupsOrder.forEach(function(name) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.textContent = name;
+                tr.appendChild(td);
+                grpBody.appendChild(tr);
+            });
+        } else {
+            grpEmptyHint.style.display = 'block';
+        }
+
+        // ── Save ──────────────────────────────────────────────────────────────
+        document.getElementById('btnSave').addEventListener('click', function() {
+            const updated = model.visibility.map(function(e) {
+                return {
+                    commandName: e.commandName,
+                    common: visibilityChanges.hasOwnProperty(e.commandName)
+                        ? visibilityChanges[e.commandName]
+                        : e.common
+                };
+            });
+            vscode.postMessage({ type: 'save', visibility: updated });
+        });
+
+        // ── Messages from host ────────────────────────────────────────────────
+        window.addEventListener('message', function(event) {
+            const msg = event.data;
+            const statusEl = document.getElementById('statusMsg');
+            if (msg.type === 'saveSuccess') {
+                statusEl.textContent = data.strings && data.strings.saved ? data.strings.saved : 'Сохранено.';
+                statusEl.className = 'status-msg status-ok';
+                dirty = false;
+                document.getElementById('btnSave').disabled = true;
+                visibilityChanges = {};
+            } else if (msg.type === 'saveError') {
+                statusEl.textContent = msg.message || 'Ошибка сохранения.';
+                statusEl.className = 'status-msg status-err';
+            }
+        });
+    })();
+    </script>
+</body>
+</html>

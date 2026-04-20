@@ -46,6 +46,8 @@ import type {
     DebugStartFromBindingParams,
 } from './agentDebugTypes';
 import { resolveBindingCommand, listBindingsCommand } from './agentBindingResolver';
+import { CommandInterfaceOperations } from './commandInterfaceOperations';
+import type { CommandOrderEntry, CommandVisibility } from '../types/commandInterface';
 
 /**
  * Регистрирует Agent API команды.
@@ -546,6 +548,62 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.getSubsystemCommandInterface ────────────────
+
+    const getSubsystemCommandInterfaceCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getSubsystemCommandInterface',
+        async (params: { subsystemPath: string }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.getCommandInterface(params.subsystemPath);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.setSubsystemCommandVisibility ───────────────
+
+    const setSubsystemCommandVisibilityCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setSubsystemCommandVisibility',
+        async (params: { subsystemPath: string; commandName: string; common: CommandVisibility | null }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.setCommandVisibility(params.subsystemPath, params.commandName, params.common);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.setSubsystemCommandOrder ────────────────────
+
+    const setSubsystemCommandOrderCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setSubsystemCommandOrder',
+        async (params: { subsystemPath: string; entries: CommandOrderEntry[] }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.setCommandOrder(params.subsystemPath, params.entries);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.setSubsystemSubsystemsOrder ─────────────────
+
+    const setSubsystemSubsystemsOrderCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setSubsystemSubsystemsOrder',
+        async (params: { subsystemPath: string; order: string[] }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.setSubsystemsOrder(params.subsystemPath, params.order);
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -562,5 +620,7 @@ export function registerAgentCommands(
         deploySelectedObjectsCommand, deployChangedFilesCommand,
         pullSelectedObjectsCommand, exportStatusCommand,
         getTypeCommand, setTypeCommand,
+        getSubsystemCommandInterfaceCommand, setSubsystemCommandVisibilityCommand,
+        setSubsystemCommandOrderCommand, setSubsystemSubsystemsOrderCommand,
     );
 }

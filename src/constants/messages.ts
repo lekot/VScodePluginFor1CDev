@@ -67,9 +67,19 @@ export const MESSAGES = {
   SUBSYSTEM_COMPOSITION_ADD_OK: 'CDT 41: объект добавлен в состав подсистемы.',
   SUBSYSTEM_COMPOSITION_REMOVE_OK: 'CDT 41: объект удалён из состава подсистемы.',
 
-  // Support-mode locked objects retry (issue #82)
   LOCKED_OBJECTS_RETRY: 'Пропустить залоченные и повторить',
   LOCKED_OBJECTS_SHOW_LOG: 'Показать лог',
   LOCKED_OBJECTS_CANCEL: 'Отмена',
   LOCKED_OBJECTS_ALL_FILTERED: 'Все выбранные файлы относятся к объектам на поддержке. Нечего раскатывать.',
+
+  SUBSYSTEM_COMMAND_INTERFACE_TITLE: 'Командный интерфейс подсистемы',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_VISIBILITY: 'Видимость команд',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_PLACEMENT: 'Размещение команд',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_ORDER: 'Порядок команд',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_SUBSYSTEMS_ORDER: 'Порядок подсистем',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_GROUPS_ORDER: 'Порядок групп',
+  SUBSYSTEM_COMMAND_INTERFACE_READ_FAILED: 'Не удалось прочитать CommandInterface.xml',
+  SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED: 'Не удалось записать CommandInterface.xml',
+  SUBSYSTEM_COMMAND_INTERFACE_NO_FILE: 'У подсистемы нет файла CommandInterface.xml',
+  SUBSYSTEM_COMMAND_INTERFACE_SAVED: 'Командный интерфейс сохранён',
 } as const;

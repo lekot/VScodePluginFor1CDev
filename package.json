@@ -216,6 +216,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.editSubsystemCommandInterface",
+        "title": "Открыть командный интерфейс",
+        "category": "1C Metadata"
+      },
+      {
         "command": "1c-metadata-tree.editExchangePlanContent",
         "title": "Редактор состава плана обмена",
         "category": "CDT 41"
@@ -800,6 +805,11 @@
           "command": "1c-metadata-tree.editSubsystemComposition",
           "when": "view == 1c-metadata-tree && viewItem =~ /Subsystem/",
           "group": "2_subsystem@0"
+        },
+        {
+          "command": "1c-metadata-tree.editSubsystemCommandInterface",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Subsystem/",
+          "group": "2_subsystem@1"
         },
         {
           "command": "1c-metadata-tree.editExchangePlanContent",

@@ -452,6 +452,34 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const editSubsystemCommandInterfaceCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.editSubsystemCommandInterface',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.Subsystem) {
+        vscode.window.showWarningMessage('Выберите узел подсистемы в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.subsystemCommandInterfaceProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось открыть командный интерфейс подсистемы.');
+        return;
+      }
+      const ciPath = path.join(path.dirname(target.filePath), 'Ext', 'CommandInterface.xml');
+      if (!fs.existsSync(ciPath)) {
+        vscode.window.showWarningMessage('У подсистемы нет файла CommandInterface.xml.');
+        return;
+      }
+      try {
+        await state.subsystemCommandInterfaceProvider.show(target, ciPath);
+      } catch (err) {
+        Logger.error('Failed to open command interface editor', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ошибка открытия командного интерфейса: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
   const startDebuggingCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.startDebugging',
     async (node?: TreeNode) => {
@@ -487,6 +515,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     editCommonAttributeContentCommand,
     editFunctionalOptionContentCommand,
     editFilterCriterionContentCommand,
+    editSubsystemCommandInterfaceCommand,
     startDebuggingCommand,
   ];
 }

@@ -4,6 +4,7 @@ const path = require('path');
 const sources = [
   'src/rolesEditor/rolesEditorWebview.html',
   'src/compositionEditor/compositionWebview.html',
+  'src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceWebview.html',
 ];
 
 const outDirs = ['dist', 'out/src'];
