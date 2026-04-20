@@ -66,4 +66,10 @@ export const MESSAGES = {
   SUBSYSTEM_COMPOSITION_REMOVE_PLACEHOLDER: 'Выберите объект для удаления из состава',
   SUBSYSTEM_COMPOSITION_ADD_OK: 'CDT 41: объект добавлен в состав подсистемы.',
   SUBSYSTEM_COMPOSITION_REMOVE_OK: 'CDT 41: объект удалён из состава подсистемы.',
+
+  // Support-mode locked objects retry (issue #82)
+  LOCKED_OBJECTS_RETRY: 'Пропустить залоченные и повторить',
+  LOCKED_OBJECTS_SHOW_LOG: 'Показать лог',
+  LOCKED_OBJECTS_CANCEL: 'Отмена',
+  LOCKED_OBJECTS_ALL_FILTERED: 'Все выбранные файлы относятся к объектам на поддержке. Нечего раскатывать.',
 } as const;

@@ -17,6 +17,10 @@ import type { ConfigurationBinding } from '../../src/bindings/models/configurati
 import type { InfobaseEntry } from '../../src/infobases/models/infobaseEntry';
 import type { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
+import { MetadataType } from '../../src/models/treeNode';
+import type { TreeNode } from '../../src/models/treeNode';
+import type { IbcmdInfobaseOperationResult } from '../../src/services/ibcmd/ibcmdInfobaseOperationResult';
+import type { IncrementalImportParams } from '../../src/infobases/infobaseConfigCommands';
 
 function fixtureSmallRoot(): string {
   return path.resolve(__dirname, '../fixtures/matrix/small');
@@ -861,6 +865,174 @@ suite('DeployService.deployBinding', () => {
         token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
       });
       assert.ok(!vscodeTestState.outputChannelLines.some((l) => l.includes('Режим copy')));
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+});
+
+suite('deploySelectedObjects: supportMode locked retry', () => {
+  teardown(() => {
+    resetIbcmdServiceSingletonForTests();
+    resetVscodeTestState();
+  });
+
+  function makeNode(filePath: string, name: string = 'Foo'): TreeNode {
+    return {
+      id: `test-node-${name}`,
+      name,
+      type: MetadataType.CommonModule,
+      properties: {},
+      filePath,
+    };
+  }
+
+  function successResult(): IbcmdInfobaseOperationResult {
+    return { status: 'success', exitCode: 0, userMessage: 'Операция завершена успешно.', logExcerpt: '' };
+  }
+
+  function lockedErrorResult(objectName: string = 'Foo'): IbcmdInfobaseOperationResult {
+    return {
+      status: 'error',
+      exitCode: 1,
+      userMessage: 'Ошибка выполнения операции (см. вывод ibcmd).',
+      logExcerpt: `редактирование объекта метаданных CommonModule.${objectName} запрещено!`,
+      lockedObjects: [{ kind: 'CommonModule', name: objectName, fullName: `CommonModule.${objectName}` }],
+    };
+  }
+
+  /**
+   * Creates a temp configRoot with CommonModules/Foo.xml + Bar.xml so
+   * collectFilesForSelection has real files to walk.
+   */
+  function setupConfigRoot(work: string): { configRoot: string; fooXml: string; barXml: string } {
+    const configRoot = path.join(work, 'cfg');
+    const modDir = path.join(configRoot, 'CommonModules');
+    fs.mkdirSync(modDir, { recursive: true });
+    // Write Configuration.xml (required by resolveConfigurationXmlDirectory)
+    fs.writeFileSync(path.join(configRoot, 'Configuration.xml'), '<Configuration/>');
+    const fooXml = path.join(modDir, 'Foo.xml');
+    const barXml = path.join(modDir, 'Bar.xml');
+    fs.writeFileSync(fooXml, '<CommonModule/>');
+    fs.writeFileSync(barXml, '<CommonModule/>');
+    return { configRoot, fooXml, barXml };
+  }
+
+  function makeSvc(
+    runIncrementalImport: (p: IncrementalImportParams) => Promise<IbcmdInfobaseOperationResult>,
+  ): DeployService {
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = process.execPath;
+    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
+    resetIbcmdServiceSingletonForTests();
+    return new DeployService({ runIncrementalImport });
+  }
+
+  test('retry without locked: second call made with filtered files, result success', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-locked-retry-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      const { configRoot, fooXml, barXml } = setupConfigRoot(work);
+
+      const calls: Array<{ relativeFiles: readonly string[] }> = [];
+      const svc = makeSvc(async (p) => {
+        calls.push({ relativeFiles: p.relativeFiles });
+        if (calls.length === 1) {
+          return lockedErrorResult('Foo');
+        }
+        return successResult();
+      });
+
+      vscodeTestState.warningMessageReturnQueue.push('Пропустить залоченные и повторить');
+
+      // Both Foo and Bar nodes selected; only Foo is locked
+      const nodes = [makeNode(fooXml, 'Foo'), makeNode(barXml, 'Bar')];
+      const summary = await svc.deploySelectedObjects({
+        binding: baseBinding({ infobaseIds: ['f1'], massDeployment: false }),
+        workspaceFolderRoot: configRoot,
+        storage: mockStorage,
+        catalog: [fileEntry('f1', 'TestBase', ibPath)],
+        selectedNodes: nodes,
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+
+      assert.strictEqual(calls.length, 2, 'second call must be made');
+      assert.ok(
+        calls[1]!.relativeFiles.every((f) => !f.toLowerCase().startsWith('commonmodules/foo')),
+        'second call must not contain locked file',
+      );
+      assert.ok(
+        calls[1]!.relativeFiles.some((f) => f.toLowerCase().startsWith('commonmodules/bar')),
+        'second call must still have Bar',
+      );
+      assert.strictEqual(summary.successCount, 1);
+      assert.ok(vscodeTestState.outputChannelLines.some((l) => l.includes('[support-mode]') && l.includes('Отфильтровано')));
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('cancel: second call not made', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-locked-cancel-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      const { configRoot, fooXml } = setupConfigRoot(work);
+
+      let callCount = 0;
+      const svc = makeSvc(async () => {
+        callCount += 1;
+        return lockedErrorResult('Foo');
+      });
+
+      vscodeTestState.warningMessageReturnQueue.push(undefined);
+
+      const summary = await svc.deploySelectedObjects({
+        binding: baseBinding({ infobaseIds: ['f1'], massDeployment: false }),
+        workspaceFolderRoot: configRoot,
+        storage: mockStorage,
+        catalog: [fileEntry('f1', 'TestBase', ibPath)],
+        selectedNodes: [makeNode(fooXml, 'Foo')],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+
+      assert.strictEqual(callCount, 1, 'no retry on cancel');
+      assert.strictEqual(summary.errorCount, 1);
+    } finally {
+      rmDirQuiet(work);
+    }
+  });
+
+  test('all files locked: showErrorMessage called, no second import call', async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-locked-all-'));
+    try {
+      const ibPath = path.join(work, 'p.1cd');
+      fs.writeFileSync(ibPath, '');
+      const { configRoot, fooXml } = setupConfigRoot(work);
+
+      let callCount = 0;
+      const svc = makeSvc(async () => {
+        callCount += 1;
+        return lockedErrorResult('Foo');
+      });
+
+      vscodeTestState.warningMessageReturnQueue.push('Пропустить залоченные и повторить');
+
+      // Only Foo selected — all files belong to locked Foo
+      await svc.deploySelectedObjects({
+        binding: baseBinding({ infobaseIds: ['f1'], massDeployment: false }),
+        workspaceFolderRoot: configRoot,
+        storage: mockStorage,
+        catalog: [fileEntry('f1', 'TestBase', ibPath)],
+        selectedNodes: [makeNode(fooXml, 'Foo')],
+        progress: { report: () => undefined },
+        token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
+      });
+
+      assert.strictEqual(callCount, 1, 'no second import when all files are locked');
+      assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Все выбранные файлы')));
     } finally {
       rmDirQuiet(work);
     }

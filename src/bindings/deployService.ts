@@ -21,6 +21,8 @@ import {
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
+import { filterOutLockedObjectFiles } from './deployLockedObjectsFilter';
+import { MESSAGES } from '../constants/messages';
 import type { TreeNode } from '../models/treeNode';
 
 export type DeployItemStatus = 'success' | 'error' | 'skipped';
@@ -251,6 +253,7 @@ export class DeployService {
   constructor(
     private readonly deps: {
       runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
+      runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
     } = {},
   ) {}
 
@@ -548,8 +551,10 @@ export class DeployService {
       const entry = entries[i]!;
       params.progress.report({ message: `Раскатка выбранных: ${entry.name} (${i + 1}/${total})`, increment });
 
+      const doImport = this.deps.runIncrementalImport ?? runInfobaseConfigIncrementalImport;
+
       let interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-        runInfobaseConfigIncrementalImport({
+        doImport({
           storage: params.storage,
           entry,
           configRoot,
@@ -560,9 +565,45 @@ export class DeployService {
         }),
       );
 
+      // Support-mode locked objects: parse ibcmd stderr and offer retry without locked files.
+      if (interpreted.status === 'error' && interpreted.lockedObjects && interpreted.lockedObjects.length > 0) {
+        const locked = interpreted.lockedObjects;
+        const lockedList = locked.map((o) => `  • ${o.fullName}`).join('\n');
+        const choice = await vscode.window.showWarningMessage(
+          `Следующие объекты находятся на поддержке и не могут быть раскатаны:\n${lockedList}\n\nРаскатать только доступные объекты?`,
+          { modal: true },
+          MESSAGES.LOCKED_OBJECTS_RETRY,
+          MESSAGES.LOCKED_OBJECTS_SHOW_LOG,
+          MESSAGES.LOCKED_OBJECTS_CANCEL,
+        );
+        if (choice === MESSAGES.LOCKED_OBJECTS_RETRY) {
+          const { kept, filtered } = filterOutLockedObjectFiles(relativeFiles, locked);
+          appendIbcmdOutputLine(
+            `[support-mode] Отфильтровано залоченных файлов: ${filtered.length}; оставлено: ${kept.length}.`,
+          );
+          if (kept.length === 0) {
+            void vscode.window.showErrorMessage(MESSAGES.LOCKED_OBJECTS_ALL_FILTERED);
+          } else {
+            interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+              doImport({
+                storage: params.storage,
+                entry,
+                configRoot,
+                relativeFiles: kept,
+                token: params.token,
+                logContext: 'выбранные объекты (без залоченных)',
+                ibcmdExtensionName: params.binding.ibcmdExtensionName,
+              }),
+            );
+          }
+        } else if (choice === MESSAGES.LOCKED_OBJECTS_SHOW_LOG) {
+          appendIbcmdOutputLine(`[support-mode] Пользователь выбрал «Показать лог».`);
+        }
+      }
+
       // Fallback: if import failed and we have structural (.xml) files,
       // offer to retry with Configuration.xml included.
-      if (interpreted.status === 'error' && hasStructuralFiles) {
+      if (interpreted.status === 'error' && hasStructuralFiles && !(interpreted.lockedObjects && interpreted.lockedObjects.length > 0)) {
         const retry = await vscode.window.showWarningMessage(
           `Раскатка в «${entry.name}» не удалась. Повторить с Configuration.xml? ` +
             '(будут применены ВСЕ структурные изменения конфигурации)',
@@ -572,7 +613,7 @@ export class DeployService {
         if (retry === 'Повторить с Configuration.xml') {
           appendIbcmdOutputLine(`[раскатка выбранных] Повтор с Configuration.xml...`);
           interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-            runInfobaseConfigIncrementalImport({
+            doImport({
               storage: params.storage,
               entry,
               configRoot,
