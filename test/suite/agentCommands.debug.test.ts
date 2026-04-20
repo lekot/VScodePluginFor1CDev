@@ -80,8 +80,8 @@ suite('registerAgentCommands — debug commands registration', () => {
         const before = ctx.subscriptions.length;
         registerAgentCommands(ctx as never, () => null, async () => null, registry);
         const after = ctx.subscriptions.length;
-        // 12 CRUD + 2 type + 15 debug + 2 binding + 1 deploy + 4 agent deploy ops + 4 command interface = 40 новых подписок
-        assert.strictEqual(after - before, 40, `Ожидалось 40 подписок, получено ${after - before}`);
+        // 12 CRUD + 2 type + 15 debug + 2 binding + 1 deploy + 4 agent deploy ops + 4 command interface + 4 predefined cot ops = 44 новых подписки
+        assert.strictEqual(after - before, 44, `Ожидалось 44 подписки, получено ${after - before}`);
     });
 
     test('debug-команды не регистрируются в package.json contributes (только programmatic)', () => {

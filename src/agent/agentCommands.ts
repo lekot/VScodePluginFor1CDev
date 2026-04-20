@@ -48,6 +48,17 @@ import type {
 import { resolveBindingCommand, listBindingsCommand } from './agentBindingResolver';
 import { CommandInterfaceOperations } from './commandInterfaceOperations';
 import type { CommandOrderEntry, CommandVisibility } from '../types/commandInterface';
+import {
+    listPredefinedCharacteristics,
+    getPredefinedCharacteristicType,
+    setPredefinedCharacteristicType,
+    getCharacteristicValueRegisters,
+} from './predefinedCharacteristicOperations';
+import type {
+    CotPathParams,
+    PredefinedCotPathParams,
+    SetPredefinedCotTypeParams,
+} from './types';
 
 /**
  * Регистрирует Agent API команды.
@@ -548,8 +559,6 @@ export function registerAgentCommands(
         }
     );
 
-    // ─── 1c-metadata-tree.agent.getSubsystemCommandInterface ────────────────
-
     const getSubsystemCommandInterfaceCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getSubsystemCommandInterface',
         async (params: { subsystemPath: string }) => {
@@ -561,8 +570,6 @@ export function registerAgentCommands(
             return await ops.getCommandInterface(params.subsystemPath);
         }
     );
-
-    // ─── 1c-metadata-tree.agent.setSubsystemCommandVisibility ───────────────
 
     const setSubsystemCommandVisibilityCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setSubsystemCommandVisibility',
@@ -576,8 +583,6 @@ export function registerAgentCommands(
         }
     );
 
-    // ─── 1c-metadata-tree.agent.setSubsystemCommandOrder ────────────────────
-
     const setSubsystemCommandOrderCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setSubsystemCommandOrder',
         async (params: { subsystemPath: string; entries: CommandOrderEntry[] }) => {
@@ -590,8 +595,6 @@ export function registerAgentCommands(
         }
     );
 
-    // ─── 1c-metadata-tree.agent.setSubsystemSubsystemsOrder ─────────────────
-
     const setSubsystemSubsystemsOrderCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setSubsystemSubsystemsOrder',
         async (params: { subsystemPath: string; order: string[] }) => {
@@ -601,6 +604,70 @@ export function registerAgentCommands(
             }
             const ops = new CommandInterfaceOperations(configRoot);
             return await ops.setSubsystemsOrder(params.subsystemPath, params.order);
+        }
+    );
+
+    const listPredefinedCharacteristicsCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.listPredefinedCharacteristics',
+        async (params: CotPathParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                const data = await listPredefinedCharacteristics(configRoot, params.path);
+                return { success: true, data };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        }
+    );
+
+    const getPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getPredefinedCharacteristicType',
+        async (params: PredefinedCotPathParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                const data = await getPredefinedCharacteristicType(configRoot, params.path, params.predefinedName);
+                return { success: true, data };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        }
+    );
+
+    const setPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setPredefinedCharacteristicType',
+        async (params: SetPredefinedCotTypeParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                await setPredefinedCharacteristicType(configRoot, params.path, params.predefinedName, params.types);
+                return { success: true };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        }
+    );
+
+    const getCharacteristicValueRegistersCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getCharacteristicValueRegisters',
+        async (params: CotPathParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                const data = await getCharacteristicValueRegisters(configRoot, params.path);
+                return { success: true, data };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
         }
     );
 
@@ -622,5 +689,9 @@ export function registerAgentCommands(
         getTypeCommand, setTypeCommand,
         getSubsystemCommandInterfaceCommand, setSubsystemCommandVisibilityCommand,
         setSubsystemCommandOrderCommand, setSubsystemSubsystemsOrderCommand,
+        listPredefinedCharacteristicsCommand,
+        getPredefinedCharacteristicTypeCommand,
+        setPredefinedCharacteristicTypeCommand,
+        getCharacteristicValueRegistersCommand,
     );
 }

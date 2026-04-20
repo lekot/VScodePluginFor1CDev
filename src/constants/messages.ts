@@ -82,4 +82,11 @@ export const MESSAGES = {
   SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED: 'Не удалось записать CommandInterface.xml',
   SUBSYSTEM_COMMAND_INTERFACE_NO_FILE: 'У подсистемы нет файла CommandInterface.xml',
   SUBSYSTEM_COMMAND_INTERFACE_SAVED: 'Командный интерфейс сохранён',
+
+  COT_PREDEFINED_VIEW_TITLE: 'Предопределённые виды характеристик',
+  COT_PREDEFINED_EMPTY: 'Нет предопределённых видов характеристик',
+  COT_PREDEFINED_READ_FAILED: 'Не удалось прочитать предопределённые виды',
+  COT_PREDEFINED_COPIED: 'Ссылка на вид характеристики скопирована',
+  COT_PREDEFINED_NO_TYPE: 'Тип не задан',
+  COT_REGISTERS_TITLE: 'Регистры, связанные с ПВХ',
 } as const;

@@ -14,6 +14,8 @@ import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import { appendIbcmdOutputLine, showIbcmdInfobaseOutputChannel } from '../infobases/infobaseConfigCommands';
 import { startDebugging } from '../debug/debugLauncher';
+import { listPredefinedCharacteristics } from '../agent/predefinedCharacteristicOperations';
+import { MESSAGES } from '../constants/messages';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
@@ -480,6 +482,63 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const viewCotPredefinedCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.viewChartOfCharacteristicTypesPredefined',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.ChartOfCharacteristicTypes) {
+        vscode.window.showWarningMessage('Выберите узел ПВХ в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.treeDataProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось определить путь к ПВХ.');
+        return;
+      }
+
+      const configPath = state.treeDataProvider.getConfigPathForNode(target) ?? state.treeDataProvider.getConfigPath();
+      if (!configPath) {
+        vscode.window.showErrorMessage('CDT 41: не удалось определить путь к конфигурации.');
+        return;
+      }
+
+      let entries;
+      try {
+        entries = await listPredefinedCharacteristics(configPath, target.name);
+      } catch (err) {
+        Logger.error('viewCotPredefined: failed to read', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ${MESSAGES.COT_PREDEFINED_READ_FAILED}: ${err instanceof Error ? err.message : String(err)}`
+        );
+        return;
+      }
+
+      if (entries.length === 0) {
+        vscode.window.showInformationMessage(MESSAGES.COT_PREDEFINED_EMPTY);
+        return;
+      }
+
+      const items = entries.map((e) => ({
+        label: e.name,
+        description: e.type.length > 0 ? e.type.join(', ') : MESSAGES.COT_PREDEFINED_NO_TYPE,
+        detail: e.description ? `${e.description}${e.code ? ` (код ${e.code})` : ''}` : (e.code ? `код ${e.code}` : undefined),
+        entry: e,
+      }));
+
+      const picked = await vscode.window.showQuickPick(items, {
+        title: MESSAGES.COT_PREDEFINED_VIEW_TITLE,
+        placeHolder: target.name,
+        matchOnDescription: true,
+        matchOnDetail: true,
+      });
+
+      if (picked) {
+        const ref = `ChartOfCharacteristicTypes.${target.name}.PredefinedData.${picked.entry.name}`;
+        await vscode.env.clipboard.writeText(ref);
+        vscode.window.showInformationMessage(MESSAGES.COT_PREDEFINED_COPIED);
+      }
+    }
+  );
+
   const startDebuggingCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.startDebugging',
     async (node?: TreeNode) => {
@@ -516,6 +575,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     editFunctionalOptionContentCommand,
     editFilterCriterionContentCommand,
     editSubsystemCommandInterfaceCommand,
+    viewCotPredefinedCommand,
     startDebuggingCommand,
   ];
 }

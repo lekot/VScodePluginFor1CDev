@@ -240,6 +240,11 @@
         "title": "CDT 41: Редактировать состав критерия отбора"
       },
       {
+        "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",
+        "title": "ПВХ: Предопределённые виды",
+        "category": "1C Metadata"
+      },
+      {
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
         "title": "CDT 41: Настройка ibcmd…",
         "category": "CDT 41"
@@ -830,6 +835,11 @@
           "command": "1c-metadata-tree.editFilterCriterionContent",
           "when": "view == 1c-metadata-tree && viewItem =~ /^FilterCriterion\\b/",
           "group": "2_composition@0"
+        },
+        {
+          "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^ChartOfCharacteristicTypes\\b/",
+          "group": "2_cot@0"
         },
         {
           "command": "1c-metadata-tree.clearSubsystemFilter",

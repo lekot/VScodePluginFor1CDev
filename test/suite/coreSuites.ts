@@ -158,6 +158,8 @@ export const coreSuiteFiles: string[] = [
   'suite/treeItemBuilder.test.js',
   'suite/commandInterfaceParser.test.js',
   'suite/commandInterfaceOperations.test.js',
+  'suite/predefinedCharacteristicsParser.test.js',
+  'suite/predefinedCharacteristicOperations.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
