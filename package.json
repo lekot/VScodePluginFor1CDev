@@ -733,7 +733,7 @@
         },
         {
           "command": "1c-metadata-tree.openBslModule",
-          "when": "view == 1c-metadata-tree && viewItem == 'MethodBsl'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^MethodBsl\\b/",
           "group": "navigation"
         },
         {
@@ -743,22 +743,22 @@
         },
         {
           "command": "1c-metadata-tree.openFormEditor",
-          "when": "view == 1c-metadata-tree && viewItem == 'Form'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Form\\b/",
           "group": "navigation"
         },
         {
           "command": "1c-metadata-tree.openRightsEditor",
-          "when": "view == 1c-metadata-tree && viewItem == 'Role'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Role\\b/",
           "group": "navigation"
         },
         {
           "command": "1c-metadata-tree.openTemplatePreview",
-          "when": "view == 1c-metadata-tree && viewItem == 'Template'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Template\\b/",
           "group": "navigation"
         },
         {
           "command": "1c-metadata-tree.openTemplatePreview",
-          "when": "view == 1c-metadata-tree && viewItem == 'CommonTemplate'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^CommonTemplate\\b/",
           "group": "navigation"
         },
         {
@@ -768,7 +768,7 @@
         },
         {
           "command": "1c-metadata-tree.createForm",
-          "when": "view == 1c-metadata-tree && viewItem == 'Forms'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Forms\\b/",
           "group": "1_modify"
         },
         {
@@ -793,7 +793,7 @@
         },
         {
           "command": "1c-metadata-tree.filterBySubsystem",
-          "when": "view == 1c-metadata-tree && viewItem == 'Subsystem'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Subsystem\\b/",
           "group": "navigation"
         },
         {
@@ -803,22 +803,22 @@
         },
         {
           "command": "1c-metadata-tree.editExchangePlanContent",
-          "when": "view == 1c-metadata-tree && viewItem == 'ExchangePlan'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^ExchangePlan\\b/",
           "group": "2_composition@0"
         },
         {
           "command": "1c-metadata-tree.editCommonAttributeContent",
-          "when": "view == 1c-metadata-tree && viewItem == 'CommonAttribute'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^CommonAttribute\\b/",
           "group": "2_composition@0"
         },
         {
           "command": "1c-metadata-tree.editFunctionalOptionContent",
-          "when": "view == 1c-metadata-tree && viewItem == 'FunctionalOption'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^FunctionalOption\\b/",
           "group": "2_composition@0"
         },
         {
           "command": "1c-metadata-tree.editFilterCriterionContent",
-          "when": "view == 1c-metadata-tree && viewItem == 'FilterCriterion'",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^FilterCriterion\\b/",
           "group": "2_composition@0"
         },
         {

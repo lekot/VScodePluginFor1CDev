@@ -77,9 +77,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.configurationBindingDecorations = new Map(map);
   }
 
-  private lookupConfigurationBindingDecoration(element: TreeNode): ConfigurationBindingDecoration | undefined {
-    if (element.type === MetadataType.Configuration) {
-      const configDir = this.getConfigPathForNode(element);
+  private lookupConfigurationBindingDecorationForRoot(root: TreeNode): ConfigurationBindingDecoration | undefined {
+    if (root.type === MetadataType.Configuration) {
+      const configDir = this.getConfigPathForNode(root);
       if (!configDir) {
         return undefined;
       }
@@ -95,12 +95,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       const key = bindingKey(wf.name, norm, ext);
       return this.configurationBindingDecorations.get(key);
     }
-    if (element.type === MetadataType.Extension) {
-      const props = element.properties as Record<string, unknown> | undefined;
-      if (props?.isExtension !== true || !element.filePath?.trim()) {
+    if (root.type === MetadataType.Extension) {
+      const props = root.properties as Record<string, unknown> | undefined;
+      if (props?.isExtension !== true || !root.filePath?.trim()) {
         return undefined;
       }
-      const configXmlFs = path.join(element.filePath.trim(), CONFIGURATION_XML);
+      const configXmlFs = path.join(root.filePath.trim(), CONFIGURATION_XML);
       try {
         if (!fs.existsSync(configXmlFs)) {
           return undefined;
@@ -118,6 +118,26 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       const ext = detectIbcmdExtensionNameFromConfigRelativePath(norm);
       const key = bindingKey(wf.name, norm, ext);
       return this.configurationBindingDecorations.get(key);
+    }
+    return undefined;
+  }
+
+  private lookupConfigurationBindingDecoration(element: TreeNode): ConfigurationBindingDecoration | undefined {
+    if (element.type === MetadataType.Configuration || this.isExtensionInfobaseBindingRoot(element)) {
+      return this.lookupConfigurationBindingDecorationForRoot(element);
+    }
+    // For child nodes: walk up to find the config/extension root and reuse its decoration.
+    const configRoot = this.cache.getConfigurationRoot(element);
+    if (configRoot) {
+      return this.lookupConfigurationBindingDecorationForRoot(configRoot);
+    }
+    // Walk parent chain to find Extension infobase binding root.
+    let n: TreeNode | undefined = element.parent;
+    while (n) {
+      if (this.isExtensionInfobaseBindingRoot(n)) {
+        return this.lookupConfigurationBindingDecorationForRoot(n);
+      }
+      n = n.parent;
     }
     return undefined;
   }
