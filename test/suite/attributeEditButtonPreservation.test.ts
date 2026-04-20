@@ -249,6 +249,7 @@ suite('Preservation Tests: Non-Edit-Button Interactions', () => {
       isSaving: false,
       treeDataProvider,
       typeEditorProvider,
+      objectTypeEditorProvider: {} as any,
       postMessage: (message: any) => { capturedMessage = message; },
       updateWebviewContent: () => { /* no-op */ },
       setIsSaving: () => { /* no-op */ },

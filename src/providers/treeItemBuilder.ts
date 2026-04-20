@@ -68,12 +68,12 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
 
     const { bindingDeco, isExtensionInfobaseBindingRoot } = options;
 
-    // WOW §2D: контекст для «Раскатать в базу/базы» (viewItem when в package.json).
+    // WOW §2D: context for deploy commands (viewItem when in package.json).
     if (element.type === MetadataType.Configuration) {
       let cv = 'Configuration';
       if (bindingDeco && bindingDeco.boundCount > 0) {
         cv += ' bindingBound';
-        // Дизайн §12.5: подпись/иконка от флага массовой раскатки, не от числа баз в списке.
+        // Design §12.5: suffix driven by mass deployment flag, not by count.
         const many = bindingDeco.massDeployment === true;
         cv += many ? ' deployMany' : ' deployOne';
       }
@@ -86,6 +86,10 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
         cv += many ? ' deployMany' : ' deployOne';
       }
       treeItem.contextValue = cv;
+    } else if (bindingDeco && bindingDeco.boundCount > 0) {
+      // Child node under a bound configuration/extension: append bindingBound so that
+      // deploy-selected-objects context menu commands become visible.
+      treeItem.contextValue = `${treeItem.contextValue} bindingBound`;
     }
 
     // Set tooltip: name, type, path (additional_req.md п.14)

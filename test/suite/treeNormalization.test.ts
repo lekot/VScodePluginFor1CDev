@@ -6,9 +6,11 @@ import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import {
   ensureTabularSectionColumnsPlaceholder,
+  ensureR6PlaceholdersForInstanceNode,
   isTabularSectionColumnsContainer,
   mergeR5TypeFoldersUnderCommon,
   normalizeEmptyPlaceholderTree,
+  NormalizeContext,
 } from '../../src/utils/treeNormalization';
 
 suite('treeNormalization Test Suite', () => {
@@ -734,6 +736,48 @@ suite('treeNormalization Test Suite', () => {
       () => mergeR5TypeFoldersUnderCommon(root, { configPath, format: ConfigFormat.Designer }),
       /Дубликат дочернего узла «Roles.DupRole»/
     );
+  });
+
+  test('ensureR6PlaceholdersForInstanceNode sets filePath ending with Ext/Predefined.xml for PredefinedData child', () => {
+    const catalogsFolder: TreeNode = {
+      id: 'Catalogs',
+      name: 'Справочники',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [],
+    };
+    const configRoot: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [catalogsFolder],
+    };
+    catalogsFolder.parent = configRoot;
+
+    const catPath = path.join('C:', 'reps', 'cfg', 'Catalogs', 'Товары', 'Товары.xml');
+    const catalogNode: TreeNode = {
+      id: 'Catalogs.Товары',
+      name: 'Товары',
+      type: MetadataType.Catalog,
+      filePath: catPath,
+      properties: {},
+      children: [],
+      parent: catalogsFolder,
+    };
+    catalogsFolder.children!.push(catalogNode);
+
+    const ctx: NormalizeContext = { configPath: path.join('C:', 'reps', 'cfg'), format: ConfigFormat.Designer };
+    ensureR6PlaceholdersForInstanceNode(catalogNode, ctx);
+
+    const predefNode = catalogNode.children!.find((c) => c.id === 'PredefinedData');
+    assert.ok(predefNode, 'PredefinedData placeholder must exist');
+    assert.ok(predefNode!.filePath, 'PredefinedData must have filePath');
+    assert.ok(
+      predefNode!.filePath!.endsWith(path.join('Ext', 'Predefined.xml')),
+      `filePath should end with Ext/Predefined.xml, got: ${predefNode!.filePath}`
+    );
+    assert.strictEqual(predefNode!.parent, catalogNode);
   });
 
   test('ensureTabularSectionColumnsPlaceholder reparents flat column attributes under one container', () => {

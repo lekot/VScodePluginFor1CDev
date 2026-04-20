@@ -18,6 +18,7 @@ import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from 
 import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
+import { appendPredefinedDesignerItem } from '../utils/xml/predefinedDataAppender';
 import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
@@ -382,6 +383,91 @@ async function handleCreateInContainerFolder(
   await XMLWriter.addNestedElement(filePath, elementType, name, {}, parent.type, parent.name);
 }
 
+const REGISTER_TYPES_FOR_DIM_RES = new Set<MetadataType>([
+  MetadataType.InformationRegister,
+  MetadataType.AccumulationRegister,
+  MetadataType.AccountingRegister,
+  MetadataType.CalculationRegister,
+]);
+
+const PREDEFINED_METADATA_ROOT_TYPES = new Set<MetadataType>([
+  MetadataType.Catalog,
+  MetadataType.ChartOfCharacteristicTypes,
+  MetadataType.ChartOfAccounts,
+]);
+
+/** Branch: EnumValues folder under an Enum metadata object. */
+async function handleCreateEnumValue(_folder: TreeNode, enumOwner: TreeNode, name: string): Promise<void> {
+  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(enumOwner.type))) {
+    throw new Error('Создание значений перечисления для этого типа не поддерживается.');
+  }
+  const filePath = enumOwner.filePath;
+  if (!filePath) {
+    throw new Error('Файл объекта перечисления не найден.');
+  }
+  try {
+    await fs.promises.access(filePath);
+  } catch {
+    throw new Error('Файл объекта перечисления не найден.');
+  }
+  await XMLWriter.addNestedElement(filePath, 'EnumValue', name, {}, MetadataType.Enum, enumOwner.name);
+}
+
+/** Branch: Dimensions folder under a register metadata object. */
+async function handleCreateRegisterDimension(folderNode: TreeNode, registerOwner: TreeNode, name: string): Promise<void> {
+  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(registerOwner.type))) {
+    throw new Error('Создание измерений для этого типа не поддерживается.');
+  }
+  const filePath = registerOwner.filePath;
+  if (!filePath) {
+    throw new Error('Файл регистра не найден.');
+  }
+  try {
+    await fs.promises.access(filePath);
+  } catch {
+    throw new Error('Файл регистра не найден.');
+  }
+  const existingDims = (folderNode.children || []).filter((c) => c.type === MetadataType.Dimension);
+  const isPrimary = existingDims.length === 0;
+  await XMLWriter.addNestedElement(
+    filePath,
+    'Dimension',
+    name,
+    { __isPrimaryDimension: isPrimary },
+    registerOwner.type,
+    registerOwner.name
+  );
+}
+
+/** Branch: Resources folder under a register metadata object. */
+async function handleCreateRegisterResource(_folder: TreeNode, registerOwner: TreeNode, name: string): Promise<void> {
+  if (ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(String(registerOwner.type))) {
+    throw new Error('Создание ресурсов для этого типа не поддерживается.');
+  }
+  const filePath = registerOwner.filePath;
+  if (!filePath) {
+    throw new Error('Файл регистра не найден.');
+  }
+  try {
+    await fs.promises.access(filePath);
+  } catch {
+    throw new Error('Файл регистра не найден.');
+  }
+  await XMLWriter.addNestedElement(filePath, 'Resource', name, {}, registerOwner.type, registerOwner.name);
+}
+
+/** Branch: PredefinedData folder (Ext/Predefined.xml path on the folder node). */
+async function handleCreatePredefinedItem(predefinedFolder: TreeNode, owner: TreeNode, name: string): Promise<void> {
+  const predefinedPath = predefinedFolder.filePath;
+  if (!predefinedPath) {
+    throw new Error('Путь к Predefined.xml не задан.');
+  }
+  if (!PREDEFINED_METADATA_ROOT_TYPES.has(owner.type)) {
+    throw new Error('Создание предопределённых элементов для этого типа не поддерживается.');
+  }
+  await appendPredefinedDesignerItem(predefinedPath, owner.type, name, name, owner.filePath);
+}
+
 /** Branch: parentNode is a columns-container under a tabular section instance. */
 async function handleCreateTabularSectionColumn(parentNode: TreeNode, name: string): Promise<void> {
   const sectionInstance = parentNode.parent;
@@ -436,6 +522,35 @@ const CREATE_ELEMENT_CASES: CreateElementCase[] = [
   {
     matches: (n) => isRootObjectCreateInTypeFolder(n),
     handle: (n, _p, name) => handleCreateRootObject(n, name),
+  },
+  {
+    matches: (n, p) =>
+      n.id === 'EnumValues' && !!p && p.type === MetadataType.Enum && !!p.filePath,
+    handle: (n, p, name) => handleCreateEnumValue(n, p as TreeNode, name),
+  },
+  {
+    matches: (n, p) =>
+      n.id === 'Dimensions' &&
+      !!p &&
+      REGISTER_TYPES_FOR_DIM_RES.has(p.type) &&
+      !!p.filePath,
+    handle: (n, p, name) => handleCreateRegisterDimension(n, p as TreeNode, name),
+  },
+  {
+    matches: (n, p) =>
+      n.id === 'Resources' &&
+      !!p &&
+      REGISTER_TYPES_FOR_DIM_RES.has(p.type) &&
+      !!p.filePath,
+    handle: (n, p, name) => handleCreateRegisterResource(n, p as TreeNode, name),
+  },
+  {
+    matches: (n, p) =>
+      n.id === 'PredefinedData' &&
+      !!p &&
+      PREDEFINED_METADATA_ROOT_TYPES.has(p.type) &&
+      !!n.filePath,
+    handle: (n, p, name) => handleCreatePredefinedItem(n, p as TreeNode, name),
   },
   {
     matches: (n) => TOP_LEVEL_TYPES.has(n.type),

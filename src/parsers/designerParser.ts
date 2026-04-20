@@ -9,6 +9,9 @@ import {
   findChildObjects,
   extractAttributes,
   extractTabularSections,
+  extractEnumValues,
+  extractDimensions,
+  extractResources,
   extractChildSubsystems,
   flattenAttributeProperties,
 } from './xmlChildObjects';
@@ -229,7 +232,7 @@ export class DesignerParser {
     const container: TreeNode = {
       id: `${typeName}.${elementName}`,
       name: elementName,
-      type: MetadataType.Configuration,
+      type: MetadataTypeMapper.map(typeName),
       properties: {},
       children,
     };
@@ -648,6 +651,8 @@ export class DesignerParser {
                 filePath: itemPath,
               };
             }
+            // Predefined.xml is handled separately as a top-level "Предопределённые" R6 placeholder,
+            // not as a child of Extensions (see applyXmlDerivedChildren).
           } catch (error) {
             Logger.debug(`Error processing extension ${itemPath}`, error);
           }
@@ -695,6 +700,72 @@ export class DesignerParser {
     }
 
     return extNode;
+  }
+
+  /**
+   * Parse Predefined.xml and return a container node with predefined item children.
+   * Returns null (not a node) when the file has no items or cannot be parsed.
+   * @param filePath Absolute path to Predefined.xml
+   * @param filePath Absolute path to Ext/Predefined.xml (may or may not exist)
+   * @param parentId Parent instance id (e.g. "Catalogs.MyName") for child node ids
+   */
+  private static async parsePredefinedData(filePath: string, parentId: string): Promise<TreeNode> {
+    const container: TreeNode = {
+      id: 'PredefinedData',
+      name: 'Предопределённые',
+      type: MetadataType.PredefinedItem,
+      properties: {},
+      children: [],
+      filePath,
+    };
+    try {
+      await fs.promises.access(filePath);
+    } catch {
+      // No Predefined.xml on disk yet — return empty container so UI can show it for creation
+      return container;
+    }
+    try {
+      const parsed = await XmlParser.parseFileAsync(filePath);
+      if (!parsed) { return container; }
+
+      let predefinedData: Record<string, unknown> | null = null;
+      for (const [key, val] of Object.entries(parsed)) {
+        if (key === 'PredefinedData' || key.endsWith(':PredefinedData')) {
+          predefinedData = val as Record<string, unknown>;
+          break;
+        }
+      }
+      if (!predefinedData) { return container; }
+
+      const rawItems = predefinedData['Item'];
+      if (!rawItems) { return container; }
+      const items = Array.isArray(rawItems) ? rawItems : [rawItems];
+
+      for (const item of items) {
+        if (!item || typeof item !== 'object') { continue; }
+        const obj = item as Record<string, unknown>;
+        const name = String(obj['Name'] ?? 'Unknown');
+        const isFolder = String(obj['IsFolder'] ?? 'false') === 'true';
+        const node: TreeNode = {
+          id: `${parentId}.PredefinedData.${name}`,
+          name,
+          type: MetadataType.PredefinedItem,
+          properties: {
+            ...(obj['Code'] != null ? { code: String(obj['Code']) } : {}),
+            ...(obj['Description'] != null ? { description: String(obj['Description']) } : {}),
+            ...(isFolder ? { isFolder: true } : {}),
+          },
+          parentFilePath: filePath,
+          parent: container,
+        };
+        container.children!.push(node);
+      }
+
+      return container;
+    } catch (error) {
+      Logger.debug(`Error parsing predefined data from ${filePath}`, error);
+      return container;
+    }
   }
 
   /**
@@ -952,6 +1023,47 @@ export class DesignerParser {
     const tabularNode = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName);
     if (tabularNode && tabularNode.children && tabularNode.children.length > 0) {
       this.mergeTabularNode(parent, tabularNode);
+    }
+
+    if (parent.type === MetadataType.Enum) {
+      const enumValuesNode = this.parseEnumValuesFromXML(xmlContent, parent.id, xmlPath);
+      if (enumValuesNode && enumValuesNode.children && enumValuesNode.children.length > 0) {
+        enumValuesNode.parent = parent;
+        parent.children!.push(enumValuesNode);
+      }
+    }
+
+    const registerTypes = [
+      MetadataType.InformationRegister,
+      MetadataType.AccumulationRegister,
+      MetadataType.AccountingRegister,
+      MetadataType.CalculationRegister,
+    ];
+    if (registerTypes.includes(parent.type)) {
+      const dimensionsNode = this.parseDimensionsFromXML(xmlContent, parent.id, xmlPath);
+      if (dimensionsNode && dimensionsNode.children && dimensionsNode.children.length > 0) {
+        dimensionsNode.parent = parent;
+        parent.children!.push(dimensionsNode);
+      }
+      const resourcesNode = this.parseResourcesFromXML(xmlContent, parent.id, xmlPath);
+      if (resourcesNode && resourcesNode.children && resourcesNode.children.length > 0) {
+        resourcesNode.parent = parent;
+        parent.children!.push(resourcesNode);
+      }
+    }
+
+    // Predefined data for types that support it
+    const predefinedTypes = [
+      MetadataType.Catalog,
+      MetadataType.ChartOfAccounts,
+      MetadataType.ChartOfCharacteristicTypes,
+    ];
+    if (predefinedTypes.includes(parent.type)) {
+      // Determine the parent directory of the XML file to locate Ext/Predefined.xml
+      const predefinedFilePath = path.join(path.dirname(xmlPath), elementName, 'Ext', 'Predefined.xml');
+      const predefinedNode = await this.parsePredefinedData(predefinedFilePath, parent.id);
+      predefinedNode.parent = parent;
+      parent.children!.push(predefinedNode);
     }
   }
 
@@ -1231,6 +1343,114 @@ export class DesignerParser {
     }
 
     return tabularNode;
+  }
+
+  /**
+   * Parse enum values from XML ChildObjects section.
+   */
+  private static parseEnumValuesFromXML(
+    xmlContent: Record<string, unknown>,
+    parentId: string,
+    xmlPath: string
+  ): TreeNode | null {
+    const childObjects = findChildObjects(xmlContent);
+    if (!childObjects) {return null;}
+    const enumValues = extractEnumValues(childObjects as Record<string, unknown>);
+    if (enumValues.length === 0) {return null;}
+
+    const container: TreeNode = {
+      id: 'EnumValues',
+      name: 'Значения',
+      type: MetadataType.EnumValue,
+      properties: {},
+      children: [],
+      parentFilePath: xmlPath,
+    };
+
+    for (const ev of enumValues) {
+      const props = (ev as Record<string, unknown>).Properties ?? ev;
+      const name = (props as Record<string, unknown>)?.Name ?? (props as Record<string, unknown>)?.name ?? 'Unknown';
+      const node: TreeNode = {
+        id: `${parentId}.EnumValues.${String(name)}`,
+        name: String(name),
+        type: MetadataType.EnumValue,
+        properties: flattenAttributeProperties(ev),
+        parentFilePath: xmlPath,
+      };
+      node.parent = container;
+      container.children!.push(node);
+    }
+    return container;
+  }
+
+  /**
+   * Parse dimensions from XML ChildObjects section (registers).
+   */
+  private static parseDimensionsFromXML(
+    xmlContent: Record<string, unknown>,
+    parentId: string,
+    xmlPath: string
+  ): TreeNode | null {
+    const childObjects = findChildObjects(xmlContent);
+    if (!childObjects) {return null;}
+    const dimensions = extractDimensions(childObjects as Record<string, unknown>);
+    if (dimensions.length === 0) {return null;}
+
+    const container: TreeNode = {
+      id: 'Dimensions',
+      name: 'Измерения',
+      type: MetadataType.Dimension,
+      properties: {},
+      children: [],
+      parentFilePath: xmlPath,
+    };
+
+    for (const dim of dimensions) {
+      const attrNode = this.buildAttributeNodeFromRaw(
+        dim as Record<string, unknown>,
+        `${parentId}.Dimensions`,
+        xmlPath
+      );
+      attrNode.type = MetadataType.Dimension;
+      attrNode.parent = container;
+      container.children!.push(attrNode);
+    }
+    return container;
+  }
+
+  /**
+   * Parse resources from XML ChildObjects section (registers).
+   */
+  private static parseResourcesFromXML(
+    xmlContent: Record<string, unknown>,
+    parentId: string,
+    xmlPath: string
+  ): TreeNode | null {
+    const childObjects = findChildObjects(xmlContent);
+    if (!childObjects) {return null;}
+    const resources = extractResources(childObjects as Record<string, unknown>);
+    if (resources.length === 0) {return null;}
+
+    const container: TreeNode = {
+      id: 'Resources',
+      name: 'Ресурсы',
+      type: MetadataType.Resource,
+      properties: {},
+      children: [],
+      parentFilePath: xmlPath,
+    };
+
+    for (const res of resources) {
+      const attrNode = this.buildAttributeNodeFromRaw(
+        res as Record<string, unknown>,
+        `${parentId}.Resources`,
+        xmlPath
+      );
+      attrNode.type = MetadataType.Resource;
+      attrNode.parent = container;
+      container.children!.push(attrNode);
+    }
+    return container;
   }
 
   /**

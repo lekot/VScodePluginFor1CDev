@@ -15,6 +15,17 @@ import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import { FORM_EVENT_CATALOG, FORM_LEVEL_EVENTS } from '../formEditor/formEventCatalog';
 
 /**
+ * Maps metadata node type to the VS Code command that opens its composition editor.
+ */
+export const CONTENT_EDITOR_COMMANDS = new Map<string, string>([
+  ['Subsystem', '1c-metadata-tree.editSubsystemComposition'],
+  ['ExchangePlan', '1c-metadata-tree.editExchangePlanContent'],
+  ['CommonAttribute', '1c-metadata-tree.editCommonAttributeContent'],
+  ['FunctionalOption', '1c-metadata-tree.editFunctionalOptionContent'],
+  ['FilterCriterion', '1c-metadata-tree.editFilterCriterionContent'],
+]);
+
+/**
  * Escape HTML to prevent XSS
  */
 export function escapeHtml(text: string): string {
@@ -34,6 +45,13 @@ export function escapeHtml(text: string): string {
  */
 export function getEditTypePencilSvg(): string {
   return `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M13.23 1h-1.46L3.52 9.85l-.16.22L1 13.11 2.41 14.5l3.04-2.35.22-.16L15 4.23V2.77L13.23 1zM2.41 11.59l.59-.59.59.59-.59.59-.59-.59zm1.83-1.83l.59-.59 3.54 3.54-.59.59-3.54-3.54zM11.77 2L14 4.23l-1.17 1.17L10.6 3.17 11.77 2z"/></svg>`;
+}
+
+/**
+ * Inline SVG for goto-arrow (→) icon — used for "Перейти в модуль" button.
+ */
+export function getGotoArrowSvg(): string {
+  return `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8.5 3.5l5 4.5-5 4.5V9H2V7h6.5V3.5z"/></svg>`;
 }
 
 /**
@@ -130,16 +148,87 @@ export function renderPropertyInput(
     }
   }
 
+  // Source property on EventSubscription — render with edit button
+  const isSourceProperty = name.toLowerCase() === 'source' && currentNode?.type === 'EventSubscription';
+  if (isSourceProperty) {
+    const displayName = getPropertyLabel(name);
+    let sourceSummary: string;
+    if (Array.isArray(value)) {
+      sourceSummary = `[${value.length} типов]`;
+    } else if (typeof value === 'object' && value !== null) {
+      const obj = value as Record<string, unknown>;
+      const typeArr = obj['v8:Type'];
+      if (Array.isArray(typeArr)) {
+        sourceSummary = `[${typeArr.length} типов]`;
+      } else if (typeArr !== undefined) {
+        sourceSummary = '[1 тип]';
+      } else {
+        sourceSummary = '[пусто]';
+      }
+    } else if (typeof value === 'string' && value.trim().startsWith('<')) {
+      const matches = (value.match(/<v8:Type>/g) || []).length;
+      sourceSummary = matches > 0 ? `[${matches} типов]` : '[пусто]';
+    } else {
+      sourceSummary = '[пусто]';
+    }
+    return `
+      <div class="property-row">
+        <label class="property-label">${escapeHtml(displayName)}</label>
+        <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(sourceSummary)}" disabled />
+        <button type="button" class="edit-source-btn" data-action="editSource" data-property="${escapeHtml(name)}" aria-label="Редактировать источник" title="Редактировать источник"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>
+      </div>
+    `;
+  }
+
+  // Handler property on EventSubscription — render with goto-module button
+  const isHandlerProperty = name === 'Handler' && currentNode?.type === 'EventSubscription';
+  if (isHandlerProperty) {
+    const displayName = getPropertyLabel(name);
+    const handlerValue = typeof value === 'string' ? value : '';
+    const gotoButton = handlerValue.trim()
+      ? `<button type="button" class="goto-handler-btn" data-property="Handler" data-handler="${escapeHtml(handlerValue)}" aria-label="Перейти в модуль" title="Перейти в модуль"><span class="edit-type-icon" aria-hidden="true">${getGotoArrowSvg()}</span></button>`
+      : '';
+    return `
+      <div class="property-row">
+        <label class="property-label">${escapeHtml(displayName)}</label>
+        <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(handlerValue)}" ${globalReadOnly ? 'disabled' : ''} />
+        ${gotoButton}
+      </div>
+    `;
+  }
+
+  // Content property — always show edit button for types with composition editors (even when empty/string)
+  const isContentProperty = name.toLowerCase() === 'content';
+  const nodeTypeStr = currentNode?.type ?? '';
+  const contentEditorCommand = isContentProperty ? CONTENT_EDITOR_COMMANDS.get(nodeTypeStr) : undefined;
+
   // Complex objects/arrays (except Type which is handled above) — render as read-only summary
   if (!isTypeProperty && (Array.isArray(displayValue) || (typeof displayValue === 'object' && displayValue !== null))) {
     const displayName = getPropertyLabel(name);
     const summary = Array.isArray(displayValue)
       ? `[${displayValue.length} элем.]`
       : '{...}';
+    const editContentButton = contentEditorCommand
+      ? `<button type="button" class="edit-content-btn" data-node-type="${escapeHtml(nodeTypeStr)}" aria-label="Редактировать состав" title="Редактировать состав"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>`
+      : '';
     return `
       <div class="property-row">
         <label class="property-label">${escapeHtml(displayName)}</label>
         <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(summary)}" disabled />
+        ${editContentButton}
+      </div>
+    `;
+  }
+
+  // Empty Content (string value) — show edit button anyway for types with composition editors
+  if (contentEditorCommand) {
+    const displayName = getPropertyLabel(name);
+    const summary = '[пусто]';
+    return `
+      <div class="property-row">
+        <label class="property-label">${escapeHtml(displayName)}</label>
+        <input type="text" class="property-input" data-property="${escapeHtml(name)}" value="${escapeHtml(summary)}" disabled />
+        <button type="button" class="edit-content-btn" data-node-type="${escapeHtml(nodeTypeStr)}" aria-label="Редактировать состав" title="Редактировать состав"><span class="edit-type-icon" aria-hidden="true">${getEditTypePencilSvg()}</span></button>
       </div>
     `;
   }
@@ -148,7 +237,7 @@ export function renderPropertyInput(
 
   // Determine if this specific property should be read-only
   const nodeIsRoot = isRootElement(currentNode);
-  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion'];
+  const typeEditableRootTypes = ['DefinedType', 'ChartOfCharacteristicTypes', 'SessionParameter', 'FilterCriterion', 'CommonAttribute'];
   const propertyReadOnly = globalReadOnly || (nodeIsRoot && isTypeProperty && !typeEditableRootTypes.includes(currentNode?.type ?? ''));
   const disabled = propertyReadOnly ? 'disabled' : '';
 
@@ -207,7 +296,10 @@ export function renderPropertyInput(
  * Uses getPropertySectionsForType(node.type); properties not in any section go to "Прочее".
  */
 export function renderPropertiesBySections(node: TreeNode, readOnly: boolean): string {
-  const properties = (node.properties || {}) as Record<string, unknown>;
+  let properties = (node.properties || {}) as Record<string, unknown>;
+  if (node.type === 'DefinedType' && !('Type' in properties) && !('type' in properties)) {
+    properties = { ...properties, Type: null };
+  }
   const sections = getPropertySectionsForType(node.type);
   const knownNames = getKnownPropertyNamesForType(node.type);
   const allKeys = Object.keys(properties);
@@ -369,6 +461,29 @@ export function getWebviewScript(readOnly: boolean): string {
         btn.addEventListener('click', handleEditType);
       });
 
+      document.querySelectorAll('.edit-source-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const propertyName = btn.dataset.property || 'Source';
+          vscode.postMessage({ type: 'editSource', propertyName });
+        });
+      });
+
+      document.querySelectorAll('.edit-content-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const nodeType = btn.dataset.nodeType;
+          vscode.postMessage({ type: 'editContent', nodeType });
+        });
+      });
+
+      document.querySelectorAll('.goto-handler-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const handler = btn.dataset.handler || '';
+          if (handler) {
+            vscode.postMessage({ type: 'gotoHandler', handler });
+          }
+        });
+      });
+
       const saveBtn = document.getElementById('save-btn');
       if (saveBtn) {
         saveBtn.addEventListener('click', handleSave);
@@ -463,6 +578,23 @@ export function getWebviewScript(readOnly: boolean): string {
             updateUI();
           }
           break;
+
+        case 'sourceUpdated': {
+          const srcProperty = message.property;
+          const srcValue = message.value;
+          const escSrc = (s) => (s || '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+          const srcInput = document.querySelector(\`.property-input[data-property="\${escSrc(srcProperty)}"]\`);
+          // Update state with raw XML string (will be sent as-is on save)
+          state.currentProperties[srcProperty] = srcValue;
+          state.changedProperties.add(srcProperty);
+          if (srcInput) {
+            const matches = (srcValue.match(/<v8:Type>/g) || []).length;
+            srcInput.value = matches > 0 ? '[' + matches + ' типов]' : '[пусто]';
+            srcInput.classList.add('changed');
+          }
+          updateUI();
+          break;
+        }
       }
     });
 
@@ -610,7 +742,7 @@ export function getWebviewContent(node: TreeNode): string {
           opacity: 0.5;
           cursor: not-allowed;
         }
-        .edit-type-btn {
+        .edit-type-btn, .edit-content-btn, .goto-handler-btn {
           padding: 4px 8px;
           display: inline-flex;
           align-items: center;
@@ -619,7 +751,7 @@ export function getWebviewContent(node: TreeNode): string {
           background: var(--vscode-button-secondaryBackground);
           color: var(--vscode-button-secondaryForeground);
         }
-        .edit-type-btn:hover {
+        .edit-type-btn:hover, .edit-content-btn:hover, .goto-handler-btn:hover {
           background: var(--vscode-button-secondaryHoverBackground);
         }
         .edit-type-icon {

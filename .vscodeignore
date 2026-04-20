@@ -3,6 +3,7 @@
 .roo/**
 .vscode-test/**
 .cursor/**
+.dev/**
 .git/**
 .github/**
 src/**

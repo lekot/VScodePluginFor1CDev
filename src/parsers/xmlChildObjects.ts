@@ -56,6 +56,27 @@ export function extractTabularSections(childObjects: unknown): unknown[] {
   return sections;
 }
 
+export function extractEnumValues(childObjects: Record<string, unknown>): Record<string, unknown>[] {
+  const val = childObjects['EnumValue'];
+  if (!val) {return [];}
+  const items: unknown[] = Array.isArray(val) ? val : [val];
+  return items as Record<string, unknown>[];
+}
+
+export function extractDimensions(childObjects: Record<string, unknown>): Record<string, unknown>[] {
+  const val = childObjects['Dimension'];
+  if (!val) {return [];}
+  const items: unknown[] = Array.isArray(val) ? val : [val];
+  return items as Record<string, unknown>[];
+}
+
+export function extractResources(childObjects: Record<string, unknown>): Record<string, unknown>[] {
+  const val = childObjects['Resource'];
+  if (!val) {return [];}
+  const items: unknown[] = Array.isArray(val) ? val : [val];
+  return items as Record<string, unknown>[];
+}
+
 /**
  * Extract child subsystem names from ChildObjects (Configurator XML).
  * Used for building subsystem hierarchy: each subsystem XML lists its children as

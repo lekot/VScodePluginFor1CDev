@@ -155,6 +155,7 @@ suite('Bug Condition Exploration: Attribute Edit Button Missing', () => {
       isSaving: false,
       treeDataProvider,
       typeEditorProvider,
+      objectTypeEditorProvider: {} as any,
       postMessage: () => { /* no-op */ },
       updateWebviewContent: () => { /* no-op */ },
       setIsSaving: () => { /* no-op */ },

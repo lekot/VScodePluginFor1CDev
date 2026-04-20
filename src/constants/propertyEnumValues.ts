@@ -51,6 +51,29 @@ export const propertyEnumValues: Record<string, string[]> = {
   // Configuration
   DefaultRunMode: ['Auto', 'ManagedApplication', 'OrdinaryApplication'],
   ScriptVariant: ['Russian', 'English'],
+
+  // EventSubscription
+  Event: [
+    'BeforeWrite',
+    'OnWrite',
+    'BeforeDelete',
+    'OnCopy',
+    'Filling',
+    'FillCheckProcessing',
+    'Posting',
+    'UndoPosting',
+    'OnSetNewCode',
+    'OnSetNewNumber',
+    'ChoiceDataGetProcessing',
+    'FormGetProcessing',
+    'PresentationFieldsGetProcessing',
+    'PresentationGetProcessing',
+    'OnReceiveDataFromMaster',
+    'OnReceiveDataFromSlave',
+    'OnSendDataToMaster',
+    'OnSendDataToSlave',
+    'OnSendNodeDataToSlave',
+  ],
 };
 
 /**

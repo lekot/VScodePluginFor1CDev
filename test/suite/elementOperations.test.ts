@@ -22,6 +22,8 @@ import {
   dirExists,
   readFileContent,
 } from '../helpers/testHelpers';
+import { ensureR6PlaceholdersForInstanceNode, NormalizeContext } from '../../src/utils/treeNormalization';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
 
 suite('elementOperations', () => {
   let tmpDir: string;
@@ -1348,6 +1350,215 @@ suite('elementOperations', () => {
   // ---------------------------------------------------------------------------
   // findTabularSectionInstanceForAttributeParent — exported utility
   // ---------------------------------------------------------------------------
+  // R6: EnumValue / Dimension / Resource / PredefinedItem (issue #77)
+  // ---------------------------------------------------------------------------
+
+  test('createElement adds EnumValue under EnumValues folder', async () => {
+    const dir = await createTempDir('1cviewer-enumvalue-');
+    try {
+      const enumsDir = path.join(dir, 'Enums');
+      await fs.promises.mkdir(enumsDir, { recursive: true });
+      const enumPath = path.join(enumsDir, 'TestEnum.xml');
+      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'TestEnum');
+      const enumNode: TreeNode = {
+        id: 'Enums.TestEnum',
+        name: 'TestEnum',
+        type: MetadataType.Enum,
+        filePath: enumPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const enumValuesFolder: TreeNode = {
+        id: 'EnumValues',
+        name: 'Значения',
+        type: MetadataType.EnumValue,
+        parent: enumNode,
+        properties: {},
+        children: [],
+      };
+      enumNode.children = [enumValuesFolder];
+      enumValuesFolder.parent = enumNode;
+
+      await createElement(enumValuesFolder, 'NewEnumMember');
+      const xml = await readFileContent(enumPath);
+      assert.ok(xml.includes('EnumValue'), 'EnumValue block expected');
+      assert.ok(xml.includes('<Name>NewEnumMember</Name>'), 'Name expected');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement adds Dimension under Dimensions folder (InformationRegister)', async () => {
+    const dir = await createTempDir('1cviewer-dimension-');
+    try {
+      const regsDir = path.join(dir, 'InformationRegisters');
+      await fs.promises.mkdir(regsDir, { recursive: true });
+      const regPath = path.join(regsDir, 'TestIR.xml');
+      await XMLWriter.createMinimalElementFile(regPath, 'InformationRegister', 'TestIR');
+      const regNode: TreeNode = {
+        id: 'InformationRegisters.TestIR',
+        name: 'TestIR',
+        type: MetadataType.InformationRegister,
+        filePath: regPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const dimsFolder: TreeNode = {
+        id: 'Dimensions',
+        name: 'Измерения',
+        type: MetadataType.Dimension,
+        parent: regNode,
+        properties: {},
+        children: [],
+      };
+      regNode.children = [dimsFolder];
+      dimsFolder.parent = regNode;
+
+      await createElement(dimsFolder, 'DimOne');
+      const xml = await readFileContent(regPath);
+      assert.ok(xml.includes('<Dimension'), 'Dimension block expected');
+      assert.ok(xml.includes('<Name>DimOne</Name>'), 'Dimension name expected');
+      assert.ok(xml.includes('<Master>true</Master>'), 'First dimension is master');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement adds Resource under Resources folder (AccumulationRegister)', async () => {
+    const dir = await createTempDir('1cviewer-resource-');
+    try {
+      const regsDir = path.join(dir, 'AccumulationRegisters');
+      await fs.promises.mkdir(regsDir, { recursive: true });
+      const regPath = path.join(regsDir, 'TestAR.xml');
+      await XMLWriter.createMinimalElementFile(regPath, 'AccumulationRegister', 'TestAR');
+      const regNode: TreeNode = {
+        id: 'AccumulationRegisters.TestAR',
+        name: 'TestAR',
+        type: MetadataType.AccumulationRegister,
+        filePath: regPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const resFolder: TreeNode = {
+        id: 'Resources',
+        name: 'Ресурсы',
+        type: MetadataType.Resource,
+        parent: regNode,
+        properties: {},
+        children: [],
+      };
+      regNode.children = [resFolder];
+      resFolder.parent = regNode;
+
+      await createElement(resFolder, 'ResOne');
+      const xml = await readFileContent(regPath);
+      assert.ok(xml.includes('<Resource'), 'Resource block expected');
+      assert.ok(xml.includes('<Name>ResOne</Name>'), 'Resource name expected');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement creates Predefined.xml with Item under PredefinedData (Catalog)', async () => {
+    const dir = await createTempDir('1cviewer-predef-');
+    try {
+      const catalogsDir = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(path.join(catalogsDir, 'Cat1'), { recursive: true });
+      const catPath = path.join(catalogsDir, 'Cat1.xml');
+      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Cat1');
+      const predefinedPath = path.join(catalogsDir, 'Cat1', 'Ext', 'Predefined.xml');
+      const catNode: TreeNode = {
+        id: 'Catalogs.Cat1',
+        name: 'Cat1',
+        type: MetadataType.Catalog,
+        filePath: catPath,
+        properties: {},
+        parent: undefined,
+        children: [],
+      };
+      const predefFolder: TreeNode = {
+        id: 'PredefinedData',
+        name: 'Предопределённые',
+        type: MetadataType.PredefinedItem,
+        filePath: predefinedPath,
+        parent: catNode,
+        properties: {},
+        children: [],
+      };
+      catNode.children = [predefFolder];
+      predefFolder.parent = catNode;
+
+      await createElement(predefFolder, 'PredefinedOne');
+      assert.ok(fileExists(predefinedPath), 'Predefined.xml should be created');
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('CatalogPredefinedItems'), 'xsi type');
+      assert.ok(xml.includes('<Name>PredefinedOne</Name>'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement creates Predefined.xml when PredefinedData filePath set via ensureR6Placeholders (no Ext dir)', async () => {
+    const dir = await createTempDir('1cviewer-predef-r6-');
+    try {
+      const catalogsDir = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(path.join(catalogsDir, 'Товары'), { recursive: true });
+      const catPath = path.join(catalogsDir, 'Товары', 'Товары.xml');
+      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Товары');
+
+      const catalogsFolder: TreeNode = {
+        id: 'Catalogs',
+        name: 'Справочники',
+        type: MetadataType.Catalog,
+        filePath: catalogsDir,
+        properties: {},
+        children: [],
+      };
+      const configRoot: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        children: [catalogsFolder],
+      };
+      catalogsFolder.parent = configRoot;
+
+      const catalogNode: TreeNode = {
+        id: 'Catalogs.Товары',
+        name: 'Товары',
+        type: MetadataType.Catalog,
+        filePath: catPath,
+        properties: {},
+        children: [],
+        parent: catalogsFolder,
+      };
+      catalogsFolder.children!.push(catalogNode);
+
+      const ctx: NormalizeContext = { configPath: dir, format: ConfigFormat.Designer };
+      ensureR6PlaceholdersForInstanceNode(catalogNode, ctx);
+
+      const predefNode = catalogNode.children!.find((c) => c.id === 'PredefinedData');
+      assert.ok(predefNode, 'PredefinedData placeholder must exist after ensureR6PlaceholdersForInstanceNode');
+      assert.ok(predefNode!.filePath, 'PredefinedData must have filePath');
+
+      const predefinedPath = path.join(catalogsDir, 'Товары', 'Ext', 'Predefined.xml');
+      assert.ok(!fileExists(predefinedPath), 'Predefined.xml must NOT exist before createElement');
+
+      await createElement(predefNode!, 'Test1');
+
+      assert.ok(fileExists(predefinedPath), 'Predefined.xml should be created by createElement');
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('CatalogPredefinedItems'), 'xsi type expected');
+      assert.ok(xml.includes('<Name>Test1</Name>'), 'Item name expected');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
 
   test('findTabularSectionInstanceForAttributeParent returns section for columns container', async () => {
     const { findTabularSectionInstanceForAttributeParent } = await import('../../src/services/elementOperations');
@@ -1400,5 +1611,75 @@ suite('elementOperations', () => {
 
     const result = findTabularSectionInstanceForAttributeParent(catalogNode);
     assert.strictEqual(result, undefined);
+  });
+
+  test('createElement rejects nested attribute on Subsystem instance (no ChildObjects)', async () => {
+    const subsystemsDir = path.join(tmpDir, 'Subsystems');
+    await fs.promises.mkdir(subsystemsDir, { recursive: true });
+    const subsystemXml = path.join(subsystemsDir, 'ПодсистемаТест.xml');
+    await XMLWriter.createMinimalElementFile(subsystemXml, 'Subsystem', 'ПодсистемаТест');
+    const subsystemsTypeNode: TreeNode = {
+      id: 'Subsystems',
+      name: 'Подсистемы',
+      type: MetadataType.Subsystem,
+      properties: {},
+      filePath: subsystemsDir,
+      parent: configNode,
+      children: [],
+    };
+    const subsystemInstance: TreeNode = {
+      id: 'Subsystems.ПодсистемаТест',
+      name: 'ПодсистемаТест',
+      type: MetadataType.Subsystem,
+      properties: {},
+      filePath: subsystemXml,
+      parent: subsystemsTypeNode,
+      children: [],
+    };
+    await assert.rejects(
+      async () => createElement(subsystemInstance, 'BadAttr'),
+      /нет ChildObjects/
+    );
+  });
+
+  test('appendPredefinedDesignerItem COT: uses boolean type from owner file', async () => {
+    const { appendPredefinedDesignerItem } = await import('../../src/utils/xml/predefinedDataAppender');
+    const dir = await createTempDir('1cviewer-cot-predef-');
+    try {
+      const cotXml = path.join(dir, 'COT.xml');
+      const cotContent = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <ChartOfCharacteristicTypes uuid="test-uuid">
+    <Properties>
+      <Name>TestCOT</Name>
+      <Type>
+        <v8:Type>xs:boolean</v8:Type>
+      </Type>
+    </Properties>
+    <ChildObjects/>
+  </ChartOfCharacteristicTypes>
+</MetaDataObject>`;
+      await fs.promises.writeFile(cotXml, cotContent, 'utf-8');
+      const predefinedPath = path.join(dir, 'Ext', 'Predefined.xml');
+      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'ВидТест', 'ВидТест', cotXml);
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('xs:boolean'), 'Item Type must reflect COT owner Type (xs:boolean)');
+      assert.ok(!xml.includes('xs:string'), 'Should not fall back to xs:string when owner has xs:boolean');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('appendPredefinedDesignerItem COT: fallback to xs:string when no owner file', async () => {
+    const { appendPredefinedDesignerItem } = await import('../../src/utils/xml/predefinedDataAppender');
+    const dir = await createTempDir('1cviewer-cot-fallback-');
+    try {
+      const predefinedPath = path.join(dir, 'Ext', 'Predefined.xml');
+      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'Fallback', 'Fallback');
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('xs:string'), 'Should use xs:string fallback when no owner file provided');
+    } finally {
+      await cleanupTempDir(dir);
+    }
   });
 });

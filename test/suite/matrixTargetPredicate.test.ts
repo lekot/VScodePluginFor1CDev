@@ -149,4 +149,95 @@ suite('matrixTargetPredicate (nested matrix pass)', () => {
     };
     assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(attrsUnderPlain), false);
   });
+
+  test('isNestedMatrixTargetUnderMatrixObject: EnumValues under Matrix_* enum true', () => {
+    const enumsFolder: TreeNode = { id: 'Enums', name: 'Перечисления', type: MetadataType.Enum, properties: {} };
+    const matrixEnum: TreeNode = {
+      id: 'Enums.Matrix_e',
+      name: 'Matrix_e',
+      type: MetadataType.Enum,
+      properties: {},
+      parent: enumsFolder,
+    };
+    const enumValues: TreeNode = {
+      id: 'EnumValues',
+      name: 'Значения',
+      type: MetadataType.EnumValue,
+      properties: {},
+      parent: matrixEnum,
+    };
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(enumValues), true);
+  });
+
+  test('isNestedMatrixTargetUnderMatrixObject: Dimensions under Matrix_* IR true', () => {
+    const irFolder: TreeNode = {
+      id: 'InformationRegisters',
+      name: 'Регистры сведений',
+      type: MetadataType.InformationRegister,
+      properties: {},
+    };
+    const matrixIr: TreeNode = {
+      id: 'InformationRegisters.Matrix_ir',
+      name: 'Matrix_ir',
+      type: MetadataType.InformationRegister,
+      properties: {},
+      parent: irFolder,
+    };
+    const dims: TreeNode = {
+      id: 'Dimensions',
+      name: 'Измерения',
+      type: MetadataType.Dimension,
+      properties: {},
+      parent: matrixIr,
+    };
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(dims), true);
+  });
+
+  test('isNestedMatrixTargetUnderMatrixObject: PredefinedData under Matrix_* catalog true', () => {
+    const catalogsFolder: TreeNode = {
+      id: 'Catalogs',
+      name: 'Справочники',
+      type: MetadataType.Catalog,
+      properties: {},
+    };
+    const matrixCatalog: TreeNode = {
+      id: 'Catalogs.Matrix_c',
+      name: 'Matrix_c',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: catalogsFolder,
+    };
+    const predef: TreeNode = {
+      id: 'PredefinedData',
+      name: 'Предопределённые',
+      type: MetadataType.PredefinedItem,
+      properties: {},
+      parent: matrixCatalog,
+    };
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(predef), true);
+  });
+
+  test('isNestedMatrixTargetUnderMatrixObject: PredefinedData under Matrix_* ChartOfAccounts false (ibcmd matrix scope)', () => {
+    const coaFolder: TreeNode = {
+      id: 'ChartsOfAccounts',
+      name: 'Планы счетов',
+      type: MetadataType.ChartOfAccounts,
+      properties: {},
+    };
+    const matrixCoa: TreeNode = {
+      id: 'ChartsOfAccounts.Matrix_coa',
+      name: 'Matrix_coa',
+      type: MetadataType.ChartOfAccounts,
+      properties: {},
+      parent: coaFolder,
+    };
+    const predef: TreeNode = {
+      id: 'PredefinedData',
+      name: 'Предопределённые',
+      type: MetadataType.PredefinedItem,
+      properties: {},
+      parent: matrixCoa,
+    };
+    assert.strictEqual(isNestedMatrixTargetUnderMatrixObject(predef), false);
+  });
 });

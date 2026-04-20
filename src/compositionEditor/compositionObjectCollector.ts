@@ -84,32 +84,69 @@ function collectSubsystems(
   }
 }
 
+function isExtensionConfigurationRoot(root: TreeNode): boolean {
+  return (
+    typeof root.properties.extensionPurpose === 'string' ||
+    root.properties.isExtension === true
+  );
+}
+
 /**
  * Determine which root nodes are visible for the given config path.
  *
- * - Node in main config → only main config roots visible.
- * - Node in extension → all roots visible.
+ * - Editing a **non-extension** configuration in a multi-root workspace → only root(s) whose
+ *   `Configuration.xml` directory matches `nodeConfigPath` (order-independent; avoids dedupe/expand
+ *   picking the wrong tree when another root is listed first).
+ * - Editing an **extension** configuration → all roots (base + extension merge for composition).
+ * - Unknown `nodeConfigPath` or no matching root → all roots (backward-compatible fallback).
  */
 export function resolveVisibleRoots(
   rootNodes: readonly TreeNode[],
   nodeConfigPath: string | null,
 ): TreeNode[] {
-  const firstRootConfigPath =
-    rootNodes[0]?.filePath ? normalisePath(path.dirname(rootNodes[0].filePath)) : null;
+  if (rootNodes.length === 0) {
+    return [];
+  }
+  if (!nodeConfigPath) {
+    return [...rootNodes];
+  }
 
-  const normalisedNodeConfigPath =
-    nodeConfigPath ? normalisePath(nodeConfigPath) : null;
+  const ncp = normalisePath(nodeConfigPath);
+  const rootsAtPath = rootNodes.filter(
+    (r) => r.filePath && normalisePath(path.dirname(r.filePath)) === ncp,
+  );
+  if (rootsAtPath.length === 0) {
+    return [...rootNodes];
+  }
 
-  const isNodeInMainConfig =
-    normalisedNodeConfigPath !== null &&
-    normalisedNodeConfigPath === firstRootConfigPath;
+  if (rootNodes.length === 1) {
+    return rootsAtPath;
+  }
 
-  return isNodeInMainConfig
-    ? rootNodes.filter((r) => {
-        const rcp = r.filePath ? normalisePath(path.dirname(r.filePath)) : null;
-        return rcp === normalisedNodeConfigPath;
-      })
-    : [...rootNodes]; // extension sees all configurations
+  if (rootsAtPath.some((r) => isExtensionConfigurationRoot(r))) {
+    return [...rootNodes];
+  }
+
+  return rootsAtPath;
+}
+
+/**
+ * Find a top-level type-folder node (e.g. `ExchangePlans`) under the same visible roots
+ * as {@link collectObjectsForType} / {@link collectTypeFolders}.
+ */
+export function findCompositionTypeFolder(
+  rootNodes: readonly TreeNode[],
+  configPath: string | null,
+  typeFolderId: string,
+): TreeNode | undefined {
+  const visibleRoots = resolveVisibleRoots(rootNodes, configPath);
+  for (const root of visibleRoots) {
+    const found = root.children?.find((c) => c.id === typeFolderId);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -236,15 +273,7 @@ export function collectObjectsForType(
   eligibleTypes: ReadonlySet<string>,
   showNestedSubsystems?: boolean,
 ): CompositionObjectEntry[] {
-  const visibleRoots = resolveVisibleRoots(rootNodes, configPath);
-
-  let typeFolder: TreeNode | undefined;
-  for (const root of visibleRoots) {
-    typeFolder = root.children?.find(c => c.id === typeFolderId);
-    if (typeFolder) {
-      break;
-    }
-  }
+  const typeFolder = findCompositionTypeFolder(rootNodes, configPath, typeFolderId);
 
   if (!typeFolder || !typeFolder.children) {
     return [];

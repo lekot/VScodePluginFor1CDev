@@ -14,6 +14,9 @@
  *   IBCMD_INFOBASE_CONFIG — optional YAML for target IB (required together with IBCMD_PATH for import)
  *   IBCMD_USER / IBCMD_PASSWORD / IBCMD_TIMEOUT_MS — optional (see docs/design/e2e-container-matrix-ibcmd.md §6.5)
  *   IBMATRIX_SKIP_CONFIG_CHECK=1 — optional; skip `ibcmd infobase config check` after successful import (see design §6.6)
+ *
+ * Nested matrix pass (second DFS) also targets R6 folders under Matrix_* objects: EnumValues, Dimensions, Resources,
+ * PredefinedData (Catalog / ChartOfCharacteristicTypes) so `ibcmd` import validates GH-77 create paths when MATRIX_NESTED=1 or full matrix.
  */
 import './helpers/vscodeStubRegister';
 import { runContainerMatrix } from './matrix/containerMatrixRunner';

@@ -7,6 +7,11 @@ import { getDefaultPropertiesForNestedElement } from '../../constants/metadataDe
 import { MetadataType } from '../../models/treeNode';
 import { buildTabularSectionInternalInfoObject } from './internalInfoGenerator';
 import { TOP_LEVEL_TYPES, ROOT_TAGS_WITHOUT_CHILDOBJECTS } from './xmlChildObjectsConstants';
+import {
+  buildDesignerEnumValueBlock,
+  buildDesignerDimensionBlock,
+  buildDesignerResourceBlock,
+} from './childObjectsMutator';
 
 // ---------------------------------------------------------------------------
 // Name extraction helpers
@@ -69,6 +74,24 @@ export function buildMinimalNestedElement(
   parentRootType?: MetadataType,
   parentObjectName?: string
 ): Record<string, unknown> {
+  const cleanProps = { ...minimalProperties };
+  const primaryDimension =
+    cleanProps['__isPrimaryDimension'] === false || cleanProps['__isPrimaryChildObject'] === false
+      ? false
+      : true;
+  delete cleanProps['__isPrimaryDimension'];
+  delete cleanProps['__isPrimaryChildObject'];
+
+  if (elementType === 'EnumValue') {
+    return buildDesignerEnumValueBlock(elementName);
+  }
+  if (elementType === 'Dimension') {
+    return buildDesignerDimensionBlock(elementName, parentRootType, primaryDimension);
+  }
+  if (elementType === 'Resource') {
+    return buildDesignerResourceBlock(elementName, parentRootType, parentObjectName);
+  }
+
   const uuid = generateSimpleUuid();
   const defaults =
     elementType === 'Attribute' || elementType === 'TabularSection'
@@ -77,7 +100,7 @@ export function buildMinimalNestedElement(
           parentRootType
         )
       : {};
-  const merged = { ...defaults, ...minimalProperties, Name: elementName };
+  const merged = { ...defaults, ...cleanProps, Name: elementName };
 
   // Build the Properties object (representation of the Properties element)
   const propertiesObject: Record<string, unknown> = {};
@@ -448,8 +471,13 @@ export function addNestedElementInStructure(
   parentRootType?: MetadataType,
   parentObjectName?: string
 ): unknown {
-  const isChildObjectElement = elementType === 'Attribute' || elementType === 'TabularSection';
-  const containerName = isChildObjectElement ? 'ChildObjects' : elementType + 's';
+  const usesRootMetadataChildObjects =
+    elementType === 'Attribute' ||
+    elementType === 'TabularSection' ||
+    elementType === 'EnumValue' ||
+    elementType === 'Dimension' ||
+    elementType === 'Resource';
+  const containerName = usesRootMetadataChildObjects ? 'ChildObjects' : elementType + 's';
   const newBlock = buildMinimalNestedElement(
     elementType,
     elementName,
@@ -460,7 +488,7 @@ export function addNestedElementInStructure(
 
   // Special handling for ChildObjects elements: only add to the root metadata object's ChildObjects,
   // not nested ChildObjects. This avoids writing into InternalInfo/GeneratedType branches.
-  if (isChildObjectElement) {
+  if (usesRootMetadataChildObjects) {
     return addNestedElementInRootStructure(
       parsed,
       containerName,
@@ -479,9 +507,14 @@ export function removeNestedElementInStructure(
   elementType: string,
   elementName: string
 ): unknown {
-  const isChildObjectElement = elementType === 'Attribute' || elementType === 'TabularSection';
-  const containerName = isChildObjectElement ? 'ChildObjects' : elementType + 's';
-  if (isChildObjectElement) {
+  const usesRootMetadataChildObjects =
+    elementType === 'Attribute' ||
+    elementType === 'TabularSection' ||
+    elementType === 'EnumValue' ||
+    elementType === 'Dimension' ||
+    elementType === 'Resource';
+  const containerName = usesRootMetadataChildObjects ? 'ChildObjects' : elementType + 's';
+  if (usesRootMetadataChildObjects) {
     return removeNestedElementInRootStructure(parsed, containerName, elementType, elementName);
   }
   return mutateChildObjectsArray(parsed, containerName, elementType, (arr) => {

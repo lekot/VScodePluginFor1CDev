@@ -227,11 +227,15 @@ export function mergeR5TypeFoldersUnderCommon(rootNode: TreeNode, ctx: Normalize
 }
 
 const R6_OBJECT_CHILDREN: ReadonlyArray<PlaceholderDef> = [
+  { id: 'EnumValues', name: 'Значения', type: MetadataType.EnumValue },
+  { id: 'Dimensions', name: 'Измерения', type: MetadataType.Dimension, typeDirName: 'Dimensions' },
+  { id: 'Resources', name: 'Ресурсы', type: MetadataType.Resource, typeDirName: 'Resources' },
   { id: 'Attributes', name: 'Реквизиты', type: MetadataType.Attribute, typeDirName: 'Attributes' },
   { id: 'TabularSections', name: 'Табличные части', type: MetadataType.TabularSection, typeDirName: 'TabularSections' },
   { id: 'Forms', name: 'Формы', type: MetadataType.Form, typeDirName: 'Forms' },
   { id: 'Commands', name: 'Команды', type: MetadataType.Command, typeDirName: 'Commands' },
   { id: 'Templates', name: 'Макеты', type: MetadataType.Template, typeDirName: 'Templates' },
+  { id: 'PredefinedData', name: 'Предопределённые', type: MetadataType.PredefinedItem },
 ];
 
 /**
@@ -265,11 +269,16 @@ function fixR6PlaceholderFilePaths(instanceNode: TreeNode, ctx: NormalizeContext
     return;
   }
   for (const def of R6_OBJECT_CHILDREN) {
-    if (!def.typeDirName) {
-      continue;
-    }
     const child = instanceNode.children?.find((c) => c.id === def.id);
     if (!child) {
+      continue;
+    }
+    if (def.id === 'PredefinedData') {
+      child.filePath = path.join(baseDir, 'Ext', 'Predefined.xml');
+      child.parent = instanceNode;
+      continue;
+    }
+    if (!def.typeDirName) {
       continue;
     }
     child.filePath = path.join(baseDir, def.typeDirName);
@@ -299,25 +308,27 @@ function fixR6PlaceholderFilePaths(instanceNode: TreeNode, ctx: NormalizeContext
  *   Enum, HTTPService, WebService, IntegrationService, ExternalDataSource
  */
 const ALL_R6: string[] = ['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates'];
+const CATALOG_R6: string[] = ['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'PredefinedData'];
 const FORMS_COMMANDS_TEMPLATES: string[] = ['Forms', 'Commands', 'Templates'];
 const FORMS_COMMANDS: string[] = ['Forms', 'Commands'];
 const FORMS_ONLY: string[] = ['Forms'];
 
 const R6_ALLOWED_CHILDREN = new Map<MetadataType, string[]>([
-  [MetadataType.Catalog, ALL_R6],
+  [MetadataType.Catalog, CATALOG_R6],
   [MetadataType.Document, ALL_R6],
   [MetadataType.DataProcessor, ALL_R6],
   [MetadataType.Report, ALL_R6],
   [MetadataType.BusinessProcess, ALL_R6],
   [MetadataType.Task, ALL_R6],
   [MetadataType.ExchangePlan, ALL_R6],
-  [MetadataType.ChartOfCharacteristicTypes, ALL_R6],
+  [MetadataType.ChartOfCharacteristicTypes, [...ALL_R6, 'PredefinedData']],
   [MetadataType.ChartOfCalculationTypes, ALL_R6],
-  [MetadataType.InformationRegister, FORMS_COMMANDS_TEMPLATES],
-  [MetadataType.AccumulationRegister, FORMS_COMMANDS_TEMPLATES],
-  [MetadataType.AccountingRegister, FORMS_COMMANDS_TEMPLATES],
-  [MetadataType.CalculationRegister, FORMS_COMMANDS_TEMPLATES],
-  [MetadataType.ChartOfAccounts, FORMS_COMMANDS_TEMPLATES],
+  [MetadataType.Enum, ['EnumValues']],
+  [MetadataType.InformationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
+  [MetadataType.AccumulationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
+  [MetadataType.AccountingRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
+  [MetadataType.CalculationRegister, ['Dimensions', 'Resources', 'Attributes', 'Forms', 'Commands', 'Templates']],
+  [MetadataType.ChartOfAccounts, [...FORMS_COMMANDS_TEMPLATES, 'PredefinedData']],
   [MetadataType.FilterCriterion, FORMS_COMMANDS],
   [MetadataType.DocumentJournal, FORMS_COMMANDS_TEMPLATES],
   [MetadataType.SettingsStorage, FORMS_ONLY],

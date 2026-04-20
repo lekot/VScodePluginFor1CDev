@@ -13,7 +13,7 @@ import {
   getRepoRootFromCompiledTestFile,
 } from '../helpers/matrixTreeWalker';
 import { runIbcmdConfigCheck, runIbcmdOnWorkDir } from './ibcmdAdapter';
-import { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject } from './matrixTargetPredicate';
+import { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject, isR6ContainerNode } from './matrixTargetPredicate';
 
 export { isMatrixTarget, isNestedMatrixTargetUnderMatrixObject };
 
@@ -28,6 +28,8 @@ export interface ContainerMatrixStep {
   operation: 'create' | 'delete';
   attempt: number;
   success: boolean;
+  /** When true the step is an expected no-op (e.g. R6 container delete) — counted as skipped, not passed/failed. */
+  skipped?: boolean;
   message: string;
   stack?: string;
 }
@@ -105,16 +107,23 @@ function nodeMatchesMatrixVictim(c: TreeNode, target: TreeNode, name2: string): 
 }
 
 /**
- * Pick node to delete after create×2. Attributes from Designer ChildObjects sit under an
- * `Attributes` folder node, not as direct children of the object (Role, CommonModule, …).
+ * Pick node to delete after create×2. R6 folders (Attributes, EnumValues, Dimensions, Resources, PredefinedData)
+ * hold created children; search inside those folders when not a direct match.
  */
 function pickVictimNodeFromList(children: TreeNode[], target: TreeNode, name2: string): TreeNode | undefined {
   const direct = children.find((c) => nodeMatchesMatrixVictim(c, target, name2));
   if (direct) {
     return direct;
   }
+  const nestedVictimFolderIds = new Set([
+    'Attributes',
+    'EnumValues',
+    'Dimensions',
+    'Resources',
+    'PredefinedData',
+  ]);
   for (const c of children) {
-    if (c.id === 'Attributes' && c.children?.length) {
+    if (nestedVictimFolderIds.has(c.id) && c.children?.length) {
       const hit = c.children.find((a) => nodeMatchesMatrixVictim(a, target, name2));
       if (hit) {
         return hit;
@@ -140,7 +149,9 @@ function appendStep(
   step: ContainerMatrixStep
 ): void {
   steps.push(step);
-  if (step.success) {
+  if (step.skipped === true) {
+    stepSummary.skipped += 1;
+  } else if (step.success) {
     stepSummary.passed += 1;
   } else {
     stepSummary.failed += 1;
@@ -260,6 +271,19 @@ async function runMatrixTargetCycle(
       message: '',
     });
   } catch (e) {
+    if (isR6ContainerNode(victim)) {
+      appendStep(steps, stepSummary, {
+        targetId: target.id,
+        containerId,
+        path: pathLabel,
+        operation: 'delete',
+        attempt: 1,
+        success: true,
+        skipped: true,
+        message: 'R6 container delete — expected skip',
+      });
+      return;
+    }
     const err = e instanceof Error ? e : new Error(String(e));
     appendStep(steps, stepSummary, {
       targetId: target.id,

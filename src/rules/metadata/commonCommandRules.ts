@@ -16,5 +16,12 @@ export const commonCommandRules: MetadataObjectRules = {
         representation: { type: 'SystemEnumeration', order: 4, xml: 'Representation', yaml: 'Отображение', defaultValueXML: 'Picture', typeSE: 'ButtonRepresentation' },
         synonym: { type: 'I8nText', order: 5, xml: 'Synonym', yaml: 'Синоним' },
         toolTip: { type: 'I8nText', order: 6, xml: 'ToolTip', yaml: 'Подсказка', defaultValueXML: '' },
+        picture: { type: 'InternalInfo', order: 7, xml: 'Picture', defaultValueXML: {} },
+        shortcut: { type: 'InternalInfo', order: 8, xml: 'Shortcut', defaultValueXML: {} },
+        includeHelpInContents: { type: 'boolean', order: 9, xml: 'IncludeHelpInContents', defaultValueXML: false },
+        commandParameterType: { type: 'InternalInfo', order: 10, xml: 'CommandParameterType', defaultValueXML: {} },
+        parameterUseMode: { type: 'SystemEnumeration', order: 11, xml: 'ParameterUseMode', typeSE: 'CommandParameterUseMode', defaultValueXML: 'Single' },
+        modifiesData: { type: 'boolean', order: 12, xml: 'ModifiesData', defaultValueXML: false },
+        onMainServerUnavailableBehavior: { type: 'SystemEnumeration', order: 13, xml: 'OnMainServerUnavalableBehavior', typeSE: 'OnMainServerUnavailableBehavior', defaultValueXML: 'Auto' },
     },
 };

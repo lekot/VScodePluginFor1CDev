@@ -15,5 +15,6 @@ export const functionalOptionRules: MetadataObjectRules = {
         name: { type: 'string', order: 3, xml: 'Name', yaml: 'Имя', required: true },
         privilegedGetMode: { type: 'boolean', order: 4, xml: 'PrivilegedGetMode', yaml: 'ПривилегированныйРежимПолучения', defaultValueXML: false },
         synonym: { type: 'I8nText', order: 5, xml: 'Synonym', yaml: 'Синоним' },
+        content: { type: 'InternalInfo', order: 6, xml: 'Content', defaultValueXML: {} },
     },
 };

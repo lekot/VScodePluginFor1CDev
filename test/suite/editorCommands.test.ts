@@ -23,7 +23,7 @@ suite('editorCommands', () => {
     (vscode.window as any).showWarningMessage = defaultShowWarningMessage;
   });
 
-  test('registers thirteen editor-related command handlers', () => {
+  test('registers fourteen editor-related command handlers', () => {
     const ids: string[] = [];
     (vscode.commands as any).registerCommand = (id: string) => {
       ids.push(id);
@@ -32,7 +32,7 @@ suite('editorCommands', () => {
 
     const disposables = registerEditorCommands({ state: {} as any });
 
-    assert.strictEqual(disposables.length, 13);
+    assert.strictEqual(disposables.length, 14);
     assert.deepStrictEqual(ids, [
       '1c-metadata-tree.showProperties',
       '1c-metadata-tree.openXML',
@@ -46,6 +46,7 @@ suite('editorCommands', () => {
       '1c-metadata-tree.editExchangePlanContent',
       '1c-metadata-tree.editCommonAttributeContent',
       '1c-metadata-tree.editFunctionalOptionContent',
+      '1c-metadata-tree.editFilterCriterionContent',
       '1c-metadata-tree.startDebugging',
     ]);
   });

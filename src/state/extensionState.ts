@@ -29,6 +29,7 @@ export class ExtensionState {
   private _exchangePlanCompositionEditorProvider: CompositionEditorProvider | null = null;
   private _commonAttributeCompositionEditorProvider: CompositionEditorProvider | null = null;
   private _functionalOptionCompositionEditorProvider: CompositionEditorProvider | null = null;
+  private _filterCriterionCompositionEditorProvider: CompositionEditorProvider | null = null;
   private _formEditorProvider: FormEditorProvider | null = null;
   private _mxlPreviewProvider: MxlPreviewProvider | null = null;
   private _extensionContext: vscode.ExtensionContext | undefined;
@@ -52,6 +53,7 @@ export class ExtensionState {
   get exchangePlanCompositionEditorProvider(): CompositionEditorProvider | null { return this._exchangePlanCompositionEditorProvider; }
   get commonAttributeCompositionEditorProvider(): CompositionEditorProvider | null { return this._commonAttributeCompositionEditorProvider; }
   get functionalOptionCompositionEditorProvider(): CompositionEditorProvider | null { return this._functionalOptionCompositionEditorProvider; }
+  get filterCriterionCompositionEditorProvider(): CompositionEditorProvider | null { return this._filterCriterionCompositionEditorProvider; }
   get formEditorProvider(): FormEditorProvider | null { return this._formEditorProvider; }
   get mxlPreviewProvider(): MxlPreviewProvider | null { return this._mxlPreviewProvider; }
   get extensionContext(): vscode.ExtensionContext | undefined { return this._extensionContext; }
@@ -76,6 +78,7 @@ export class ExtensionState {
   set exchangePlanCompositionEditorProvider(v: CompositionEditorProvider | null) { this._exchangePlanCompositionEditorProvider = v; }
   set commonAttributeCompositionEditorProvider(v: CompositionEditorProvider | null) { this._commonAttributeCompositionEditorProvider = v; }
   set functionalOptionCompositionEditorProvider(v: CompositionEditorProvider | null) { this._functionalOptionCompositionEditorProvider = v; }
+  set filterCriterionCompositionEditorProvider(v: CompositionEditorProvider | null) { this._filterCriterionCompositionEditorProvider = v; }
   set formEditorProvider(v: FormEditorProvider | null) { this._formEditorProvider = v; }
   set mxlPreviewProvider(v: MxlPreviewProvider | null) { this._mxlPreviewProvider = v; }
   set metadataWatchers(v: MetadataWatcherService[]) { this._metadataWatchers = v; }
@@ -111,6 +114,8 @@ export class ExtensionState {
     this._commonAttributeCompositionEditorProvider = null;
     this._functionalOptionCompositionEditorProvider?.dispose();
     this._functionalOptionCompositionEditorProvider = null;
+    this._filterCriterionCompositionEditorProvider?.dispose();
+    this._filterCriterionCompositionEditorProvider = null;
     this._infobaseTreeProvider = null;
     this._infobaseTreeView = null;
     this._refreshBindingTreeDecorations = null;

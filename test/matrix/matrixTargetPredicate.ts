@@ -3,6 +3,15 @@ import { isRootObjectCreateInTypeFolder, TOP_LEVEL_TYPES } from '../../src/servi
 import { MetadataTypeMapper } from '../../src/utils/metadataTypeMapper';
 import { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from '../../src/utils/XMLWriter';
 
+/**
+ * R6-placeholder containers that cannot be deleted — they are virtual grouping nodes, not real metadata elements.
+ * Attempting to delete them produces «Удаление для этого типа элемента не поддерживается».
+ */
+export function isR6ContainerNode(node: TreeNode): boolean {
+  const r6Ids = new Set(['EnumValues', 'Dimensions', 'Resources', 'PredefinedData']);
+  return r6Ids.has(node.id);
+}
+
 /** Конкретная форма (лист под «Forms»), не папка-контейнер `id === 'Forms'`. */
 function isFormInstanceNode(node: TreeNode): boolean {
   return node.type === MetadataType.Form && node.id !== 'Forms';
@@ -82,9 +91,27 @@ function isAttributeOrTabularContainerUnderObject(node: TreeNode): boolean {
   return false;
 }
 
+/** Register types that own Dimensions/Resources in Designer XML (keep in sync with elementOperations REGISTER_TYPES_FOR_DIM_RES). */
+const NESTED_MATRIX_REGISTER_PARENT_TYPES = new Set<MetadataType>([
+  MetadataType.InformationRegister,
+  MetadataType.AccumulationRegister,
+  MetadataType.AccountingRegister,
+  MetadataType.CalculationRegister,
+]);
+
 /**
- * Второй проход матрицы: «Реквизиты» / «Табличные части» / «Формы» под объектами, созданными в первом проходе
- * (имя родителя `Matrix_*`). В первом DFS цели собираются до create — узлов под новыми `Matrix_*` объектами ещё нет.
+ * PredefinedData nested matrix: ibcmd-friendly owners only (exclude ChartOfAccounts — minimal CoA + predefined often breaks import).
+ * Subset of elementOperations PREDEFINED_METADATA_ROOT_TYPES.
+ */
+const NESTED_MATRIX_PREDEFINED_PARENT_TYPES = new Set<MetadataType>([
+  MetadataType.Catalog,
+  MetadataType.ChartOfCharacteristicTypes,
+]);
+
+/**
+ * Второй проход матрицы: «Реквизиты» / «Табличные части» / «Формы» / R6-контейнеры (#77: EnumValues, Dimensions, Resources, PredefinedData)
+ * под объектами, созданными в первом проходе (имя родителя `Matrix_*`). В первом DFS цели собираются до create —
+ * узлов под новыми `Matrix_*` объектами ещё нет.
  */
 export function isNestedMatrixTargetUnderMatrixObject(node: TreeNode): boolean {
   const p = node.parent;
@@ -110,6 +137,22 @@ export function isNestedMatrixTargetUnderMatrixObject(node: TreeNode): boolean {
     return true;
   }
   if (isFormsFolderTarget(node)) {
+    return true;
+  }
+  if (node.id === 'EnumValues' && node.type === MetadataType.EnumValue && p.type === MetadataType.Enum) {
+    return true;
+  }
+  if (node.id === 'Dimensions' && node.type === MetadataType.Dimension && NESTED_MATRIX_REGISTER_PARENT_TYPES.has(p.type)) {
+    return true;
+  }
+  if (node.id === 'Resources' && node.type === MetadataType.Resource && NESTED_MATRIX_REGISTER_PARENT_TYPES.has(p.type)) {
+    return true;
+  }
+  if (
+    node.id === 'PredefinedData' &&
+    node.type === MetadataType.PredefinedItem &&
+    NESTED_MATRIX_PREDEFINED_PARENT_TYPES.has(p.type)
+  ) {
     return true;
   }
   return false;

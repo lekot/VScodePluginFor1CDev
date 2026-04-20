@@ -415,6 +415,21 @@ suite('propertiesWebviewContent — renderPropertiesBySections', () => {
     const html = renderPropertiesBySections(node, false);
     assert.ok(html.includes('MyConfig'));
   });
+
+  test('DefinedType with empty properties still renders Type row and edit-type-btn', () => {
+    const node = makeNode({
+      type: MetadataType.DefinedType,
+      properties: {},
+      filePath: '/test/DefinedType.xml',
+      parent: makeConfigParent(),
+    });
+    const html = renderPropertiesBySections(node, false);
+    assert.ok(html.includes('edit-type-btn'), 'edit-type-btn must be present');
+    assert.ok(
+      html.includes('data-property="Type"') || html.includes('data-property="type"'),
+      'Type property row must be rendered'
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

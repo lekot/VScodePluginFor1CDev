@@ -27,10 +27,18 @@ import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
 import { buildTreeItem } from './treeItemBuilder';
-import { getReferenceableObjects, getReferenceableObjectsForTypeEditor } from './treeReferenceLoader';
+import {
+  getReferenceableObjects,
+  getReferenceableObjectsForTypeEditor,
+  getTypeEditorReferenceableScopeKey,
+  countPendingReferenceableTypeLoads,
+  cloneReferenceableGroups,
+} from './treeReferenceLoader';
+import { getObjectableObjectsForEditor, cloneObjectableGroups } from './objectTypeLoader';
+import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
-const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates']);
+const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
 
 /**
  * Tree Data Provider for VS Code Tree View
@@ -45,6 +53,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private readonly filter = new TreeFilterService();
   private readonly cache = new TreeCacheService();
+  /** Snapshot of referenceable names per scope for TypeEditor (invalidated with tree reload / structure). */
+  private readonly typeEditorReferenceableCache = new Map<string, ReferenceableGroup[]>();
+  /** Snapshot of objectable object groups per scope for ObjectTypeEditor (invalidated with tree reload / structure). */
+  private readonly objectableObjectsCache = new Map<string, ObjectableGroup[]>();
 
   private messageUpdater: ((message: string | undefined) => void) | null = null;
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
@@ -65,9 +77,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.configurationBindingDecorations = new Map(map);
   }
 
-  private lookupConfigurationBindingDecoration(element: TreeNode): ConfigurationBindingDecoration | undefined {
-    if (element.type === MetadataType.Configuration) {
-      const configDir = this.getConfigPathForNode(element);
+  private lookupConfigurationBindingDecorationForRoot(root: TreeNode): ConfigurationBindingDecoration | undefined {
+    if (root.type === MetadataType.Configuration) {
+      const configDir = this.getConfigPathForNode(root);
       if (!configDir) {
         return undefined;
       }
@@ -83,12 +95,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       const key = bindingKey(wf.name, norm, ext);
       return this.configurationBindingDecorations.get(key);
     }
-    if (element.type === MetadataType.Extension) {
-      const props = element.properties as Record<string, unknown> | undefined;
-      if (props?.isExtension !== true || !element.filePath?.trim()) {
+    if (root.type === MetadataType.Extension) {
+      const props = root.properties as Record<string, unknown> | undefined;
+      if (props?.isExtension !== true || !root.filePath?.trim()) {
         return undefined;
       }
-      const configXmlFs = path.join(element.filePath.trim(), CONFIGURATION_XML);
+      const configXmlFs = path.join(root.filePath.trim(), CONFIGURATION_XML);
       try {
         if (!fs.existsSync(configXmlFs)) {
           return undefined;
@@ -106,6 +118,26 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       const ext = detectIbcmdExtensionNameFromConfigRelativePath(norm);
       const key = bindingKey(wf.name, norm, ext);
       return this.configurationBindingDecorations.get(key);
+    }
+    return undefined;
+  }
+
+  private lookupConfigurationBindingDecoration(element: TreeNode): ConfigurationBindingDecoration | undefined {
+    if (element.type === MetadataType.Configuration || this.isExtensionInfobaseBindingRoot(element)) {
+      return this.lookupConfigurationBindingDecorationForRoot(element);
+    }
+    // For child nodes: walk up to find the config/extension root and reuse its decoration.
+    const configRoot = this.cache.getConfigurationRoot(element);
+    if (configRoot) {
+      return this.lookupConfigurationBindingDecorationForRoot(configRoot);
+    }
+    // Walk parent chain to find Extension infobase binding root.
+    let n: TreeNode | undefined = element.parent;
+    while (n) {
+      if (this.isExtensionInfobaseBindingRoot(n)) {
+        return this.lookupConfigurationBindingDecorationForRoot(n);
+      }
+      n = n.parent;
     }
     return undefined;
   }
@@ -450,6 +482,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (loadContext) {this.cache.setLoadContext(node.id, loadContext);}
     this.cache.clear();
     this.cache.buildCache(node);
+    this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size });
     this.filter.filterAncestorOrVisibleIds = null;
     this.refresh();
@@ -469,6 +502,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.cache.setLoadContexts(loadContextMap ?? new Map());
     this.cache.clear();
     for (const node of nodes) {this.cache.buildCache(node);}
+    this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size, roots: nodes.length });
     this.filter.filterAncestorOrVisibleIds = null;
     this.refresh();
@@ -522,6 +556,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         Logger.warn('Failed to eager load type folder', { folder: typeFolder.id, error });
       }
     }
+    this.clearTypeEditorReferenceableCache();
   }
 
   /**
@@ -583,6 +618,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       (el.properties as Record<string, unknown>)._lazy = true;
     }
     this.filter.filterAncestorOrVisibleIds = null;
+    this.clearTypeEditorReferenceableCache();
     this.refresh(el);
   }
 
@@ -976,6 +1012,21 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.refresh(node);
   }
 
+  private clearTypeEditorReferenceableCache(): void {
+    const hadReferenceable = this.typeEditorReferenceableCache.size > 0;
+    const hadObjectable = this.objectableObjectsCache.size > 0;
+    if (!hadReferenceable && !hadObjectable) {
+      return;
+    }
+    if (hadReferenceable) {
+      this.typeEditorReferenceableCache.clear();
+    }
+    if (hadObjectable) {
+      this.objectableObjectsCache.clear();
+    }
+    Logger.debug('Cleared type editor referenceable cache');
+  }
+
   /**
    * Returns referenceable objects for the type editor: each reference kind with its project object names.
    * Aggregates from all configuration roots (first root used for kind order; names merged per kind).
@@ -992,7 +1043,83 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * If type editor gets an empty list, it can't offer "DocumentRef.<...>" selection.
    */
   public async getReferenceableObjectsForTypeEditor(node?: TreeNode): Promise<ReferenceableGroup[]> {
-    return getReferenceableObjectsForTypeEditor(node, this.rootNodes, this.cache);
+    const t0 = Date.now();
+    const scopeKey = getTypeEditorReferenceableScopeKey(node, this.rootNodes, this.cache);
+
+    if (scopeKey) {
+      const cached = this.typeEditorReferenceableCache.get(scopeKey);
+      if (cached) {
+        const durationMs = Date.now() - t0;
+        Logger.debug('getReferenceableObjectsForTypeEditor cache hit', { durationMs, scopeKey });
+        return cloneReferenceableGroups(cached);
+      }
+    }
+
+    const pendingLoads = countPendingReferenceableTypeLoads(node, this.rootNodes, this.cache);
+
+    const run = async (): Promise<ReferenceableGroup[]> => {
+      const groups = await getReferenceableObjectsForTypeEditor(node, this.rootNodes, this.cache);
+      if (scopeKey) {
+        this.typeEditorReferenceableCache.set(scopeKey, cloneReferenceableGroups(groups));
+      }
+      const durationMs = Date.now() - t0;
+      if (durationMs >= 500) {
+        Logger.info('getReferenceableObjectsForTypeEditor completed', {
+          durationMs,
+          scopeKey,
+          pendingLoads,
+        });
+      } else {
+        Logger.debug('getReferenceableObjectsForTypeEditor completed', {
+          durationMs,
+          scopeKey,
+          pendingLoads,
+        });
+      }
+      return groups;
+    };
+
+    if (pendingLoads > 0) {
+      return vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: MESSAGES.TYPE_EDITOR_LOADING_REFS,
+          cancellable: false,
+        },
+        async (progress) => {
+          progress.report({ increment: 0 });
+          return run();
+        }
+      );
+    }
+
+    return run();
+  }
+
+  public async getObjectableObjectsForEditor(node?: TreeNode): Promise<ObjectableGroup[]> {
+    const t0 = Date.now();
+    const scopeKey = getTypeEditorReferenceableScopeKey(node, this.rootNodes, this.cache);
+
+    if (scopeKey) {
+      const cached = this.objectableObjectsCache.get(scopeKey);
+      if (cached) {
+        const durationMs = Date.now() - t0;
+        Logger.debug('getObjectableObjectsForEditor cache hit', { durationMs, scopeKey });
+        return cloneObjectableGroups(cached);
+      }
+    }
+
+    const groups = await getObjectableObjectsForEditor(node, this.rootNodes, this.cache);
+    if (scopeKey) {
+      this.objectableObjectsCache.set(scopeKey, cloneObjectableGroups(groups));
+    }
+    const durationMs = Date.now() - t0;
+    if (durationMs >= 500) {
+      Logger.info('getObjectableObjectsForEditor completed', { durationMs, scopeKey });
+    } else {
+      Logger.debug('getObjectableObjectsForEditor completed', { durationMs, scopeKey });
+    }
+    return groups;
   }
 
   private cloneNodeForRollback(node: TreeNode): TreeNode {

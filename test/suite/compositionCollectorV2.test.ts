@@ -6,6 +6,7 @@ import {
   buildAncestorIds,
   SUBSYSTEM_ELIGIBLE_TYPES,
 } from '../../src/compositionEditor/compositionObjectCollector';
+import { CommonAttributeStrategy } from '../../src/compositionEditor/strategies/commonAttributeStrategy';
 import type { CompositionObjectEntry } from '../../src/compositionEditor/compositionContracts';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -202,6 +203,7 @@ suite('compositionCollectorV2 — collectTypeFolders', () => {
       [extSubsFolder, extCatFolder],
       `${extPath}/Configuration.xml`,
     );
+    extRoot.properties = { extensionPurpose: 'Customization' };
 
     // extSub belongs to extension (extPath ≠ mainPath)
     const result = collectTypeFolders([mainRoot, extRoot], extSub, extPath, new Set(), SUBSYSTEM_ELIGIBLE_TYPES, true);
@@ -328,5 +330,74 @@ suite('compositionCollectorV2 — collectObjectsForType', () => {
     // Nested subsystems A1, A2 (recursive)
     assert.ok(refs.includes('Subsystem.A1'), 'A1 must be included (recursive)');
     assert.ok(refs.includes('Subsystem.A2'), 'A2 must be included (recursive)');
+  });
+
+  // 6 ─────────────────────────────────────────────────────────────────────────
+  test('main-only multi-root: extension root listed first still resolves ExchangePlans from main', () => {
+    const mainPath = 'C:/cfg/main';
+    const extPath = 'C:/cfg/ext';
+
+    const extEpFolder = makeNode('ExchangePlans', 'Планы обмена', MetadataType.ExchangePlan, []);
+    const extRoot = makeNode(
+      'extroot',
+      'Configuration',
+      MetadataType.Configuration,
+      [extEpFolder],
+      `${extPath}/Configuration.xml`,
+    );
+
+    const xp1 = makeNode(
+      'ExchangePlans.ПланОбмена1',
+      'ПланОбмена1',
+      MetadataType.ExchangePlan,
+      undefined,
+      `${mainPath}/ExchangePlans/ПланОбмена1.xml`,
+    );
+    const mainEpFolder = makeNode('ExchangePlans', 'Планы обмена', MetadataType.ExchangePlan, [xp1]);
+    const mainRoot = makeNode(
+      'mainroot',
+      'Configuration',
+      MetadataType.Configuration,
+      [mainEpFolder],
+      `${mainPath}/Configuration.xml`,
+    );
+
+    const commonAttr = makeNode(
+      'CommonAttributes.ОбщийРеквизит',
+      'ОбщийРеквизит',
+      MetadataType.CommonAttribute,
+      undefined,
+      `${mainPath}/CommonAttributes/ОбщийРеквизит.xml`,
+    );
+
+    const rootsOrderedExtFirst = [extRoot, mainRoot];
+    const eligible = CommonAttributeStrategy.eligibleTypes;
+
+    const containers = collectTypeFolders(
+      rootsOrderedExtFirst,
+      commonAttr,
+      mainPath,
+      new Set(),
+      eligible,
+      false,
+    );
+    const ep = containers.find((c) => c.typeFolderId === 'ExchangePlans');
+    assert.ok(ep, 'ExchangePlans container expected');
+    assert.strictEqual(
+      ep!.objectCount,
+      1,
+      'must count exchange plans from main tree, not duplicate empty ext-first folder',
+    );
+
+    const objects = collectObjectsForType(
+      rootsOrderedExtFirst,
+      mainPath,
+      'ExchangePlans',
+      new Set<string>(),
+      eligible,
+      false,
+    );
+    assert.strictEqual(objects.length, 1);
+    assert.ok(objects.some((o) => o.ref === 'ExchangePlan.ПланОбмена1'));
   });
 });

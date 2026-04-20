@@ -279,6 +279,7 @@ suite('compositionObjectCollector', () => {
       [extSubsFolder],
       `${extPath}/Configuration.xml`,
     );
+    extRoot.properties = { extensionPurpose: 'Customization' };
 
     // extSub belongs to extension (extPath ≠ mainPath → not main config)
     const result = collectAll([mainRoot, extRoot], extSub, extPath);

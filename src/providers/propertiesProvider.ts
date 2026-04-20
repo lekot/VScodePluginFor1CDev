@@ -3,9 +3,11 @@ import { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { MetadataTreeDataProvider } from './treeDataProvider';
 import { TypeEditorProvider } from './typeEditorProvider';
+import { ObjectTypeEditorProvider } from './objectTypeEditorProvider';
 import { MESSAGES } from '../constants/messages';
 import { getConfigurationXmlPathForNode } from '../utils/configHelpers';
 import * as path from 'path';
+import * as fs from 'fs';
 import type { FormSelectionPayload } from '../formEditor/formMessageHandler';
 import { isValidWebviewMessage } from './propertiesWebviewTypes';
 import type { ExtensionMessage } from './propertiesWebviewTypes';
@@ -28,6 +30,7 @@ export class PropertiesProvider {
   private currentFormSelectionRevision = 0;
   private disposables: vscode.Disposable[] = [];
   private _isSaving = false;
+  private objectTypeEditorProvider: ObjectTypeEditorProvider;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -52,6 +55,7 @@ export class PropertiesProvider {
     }) => void
   ) {
     Logger.info('PropertiesProvider initialized');
+    this.objectTypeEditorProvider = new ObjectTypeEditorProvider(context);
     // Store reference for future use (tree refresh will be implemented in later tasks)
     void this.treeDataProvider;
   }
@@ -146,25 +150,35 @@ export class PropertiesProvider {
       node.filePath;
 
     if (pathToRead && !node.parentFilePath) {
+      let isReadableFile = false;
       try {
-        const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
-        const xmlProperties = await xmlWriter.readProperties(pathToRead);
+        const stat = await fs.promises.stat(pathToRead);
+        isReadableFile = stat.isFile();
+      } catch {
+        // path doesn't exist — skip reading
+      }
 
-        // Update node properties with fresh data from XML
-        node.properties = { ...xmlProperties };
+      if (isReadableFile) {
+        try {
+          const { XMLWriter: xmlWriter } = await import('../utils/XMLWriter');
+          const xmlProperties = await xmlWriter.readProperties(pathToRead);
 
-        Logger.debug(`Successfully loaded properties from ${pathToRead}`);
-      } catch (error) {
-        // Log detailed error
-        Logger.error(`Failed to read properties from ${pathToRead}`, error);
+          // Update node properties with fresh data from XML
+          node.properties = { ...xmlProperties };
 
-        // Display error in properties panel
-        this.showErrorInPanel(
-          node,
-          `Failed to read properties from file`,
-          error instanceof Error ? error.message : String(error)
-        );
-        return;
+          Logger.debug(`Successfully loaded properties from ${pathToRead}`);
+        } catch (error) {
+          // Log detailed error
+          Logger.error(`Failed to read properties from ${pathToRead}`, error);
+
+          // Display error in properties panel
+          this.showErrorInPanel(
+            node,
+            `Failed to read properties from file`,
+            error instanceof Error ? error.message : String(error)
+          );
+          return;
+        }
       }
     }
     // For nested elements with parentFilePath, use already loaded properties from node.properties
@@ -349,6 +363,7 @@ export class PropertiesProvider {
       isSaving: this._isSaving,
       treeDataProvider: this.treeDataProvider,
       typeEditorProvider: this.typeEditorProvider,
+      objectTypeEditorProvider: this.objectTypeEditorProvider,
       onFormPropertyChanged: this.onFormPropertyChanged,
       onGotoEventHandler: this.onGotoEventHandler,
       onCreateEventHandler: this.onCreateEventHandler,

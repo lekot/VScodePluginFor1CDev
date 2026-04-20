@@ -60,6 +60,10 @@ export const METADATA_TYPE_TO_REFERENCE_KIND: Record<MetadataType, string | unde
   [MetadataType.Recurrence]: undefined,
   [MetadataType.Method]: undefined,
   [MetadataType.Parameter]: undefined,
+  [MetadataType.EnumValue]: undefined,
+  [MetadataType.Dimension]: undefined,
+  [MetadataType.Resource]: undefined,
   [MetadataType.Extension]: undefined,
+  [MetadataType.PredefinedItem]: undefined,
   [MetadataType.Unknown]: undefined,
 };

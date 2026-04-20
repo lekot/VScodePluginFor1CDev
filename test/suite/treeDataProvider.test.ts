@@ -1065,6 +1065,59 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
   });
 
+  test('getReferenceableObjectsForTypeEditor caches result (no second parse pass)', async () => {
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    let parseCalls = 0;
+
+    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+      parseCalls++;
+      if (typeName === 'Documents') {
+        return [
+          {
+            id: `${typeName}.Orders`,
+            name: 'Orders',
+            type: MetadataType.Document,
+            properties: {},
+            children: [],
+          },
+        ];
+      }
+      return [];
+    };
+
+    try {
+      const documentsNode: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: {},
+        children: [],
+      };
+
+      const rootNode: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'reps', 'myconfig', 'Configuration.xml'),
+        children: [documentsNode],
+      };
+
+      provider.setRootNode(rootNode);
+      await provider.getReferenceableObjectsForTypeEditor();
+      assert.ok(parseCalls > 0, 'first call should hit parseTypeContents');
+      const afterFirst = parseCalls;
+      await provider.getReferenceableObjectsForTypeEditor();
+      assert.strictEqual(
+        parseCalls,
+        afterFirst,
+        'second call should use treeDataProvider cache and not parse again'
+      );
+    } finally {
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
+  });
+
   test('getReferenceableObjectsForTypeEditor restricts to current config root', async () => {
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     const calls: Array<{ configPath: string; typeName: string }> = [];

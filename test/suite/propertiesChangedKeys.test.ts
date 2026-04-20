@@ -53,6 +53,7 @@ function createMockMessageHandlerContext(
     isSaving: false,
     treeDataProvider,
     typeEditorProvider,
+    objectTypeEditorProvider: {} as any,
     postMessage: () => { /* no-op */ },
     updateWebviewContent: () => { /* no-op */ },
     setIsSaving: (_value: boolean) => { /* no-op */ },
