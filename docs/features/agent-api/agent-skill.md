@@ -18,11 +18,15 @@
   "pid": 42144,
   "workspaceFolder": "c:\\reps\\1cviewer",
   "createdAt": "2026-04-13T08:56:08.711Z",
-  "extensionVersion": "0.46.4",
+  "extensionVersion": "0.46.8",
   "docs": "https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md",
-  "quickstart": "POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {\"name\":\"1c-metadata-tree.agent.<cmd>\",\"args\":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start с debuggeeType='webServer' или dbPath → потом playwright на webServerUrl. Отладка BSL — agent.debug.start (debuggeeType='webServer' чтобы агент мог управлять формой; thinClient — нативное окно Windows, недоступно без ui-test)."
+  "quickstart": "POST http://127.0.0.1:<port>/command ...",
+  "helperScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/call.sh",
+  "discoverScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/discover.sh"
 }
 ```
+
+Поля `helperScriptPath` / `discoverScriptPath` указывают на bash-скрипты, поставляемые вместе с расширением (см. ниже «Вызов через helper-скрипт»).
 
 ### Протокол
 
@@ -62,6 +66,24 @@ req.end(data);
 ```
 /^1c-metadata-tree\.agent(\.debug|\.forms|\.skd)?\.[a-zA-Z]+$/
 ```
+
+### Вызов через helper-скрипт
+
+Расширение поставляет два bash-скрипта в `resources/agent-bridge/`, которые раскатываются вместе с VSIX и доступны любому агенту через абсолютный путь из `bridge.json`:
+
+- **`call.sh <cmd-suffix> '<JSON-args>'`** — парсит `bridge.json`, делает `curl POST /command` c корректным UTF-8 и возвращает JSON-ответ.
+- **`discover.sh`** — печатает координаты bridge и делает `GET /health`.
+
+Discovery `bridge.json` в скриптах: `$CDT_AGENT_BRIDGE_FILE` → `./.vscode/cdt-agent-bridge.json` → обход каталогов вверх.
+
+Пример (агент уже прочитал `bridge.json` и взял `helperScriptPath`):
+```bash
+HELPER=$(node -p "JSON.parse(require('fs').readFileSync('./.vscode/cdt-agent-bridge.json','utf8')).helperScriptPath")
+bash "$HELPER" listObjects '{"type":"Catalog"}'
+bash "$HELPER" debug.start '{"rootProject":"C:/conf","infobase":"File=...","platformPath":"C:/Program Files/1cv8/.../bin","debuggeeType":"webServer","databasePath":"C:/bases/my"}'
+```
+
+Этот путь предпочтительнее, чем ручной `curl`: скрипт сам подставляет токен, правильно пропускает кириллицу через UTF-8 и шейпит тело запроса.
 
 ---
 
