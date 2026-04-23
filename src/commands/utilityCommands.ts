@@ -14,6 +14,7 @@ import {
   getIbcmdTaskLabel,
 } from '../services/ibcmdReportPaths';
 import { rulesRegistry, metadataConverter } from '../rules';
+import { locateMetadataFile } from '../services/metadataFileLocator';
 
 type RegisterUtilityCommandsDeps = {
   state: ExtensionState;
@@ -92,6 +93,35 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     (): string | null => state.treeView?.selection?.[0]?.name ?? null
   );
 
+  /**
+   * Test-harness command — same pattern as getSelectionNameForTest.
+   * Diagnoses why revealActiveFileInTree may fail for a given file path.
+   * Returns a snapshot of: configRoots, located metadata descriptor, and node lookup result.
+   */
+  const diagnoseRevealForTestCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.diagnoseRevealForTest',
+    async (filePath: string): Promise<{
+      configRoots: string[];
+      loc: ReturnType<typeof locateMetadataFile>;
+      nodeId: string | null;
+      nodeName: string | null;
+      nodeType: string | null;
+    }> => {
+      const configRoots = state.treeDataProvider?.getConfigRootPaths() ?? [];
+      const loc = configRoots.length > 0 ? locateMetadataFile(filePath, configRoots) : null;
+      const node = loc && state.treeDataProvider
+        ? await state.treeDataProvider.findNodeByLocation(loc)
+        : null;
+      return {
+        configRoots,
+        loc,
+        nodeId: node?.id ?? null,
+        nodeName: node?.name ?? null,
+        nodeType: node?.type != null ? String(node.type) : null,
+      };
+    }
+  );
+
   const refreshCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.refresh',
     async () => {
@@ -106,6 +136,7 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     openIbcmdImportReportCommand,
     getTreeReadyForTestCommand,
     getSelectionNameForTestCommand,
+    diagnoseRevealForTestCommand,
     refreshCommand,
   ];
 }

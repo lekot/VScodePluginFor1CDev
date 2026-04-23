@@ -1216,7 +1216,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
 
     // ── Step 3: find type folder ─────────────────────────────────────────────
-    const typeFolderNode = await this.findChildByName(searchRoot, loc.objectType);
+    // Use findTypeFolderNode (id-based, aware of the «Общие» / Common group) rather than
+    // findChildByName (name-based). Type folder names are localised to Russian (e.g. CommonModules
+    // → 'Общие модули'), so a name-based lookup would always fail for that category.
+    // findTypeFolderNode already handles both direct children and children nested under Common.
+    const typeFolderNode = this.findTypeFolderNode(searchRoot, loc.objectType);
     if (!typeFolderNode) {
       return null;
     }

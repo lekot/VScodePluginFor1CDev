@@ -347,9 +347,10 @@ function buildFakeTreeWithExtension(): MetadataTreeDataProvider {
     path.join(CONFIG_ROOT, 'Configuration.xml')
   );
 
-  // Extension catalog
+  // Extension catalog — type folder id must match objectType ('Catalogs'), same as in real trees.
+  // Only the leaf object id gets a prefix to avoid collision with main-config nodes.
   const extCatalogNode = node('ext.Catalogs.Товары', 'Товары', MetadataType.Catalog, []);
-  const extCatalogsFolder = node('ext.Catalogs', 'Catalogs', MetadataType.Catalog, [extCatalogNode]);
+  const extCatalogsFolder = node('Catalogs', 'Справочники', MetadataType.Catalog, [extCatalogNode]);
 
   const extRoot = node(
     'config:ext',
