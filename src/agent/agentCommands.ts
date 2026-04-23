@@ -59,6 +59,21 @@ import type {
     PredefinedCotPathParams,
     SetPredefinedCotTypeParams,
 } from './types';
+import { FormsOperations } from './agentFormsOperations';
+import type {
+    FormsStartParams,
+    FormsExecParams,
+    FormsStopParams,
+    FormsShotParams,
+    FormsStatusParams,
+} from './agentFormsTypes';
+import { SkdOperations } from './agentSkdOperations';
+import type {
+    SkdCompileParams,
+    SkdInfoParams,
+    SkdEditParams,
+    SkdValidateParams,
+} from './agentSkdTypes';
 
 /**
  * Регистрирует Agent API команды.
@@ -671,6 +686,116 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1C Forms output channel (однократно для всей группы forms.*) ─────────
+
+    const formsOutputChannel = vscode.window.createOutputChannel('CDT 41: 1C Forms');
+    context.subscriptions.push(formsOutputChannel);
+
+    // ─── 1c-metadata-tree.agent.forms.start ──────────────────────────────────
+
+    const formsStartCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.start',
+        async (params: FormsStartParams) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsStart(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.exec ───────────────────────────────────
+
+    const formsExecCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.exec',
+        async (params: FormsExecParams) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsExec(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.stop ───────────────────────────────────
+
+    const formsStopCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.stop',
+        async (params: FormsStopParams = {}) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsStop(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.shot ───────────────────────────────────
+
+    const formsShotCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.shot',
+        async (params: FormsShotParams = {}) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsShot(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.status ─────────────────────────────────
+
+    const formsStatusCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.status',
+        async (params: FormsStatusParams = {}) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsStatus(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.compile ──────────────────────────────────
+
+    const skdCompileCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.compile',
+        async (params: SkdCompileParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdCompile(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.info ─────────────────────────────────────
+
+    const skdInfoCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.info',
+        async (params: SkdInfoParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdInfo(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.edit ─────────────────────────────────────
+
+    const skdEditCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.edit',
+        async (params: SkdEditParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdEdit(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.validate ─────────────────────────────────
+
+    const skdValidateCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.validate',
+        async (params: SkdValidateParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdValidate(params);
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -693,5 +818,8 @@ export function registerAgentCommands(
         getPredefinedCharacteristicTypeCommand,
         setPredefinedCharacteristicTypeCommand,
         getCharacteristicValueRegistersCommand,
+        formsStartCommand, formsExecCommand, formsStopCommand,
+        formsShotCommand, formsStatusCommand,
+        skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,
     );
 }

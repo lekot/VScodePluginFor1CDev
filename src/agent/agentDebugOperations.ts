@@ -171,6 +171,15 @@ export class AgentDebugOperations {
             const data: DebugStartResult = { sessionId: session.id };
             if (webServerHttpPort !== undefined) {
                 data.webServerUrl = `http://localhost:${webServerHttpPort}`;
+                data.uiAccessHint =
+                    `Для работы с формами 1С откройте ${data.webServerUrl} через playwright ` +
+                    `(mcp__plugin_playwright_playwright__browser_navigate). ` +
+                    `Тогда можно кликать/заполнять формы и одновременно пользоваться debug.*.`;
+            } else {
+                data.uiAccessHint =
+                    'Запущен thinClient (1cv8c.exe) — нативное окно Windows, недоступно агенту без UI-автоматизации. ' +
+                    'Чтобы управлять формами из агента, перезапустите сессию с debuggeeType="webServer" + databasePath ' +
+                    '(ibsrv HTTP-клиент + playwright) или используйте skill ui-test для кликов в нативном окне.';
             }
             return { success: true, data };
         } catch {
@@ -713,6 +722,15 @@ export class AgentDebugOperations {
             const data: DebugStartResult = { sessionId: session.id };
             if (webServerHttpPort !== undefined) {
                 data.webServerUrl = `http://localhost:${webServerHttpPort}`;
+                data.uiAccessHint =
+                    `Для работы с формами 1С откройте ${data.webServerUrl} через playwright ` +
+                    `(mcp__plugin_playwright_playwright__browser_navigate). ` +
+                    `Тогда можно кликать/заполнять формы и одновременно пользоваться debug.*.`;
+            } else {
+                data.uiAccessHint =
+                    'Запущен thinClient (1cv8c.exe) — нативное окно Windows, недоступно агенту без UI-автоматизации. ' +
+                    'Чтобы управлять формами из агента, перезапустите сессию с debuggeeType="webServer" + databasePath ' +
+                    '(ibsrv HTTP-клиент + playwright) или используйте skill ui-test для кликов в нативном окне.';
             }
             return { success: true, data };
         } catch {

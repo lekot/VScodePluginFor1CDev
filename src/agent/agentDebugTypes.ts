@@ -30,6 +30,12 @@ export interface DebugStartResult {
     sessionId: string;
     /** URL ibsrv веб-клиента (только для debuggeeType='webServer'). */
     webServerUrl?: string;
+    /**
+     * Подсказка агенту, как взаимодействовать с UI 1С в этой сессии.
+     * Заполняется всегда: для thinClient — предупреждение что окно нативное,
+     * для webServer — инструкция открыть webServerUrl через playwright.
+     */
+    uiAccessHint?: string;
 }
 
 /** Параметры остановки отладочной сессии. */
