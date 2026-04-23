@@ -196,6 +196,9 @@ export function registerNavigationCommands(
         if (choice === 'Сбросить') {
           state.treeDataProvider.clearSearch();
           await vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
+        } else {
+          // «Отмена» или Escape — не делаем reveal на потенциально скрытом узле
+          return;
         }
       }
       await state.treeView.reveal(node, { select: true, focus: true, expand: 1 });

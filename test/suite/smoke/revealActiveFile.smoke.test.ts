@@ -152,10 +152,19 @@ suite('Smoke: revealActiveFileInTree command', () => {
       // Give VS Code time to complete the reveal and update treeView.selection.
       await new Promise((r) => setTimeout(r, 1500));
 
-      // Verify the selection changed to FlatOnlyModule by calling openXML (no-arg).
-      // openXML uses state.treeView.selection[0] as the target node.
-      const openedPath = await pollOpenXmlUntilMatch('FlatOnlyModule', 8000);
+      // Primary assertion: check treeView.selection directly via test-helper command.
+      const selectedName = await vscode.commands.executeCommand<string | null>(
+        '1c-metadata-tree.getSelectionNameForTest'
+      );
+      assert.ok(selectedName, 'treeView.selection should be non-empty after reveal');
+      assert.strictEqual(
+        selectedName,
+        'FlatOnlyModule',
+        'Selected node should be FlatOnlyModule but got: ' + selectedName
+      );
 
+      // Secondary: verify via openXML (selection → XML file path).
+      const openedPath = await pollOpenXmlUntilMatch('FlatOnlyModule', 8000);
       assert.ok(
         openedPath.includes('FlatOnlyModule'),
         'openXML after reveal should open FlatOnlyModule.xml but opened: ' + openedPath

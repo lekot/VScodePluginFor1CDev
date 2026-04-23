@@ -324,3 +324,128 @@ suite('MetadataTreeDataProvider.findNodeByLocation (issue #88)', () => {
     assert.strictEqual(result!.name, 'МакетПечати');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Extension root lookup tests
+// ---------------------------------------------------------------------------
+
+const EXT_NAME = 'Базовое';
+const EXT_CONFIG_ROOT = path.resolve(CONFIG_ROOT, 'ConfigurationExtensions', EXT_NAME);
+
+/**
+ * Builds a provider with two root nodes:
+ *   - main config root (no extensionPurpose)
+ *   - extension root (extensionPurpose = 'Patch') with a Catalog
+ */
+function buildFakeTreeWithExtension(): MetadataTreeDataProvider {
+  // Main config root — empty, just needs to be reachable by configRoot path
+  const mainRoot = node(
+    'config:main',
+    'Configuration',
+    MetadataType.Configuration,
+    [],
+    path.join(CONFIG_ROOT, 'Configuration.xml')
+  );
+
+  // Extension catalog
+  const extCatalogNode = node('ext.Catalogs.Товары', 'Товары', MetadataType.Catalog, []);
+  const extCatalogsFolder = node('ext.Catalogs', 'Catalogs', MetadataType.Catalog, [extCatalogNode]);
+
+  const extRoot = node(
+    'config:ext',
+    'Configuration',
+    MetadataType.Configuration,
+    [extCatalogsFolder],
+    path.join(EXT_CONFIG_ROOT, 'Configuration.xml')
+  );
+  // Mark as extension
+  extRoot.properties.extensionPurpose = 'Patch';
+
+  const provider = new MetadataTreeDataProvider();
+  provider.setRootNodes(
+    [mainRoot, extRoot],
+    new Map([
+      ['config:main', { configPath: CONFIG_ROOT, format: ConfigFormat.Designer }],
+      ['config:ext', { configPath: EXT_CONFIG_ROOT, format: ConfigFormat.Designer }],
+    ])
+  );
+  return provider;
+}
+
+suite('MetadataTreeDataProvider.findNodeByLocation — extension root (issue #88)', () => {
+  // Case 14: extension root lookup finds catalog in extension
+  test('14. extensionName=Базовое → узел каталога в extension root', async () => {
+    const provider = buildFakeTreeWithExtension();
+    const loc: MetadataLocation = {
+      configRoot: CONFIG_ROOT,
+      objectType: 'Catalogs',
+      objectName: 'Товары',
+      extensionName: EXT_NAME,
+    };
+    const result = await provider.findNodeByLocation(loc);
+    assert.ok(result, 'Expected extension catalog node but got null');
+    assert.strictEqual(result!.name, 'Товары');
+    assert.strictEqual(result!.type, MetadataType.Catalog);
+  });
+
+  // Case 15: extensionName set but extension root not loaded → null (not false-positive in main)
+  test('15. extensionName задан, extension root не загружен → null', async () => {
+    const provider = buildFakeTreeWithExtension();
+    const loc: MetadataLocation = {
+      configRoot: CONFIG_ROOT,
+      objectType: 'Catalogs',
+      objectName: 'Товары',
+      extensionName: 'НесуществующееРасширение',
+    };
+    const result = await provider.findNodeByLocation(loc);
+    assert.strictEqual(result, null, 'Should return null when extension root is not loaded');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subsystem name-collision test
+// ---------------------------------------------------------------------------
+
+suite('MetadataTreeDataProvider.findNodeByLocation — subsystem type guard (issue #88)', () => {
+  // Case 16: non-subsystem child with same name as next subsystem is ignored
+  test('16. non-subsystem child с тем же именем не перехватывает subsystem walk', async () => {
+    // Build tree: Subsystems → Продажи (Subsystem) which has:
+    //   - child with name='Заказы' and type=Unknown (CommandInterface-like)
+    //   - child with name='Заказы' and type=Subsystem (the real subsystem)
+    const realЗаказы = node('Subsystems.Продажи.Заказы', 'Заказы', MetadataType.Subsystem, []);
+    const fakeЗаказы = node(
+      'Subsystems.Продажи.Заказы.CI',
+      'Заказы',
+      MetadataType.Unknown,
+      []
+    );
+    // fakeЗаказы comes BEFORE realЗаказы in children to test that type-guard skips it
+    const продажи = node('Subsystems.Продажи', 'Продажи', MetadataType.Subsystem, [fakeЗаказы, realЗаказы]);
+    const subsystemsFolder = node('Subsystems', 'Subsystems', MetadataType.Subsystem, [продажи]);
+
+    const configRoot = node(
+      'Configuration',
+      'Configuration',
+      MetadataType.Configuration,
+      [subsystemsFolder],
+      path.join(CONFIG_ROOT, 'Configuration.xml')
+    );
+
+    const provider = new MetadataTreeDataProvider();
+    provider.setRootNodes(
+      [configRoot],
+      new Map([['Configuration', { configPath: CONFIG_ROOT, format: ConfigFormat.Designer }]])
+    );
+
+    const loc: MetadataLocation = {
+      configRoot: CONFIG_ROOT,
+      objectType: 'Subsystems',
+      objectName: 'Продажи',
+      hierarchy: ['Продажи', 'Заказы'],
+    };
+    const result = await provider.findNodeByLocation(loc);
+    assert.ok(result, 'Expected Заказы subsystem node but got null');
+    assert.strictEqual(result!.name, 'Заказы');
+    assert.strictEqual(result!.type, MetadataType.Subsystem, 'Must return Subsystem-typed node, not Unknown');
+  });
+});

@@ -87,6 +87,11 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     (): boolean => !!(state.treeDataProvider?.getRootNode() ?? null)
   );
 
+  const getSelectionNameForTestCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.getSelectionNameForTest',
+    (): string | null => state.treeView?.selection?.[0]?.name ?? null
+  );
+
   const refreshCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.refresh',
     async () => {
@@ -100,6 +105,7 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     openIbcmdCheckReportCommand,
     openIbcmdImportReportCommand,
     getTreeReadyForTestCommand,
+    getSelectionNameForTestCommand,
     refreshCommand,
   ];
 }

@@ -1201,10 +1201,19 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
 
     // ── Step 2: extension support ────────────────────────────────────────────
-    // TODO(#88): extensionName resolution — нужна проверка как extension узлы
-    // структурированы (ConfigurationExtensions/<Name>/ в Designer vs EDT).
-    // Пока extensionName игнорируется, main-config кейс работает полностью.
-    const searchRoot = configRootNode;
+    // When loc.extensionName is set, the file lives inside ConfigurationExtensions/<Name>/
+    // of the main config (the locator found the main config as longest prefix).
+    // We need to find the corresponding extension root node, which is loaded as a separate
+    // root with loadContext.configPath = <mainConfigRoot>/ConfigurationExtensions/<extensionName>.
+    let searchRoot = configRootNode;
+    if (loc.extensionName) {
+      const extRoot = await this.findExtensionRootByName(loc.configRoot, loc.extensionName);
+      if (extRoot === null) {
+        // Extension root not loaded — cannot walk into it; avoid false-positive on main config.
+        return null;
+      }
+      searchRoot = extRoot;
+    }
 
     // ── Step 3: find type folder ─────────────────────────────────────────────
     const typeFolderNode = await this.findChildByName(searchRoot, loc.objectType);
@@ -1257,6 +1266,35 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /**
+   * Find an extension root node whose loadContext.configPath equals
+   * `<mainConfigRoot>/ConfigurationExtensions/<extensionName>`.
+   *
+   * Designer stores extension files under `ConfigurationExtensions/<Name>/` inside
+   * the main config directory. When the locator sees such a path it returns
+   * `configRoot = mainConfigRoot` plus `extensionName = '<Name>'`. The corresponding
+   * root node has `configPath = <mainConfigRoot>/ConfigurationExtensions/<Name>` and
+   * `properties.extensionPurpose` set.
+   *
+   * Returns `null` when no matching extension root is loaded.
+   */
+  private async findExtensionRootByName(
+    mainConfigRoot: string,
+    extensionName: string
+  ): Promise<TreeNode | null> {
+    const expectedPath = path.resolve(mainConfigRoot, 'ConfigurationExtensions', extensionName);
+    for (const root of this.rootNodes) {
+      if (root.properties.extensionPurpose === undefined) {
+        continue;
+      }
+      const ctx = this.cache.getLoadContext(root.id);
+      if (ctx && path.resolve(ctx.configPath) === expectedPath) {
+        return root;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Get (lazy-load if needed) children of `parent` and find the first child
    * whose `name` equals `targetName` (case-sensitive, matching 1C metadata names).
    *
@@ -1270,7 +1308,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       return found;
     }
     // Fallback: getChildren may return a filtered list when a search filter is active.
-    // For targeted walk we need the raw children — check node.children directly as well.
+    // Skip the raw-children fallback when a filter is active — the caller (revealActiveFile)
+    // has already guarded against this via the filter-cancel dialog (Critical #1).
+    // Raw fallback only makes sense when no filter is active to ensure lazy nodes are reachable.
+    if (this.filter.hasActiveFilter()) {
+      return null;
+    }
     const raw = parent.children ?? [];
     return raw.find((c) => c.name === targetName) ?? null;
   }
@@ -1286,7 +1329,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (found) {
       return found;
     }
-    // Fallback: check raw children in case filter hides it.
+    // Skip raw fallback when a filter is active — same reasoning as findChildByName.
+    if (this.filter.hasActiveFilter()) {
+      return null;
+    }
     const raw = parent.children ?? [];
     return raw.find((c) => c.id === targetId) ?? null;
   }
@@ -1304,12 +1350,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     let current: TreeNode = subsystemsFolderNode;
     for (const name of hierarchy) {
       const children = await this.getChildren(current);
-      // Subsystem direct children — find by name regardless of type for the root level;
-      // at deeper levels only MetadataType.Subsystem nodes carry subsystem children.
-      let found = children.find((c) => c.name === name);
+      // Match by name AND type to avoid collisions with non-subsystem children
+      // (e.g. the synthetic CommandInterface node that shares the parent).
+      let found = children.find((c) => c.name === name && c.type === MetadataType.Subsystem);
       if (!found) {
         // Fallback: check raw children in case filter hides the subsystem node.
-        found = (current.children ?? []).find((c) => c.name === name);
+        found = (current.children ?? []).find(
+          (c) => c.name === name && c.type === MetadataType.Subsystem
+        );
       }
       if (!found) {
         return null;
