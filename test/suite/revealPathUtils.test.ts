@@ -1,7 +1,11 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
-import { normalizePathForMatch, scoreNodeAgainstTarget } from '../../src/extensionSupport/revealPathUtils';
+import {
+  normalizePathForMatch,
+  parseRevealTypeFolderObjectFromFilePath,
+  scoreNodeAgainstTarget,
+} from '../../src/extensionSupport/revealPathUtils';
 
 suite('revealPathUtils', () => {
   const getCfg = (_n: TreeNode): string | null => null;
@@ -56,5 +60,40 @@ suite('revealPathUtils', () => {
       const c = normalizePathForMatch('c:/PROJ\\a/b.XML');
       assert.strictEqual(b, c);
     }
+  });
+
+  test('parseRevealTypeFolderObjectFromFilePath: EDT-style path', () => {
+    const p = path.join(
+      process.cwd(),
+      'src',
+      'Documents',
+      'гк_Договор',
+      'Forms',
+      'F1',
+      'Ext',
+      'Form',
+      'Module.bsl'
+    );
+    const h = parseRevealTypeFolderObjectFromFilePath(p);
+    assert.ok(h, 'expected hint');
+    assert.strictEqual(h?.typeFolder, 'Documents');
+    assert.strictEqual(h?.objectName, 'гк_Договор');
+  });
+
+  test('parseRevealTypeFolderObjectFromFilePath: rightmost type folder', () => {
+    const p = path.join(
+      process.cwd(),
+      'Catalogs',
+      'A',
+      'Other',
+      'Catalogs',
+      'B',
+      'Ext',
+      'm.bsl'
+    );
+    const h = parseRevealTypeFolderObjectFromFilePath(p);
+    assert.ok(h);
+    assert.strictEqual(h?.typeFolder, 'Catalogs');
+    assert.strictEqual(h?.objectName, 'B');
   });
 });

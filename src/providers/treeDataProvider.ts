@@ -27,7 +27,14 @@ import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
 import { buildTreeItem } from './treeItemBuilder';
-import { normalizePathForMatch, scoreNodeAgainstTarget } from '../extensionSupport/revealPathUtils';
+import {
+  collectNodeIdentityPaths,
+  compareFileRevealNodes,
+  normalizePathForMatch,
+  parseRevealTypeFolderObjectFromFilePath,
+  REVEAL_METADATA_TYPE_FOLDERS,
+  scoreNodeAgainstTarget,
+} from '../extensionSupport/revealPathUtils';
 import {
   getReferenceableObjects,
   getReferenceableObjectsForTypeEditor,
@@ -58,6 +65,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private readonly typeEditorReferenceableCache = new Map<string, ReferenceableGroup[]>();
   /** Snapshot of objectable object groups per scope for ObjectTypeEditor (invalidated with tree reload / structure). */
   private readonly objectableObjectsCache = new Map<string, ObjectableGroup[]>();
+
+  /**
+   * When &gt; 0, lazy loads in {@link getChildrenWithFilterOptions} skip per-node {@link refresh}
+   * (e.g. reveal-active-file) so the tree is not re-rendered hundreds of times. Pair with a single
+   * {@link refresh} when depth returns to 0.
+   */
+  private _suppressTreeRefreshDepth = 0;
 
   private messageUpdater: ((message: string | undefined) => void) | null = null;
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
@@ -783,7 +797,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             nodeCount: this.cache.size,
           });
           this.filter.filterAncestorOrVisibleIds = null;
-          this.refresh(activeElement);
+          if (this._suppressTreeRefreshDepth === 0) {
+            this.refresh(activeElement);
+          }
           return this.mapChildrenRespectingFilterIfNeeded(children, applyFilter);
         });
       }
@@ -814,7 +830,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
               nodeCount: this.cache.size,
             });
             this.filter.filterAncestorOrVisibleIds = null;
-            this.refresh(activeElement);
+            if (this._suppressTreeRefreshDepth === 0) {
+              this.refresh(activeElement);
+            }
             return this.mapChildrenRespectingFilterIfNeeded(children, applyFilter);
           }
         );
@@ -847,19 +865,123 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   /**
    * Find the most specific tree node for a file path, loading lazy branches as needed. Ignores search/type/subsystem filters
-   * so a match can be found when the tree is narrowed.
+   * so a match can be found when the tree is narrowed. Optimized: no refresh storm during walk, exact match in cache,
+   * fast `TypeDir/ObjectName` (например `Documents/гк_Договор` из `…/src/Documents/…/Module.bsl`),
+   * иначе обход с корня, без full-tree DFS если hint уже дал.
    */
   async findDeepestNodeForFilePath(targetFsPath: string): Promise<TreeNode | null> {
-    if (!targetFsPath.trim()) {return null;}
+    if (!targetFsPath.trim() || this.rootNodes.length === 0) {
+      return null;
+    }
     const targetNorm = normalizePathForMatch(targetFsPath);
-    if (this.rootNodes.length === 0) {return null;}
+    const getCfg = (n: TreeNode) => this.getConfigPathForNode(n);
+    const exactHit = this.findExactFilePathInCache(targetNorm, getCfg);
+    if (exactHit) {
+      return exactHit;
+    }
+    const hint = parseRevealTypeFolderObjectFromFilePath(targetFsPath);
+    this._suppressTreeRefreshDepth += 1;
+    try {
+      const allRoots = await this.getChildrenWithFilterOptions(undefined, false);
+      const configRoots = this.filterRootsByPathPrefix(targetNorm, allRoots);
+      const roots = configRoots.length > 0 ? configRoots : allRoots;
+      if (hint) {
+        const fast = await this.findRevealObjectByTypeFolderHint(hint, roots, targetNorm, getCfg);
+        if (fast) {
+          return fast;
+        }
+      }
+      let best: TreeNode | null = null;
+      let bestScore = -1;
+      for (const r of roots) {
+        const cand = await this.findDeepestByDfsFromNode(r, targetNorm, getCfg);
+        if (!cand) {continue;}
+        const sc = scoreNodeAgainstTarget(targetNorm, cand, getCfg);
+        if (
+          !best ||
+          sc > bestScore ||
+          (sc === bestScore && sc > 0 && compareFileRevealNodes(cand, best, targetNorm, getCfg) > 0)
+        ) {
+          best = cand;
+          bestScore = sc;
+        }
+      }
+      if (best && bestScore > 0) {return best;}
+      if (!hint) {return this.findDeepestByFullTreeDfs(targetNorm, getCfg);}
+      return null;
+    } finally {
+      this._suppressTreeRefreshDepth -= 1;
+      if (this._suppressTreeRefreshDepth === 0) {
+        this.refresh();
+      }
+    }
+  }
+
+  private findExactFilePathInCache(
+    targetNorm: string,
+    getCfg: (n: TreeNode) => string | null
+  ): TreeNode | null {
+    const matches: TreeNode[] = [];
+    for (const node of this.cache.nodes.values()) {
+      for (const p of collectNodeIdentityPaths(node, getCfg)) {
+        if (path.resolve(p).toLowerCase() === targetNorm) {
+          matches.push(node);
+          break;
+        }
+      }
+    }
+    if (matches.length === 0) {
+      return null;
+    }
+    if (matches.length === 1) {
+      return matches[0] ?? null;
+    }
+    let best: TreeNode = matches[0] as TreeNode;
+    for (let k = 1; k < matches.length; k++) {
+      const cand = matches[k] as TreeNode;
+      if (compareFileRevealNodes(cand, best, targetNorm, getCfg) > 0) {best = cand;}
+    }
+    return best;
+  }
+
+  private filterRootsByPathPrefix(targetNorm: string, roots: TreeNode[]): TreeNode[] {
+    return roots.filter((r) => this.isFilePathUnderTreeRoot(targetNorm, r));
+  }
+
+  /** Whether target (normalized) is under the configuration / extension content root. */
+  private isFilePathUnderTreeRoot(targetNorm: string, root: TreeNode): boolean {
+    const ctx = this.cache.getLoadContext(root.id);
+    if (ctx?.configPath) {
+      return MetadataTreeDataProvider.pathIsUnderConfigDir(targetNorm, path.resolve(ctx.configPath).toLowerCase());
+    }
+    if (root.filePath) {
+      if (root.type === MetadataType.Configuration) {
+        const b = path.resolve(path.dirname(root.filePath)).toLowerCase();
+        return MetadataTreeDataProvider.pathIsUnderConfigDir(targetNorm, b);
+      }
+    }
+    return true;
+  }
+
+  private static pathIsUnderConfigDir(fileNorm: string, dirNorm: string): boolean {
+    const f = fileNorm.replace(/\\/g, path.sep);
+    const d = dirNorm.replace(/\\/g, path.sep);
+    if (f === d) {return true;}
+    if (f.length <= d.length) {return false;}
+    return f.startsWith(d + path.sep) || f.startsWith(d + '/');
+  }
+
+  private async findDeepestByDfsFromNode(
+    start: TreeNode,
+    targetNorm: string,
+    getCfg: (n: TreeNode) => string | null
+  ): Promise<TreeNode | null> {
+    const active = this.cache.resolveActiveNode(start, this.rootNodes);
     let best: TreeNode | null = null;
     let bestScore = -1;
-    const getCfg = (n: TreeNode) => this.getConfigPathForNode(n);
-
     const visit = async (node: TreeNode): Promise<void> => {
       const s = scoreNodeAgainstTarget(targetNorm, node, getCfg);
-      if (s > bestScore) {
+      if (s > 0 && (!best || s > bestScore || (s === bestScore && best && compareFileRevealNodes(node, best, targetNorm, getCfg) > 0))) {
         bestScore = s;
         best = node;
       }
@@ -868,12 +990,167 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         await visit(c);
       }
     };
+    await visit(active);
+    return bestScore > 0 ? best : null;
+  }
 
+  private async findDeepestByFullTreeDfs(
+    targetNorm: string,
+    getCfg: (n: TreeNode) => string | null
+  ): Promise<TreeNode | null> {
+    let best: TreeNode | null = null;
+    let bestScore = -1;
+    const visit = async (node: TreeNode): Promise<void> => {
+      const s = scoreNodeAgainstTarget(targetNorm, node, getCfg);
+      if (s > 0 && (!best || s > bestScore || (s === bestScore && best && compareFileRevealNodes(node, best, targetNorm, getCfg) > 0))) {
+        bestScore = s;
+        best = node;
+      }
+      const ch = await this.getChildrenWithFilterOptions(node, false);
+      for (const c of ch) {
+        await visit(c);
+      }
+    };
     const roots = await this.getChildrenWithFilterOptions(undefined, false);
     for (const r of roots) {
       await visit(r);
     }
     return bestScore > 0 ? best : null;
+  }
+
+  /**
+   * Быстрый reveal: `…/Documents/гк_Договор/…` → кэш по `Documents.гк_Договор` и поиск папки типа без
+   * обхода всех справочников/документов (BFS не заходит внутрь каталогов-«корзин»).
+   */
+  private async findRevealObjectByTypeFolderHint(
+    hint: { typeFolder: string; objectName: string },
+    roots: TreeNode[],
+    targetNorm: string,
+    getCfg: (n: TreeNode) => string | null
+  ): Promise<TreeNode | null> {
+    const { typeFolder, objectName } = hint;
+    const wantId = `${typeFolder}.${objectName}`;
+    const byId = this.cache.getCandidatesById(wantId);
+    if (byId.length > 0) {
+      const good = this.filterRevealCandidatesForRootsAndPath(byId, roots, targetNorm);
+      if (good.length === 1) {return good[0]!;}
+      if (good.length > 1) {
+        let b = good[0]!;
+        for (let k = 1; k < good.length; k += 1) {
+          if (compareFileRevealNodes(good[k]!, b, targetNorm, getCfg) > 0) {b = good[k]!;}
+        }
+        return b;
+      }
+    }
+    for (const r of roots) {
+      if (!this.isFilePathUnderTreeRoot(targetNorm, r)) {continue;}
+      const typeNode = await this.findTypeFolderBfsFromRoot(r, typeFolder);
+      if (!typeNode) {continue;}
+      const obj = await this.findObjectInTypeFolder(typeNode, typeFolder, objectName, targetNorm, getCfg);
+      if (obj) {return obj;}
+    }
+    return null;
+  }
+
+  private filterRevealCandidatesForRootsAndPath(
+    cands: TreeNode[],
+    roots: TreeNode[],
+    targetNorm: string
+  ): TreeNode[] {
+    const out: TreeNode[] = [];
+    for (const c of cands) {
+      for (const r of roots) {
+        if (this.isTreeDescendantOf(c, r) && this.isFilePathUnderTreeRoot(targetNorm, r) && this.objectFilePathCoversTarget(c, targetNorm)) {
+          out.push(c);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  private isTreeDescendantOf(needle: TreeNode, ancestor: TreeNode): boolean {
+    for (let p: TreeNode | undefined = needle; p; p = p.parent) {
+      if (p.id === ancestor.id) {return true;}
+    }
+    return false;
+  }
+
+  private objectFilePathCoversTarget(node: TreeNode, targetNorm: string): boolean {
+    if (!node.filePath?.trim()) {return false;}
+    const base = path.resolve(path.normalize(node.filePath.trim())).toLowerCase();
+    if (targetNorm === base) {return true;}
+    if (targetNorm.length <= base.length) {return false;}
+    return MetadataTreeDataProvider.pathIsUnderConfigDir(targetNorm, base);
+  }
+
+  private isNodeExpandableForTypeFolderSearch(n: TreeNode): boolean {
+    if (n.id === 'Common') {return true;}
+    if (REVEAL_METADATA_TYPE_FOLDERS.has(n.id)) {return false;}
+    if (n.type === MetadataType.Configuration) {return true;}
+    if (n.type === MetadataType.Extension) {return true;}
+    if (n.parent == null) {return true;}
+    return false;
+  }
+
+  private async findTypeFolderBfsFromRoot(start: TreeNode, typeFolder: string): Promise<TreeNode | null> {
+    const fromCache = this.cache.getCandidatesById(typeFolder);
+    for (const t of fromCache) {
+      if (this.isTreeDescendantOf(t, this.cache.resolveActiveNode(start, this.rootNodes)) && t.id === typeFolder) {
+        return t;
+      }
+    }
+    const seen = new Set<string>();
+    const startActive = this.cache.resolveActiveNode(start, this.rootNodes);
+    const q: TreeNode[] = [startActive];
+    for (let it = 0; it < 320 && q.length > 0; it += 1) {
+      const n = q.shift() as TreeNode;
+      if (seen.has(n.id)) {continue;}
+      seen.add(n.id);
+      if (n.id === typeFolder) {return n;}
+      const ch = await this.getChildrenWithFilterOptions(n, false);
+      for (const c of ch) {
+        if (c.id === typeFolder) {return c;}
+        if (this.isNodeExpandableForTypeFolderSearch(c)) {
+          q.push(c);
+        }
+      }
+    }
+    return null;
+  }
+
+  private async findObjectInTypeFolder(
+    typeNode: TreeNode,
+    typeFolder: string,
+    objectName: string,
+    targetNorm: string,
+    getCfg: (n: TreeNode) => string | null
+  ): Promise<TreeNode | null> {
+    const wantId = `${typeFolder}.${objectName}`;
+    const ch = await this.getChildrenWithFilterOptions(
+      this.cache.resolveActiveNode(typeNode, this.rootNodes),
+      false
+    );
+    const matches: TreeNode[] = [];
+    for (const c of ch) {
+      if (c.id === wantId) {matches.push(c);}
+    }
+    if (matches.length === 0) {
+      for (const c of ch) {
+        if (c.name && c.name.localeCompare(objectName, undefined, { sensitivity: 'base'}) === 0) {
+          matches.push(c);
+        }
+      }
+    }
+    if (matches.length === 0) {return null;}
+    const ok = matches.filter((m) => this.objectFilePathCoversTarget(m, targetNorm));
+    const take = ok.length > 0 ? ok : matches;
+    if (take.length === 1) {return take[0]!;}
+    let best = take[0]!;
+    for (let k = 1; k < take.length; k += 1) {
+      if (compareFileRevealNodes(take[k]!, best, targetNorm, getCfg) > 0) {best = take[k]!;}
+    }
+    return best;
   }
 
   /** True if the node (after resolve) is visible in the current filtered tree. */
