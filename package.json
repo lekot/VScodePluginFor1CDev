@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.46.3",
+  "version": "0.46.9",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -216,6 +216,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.editSubsystemCommandInterface",
+        "title": "Открыть командный интерфейс",
+        "category": "1C Metadata"
+      },
+      {
         "command": "1c-metadata-tree.editExchangePlanContent",
         "title": "Редактор состава плана обмена",
         "category": "CDT 41"
@@ -233,6 +238,11 @@
       {
         "command": "1c-metadata-tree.editFilterCriterionContent",
         "title": "CDT 41: Редактировать состав критерия отбора"
+      },
+      {
+        "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",
+        "title": "ПВХ: Предопределённые виды",
+        "category": "1C Metadata"
       },
       {
         "command": "1c-metadata-tree.infobaseManager.showIbcmdSetup",
@@ -802,6 +812,11 @@
           "group": "2_subsystem@0"
         },
         {
+          "command": "1c-metadata-tree.editSubsystemCommandInterface",
+          "when": "view == 1c-metadata-tree && viewItem =~ /Subsystem/",
+          "group": "2_subsystem@1"
+        },
+        {
           "command": "1c-metadata-tree.editExchangePlanContent",
           "when": "view == 1c-metadata-tree && viewItem =~ /^ExchangePlan\\b/",
           "group": "2_composition@0"
@@ -820,6 +835,11 @@
           "command": "1c-metadata-tree.editFilterCriterionContent",
           "when": "view == 1c-metadata-tree && viewItem =~ /^FilterCriterion\\b/",
           "group": "2_composition@0"
+        },
+        {
+          "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^ChartOfCharacteristicTypes\\b/",
+          "group": "2_cot@0"
         },
         {
           "command": "1c-metadata-tree.clearSubsystemFilter",
@@ -1284,7 +1304,8 @@
     "@vscode/debugadapter": "^1.68.0",
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "playwright": "^1.50.0"
   },
   "c8": {
     "include": [

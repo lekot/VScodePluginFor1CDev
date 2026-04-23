@@ -793,6 +793,21 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
               c.parent = activeElement;
               this.cache.buildCache(c);
             }
+            if (activeElement.type === MetadataType.Subsystem && activeElement.filePath) {
+              const ciPath = path.join(path.dirname(activeElement.filePath), 'Ext', 'CommandInterface.xml');
+              if (fs.existsSync(ciPath)) {
+                const ciNode: TreeNode = {
+                  id: `${activeElement.id}.CommandInterface`,
+                  name: 'Командный интерфейс',
+                  type: MetadataType.Unknown,
+                  parent: activeElement,
+                  properties: { isVirtual: true },
+                  filePath: ciPath,
+                };
+                children.push(ciNode);
+                this.cache.buildCache(ciNode);
+              }
+            }
             activeElement.children = children;
             delete activeElement.properties._lazy;
             Logger.info('Tree cache size after lazy element load', {

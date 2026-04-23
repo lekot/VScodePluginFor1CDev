@@ -24,6 +24,10 @@ export interface AgentBridgeOptions {
     commandPattern: RegExp;
     /** Папка workspace для записи bridge.json. Если не задана — bridge file НЕ создаётся. */
     workspaceFolder?: string;
+    /** Версия расширения — пишется в bridge.json для диагностики. */
+    extensionVersion?: string;
+    /** Путь установки расширения — используется для резолвинга helperScriptPath в bridge.json. */
+    extensionPath?: string;
 }
 
 export interface AgentBridgeStartResult {
@@ -42,10 +46,14 @@ export class AgentBridge {
     private _commandPattern: RegExp;
     private _workspaceFolder?: string;
     private _bridgeFilePath?: string;
+    private _extensionVersion?: string;
+    private _extensionPath?: string;
 
     constructor(opts: AgentBridgeOptions) {
         this._commandPattern = opts.commandPattern;
         this._workspaceFolder = opts.workspaceFolder;
+        this._extensionVersion = opts.extensionVersion;
+        this._extensionPath = opts.extensionPath;
     }
 
     /**
@@ -73,12 +81,23 @@ export class AgentBridge {
             const vscodeDir = path.join(this._workspaceFolder, '.vscode');
             await fs.promises.mkdir(vscodeDir, { recursive: true });
             const bridgeFile = path.join(vscodeDir, 'cdt-agent-bridge.json');
+            const helperScriptPath = this._extensionPath
+                ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'call.sh')
+                : undefined;
+            const discoverScriptPath = this._extensionPath
+                ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'discover.sh')
+                : undefined;
             const content = {
                 port: this._port,
                 token: this._token,
                 pid: process.pid,
                 workspaceFolder: this._workspaceFolder,
                 createdAt: new Date().toISOString(),
+                extensionVersion: this._extensionVersion ?? 'unknown',
+                docs: 'https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md',
+                quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start с debuggeeType=\'webServer\' или dbPath → потом playwright на webServerUrl. Отладка BSL — agent.debug.start (debuggeeType=\'webServer\' чтобы агент мог управлять формой; thinClient — нативное окно Windows, недоступно без ui-test).',
+                ...(helperScriptPath ? { helperScriptPath } : {}),
+                ...(discoverScriptPath ? { discoverScriptPath } : {}),
             };
             await fs.promises.writeFile(bridgeFile, JSON.stringify(content, null, 2), 'utf8');
             this._bridgeFilePath = bridgeFile;

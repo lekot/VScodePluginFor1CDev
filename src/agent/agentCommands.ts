@@ -46,6 +46,34 @@ import type {
     DebugStartFromBindingParams,
 } from './agentDebugTypes';
 import { resolveBindingCommand, listBindingsCommand } from './agentBindingResolver';
+import { CommandInterfaceOperations } from './commandInterfaceOperations';
+import type { CommandOrderEntry, CommandVisibility } from '../types/commandInterface';
+import {
+    listPredefinedCharacteristics,
+    getPredefinedCharacteristicType,
+    setPredefinedCharacteristicType,
+    getCharacteristicValueRegisters,
+} from './predefinedCharacteristicOperations';
+import type {
+    CotPathParams,
+    PredefinedCotPathParams,
+    SetPredefinedCotTypeParams,
+} from './types';
+import { FormsOperations } from './agentFormsOperations';
+import type {
+    FormsStartParams,
+    FormsExecParams,
+    FormsStopParams,
+    FormsShotParams,
+    FormsStatusParams,
+} from './agentFormsTypes';
+import { SkdOperations } from './agentSkdOperations';
+import type {
+    SkdCompileParams,
+    SkdInfoParams,
+    SkdEditParams,
+    SkdValidateParams,
+} from './agentSkdTypes';
 
 /**
  * Регистрирует Agent API команды.
@@ -546,6 +574,228 @@ export function registerAgentCommands(
         }
     );
 
+    const getSubsystemCommandInterfaceCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getSubsystemCommandInterface',
+        async (params: { subsystemPath: string }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.getCommandInterface(params.subsystemPath);
+        }
+    );
+
+    const setSubsystemCommandVisibilityCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setSubsystemCommandVisibility',
+        async (params: { subsystemPath: string; commandName: string; common: CommandVisibility | null }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.setCommandVisibility(params.subsystemPath, params.commandName, params.common);
+        }
+    );
+
+    const setSubsystemCommandOrderCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setSubsystemCommandOrder',
+        async (params: { subsystemPath: string; entries: CommandOrderEntry[] }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.setCommandOrder(params.subsystemPath, params.entries);
+        }
+    );
+
+    const setSubsystemSubsystemsOrderCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setSubsystemSubsystemsOrder',
+        async (params: { subsystemPath: string; order: string[] }) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new CommandInterfaceOperations(configRoot);
+            return await ops.setSubsystemsOrder(params.subsystemPath, params.order);
+        }
+    );
+
+    const listPredefinedCharacteristicsCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.listPredefinedCharacteristics',
+        async (params: CotPathParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                const data = await listPredefinedCharacteristics(configRoot, params.path);
+                return { success: true, data };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        }
+    );
+
+    const getPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getPredefinedCharacteristicType',
+        async (params: PredefinedCotPathParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                const data = await getPredefinedCharacteristicType(configRoot, params.path, params.predefinedName);
+                return { success: true, data };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        }
+    );
+
+    const setPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setPredefinedCharacteristicType',
+        async (params: SetPredefinedCotTypeParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                await setPredefinedCharacteristicType(configRoot, params.path, params.predefinedName, params.types);
+                return { success: true };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        }
+    );
+
+    const getCharacteristicValueRegistersCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getCharacteristicValueRegisters',
+        async (params: CotPathParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            try {
+                const data = await getCharacteristicValueRegisters(configRoot, params.path);
+                return { success: true, data };
+            } catch (err) {
+                return { success: false, error: err instanceof Error ? err.message : String(err) };
+            }
+        }
+    );
+
+    // ─── 1C Forms output channel (однократно для всей группы forms.*) ─────────
+
+    const formsOutputChannel = vscode.window.createOutputChannel('CDT 41: 1C Forms');
+    context.subscriptions.push(formsOutputChannel);
+
+    // ─── 1c-metadata-tree.agent.forms.start ──────────────────────────────────
+
+    const formsStartCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.start',
+        async (params: FormsStartParams) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsStart(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.exec ───────────────────────────────────
+
+    const formsExecCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.exec',
+        async (params: FormsExecParams) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsExec(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.stop ───────────────────────────────────
+
+    const formsStopCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.stop',
+        async (params: FormsStopParams = {}) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsStop(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.shot ───────────────────────────────────
+
+    const formsShotCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.shot',
+        async (params: FormsShotParams = {}) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsShot(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.forms.status ─────────────────────────────────
+
+    const formsStatusCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.status',
+        async (params: FormsStatusParams = {}) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return await ops.formsStatus(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.compile ──────────────────────────────────
+
+    const skdCompileCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.compile',
+        async (params: SkdCompileParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdCompile(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.info ─────────────────────────────────────
+
+    const skdInfoCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.info',
+        async (params: SkdInfoParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdInfo(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.edit ─────────────────────────────────────
+
+    const skdEditCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.edit',
+        async (params: SkdEditParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdEdit(params);
+        }
+    );
+
+    // ─── 1c-metadata-tree.agent.skd.validate ─────────────────────────────────
+
+    const skdValidateCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.skd.validate',
+        async (params: SkdValidateParams) => {
+            const ops = new SkdOperations({ extensionPath: context.extensionPath });
+            return await ops.skdValidate(params);
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -562,5 +812,14 @@ export function registerAgentCommands(
         deploySelectedObjectsCommand, deployChangedFilesCommand,
         pullSelectedObjectsCommand, exportStatusCommand,
         getTypeCommand, setTypeCommand,
+        getSubsystemCommandInterfaceCommand, setSubsystemCommandVisibilityCommand,
+        setSubsystemCommandOrderCommand, setSubsystemSubsystemsOrderCommand,
+        listPredefinedCharacteristicsCommand,
+        getPredefinedCharacteristicTypeCommand,
+        setPredefinedCharacteristicTypeCommand,
+        getCharacteristicValueRegistersCommand,
+        formsStartCommand, formsExecCommand, formsStopCommand,
+        formsShotCommand, formsStatusCommand,
+        skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,
     );
 }

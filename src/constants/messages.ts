@@ -66,4 +66,24 @@ export const MESSAGES = {
   SUBSYSTEM_COMPOSITION_REMOVE_PLACEHOLDER: 'Выберите объект для удаления из состава',
   SUBSYSTEM_COMPOSITION_ADD_OK: 'CDT 41: объект добавлен в состав подсистемы.',
   SUBSYSTEM_COMPOSITION_REMOVE_OK: 'CDT 41: объект удалён из состава подсистемы.',
+
+  LOCKED_OBJECTS_ALL_FILTERED: 'Все выбранные файлы относятся к объектам на поддержке. Нечего раскатывать.',
+
+  SUBSYSTEM_COMMAND_INTERFACE_TITLE: 'Командный интерфейс подсистемы',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_VISIBILITY: 'Видимость команд',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_PLACEMENT: 'Размещение команд',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_ORDER: 'Порядок команд',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_SUBSYSTEMS_ORDER: 'Порядок подсистем',
+  SUBSYSTEM_COMMAND_INTERFACE_SECTION_GROUPS_ORDER: 'Порядок групп',
+  SUBSYSTEM_COMMAND_INTERFACE_READ_FAILED: 'Не удалось прочитать CommandInterface.xml',
+  SUBSYSTEM_COMMAND_INTERFACE_WRITE_FAILED: 'Не удалось записать CommandInterface.xml',
+  SUBSYSTEM_COMMAND_INTERFACE_NO_FILE: 'У подсистемы нет файла CommandInterface.xml',
+  SUBSYSTEM_COMMAND_INTERFACE_SAVED: 'Командный интерфейс сохранён',
+
+  COT_PREDEFINED_VIEW_TITLE: 'Предопределённые виды характеристик',
+  COT_PREDEFINED_EMPTY: 'Нет предопределённых видов характеристик',
+  COT_PREDEFINED_READ_FAILED: 'Не удалось прочитать предопределённые виды',
+  COT_PREDEFINED_COPIED: 'Ссылка на вид характеристики скопирована',
+  COT_PREDEFINED_NO_TYPE: 'Тип не задан',
+  COT_REGISTERS_TITLE: 'Регистры, связанные с ПВХ',
 } as const;

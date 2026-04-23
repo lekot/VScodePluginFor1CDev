@@ -82,6 +82,9 @@ export const coreSuiteFiles: string[] = [
   'suite/bindingConfigurationTree.test.js',
   'suite/bindingTreeDecorations.test.js',
   'suite/deployService.test.js',
+  'suite/deployPreflightGuards.test.js',
+  'suite/bslExpansion.test.js',
+  'suite/deployDedupCache.test.js',
   'suite/bindingStorage.test.js',
   'suite/infobaseCommands.test.js',
   'suite/v8iParser.test.js',
@@ -153,6 +156,12 @@ export const coreSuiteFiles: string[] = [
   'suite/objectTypeEditorProvider.test.js',
   'suite/eventSubscriptionSource.test.js',
   'suite/treeItemBuilder.test.js',
+  'suite/commandInterfaceParser.test.js',
+  'suite/commandInterfaceOperations.test.js',
+  'suite/predefinedCharacteristicsParser.test.js',
+  'suite/predefinedCharacteristicOperations.test.js',
+  'suite/chromiumInstaller.test.js',
+  'suite/agentSkdOperations.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

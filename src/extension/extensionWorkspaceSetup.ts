@@ -22,6 +22,7 @@ import { registerInfobaseTreeCommands } from '../infobases/registerInfobaseTreeC
 import { registerBindingDialogCommands } from '../bindings/bindingDialog';
 import { rebuildBindingDecorationsForTree, registerBindingDecorationSync } from '../bindings/bindingTreeDecorations';
 import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
+import { SubsystemCommandInterfaceProvider } from '../subsystemCommandInterfaceEditor';
 import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
 
 /** Empty-catalog hint (WOW design UC-01 / plan §1C). */
@@ -86,6 +87,9 @@ function registerMetadataTreeProviders(
 
   state.filterCriterionCompositionEditorProvider = new CompositionEditorProvider(context, compositionDeps, FilterCriterionStrategy);
   context.subscriptions.push(state.filterCriterionCompositionEditorProvider);
+
+  state.subsystemCommandInterfaceProvider = new SubsystemCommandInterfaceProvider(context);
+  context.subscriptions.push(state.subsystemCommandInterfaceProvider);
 
   state.propertiesProvider = new PropertiesProvider(
     context,

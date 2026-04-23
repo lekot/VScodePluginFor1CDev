@@ -114,3 +114,21 @@ export interface GetTypeResult {
     /** Raw XML of the Type element */
     rawXml: string;
 }
+
+export interface CotPathParams {
+    /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
+    path: string;
+}
+
+export interface PredefinedCotPathParams {
+    /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
+    path: string;
+    predefinedName: string;
+}
+
+export interface SetPredefinedCotTypeParams {
+    /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
+    path: string;
+    predefinedName: string;
+    types: string[];
+}

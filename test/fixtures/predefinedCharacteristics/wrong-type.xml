@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20">
+	<Item id="aaaaaaaa-bbbb-cccc-dddd-000000000001">
+		<Name>ТестовыйЭлемент</Name>
+		<Code/>
+		<Description>Тест</Description>
+		<IsFolder>false</IsFolder>
+	</Item>
+</PredefinedData>

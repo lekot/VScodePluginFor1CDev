@@ -1,4 +1,6 @@
 import type { IbcmdStreamingRawOutcome } from './IbcmdStreamingRunner';
+import { parseLockedMetadataObjects } from './ibcmdLockedObjectsParser';
+import type { LockedObjectRef } from './ibcmdLockedObjectsParser';
 
 export type IbcmdInfobaseConfigOpKind = 'import' | 'export' | 'check' | 'apply';
 
@@ -11,6 +13,8 @@ export interface IbcmdInfobaseOperationResult {
   logExcerpt: string;
   /** True when ring buffer trimmed output (see runner). */
   logTruncated?: boolean;
+  /** Populated when ibcmd rejects specific objects due to support mode lock (NotEditable). */
+  lockedObjects?: readonly LockedObjectRef[];
 }
 
 const TIMEOUT_HINT =
@@ -142,6 +146,7 @@ export function interpretIbcmdInfobaseOutcome(
     const userMessage = isIbcmdForceParameterRejectedLog(logExcerpt)
       ? IMPORT_FORCE_PARAM_PARSE_MSG
       : mapImportExit(code);
+    const lockedObjects = parseLockedMetadataObjects(logExcerpt);
     return {
       status: 'error',
       exitCode: code,
@@ -149,6 +154,7 @@ export function interpretIbcmdInfobaseOutcome(
       userMessage,
       logExcerpt,
       logTruncated,
+      ...(lockedObjects.length > 0 ? { lockedObjects } : {}),
     };
   }
 

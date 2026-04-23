@@ -20,7 +20,12 @@ import {
 } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
+import { detectDeployGuards } from './deployPreflightGuards';
+import { expandBslSiblings } from './bslExpansion';
+import { checkRecentDeploy, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
+import { filterOutLockedObjectFiles } from './deployLockedObjectsFilter';
+import { MESSAGES } from '../constants/messages';
 import type { TreeNode } from '../models/treeNode';
 
 export type DeployItemStatus = 'success' | 'error' | 'skipped';
@@ -251,6 +256,7 @@ export class DeployService {
   constructor(
     private readonly deps: {
       runXmlPreflight?: typeof runIbcmdXmlImportPreflight;
+      runIncrementalImport?: typeof runInfobaseConfigIncrementalImport;
     } = {},
   ) {}
 
@@ -516,12 +522,40 @@ export class DeployService {
       return s;
     }
 
-    const hasStructuralFiles = relativeFiles.some((f) => f.endsWith('.xml'));
+    // BSL expansion: for .bsl files add descriptor XML + all sibling files in object dir.
+    const withSiblings = expandBslSiblings(relativeFiles, configRoot);
+    appendIbcmdOutputLine(`[bsl-expansion] было ${relativeFiles.length} файлов, стало ${withSiblings.length}`);
 
-    appendIbcmdOutputLine(`[раскатка выбранных] Найдено файлов: ${relativeFiles.length}`);
-    for (const f of relativeFiles) {
+    // Preflight guards: detect Configuration.xml inclusion and missing files.
+    const guards = detectDeployGuards(withSiblings, configRoot);
+    appendIbcmdOutputLine(`[preflight] hasConfigurationXml=${guards.hasConfigurationXml}, missingFiles=${guards.missingFiles.length}`);
+
+    if (guards.hasConfigurationXml || guards.missingFiles.length > 0) {
+      const parts: string[] = [];
+      if (guards.hasConfigurationXml) {
+        parts.push('В список попал Configuration.xml. Partial import не поддерживает корневой дескриптор — требуется полная раскатка.');
+      }
+      if (guards.missingFiles.length > 0) {
+        const names = guards.missingFiles.slice(0, 10).map((f) => path.basename(f)).join(', ');
+        parts.push(`Некоторые выбранные файлы отсутствуют на диске. Partial import не поддерживает удаления — требуется полная раскатка или пересмотр выбора. Отсутствует: ${names}.`);
+      }
+      await vscode.window.showWarningMessage(parts.join('\n'), { modal: true }, 'Отмена');
+      const s = summarizeDeployRun(
+        [{ infobaseId: '', name: '', status: 'skipped', message: 'Раскатка отменена из-за ограничений partial import.' }],
+        false,
+      );
+      appendDeployRunSummaryLine(s);
+      return s;
+    }
+
+    const hasStructuralFiles = withSiblings.some((f) => f.endsWith('.xml'));
+
+    appendIbcmdOutputLine(`[раскатка выбранных] Найдено файлов: ${withSiblings.length}`);
+    for (const f of withSiblings) {
       appendIbcmdOutputLine(`  ${f}`);
     }
+
+    const bindingId = path.resolve(params.workspaceFolderRoot, params.binding.configRelativePath).toLowerCase();
 
     const { entries, skipped } = resolveDeployTargetsForBinding(params.binding, catalogById);
     const results: DeployItemResult[] = [...skipped];
@@ -548,21 +582,57 @@ export class DeployService {
       const entry = entries[i]!;
       params.progress.report({ message: `Раскатка выбранных: ${entry.name} (${i + 1}/${total})`, increment });
 
+      const dedupResult = checkRecentDeploy({ bindingId, infobaseId: entry.id }, { relativeFiles: withSiblings }, Date.now());
+      if (dedupResult.isDuplicate) {
+        appendIbcmdOutputLine(`[dedup] пропуск ${dedupResult.ageMs} ms назад уже раскатывали тот же набор на ${entry.name}`);
+        results.push({ infobaseId: entry.id, name: entry.name, status: 'skipped', message: `Пропущено: тот же набор файлов уже раскатывался ${dedupResult.ageMs} мс назад.` });
+        continue;
+      }
+
+      const doImport = this.deps.runIncrementalImport ?? runInfobaseConfigIncrementalImport;
+
       let interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-        runInfobaseConfigIncrementalImport({
+        doImport({
           storage: params.storage,
           entry,
           configRoot,
-          relativeFiles,
+          relativeFiles: withSiblings,
           token: params.token,
           logContext: 'выбранные объекты',
           ibcmdExtensionName: params.binding.ibcmdExtensionName,
         }),
       );
 
+      if (interpreted.status === 'error' && interpreted.lockedObjects && interpreted.lockedObjects.length > 0) {
+        const locked = interpreted.lockedObjects;
+        const { kept, filtered } = filterOutLockedObjectFiles(withSiblings, locked);
+        const lockedNames = locked.map((o) => o.fullName).join(', ');
+        appendIbcmdOutputLine(
+          `[support-mode] Объекты на поддержке: ${lockedNames}. Отфильтровано файлов: ${filtered.length}; оставлено: ${kept.length}.`,
+        );
+        if (kept.length === 0) {
+          void vscode.window.showWarningMessage(MESSAGES.LOCKED_OBJECTS_ALL_FILTERED);
+        } else {
+          void vscode.window.showWarningMessage(
+            `На поддержке и пропущены: ${lockedNames}. Продолжаем раскатку без них.`,
+          );
+          interpreted = await serializeInfobaseConfigIbcmdOp(() =>
+            doImport({
+              storage: params.storage,
+              entry,
+              configRoot,
+              relativeFiles: kept,
+              token: params.token,
+              logContext: 'выбранные объекты (без залоченных)',
+              ibcmdExtensionName: params.binding.ibcmdExtensionName,
+            }),
+          );
+        }
+      }
+
       // Fallback: if import failed and we have structural (.xml) files,
       // offer to retry with Configuration.xml included.
-      if (interpreted.status === 'error' && hasStructuralFiles) {
+      if (interpreted.status === 'error' && hasStructuralFiles && !(interpreted.lockedObjects && interpreted.lockedObjects.length > 0)) {
         const retry = await vscode.window.showWarningMessage(
           `Раскатка в «${entry.name}» не удалась. Повторить с Configuration.xml? ` +
             '(будут применены ВСЕ структурные изменения конфигурации)',
@@ -572,11 +642,11 @@ export class DeployService {
         if (retry === 'Повторить с Configuration.xml') {
           appendIbcmdOutputLine(`[раскатка выбранных] Повтор с Configuration.xml...`);
           interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-            runInfobaseConfigIncrementalImport({
+            doImport({
               storage: params.storage,
               entry,
               configRoot,
-              relativeFiles: ['Configuration.xml', ...relativeFiles],
+              relativeFiles: ['Configuration.xml', ...withSiblings],
               token: params.token,
               logContext: 'выбранные объекты + Configuration.xml',
               ibcmdExtensionName: params.binding.ibcmdExtensionName,
@@ -597,6 +667,7 @@ export class DeployService {
       }
 
       if (interpreted.status === 'success') {
+        recordDeploy({ bindingId, infobaseId: entry.id }, { relativeFiles: withSiblings }, Date.now());
         appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: успех — ${interpreted.userMessage}`);
         results.push({ infobaseId: entry.id, name: entry.name, status: 'success', message: interpreted.userMessage });
       } else {

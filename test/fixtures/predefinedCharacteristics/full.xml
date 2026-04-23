@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="PlanOfCharacteristicKindPredefinedItems" version="2.20">
+	<Item id="74f7f99c-ca92-431a-86d6-39f749ae3adb">
+		<Name>КатегорииЗакупок</Name>
+		<Code>000000010</Code>
+		<Description>Категории закупок</Description>
+		<Type>
+			<v8:Type xmlns:d4p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d4p1:CatalogRef.КатегорииЗакупок</v8:Type>
+		</Type>
+		<IsFolder>false</IsFolder>
+	</Item>
+	<Item id="aaaabbbb-0000-1111-2222-ccccddddeeee">
+		<Name>ГруппаВидов</Name>
+		<Code>000000099</Code>
+		<Description>Группа видов характеристик</Description>
+		<Type>
+			<v8:Type xmlns:d4p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d4p1:CatalogRef.МестаПоставки</v8:Type>
+		</Type>
+		<IsFolder>true</IsFolder>
+	</Item>
+	<Item id="6ac9eab8-b733-42c3-93dd-84d106e9bd2e">
+		<Name>Номенклатура</Name>
+		<Code>000000003</Code>
+		<Description>Номенклатура</Description>
+		<Type>
+			<v8:Type xmlns:d4p1="http://v8.1c.ru/8.1/data/enterprise/current-config">d4p1:CatalogRef.Номенклатура</v8:Type>
+		</Type>
+		<IsFolder>false</IsFolder>
+	</Item>
+</PredefinedData>
