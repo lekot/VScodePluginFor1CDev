@@ -27,6 +27,7 @@ import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { TreeFilterService, FILTERABLE_METADATA_TYPES } from './treeFilterService';
 import { TreeCacheService } from './treeCacheService';
 import { buildTreeItem } from './treeItemBuilder';
+import { normalizePathForMatch, scoreNodeAgainstTarget } from '../extensionSupport/revealPathUtils';
 import {
   getReferenceableObjects,
   getReferenceableObjectsForTypeEditor,
@@ -178,6 +179,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   getSearchQuery(): string {
     return this.filter.getSearchQuery();
+  }
+
+  /** Whether search / type / subsystem filter narrows the tree. */
+  hasActiveTreeFilter(): boolean {
+    return this.filter.hasActiveFilter();
   }
 
   setSearchOptions(options: { bySynonymComment?: boolean; useRegex?: boolean }): void {
@@ -732,15 +738,26 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     });
   }
 
+  /** When filters are active, restrict to visible branch; used by UI tree and by reveal-helpers. */
+  private mapChildrenRespectingFilterIfNeeded(children: TreeNode[], applyFilter: boolean): TreeNode[] {
+    if (!applyFilter || !this.filter.hasActiveFilter()) {
+      return children;
+    }
+    this.filter.ensureFilterSets(this.cache.nodes);
+    const ids = this.filter.filterAncestorOrVisibleIds!;
+    return children.filter((c) => ids.has(c.id));
+  }
+
   /**
    * Get children for a node (lazy loading). When search/type filter is active, returns only children that match or contain matches.
    * For lazy type nodes (structure-only load), loads type contents on first expand.
+   * @param applyFilter When false, returns the full (unfiltered) list — used to locate a file in the tree while a filter is on.
    */
-  getChildren(element?: TreeNode): Thenable<TreeNode[]> {
+  private getChildrenWithFilterOptions(element: TreeNode | undefined, applyFilter: boolean): Thenable<TreeNode[]> {
     try {
       if (!element) {
         if (this.rootNodes.length === 0) {return Promise.resolve([]);}
-        if (!this.filter.hasActiveFilter()) {return Promise.resolve(this.rootNodes);}
+        if (!applyFilter || !this.filter.hasActiveFilter()) {return Promise.resolve(this.rootNodes);}
         this.filter.ensureFilterSets(this.cache.nodes);
         const ids = this.filter.filterAncestorOrVisibleIds!;
         return Promise.resolve(this.rootNodes.filter((r) => ids.has(r.id)));
@@ -767,10 +784,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           });
           this.filter.filterAncestorOrVisibleIds = null;
           this.refresh(activeElement);
-          if (!this.filter.hasActiveFilter()) {return children;}
-          this.filter.ensureFilterSets(this.cache.nodes);
-          const ids = this.filter.filterAncestorOrVisibleIds!;
-          return children.filter((c) => ids.has(c.id));
+          return this.mapChildrenRespectingFilterIfNeeded(children, applyFilter);
         });
       }
 
@@ -801,10 +815,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             });
             this.filter.filterAncestorOrVisibleIds = null;
             this.refresh(activeElement);
-            if (!this.filter.hasActiveFilter()) {return children;}
-            this.filter.ensureFilterSets(this.cache.nodes);
-            const ids = this.filter.filterAncestorOrVisibleIds!;
-            return children.filter((c) => ids.has(c.id));
+            return this.mapChildrenRespectingFilterIfNeeded(children, applyFilter);
           }
         );
       }
@@ -818,18 +829,62 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       this.ensureTabularSectionColumnsIfNeeded(activeElement);
 
       const raw = activeElement.children || [];
-      if (!this.filter.hasActiveFilter()) {
+      if (!applyFilter || !this.filter.hasActiveFilter()) {
         return Promise.resolve(raw);
       }
-
       this.filter.ensureFilterSets(this.cache.nodes);
       const ids = this.filter.filterAncestorOrVisibleIds!;
-      const filtered = raw.filter((c) => ids.has(c.id));
-      return Promise.resolve(filtered);
+      return Promise.resolve(raw.filter((c) => ids.has(c.id)));
     } catch (error) {
       Logger.error('Error getting children', error);
       return Promise.resolve([]);
     }
+  }
+
+  getChildren(element?: TreeNode): Thenable<TreeNode[]> {
+    return this.getChildrenWithFilterOptions(element, true);
+  }
+
+  /**
+   * Find the most specific tree node for a file path, loading lazy branches as needed. Ignores search/type/subsystem filters
+   * so a match can be found when the tree is narrowed.
+   */
+  async findDeepestNodeForFilePath(targetFsPath: string): Promise<TreeNode | null> {
+    if (!targetFsPath.trim()) {return null;}
+    const targetNorm = normalizePathForMatch(targetFsPath);
+    if (this.rootNodes.length === 0) {return null;}
+    let best: TreeNode | null = null;
+    let bestScore = -1;
+    const getCfg = (n: TreeNode) => this.getConfigPathForNode(n);
+
+    const visit = async (node: TreeNode): Promise<void> => {
+      const s = scoreNodeAgainstTarget(targetNorm, node, getCfg);
+      if (s > bestScore) {
+        bestScore = s;
+        best = node;
+      }
+      const ch = await this.getChildrenWithFilterOptions(node, false);
+      for (const c of ch) {
+        await visit(c);
+      }
+    };
+
+    const roots = await this.getChildrenWithFilterOptions(undefined, false);
+    for (const r of roots) {
+      await visit(r);
+    }
+    return bestScore > 0 ? best : null;
+  }
+
+  /** True if the node (after resolve) is visible in the current filtered tree. */
+  isNodeVisibleInFilteredView(node: TreeNode): boolean {
+    if (!this.filter.hasActiveFilter()) {
+      return true;
+    }
+    const resolved = this.resolveNodeForUi(node);
+    this.filter.ensureFilterSets(this.cache.nodes);
+    const ids = this.filter.filterAncestorOrVisibleIds;
+    return ids ? ids.has(resolved.id) : true;
   }
 
   /** Ordered list of visible node ids (depth-first) for next/previous match navigation. */

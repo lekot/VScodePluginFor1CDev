@@ -51,6 +51,7 @@ export const coreSuiteFiles: string[] = [
   'suite/propertiesProvider.test.js',
   'suite/formModelUtils.test.js',
   'suite/formPaths.test.js',
+  'suite/revealPathUtils.test.js',
   'suite/formModelCommands.test.js',
   'suite/formCommandEngine.test.js',
   'suite/formCommandEngineFeatureFlag.test.js',

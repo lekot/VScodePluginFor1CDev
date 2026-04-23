@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ExtensionState } from '../state/extensionState';
 import { MetadataType, TreeNode } from '../models/treeNode';
+import { getActiveFileUriForReveal } from '../extensionSupport/activeFileUri';
 
 type RegisterNavigationCommandsDeps = {
   state: ExtensionState;
@@ -107,6 +108,63 @@ export function registerNavigationCommands(
     }
   );
 
+  const revealActiveFileInTreeCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.revealActiveFileInTree',
+    async () => {
+      const { treeDataProvider, treeView } = state;
+      if (!treeDataProvider || !treeView) {
+        return;
+      }
+      const root = treeDataProvider.getRootNode();
+      if (!root) {
+        void vscode.window.showInformationMessage('Дерево метаданных ещё не загружено. Откройте рабочую папку и дождитесь загрузки.');
+        return;
+      }
+      const uri = getActiveFileUriForReveal();
+      if (!uri) {
+        void vscode.window.showInformationMessage('Активный редактор не указывает на файл (file URI).');
+        return;
+      }
+      const activePath = uri.fsPath;
+      if (!activePath) {
+        return;
+      }
+      if (!vscode.workspace.getWorkspaceFolder(uri)) {
+        void vscode.window.showWarningMessage('Активный файл не сопоставлен папке workspace (не из открытой папки).');
+        return;
+      }
+
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: 'CDT 41: Поиск в дереве…' },
+        async () => {
+          const found = await treeDataProvider.findDeepestNodeForFilePath(activePath);
+          if (!found) {
+            void vscode.window.showInformationMessage('Не найдено соответствия для активного файла в дереве метаданных.');
+            return;
+          }
+          const target = treeDataProvider.resolveNodeForUi(found);
+          if (treeDataProvider.hasActiveTreeFilter() && !treeDataProvider.isNodeVisibleInFilteredView(target)) {
+            treeDataProvider.clearSearch();
+            void vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
+            void vscode.window.showInformationMessage('Фильтры и поиск в дереве сброшены, чтобы показать элемент.');
+            await new Promise((r) => {
+              setTimeout(r, 0);
+            });
+          }
+          const finalNode = treeDataProvider.resolveNodeForUi(target);
+          try {
+            await vscode.commands.executeCommand('workbench.view.explorer');
+            await treeView.reveal(finalNode, { select: true, focus: true, expand: true });
+          } catch (err) {
+            void vscode.window.showErrorMessage(
+              `Не удалось выделить элемент: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      );
+    }
+  );
+
   const nextMatchCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.nextMatch',
     () => {
@@ -155,6 +213,7 @@ export function registerNavigationCommands(
     focusTreeCommand,
     focusSearchCommand,
     clearSearchCommand,
+    revealActiveFileInTreeCommand,
     nextMatchCommand,
     previousMatchCommand,
   ];

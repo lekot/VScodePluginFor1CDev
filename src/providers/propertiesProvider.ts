@@ -83,7 +83,7 @@ export class PropertiesProvider {
     if (node.filePath && node.filePath.endsWith('.bsl')) {
       try {
         const uri = vscode.Uri.file(node.filePath);
-        await vscode.window.showTextDocument(uri);
+        await vscode.window.showTextDocument(uri, { preview: false });
         Logger.info(`Opened .bsl module file: ${node.filePath}`);
         return;
       } catch (error) {

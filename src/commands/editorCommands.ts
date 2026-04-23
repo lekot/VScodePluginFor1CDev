@@ -91,7 +91,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
           }
         }
         Logger.info(`Opening BSL module: ${fp}`);
-        await vscode.window.showTextDocument(vscode.Uri.file(fp));
+        await vscode.window.showTextDocument(vscode.Uri.file(fp), { preview: false });
       } catch (err) {
         Logger.error('Failed to open BSL module', err);
         vscode.window.showErrorMessage(
