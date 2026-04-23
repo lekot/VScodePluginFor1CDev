@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import {
   checkRecentDeploy,
   recordDeploy,
-  __resetDeployDedupCacheForTests,
+  resetDeployDedupCacheForTests,
 } from '../../src/bindings/deployDedupCache';
 
 const KEY_A = { bindingId: '/cfg/Configuration.xml', infobaseId: 'base-1' };
@@ -12,7 +12,7 @@ const FILES_B = { relativeFiles: ['Documents/Doc1.xml'] };
 
 suite('deployDedupCache', () => {
   setup(() => {
-    __resetDeployDedupCacheForTests();
+    resetDeployDedupCacheForTests();
   });
 
   test('first check without record returns isDuplicate false', () => {
@@ -54,7 +54,7 @@ suite('deployDedupCache', () => {
 
   test('reset clears all entries', () => {
     recordDeploy(KEY_A, FILES_A, 1000);
-    __resetDeployDedupCacheForTests();
+    resetDeployDedupCacheForTests();
     const result = checkRecentDeploy(KEY_A, FILES_A, 1500);
     assert.strictEqual(result.isDuplicate, false);
   });

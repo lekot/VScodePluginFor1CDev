@@ -63,6 +63,6 @@ export function recordDeploy(
   cache.set(makeKey(key), { hash: hashFiles(input.relativeFiles), timestamp: nowMs });
 }
 
-export function __resetDeployDedupCacheForTests(): void {
+export function resetDeployDedupCacheForTests(): void {
   cache.clear();
 }
