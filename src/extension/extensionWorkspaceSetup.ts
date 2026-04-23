@@ -108,6 +108,9 @@ function registerMetadataTreeProviders(
       const selectedNode = e.selection[0];
       Logger.debug(`Tree selection changed: ${selectedNode.name}`);
 
+      if (state.consumeSuppressPropertiesOnNextTreeSelection()) {
+        return;
+      }
       if (selectedNode.type === MetadataType.Role && selectedNode.filePath) {
         await vscode.commands.executeCommand('1c-metadata-tree.openRightsEditor', selectedNode);
       } else if (state.propertiesProvider) {

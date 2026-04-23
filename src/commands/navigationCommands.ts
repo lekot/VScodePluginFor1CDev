@@ -154,7 +154,14 @@ export function registerNavigationCommands(
           const finalNode = treeDataProvider.resolveNodeForUi(target);
           try {
             await vscode.commands.executeCommand('workbench.view.explorer');
-            await treeView.reveal(finalNode, { select: true, focus: true, expand: true });
+            state.requestSuppressPropertiesOnNextTreeSelection();
+            try {
+              await treeView.reveal(finalNode, { select: true, focus: true, expand: true });
+            } finally {
+              setTimeout(() => {
+                state.clearSuppressPropertiesOnNextTreeSelectionIfPending();
+              }, 0);
+            }
           } catch (err) {
             void vscode.window.showErrorMessage(
               `Не удалось выделить элемент: ${err instanceof Error ? err.message : String(err)}`

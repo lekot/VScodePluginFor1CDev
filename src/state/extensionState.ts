@@ -41,6 +41,11 @@ export class ExtensionState {
   private _infobaseTreeProvider: InfobaseTreeDataProvider | null = null;
   private _infobaseTreeView: vscode.TreeView<InfobaseTreeNode> | null = null;
   private _refreshBindingTreeDecorations: (() => Promise<void>) | null = null;
+  /**
+   * Следующее изменение выделения в дереве метаданных не должно открывать Properties
+   * (команда «показать в дереве» не должна переключать панель на свойства).
+   */
+  private _suppressPropertiesOnNextTreeSelection = false;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -66,6 +71,31 @@ export class ExtensionState {
   get infobaseTreeView(): vscode.TreeView<InfobaseTreeNode> | null { return this._infobaseTreeView; }
   /** Обновление бейджей/tooltip привязок на узле Configuration (§2C); выставляется в extensionWorkspaceSetup. */
   get refreshBindingTreeDecorations(): (() => Promise<void>) | null { return this._refreshBindingTreeDecorations; }
+
+  /**
+   * Запрос не открывать Properties на следующем событии выбора в дереве (один раз).
+   */
+  requestSuppressPropertiesOnNextTreeSelection(): void {
+    this._suppressPropertiesOnNextTreeSelection = true;
+  }
+
+  /**
+   * Если ожидалось подавление, сбрасывает флаг и возвращает true (не открывать панель свойств).
+   */
+  consumeSuppressPropertiesOnNextTreeSelection(): boolean {
+    if (!this._suppressPropertiesOnNextTreeSelection) {
+      return false;
+    }
+    this._suppressPropertiesOnNextTreeSelection = false;
+    return true;
+  }
+
+  /**
+   * Сбрасывает подавление, если событие выбора не пришло (например, выделен тот же узел).
+   */
+  clearSuppressPropertiesOnNextTreeSelectionIfPending(): void {
+    this._suppressPropertiesOnNextTreeSelection = false;
+  }
 
   // ── Setters ───────────────────────────────────────────────────────────────
 
