@@ -536,6 +536,21 @@
         "command": "1c-metadata-tree.agent.exportStatus",
         "title": "Agent: Статус конфигурации",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.getSelectionNameForTest",
+        "title": "Test: Get selection name",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.getTreeReadyForTest",
+        "title": "Test: Tree ready",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.diagnoseRevealForTest",
+        "title": "Test: Diagnose reveal",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -612,6 +627,18 @@
         },
         {
           "command": "1c-metadata-tree.agent.exportStatus",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.getSelectionNameForTest",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.getTreeReadyForTest",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.diagnoseRevealForTest",
           "when": "false"
         }
       ],
@@ -1108,6 +1135,7 @@
       {
         "command": "1c-metadata-tree.revealActiveFileInTree",
         "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t",
         "when": "editorTextFocus"
       }
     ],

@@ -442,6 +442,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return this.filter.getSubsystemFilterLabel();
   }
 
+  /** Returns true when any filter (search query, type filter, or subsystem filter) is active. */
+  hasActiveFilter(): boolean {
+    return this.filter.hasActiveFilter();
+  }
+
   clearSearch(): void {
     this.filter.clearAll();
     this.updateFilterMessage();
@@ -1405,7 +1410,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         if (!formsFolder) {
           return null;
         }
-        const formNode = await this.findChildByName(formsFolder, subPath.name);
+        const children = await this.getChildren(formsFolder);
+        const allChildren = this.mergeChildren(children, formsFolder.children ?? []);
+        const formNode = allChildren.find(
+          (c) => c.name === subPath.name && c.type === MetadataType.Form
+        ) ?? null;
         if (!formNode) {
           return null;
         }
@@ -1422,7 +1431,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         if (!commandsFolder) {
           return null;
         }
-        const commandNode = await this.findChildByName(commandsFolder, subPath.name);
+        const cmdChildren = await this.getChildren(commandsFolder);
+        const allCmdChildren = this.mergeChildren(cmdChildren, commandsFolder.children ?? []);
+        const commandNode = allCmdChildren.find(
+          (c) => c.name === subPath.name && c.type === MetadataType.Command
+        ) ?? null;
         if (!commandNode) {
           return null;
         }
@@ -1439,7 +1452,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         if (!templatesFolder) {
           return null;
         }
-        return this.findChildByName(templatesFolder, subPath.name);
+        const tmplChildren = await this.getChildren(templatesFolder);
+        const allTmplChildren = this.mergeChildren(tmplChildren, templatesFolder.children ?? []);
+        return allTmplChildren.find(
+          (c) => c.name === subPath.name && c.type === MetadataType.Template
+        ) ?? null;
       }
 
       case 'rights': {

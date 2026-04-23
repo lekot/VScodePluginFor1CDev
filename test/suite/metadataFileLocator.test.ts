@@ -306,20 +306,23 @@ suite('metadataFileLocator', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 18. Windows mixed separators
+  // 18. Windows mixed separators (Windows-only: path.normalize on Linux does not convert backslashes)
   // -------------------------------------------------------------------------
-  test('Windows mixed separators are normalised correctly', () => {
-    // Simulate a path with backslashes (Windows-style)
-    const winPath =
-      root.replace(/\//g, '\\') + '\\Catalogs\\Товары\\Forms\\ФормаЭлемента\\Ext\\Form.xml';
-    const result = locateMetadataFile(winPath, roots);
-    assert.ok(result, 'should handle backslash paths');
-    assert.deepStrictEqual(result.subPath, {
-      kind: 'form',
-      name: 'ФормаЭлемента',
-      subFile: 'container',
-    });
-  });
+  (process.platform === 'win32' ? test : test.skip)(
+    'Windows mixed separators are normalised correctly',
+    () => {
+      // Simulate a path with backslashes (Windows-style)
+      const winPath =
+        root.replace(/\//g, '\\') + '\\Catalogs\\Товары\\Forms\\ФормаЭлемента\\Ext\\Form.xml';
+      const result = locateMetadataFile(winPath, roots);
+      assert.ok(result, 'should handle backslash paths');
+      assert.deepStrictEqual(result.subPath, {
+        kind: 'form',
+        name: 'ФормаЭлемента',
+        subFile: 'container',
+      });
+    }
+  );
 
   // -------------------------------------------------------------------------
   // Additional: configRoot field is set correctly

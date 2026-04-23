@@ -43,7 +43,6 @@ export interface MetadataLocation {
  */
 const FLAT_XML_TYPE_FOLDERS = new Set([
   'Roles',
-  'Subsystems',
   'XDTOPackages',
   'StyleItems',
   'CommonPictures',
@@ -68,10 +67,11 @@ const FLAT_XML_TYPE_FOLDERS = new Set([
   'FilterCriteria',
 ]);
 
-// All supported object types — hierarchical (from moduleIdResolver) + flat XML
+// All supported object types — hierarchical (from moduleIdResolver) + flat XML + Subsystems (dedicated branch)
 const ALL_SUPPORTED_TYPES: ReadonlySet<string> = new Set([
   ...TOP_LEVEL_TYPE_FOLDERS,
   ...FLAT_XML_TYPE_FOLDERS,
+  'Subsystems',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ export function locateMetadataFile(
   }
 
   // --- Flat XML types (single-level: just TypeFolder/Name.xml) ---
-  if (FLAT_XML_TYPE_FOLDERS.has(objectType) && objectType !== 'Subsystems' && objectType !== 'Roles') {
+  if (FLAT_XML_TYPE_FOLDERS.has(objectType) && objectType !== 'Roles') {
     if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
       return { ...base, objectName: stripXmlExt(rest[0]) };
     }
@@ -208,7 +208,7 @@ export function locateMetadataFile(
 // ---------------------------------------------------------------------------
 
 function stripXmlExt(segment: string): string {
-  return segment.slice(0, -4); // removes ".xml"
+  return path.basename(segment, path.extname(segment));
 }
 
 /**

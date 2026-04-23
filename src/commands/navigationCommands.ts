@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ExtensionState } from '../state/extensionState';
 import { MetadataType, TreeNode } from '../models/treeNode';
 import { locateMetadataFile } from '../services/metadataFileLocator';
+import { MESSAGES } from '../constants/messages';
 
 type RegisterNavigationCommandsDeps = {
   state: ExtensionState;
@@ -157,12 +158,12 @@ export function registerNavigationCommands(
     async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
-        vscode.window.showInformationMessage('Нет активного редактора');
+        vscode.window.showInformationMessage(MESSAGES.REVEAL_NO_ACTIVE_EDITOR);
         return;
       }
       const uri = editor.document.uri;
       if (uri.scheme !== 'file') {
-        vscode.window.showInformationMessage('Активный редактор не связан с файлом');
+        vscode.window.showInformationMessage(MESSAGES.REVEAL_NOT_FILE_URI);
         return;
       }
       if (!state.treeDataProvider || !state.treeView) {
@@ -170,34 +171,30 @@ export function registerNavigationCommands(
       }
       const configRoots = state.treeDataProvider.getConfigRootPaths();
       if (configRoots.length === 0) {
-        vscode.window.showInformationMessage('Дерево метаданных не загружено');
+        vscode.window.showInformationMessage(MESSAGES.REVEAL_NO_CONFIG_LOADED);
         return;
       }
       const loc = locateMetadataFile(uri.fsPath, configRoots);
       if (loc === null) {
-        vscode.window.showInformationMessage('Активный файл не найден в структуре метаданных');
+        vscode.window.showInformationMessage(MESSAGES.REVEAL_NOT_FOUND_IN_METADATA);
         return;
       }
       const node = await state.treeDataProvider.findNodeByLocation(loc);
       if (node === null) {
-        vscode.window.showInformationMessage('Не удалось найти узел в дереве для активного файла');
+        vscode.window.showInformationMessage(MESSAGES.REVEAL_NODE_NOT_FOUND);
         return;
       }
-      const hasActiveFilter =
-        !!state.treeDataProvider.getSearchQuery().trim() ||
-        state.treeDataProvider.getTypeFilter() !== null ||
-        state.treeDataProvider.getSubsystemFilterLabel() !== null;
-      if (hasActiveFilter) {
+      if (state.treeDataProvider.hasActiveFilter()) {
         const choice = await vscode.window.showInformationMessage(
-          'Файл может быть скрыт активным фильтром. Сбросить фильтры?',
-          'Сбросить',
-          'Отмена'
+          MESSAGES.REVEAL_FILTER_ACTIVE_PROMPT,
+          MESSAGES.REVEAL_RESET_BUTTON,
+          MESSAGES.REVEAL_CANCEL_BUTTON
         );
-        if (choice === 'Сбросить') {
+        if (choice === MESSAGES.REVEAL_RESET_BUTTON) {
           state.treeDataProvider.clearSearch();
           await vscode.commands.executeCommand('setContext', 'subsystemFilterActive', false);
         } else {
-          // «Отмена» или Escape — не делаем reveal на потенциально скрытом узле
+          // Cancel or Escape — skip reveal on potentially hidden node
           return;
         }
       }

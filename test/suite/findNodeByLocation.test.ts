@@ -96,19 +96,19 @@ function buildFakeTree(): { provider: MetadataTreeDataProvider; configRoot: Tree
     MetadataType.Form,
     [formModuleExt]
   );
-  const formsFolder = node('Forms', 'Forms', MetadataType.Unknown, [formNode]);
+  const formsFolder = node('Forms', 'Формы', MetadataType.Form, [formNode]);
 
   const commandModuleExt = extNode('Commands.МояКоманда.', ['CommandModule.bsl']);
   const commandNode = node(
     'Commands.МояКоманда',
     'МояКоманда',
-    MetadataType.CommandSubElement,
+    MetadataType.Command,
     [commandModuleExt]
   );
-  const commandsFolder = node('Commands', 'Commands', MetadataType.Unknown, [commandNode]);
+  const commandsFolder = node('Commands', 'Команды', MetadataType.Command, [commandNode]);
 
   const templateNode = node('Templates.МакетПечати', 'МакетПечати', MetadataType.Template);
-  const templatesFolder = node('Templates', 'Templates', MetadataType.Unknown, [templateNode]);
+  const templatesFolder = node('Templates', 'Макеты', MetadataType.Template, [templateNode]);
 
   const catalogNode = node(
     'Catalogs.Товары',

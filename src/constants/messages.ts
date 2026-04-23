@@ -86,4 +86,14 @@ export const MESSAGES = {
   COT_PREDEFINED_COPIED: 'Ссылка на вид характеристики скопирована',
   COT_PREDEFINED_NO_TYPE: 'Тип не задан',
   COT_REGISTERS_TITLE: 'Регистры, связанные с ПВХ',
+
+  // Reveal active file in tree (issue #88)
+  REVEAL_NO_ACTIVE_EDITOR: 'Нет активного редактора',
+  REVEAL_NOT_FILE_URI: 'Активный редактор не связан с файлом',
+  REVEAL_NO_CONFIG_LOADED: 'Дерево метаданных не загружено',
+  REVEAL_NOT_FOUND_IN_METADATA: 'Активный файл не найден в структуре метаданных',
+  REVEAL_NODE_NOT_FOUND: 'Не удалось найти узел в дереве для активного файла',
+  REVEAL_FILTER_ACTIVE_PROMPT: 'Файл может быть скрыт активным фильтром. Сбросить фильтры?',
+  REVEAL_RESET_BUTTON: 'Сбросить',
+  REVEAL_CANCEL_BUTTON: 'Отмена',
 } as const;
