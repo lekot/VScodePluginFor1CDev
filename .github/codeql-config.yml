@@ -1,0 +1,11 @@
+name: "CodeQL config"
+
+# Vendored runtime scripts live under resources/ and are synced from
+# upstream (see resources/UPSTREAM.md). Analyzing them raises alerts we
+# cannot fix without diverging from the upstream — report them there.
+paths-ignore:
+  - resources/**
+  - node_modules/**
+  - out/**
+  - releases/**
+  - FormatSamples/**
