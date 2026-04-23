@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет 34 команды для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
+Расширение CDT 41 для VS Code предоставляет **53** команды для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
 
 ## HTTP Bridge
 
@@ -17,7 +17,10 @@
   "token": "baf0b38e...hex64...",
   "pid": 42144,
   "workspaceFolder": "c:\\reps\\1cviewer",
-  "createdAt": "2026-04-13T08:56:08.711Z"
+  "createdAt": "2026-04-13T08:56:08.711Z",
+  "extensionVersion": "0.46.4",
+  "docs": "https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md",
+  "quickstart": "POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {\"name\":\"1c-metadata-tree.agent.<cmd>\",\"args\":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start с debuggeeType='webServer' или dbPath → потом playwright на webServerUrl. Отладка BSL — agent.debug.start (debuggeeType='webServer' чтобы агент мог управлять формой; thinClient — нативное окно Windows, недоступно без ui-test)."
 }
 ```
 
@@ -57,7 +60,7 @@ req.end(data);
 
 Через bridge доступны только команды, соответствующие паттерну:
 ```
-/^1c-metadata-tree\.agent(\.debug|\.forms)?\.[a-zA-Z]+$/
+/^1c-metadata-tree\.agent(\.debug|\.forms|\.skd)?\.[a-zA-Z]+$/
 ```
 
 ---
@@ -368,7 +371,7 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 
 ---
 
-### Отладка (14 команд)
+### Отладка (15 команд)
 
 Все debug-команды используют `sessionId`, полученный из `debug.start`.
 
@@ -543,6 +546,198 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 
 ---
 
+### Типы (2 команды)
+
+#### `1c-metadata-tree.agent.getType`
+
+Получить тип реквизита или колонки ТЧ.
+
+```json
+{ "path": "Catalog.Товары.Attribute.Артикул" }
+```
+
+Возвращает: `{ type: string }` — строка типа в формате `"cfg:CatalogRef.Номенклатура"` или `"xs:string"`.
+
+#### `1c-metadata-tree.agent.setType`
+
+Установить тип реквизита или колонки ТЧ.
+
+```json
+{ "path": "Catalog.Товары.Attribute.Артикул", "type": "cfg:CatalogRef.Номенклатура" }
+```
+
+---
+
+### Интерфейс команд подсистем (4 команды)
+
+#### `1c-metadata-tree.agent.getSubsystemCommandInterface`
+
+Получить интерфейс команд подсистемы (видимость, порядок).
+
+```json
+{ "path": "Subsystem.МояПодсистема" }
+```
+
+Возвращает: `{ commandInterface: { commands: [{ name, visible, order }], subsystems: [{ name, order }] } }`.
+
+#### `1c-metadata-tree.agent.setSubsystemCommandVisibility`
+
+Установить видимость команды в интерфейсе подсистемы.
+
+```json
+{ "path": "Subsystem.МояПодсистема", "commandName": "Catalog.Товары.Form.ФормаСписка.Command.Создать", "visible": true }
+```
+
+#### `1c-metadata-tree.agent.setSubsystemCommandOrder`
+
+Установить порядок команды в интерфейсе подсистемы.
+
+```json
+{ "path": "Subsystem.МояПодсистема", "commandName": "Catalog.Товары.Form.ФормаСписка.Command.Создать", "order": 5 }
+```
+
+#### `1c-metadata-tree.agent.setSubsystemSubsystemsOrder`
+
+Установить порядок дочерней подсистемы в родительской.
+
+```json
+{ "path": "Subsystem.МояПодсистема", "subsystemName": "Subsystem.Дочерняя", "order": 2 }
+```
+
+---
+
+### Предопределённые характеристики (4 команды)
+
+#### `1c-metadata-tree.agent.listPredefinedCharacteristics`
+
+Список предопределённых характеристик объекта типа ChartOfCharacteristicTypes.
+
+```json
+{ "path": "ChartOfCharacteristicTypes.ВидыСубконто" }
+```
+
+Возвращает: `{ characteristics: [{ name, synonym, type }] }`.
+
+#### `1c-metadata-tree.agent.getPredefinedCharacteristicType`
+
+Получить тип значения предопределённой характеристики.
+
+```json
+{ "path": "ChartOfCharacteristicTypes.ВидыСубконто", "characteristicName": "МойВид" }
+```
+
+Возвращает: `{ type: string }`.
+
+#### `1c-metadata-tree.agent.setPredefinedCharacteristicType`
+
+Установить тип значения предопределённой характеристики.
+
+```json
+{ "path": "ChartOfCharacteristicTypes.ВидыСубконто", "characteristicName": "МойВид", "type": "cfg:CatalogRef.Контрагенты" }
+```
+
+#### `1c-metadata-tree.agent.getCharacteristicValueRegisters`
+
+Получить список регистров сведений, хранящих значения характеристик данного вида.
+
+```json
+{ "path": "ChartOfCharacteristicTypes.ВидыСубконто" }
+```
+
+Возвращает: `{ registers: [{ name, filePath }] }`.
+
+---
+
+### Формы (5 команд)
+
+Запуск и управление веб-клиентом 1С для агентской работы с формами. Внутри расширения запускается ibsrv (при dbPath) + playwright (с автоустановкой chromium при первом вызове).
+
+#### `1c-metadata-tree.agent.forms.start`
+
+Запустить сессию. Либо URL готового ibsrv, либо dbPath (ibsrv стартует автоматически). platformPath берётся из настройки `1cMetadataTree.platformPath` если не задан явно.
+
+```json
+{ "dbPath": "C:/Users/.../InfoBase", "platformPath": "C:/Program Files/1cv8/8.3.27.1859/bin" }
+```
+
+Возвращает: `{ url, ibsrvSpawned, uiAccessHint }`.
+
+#### `1c-metadata-tree.agent.forms.exec`
+
+Выполнить JS-скрипт в контексте browser (run.mjs exec). Скрипт может использовать API browser.mjs (navigateLink, clickElement, fillFields, readTable и т.д.).
+
+```json
+{ "script": "await navigateLink('Справочник.Контрагенты'); const t = await readTable(); console.log(JSON.stringify(t));" }
+```
+
+Возвращает: `{ output, stderr?, exitCode }`.
+
+#### `1c-metadata-tree.agent.forms.stop`
+
+Закрыть browser и остановить ibsrv (если был запущен расширением).
+
+#### `1c-metadata-tree.agent.forms.shot`
+
+Скриншот текущей страницы в PNG.
+
+```json
+{ "file": "C:/tmp/shot.png" }
+```
+
+#### `1c-metadata-tree.agent.forms.status`
+
+Статус сессии: жив ли browser, жив ли ibsrv, URL.
+
+Возвращает: `{ browserAlive, url?, ibsrvAlive, ibsrvPid? }`.
+
+---
+
+### SKD (4 команды)
+
+Работа со схемами компоновки данных (DataCompositionSchema). Обёртка над PowerShell-скриптами внутри расширения. Требует pwsh (или Windows PowerShell).
+
+#### `1c-metadata-tree.agent.skd.compile`
+
+JSON-DSL → DataCompositionSchema.xml.
+
+```json
+{ "input": "C:/defs/my-skd.json", "output": "C:/conf/Reports/Мой/Templates/Schema.xml" }
+```
+
+Обязательно: `output` + (`input` файл либо inline `value`). Возвращает путь к результату и статистику.
+
+#### `1c-metadata-tree.agent.skd.info`
+
+Сводка структуры Template.xml (dataSets, fields, parameters). Режим задаётся через параметр `mode`.
+
+```json
+{ "input": "C:/conf/.../Template.xml" }
+```
+
+Возвращает: текстовые строки структуры.
+
+#### `1c-metadata-tree.agent.skd.edit`
+
+Точечное редактирование Template.xml. 26 операций (ValidateSet в skd-edit.ps1).
+
+```json
+{ "input": "C:/conf/.../Template.xml", "op": "AddField", "value": "Колонка" }
+```
+
+Возвращает: строки `[OK]` / `[WARN]` по результату каждой операции.
+
+#### `1c-metadata-tree.agent.skd.validate`
+
+Валидация схемы.
+
+```json
+{ "input": "C:/conf/.../Template.xml" }
+```
+
+Возвращает: `{ valid, issues? }`. При успехе stdout содержит `=== Validation OK ===`.
+
+---
+
 ## Типичные сценарии
 
 ### Сценарий A: CRUD метаданных
@@ -571,82 +766,36 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 8. debug.stop({ sessionId: '...' })
 ```
 
-### Сценарий C: отладка через ibsrv + Playwright
+### Сценарий C: отладка + формы через agent API (Playwright внутри расширения)
 
-Для агентской работы с формами — ibsrv поднимает веб-клиент и встроенный отладчик.
+Агент управляет и отладчиком и формой одновременно через два разных канала, оба в agent API.
 
 ```
-1. debug.startFromBinding({ binding: 'empty_conf', debuggeeType: 'webServer' })
+1. resolveBinding({ configPath: 'empty_conf' })
+   → { infobase: { filePath: 'C:/Users/.../InfoBase11' } }
+2. debug.start({ rootProject: '...', infobase: 'File=...', platformPath: '...', debuggeeType: 'webServer', databasePath: 'C:/Users/.../InfoBase11' })
    → { sessionId, webServerUrl: 'http://localhost:52570' }
-2. debug.setBreakpoint({ file: '...ObjectModule.bsl', line: 4 })
-3. Playwright: открыть webServerUrl, навигировать к форме, выполнить действие (Записать)
-4. debug.waitForStop({ sessionId, timeoutMs: 30000 })
+3. debug.setBreakpoint({ file: '...ObjectModule.bsl', line: 4 })
+4. forms.start({ url: 'http://localhost:52570' })   — подключаем playwright к тому же ibsrv
+5. forms.exec({ script: 'await navigateLink("Справочник.Контрагенты"); await clickElement("Создать"); await fillFields({Наименование:"Тест"}); await clickElement("Записать");' })
+6. debug.waitForStop({ sessionId, timeoutMs: 30000 })
    → { reason: 'breakpoint', threadId: 1, frameId: 1, file: '...', line: 4 }
-5. debug.evaluate({ sessionId, frameId: 1, expression: 'Сч' })
-   → { value: '1', type: 'Число', varRef: 0 }
-6. debug.continue({ sessionId, threadId: 1 })
-7. debug.stop({ sessionId })
+7. debug.evaluate({ sessionId, frameId: 1, expression: 'Отказ' })
+8. debug.continue({ sessionId, threadId: 1 })
+9. forms.stop()
+10. debug.stop({ sessionId })
 ```
 
 **Особенности webServer режима:**
 - `verified: false` при setBreakpoint — нормально, BP сработает после подключения браузера
 - `getVariables` (панель Locals) — пусто; используйте `evaluate` для конкретных переменных
 - ibsrv создаёт новые target'ы динамически при серверных операциях — расширение обнаруживает и подключает их автоматически
-- `waitForStop` нужно вызывать **до** или **одновременно** с действием Playwright (иначе stop event будет потерян)
-
-### Формы enterprise (через skill /1c-forms)
-
-Работа с формами 1С в режиме предприятия выполняется через отдельный skill `/1c-forms` (Playwright + ibsrv), а не через VS Code bridge. Skill автоматически запускает ibsrv и подключает браузер:
-
-```bash
-# Резолвить базу по фикстуре (через bridge):
-bash .claude/skills/cdt-agent/scripts/call.sh resolveBinding '{"configPath":"uh"}'
-
-# Запустить сессию (ibsrv + Playwright автоматически):
-bash .claude/skills/1c-forms/scripts/call.sh start "C:/path/to/infobase"
-
-# Навигация, заполнение, чтение:
-bash .claude/skills/1c-forms/scripts/call.sh exec 'await navigateLink("Справочник.Контрагенты"); const t = await readTable(); console.log(JSON.stringify(t));'
-
-# Остановить всё:
-bash .claude/skills/1c-forms/scripts/call.sh stop
-```
-
-Подробнее: `.claude/skills/1c-forms/SKILL.md`.
-
-### СКД (через skill /skd)
-
-Создание, анализ и редактирование схем компоновки данных (DataCompositionSchema). Построен поверх cc-1c-skills.
-
-```bash
-# Скомпилировать СКД из JSON DSL:
-bash .claude/skills/skd/scripts/call.sh compile -Value '{
-  "dataSets": [{"query": "ВЫБРАТЬ Товары.Наименование, Товары.Цена ИЗ Справочник.Товары КАК Товары", "fields": ["Наименование", "Цена: decimal(15,2)"]}],
-  "totalFields": ["Цена: Сумма"],
-  "parameters": ["Период: StandardPeriod = LastMonth @autoDates"]
-}' -OutputPath Template.xml
-
-# Анализ существующей СКД (11 режимов):
-bash .claude/skills/skd/scripts/call.sh info Template.xml                    # overview
-bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode query -Name НаборДанных1  # текст запроса
-bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode params       # параметры
-bash .claude/skills/skd/scripts/call.sh info Template.xml -Mode full         # полная сводка
-
-# Точечное редактирование (25 операций):
-bash .claude/skills/skd/scripts/call.sh edit Template.xml -Op add-field -DataSet НаборДанных1 -Field "НовоеПоле: decimal(15,2)"
-
-# Валидация (~30 проверок):
-bash .claude/skills/skd/scripts/call.sh validate Template.xml
-```
-
-JSON DSL поддерживает shorthand: `"Количество: decimal(15,2) @dimension #noFilter"`, русские синонимы типов (`число`, `строка`, `дата`), `@autoDates` для автогенерации ДатаНачала/ДатаОкончания.
-
-Подробнее: `.claude/skills/skd/SKILL.md`.
+- `waitForStop` нужно вызывать **до** или **одновременно** с действием forms.exec (иначе stop event будет потерян)
 
 ---
 
 ## Ограничения
 
-- Формы конфигуратора через Agent API не создаются/редактируются (используйте UI). Формы enterprise — через skill /1c-forms
+- Формы конфигуратора через Agent API не создаются/редактируются (используйте UI). Формы enterprise — через agent.forms.*
 - Для InformationRegister и AccumulationRegister при `createObject` создаются дефолтные Измерение+Ресурс (шаблонный fallback)
 - Тип реквизита при `addAttribute` задаётся дефолтный (строка 50); для изменения используйте `setProperties` с `Type: "cfg:DocumentRef.Больше"` или `Type: "xs:boolean"` и т.д.

@@ -20,16 +20,18 @@ VS Code расширение для визуализации и редактир
 
 ### Agent API (для AI-агентов)
 
-CDT 41 предоставляет 34 VS Code commands для программного управления метаданными, отладкой и формами 1С. AI-агент (Claude Code, Copilot, MCP-клиент) может:
-- **CRUD метаданных** (12 команд) — создавать объекты, добавлять реквизиты, читать/писать свойства, устанавливать типы
+CDT 41 предоставляет **53** VS Code commands для программного управления метаданными, отладкой и формами 1С. AI-агент (Claude Code, Copilot, MCP-клиент) может:
+- **CRUD метаданных** (12 команд) — создавать объекты, добавлять реквизиты/ТЧ/колонки, читать/писать свойства, переименовывать и удалять
+- **Отладка** (15 команд) — запускать отладочную сессию (thinClient / webServer), ставить breakpoints, читать переменные, шагать по коду, фильтровать исключения
 - **Привязки** (2 команды) — resolveBinding (фикстура→база), listBindings (все привязки с базами)
-- **Отладка** (14 команд) — запускать отладочную сессию, ставить breakpoints, читать переменные, шагать по коду
 - **Раскатка и выгрузка** (5 команд) — deploy конфигурации, раскатка выбранных файлов / изменённых по git, выгрузка объектов из ИБ, статус конфигурации — через ibcmd
-- **Навигация** (1 команда) — startFromBinding для автономного запуска отладки по привязке
-- **Формы enterprise** — работа с формами 1С через веб-клиент (Playwright + ibsrv): навигация, заполнение, табличные части, отчёты
-- **СКД** — создание, анализ и редактирование схем компоновки данных: JSON DSL → Template.xml, 25 атомарных операций, 11 режимов анализа
+- **Типы** (2 команды) — getType / setType для реквизитов и колонок ТЧ
+- **Интерфейс команд подсистем** (4 команды) — getSubsystemCommandInterface, setSubsystemCommandVisibility, setSubsystemCommandOrder, setSubsystemSubsystemsOrder
+- **Предопределённые характеристики** (4 команды) — listPredefinedCharacteristics, getPredefinedCharacteristicType, setPredefinedCharacteristicType, getCharacteristicValueRegisters
+- **Формы enterprise** (5 команд, **новое**) — agent.forms.{start, exec, stop, shot, status}: Playwright + ibsrv внутри расширения, без внешних скриптов
+- **СКД** (4 команды, **новое**) — agent.skd.{compile, info, edit, validate}: PowerShell-скрипты внутри расширения, JSON DSL → Template.xml, 26 операций редактирования
 
-Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`. Подробнее: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md)
+Агент находит bridge через файл `.vscode/cdt-agent-bridge.json` (port, token, docs-ссылка, quickstart). Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`. Подробнее: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md)
 
 Чего нет: конструктора запроса (есть внешние в режиме предприятия), состава планов обмена и много чего еще нет. Включайся в разработку - будет
 <img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />
