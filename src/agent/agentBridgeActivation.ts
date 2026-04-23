@@ -28,6 +28,7 @@ export function activateAgentBridge(
     commandPattern: /^1c-metadata-tree\.agent(\.debug|\.forms|\.skd)?\.[a-zA-Z]+$/,
     workspaceFolder,
     extensionVersion: version,
+    extensionPath: context.extensionPath,
   });
 
   bridge.start().then(({ port }) => {

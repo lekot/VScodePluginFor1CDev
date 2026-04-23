@@ -42,5 +42,28 @@ suite('AgentBridge — bridge file extensionVersion', () => {
             obj['extensionVersion'] !== '',
             'extensionVersion не должен быть пустой строкой',
         );
+
+        // helperScriptPath / discoverScriptPath — опциональны (только когда extensionPath был задан).
+        // Если присутствуют — должны быть непустыми строками, оканчивающимися на call.sh / discover.sh.
+        if ('helperScriptPath' in obj) {
+            assert.ok(
+                typeof obj['helperScriptPath'] === 'string',
+                `helperScriptPath должен быть строкой, получено: ${JSON.stringify(obj['helperScriptPath'])}`,
+            );
+            assert.ok(
+                (obj['helperScriptPath'] as string).endsWith('call.sh'),
+                `helperScriptPath должен оканчиваться на call.sh, получено: ${obj['helperScriptPath'] as string}`,
+            );
+        }
+        if ('discoverScriptPath' in obj) {
+            assert.ok(
+                typeof obj['discoverScriptPath'] === 'string',
+                `discoverScriptPath должен быть строкой, получено: ${JSON.stringify(obj['discoverScriptPath'])}`,
+            );
+            assert.ok(
+                (obj['discoverScriptPath'] as string).endsWith('discover.sh'),
+                `discoverScriptPath должен оканчиваться на discover.sh, получено: ${obj['discoverScriptPath'] as string}`,
+            );
+        }
     });
 });

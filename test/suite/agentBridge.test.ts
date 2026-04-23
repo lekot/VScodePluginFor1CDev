@@ -690,4 +690,56 @@ suite('AgentBridge — HTTP server', () => {
             await b.stop();
         }
     });
+
+    // -------------------------------------------------------------------------
+    // 27. helperScriptPath / discoverScriptPath пишутся если задан extensionPath
+    // -------------------------------------------------------------------------
+
+    test('extensionPath: bridge file содержит helperScriptPath и discoverScriptPath', async () => {
+        const wsDir = path.join(tmpDir, 'test-27');
+        fs.mkdirSync(wsDir, { recursive: true });
+        const extDir = path.join(tmpDir, 'test-27-ext');
+        fs.mkdirSync(extDir, { recursive: true });
+
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN, workspaceFolder: wsDir, extensionPath: extDir });
+        try {
+            await b.start();
+            const bridgeFile = path.join(wsDir, '.vscode', 'cdt-agent-bridge.json');
+            const content = JSON.parse(fs.readFileSync(bridgeFile, 'utf8')) as Record<string, unknown>;
+
+            assert.strictEqual(
+                content['helperScriptPath'],
+                path.join(extDir, 'resources', 'agent-bridge', 'call.sh'),
+                'helperScriptPath должен указывать на resources/agent-bridge/call.sh в extensionPath',
+            );
+            assert.strictEqual(
+                content['discoverScriptPath'],
+                path.join(extDir, 'resources', 'agent-bridge', 'discover.sh'),
+                'discoverScriptPath должен указывать на resources/agent-bridge/discover.sh в extensionPath',
+            );
+        } finally {
+            await b.stop();
+        }
+    });
+
+    // -------------------------------------------------------------------------
+    // 28. Без extensionPath — helperScriptPath/discoverScriptPath не пишутся
+    // -------------------------------------------------------------------------
+
+    test('без extensionPath: helperScriptPath/discoverScriptPath отсутствуют в bridge file', async () => {
+        const wsDir = path.join(tmpDir, 'test-28');
+        fs.mkdirSync(wsDir, { recursive: true });
+
+        const b = new AgentBridge({ commandPattern: TEST_PATTERN, workspaceFolder: wsDir });
+        try {
+            await b.start();
+            const bridgeFile = path.join(wsDir, '.vscode', 'cdt-agent-bridge.json');
+            const content = JSON.parse(fs.readFileSync(bridgeFile, 'utf8')) as Record<string, unknown>;
+
+            assert.ok(!('helperScriptPath' in content), 'helperScriptPath не должен присутствовать без extensionPath');
+            assert.ok(!('discoverScriptPath' in content), 'discoverScriptPath не должен присутствовать без extensionPath');
+        } finally {
+            await b.stop();
+        }
+    });
 });
