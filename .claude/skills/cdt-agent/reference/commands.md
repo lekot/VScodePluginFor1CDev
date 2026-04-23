@@ -1,6 +1,6 @@
 # CDT Agent API — Полный reference
 
-30 команд через `bash .claude/skills/cdt-agent/scripts/call.sh <suffix> '<args>'`.
+53 команды через `bash .claude/skills/cdt-agent/scripts/call.sh <suffix> '<args>'`.
 
 Все команды возвращают `AgentResult<T>`:
 - Успех: `{"success": true, "data": {...}}` или `{"success": true}`
@@ -10,8 +10,10 @@
 
 - [CRUD метаданных (12 команд)](#crud-метаданных)
 - [Привязки (2 команды)](#привязки)
-- [Debug (14 команд)](#debug)
-- [Deploy (1 команда)](#deploy)
+- [Debug (15 команд)](#debug)
+- [Deploy (5 команд)](#deploy)
+- [Forms (5 команд)](#forms)
+- [SKD (4 команды)](#skd)
 
 ---
 
@@ -462,6 +464,211 @@ bash .claude/skills/cdt-agent/scripts/call.sh debug.stepOut '{"sessionId":"abc",
 
 ---
 
+## Forms
+
+Команды управления веб-клиентом 1С через Playwright/Chromium. Whitelist: `forms.*`.
+
+### `forms.start`
+
+Запускает сессию веб-клиента 1С. Подключается к готовому ibsrv (`url`) или сам спавнит ibsrv из файловой базы (`dbPath`). Ровно один из двух параметров обязателен.
+
+**Params:**
+```ts
+{
+  url?: string;            // URL готового ibsrv. Взаимоисключающий с dbPath
+  dbPath?: string;         // Путь к файловой базе — ibsrv запустится автоматически. Взаимоисключающий с url
+  platformPath?: string;   // Каталог bin платформы 1С (для spawn ibsrv). Если не задан — берётся из настроек
+  readyTimeoutMs?: number; // Таймаут готовности ibsrv+chromium в мс (по умолчанию 60000)
+}
+```
+
+**Result:** `{ url: string, ibsrvSpawned: boolean, uiAccessHint?: string }`
+
+```bash
+# Подключиться к уже запущенному веб-серверу
+bash .claude/skills/cdt-agent/scripts/call.sh forms.start '{"url":"http://localhost:8080/base"}'
+
+# Запустить из файловой базы
+bash .claude/skills/cdt-agent/scripts/call.sh forms.start '{"dbPath":"C:/bases/mybase","platformPath":"C:/Program Files/1cv8/8.3.24/bin"}'
+```
+
+---
+
+### `forms.exec`
+
+Выполняет JS-скрипт в контексте браузера. Скрипт передаётся в run.mjs exec — stdout возвращается в output.
+
+**Params:**
+```ts
+{
+  script: string;      // JS-скрипт для выполнения в браузере (обязателен)
+  timeoutMs?: number;  // Таймаут в мс (по умолчанию 30000)
+}
+```
+
+**Result:** `{ output: string, stderr?: string, exitCode: number }`
+
+Sandbox экспортирует функции из `resources/web-test/browser.mjs` (`getPageState`, `getSections`, `navigateSection`, `clickElement`, `fillField`, `closeForm`, `screenshot`, `getPage` и др.) и глобальные `console`, `writeFileSync`, `readFileSync`. Чтобы получить значение наружу — пиши в `console.log(...)`: строки из stdout попадают в `output`.
+
+```bash
+# Статус открытой страницы (section, tab, formTitle)
+bash .claude/skills/cdt-agent/scripts/call.sh forms.exec '{"script":"const st = await getPageState(); console.log(JSON.stringify(st));"}'
+
+# Навигация и чтение формы через Playwright page напрямую (getPage возвращает playwright.Page)
+bash .claude/skills/cdt-agent/scripts/call.sh forms.exec '{"script":"const p = getPage(); const t = await p.title(); console.log(t);","timeoutMs":10000}'
+```
+
+---
+
+### `forms.stop`
+
+Останавливает сессию веб-клиента. Если ibsrv был запущен через `forms.start`, гасит его тоже.
+
+**Params:** `{}` (нет параметров)
+**Result:** `{}`
+
+```bash
+bash .claude/skills/cdt-agent/scripts/call.sh forms.stop '{}'
+```
+
+---
+
+### `forms.shot`
+
+Делает скриншот текущего состояния браузера.
+
+**Params:**
+```ts
+{
+  file?: string;  // Путь к PNG. Если не задан — сохраняется во temp-файл
+}
+```
+
+**Result:** `{ file: string }` — абсолютный путь сохранённого PNG
+
+```bash
+bash .claude/skills/cdt-agent/scripts/call.sh forms.shot '{}'
+bash .claude/skills/cdt-agent/scripts/call.sh forms.shot '{"file":"C:/tmp/screen.png"}'
+```
+
+---
+
+### `forms.status`
+
+Проверяет состояние текущей сессии веб-клиента.
+
+**Params:** `{}` (нет параметров)
+**Result:** `{ browserAlive: boolean, url?: string, ibsrvAlive: boolean, ibsrvPid?: number }`
+
+```bash
+bash .claude/skills/cdt-agent/scripts/call.sh forms.status '{}'
+```
+
+---
+
+## SKD
+
+Команды работы со схемами компоновки данных (DataCompositionSchema). Whitelist: `skd.*`.
+
+### `skd.compile`
+
+Компилирует СКД из JSON DSL в XML (Template.xml). Один из `definitionFile` / `value` обязателен; нельзя использовать оба.
+
+**Params:**
+```ts
+{
+  definitionFile?: string;  // Путь к JSON-файлу описания СКД. Взаимоисключающий с value
+  value?: string;           // Inline JSON-строка описания СКД. Взаимоисключающий с definitionFile
+  outputPath: string;       // Путь к выходному XML-файлу (обязателен)
+}
+```
+
+**Result:** `{ output: string, stats?: { dataSets, fields, calculated, totals, parameters, variants, sizeBytes }, rawOutput: string }`
+
+```bash
+bash .claude/skills/cdt-agent/scripts/call.sh skd.compile '{"definitionFile":"C:/tmp/skd.json","outputPath":"C:/conf/Reports/Отчёт/Ext/Template.xml"}'
+bash .claude/skills/cdt-agent/scripts/call.sh skd.compile '{"value":"{\"dataSets\":[]}","outputPath":"C:/tmp/out.xml"}'
+```
+
+---
+
+### `skd.info`
+
+Возвращает информацию о структуре СКД в текстовом виде. Поддерживает пагинацию и несколько режимов вывода.
+
+**Params:**
+```ts
+{
+  templatePath: string;    // Путь к Template.xml, папке СКД или дескриптору (обязателен)
+  mode?: 'overview' | 'query' | 'fields' | 'links' | 'calculated' | 'resources'
+       | 'params' | 'variant' | 'trace' | 'templates' | 'full';  // По умолчанию overview
+  name?: string;           // Имя набора данных / варианта для детального вывода
+  batch?: number;          // Загрузка пакетами, 0 = без пакетов
+  limit?: number;          // Максимум строк на страницу (по умолчанию 150)
+  offset?: number;         // Смещение для пагинации
+  outFile?: string;        // Путь к выходному файлу
+}
+```
+
+**Result:** `{ info: string, truncated?: boolean }`
+
+```bash
+bash .claude/skills/cdt-agent/scripts/call.sh skd.info '{"templatePath":"C:/conf/Reports/Отчёт/Ext/Template.xml"}'
+bash .claude/skills/cdt-agent/scripts/call.sh skd.info '{"templatePath":"C:/conf/Reports/Отчёт/Ext/Template.xml","mode":"fields"}'
+bash .claude/skills/cdt-agent/scripts/call.sh skd.info '{"templatePath":"C:/conf/Reports/Отчёт/Ext/Template.xml","mode":"params","limit":50,"offset":0}'
+```
+
+---
+
+### `skd.edit`
+
+Атомарная операция редактирования СКД (add/modify/remove полей, параметров, отборов и т.д.).
+
+**Params:**
+```ts
+{
+  templatePath: string;       // Путь к Template.xml или папке СКД (обязателен)
+  operation: SkdEditOperation; // Тип операции (обязателен) — см. список ниже
+  value: string;              // JSON-значение операции (обязателен)
+  dataSet?: string;           // Имя набора данных для привязки операции
+  variant?: string;           // Имя варианта настроек
+  noSelection?: boolean;      // Не добавлять автоматически в отбор
+}
+```
+
+Допустимые значения `operation`: `add-field`, `add-total`, `add-calculated-field`, `add-parameter`, `add-filter`, `add-dataParameter`, `add-order`, `add-selection`, `add-dataSetLink`, `add-dataSet`, `add-variant`, `add-conditionalAppearance`, `set-query`, `set-outputParameter`, `set-structure`, `modify-field`, `modify-filter`, `modify-dataParameter`, `clear-selection`, `clear-order`, `clear-filter`, `remove-field`, `remove-total`, `remove-calculated-field`, `remove-parameter`, `remove-filter`.
+
+**Result:** `{ output: string, rawOutput: string }`
+
+```bash
+bash .claude/skills/cdt-agent/scripts/call.sh skd.edit '{"templatePath":"C:/conf/Reports/Отчёт/Ext/Template.xml","operation":"add-field","value":"{\"Field\":\"Контрагент\"}"}'
+```
+
+---
+
+### `skd.validate`
+
+Валидирует Template.xml и возвращает счётчики ошибок/предупреждений.
+
+**Params:**
+```ts
+{
+  templatePath: string;  // Путь к Template.xml, папке СКД или дескриптору (обязателен)
+  detailed?: boolean;    // Детальный вывод, включая [OK]-строки
+  maxErrors?: number;    // Максимум ошибок до остановки (по умолчанию 20)
+  outFile?: string;      // Путь к выходному файлу отчёта
+}
+```
+
+**Result:** `{ valid: boolean, errorCount: number, warningCount: number, rawOutput: string }`
+
+```bash
+bash .claude/skills/cdt-agent/scripts/call.sh skd.validate '{"templatePath":"C:/conf/Reports/Отчёт/Ext/Template.xml"}'
+bash .claude/skills/cdt-agent/scripts/call.sh skd.validate '{"templatePath":"C:/conf/Reports/Отчёт/Ext/Template.xml","detailed":true}'
+```
+
+---
+
 ## Типичные сценарии
 
 ### Сценарий A: проверить что объект существует
@@ -497,5 +704,34 @@ SCOPES=$(bash .claude/skills/cdt-agent/scripts/call.sh debug.getScopes "{\"sessi
 bash .claude/skills/cdt-agent/scripts/call.sh debug.continue "{\"sessionId\":\"$SESSION\",\"threadId\":1}"
 
 # 6. Остановить
+bash .claude/skills/cdt-agent/scripts/call.sh debug.stop "{\"sessionId\":\"$SESSION\"}"
+```
+
+### Сценарий D: end-to-end debug + forms (веб-клиент через ibsrv debug-сессии)
+
+```bash
+# 1. Запустить отладочную сессию с веб-сервером
+SESSION=$(bash .claude/skills/cdt-agent/scripts/call.sh debug.start '{
+  "rootProject":"C:/reps/myconf",
+  "infobase":"File=C:/bases/mybase",
+  "platformPath":"C:/Program Files/1cv8/8.3.24/bin"
+}' | node -e "console.log(JSON.parse(require('fs').readFileSync(0,'utf8')).data.sessionId)")
+
+# 2. Узнать URL ibsrv из debug-сессии (через resolveBinding или из debug.start result)
+IBSRV_URL="http://localhost:8080/mybase"
+
+# 3. Подключить веб-клиент к тому же ibsrv
+bash .claude/skills/cdt-agent/scripts/call.sh forms.start "{\"url\":\"$IBSRV_URL\"}"
+
+# 4. Выполнить скрипт в браузере (например, получить заголовок формы)
+bash .claude/skills/cdt-agent/scripts/call.sh forms.exec '{"script":"return document.querySelector(\".v8-form-title\")?.textContent ?? \"\"","timeoutMs":10000}'
+
+# 5. Сделать скриншот для диагностики
+bash .claude/skills/cdt-agent/scripts/call.sh forms.shot '{"file":"C:/tmp/form-state.png"}'
+
+# 6. Остановить веб-клиент
+bash .claude/skills/cdt-agent/scripts/call.sh forms.stop '{}'
+
+# 7. Остановить отладочную сессию
 bash .claude/skills/cdt-agent/scripts/call.sh debug.stop "{\"sessionId\":\"$SESSION\"}"
 ```
