@@ -64,3 +64,6 @@ out-test-bsl/
 
 # CDT Agent Bridge discovery file (per-workspace runtime data)
 .vscode/cdt-agent-bridge.json
+
+# Smoke test timestamped artifact dumps (failures.json / summary.md per run)
+test/fixtures/**/smoke-artifacts/

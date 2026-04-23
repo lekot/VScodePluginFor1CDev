@@ -36,6 +36,7 @@ import {
 } from './treeReferenceLoader';
 import { getObjectableObjectsForEditor, cloneObjectableGroups } from './objectTypeLoader';
 import type { ObjectableGroup } from '../types/objectTypeDefinitions';
+import type { MetadataLocation } from '../services/metadataFileLocator';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
@@ -566,6 +567,16 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const first = this.rootNodes[0];
     if (!first) {return null;}
     return this.cache.getLoadContext(first.id)?.configPath ?? first.filePath ?? null;
+  }
+
+  /**
+   * Get configuration root paths for all loaded roots (multi-root workspace support).
+   * Used by revealActiveFileInTree command to locate a file across all configurations.
+   */
+  getConfigRootPaths(): string[] {
+    return this.rootNodes
+      .map((root) => this.cache.getLoadContext(root.id)?.configPath ?? root.filePath ?? null)
+      .filter((p): p is string => p != null);
   }
 
   /**
@@ -1164,5 +1175,270 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     };
     restored.children = (node.children ?? []).map((child) => this.rehydrateRollbackNode(child, restored));
     return restored;
+  }
+
+  // ---------------------------------------------------------------------------
+  // findNodeByLocation — targeted tree walk for reveal-in-tree (issue #88)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Walk the tree from the configuration root matching `loc.configRoot` down to the node
+   * described by `loc`. Returns `null` when any step fails (root not found, type folder absent, etc.).
+   *
+   * Subsystem structure (Designer + EDT): child subsystems are direct children of the parent
+   * subsystem node with type `MetadataType.Subsystem` — no intermediate subfolder.
+   *
+   * Uses `getChildren()` for lazy-loading at every step so that nodes that have not been
+   * expanded yet are loaded transparently.
+   *
+   * @param loc Descriptor produced by `locateMetadataFile`.
+   */
+  async findNodeByLocation(loc: MetadataLocation): Promise<TreeNode | null> {
+    // ── Step 1: find configuration root by configRoot path ──────────────────
+    const configRootNode = await this.findConfigRootByPath(loc.configRoot);
+    if (!configRootNode) {
+      return null;
+    }
+
+    // ── Step 2: extension support ────────────────────────────────────────────
+    // TODO(#88): extensionName resolution — нужна проверка как extension узлы
+    // структурированы (ConfigurationExtensions/<Name>/ в Designer vs EDT).
+    // Пока extensionName игнорируется, main-config кейс работает полностью.
+    const searchRoot = configRootNode;
+
+    // ── Step 3: find type folder ─────────────────────────────────────────────
+    const typeFolderNode = await this.findChildByName(searchRoot, loc.objectType);
+    if (!typeFolderNode) {
+      return null;
+    }
+
+    // ── Step 4/5: find object (with optional subsystem hierarchy walk) ───────
+    let objectNode: TreeNode | null;
+
+    if (loc.objectType === 'Subsystems' && loc.hierarchy && loc.hierarchy.length > 0) {
+      objectNode = await this.walkSubsystemHierarchy(typeFolderNode, loc.hierarchy);
+    } else {
+      objectNode = await this.findChildByName(typeFolderNode, loc.objectName);
+    }
+
+    if (!objectNode) {
+      return null;
+    }
+
+    // ── Step 6: subPath walk ─────────────────────────────────────────────────
+    if (!loc.subPath) {
+      return objectNode;
+    }
+
+    return this.walkSubPath(objectNode, loc.subPath);
+  }
+
+  /**
+   * Find the configuration root node whose load context configPath matches `configRoot`.
+   * Comparison is done with `path.resolve` to normalise separators and relative segments.
+   */
+  private async findConfigRootByPath(configRoot: string): Promise<TreeNode | null> {
+    const normalizedTarget = path.resolve(configRoot);
+    for (const root of this.rootNodes) {
+      const ctx = this.cache.getLoadContext(root.id);
+      if (ctx) {
+        if (path.resolve(ctx.configPath) === normalizedTarget) {
+          return root;
+        }
+      } else if (root.filePath) {
+        // Fallback: Configuration.xml lives directly in configPath
+        const rootDir = path.resolve(path.dirname(root.filePath));
+        if (rootDir === normalizedTarget) {
+          return root;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get (lazy-load if needed) children of `parent` and find the first child
+   * whose `name` equals `targetName` (case-sensitive, matching 1C metadata names).
+   *
+   * Uses the resolved children from getChildren() (handles lazy-load and stale-node
+   * resolution) rather than reading `parent.children` directly.
+   */
+  private async findChildByName(parent: TreeNode, targetName: string): Promise<TreeNode | null> {
+    const children = await this.getChildren(parent);
+    const found = children.find((c) => c.name === targetName);
+    if (found) {
+      return found;
+    }
+    // Fallback: getChildren may return a filtered list when a search filter is active.
+    // For targeted walk we need the raw children — check node.children directly as well.
+    const raw = parent.children ?? [];
+    return raw.find((c) => c.name === targetName) ?? null;
+  }
+
+  /**
+   * Get (lazy-load if needed) children of `parent` and find the first child with `id === targetId`.
+   * Used for R6 placeholder subfolders (Forms, Commands, Templates) whose `name` may be localised
+   * by `ensureR6PlaceholdersForInstanceNode` (e.g. 'Формы'), but whose `id` stays stable.
+   */
+  private async findChildById(parent: TreeNode, targetId: string): Promise<TreeNode | null> {
+    const children = await this.getChildren(parent);
+    const found = children.find((c) => c.id === targetId);
+    if (found) {
+      return found;
+    }
+    // Fallback: check raw children in case filter hides it.
+    const raw = parent.children ?? [];
+    return raw.find((c) => c.id === targetId) ?? null;
+  }
+
+  /**
+   * Walk the subsystem hierarchy chain starting from the `Subsystems` type-folder node.
+   * `hierarchy` is an array like ['Sales', 'Orders'] — root is hierarchy[0].
+   * Child subsystems are direct children of type MetadataType.Subsystem (no intermediate folder).
+   */
+  private async walkSubsystemHierarchy(
+    subsystemsFolderNode: TreeNode,
+    hierarchy: string[]
+  ): Promise<TreeNode | null> {
+    // hierarchy[0] is the root subsystem name (child of Subsystems folder).
+    let current: TreeNode = subsystemsFolderNode;
+    for (const name of hierarchy) {
+      const children = await this.getChildren(current);
+      // Subsystem direct children — find by name regardless of type for the root level;
+      // at deeper levels only MetadataType.Subsystem nodes carry subsystem children.
+      let found = children.find((c) => c.name === name);
+      if (!found) {
+        // Fallback: check raw children in case filter hides the subsystem node.
+        found = (current.children ?? []).find((c) => c.name === name);
+      }
+      if (!found) {
+        return null;
+      }
+      current = found;
+    }
+    return current;
+  }
+
+  /**
+   * Walk inside an object node following `subPath` descriptor.
+   * Returns the target node or `null` when the path cannot be resolved.
+   */
+  private async walkSubPath(
+    objectNode: TreeNode,
+    subPath: NonNullable<MetadataLocation['subPath']>
+  ): Promise<TreeNode | null> {
+    switch (subPath.kind) {
+      case 'commonModule': {
+        // CommonModules/X — the object node IS the common module.
+        // Virtual Ext node with Module.bsl is a child, but the object node itself
+        // is the navigable entity for a commonModule subPath.
+        return objectNode;
+      }
+
+      case 'objectModule':
+        return this.findModuleNode(objectNode, 'ObjectModule.bsl');
+
+      case 'managerModule':
+        return this.findModuleNode(objectNode, 'ManagerModule.bsl');
+
+      case 'recordSetModule':
+        return this.findModuleNode(objectNode, 'RecordSetModule.bsl');
+
+      case 'valueManagerModule':
+        return this.findModuleNode(objectNode, 'ValueManagerModule.bsl');
+
+      case 'form': {
+        // R6 placeholder id is 'Forms'; name may be localised by ensureR6PlaceholdersForInstanceNode.
+        const formsFolder = await this.findChildById(objectNode, 'Forms');
+        if (!formsFolder) {
+          return null;
+        }
+        const formNode = await this.findChildByName(formsFolder, subPath.name);
+        if (!formNode) {
+          return null;
+        }
+        if (subPath.subFile === 'xml' || subPath.subFile === 'container') {
+          return formNode;
+        }
+        // subFile === 'module': find the module node inside the form
+        return this.findModuleNode(formNode, 'Module.bsl');
+      }
+
+      case 'command': {
+        // R6 placeholder id is 'Commands'.
+        const commandsFolder = await this.findChildById(objectNode, 'Commands');
+        if (!commandsFolder) {
+          return null;
+        }
+        const commandNode = await this.findChildByName(commandsFolder, subPath.name);
+        if (!commandNode) {
+          return null;
+        }
+        if (subPath.subFile === 'xml') {
+          return commandNode;
+        }
+        // subFile === 'module'
+        return this.findModuleNode(commandNode, 'CommandModule.bsl');
+      }
+
+      case 'template': {
+        // R6 placeholder id is 'Templates'.
+        const templatesFolder = await this.findChildById(objectNode, 'Templates');
+        if (!templatesFolder) {
+          return null;
+        }
+        return this.findChildByName(templatesFolder, subPath.name);
+      }
+
+      case 'rights': {
+        // Rights.xml is parsed into object properties, not a separate tree node.
+        // Return the role node itself so the caller can reveal/select it.
+        return objectNode;
+      }
+
+      case 'predefinedData': {
+        // PredefinedData container node has id 'PredefinedData' and is a direct child of the object.
+        const pdChildren = await this.getChildren(objectNode);
+        const allPdChildren = this.mergeChildren(pdChildren, objectNode.children ?? []);
+        const predefined = allPdChildren.find((c) => c.id === 'PredefinedData');
+        return predefined ?? objectNode;
+      }
+
+      default:
+        return objectNode;
+    }
+  }
+
+  /**
+   * Find a module .bsl node inside an object node.
+   * Modules live under the `Ext` child node (`MetadataType.Extension`, id ends with `.Ext` or `Ext`).
+   * For CommonModules the Ext id is `CommonModules.X.Ext`; for others plain `Ext`.
+   */
+  private async findModuleNode(objectNode: TreeNode, fileName: string): Promise<TreeNode | null> {
+    const children = await this.getChildren(objectNode);
+    // Use the union of resolved children and raw node.children to handle filtered views.
+    const allChildren = this.mergeChildren(children, objectNode.children ?? []);
+    // Find the Ext node (may be named 'Extensions' with type Extension)
+    const extNode = allChildren.find(
+      (c) => c.type === MetadataType.Extension && (c.id === 'Ext' || c.id.endsWith('.Ext'))
+    );
+    if (!extNode) {
+      return null;
+    }
+    const extChildren = await this.getChildren(extNode);
+    const allExtChildren = this.mergeChildren(extChildren, extNode.children ?? []);
+    return allExtChildren.find((c) => c.name === fileName) ?? null;
+  }
+
+  /**
+   * Merge two children arrays without duplicates (by identity).
+   * Used to combine getChildren() result (possibly filtered) with raw node.children.
+   */
+  private mergeChildren(a: TreeNode[], b: TreeNode[]): TreeNode[] {
+    if (a.length === 0) {return b;}
+    if (b.length === 0) {return a;}
+    const seen = new Set<TreeNode>(a);
+    const extra = b.filter((n) => !seen.has(n));
+    return extra.length === 0 ? a : [...a, ...extra];
   }
 }

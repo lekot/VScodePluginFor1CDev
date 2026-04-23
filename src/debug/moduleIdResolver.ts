@@ -29,7 +29,7 @@ export interface ResolverConfigRoot {
 // ---------------------------------------------------------------------------
 // Type folders that contain top-level metadata objects
 // ---------------------------------------------------------------------------
-const TOP_LEVEL_TYPE_FOLDERS = new Set([
+export const TOP_LEVEL_TYPE_FOLDERS = new Set([
   'Catalogs',
   'Documents',
   'DataProcessors',

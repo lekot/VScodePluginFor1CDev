@@ -151,6 +151,12 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.revealActiveFileInTree",
+        "title": "Показать активный файл в дереве",
+        "category": "CDT 41",
+        "icon": "$(target)"
+      },
+      {
         "command": "1c-metadata-tree.clearCache",
         "title": "Очистить кэш дерева",
         "category": "CDT 41"
@@ -626,6 +632,11 @@
           "group": "navigation"
         },
         {
+          "command": "1c-metadata-tree.revealActiveFileInTree",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        },
+        {
           "command": "1c-metadata-tree.infobases.refresh",
           "when": "view == 1c-infobase-manager",
           "group": "navigation@1"
@@ -1093,6 +1104,11 @@
         "key": "ctrl+s",
         "mac": "cmd+s",
         "when": "activeWebviewPanelId == '1c-rights-editor'"
+      },
+      {
+        "command": "1c-metadata-tree.revealActiveFileInTree",
+        "key": "ctrl+alt+t",
+        "when": "editorTextFocus"
       }
     ],
     "breakpoints": [
