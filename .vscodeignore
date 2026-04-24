@@ -1,6 +1,7 @@
 # resources/ packaged (designer templates in resources/designerTemplates/)
 .vscode/**
 .roo/**
+.agents/**
 .vscode-test/**
 .cursor/**
 .dev/**
