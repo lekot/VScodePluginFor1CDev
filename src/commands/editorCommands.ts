@@ -59,7 +59,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
       try {
         Logger.info(`Opening XML file: ${pathToOpen}`);
         const uri = vscode.Uri.file(pathToOpen);
-        await vscode.window.showTextDocument(uri);
+        await vscode.window.showTextDocument(uri, { preview: false });
       } catch (err) {
         Logger.error('Failed to open XML', err);
         vscode.window.showErrorMessage(
@@ -93,7 +93,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
           }
         }
         Logger.info(`Opening BSL module: ${fp}`);
-        await vscode.window.showTextDocument(vscode.Uri.file(fp));
+        await vscode.window.showTextDocument(vscode.Uri.file(fp), { preview: false });
       } catch (err) {
         Logger.error('Failed to open BSL module', err);
         vscode.window.showErrorMessage(
@@ -118,7 +118,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
       const { formXmlPath } = getFormPaths(target.filePath);
       const uri = vscode.Uri.file(formXmlPath);
       try {
-        await vscode.commands.executeCommand('vscode.openWith', uri, '1c-form-editor');
+        await vscode.commands.executeCommand('vscode.openWith', uri, '1c-form-editor', { preview: false });
       } catch (err) {
         Logger.error('Failed to open form editor', err);
         vscode.window.showErrorMessage(

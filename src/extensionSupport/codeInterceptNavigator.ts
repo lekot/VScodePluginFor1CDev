@@ -114,7 +114,7 @@ export async function showInterceptors(bslFilePath: string, state: ExtensionStat
   try {
     const uri = vscode.Uri.file(bslFilePath);
     const doc = await vscode.workspace.openTextDocument(uri);
-    const editor = await vscode.window.showTextDocument(doc);
+    const editor = await vscode.window.showTextDocument(doc, { preview: false });
     const lineIndex = picked.entry.line - 1;
     const range = new vscode.Range(lineIndex, 0, lineIndex, 0);
     editor.selection = new vscode.Selection(lineIndex, 0, lineIndex, 0);

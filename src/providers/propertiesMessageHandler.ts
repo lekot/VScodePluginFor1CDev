@@ -867,6 +867,7 @@ async function openBslModuleAtProcedure(moduleFsPath: string, procedureName: str
   const doc = await vscode.workspace.openTextDocument(uri);
   const editor = await vscode.window.showTextDocument(doc, {
     viewColumn: vscode.ViewColumn.One,
+    preview: false,
   });
   if (procedureName) {
     const procedures = await parseBslModuleProcedures(moduleFsPath);

@@ -116,7 +116,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       returnLabel
     );
     if (choice === returnLabel) {
-      await vscode.commands.executeCommand('vscode.openWith', documentUri, '1c-form-editor');
+      await vscode.commands.executeCommand('vscode.openWith', documentUri, '1c-form-editor', { preview: false });
     }
   }
 
