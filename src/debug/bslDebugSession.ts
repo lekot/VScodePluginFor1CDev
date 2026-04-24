@@ -22,7 +22,7 @@ import {
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
-import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode } from './rdbg/rdbgTypes';
+import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode, RdbgEvalResult } from './rdbg/rdbgTypes';
 import { ReferencesTable } from './referencesTable';
 import { BslAttachConfiguration, BslLaunchConfiguration } from './types';
 import { DebuggeeLauncher, getFreePort } from './debuggeeLauncher';
@@ -270,6 +270,8 @@ export class BslDebugSession extends DebugSession {
     private _launcher: DebuggeeLauncher | undefined;
     /** Dedup key for last StoppedEvent — prevents repeated UI refresh on each ping tick while paused. */
     private _lastStoppedKey: string = '';
+    /** Successful DAP watch evaluations cached while execution stays on the same stop. */
+    private readonly _watchEvaluateCache = new Map<string, RdbgEvalResult>();
     /** Maps DAP frameId → {threadId, frameLevel}. Cleared on continued for the relevant thread. */
     private readonly _frameRefs = new ReferencesTable<FrameRef>();
     /** Maps DAP variablesReference → {threadId, frameLevel, path, view}. Cleared on continued. */
@@ -902,7 +904,7 @@ export class BslDebugSession extends DebugSession {
                 // Individual expressions work via evaluateRequest (evalExpr).
                 children = [];
             } else if (state.path.length === 0) {
-                // Top-level locals scope: use evalLocalVariables (with ADR-1 fallback)
+                // Top-level locals scope is intentionally safe-empty in RdbgClient.
                 children = await this._client.evalLocalVariables(targetId, state.frameLevel);
             } else {
                 // Drilldown: evaluate path to get nested properties/elements
@@ -959,7 +961,19 @@ export class BslDebugSession extends DebugSession {
             const frameRef = args.frameId !== undefined ? this._frameRefs.get(args.frameId) : undefined;
             const frameLevel = frameRef?.frameLevel ?? 0;
 
-            const result = await this._client.evaluate(targetId, args.expression, frameLevel);
+            const watchCacheKey =
+                args.context === 'watch'
+                    ? `${targetId}\n${frameLevel}\n${args.expression}`
+                    : undefined;
+
+            let result: RdbgEvalResult | undefined =
+                watchCacheKey !== undefined ? this._watchEvaluateCache.get(watchCacheKey) : undefined;
+            if (result === undefined) {
+                result = await this._client.evaluate(targetId, args.expression, frameLevel);
+                if (watchCacheKey !== undefined && !result.error) {
+                    this._watchEvaluateCache.set(watchCacheKey, result);
+                }
+            }
 
             if (result.error) {
                 this.sendErrorResponse(response, 1006, result.error);
@@ -1192,6 +1206,9 @@ export class BslDebugSession extends DebugSession {
 
             // Dedup: skip StoppedEvent if same position/reason as last ping
             const stoppedKey = `${e.targetId}:${e.callStack?.[0]?.lineNo ?? ''}:${e.reason}`;
+            if (stoppedKey !== this._lastStoppedKey) {
+                this._watchEvaluateCache.clear();
+            }
             if (stoppedKey === this._lastStoppedKey) {
                 return;
             }
@@ -1220,6 +1237,7 @@ export class BslDebugSession extends DebugSession {
                 this._pausedThreadId = undefined;
             }
             this._lastStoppedKey = '';
+            this._watchEvaluateCache.clear();
             // Phase 4: clear stale frame/variable references for this thread
             this._frameRefs.clear(f => f.threadId === threadId);
             this._variableRefs.clear(v => v.threadId === threadId);

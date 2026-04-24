@@ -4,6 +4,7 @@ import {
   createIbcmdStreamChunkDecoders,
   decodeConsoleStream,
   decodeConsoleStreamAuto,
+  decodeIbcmdProcessStreams,
   isLikelyUtf8,
 } from '../../src/services/ibcmd/consoleStreamDecoder';
 
@@ -77,6 +78,18 @@ suite('consoleStreamDecoder decodeConsoleStreamAuto', () => {
       // Non-Windows: invalid UTF-8 uses utf8 toString (replacement / mojibake), not OEM.
       assert.ok(typeof decodeConsoleStreamAuto(raw) === 'string');
     }
+  });
+});
+
+suite('consoleStreamDecoder decodeIbcmdProcessStreams', () => {
+  test('decodes stdout and stderr buffers with the selected encoding', () => {
+    const streams = decodeIbcmdProcessStreams(
+      iconv.encode('Вывод', 'cp1251'),
+      iconv.encode('Ошибка', 'cp1251'),
+      'windows1251',
+    );
+
+    assert.deepStrictEqual(streams, { stdout: 'Вывод', stderr: 'Ошибка' });
   });
 });
 

@@ -314,28 +314,13 @@ export class RdbgClient extends EventEmitter {
 
     /**
      * Get local variables at a specific stack frame.
-     * Phase 4 (ADR-1): first attempts evalLocalVariables (direct platform call).
-     * If that fails (HTTP error / parse error), falls back to evalExpressionPath
-     * with an empty path and view=context (equivalent to local context).
+     * Top-level locals are intentionally disabled: dbgs can terminate on both the
+     * wire-level evalLocalVariables command and the empty-path evalExpr fallback.
      */
     async evalLocalVariables(targetId: string, frameLevel: number): Promise<RdbgVariableNode[]> {
         this.requireAttached('evalLocalVariables');
-        const seanceId = this._seanceMap.get(targetId) ?? '';
-        const body = codec.encodeEvalLocalVariables(this.debugUiId, targetId, seanceId, frameLevel, this._infobaseAlias);
-        this.emit('log', `[evalLocalVariables] REQUEST target=${targetId} frame=${frameLevel}`);
-        try {
-            const xml = await this.transport.send('evalLocalVariables', body);
-            this.emit('log', `[evalLocalVariables] RESPONSE ${xml.length} bytes`);
-            const expanded = codec.decodeEvalResultExpanded(xml);
-            // Local variables come back as children of the context result
-            return expanded.children;
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            this.emit('log', `[evalLocalVariables] failed, falling back to evalExpr with empty path: ${msg}`);
-            console.warn(`[RdbgClient] evalLocalVariables failed (ADR-1 fallback): ${msg}`);
-            const fallback = await this.evalExpressionPath(targetId, frameLevel, [], 'context');
-            return fallback.children;
-        }
+        this.emit('log', `[evalLocalVariables] skipped unsafe top-level locals target=${targetId} frame=${frameLevel}`);
+        return [];
     }
 
     /**

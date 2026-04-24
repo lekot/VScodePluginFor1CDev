@@ -67,3 +67,4 @@ out-test-bsl/
 
 # Smoke test timestamped artifact dumps (failures.json / summary.md per run)
 test/fixtures/**/smoke-artifacts/
+/.agents/*

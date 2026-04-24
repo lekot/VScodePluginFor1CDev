@@ -1,1 +1,1 @@
-// ManagerModule stub for tests
+﻿// ManagerModule stub for tests

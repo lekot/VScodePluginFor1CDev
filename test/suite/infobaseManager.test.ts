@@ -4,6 +4,15 @@ import { InfobaseManager } from '../../src/infobases/infobaseManager';
 import type { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 
 suite('InfobaseManager (WOW 2A cascade delete)', () => {
+  test('catalog and bindings getters expose constructor dependencies', () => {
+    const bindingManager = {} as BindingManager;
+    const storage = {} as InfobaseStorageService;
+    const mgr = new InfobaseManager(storage, bindingManager);
+
+    assert.strictEqual(mgr.catalog, storage);
+    assert.strictEqual(mgr.bindings, bindingManager);
+  });
+
   test('removeCatalogEntry removes id from bindings before storage', async () => {
     const order: string[] = [];
     const bindingManager = {
