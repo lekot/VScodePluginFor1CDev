@@ -60,6 +60,26 @@ export class PropertiesProvider {
     void this.treeDataProvider;
   }
 
+  /** Returns true if the properties panel is currently open (created and not disposed). */
+  public isOpen(): boolean {
+    return this.panel !== undefined;
+  }
+
+  /**
+   * Update panel content for a new node IF the panel is already open.
+   * No-op if the panel has not been created or was closed by the user.
+   * Does NOT reveal or focus the panel.
+   */
+  public async updateIfOpen(node: TreeNode | undefined): Promise<void> {
+    if (!this.panel) {
+      return;
+    }
+    this.currentFormSelection = null;
+    this.currentFormSelectionRevision += 1;
+    this.currentNode = node;
+    this.updateWebviewContent();
+  }
+
   /**
    * Show properties for a tree node (or empty state when node is undefined)
    * Creates new panel or reuses existing one (singleton pattern)

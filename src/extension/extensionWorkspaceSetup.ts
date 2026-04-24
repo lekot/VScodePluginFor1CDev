@@ -113,9 +113,11 @@ function registerMetadataTreeProviders(
       Logger.debug(`Tree selection changed: ${selectedNode.name}`);
 
       if (selectedNode.type === MetadataType.Role && selectedNode.filePath) {
-        await vscode.commands.executeCommand('1c-metadata-tree.openRightsEditor', selectedNode);
-      } else if (state.propertiesProvider) {
-        await vscode.commands.executeCommand('1c-metadata-tree.showProperties', selectedNode);
+        if (state.rolesRightsEditorProvider?.isOpen()) {
+          await state.rolesRightsEditorProvider.updateIfOpen(selectedNode);
+        }
+      } else if (state.propertiesProvider?.isOpen()) {
+        await state.propertiesProvider.updateIfOpen(selectedNode);
       }
     }
   });

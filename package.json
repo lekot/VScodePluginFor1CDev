@@ -551,6 +551,11 @@
         "command": "1c-metadata-tree.diagnoseRevealForTest",
         "title": "Test: Diagnose reveal",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.getPropertiesOpenStateForTest",
+        "title": "Test: Get properties panel open state",
+        "category": "CDT 41"
       }
     ],
     "customEditors": [
@@ -639,6 +644,10 @@
         },
         {
           "command": "1c-metadata-tree.diagnoseRevealForTest",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.getPropertiesOpenStateForTest",
           "when": "false"
         }
       ],

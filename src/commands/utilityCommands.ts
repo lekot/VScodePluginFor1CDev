@@ -93,6 +93,11 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     (): string | null => state.treeView?.selection?.[0]?.name ?? null
   );
 
+  const getPropertiesOpenStateForTestCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.getPropertiesOpenStateForTest',
+    (): boolean => state.propertiesProvider?.isOpen() ?? false
+  );
+
   /**
    * Test-harness command — same pattern as getSelectionNameForTest.
    * Diagnoses why revealActiveFileInTree may fail for a given file path.
@@ -136,6 +141,7 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     openIbcmdImportReportCommand,
     getTreeReadyForTestCommand,
     getSelectionNameForTestCommand,
+    getPropertiesOpenStateForTestCommand,
     diagnoseRevealForTestCommand,
     refreshCommand,
   ];

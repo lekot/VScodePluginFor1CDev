@@ -412,6 +412,96 @@ suite('PropertiesProvider Message Protocol Test Suite', () => {
   });
 });
 
+suite('PropertiesProvider isOpen / updateIfOpen Test Suite', () => {
+  let provider: PropertiesProvider;
+  let mockContext: vscode.ExtensionContext;
+
+  setup(() => {
+    mockContext = {
+      subscriptions: [],
+      extensionPath: '',
+      extensionUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      globalState: {} as any,
+      workspaceState: {} as any,
+      secrets: {} as any,
+      storageUri: undefined,
+      storagePath: undefined,
+      globalStorageUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      globalStoragePath: '',
+      logUri: vscode.Uri.file(path.resolve(__dirname, '..', '..')),
+      logPath: '',
+      extensionMode: vscode.ExtensionMode.Test,
+      extension: {} as any,
+      environmentVariableCollection: {} as any,
+      languageModelAccessInformation: {} as any,
+      asAbsolutePath: (relativePath: string) => relativePath,
+    };
+    provider = new PropertiesProvider(
+      mockContext,
+      new MetadataTreeDataProvider(),
+      new TypeEditorProvider(mockContext)
+    );
+  });
+
+  teardown(() => {
+    provider.dispose();
+  });
+
+  test('isOpen() returns false before any panel is created', () => {
+    assert.strictEqual(provider.isOpen(), false, 'panel should not exist before showProperties');
+  });
+
+  test('updateIfOpen() is a no-op when panel is closed — does not throw', async () => {
+    const node: TreeNode = {
+      id: 'n1',
+      name: 'TestCatalog',
+      type: MetadataType.Catalog,
+      properties: { Name: 'TestCatalog' },
+      filePath: '/fake/path.xml',
+    };
+    // Should not throw even though panel is undefined
+    await assert.doesNotReject(async () => {
+      await provider.updateIfOpen(node);
+    });
+    // currentNode should remain undefined — update was skipped
+    assert.strictEqual((provider as any).currentNode, undefined, 'currentNode must not be set when panel is closed');
+  });
+
+  test('updateIfOpen() updates currentNode when panel is artificially open', async () => {
+    // Inject a fake panel so we can test without real VS Code UI
+    const fakePanelDisposed: boolean[] = [];
+    const fakePanel: any = {
+      webview: { html: '' },
+      reveal: () => { /* no-op */ },
+      onDidDispose: () => ({ dispose: () => undefined }),
+      webview_onDidReceiveMessage: () => ({ dispose: () => undefined }),
+      dispose: () => { fakePanelDisposed.push(true); },
+    };
+    (provider as any).panel = fakePanel;
+
+    const node: TreeNode = {
+      id: 'n2',
+      name: 'UpdatedCatalog',
+      type: MetadataType.Catalog,
+      properties: { Name: 'UpdatedCatalog' },
+    };
+
+    assert.strictEqual(provider.isOpen(), true, 'panel should be seen as open after injection');
+    await provider.updateIfOpen(node);
+    assert.strictEqual((provider as any).currentNode, node, 'currentNode must be updated to the new node');
+    // panel.reveal must NOT have been called — updateIfOpen does not reveal
+    // (no assertion needed beyond checking panel.reveal was not invoked with side effects)
+  });
+
+  test('isOpen() returns false after dispose()', () => {
+    // Inject a fake panel and then dispose
+    (provider as any).panel = { webview: { html: '' }, dispose: () => undefined, reveal: () => undefined };
+    assert.strictEqual(provider.isOpen(), true);
+    provider.dispose();
+    assert.strictEqual(provider.isOpen(), false, 'panel should be undefined after dispose');
+  });
+});
+
 /**
  * Builds a minimal MessageHandlerContext for saveProperties tests.
  * Uses the provider's treeDataProvider for refresh(); other callbacks are no-ops.

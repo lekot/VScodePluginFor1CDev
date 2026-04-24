@@ -75,12 +75,30 @@ export class RolesRightsEditorProvider {
     return primary;
   }
 
+  /** Returns true if the rights editor panel is currently open (created and not disposed). */
+  public isOpen(): boolean {
+    return this.panel !== undefined;
+  }
+
+  /**
+   * Update panel content for a new role node IF the panel is already open.
+   * No-op if the panel has not been created or was closed by the user.
+   * Does NOT reveal or focus the panel.
+   */
+  public async updateIfOpen(node: import('../models/treeNode').TreeNode): Promise<void> {
+    if (!this.panel || !node.filePath) {
+      return;
+    }
+    await this.show(node.filePath, undefined, { suppressReveal: true });
+  }
+
   /**
    * Open the rights editor for a specific role file
    * @param roleFilePath Path to the Role.xml file
    * @param configPath Optional configuration path - if provided, skips the search for configuration root
+   * @param options Internal options (suppressReveal: skip panel.reveal when panel already exists)
    */
-  public async show(roleFilePath: string, configPath?: string | null): Promise<void> {
+  public async show(roleFilePath: string, configPath?: string | null, options?: { suppressReveal?: boolean }): Promise<void> {
     const loadGeneration = ++this.objectsLoadGeneration;
     try {
       // Parse the role XML file
@@ -93,7 +111,7 @@ export class RolesRightsEditorProvider {
       // Create or reveal webview panel immediately; load metadata in the background
       if (!this.panel) {
         this.panel = this.createPanel();
-      } else {
+      } else if (!options?.suppressReveal) {
         this.panel.reveal(vscode.ViewColumn.Beside);
       }
       this.panel.title = `Rights: ${this.currentRoleModel.name}`;
