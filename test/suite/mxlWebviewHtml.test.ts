@@ -1,10 +1,19 @@
 import * as assert from 'assert';
-import { buildMxlParserErrorHtml, buildMxlPreviewHtml } from '../../src/mxlPreview/mxlWebviewHtml';
+import { buildMxlErrorHtml, buildMxlParserErrorHtml, buildMxlPreviewHtml } from '../../src/mxlPreview/mxlWebviewHtml';
 import { MxlRenderModel } from '../../src/mxlPreview/mxlRenderModel';
 
 const mockWebview = { cspSource: 'vscode-test-csp' } as any;
 
 suite('mxlWebviewHtml', () => {
+  test('renders preview load error and escapes dynamic text', () => {
+    const html = buildMxlErrorHtml(mockWebview, 'broken/<file>.mxl', new Error('bad <xml>'));
+
+    assert.ok(html.includes('MXL preview error'));
+    assert.ok(html.includes('broken/&lt;file&gt;.mxl'));
+    assert.ok(html.includes('bad &lt;xml&gt;'));
+    assert.ok(html.includes('vscode-test-csp'));
+  });
+
   test('renders empty-state when there are no tables', () => {
     const model: MxlRenderModel = {
       version: 'v1',

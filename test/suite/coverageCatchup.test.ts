@@ -14,6 +14,7 @@ import {
   buildInfobaseConfigExportStatusArgs,
   buildInfobaseConfigImportFilesArgs,
 } from '../../src/services/ibcmd/ibcmdInfobaseConfigArgs';
+import { randomIbcmdTempSuffix } from '../../src/services/ibcmd/ibcmdOfflineDataDir';
 import {
   detectChangedConfigFiles,
   type GitRepository,
@@ -109,6 +110,15 @@ suite('coverage catch-up for pure helpers', () => {
     assert.ok(args.includes('--extension=Ext1'));
     assert.ok(args.includes('--base=/dump/ConfigDumpInfo.xml'));
     assert.ok(args.includes('--short'));
+  });
+
+  test('ibcmd temp suffix is hex and changes between calls', () => {
+    const first = randomIbcmdTempSuffix();
+    const second = randomIbcmdTempSuffix();
+
+    assert.match(first, /^[0-9a-f]{16}$/);
+    assert.match(second, /^[0-9a-f]{16}$/);
+    assert.notStrictEqual(first, second);
   });
 
   test('tree argument guards distinguish folder and entry payloads', () => {
