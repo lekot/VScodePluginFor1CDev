@@ -904,7 +904,7 @@ export class BslDebugSession extends DebugSession {
                 // Individual expressions work via evaluateRequest (evalExpr).
                 children = [];
             } else if (state.path.length === 0) {
-                // Top-level locals scope: use evalLocalVariables (with ADR-1 fallback)
+                // Top-level locals scope is intentionally safe-empty in RdbgClient.
                 children = await this._client.evalLocalVariables(targetId, state.frameLevel);
             } else {
                 // Drilldown: evaluate path to get nested properties/elements

@@ -314,15 +314,13 @@ export class RdbgClient extends EventEmitter {
 
     /**
      * Get local variables at a specific stack frame.
-     * Keep the public method name for callers, but intentionally use evalExpr with
-     * an empty path: dbgs 8.3.27.2130 can terminate on the wire-level
-     * evalLocalVariables command when the DAP Locals scope is expanded.
+     * Top-level locals are intentionally disabled: dbgs can terminate on both the
+     * wire-level evalLocalVariables command and the empty-path evalExpr fallback.
      */
     async evalLocalVariables(targetId: string, frameLevel: number): Promise<RdbgVariableNode[]> {
         this.requireAttached('evalLocalVariables');
-        this.emit('log', `[evalLocalVariables] using evalExpr context fallback target=${targetId} frame=${frameLevel}`);
-        const fallback = await this.evalExpressionPath(targetId, frameLevel, [], 'context');
-        return fallback.children;
+        this.emit('log', `[evalLocalVariables] skipped unsafe top-level locals target=${targetId} frame=${frameLevel}`);
+        return [];
     }
 
     /**
