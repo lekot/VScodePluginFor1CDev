@@ -30,6 +30,7 @@ export const coreSuiteFiles: string[] = [
   'suite/configHelpers.test.js',
   'suite/connectionString.test.js',
   'suite/commandHelpers.test.js',
+  'suite/coverageCatchup.test.js',
   'suite/optimisticNodeBuilder.test.js',
   'suite/elementCommands.test.js',
   'suite/editorCommands.test.js',
