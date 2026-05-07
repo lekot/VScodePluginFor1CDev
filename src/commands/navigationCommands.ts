@@ -156,12 +156,13 @@ export function registerNavigationCommands(
   const revealActiveFileCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.revealActiveFileInTree',
     async () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) {
+      const uri =
+        vscode.window.activeTextEditor?.document.uri ??
+        state.formEditorProvider?.getActiveDocumentUri();
+      if (!uri) {
         vscode.window.showInformationMessage(MESSAGES.REVEAL_NO_ACTIVE_EDITOR);
         return;
       }
-      const uri = editor.document.uri;
       if (uri.scheme !== 'file') {
         vscode.window.showInformationMessage(MESSAGES.REVEAL_NOT_FILE_URI);
         return;

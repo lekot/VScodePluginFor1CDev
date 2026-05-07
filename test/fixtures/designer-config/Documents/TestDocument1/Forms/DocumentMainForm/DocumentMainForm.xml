@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<Form uuid="0ce7f0ed-f0c1-41ec-b9df-000000000096">
+		<Properties>
+			<Name>DocumentMainForm</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Document Main Form</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+		</Properties>
+	</Form>
+</MetaDataObject>
