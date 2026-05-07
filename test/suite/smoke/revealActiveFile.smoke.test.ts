@@ -225,6 +225,57 @@ suite('Smoke: revealActiveFileInTree command', () => {
     }
   });
 
+  test('smoke: revealActiveFileInTree - document form custom editor reveals Form node', async function () {
+    this.timeout(30000);
+
+    const formXmlPath = path.join(
+      workspacePath,
+      'Documents',
+      'TestDocument1',
+      'Forms',
+      'DocumentMainForm',
+      'Ext',
+      'Form.xml'
+    );
+
+    if (!fs.existsSync(formXmlPath)) {
+      recordFailure({
+        step: 'revealActiveFile:documentForm:precondition',
+        error: new Error('Fixture file not found: ' + formXmlPath),
+        command: '1c-metadata-tree.revealActiveFileInTree',
+      });
+      assert.fail('Fixture file not found: ' + formXmlPath);
+    }
+
+    try {
+      await vscode.commands.executeCommand('vscode.openWith', vscode.Uri.file(formXmlPath), '1c-form-editor', {
+        preview: false,
+      });
+      await new Promise((r) => setTimeout(r, 1000));
+
+      await vscode.commands.executeCommand('1c-metadata-tree.revealActiveFileInTree');
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const selectedName = await vscode.commands.executeCommand<string | null>(
+        '1c-metadata-tree.getSelectionNameForTest'
+      );
+      assert.strictEqual(
+        selectedName,
+        'DocumentMainForm',
+        'Selected node should be DocumentMainForm but got: ' + selectedName
+      );
+    } catch (err) {
+      recordFailure({
+        step: 'revealActiveFile:documentForm',
+        error: err instanceof Error ? err : new Error(String(err)),
+        command: '1c-metadata-tree.revealActiveFileInTree',
+      });
+      throw err;
+    } finally {
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    }
+  });
+
   // TODO(#88): This test is a no-throw check only because VS Code does not expose
   // an API to intercept showInformationMessage() calls from tests, so we cannot
   // assert the info message text. The primary assertion is that the command

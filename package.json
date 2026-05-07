@@ -1146,6 +1146,12 @@
         "key": "ctrl+alt+t",
         "mac": "cmd+alt+t",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "1c-metadata-tree.revealActiveFileInTree",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t",
+        "when": "activeWebviewPanelId == '1c-form-editor'"
       }
     ],
     "breakpoints": [

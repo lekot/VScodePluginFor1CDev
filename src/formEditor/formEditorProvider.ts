@@ -34,6 +34,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
   private dirtyDocuments = new Set<string>();
   private contextByDocument = new Map<string, MessageHandlerContext>();
   private activeSelectionDocumentUri: string | null = null;
+  private activeDocumentUri: vscode.Uri | null = null;
   private latestSelectionByDocument = new Map<
     string,
     {
@@ -85,6 +86,16 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     };
     const docKey = document.uri.toString();
     this.contextByDocument.set(docKey, ctx);
+    if (webviewPanel.active) {
+      this.activeDocumentUri = document.uri;
+    }
+    webviewPanel.onDidChangeViewState((event) => {
+      if (event.webviewPanel.active) {
+        this.activeDocumentUri = document.uri;
+      } else if (this.activeDocumentUri?.toString() === docKey) {
+        this.activeDocumentUri = null;
+      }
+    });
     const onMessage = createSerializedMessageHandler(ctx);
     webviewPanel.webview.onDidReceiveMessage(onMessage);
     webviewPanel.onDidDispose(() => {
@@ -104,6 +115,9 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     if (this.activeSelectionDocumentUri === key) {
       this.activeSelectionDocumentUri = null;
     }
+    if (this.activeDocumentUri?.toString() === key) {
+      this.activeDocumentUri = null;
+    }
     if (!dirty) {
       return;
     }
@@ -118,6 +132,10 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     if (choice === returnLabel) {
       await vscode.commands.executeCommand('vscode.openWith', documentUri, '1c-form-editor', { preview: false });
     }
+  }
+
+  public getActiveDocumentUri(): vscode.Uri | null {
+    return this.activeDocumentUri;
   }
 
   public gotoEventHandler(payload: { docUri: string; handlerName: string }): void {
