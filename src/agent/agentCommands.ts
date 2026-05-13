@@ -74,6 +74,15 @@ import type {
     SkdEditParams,
     SkdValidateParams,
 } from './agentSkdTypes';
+import { XdtoAgentOperations } from './agentXdtoOperations';
+import type {
+    XdtoCompareParams,
+    XdtoCreateFromXsdParams,
+    XdtoExportXsdParams,
+    XdtoGetPackageParams,
+    XdtoImportXsdParams,
+    XdtoMergeParams,
+} from './agentXdtoTypes';
 
 /**
  * Регистрирует Agent API команды.
@@ -796,6 +805,102 @@ export function registerAgentCommands(
         }
     );
 
+    const listXdtoPackagesCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.xdto.listPackages',
+        async () => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new XdtoAgentOperations(configRoot);
+            return await ops.listPackages();
+        }
+    );
+
+    const getXdtoPackageCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.xdto.getPackage',
+        async (params: XdtoGetPackageParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new XdtoAgentOperations(configRoot);
+            return await ops.getPackage(params);
+        }
+    );
+
+    const exportXdtoXsdCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.xdto.exportXsd',
+        async (params: XdtoExportXsdParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new XdtoAgentOperations(configRoot);
+            return await ops.exportXsd(params);
+        }
+    );
+
+    const importXdtoXsdCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.xdto.importXsd',
+        async (params: XdtoImportXsdParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new XdtoAgentOperations(configRoot);
+            const result = await ops.importXsd(params);
+            if (result.success) {
+                getTreeDataProvider()?.refresh();
+            }
+            return result;
+        }
+    );
+
+    const createXdtoFromXsdCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.xdto.createFromXsd',
+        async (params: XdtoCreateFromXsdParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new XdtoAgentOperations(configRoot);
+            const result = await ops.createFromXsd(params);
+            if (result.success) {
+                getTreeDataProvider()?.refresh();
+            }
+            return result;
+        }
+    );
+
+    const compareXdtoPackageCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.xdto.compare',
+        async (params: XdtoCompareParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new XdtoAgentOperations(configRoot);
+            return await ops.compare(params);
+        }
+    );
+
+    const mergeXdtoPackageCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.xdto.merge',
+        async (params: XdtoMergeParams) => {
+            const configRoot = await getConfigRoot();
+            if (!configRoot) {
+                return { success: false, error: 'Корень конфигурации не найден.' };
+            }
+            const ops = new XdtoAgentOperations(configRoot);
+            const result = await ops.merge(params);
+            if (result.success) {
+                getTreeDataProvider()?.refresh();
+            }
+            return result;
+        }
+    );
+
     context.subscriptions.push(
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
@@ -821,5 +926,8 @@ export function registerAgentCommands(
         formsStartCommand, formsExecCommand, formsStopCommand,
         formsShotCommand, formsStatusCommand,
         skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,
+        listXdtoPackagesCommand, getXdtoPackageCommand, exportXdtoXsdCommand,
+        importXdtoXsdCommand, createXdtoFromXsdCommand,
+        compareXdtoPackageCommand, mergeXdtoPackageCommand,
     );
 }

@@ -80,6 +80,13 @@ export const MESSAGES = {
   SUBSYSTEM_COMMAND_INTERFACE_NO_FILE: 'У подсистемы нет файла CommandInterface.xml',
   SUBSYSTEM_COMMAND_INTERFACE_SAVED: 'Командный интерфейс сохранён',
 
+  XDTO_PACKAGE_TITLE: 'Редактор XDTO-пакета',
+  XDTO_PACKAGE_NO_METADATA_FILE: 'CDT 41: у XDTO-пакета нет пути к XML-файлу метаданных.',
+  XDTO_PACKAGE_READ_FAILED: 'CDT 41: не удалось прочитать или создать файл XDTO-пакета',
+  XDTO_PACKAGE_WRITE_FAILED: 'CDT 41: не удалось записать файл XDTO-пакета',
+  XDTO_PACKAGE_VALIDATION_FAILED: 'CDT 41: файл XDTO-пакета содержит ошибку XML',
+  XDTO_PACKAGE_SAVED: 'Файл XDTO-пакета сохранён',
+
   COT_PREDEFINED_VIEW_TITLE: 'Предопределённые виды характеристик',
   COT_PREDEFINED_EMPTY: 'Нет предопределённых видов характеристик',
   COT_PREDEFINED_READ_FAILED: 'Не удалось прочитать предопределённые виды',

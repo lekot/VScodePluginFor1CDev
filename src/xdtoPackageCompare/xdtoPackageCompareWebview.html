@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Сравнение XDTO-пакета</title>
+  <style nonce="${nonce}">
+    :root {
+      color-scheme: light dark;
+      --border: var(--vscode-panel-border, #3c3c3c);
+      --muted: var(--vscode-descriptionForeground, #888);
+      --active: var(--vscode-list-activeSelectionBackground, rgba(0, 127, 212, 0.28));
+      --hover: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.14));
+      --input-bg: var(--vscode-input-background, var(--vscode-editor-background));
+      --button: var(--vscode-button-background, #0e639c);
+      --button-fg: var(--vscode-button-foreground, #fff);
+      --right: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
+      --left: var(--vscode-gitDecoration-deletedResourceForeground, #f48771);
+      --changed: var(--vscode-gitDecoration-modifiedResourceForeground, #cca700);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 14px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .path {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    button,
+    input {
+      font: inherit;
+    }
+    button {
+      min-height: 28px;
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      background: var(--vscode-button-secondaryBackground, transparent);
+      cursor: pointer;
+    }
+    button:hover { background: var(--hover); }
+    button.primary {
+      color: var(--button-fg);
+      background: var(--button);
+      border-color: var(--button);
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+    }
+    .status {
+      color: var(--muted);
+      margin-left: auto;
+    }
+    .summary {
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .compare-grid,
+    .compare-row {
+      display: grid;
+      grid-template-columns: minmax(260px, 38%) minmax(180px, 31%) minmax(180px, 31%);
+    }
+    .compare-grid {
+      border: 1px solid var(--border);
+      min-height: calc(100vh - 150px);
+      overflow: auto;
+    }
+    .compare-head {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: contents;
+      font-weight: 600;
+    }
+    .compare-head > div {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    }
+    .compare-tree {
+      grid-column: 1 / -1;
+    }
+    .compare-row {
+      min-height: 28px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+    }
+    .compare-row:hover { background: var(--hover); }
+    .cell {
+      min-width: 0;
+      padding: 5px 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cell + .cell { border-left: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+    .name-cell {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .indent {
+      width: 18px;
+      flex: 0 0 18px;
+    }
+    .checkbox-spacer {
+      width: 13px;
+      flex: 0 0 13px;
+    }
+    .node-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .badge {
+      flex: 0 0 auto;
+      min-width: 64px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 1px 6px;
+      font-size: 11px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .status-rightOnly .badge { color: var(--right); }
+    .status-leftOnly .badge { color: var(--left); }
+    .status-changed .badge { color: var(--changed); }
+    .empty {
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="title">Сравнение XDTO-пакета</h1>
+      <div class="path" id="paths"></div>
+    </div>
+  </header>
+  <div class="toolbar">
+    <label><input id="show-different-only" type="checkbox" checked> Только различия</label>
+    <button id="select-visible">Отметить видимые</button>
+    <button id="clear-selection">Снять отметки</button>
+    <button id="merge-selected" class="primary">Объединить выбранное</button>
+    <span class="status" id="status"></span>
+  </div>
+  <div class="summary" id="summary"></div>
+  <div class="compare-grid">
+    <div class="compare-head">
+      <div>Элемент</div>
+      <div id="left-title">В конфигурации</div>
+      <div id="right-title">В файле</div>
+    </div>
+    <div id="compare-tree" class="compare-tree"></div>
+  </div>
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    // __XDTO_COMPARE_DATA_PLACEHOLDER__
+
+    let payload = window.__xdtoCompareData;
+    let selectedIds = new Set();
+    let showDifferentOnly = true;
+
+    const title = document.getElementById('title');
+    const paths = document.getElementById('paths');
+    const leftTitle = document.getElementById('left-title');
+    const rightTitle = document.getElementById('right-title');
+    const summary = document.getElementById('summary');
+    const tree = document.getElementById('compare-tree');
+    const status = document.getElementById('status');
+    const showDifferentOnlyInput = document.getElementById('show-different-only');
+    const mergeButton = document.getElementById('merge-selected');
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function attr(value) {
+      return esc(value).replace(/`/g, '&#96;');
+    }
+
+    function statusLabel(value) {
+      switch (value) {
+        case 'changed': return 'изменено';
+        case 'leftOnly': return 'только слева';
+        case 'rightOnly': return 'только справа';
+        default: return 'равно';
+      }
+    }
+
+    function hasVisibleDifference(node) {
+      return node.status !== 'equal' || (node.children || []).some(hasVisibleDifference);
+    }
+
+    function isVisible(node) {
+      return !showDifferentOnly || hasVisibleDifference(node);
+    }
+
+    function visibleMergeableIds(node) {
+      const ids = [];
+      if (!isVisible(node)) { return ids; }
+      if (node.mergeable) { ids.push(node.id); }
+      for (const child of node.children || []) {
+        ids.push(...visibleMergeableIds(child));
+      }
+      return ids;
+    }
+
+    function renderNode(node, depth) {
+      if (!isVisible(node)) { return ''; }
+      const checked = selectedIds.has(node.id) ? ' checked' : '';
+      const checkbox = node.mergeable
+        ? `<input type="checkbox" data-merge-checkbox data-id="${attr(node.id)}"${checked}>`
+        : '<span class="checkbox-spacer"></span>';
+      const indent = '<span class="indent"></span>'.repeat(depth);
+      const row = `<div class="compare-row status-${attr(node.status)}">` +
+        `<div class="cell name-cell">${indent}${checkbox}<span class="node-label" title="${attr(node.label)}">${esc(node.label)}</span><span class="badge">${statusLabel(node.status)}</span></div>` +
+        `<div class="cell" title="${attr(node.leftValue || '')}">${esc(node.leftValue || '')}</div>` +
+        `<div class="cell" title="${attr(node.rightValue || '')}">${esc(node.rightValue || '')}</div>` +
+        `</div>`;
+      return row + (node.children || []).map((child) => renderNode(child, depth + 1)).join('');
+    }
+
+    function render() {
+      title.textContent = payload.title;
+      leftTitle.textContent = payload.leftTitle;
+      rightTitle.textContent = payload.rightTitle;
+      paths.textContent = `${payload.schemaPath} ⇄ ${payload.sourcePath}`;
+      summary.textContent = `Различий: ${payload.stats.different}; доступно к объединению: ${payload.stats.mergeable}`;
+      const html = renderNode(payload.tree, 0);
+      tree.innerHTML = html || '<div class="empty">Различий нет</div>';
+      mergeButton.disabled = selectedIds.size === 0;
+      status.textContent = selectedIds.size > 0 ? `Выбрано: ${selectedIds.size}` : '';
+    }
+
+    showDifferentOnlyInput.addEventListener('change', () => {
+      showDifferentOnly = showDifferentOnlyInput.checked;
+      render();
+    });
+
+    document.getElementById('select-visible').addEventListener('click', () => {
+      selectedIds = new Set(visibleMergeableIds(payload.tree));
+      render();
+    });
+
+    document.getElementById('clear-selection').addEventListener('click', () => {
+      selectedIds.clear();
+      render();
+    });
+
+    tree.addEventListener('change', (event) => {
+      const checkbox = event.target.closest('input[data-merge-checkbox]');
+      if (!checkbox) { return; }
+      if (checkbox.checked) {
+        selectedIds.add(checkbox.dataset.id);
+      } else {
+        selectedIds.delete(checkbox.dataset.id);
+      }
+      render();
+    });
+
+    mergeButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'merge', selectedIds: Array.from(selectedIds) });
+      status.textContent = 'Объединение...';
+    });
+
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (message.type === 'mergeSuccess') {
+        payload = message.payload;
+        selectedIds.clear();
+        status.textContent = 'Сохранено';
+        render();
+      } else if (message.type === 'mergeError') {
+        status.textContent = message.message || 'Ошибка объединения';
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>

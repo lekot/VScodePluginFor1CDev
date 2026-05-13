@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Редактор пакета XDTO</title>
+  <style nonce="${nonce}">
+    :root {
+      color-scheme: light dark;
+      --border: var(--vscode-panel-border, #3c3c3c);
+      --muted: var(--vscode-descriptionForeground, #888);
+      --button: var(--vscode-button-background, #0e639c);
+      --button-fg: var(--vscode-button-foreground, #fff);
+      --danger: var(--vscode-errorForeground, #f48771);
+      --input-bg: var(--vscode-input-background, var(--vscode-editor-background));
+      --input-fg: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+      --list-hover: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.14));
+      --list-active: var(--vscode-list-activeSelectionBackground, rgba(0, 127, 212, 0.28));
+      --panel: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+    }
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .path {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      word-break: break-all;
+    }
+    .toolbar,
+    .tabs {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .toolbar {
+      margin-bottom: 10px;
+    }
+    .tabs {
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    button,
+    select,
+    input {
+      font: inherit;
+    }
+    button {
+      border: 1px solid var(--border);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      background: var(--vscode-button-secondaryBackground, transparent);
+      padding: 6px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      min-height: 28px;
+    }
+    button:hover {
+      background: var(--list-hover);
+    }
+    button.primary {
+      color: var(--button-fg);
+      background: var(--button);
+      border-color: var(--button);
+    }
+    button.tab {
+      border-bottom: 0;
+      border-radius: 4px 4px 0 0;
+      margin-bottom: -1px;
+    }
+    button.active {
+      color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+      background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+      border-color: var(--vscode-focusBorder, #007fd4);
+    }
+    button:disabled,
+    select:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    select,
+    input,
+    textarea {
+      border: 1px solid var(--vscode-input-border, var(--border));
+      color: var(--input-fg);
+      background: var(--input-bg);
+    }
+    select {
+      min-height: 28px;
+      padding: 4px 26px 4px 8px;
+    }
+    .status {
+      min-height: 18px;
+      color: var(--muted);
+      margin-left: auto;
+    }
+    .status.error { color: var(--danger); }
+    section { display: none; }
+    section.active { display: block; }
+    .constructor {
+      display: grid;
+      grid-template-columns: minmax(240px, 38%) minmax(320px, 1fr);
+      gap: 12px;
+      min-height: calc(100vh - 150px);
+    }
+    .pane {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      min-height: 0;
+    }
+    .pane-title {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .tree {
+      padding: 6px;
+      overflow: auto;
+      max-height: calc(100vh - 198px);
+    }
+    .tree ul {
+      list-style: none;
+      margin: 0;
+      padding-left: 16px;
+    }
+    .tree > ul {
+      padding-left: 0;
+    }
+    .tree button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 0;
+      border-radius: 3px;
+      padding: 4px 6px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      text-align: left;
+    }
+    .tree button.selected {
+      background: var(--list-active);
+      outline: 1px solid var(--vscode-focusBorder, transparent);
+    }
+    .node-icon {
+      width: 16px;
+      flex: 0 0 16px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .node-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .node-count {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .inspector {
+      padding: 12px;
+      overflow: auto;
+      max-height: calc(100vh - 198px);
+    }
+    .inspector h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: minmax(130px, 190px) minmax(180px, 1fr);
+      gap: 8px 12px;
+      align-items: center;
+    }
+    label {
+      color: var(--muted);
+    }
+    input {
+      width: 100%;
+      min-height: 28px;
+      padding: 4px 7px;
+    }
+    input[type="checkbox"] {
+      width: auto;
+      min-height: 0;
+      justify-self: start;
+    }
+    .type-picker {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 30px;
+      width: 100%;
+    }
+    .type-picker input {
+      border-radius: 0;
+      border-right: 0;
+    }
+    .type-picker-button {
+      min-height: 28px;
+      min-width: 30px;
+      padding: 0;
+      border-radius: 0;
+    }
+    .type-chooser-dialog[hidden] {
+      display: none;
+    }
+    .type-chooser-dialog {
+      position: fixed;
+      z-index: 100;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.38);
+    }
+    .type-chooser-panel {
+      width: min(560px, 100%);
+      max-height: min(640px, calc(100vh - 48px));
+      display: grid;
+      grid-template-rows: auto auto minmax(160px, 1fr) auto;
+      gap: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
+      padding: 14px;
+    }
+    .type-chooser-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .type-chooser-options {
+      overflow: auto;
+      border: 1px solid var(--vscode-input-border, var(--border));
+      background: var(--input-bg);
+      min-height: 160px;
+    }
+    .type-chooser-option {
+      width: 100%;
+      justify-content: flex-start;
+      border: 0;
+      border-radius: 0;
+      padding: 5px 8px;
+      color: var(--input-fg);
+      background: var(--input-bg);
+      text-align: left;
+    }
+    .type-chooser-option.selected {
+      background: var(--list-active);
+      outline: 1px solid var(--vscode-focusBorder, transparent);
+    }
+    .type-chooser-empty {
+      padding: 6px 8px;
+      color: var(--muted);
+    }
+    .type-chooser-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .readonly {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+    .diagnostics {
+      margin: 0 0 12px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    .diagnostics.error { border-color: var(--danger); color: var(--danger); }
+    .empty {
+      color: var(--muted);
+      padding: 8px 0;
+      font-style: italic;
+    }
+    textarea {
+      width: 100%;
+      min-height: calc(100vh - 150px);
+      resize: vertical;
+      padding: 10px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 13px);
+      line-height: 1.4;
+      white-space: pre;
+    }
+    @media (max-width: 760px) {
+      .constructor {
+        grid-template-columns: 1fr;
+      }
+      .tree,
+      .inspector {
+        max-height: none;
+      }
+      .field-grid {
+        grid-template-columns: 1fr;
+      }
+      .status {
+        flex-basis: 100%;
+        margin-left: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="title">Редактор пакета XDTO</h1>
+      <div class="path" id="schema-path"></div>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <button class="primary" id="save-button">Сохранить</button>
+    <select id="add-kind" title="Что добавить">
+      <option value="auto">Добавить по выбору</option>
+      <option value="import">Директива импорта</option>
+      <option value="valueType">Тип значения</option>
+      <option value="objectType">Тип объекта</option>
+      <option value="rootProperty">Корневое свойство</option>
+      <option value="objectProperty">Свойство объекта</option>
+      <option value="objectAttribute">Атрибут объекта</option>
+    </select>
+    <button id="add-button">Добавить</button>
+    <button id="delete-button">Удалить</button>
+    <span id="status" class="status"></span>
+  </div>
+
+  <div class="tabs">
+    <button id="constructor-tab" class="tab active">Конструктор</button>
+    <button id="source-tab" class="tab">XML</button>
+  </div>
+
+  <section id="constructor-section" class="active">
+    <div id="diagnostics"></div>
+    <div class="constructor">
+      <aside class="pane">
+        <div class="pane-title">Структура пакета</div>
+        <nav class="tree" id="tree" aria-label="Структура пакета XDTO"></nav>
+      </aside>
+      <main class="pane">
+        <div class="pane-title">Инспектор свойств</div>
+        <div class="inspector" id="inspector"></div>
+      </main>
+    </div>
+  </section>
+
+  <section id="source-section">
+    <textarea id="source" spellcheck="false"></textarea>
+  </section>
+
+  <div id="type-chooser-dialog" class="type-chooser-dialog" role="dialog" aria-modal="true" aria-labelledby="type-chooser-title" hidden>
+    <div class="type-chooser-panel">
+      <h2 id="type-chooser-title" class="type-chooser-title">Выбор типа</h2>
+      <input id="type-chooser-search" type="search" placeholder="Найти тип" autocomplete="off">
+      <div id="type-chooser-options" class="type-chooser-options" role="listbox"></div>
+      <div class="type-chooser-actions">
+        <button type="button" id="type-chooser-cancel">Отмена</button>
+        <button type="button" id="type-chooser-apply" class="primary">Выбрать</button>
+      </div>
+    </div>
+  </div>
+
+  <script nonce="${nonce}">
+    const vscode = acquireVsCodeApi();
+    // __XDTO_DATA_PLACEHOLDER__
+
+    const data = window.__xdtoData;
+    let model = normalizeModel(data.model);
+    let activeTab = 'constructor';
+    let selection = { kind: 'package' };
+    let dirty = false;
+    let dirtyKind = undefined;
+    let sourceHasPreview = false;
+    let activeTypePickerField = undefined;
+    let selectedTypeChoice = undefined;
+    let typeChooserPreviousFocus = undefined;
+    let typeOptionValues = [];
+    const collapsedGroups = new Set();
+
+    const builtInTypes = [
+      'xs:string', 'xs:boolean', 'xs:decimal', 'xs:integer', 'xs:int', 'xs:long',
+      'xs:date', 'xs:dateTime', 'xs:time', 'xs:double', 'xs:float', 'xs:base64Binary',
+      'xsd:string', 'xsd:boolean', 'xsd:decimal', 'xsd:integer', 'xsd:int', 'xsd:long',
+      'xsd:date', 'xsd:dateTime', 'xsd:time', 'xsd:double', 'xsd:float'
+    ];
+
+    const title = document.getElementById('title');
+    const schemaPath = document.getElementById('schema-path');
+    const source = document.getElementById('source');
+    const status = document.getElementById('status');
+    const saveButton = document.getElementById('save-button');
+    const addKind = document.getElementById('add-kind');
+    const addButton = document.getElementById('add-button');
+    const deleteButton = document.getElementById('delete-button');
+    const constructorTab = document.getElementById('constructor-tab');
+    const sourceTab = document.getElementById('source-tab');
+    const constructorSection = document.getElementById('constructor-section');
+    const sourceSection = document.getElementById('source-section');
+    const tree = document.getElementById('tree');
+    const inspector = document.getElementById('inspector');
+    const typeChooserDialog = document.getElementById('type-chooser-dialog');
+    const typeChooserSearch = document.getElementById('type-chooser-search');
+    const typeChooserOptions = document.getElementById('type-chooser-options');
+    const typeChooserApply = document.getElementById('type-chooser-apply');
+    const typeChooserCancel = document.getElementById('type-chooser-cancel');
+
+    title.textContent = `${data.strings.title}: ${data.packageName}`;
+    schemaPath.textContent = data.schemaPath;
+    source.value = data.source || '';
+
+    function normalizeModel(value) {
+      const next = value && typeof value === 'object' ? value : {};
+      next.imports = Array.isArray(next.imports) ? next.imports : [];
+      next.valueTypes = Array.isArray(next.valueTypes) ? next.valueTypes : [];
+      next.objectTypes = Array.isArray(next.objectTypes) ? next.objectTypes : [];
+      next.rootProperties = Array.isArray(next.rootProperties) ? next.rootProperties : [];
+      next.diagnostics = Array.isArray(next.diagnostics) ? next.diagnostics : [];
+      next.imports.forEach((item) => ensureRaw(item));
+      next.valueTypes.forEach(normalizeType);
+      next.objectTypes.forEach(normalizeType);
+      next.rootProperties.forEach(normalizeProperty);
+      return next;
+    }
+
+    function normalizeType(type) {
+      ensureRaw(type);
+      type.facets = Array.isArray(type.facets) ? type.facets : [];
+      type.properties = Array.isArray(type.properties) ? type.properties : [];
+      type.attributes = Array.isArray(type.attributes) ? type.attributes : [];
+      type.properties.forEach(normalizeProperty);
+      type.attributes.forEach(normalizeProperty);
+      return type;
+    }
+
+    function normalizeProperty(property) {
+      ensureRaw(property);
+      property.unknownNodes = Array.isArray(property.unknownNodes) ? property.unknownNodes : [];
+      return property;
+    }
+
+    function ensureRaw(item) {
+      if (!item.raw || typeof item.raw !== 'object') {
+        item.raw = {};
+      }
+      return item;
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      })[ch]);
+    }
+
+    function attr(value) {
+      return esc(value);
+    }
+
+    function isTruthy(value) {
+      return value === true || value === 'true' || value === '1';
+    }
+
+    function setStatus(text, isError = false) {
+      status.className = isError ? 'status error' : 'status';
+      status.textContent = text || '';
+    }
+
+    function markModelDirty() {
+      dirty = true;
+      dirtyKind = 'model';
+      sourceHasPreview = false;
+      setStatus('Есть несохранённые изменения конструктора');
+    }
+
+    function markSourceDirty() {
+      dirty = true;
+      dirtyKind = 'source';
+      setStatus('Есть несохранённые изменения XML');
+    }
+
+    function setTab(name) {
+      activeTab = name;
+      const constructor = name === 'constructor';
+      constructorTab.classList.toggle('active', constructor);
+      sourceTab.classList.toggle('active', !constructor);
+      constructorSection.classList.toggle('active', constructor);
+      sourceSection.classList.toggle('active', !constructor);
+      if (!constructor && dirtyKind === 'model') {
+        source.value = createSourcePreview();
+        sourceHasPreview = true;
+        setStatus('XML показан как предварительный просмотр несохранённых изменений конструктора');
+      }
+    }
+
+    function renderDiagnostics() {
+      const host = document.getElementById('diagnostics');
+      const diagnostics = model.diagnostics || [];
+      if (diagnostics.length === 0) {
+        host.innerHTML = '';
+        return;
+      }
+      const hasError = diagnostics.some((d) => d.severity === 'error');
+      host.innerHTML = `<div class="diagnostics ${hasError ? 'error' : ''}">` +
+        diagnostics.map((d) => `${esc(d.severity)}: ${esc(d.message)}`).join('<br>') +
+        '</div>';
+    }
+
+    function nodeId(node) {
+      const parts = [node.kind];
+      if (node.objectIndex !== undefined) { parts.push(node.objectIndex); }
+      if (node.index !== undefined) { parts.push(node.index); }
+      return parts.join(':');
+    }
+
+    function sameNode(a, b) {
+      return nodeId(a) === nodeId(b);
+    }
+
+    function isGroupNode(node) {
+      return Boolean(node && typeof node.kind === 'string' && node.kind.endsWith('Group'));
+    }
+
+    function isExpandableNode(node) {
+      return isGroupNode(node) || Boolean(node && node.kind === 'objectType');
+    }
+
+    function objectTypeKey(node) {
+      return `objectType:${node.index}`;
+    }
+
+    function groupKey(node) {
+      if (node.kind === 'objectType') {
+        return objectTypeKey(node);
+      }
+      const parts = [node.kind];
+      if (node.objectIndex !== undefined) { parts.push(node.objectIndex); }
+      return parts.join(':');
+    }
+
+    function isGroupCollapsed(node) {
+      return collapsedGroups.has(groupKey(node));
+    }
+
+    function toggleGroup(node) {
+      const key = groupKey(node);
+      if (collapsedGroups.has(key)) {
+        collapsedGroups.delete(key);
+      } else {
+        collapsedGroups.add(key);
+      }
+      render();
+    }
+
+    function selectNode(node) {
+      selection = node;
+      render();
+    }
+
+    function treeButton(node, label, icon, count, options = {}) {
+      const selected = sameNode(node, selection) ? ' selected' : '';
+      const countHtml = count === undefined ? '' : `<span class="node-count">${count}</span>`;
+      const groupAttrs = options.group ? ` data-group="true" aria-expanded="${options.expanded ? 'true' : 'false'}"` : '';
+      return `<button class="${selected}" data-node="${attr(JSON.stringify(node))}"${groupAttrs} title="${attr(label)}">` +
+        `<span class="node-icon">${esc(icon)}</span><span class="node-text">${esc(label)}</span>${countHtml}</button>`;
+    }
+
+    function treeGroup(node, label, count, childrenHtml) {
+      const collapsed = isGroupCollapsed(node);
+      const icon = collapsed ? '▸' : '▾';
+      const hidden = collapsed ? ' hidden' : '';
+      return treeExpandableNode(node, label, count, childrenHtml, icon);
+    }
+
+    function treeExpandableNode(node, label, count, childrenHtml, iconOverride) {
+      const collapsed = isGroupCollapsed(node);
+      const icon = iconOverride || (collapsed ? '▸' : '▾');
+      const hidden = collapsed ? ' hidden' : '';
+      return `<li>${treeButton(node, label, icon, count, { group: true, expanded: !collapsed })}<ul${hidden}>${childrenHtml}</ul></li>`;
+    }
+
+    function renderTree() {
+      const imports = model.imports || [];
+      const valueTypes = model.valueTypes || [];
+      const objectTypes = model.objectTypes || [];
+      const rootProperties = model.rootProperties || [];
+      let html = '<ul>';
+      html += `<li>${treeButton({ kind: 'package' }, packageLabel(), '□')}</li>`;
+      html += treeGroup({ kind: 'importsGroup' }, 'Директивы импорта', imports.length, imports.map((item, index) =>
+        `<li>${treeButton({ kind: 'import', index }, item.namespace || item.schemaLocation || 'Новая директива импорта', '↳')}</li>`
+      ).join(''));
+      html += treeGroup({ kind: 'valueTypesGroup' }, 'Типы значений', valueTypes.length, valueTypes.map((item, index) =>
+        `<li>${treeButton({ kind: 'valueType', index }, item.name || 'Новый тип значения', 'T')}</li>`
+      ).join(''));
+      html += treeGroup({ kind: 'objectTypesGroup' }, 'Типы объектов', objectTypes.length, objectTypes.map((item, objectIndex) => {
+        const attributes = item.attributes || [];
+        const properties = item.properties || [];
+        let node = '';
+        node += treeGroup({ kind: 'objectAttributesGroup', objectIndex }, 'Атрибуты', attributes.length, attributes.map((attribute, index) =>
+          `<li>${treeButton({ kind: 'objectAttribute', objectIndex, index }, propertyLabel(attribute), '@')}</li>`
+        ).join(''));
+        node += treeGroup({ kind: 'objectPropertiesGroup', objectIndex }, 'Свойства', properties.length, properties.map((property, index) =>
+          `<li>${treeButton({ kind: 'objectProperty', objectIndex, index }, propertyLabel(property), '•')}</li>`
+        ).join(''));
+        return treeExpandableNode({ kind: 'objectType', index: objectIndex }, item.name || 'Новый тип объекта', undefined, node);
+      }).join(''));
+      html += treeGroup({ kind: 'rootPropertiesGroup' }, 'Корневые свойства', rootProperties.length, rootProperties.map((item, index) =>
+        `<li>${treeButton({ kind: 'rootProperty', index }, propertyLabel(item), '•')}</li>`
+      ).join(''));
+      html += '</ul>';
+      tree.innerHTML = html;
+    }
+
+    function packageLabel() {
+      return model.targetNamespace || data.packageName || 'Пакет XDTO';
+    }
+
+    function propertyLabel(property) {
+      if (!property) { return 'Новое свойство'; }
+      return property.name || property.ref || property.localName || 'Новое свойство';
+    }
+
+    function getSelectedObjectType() {
+      if (selection.objectIndex !== undefined) {
+        return model.objectTypes[selection.objectIndex];
+      }
+      if (selection.kind === 'objectType') {
+        return model.objectTypes[selection.index];
+      }
+      return undefined;
+    }
+
+    function getSelectedEntity() {
+      switch (selection.kind) {
+        case 'package': return model;
+        case 'import': return model.imports[selection.index];
+        case 'valueType': return model.valueTypes[selection.index];
+        case 'objectType': return model.objectTypes[selection.index];
+        case 'rootProperty': return model.rootProperties[selection.index];
+        case 'objectProperty': return model.objectTypes[selection.objectIndex]?.properties?.[selection.index];
+        case 'objectAttribute': return model.objectTypes[selection.objectIndex]?.attributes?.[selection.index];
+        default: return undefined;
+      }
+    }
+
+    function field(label, key, value, options = {}) {
+      const disabled = options.disabled ? ' disabled' : '';
+      const placeholder = options.placeholder ? ` placeholder="${attr(options.placeholder)}"` : '';
+      const type = options.type || 'text';
+      if (options.typePicker) {
+        const buttonDisabled = options.disabled ? ' disabled' : '';
+        return `<label for="field-${attr(key)}">${esc(label)}</label>` +
+          `<div class="type-picker" data-type-picker-field="${attr(key)}">` +
+          `<input id="field-${attr(key)}" data-field="${attr(key)}" data-type-picker-input="true" type="${attr(type)}" value="${attr(value || '')}"${placeholder}${disabled}>` +
+          `<button type="button" class="type-picker-button" data-type-picker-button="${attr(key)}" aria-label="Выбрать тип"${buttonDisabled}>...</button>` +
+          `</div>`;
+      }
+      return `<label for="field-${attr(key)}">${esc(label)}</label>` +
+        `<input id="field-${attr(key)}" data-field="${attr(key)}" type="${attr(type)}" value="${attr(value || '')}"${placeholder}${disabled}>`;
+    }
+
+    function checkboxField(label, key, value) {
+      const checked = isTruthy(value) ? ' checked' : '';
+      return `<label for="field-${attr(key)}">${esc(label)}</label>` +
+        `<input id="field-${attr(key)}" data-field="${attr(key)}" type="checkbox"${checked}>`;
+    }
+
+    function renderInspector() {
+      const entity = getSelectedEntity();
+      deleteButton.disabled = !canDeleteSelection();
+      addButton.disabled = !canAdd(resolveAddKind());
+      addKind.value = canAdd(addKind.value) ? addKind.value : 'auto';
+
+      if (selection.kind.endsWith('Group')) {
+        inspector.innerHTML = renderGroupInspector();
+        return;
+      }
+      if (!entity) {
+        inspector.innerHTML = '<div class="empty">Выберите элемент дерева</div>';
+        return;
+      }
+
+      if (selection.kind === 'package') {
+        inspector.innerHTML = `<h2>Пакет</h2><div class="field-grid">` +
+          field('Пространство имён', 'targetNamespace', model.targetNamespace || '') +
+          `<label>Файл</label><div class="readonly">${esc(data.schemaPath)}</div>` +
+          `</div>`;
+        return;
+      }
+      if (selection.kind === 'import') {
+        inspector.innerHTML = `<h2>Директива импорта</h2><div class="field-grid">` +
+          field('Пространство имён', 'namespace', entity.namespace || '') +
+          field('Расположение схемы', 'schemaLocation', entity.schemaLocation || '') +
+          `</div>`;
+        return;
+      }
+      if (selection.kind === 'valueType' || selection.kind === 'objectType') {
+        inspector.innerHTML = `<h2>${selection.kind === 'valueType' ? 'Тип значения' : 'Тип объекта'}</h2><div class="field-grid">` +
+          field('Имя', 'name', entity.name || '') +
+          field('Базовый тип', 'baseType', entity.baseType || '', { typePicker: true }) +
+          `</div>`;
+        return;
+      }
+      inspector.innerHTML = `<h2>${selection.kind === 'objectAttribute' ? 'Атрибут' : 'Свойство'}</h2><div class="field-grid">` +
+        field('Имя', 'name', entity.name || '') +
+        field('Ссылка', 'ref', entity.ref || '') +
+        field('Тип', 'type', entity.type || '', { typePicker: true }) +
+        field('Минимальное количество', 'lowerBound', entity.lowerBound || '') +
+        field('Максимальное количество', 'upperBound', entity.upperBound || '') +
+        field('minOccurs', 'minOccurs', entity.minOccurs || '') +
+        field('maxOccurs', 'maxOccurs', entity.maxOccurs || '') +
+        checkboxField('Возможно пустое', 'nillable', entity.nillable) +
+        field('Фиксированное', 'fixed', entity.fixed || '') +
+        field('По умолчанию', 'defaultValue', entity.defaultValue || '') +
+        field('Форма', 'form', entity.form || '') +
+        field('Локальное имя', 'localName', entity.localName || '') +
+        field('URI пространства имён', 'namespaceURI', entity.namespaceURI || '') +
+        checkboxField('Квалифицированное', 'qualified', entity.qualified) +
+        field('Использование', 'use', entity.use || '') +
+        `</div>`;
+    }
+
+    function renderGroupInspector() {
+      const titleByKind = {
+        importsGroup: 'Директивы импорта',
+        valueTypesGroup: 'Типы значений',
+        objectTypesGroup: 'Типы объектов',
+        rootPropertiesGroup: 'Корневые свойства',
+        objectAttributesGroup: 'Атрибуты объекта',
+        objectPropertiesGroup: 'Свойства объекта'
+      };
+      const objectType = getSelectedObjectType();
+      const detail = objectType ? `<p class="readonly">Тип объекта: ${esc(objectType.name || 'Без имени')}</p>` : '';
+      return `<h2>${esc(titleByKind[selection.kind] || 'Группа')}</h2>${detail}` +
+        '<div class="empty">Используйте кнопку «Добавить», чтобы создать новый элемент в этой группе.</div>';
+    }
+
+    function updateTypeOptions() {
+      const localTypes = []
+        .concat(model.valueTypes || [], model.objectTypes || [])
+        .map((item) => item.name)
+        .filter(Boolean);
+      const importTypes = (model.imports || [])
+        .map((item) => item.namespace)
+        .filter(Boolean);
+      const prefixedTypes = namespacePrefixes().map((prefix) => `${prefix}:`);
+      const values = Array.from(new Set(builtInTypes.concat(localTypes, importTypes, prefixedTypes)));
+      typeOptionValues = values;
+      if (!typeChooserDialog.hidden) {
+        renderTypeChoiceOptions();
+      }
+    }
+
+    function namespacePrefixes() {
+      const rawRoot = model.rawRoot && typeof model.rawRoot === 'object' ? model.rawRoot : {};
+      return Object.keys(rawRoot)
+        .filter((key) => key.startsWith('@_xmlns:'))
+        .map((key) => key.slice('@_xmlns:'.length))
+        .filter((prefix) => prefix && prefix !== 'xs' && prefix !== 'xsi');
+    }
+
+    function updateField(key, value) {
+      const entity = getSelectedEntity();
+      if (!entity) { return; }
+      if (value === '') {
+        delete entity[key];
+      } else {
+        entity[key] = value;
+      }
+      markModelDirty();
+      renderTree();
+      updateTypeOptions();
+    }
+
+    function updateCheckbox(key, checked) {
+      const entity = getSelectedEntity();
+      if (!entity) { return; }
+      entity[key] = checked ? 'true' : 'false';
+      markModelDirty();
+      renderTree();
+    }
+
+    function renderTypeChoiceOptions() {
+      const query = typeChooserSearch.value.trim().toLowerCase();
+      const options = typeOptionValues.filter((value) => value.toLowerCase().includes(query));
+      if (options.length === 0) {
+        selectedTypeChoice = undefined;
+        typeChooserOptions.innerHTML = '<div class="type-chooser-empty">Нет доступных типов</div>';
+        typeChooserApply.disabled = true;
+        return;
+      }
+      if (!selectedTypeChoice || !options.includes(selectedTypeChoice)) {
+        selectedTypeChoice = options[0];
+      }
+      typeChooserApply.disabled = false;
+      typeChooserOptions.innerHTML = options.map((value) => {
+        const selected = value === selectedTypeChoice;
+        return `<button type="button" class="type-chooser-option${selected ? ' selected' : ''}" data-type-choice="${attr(value)}" role="option" aria-selected="${selected ? 'true' : 'false'}">${esc(value)}</button>`;
+      }).join('');
+    }
+
+    function updateTypeChoiceSelection() {
+      typeChooserOptions.querySelectorAll('button[data-type-choice]').forEach((button) => {
+        const selected = button.dataset.typeChoice === selectedTypeChoice;
+        button.classList.toggle('selected', selected);
+        button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      });
+      typeChooserApply.disabled = !selectedTypeChoice;
+    }
+
+    function openTypeChooser(fieldKey) {
+      const input = Array.from(inspector.querySelectorAll('input[data-field]'))
+        .find((item) => item.dataset.field === fieldKey);
+      if (!input) { return; }
+      activeTypePickerField = undefined;
+      selectedTypeChoice = input.value && typeOptionValues.includes(input.value) ? input.value : undefined;
+      typeChooserPreviousFocus = document.activeElement;
+      typeChooserSearch.value = '';
+      typeChooserDialog.hidden = false;
+      activeTypePickerField = fieldKey;
+      renderTypeChoiceOptions();
+      typeChooserSearch.focus();
+    }
+
+    function chooseTypeOption(value) {
+      selectedTypeChoice = value;
+      updateTypeChoiceSelection();
+    }
+
+    function applyTypeChoice() {
+      if (!activeTypePickerField || !selectedTypeChoice) { return; }
+      const input = Array.from(inspector.querySelectorAll('input[data-field]'))
+        .find((item) => item.dataset.field === activeTypePickerField);
+      if (!input) { return; }
+      input.value = selectedTypeChoice;
+      updateField(activeTypePickerField, selectedTypeChoice);
+      cancelTypeChoice();
+      input.focus();
+    }
+
+    function cancelTypeChoice() {
+      typeChooserDialog.hidden = true;
+      activeTypePickerField = undefined;
+      selectedTypeChoice = undefined;
+      if (typeChooserPreviousFocus && typeof typeChooserPreviousFocus.focus === 'function') {
+        typeChooserPreviousFocus.focus();
+      }
+      typeChooserPreviousFocus = undefined;
+    }
+
+    function canDeleteSelection() {
+      return ['import', 'valueType', 'objectType', 'rootProperty', 'objectProperty', 'objectAttribute'].includes(selection.kind);
+    }
+
+    function resolveAddKind() {
+      if (addKind.value && addKind.value !== 'auto') {
+        return addKind.value;
+      }
+      switch (selection.kind) {
+        case 'importsGroup':
+        case 'import': return 'import';
+        case 'valueTypesGroup':
+        case 'valueType': return 'valueType';
+        case 'objectTypesGroup':
+        case 'objectType': return 'objectType';
+        case 'rootPropertiesGroup':
+        case 'rootProperty': return 'rootProperty';
+        case 'objectAttributesGroup':
+        case 'objectAttribute': return 'objectAttribute';
+        case 'objectPropertiesGroup':
+        case 'objectProperty': return 'objectProperty';
+        default: return 'rootProperty';
+      }
+    }
+
+    function canAdd(kind) {
+      if (['import', 'valueType', 'objectType', 'rootProperty'].includes(kind)) {
+        return true;
+      }
+      if (kind === 'objectProperty' || kind === 'objectAttribute') {
+        return Boolean(getSelectedObjectType());
+      }
+      return false;
+    }
+
+    function uniqueName(prefix, items) {
+      const used = new Set((items || []).map((item) => item.name).filter(Boolean));
+      let index = 1;
+      let value = `${prefix}${index}`;
+      while (used.has(value)) {
+        index++;
+        value = `${prefix}${index}`;
+      }
+      return value;
+    }
+
+    function addItem() {
+      const kind = resolveAddKind();
+      if (!canAdd(kind)) {
+        setStatus('Сначала выберите тип объекта для добавления свойства или атрибута', true);
+        return;
+      }
+      if (kind === 'import') {
+        const item = { namespace: '', schemaLocation: '', raw: {} };
+        model.imports.push(item);
+        selection = { kind: 'import', index: model.imports.length - 1 };
+      } else if (kind === 'valueType') {
+        const item = normalizeType({ name: uniqueName('ValueType', model.valueTypes), baseType: 'xs:string', facets: [], properties: [], attributes: [], raw: {}, unknownNodes: [] });
+        model.valueTypes.push(item);
+        selection = { kind: 'valueType', index: model.valueTypes.length - 1 };
+      } else if (kind === 'objectType') {
+        const item = normalizeType({ name: uniqueName('ObjectType', model.objectTypes), baseType: '', facets: [], properties: [], attributes: [], raw: {}, unknownNodes: [] });
+        model.objectTypes.push(item);
+        selection = { kind: 'objectType', index: model.objectTypes.length - 1 };
+      } else if (kind === 'rootProperty') {
+        const item = normalizeProperty({ name: uniqueName('Property', model.rootProperties), type: 'xs:string', raw: {}, unknownNodes: [] });
+        model.rootProperties.push(item);
+        selection = { kind: 'rootProperty', index: model.rootProperties.length - 1 };
+      } else {
+        const objectIndex = selection.objectIndex !== undefined ? selection.objectIndex : selection.index;
+        const objectType = model.objectTypes[objectIndex];
+        const collection = kind === 'objectAttribute' ? objectType.attributes : objectType.properties;
+        const item = normalizeProperty({ name: uniqueName(kind === 'objectAttribute' ? 'Attribute' : 'Property', collection), type: 'xs:string', raw: {}, unknownNodes: [] });
+        collection.push(item);
+        selection = { kind, objectIndex, index: collection.length - 1 };
+      }
+      markModelDirty();
+      render();
+    }
+
+    function deleteItem() {
+      if (!canDeleteSelection()) { return; }
+      if (selection.kind === 'import') {
+        model.imports.splice(selection.index, 1);
+        selection = { kind: 'importsGroup' };
+      } else if (selection.kind === 'valueType') {
+        model.valueTypes.splice(selection.index, 1);
+        selection = { kind: 'valueTypesGroup' };
+      } else if (selection.kind === 'objectType') {
+        model.objectTypes.splice(selection.index, 1);
+        selection = { kind: 'objectTypesGroup' };
+      } else if (selection.kind === 'rootProperty') {
+        model.rootProperties.splice(selection.index, 1);
+        selection = { kind: 'rootPropertiesGroup' };
+      } else if (selection.kind === 'objectProperty') {
+        model.objectTypes[selection.objectIndex]?.properties?.splice(selection.index, 1);
+        selection = { kind: 'objectPropertiesGroup', objectIndex: selection.objectIndex };
+      } else if (selection.kind === 'objectAttribute') {
+        model.objectTypes[selection.objectIndex]?.attributes?.splice(selection.index, 1);
+        selection = { kind: 'objectAttributesGroup', objectIndex: selection.objectIndex };
+      }
+      markModelDirty();
+      render();
+    }
+
+    function save() {
+      setStatus('Сохранение...');
+      if (activeTab === 'source') {
+        vscode.postMessage({ type: 'save', source: source.value });
+        return;
+      }
+      vscode.postMessage({ type: 'saveModel', model });
+    }
+
+    function render() {
+      renderDiagnostics();
+      updateTypeOptions();
+      renderTree();
+      renderInspector();
+    }
+
+    function createSourcePreview() {
+      const lines = [
+        '<!-- Предварительный просмотр несохранённых изменений конструктора. Реальный XML сформирует расширение при сохранении. -->',
+        `<package xmlns="http://v8.1c.ru/8.1/xdto"${model.targetNamespace ? ` targetNamespace="${xmlAttr(model.targetNamespace)}"` : ''}>`
+      ];
+      (model.imports || []).forEach((item) => {
+        lines.push(`  <import${xmlAttrPart('namespace', item.namespace)}${xmlAttrPart('schemaLocation', item.schemaLocation)}/>`);
+      });
+      (model.valueTypes || []).forEach((item) => {
+        lines.push(`  <valueType name="${xmlAttr(item.name || '')}"${xmlAttrPart('base', item.baseType)}/>`);
+      });
+      (model.objectTypes || []).forEach((item) => {
+        lines.push(`  <objectType name="${xmlAttr(item.name || '')}"${xmlAttrPart('base', item.baseType)}>`);
+        (item.attributes || []).forEach((property) => lines.push(`    ${previewProperty('property', { ...property, form: 'Attribute' })}`));
+        (item.properties || []).forEach((property) => lines.push(`    ${previewProperty('property', property)}`));
+        lines.push('  </objectType>');
+      });
+      (model.rootProperties || []).forEach((property) => lines.push(`  ${previewProperty('property', property)}`));
+      lines.push('</package>');
+      return lines.join('\n');
+    }
+
+    function previewProperty(tag, property) {
+      return `<${tag}${xmlAttrPart('name', property.name)}${xmlAttrPart('ref', property.ref)}${xmlAttrPart('type', property.type)}${xmlAttrPart('lowerBound', property.lowerBound)}${xmlAttrPart('upperBound', property.upperBound)}${xmlAttrPart('nillable', property.nillable)}${xmlAttrPart('fixed', property.fixed)}${xmlAttrPart('default', property.defaultValue)}${xmlAttrPart('form', property.form)}${xmlAttrPart('localName', property.localName)}${xmlAttrPart('namespaceURI', property.namespaceURI)}${xmlAttrPart('qualified', property.qualified)}${xmlAttrPart('use', property.use)}/>`;
+    }
+
+    function xmlAttrPart(name, value) {
+      if (value === undefined || value === null || value === '') { return ''; }
+      return ` ${name}="${xmlAttr(String(value))}"`;
+    }
+
+    function xmlAttr(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
+      })[ch]);
+    }
+
+    tree.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-node]');
+      if (!button) { return; }
+      const node = JSON.parse(button.dataset.node);
+      if (isExpandableNode(node)) {
+        selection = node;
+        toggleGroup(node);
+        return;
+      }
+      selectNode(node);
+    });
+
+    inspector.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-type-picker-button]');
+      if (button) {
+        openTypeChooser(button.dataset.typePickerButton);
+        return;
+      }
+    });
+
+    typeChooserOptions.addEventListener('click', (event) => {
+      const option = event.target.closest('button[data-type-choice]');
+      if (!option) { return; }
+      chooseTypeOption(option.dataset.typeChoice);
+    });
+
+    typeChooserOptions.addEventListener('dblclick', (event) => {
+      const option = event.target.closest('button[data-type-choice]');
+      if (!option) { return; }
+      chooseTypeOption(option.dataset.typeChoice);
+      applyTypeChoice();
+    });
+
+    typeChooserSearch.addEventListener('input', renderTypeChoiceOptions);
+    typeChooserApply.addEventListener('click', applyTypeChoice);
+    typeChooserCancel.addEventListener('click', cancelTypeChoice);
+    typeChooserDialog.addEventListener('click', (event) => {
+      if (event.target === typeChooserDialog) {
+        cancelTypeChoice();
+      }
+    });
+    typeChooserDialog.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        cancelTypeChoice();
+      } else if (event.key === 'Enter') {
+        applyTypeChoice();
+      }
+    });
+
+    inspector.addEventListener('input', (event) => {
+      const input = event.target;
+      if (!input.dataset || !input.dataset.field) { return; }
+      if (input.type === 'checkbox') {
+        updateCheckbox(input.dataset.field, input.checked);
+      } else {
+        updateField(input.dataset.field, input.value);
+      }
+    });
+
+    source.addEventListener('input', () => {
+      sourceHasPreview = false;
+      markSourceDirty();
+    });
+
+    constructorTab.addEventListener('click', () => setTab('constructor'));
+    sourceTab.addEventListener('click', () => setTab('source'));
+    saveButton.addEventListener('click', save);
+    addButton.addEventListener('click', addItem);
+    deleteButton.addEventListener('click', deleteItem);
+    addKind.addEventListener('change', () => {
+      addButton.disabled = !canAdd(resolveAddKind());
+    });
+
+    window.addEventListener('message', (event) => {
+      const message = event.data || {};
+      if (message.type === 'saveSuccess') {
+        model = normalizeModel(message.model || model);
+        if (typeof message.source === 'string') {
+          source.value = message.source;
+          sourceHasPreview = false;
+        } else if (sourceHasPreview && dirtyKind === 'model') {
+          source.value = createSourcePreview();
+        }
+        dirty = false;
+        dirtyKind = undefined;
+        render();
+        setStatus(data.strings.saved);
+      } else if (message.type === 'saveError') {
+        setStatus(message.message || 'Не удалось сохранить файл XDTO-пакета', true);
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>

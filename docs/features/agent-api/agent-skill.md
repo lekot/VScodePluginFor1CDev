@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **53** команды для программного управления метаданными, привязками, отладкой и формами конфигурации 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
+Расширение CDT 41 для VS Code предоставляет **60** команд для программного управления метаданными, привязками, раскаткой, отладкой, формами enterprise, СКД и XDTO-пакетами 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
 
 ## HTTP Bridge
 
@@ -64,7 +64,7 @@ req.end(data);
 
 Через bridge доступны только команды, соответствующие паттерну:
 ```
-/^1c-metadata-tree\.agent(\.debug|\.forms|\.skd)?\.[a-zA-Z]+$/
+/^1c-metadata-tree\.agent(\.debug|\.forms|\.skd|\.xdto)?\.[a-zA-Z]+$/
 ```
 
 ### Вызов через helper-скрипт
@@ -760,6 +760,90 @@ JSON-DSL → DataCompositionSchema.xml.
 
 ---
 
+### XDTO-пакеты (7 команд)
+
+Работа с XDTO-пакетами конфигурации из `XDTOPackages/<Имя>.xml` и `XDTOPackages/<Имя>/Ext/Package.bin`: чтение модели, экспорт/импорт XSD, создание нового пакета из XSD, сравнение и объединение пакетов. Внешний источник для импорта/сравнения/merge можно передать как `inputPath` или inline `source`; поддерживаются XSD и 1C XDTO package XML/BIN.
+
+#### `1c-metadata-tree.agent.xdto.listPackages`
+
+Список XDTO-пакетов конфигурации.
+
+```json
+{}
+```
+
+Возвращает: `{ packages: [{ name, metadataPath, schemaPath, targetNamespace? }] }`.
+
+#### `1c-metadata-tree.agent.xdto.getPackage`
+
+Прочитать текущий пакет по имени или пути к metadata XML. Если `Package.bin` отсутствует, создаёт минимальный XDTO skeleton с namespace из metadata XML.
+
+```json
+{ "packageName": "EnterpriseData_1_20_2", "includeSource": true }
+```
+
+Альтернатива: `{ "metadataPath": "XDTOPackages/EnterpriseData_1_20_2.xml" }`.
+
+Возвращает: `{ name, metadataPath, schemaPath, targetNamespace?, model, source? }`.
+
+#### `1c-metadata-tree.agent.xdto.exportXsd`
+
+Экспортировать текущий 1C XDTO package в XSD. Без `outputPath` возвращает XSD inline.
+
+```json
+{ "packageName": "EnterpriseData_1_20_2", "outputPath": "C:/tmp/EnterpriseData_1_20_2.xsd" }
+```
+
+Возвращает: `{ schemaPath, outputPath?, xsd? }`.
+
+#### `1c-metadata-tree.agent.xdto.importXsd`
+
+Импортировать XSD в существующий XDTO-пакет и перезаписать его `Package.bin`.
+
+```json
+{ "packageName": "EnterpriseData_1_20_2", "inputPath": "C:/tmp/EnterpriseData_1_20_2.xsd" }
+```
+
+Inline-вариант: `{ "packageName": "Demo", "source": "<xs:schema .../>" }`.
+
+Возвращает: `{ schemaPath, model }`.
+
+#### `1c-metadata-tree.agent.xdto.createFromXsd`
+
+Создать новый XDTO-пакет из XSD: metadata XML, `Ext/Package.bin` и запись в `Configuration.xml`.
+
+```json
+{ "packageName": "ExchangeDemo", "inputPath": "C:/tmp/ExchangeDemo.xsd" }
+```
+
+Возвращает: `{ name, metadataPath, schemaPath, targetNamespace?, model }`.
+
+#### `1c-metadata-tree.agent.xdto.compare`
+
+Сравнить текущий пакет конфигурации с внешним XSD/XML/BIN источником. Сравнение нормализует QName-префиксы и сопоставляет `enumeration` по значению, а не по позиции.
+
+```json
+{ "packageName": "EnterpriseData_1_20_2", "inputPath": "C:/tmp/EnterpriseData_1_20_2.xsd", "includeTree": true }
+```
+
+Возвращает: `{ stats: { total, different, mergeable }, schemaPath, sourcePath?, tree? }`.
+
+#### `1c-metadata-tree.agent.xdto.merge`
+
+Применить выбранные различия из внешнего источника в текущий `Package.bin`. `selectedIds` берутся из дерева `xdto.compare`.
+
+```json
+{
+  "packageName": "EnterpriseData_1_20_2",
+  "inputPath": "C:/tmp/EnterpriseData_1_20_2.xsd",
+  "selectedIds": ["valueTypes:Code:facets:maxLength:0", "objectTypes:Order:properties:Number:type"]
+}
+```
+
+Возвращает: `{ stats, schemaPath, model }`.
+
+---
+
 ## Типичные сценарии
 
 ### Сценарий A: CRUD метаданных
@@ -814,6 +898,23 @@ JSON-DSL → DataCompositionSchema.xml.
 - ibsrv создаёт новые target'ы динамически при серверных операциях — расширение обнаруживает и подключает их автоматически
 - `waitForStop` нужно вызывать **до** или **одновременно** с действием forms.exec (иначе stop event будет потерян)
 
+### Сценарий D: XDTO export/compare/merge
+
+```
+1. xdto.listPackages({})
+   → найти имя пакета и путь к Package.bin
+2. xdto.exportXsd({ packageName: 'EnterpriseData_1_20_2', outputPath: 'C:/tmp/EnterpriseData_1_20_2.xsd' })
+   → выгрузить текущий пакет в XSD
+3. xdto.compare({ packageName: 'EnterpriseData_1_20_2', inputPath: 'C:/tmp/vendor.xsd', includeTree: true })
+   → получить дерево различий до типов, свойств, атрибутов и facets
+4. xdto.merge({ packageName: 'EnterpriseData_1_20_2', inputPath: 'C:/tmp/vendor.xsd', selectedIds: [...] })
+   → применить выбранные различия в Package.bin
+5. xdto.getPackage({ packageName: 'EnterpriseData_1_20_2' })
+   → проверить итоговую модель
+```
+
+Для нового пакета используйте `xdto.createFromXsd({ packageName, inputPath })`; для полной замены существующего — `xdto.importXsd({ packageName, inputPath })`.
+
 ---
 
 ## Ограничения
@@ -821,3 +922,5 @@ JSON-DSL → DataCompositionSchema.xml.
 - Формы конфигуратора через Agent API не создаются/редактируются (используйте UI). Формы enterprise — через agent.forms.*
 - Для InformationRegister и AccumulationRegister при `createObject` создаются дефолтные Измерение+Ресурс (шаблонный fallback)
 - Тип реквизита при `addAttribute` задаётся дефолтный (строка 50); для изменения используйте `setProperties` с `Type: "cfg:DocumentRef.Больше"` или `Type: "xs:boolean"` и т.д.
+- XDTO merge применяет только выбранные `selectedIds`; левосторонние узлы не удаляются автоматически.
+- HTTP bridge принимает тело запроса до 16 МБ. Для больших XSD/XDTO передавайте `inputPath`, а не inline `source`.
