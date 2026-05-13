@@ -76,6 +76,38 @@ suite('XdtoPackageCompareModel', () => {
     assert.strictEqual(tree.stats.mergeable, 0);
   });
 
+  test('reports value type facet differences', () => {
+    const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="Code" base="xs:string" maxLength="13"/>
+</package>`);
+    const right = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="Code" base="xs:string" maxLength="20"/>
+</package>`);
+
+    const tree = buildXdtoPackageCompareTree(left, right);
+    const valueType = tree.root.children.find((node) => node.id === 'valueTypes')?.children
+      .find((node) => node.id === 'valueTypes:Code');
+    const facets = valueType?.children.find((node) => node.id === 'valueTypes:Code:facets');
+
+    assert.ok(facets, 'value type facets group must be present');
+    assert.strictEqual(facets.status, 'changed');
+    assert.ok(facets.children.some((node) => node.leftValue === '13' && node.rightValue === '20'));
+  });
+
+  test('merges selected value type facet changes', () => {
+    const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="Code" base="xs:string" maxLength="13"/>
+</package>`);
+    const right = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="Code" base="xs:string" maxLength="20"/>
+</package>`);
+
+    const merged = applyXdtoPackageMerge(left, right, ['valueTypes:Code:facets:maxLength:0']);
+    const code = merged.valueTypes.find((type) => type.name === 'Code');
+
+    assert.strictEqual(code?.facets.find((facet) => facet.name === 'maxLength')?.value, '20');
+  });
+
   test('merges selected right-side object property changes without deleting left-only nodes', () => {
     const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
   <objectType name="Order">

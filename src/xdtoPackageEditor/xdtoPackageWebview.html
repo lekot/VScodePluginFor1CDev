@@ -447,6 +447,7 @@
 
     function normalizeType(type) {
       ensureRaw(type);
+      type.facets = Array.isArray(type.facets) ? type.facets : [];
       type.properties = Array.isArray(type.properties) ? type.properties : [];
       type.attributes = Array.isArray(type.attributes) ? type.attributes : [];
       type.properties.forEach(normalizeProperty);
@@ -925,11 +926,11 @@
         model.imports.push(item);
         selection = { kind: 'import', index: model.imports.length - 1 };
       } else if (kind === 'valueType') {
-        const item = normalizeType({ name: uniqueName('ValueType', model.valueTypes), baseType: 'xs:string', properties: [], attributes: [], raw: {}, unknownNodes: [] });
+        const item = normalizeType({ name: uniqueName('ValueType', model.valueTypes), baseType: 'xs:string', facets: [], properties: [], attributes: [], raw: {}, unknownNodes: [] });
         model.valueTypes.push(item);
         selection = { kind: 'valueType', index: model.valueTypes.length - 1 };
       } else if (kind === 'objectType') {
-        const item = normalizeType({ name: uniqueName('ObjectType', model.objectTypes), baseType: '', properties: [], attributes: [], raw: {}, unknownNodes: [] });
+        const item = normalizeType({ name: uniqueName('ObjectType', model.objectTypes), baseType: '', facets: [], properties: [], attributes: [], raw: {}, unknownNodes: [] });
         model.objectTypes.push(item);
         selection = { kind: 'objectType', index: model.objectTypes.length - 1 };
       } else if (kind === 'rootProperty') {

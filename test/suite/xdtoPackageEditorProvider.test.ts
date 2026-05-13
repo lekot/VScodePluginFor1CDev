@@ -48,7 +48,7 @@ suite('XdtoPackageEditorProvider (pure helpers)', () => {
   test('serializes structured save model to package XML and parsed model without empty targetNamespace', () => {
     const model: XdtoPackageModel = {
       imports: [],
-      valueTypes: [{ name: 'BoolFlag', baseType: 'xs:boolean', properties: [], attributes: [], raw: {}, unknownNodes: [] }],
+      valueTypes: [{ name: 'BoolFlag', baseType: 'xs:boolean', facets: [], properties: [], attributes: [], raw: {}, unknownNodes: [] }],
       objectTypes: [],
       rootProperties: [{ name: 'Flag', type: 'BoolFlag', raw: {}, unknownNodes: [] }],
       diagnostics: [],

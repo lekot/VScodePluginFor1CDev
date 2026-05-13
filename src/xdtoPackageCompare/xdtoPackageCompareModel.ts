@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
 import type { CompareTreeNode, CompareTreeStats, CompareTreeStatus } from '../compareMerge/compareTreeTypes';
-import type { XdtoImport, XdtoPackageModel, XdtoProperty, XdtoRawNode, XdtoTypeDefinition } from '../types/xdtoPackage';
+import type { XdtoFacet, XdtoImport, XdtoPackageModel, XdtoProperty, XdtoRawNode, XdtoTypeDefinition } from '../types/xdtoPackage';
 import { stripUtf8Bom } from '../xdtoPackageEditor/xdtoPackageFiles';
 import { convertXsdTo1cPackage } from '../xdtoPackageEditor/xdtoXsdConverter';
 
@@ -114,6 +114,10 @@ function cloneProperty(item: XdtoProperty): XdtoProperty {
   return JSON.parse(JSON.stringify(item)) as XdtoProperty;
 }
 
+function cloneFacet(item: XdtoFacet): XdtoFacet {
+  return JSON.parse(JSON.stringify(item)) as XdtoFacet;
+}
+
 function cloneImport(item: XdtoImport): XdtoImport {
   return JSON.parse(JSON.stringify(item)) as XdtoImport;
 }
@@ -200,8 +204,51 @@ function compareTypes(
     }
     return branchNode(`${section}:${name}`, name, section.slice(0, -1), [
       compareQNameNode(`${section}:${name}:baseType`, 'Базовый тип', 'typeField', leftType.baseType, rightType.baseType, leftContext, rightContext),
+      compareFacets(`${section}:${name}:facets`, 'Ограничения', leftType.facets, rightType.facets),
     ]);
   }));
+}
+
+function compareFacets(
+  id: string,
+  label: string,
+  left: readonly XdtoFacet[],
+  right: readonly XdtoFacet[]
+): CompareTreeNode {
+  const leftEntries = facetEntries(left);
+  const rightEntries = facetEntries(right);
+  const keys = unionKeys(leftEntries.map((entry) => entry.key), rightEntries.map((entry) => entry.key));
+  return branchNode(id, label, 'facetsGroup', keys.map((key) => {
+    const leftEntry = leftEntries.find((entry) => entry.key === key);
+    const rightEntry = rightEntries.find((entry) => entry.key === key);
+    const facetName = rightEntry?.facet.name ?? leftEntry?.facet.name ?? key;
+    const labelSuffix = repeatedFacetIndex(key);
+    return compareScalarNode(
+      `${id}:${key}`,
+      labelSuffix ? `${facetName} ${labelSuffix}` : facetName,
+      'facet',
+      leftEntry?.facet.value,
+      rightEntry?.facet.value
+    );
+  }));
+}
+
+function facetEntries(facets: readonly XdtoFacet[]): Array<{ key: string; facet: XdtoFacet }> {
+  const counts = new Map<string, number>();
+  return facets.map((facet) => {
+    const index = counts.get(facet.name) ?? 0;
+    counts.set(facet.name, index + 1);
+    return {
+      key: `${encodeURIComponent(facet.name)}:${index}`,
+      facet,
+    };
+  });
+}
+
+function repeatedFacetIndex(key: string): string {
+  const separator = key.lastIndexOf(':');
+  const index = separator >= 0 ? Number(key.slice(separator + 1)) : 0;
+  return Number.isFinite(index) && index > 0 ? `#${index + 1}` : '';
 }
 
 function compareObjectTypes(
@@ -477,10 +524,39 @@ function applyTypeMerge(
     if (selected.has(`${typeId}:baseType`)) {
       targetType.baseType = rightType.baseType;
     }
+    if (section === 'valueTypes' && selected.has(`${typeId}:facets`)) {
+      targetType.facets = rightType.facets.map(cloneFacet);
+    }
+    if (section === 'valueTypes') {
+      applyFacetMerge(targetType.facets, rightType.facets, `${typeId}:facets`, selected);
+    }
     if (section === 'objectTypes') {
       applyPropertyMerge(targetType.attributes, rightType.attributes, `${typeId}:attributes`, selected);
       applyPropertyMerge(targetType.properties, rightType.properties, `${typeId}:properties`, selected);
     }
+  }
+}
+
+function applyFacetMerge(
+  target: XdtoFacet[],
+  source: readonly XdtoFacet[],
+  parentId: string,
+  selected: ReadonlySet<string>
+): void {
+  const targetEntries = facetEntries(target);
+  const sourceEntries = facetEntries(source);
+  for (const sourceEntry of sourceEntries) {
+    const facetId = `${parentId}:${sourceEntry.key}`;
+    if (!selected.has(facetId)) {
+      continue;
+    }
+    const targetEntry = targetEntries.find((entry) => entry.key === sourceEntry.key);
+    if (!targetEntry) {
+      target.push(cloneFacet(sourceEntry.facet));
+      continue;
+    }
+    targetEntry.facet.value = sourceEntry.facet.value;
+    targetEntry.facet.raw = { ...sourceEntry.facet.raw };
   }
 }
 

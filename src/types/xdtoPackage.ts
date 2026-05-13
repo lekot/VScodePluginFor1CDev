@@ -40,9 +40,17 @@ export interface XdtoProperty {
   unknownNodes: XdtoUnknownNode[];
 }
 
+export interface XdtoFacet {
+  name: string;
+  value: string;
+  raw: XdtoRawNode;
+}
+
 export interface XdtoTypeDefinition {
   name: string;
   baseType?: string;
+  variety?: string;
+  facets: XdtoFacet[];
   properties: XdtoProperty[];
   attributes: XdtoProperty[];
   raw: XdtoRawNode;

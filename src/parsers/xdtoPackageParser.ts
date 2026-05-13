@@ -2,6 +2,7 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import type {
   XdtoDiagnostic,
   XdtoImport,
+  XdtoFacet,
   XdtoPackageModel,
   XdtoProperty,
   XdtoRawNode,
@@ -37,7 +38,9 @@ const ROOT_KNOWN_CHILDREN = new Set([
 
 const VALUE_TYPE_KNOWN_CHILDREN = new Set([
   'annotation',
+  'enumeration',
   'restriction',
+  'pattern',
   'union',
   'list',
 ]);
@@ -60,6 +63,23 @@ const PROPERTY_KNOWN_CHILDREN = new Set([
   'complexType',
   'simpleType',
 ]);
+
+const VALUE_TYPE_ATTRIBUTE_FACETS = [
+  'length',
+  'minLength',
+  'maxLength',
+  'pattern',
+  'enumeration',
+  'maxInclusive',
+  'maxExclusive',
+  'minInclusive',
+  'minExclusive',
+  'totalDigits',
+  'fractionDigits',
+  'whiteSpace',
+] as const;
+
+const FACET_CHILDREN = new Set<string>(VALUE_TYPE_ATTRIBUTE_FACETS);
 
 function emptyModel(diagnostics: XdtoDiagnostic[] = []): XdtoPackageModel {
   return {
@@ -259,6 +279,49 @@ function parseBaseType(node: XdtoRawNode): string | undefined {
   return extension ? getAttribute(extension, 'base') : undefined;
 }
 
+function parseFacetNode(name: string, raw: unknown): XdtoFacet | null {
+  if (!isRecord(raw)) {
+    return typeof raw === 'string' ? { name, value: raw, raw: { '#text': raw } } : null;
+  }
+  const value = getAttribute(raw, 'value');
+  const text = typeof raw['#text'] === 'string' ? raw['#text'] : undefined;
+  const facetValue = value ?? text;
+  return facetValue === undefined ? null : { name, value: facetValue, raw };
+}
+
+function collectValueFacets(node: XdtoRawNode): XdtoFacet[] {
+  const result: XdtoFacet[] = [];
+
+  for (const facetName of VALUE_TYPE_ATTRIBUTE_FACETS) {
+    const value = getAttribute(node, facetName);
+    if (value !== undefined) {
+      result.push({ name: facetName, value, raw: { [`@_${facetName}`]: value } });
+    }
+  }
+
+  const containers = [node];
+  const restriction = firstRecordChild(node, 'restriction');
+  if (restriction) {
+    containers.push(restriction);
+  }
+
+  for (const container of containers) {
+    for (const [key, value] of childEntries(container)) {
+      const facetName = localName(key);
+      if (!FACET_CHILDREN.has(facetName)) {
+        continue;
+      }
+      result.push(
+        ...asArray(value)
+          .map((raw) => parseFacetNode(facetName, raw))
+          .filter((facet): facet is XdtoFacet => facet !== null)
+      );
+    }
+  }
+
+  return result;
+}
+
 function parseTypeDefinition(
   raw: unknown,
   knownChildren: ReadonlySet<string>,
@@ -276,6 +339,8 @@ function parseTypeDefinition(
   return {
     name,
     baseType: parseBaseType(raw),
+    variety: getAttribute(raw, 'variety'),
+    facets: collectValueFacets(raw),
     properties: includeMembers ? collectProperties(raw) : [],
     attributes: includeMembers ? collectAttributes(raw) : [],
     raw,

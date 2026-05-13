@@ -14,6 +14,13 @@ function escapeAttribute(value: AttributeValue): string {
     .replace(/>/g, '&gt;');
 }
 
+function escapeText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function pushAttribute(attributes: string[], name: string, value: AttributeValue): void {
   if (value === undefined || value === '') {
     return;
@@ -83,11 +90,39 @@ function renderImport(item: XdtoPackageModel['imports'][number], indent: string)
   return `${indent}${renderEmptyTag('import', attributes)}`;
 }
 
+function valueTypeAttributeFacets(type: XdtoTypeDefinition): string[] {
+  const attributes: string[] = [];
+  const attributeFacets = new Set(['length', 'minLength', 'maxLength', 'totalDigits', 'fractionDigits', 'whiteSpace']);
+  for (const facet of type.facets) {
+    if (attributeFacets.has(facet.name)) {
+      pushAttribute(attributes, facet.name, facet.value);
+    }
+  }
+  return attributes;
+}
+
+function valueTypeChildFacets(type: XdtoTypeDefinition, indent: string): string[] {
+  const childFacets = new Set(['pattern', 'enumeration', 'maxInclusive', 'maxExclusive', 'minInclusive', 'minExclusive']);
+  return type.facets
+    .filter((facet) => childFacets.has(facet.name))
+    .map((facet) => `${indent}<${facet.name}>${escapeText(facet.value)}</${facet.name}>`);
+}
+
 function renderValueType(type: XdtoTypeDefinition, indent: string): string {
   const attributes: string[] = [];
   pushAttribute(attributes, 'name', type.name);
   pushAttribute(attributes, 'base', type.baseType);
-  return `${indent}${renderEmptyTag('valueType', attributes)}`;
+  pushAttribute(attributes, 'variety', type.variety);
+  attributes.push(...valueTypeAttributeFacets(type));
+  const childLines = valueTypeChildFacets(type, `${indent}  `);
+  if (childLines.length === 0) {
+    return `${indent}${renderEmptyTag('valueType', attributes)}`;
+  }
+  return [
+    `${indent}${renderStartTag('valueType', attributes)}`,
+    ...childLines,
+    `${indent}</valueType>`,
+  ].join('\n');
 }
 
 function renderObjectType(type: XdtoTypeDefinition, indent: string): string {

@@ -29,6 +29,8 @@ function typeDefinition(fields: Partial<XdtoTypeDefinition> & Pick<XdtoTypeDefin
   return {
     name: fields.name,
     baseType: fields.baseType,
+    variety: fields.variety,
+    facets: fields.facets ?? [],
     properties: fields.properties ?? [],
     attributes: fields.attributes ?? [],
     raw: {},
