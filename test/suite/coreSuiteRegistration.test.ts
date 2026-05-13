@@ -31,6 +31,7 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/xmlChildObjects.test.js',
   'suite/xmlPropertyUtils.test.js',
   'suite/metadataParser.edge.test.js',
+  'suite/typeContentsCache.test.js',
   'suite/errorHandling.test.js',
 ];
 

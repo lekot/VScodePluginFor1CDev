@@ -200,7 +200,7 @@ export async function loadMetadataObjects(
         }
 
         // Load elements for this type
-        const elements = await MetadataParser.parseTypeContents(effectiveConfigPath, typeNode.name);
+        const elements = await MetadataParser.parseTypeContents(effectiveConfigPath, typeNode.name, { format });
 
         for (const element of elements) {
           const metadataObject = createMetadataObject(element, currentRights);

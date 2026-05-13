@@ -6,6 +6,7 @@ import { ExtensionState } from './state/extensionState';
 import { createMetadataTreeLifecycle } from './extension/metadataTreeLifecycle';
 import { registerExtensionWorkspace } from './extension/extensionWorkspaceSetup';
 import { registerDebugAdapter } from './debug';
+import { MetadataParser } from './parsers/metadataParser';
 
 const extensionState = new ExtensionState();
 
@@ -15,6 +16,7 @@ const extensionState = new ExtensionState();
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   try {
     extensionState.init(context);
+    MetadataParser.setTypeContentsCacheStoragePath(context.globalStoragePath);
     initDesignerTemplateRepository(context.extensionPath);
     Logger.initialize();
     Logger.info(MESSAGES.EXTENSION_ACTIVATED);

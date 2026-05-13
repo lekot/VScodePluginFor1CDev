@@ -3,6 +3,7 @@ import { TreeNode } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
+import { ConfigFormat } from '../parsers/formatDetector';
 import { METADATA_TYPE_TO_OBJECT_KIND, OBJECT_KIND_ORDER, ALL_MANAGER_KINDS } from '../constants/metadataTypeObjectKinds';
 import { resolveRootsToUse } from './treeReferenceLoader';
 import { TreeCacheService } from './treeCacheService';
@@ -79,7 +80,7 @@ export async function getObjectableObjectsForEditor(
     }));
   }
 
-  type LoadTask = { typeNode: TreeNode; configPath: string };
+  type LoadTask = { typeNode: TreeNode; configPath: string; format?: ConfigFormat };
   const loadTasks: LoadTask[] = [];
 
   for (const root of rootsToUse) {
@@ -87,8 +88,8 @@ export async function getObjectableObjectsForEditor(
       continue;
     }
 
-    const configPath =
-      cache.getLoadContext(root.id)?.configPath ?? (root.filePath ? path.dirname(root.filePath) : null);
+    const loadContext = cache.getLoadContext(root.id);
+    const configPath = loadContext?.configPath ?? (root.filePath ? path.dirname(root.filePath) : null);
 
     if (!configPath) {
       continue;
@@ -101,15 +102,15 @@ export async function getObjectableObjectsForEditor(
       if (typeNode.children && typeNode.children.length > 0) {
         continue;
       }
-      loadTasks.push({ typeNode, configPath });
+      loadTasks.push({ typeNode, configPath, format: loadContext?.format });
     }
   }
 
   if (loadTasks.length > 0) {
     const settled = await Promise.all(
-      loadTasks.map(async ({ typeNode, configPath }) => {
+      loadTasks.map(async ({ typeNode, configPath, format }) => {
         try {
-          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id);
+          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id, { format });
           return { typeNode, children };
         } catch (e) {
           Logger.warn('Failed to eager load objectable type contents for object type editor', {

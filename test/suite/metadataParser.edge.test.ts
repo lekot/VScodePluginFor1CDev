@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat, FormatDetector } from '../../src/parsers/formatDetector';
@@ -46,6 +49,61 @@ suite('MetadataParser edge branches', () => {
       (FormatDetector.detect as unknown as typeof FormatDetector.detect) = originalDetect;
       (DesignerParser.parseTypeContents as unknown as typeof DesignerParser.parseTypeContents) = originalDesigner;
       (EdtParser.parseTypeContents as unknown as typeof EdtParser.parseTypeContents) = originalEdt;
+    }
+  });
+
+  test('parseTypeContents uses provided format without detecting again', async () => {
+    const originalDetect = FormatDetector.detect;
+    const originalDesigner = DesignerParser.parseTypeContents;
+    try {
+      (FormatDetector.detect as unknown as (p: string) => Promise<ConfigFormat>) = async () => {
+        throw new Error('detect should not run');
+      };
+      (DesignerParser.parseTypeContents as unknown as (a: string, b: string) => Promise<TreeNode[]>) = async () => [
+        { id: 'cached-format', name: 'D', type: MetadataType.Catalog, properties: {} },
+      ];
+
+      const children = await MetadataParser.parseTypeContents('cfg', 'Catalogs', {
+        format: ConfigFormat.Designer,
+        bypassCache: true,
+      });
+
+      assert.strictEqual(children[0].id, 'cached-format');
+    } finally {
+      (FormatDetector.detect as unknown as typeof FormatDetector.detect) = originalDetect;
+      (DesignerParser.parseTypeContents as unknown as typeof DesignerParser.parseTypeContents) = originalDesigner;
+    }
+  });
+
+  test('parseTypeContents reuses disk cache for unchanged type folders', async () => {
+    const configPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-type-cache-cfg-'));
+    const storagePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-type-cache-store-'));
+    await fs.promises.mkdir(path.join(configPath, 'Catalogs'), { recursive: true });
+    await fs.promises.writeFile(path.join(configPath, 'Catalogs', 'Goods.xml'), '<MetaDataObject/>', 'utf-8');
+
+    const originalDetect = FormatDetector.detect;
+    const originalDesigner = DesignerParser.parseTypeContents;
+    let parseCount = 0;
+    try {
+      MetadataParser.setTypeContentsCacheStoragePath(storagePath);
+      (FormatDetector.detect as unknown as (p: string) => Promise<ConfigFormat>) = async () => ConfigFormat.Designer;
+      (DesignerParser.parseTypeContents as unknown as (a: string, b: string) => Promise<TreeNode[]>) = async () => {
+        parseCount += 1;
+        return [{ id: 'Catalogs.Goods', name: 'Goods', type: MetadataType.Catalog, properties: {} }];
+      };
+
+      const first = await MetadataParser.parseTypeContents(configPath, 'Catalogs');
+      const second = await MetadataParser.parseTypeContents(configPath, 'Catalogs');
+
+      assert.strictEqual(first[0].id, 'Catalogs.Goods');
+      assert.strictEqual(second[0].id, 'Catalogs.Goods');
+      assert.strictEqual(parseCount, 1);
+    } finally {
+      MetadataParser.setTypeContentsCacheStoragePath(null);
+      (FormatDetector.detect as unknown as typeof FormatDetector.detect) = originalDetect;
+      (DesignerParser.parseTypeContents as unknown as typeof DesignerParser.parseTypeContents) = originalDesigner;
+      await fs.promises.rm(configPath, { recursive: true, force: true });
+      await fs.promises.rm(storagePath, { recursive: true, force: true });
     }
   });
 
