@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { FormatDetector, ConfigFormat } from '../../src/parsers/formatDetector';
 
@@ -85,5 +87,24 @@ suite('FormatDetector', () => {
     const smallMatrix = result.find((r) => r.configPath.endsWith(path.join('matrix', 'small')));
     assert.ok(smallMatrix, 'expected matrix/small configuration root');
     assert.strictEqual(smallMatrix?.workspaceFolderPath, fixturesPath);
+  });
+
+  test('findAllConfigurationRoots does not recurse into discovered configuration roots', async () => {
+    const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-fd-prune-'));
+    const configPath = path.join(workspacePath, 'big-config');
+    const nestedConfigPath = path.join(configPath, 'Catalogs', 'NestedLikeConfig');
+
+    await fs.promises.mkdir(nestedConfigPath, { recursive: true });
+    await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+    await fs.promises.writeFile(path.join(nestedConfigPath, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+
+    const result = await FormatDetector.findAllConfigurationRoots([workspacePath]);
+    const configPaths = result.map((r) => path.normalize(r.configPath));
+
+    assert.ok(configPaths.includes(path.normalize(configPath)), 'top-level configuration should be discovered');
+    assert.ok(
+      !configPaths.includes(path.normalize(nestedConfigPath)),
+      'nested markers inside an already discovered configuration root must be ignored'
+    );
   });
 });

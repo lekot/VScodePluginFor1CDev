@@ -16,6 +16,14 @@ export enum ConfigFormat {
 }
 /* eslint-enable @typescript-eslint/naming-convention */
 
+const SKIPPED_DISCOVERY_DIRS = new Set(['node_modules', '.git', '.vscode', 'dist', 'out']);
+const CONFIG_ROOT_MARKERS = new Set(['1cv8.cf', '1cv8.cfe', CONFIGURATION_XML, 'ConfigDumpInfo.xml']);
+const NESTED_CONFIGURATION_CONTAINERS = [
+  ['ConfigurationExtensions'],
+  ['Extensions'],
+  ['src', 'Extensions'],
+] as const;
+
 /**
  * Detector for 1C configuration format
  */
@@ -61,27 +69,46 @@ export class FormatDetector {
    * Check if the given directory path is a configuration root (has 1cv8.cf, 1cv8.cfe, or valid Configuration.xml).
    */
   private static async isConfigurationRoot(dirPath: string): Promise<boolean> {
-    const cfPath = path.join(dirPath, '1cv8.cf');
-    const cfePath = path.join(dirPath, '1cv8.cfe');
-    const configXmlPath = path.join(dirPath, CONFIGURATION_XML);
+    const entries = await this.readDirectoryEntries(dirPath);
+    return entries ? this.hasConfigurationRootMarkers(entries) : false;
+  }
+
+  private static async readDirectoryEntries(dirPath: string): Promise<fs.Dirent[] | null> {
     try {
-      await fs.promises.access(cfPath);
-      return true;
-    } catch {
-      // continue
+      return await fs.promises.readdir(dirPath, { withFileTypes: true });
+    } catch (error) {
+      Logger.debug(`Error reading directory ${dirPath}`, error);
+      return null;
     }
-    try {
-      await fs.promises.access(cfePath);
-      return true;
-    } catch {
-      // continue
+  }
+
+  private static hasConfigurationRootMarkers(entries: readonly fs.Dirent[]): boolean {
+    const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
+    return [...CONFIG_ROOT_MARKERS].some((marker) => names.has(marker));
+  }
+
+  private static getCandidateChildDirectories(dirPath: string, entries: readonly fs.Dirent[]): string[] {
+    return entries
+      .filter((entry) => entry.isDirectory() && !SKIPPED_DISCOVERY_DIRS.has(entry.name))
+      .map((entry) => path.join(dirPath, entry.name));
+  }
+
+  private static async findNestedKnownConfigurationRoots(configRootPath: string): Promise<string[]> {
+    const found: string[] = [];
+    for (const containerSegments of NESTED_CONFIGURATION_CONTAINERS) {
+      const containerPath = path.join(configRootPath, ...containerSegments);
+      const entries = await this.readDirectoryEntries(containerPath);
+      if (!entries) {
+        continue;
+      }
+      for (const childPath of this.getCandidateChildDirectories(containerPath, entries)) {
+        const childEntries = await this.readDirectoryEntries(childPath);
+        if (childEntries && this.hasConfigurationRootMarkers(childEntries)) {
+          found.push(childPath);
+        }
+      }
     }
-    try {
-      await fs.promises.access(configXmlPath);
-      return true;
-    } catch {
-      return false;
-    }
+    return found;
   }
 
   /**
@@ -123,6 +150,15 @@ export class FormatDetector {
             seen.add(n);
             result.push({ configPath: workspacePath, workspaceFolderPath: workspacePath });
           }
+          const nested = await this.findNestedKnownConfigurationRoots(workspacePath);
+          for (const configPath of nested) {
+            const n = normalize(configPath);
+            if (!seen.has(n)) {
+              seen.add(n);
+              result.push({ configPath, workspaceFolderPath: workspacePath });
+            }
+          }
+          continue;
         }
         const inSubdirs = await this.searchAllConfigurationsRecursive(workspacePath, 0, 5);
         for (const configPath of inSubdirs) {
@@ -145,32 +181,39 @@ export class FormatDetector {
   private static async searchAllConfigurationsRecursive(
     dirPath: string,
     currentDepth: number,
-    maxDepth: number
+    maxDepth: number,
+    knownEntries?: fs.Dirent[]
   ): Promise<string[]> {
     if (currentDepth >= maxDepth) {return [];}
     const found: string[] = [];
-    try {
-      const items = await fs.promises.readdir(dirPath);
-      for (const item of items) {
-        if (item === 'node_modules' || item === '.git' || item === '.vscode' || item === 'dist' || item === 'out') {
-          continue;
-        }
-        const itemPath = path.join(dirPath, item);
-        try {
-          const stat = await fs.promises.stat(itemPath);
-          if (!stat.isDirectory()) {continue;}
-          if (await this.isConfigurationRoot(itemPath)) {
-            found.push(itemPath);
-            Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
-          }
-          const sub = await this.searchAllConfigurationsRecursive(itemPath, currentDepth + 1, maxDepth);
-          found.push(...sub);
-        } catch (error) {
-          Logger.debug(`Error checking subdirectory ${itemPath}`, error);
-        }
+    const entries = knownEntries ?? await this.readDirectoryEntries(dirPath);
+    if (!entries) {
+      return found;
+    }
+
+    const nonRootChildren: Array<{ itemPath: string; entries: fs.Dirent[] }> = [];
+    for (const itemPath of this.getCandidateChildDirectories(dirPath, entries)) {
+      const childEntries = await this.readDirectoryEntries(itemPath);
+      if (!childEntries) {
+        continue;
       }
-    } catch (error) {
-      Logger.debug(`Error reading directory ${dirPath}`, error);
+      if (this.hasConfigurationRootMarkers(childEntries)) {
+        found.push(itemPath);
+        Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
+        found.push(...await this.findNestedKnownConfigurationRoots(itemPath));
+        continue;
+      }
+      nonRootChildren.push({ itemPath, entries: childEntries });
+    }
+
+    for (const child of nonRootChildren) {
+      const sub = await this.searchAllConfigurationsRecursive(
+        child.itemPath,
+        currentDepth + 1,
+        maxDepth,
+        child.entries
+      );
+      found.push(...sub);
     }
     return found;
   }
@@ -185,59 +228,43 @@ export class FormatDetector {
   private static async searchConfigurationRecursive(
     dirPath: string,
     currentDepth: number,
-    maxDepth: number
+    maxDepth: number,
+    knownEntries?: fs.Dirent[]
   ): Promise<string | null> {
     if (currentDepth >= maxDepth) {
       return null;
     }
 
-    try {
-      const items = await fs.promises.readdir(dirPath);
-
-      for (const item of items) {
-        // Skip common non-config directories
-        if (item === 'node_modules' || item === '.git' || item === '.vscode' || item === 'dist' || item === 'out') {
-          continue;
-        }
-
-        const itemPath = path.join(dirPath, item);
-        try {
-          const stat = await fs.promises.stat(itemPath);
-
-          if (stat.isDirectory()) {
-            // Check if this directory is a configuration root
-            const cfPath = path.join(itemPath, '1cv8.cf');
-            const cfePath = path.join(itemPath, '1cv8.cfe');
-            const configXmlPath = path.join(itemPath, CONFIGURATION_XML);
-
-            // Check all paths in parallel
-            const checks = await Promise.allSettled([
-              fs.promises.access(cfPath),
-              fs.promises.access(cfePath),
-              fs.promises.access(configXmlPath),
-            ]);
-
-            if (checks.some(result => result.status === 'fulfilled')) {
-              Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
-              return itemPath;
-            }
-
-            // Recursively search in this subdirectory
-            const found = await this.searchConfigurationRecursive(itemPath, currentDepth + 1, maxDepth);
-            if (found) {
-              return found;
-            }
-          }
-        } catch (error) {
-          Logger.debug(`Error checking subdirectory ${itemPath}`, error);
-        }
-      }
-
-      return null;
-    } catch (error) {
-      Logger.debug(`Error reading directory ${dirPath}`, error);
+    const entries = knownEntries ?? await this.readDirectoryEntries(dirPath);
+    if (!entries) {
       return null;
     }
+
+    const nonRootChildren: Array<{ itemPath: string; entries: fs.Dirent[] }> = [];
+    for (const itemPath of this.getCandidateChildDirectories(dirPath, entries)) {
+      const childEntries = await this.readDirectoryEntries(itemPath);
+      if (!childEntries) {
+        continue;
+      }
+      if (this.hasConfigurationRootMarkers(childEntries)) {
+        Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
+        return itemPath;
+      }
+      nonRootChildren.push({ itemPath, entries: childEntries });
+    }
+
+    for (const child of nonRootChildren) {
+      const found = await this.searchConfigurationRecursive(
+        child.itemPath,
+        currentDepth + 1,
+        maxDepth,
+        child.entries
+      );
+      if (found) {
+        return found;
+      }
+    }
+    return null;
   }
 
   /**
