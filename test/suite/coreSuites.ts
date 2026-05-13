@@ -160,6 +160,7 @@ export const coreSuiteFiles: string[] = [
   'suite/xdtoPackageParser.test.js',
   'suite/xdtoPackageSerializer.test.js',
   'suite/xdtoPackageEditorProvider.test.js',
+  'suite/xdtoPackageWebviewContent.test.js',
   'suite/xdtoXsdConverter.test.js',
   'suite/objectTypeSerializer.test.js',
   'suite/objectTypeEditorProvider.test.js',

@@ -207,6 +207,51 @@
       min-height: 0;
       justify-self: start;
     }
+    .type-picker {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 30px;
+      width: 100%;
+    }
+    .type-picker input {
+      border-radius: 0;
+      border-right: 0;
+    }
+    .type-picker-button {
+      min-height: 28px;
+      min-width: 30px;
+      padding: 0;
+      border-radius: 0;
+    }
+    .type-picker-list {
+      position: absolute;
+      z-index: 10;
+      top: calc(100% + 2px);
+      left: 0;
+      right: 0;
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid var(--vscode-input-border, var(--border));
+      background: var(--input-bg);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
+    }
+    .type-picker-list[hidden] {
+      display: none;
+    }
+    .type-picker-option {
+      width: 100%;
+      justify-content: flex-start;
+      border: 0;
+      border-radius: 0;
+      padding: 5px 8px;
+      color: var(--input-fg);
+      background: var(--input-bg);
+      text-align: left;
+    }
+    .type-picker-empty {
+      padding: 6px 8px;
+      color: var(--muted);
+    }
     .readonly {
       color: var(--muted);
       overflow-wrap: anywhere;
@@ -298,8 +343,6 @@
     <textarea id="source" spellcheck="false"></textarea>
   </section>
 
-  <datalist id="type-options"></datalist>
-
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     // __XDTO_DATA_PLACEHOLDER__
@@ -311,6 +354,9 @@
     let dirty = false;
     let dirtyKind = undefined;
     let sourceHasPreview = false;
+    let activeTypePickerField = undefined;
+    let typeOptionValues = [];
+    const collapsedGroups = new Set();
 
     const builtInTypes = [
       'xs:string', 'xs:boolean', 'xs:decimal', 'xs:integer', 'xs:int', 'xs:long',
@@ -333,7 +379,6 @@
     const sourceSection = document.getElementById('source-section');
     const tree = document.getElementById('tree');
     const inspector = document.getElementById('inspector');
-    const typeOptions = document.getElementById('type-options');
 
     title.textContent = `${data.strings.title}: ${data.packageName}`;
     schemaPath.textContent = data.schemaPath;
@@ -445,16 +490,48 @@
       return nodeId(a) === nodeId(b);
     }
 
+    function isGroupNode(node) {
+      return Boolean(node && typeof node.kind === 'string' && node.kind.endsWith('Group'));
+    }
+
+    function groupKey(node) {
+      const parts = [node.kind];
+      if (node.objectIndex !== undefined) { parts.push(node.objectIndex); }
+      return parts.join(':');
+    }
+
+    function isGroupCollapsed(node) {
+      return collapsedGroups.has(groupKey(node));
+    }
+
+    function toggleGroup(node) {
+      const key = groupKey(node);
+      if (collapsedGroups.has(key)) {
+        collapsedGroups.delete(key);
+      } else {
+        collapsedGroups.add(key);
+      }
+      render();
+    }
+
     function selectNode(node) {
       selection = node;
       render();
     }
 
-    function treeButton(node, label, icon, count) {
+    function treeButton(node, label, icon, count, options = {}) {
       const selected = sameNode(node, selection) ? ' selected' : '';
       const countHtml = count === undefined ? '' : `<span class="node-count">${count}</span>`;
-      return `<button class="${selected}" data-node="${attr(JSON.stringify(node))}" title="${attr(label)}">` +
+      const groupAttrs = options.group ? ` data-group="true" aria-expanded="${options.expanded ? 'true' : 'false'}"` : '';
+      return `<button class="${selected}" data-node="${attr(JSON.stringify(node))}"${groupAttrs} title="${attr(label)}">` +
         `<span class="node-icon">${esc(icon)}</span><span class="node-text">${esc(label)}</span>${countHtml}</button>`;
+    }
+
+    function treeGroup(node, label, count, childrenHtml) {
+      const collapsed = isGroupCollapsed(node);
+      const icon = collapsed ? '▸' : '▾';
+      const hidden = collapsed ? ' hidden' : '';
+      return `<li>${treeButton(node, label, icon, count, { group: true, expanded: !collapsed })}<ul${hidden}>${childrenHtml}</ul></li>`;
     }
 
     function renderTree() {
@@ -464,38 +541,30 @@
       const rootProperties = model.rootProperties || [];
       let html = '<ul>';
       html += `<li>${treeButton({ kind: 'package' }, packageLabel(), '□')}</li>`;
-      html += `<li>${treeButton({ kind: 'importsGroup' }, 'Директивы импорта', '▸', imports.length)}<ul>`;
-      html += imports.map((item, index) =>
+      html += treeGroup({ kind: 'importsGroup' }, 'Директивы импорта', imports.length, imports.map((item, index) =>
         `<li>${treeButton({ kind: 'import', index }, item.namespace || item.schemaLocation || 'Новая директива импорта', '↳')}</li>`
-      ).join('');
-      html += '</ul></li>';
-      html += `<li>${treeButton({ kind: 'valueTypesGroup' }, 'Типы значений', '▸', valueTypes.length)}<ul>`;
-      html += valueTypes.map((item, index) =>
+      ).join(''));
+      html += treeGroup({ kind: 'valueTypesGroup' }, 'Типы значений', valueTypes.length, valueTypes.map((item, index) =>
         `<li>${treeButton({ kind: 'valueType', index }, item.name || 'Новый тип значения', 'T')}</li>`
-      ).join('');
-      html += '</ul></li>';
-      html += `<li>${treeButton({ kind: 'objectTypesGroup' }, 'Типы объектов', '▸', objectTypes.length)}<ul>`;
-      html += objectTypes.map((item, objectIndex) => {
+      ).join(''));
+      html += treeGroup({ kind: 'objectTypesGroup' }, 'Типы объектов', objectTypes.length, objectTypes.map((item, objectIndex) => {
         const attributes = item.attributes || [];
         const properties = item.properties || [];
         let node = `<li>${treeButton({ kind: 'objectType', index: objectIndex }, item.name || 'Новый тип объекта', 'O')}`;
-        node += `<ul><li>${treeButton({ kind: 'objectAttributesGroup', objectIndex }, 'Атрибуты', '▸', attributes.length)}<ul>`;
-        node += attributes.map((attribute, index) =>
+        node += '<ul>';
+        node += treeGroup({ kind: 'objectAttributesGroup', objectIndex }, 'Атрибуты', attributes.length, attributes.map((attribute, index) =>
           `<li>${treeButton({ kind: 'objectAttribute', objectIndex, index }, propertyLabel(attribute), '@')}</li>`
-        ).join('');
-        node += `</ul></li><li>${treeButton({ kind: 'objectPropertiesGroup', objectIndex }, 'Свойства', '▸', properties.length)}<ul>`;
-        node += properties.map((property, index) =>
+        ).join(''));
+        node += treeGroup({ kind: 'objectPropertiesGroup', objectIndex }, 'Свойства', properties.length, properties.map((property, index) =>
           `<li>${treeButton({ kind: 'objectProperty', objectIndex, index }, propertyLabel(property), '•')}</li>`
-        ).join('');
-        node += '</ul></li></ul></li>';
+        ).join(''));
+        node += '</ul></li>';
         return node;
-      }).join('');
-      html += '</ul></li>';
-      html += `<li>${treeButton({ kind: 'rootPropertiesGroup' }, 'Корневые свойства', '▸', rootProperties.length)}<ul>`;
-      html += rootProperties.map((item, index) =>
+      }).join(''));
+      html += treeGroup({ kind: 'rootPropertiesGroup' }, 'Корневые свойства', rootProperties.length, rootProperties.map((item, index) =>
         `<li>${treeButton({ kind: 'rootProperty', index }, propertyLabel(item), '•')}</li>`
-      ).join('');
-      html += '</ul></li></ul>';
+      ).join(''));
+      html += '</ul>';
       tree.innerHTML = html;
     }
 
@@ -533,11 +602,19 @@
 
     function field(label, key, value, options = {}) {
       const disabled = options.disabled ? ' disabled' : '';
-      const list = options.list ? ` list="${attr(options.list)}"` : '';
       const placeholder = options.placeholder ? ` placeholder="${attr(options.placeholder)}"` : '';
       const type = options.type || 'text';
+      if (options.typePicker) {
+        const buttonDisabled = options.disabled ? ' disabled' : '';
+        return `<label for="field-${attr(key)}">${esc(label)}</label>` +
+          `<div class="type-picker" data-type-picker-field="${attr(key)}">` +
+          `<input id="field-${attr(key)}" data-field="${attr(key)}" data-type-picker-input="true" type="${attr(type)}" value="${attr(value || '')}"${placeholder}${disabled}>` +
+          `<button type="button" class="type-picker-button" data-type-picker-button="${attr(key)}" aria-label="Открыть список типов" aria-expanded="false"${buttonDisabled}>▾</button>` +
+          `<div class="type-picker-list" data-type-picker-list="${attr(key)}" role="listbox" hidden>${renderTypePickerOptions(key)}</div>` +
+          `</div>`;
+      }
       return `<label for="field-${attr(key)}">${esc(label)}</label>` +
-        `<input id="field-${attr(key)}" data-field="${attr(key)}" type="${attr(type)}" value="${attr(value || '')}"${list}${placeholder}${disabled}>`;
+        `<input id="field-${attr(key)}" data-field="${attr(key)}" type="${attr(type)}" value="${attr(value || '')}"${placeholder}${disabled}>`;
     }
 
     function checkboxField(label, key, value) {
@@ -578,14 +655,14 @@
       if (selection.kind === 'valueType' || selection.kind === 'objectType') {
         inspector.innerHTML = `<h2>${selection.kind === 'valueType' ? 'Тип значения' : 'Тип объекта'}</h2><div class="field-grid">` +
           field('Имя', 'name', entity.name || '') +
-          field('Базовый тип', 'baseType', entity.baseType || '', { list: 'type-options' }) +
+          field('Базовый тип', 'baseType', entity.baseType || '', { typePicker: true }) +
           `</div>`;
         return;
       }
       inspector.innerHTML = `<h2>${selection.kind === 'objectAttribute' ? 'Атрибут' : 'Свойство'}</h2><div class="field-grid">` +
         field('Имя', 'name', entity.name || '') +
         field('Ссылка', 'ref', entity.ref || '') +
-        field('Тип', 'type', entity.type || '', { list: 'type-options' }) +
+        field('Тип', 'type', entity.type || '', { typePicker: true }) +
         field('Минимальное количество', 'lowerBound', entity.lowerBound || '') +
         field('Максимальное количество', 'upperBound', entity.upperBound || '') +
         field('minOccurs', 'minOccurs', entity.minOccurs || '') +
@@ -616,6 +693,22 @@
         '<div class="empty">Используйте кнопку «Добавить», чтобы создать новый элемент в этой группе.</div>';
     }
 
+    function renderTypePickerOptions(fieldKey) {
+      if (typeOptionValues.length === 0) {
+        return '<div class="type-picker-empty">Нет доступных типов</div>';
+      }
+      return typeOptionValues.map((value) =>
+        `<button type="button" class="type-picker-option" data-type-picker-field="${attr(fieldKey)}" data-type-picker-option="${attr(value)}" role="option">${esc(value)}</button>`
+      ).join('');
+    }
+
+    function refreshTypePickerLists() {
+      inspector.querySelectorAll('.type-picker-list').forEach((list) => {
+        const fieldKey = list.dataset.typePickerList;
+        list.innerHTML = renderTypePickerOptions(fieldKey);
+      });
+    }
+
     function updateTypeOptions() {
       const localTypes = []
         .concat(model.valueTypes || [], model.objectTypes || [])
@@ -626,7 +719,8 @@
         .filter(Boolean);
       const prefixedTypes = namespacePrefixes().map((prefix) => `${prefix}:`);
       const values = Array.from(new Set(builtInTypes.concat(localTypes, importTypes, prefixedTypes)));
-      typeOptions.innerHTML = values.map((value) => `<option value="${attr(value)}"></option>`).join('');
+      typeOptionValues = values;
+      refreshTypePickerLists();
     }
 
     function namespacePrefixes() {
@@ -656,6 +750,42 @@
       entity[key] = checked ? 'true' : 'false';
       markModelDirty();
       renderTree();
+    }
+
+    function closeTypePicker() {
+      activeTypePickerField = undefined;
+      inspector.querySelectorAll('.type-picker-list').forEach((list) => {
+        list.hidden = true;
+      });
+      inspector.querySelectorAll('.type-picker-button').forEach((button) => {
+        button.setAttribute('aria-expanded', 'false');
+      });
+    }
+
+    function toggleTypePicker(fieldKey) {
+      const picker = inspector.querySelector(`.type-picker[data-type-picker-field="${fieldKey}"]`);
+      if (!picker) { return; }
+      const list = picker.querySelector('.type-picker-list');
+      const button = picker.querySelector('.type-picker-button');
+      if (!list || !button) { return; }
+      const shouldOpen = activeTypePickerField !== fieldKey || list.hidden;
+      closeTypePicker();
+      if (shouldOpen) {
+        list.innerHTML = renderTypePickerOptions(fieldKey);
+        list.hidden = false;
+        button.setAttribute('aria-expanded', 'true');
+        activeTypePickerField = fieldKey;
+      }
+    }
+
+    function selectTypeOption(fieldKey, value) {
+      const input = Array.from(inspector.querySelectorAll('input[data-field]'))
+        .find((item) => item.dataset.field === fieldKey);
+      if (!input) { return; }
+      input.value = value;
+      updateField(fieldKey, value);
+      closeTypePicker();
+      input.focus();
     }
 
     function canDeleteSelection() {
@@ -819,7 +949,29 @@
     tree.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-node]');
       if (!button) { return; }
-      selectNode(JSON.parse(button.dataset.node));
+      const node = JSON.parse(button.dataset.node);
+      if (isGroupNode(node)) {
+        selection = node;
+        toggleGroup(node);
+        return;
+      }
+      selectNode(node);
+    });
+
+    inspector.addEventListener('click', (event) => {
+      const option = event.target.closest('button[data-type-picker-option]');
+      if (option) {
+        selectTypeOption(option.dataset.typePickerField, option.dataset.typePickerOption);
+        return;
+      }
+      const button = event.target.closest('button[data-type-picker-button]');
+      if (button) {
+        toggleTypePicker(button.dataset.typePickerButton);
+        return;
+      }
+      if (!event.target.closest('.type-picker')) {
+        closeTypePicker();
+      }
     });
 
     inspector.addEventListener('input', (event) => {
