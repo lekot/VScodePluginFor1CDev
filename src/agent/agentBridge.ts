@@ -95,7 +95,7 @@ export class AgentBridge {
                 createdAt: new Date().toISOString(),
                 extensionVersion: this._extensionVersion ?? 'unknown',
                 docs: 'https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md',
-                quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start с debuggeeType=\'webServer\' или dbPath → потом playwright на webServerUrl. Отладка BSL — agent.debug.start (debuggeeType=\'webServer\' чтобы агент мог управлять формой; thinClient — нативное окно Windows, недоступно без ui-test).',
+                quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd|\\.xdto)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start с debuggeeType=\'webServer\' или dbPath → потом playwright на webServerUrl. XDTO: agent.xdto.listPackages/getPackage/exportXsd/importXsd/createFromXsd/compare/merge. Отладка BSL — agent.debug.start (debuggeeType=\'webServer\' чтобы агент мог управлять формой; thinClient — нативное окно Windows, недоступно без ui-test).',
                 ...(helperScriptPath ? { helperScriptPath } : {}),
                 ...(discoverScriptPath ? { discoverScriptPath } : {}),
             };

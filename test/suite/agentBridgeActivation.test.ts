@@ -127,4 +127,23 @@ suite('activateAgentBridge', () => {
 
     assert.ok(stopCalled, 'bridge.stop() должен быть вызван при dispose');
   });
+
+  test('whitelist разрешает agent.xdto команды', () => {
+    const originalStart = AgentBridge.prototype.start;
+    AgentBridge.prototype.start = async function () {
+      return { port: 1, token: 'test' };
+    };
+
+    try {
+      const ctx = makeContext();
+      const bridge = activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
+      assert.ok(bridge, 'bridge должен быть создан');
+
+      const pattern = (bridge as unknown as { _commandPattern: RegExp })._commandPattern;
+      assert.ok(pattern.test('1c-metadata-tree.agent.xdto.listPackages'));
+      assert.ok(pattern.test('1c-metadata-tree.agent.xdto.exportXsd'));
+    } finally {
+      AgentBridge.prototype.start = originalStart;
+    }
+  });
 });
