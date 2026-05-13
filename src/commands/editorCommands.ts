@@ -23,6 +23,7 @@ import { metadataConverter, rulesRegistry } from '../rules';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
 import { convert1cPackageToXsd, convertXsdTo1cPackage } from '../xdtoPackageEditor/xdtoXsdConverter';
 import { resolveXdtoPackageSchemaPath } from '../xdtoPackageEditor/xdtoPackagePaths';
+import { showXdtoPackageCompare } from '../xdtoPackageCompare/xdtoPackageCompareProvider';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
@@ -675,6 +676,17 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const compareMergeXdtoPackageCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.compareMergeXdtoPackage',
+    async (node?: TreeNode) => {
+      const target = ensureSelectedXdtoPackage(state, node);
+      if (!target?.filePath || !state.extensionContext) {
+        return;
+      }
+      await showXdtoPackageCompare(state.extensionContext, target);
+    }
+  );
+
   const viewCotPredefinedCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.viewChartOfCharacteristicTypesPredefined',
     async (node?: TreeNode) => {
@@ -772,6 +784,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     exportXdtoPackageToXsdCommand,
     importXsdIntoXdtoPackageCommand,
     importXsdAsNewXdtoPackageCommand,
+    compareMergeXdtoPackageCommand,
     viewCotPredefinedCommand,
     startDebuggingCommand,
   ];

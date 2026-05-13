@@ -541,7 +541,18 @@
       return Boolean(node && typeof node.kind === 'string' && node.kind.endsWith('Group'));
     }
 
+    function isExpandableNode(node) {
+      return isGroupNode(node) || Boolean(node && node.kind === 'objectType');
+    }
+
+    function objectTypeKey(node) {
+      return `objectType:${node.index}`;
+    }
+
     function groupKey(node) {
+      if (node.kind === 'objectType') {
+        return objectTypeKey(node);
+      }
       const parts = [node.kind];
       if (node.objectIndex !== undefined) { parts.push(node.objectIndex); }
       return parts.join(':');
@@ -578,6 +589,13 @@
       const collapsed = isGroupCollapsed(node);
       const icon = collapsed ? '▸' : '▾';
       const hidden = collapsed ? ' hidden' : '';
+      return treeExpandableNode(node, label, count, childrenHtml, icon);
+    }
+
+    function treeExpandableNode(node, label, count, childrenHtml, iconOverride) {
+      const collapsed = isGroupCollapsed(node);
+      const icon = iconOverride || (collapsed ? '▸' : '▾');
+      const hidden = collapsed ? ' hidden' : '';
       return `<li>${treeButton(node, label, icon, count, { group: true, expanded: !collapsed })}<ul${hidden}>${childrenHtml}</ul></li>`;
     }
 
@@ -597,16 +615,14 @@
       html += treeGroup({ kind: 'objectTypesGroup' }, 'Типы объектов', objectTypes.length, objectTypes.map((item, objectIndex) => {
         const attributes = item.attributes || [];
         const properties = item.properties || [];
-        let node = `<li>${treeButton({ kind: 'objectType', index: objectIndex }, item.name || 'Новый тип объекта', 'O')}`;
-        node += '<ul>';
+        let node = '';
         node += treeGroup({ kind: 'objectAttributesGroup', objectIndex }, 'Атрибуты', attributes.length, attributes.map((attribute, index) =>
           `<li>${treeButton({ kind: 'objectAttribute', objectIndex, index }, propertyLabel(attribute), '@')}</li>`
         ).join(''));
         node += treeGroup({ kind: 'objectPropertiesGroup', objectIndex }, 'Свойства', properties.length, properties.map((property, index) =>
           `<li>${treeButton({ kind: 'objectProperty', objectIndex, index }, propertyLabel(property), '•')}</li>`
         ).join(''));
-        node += '</ul></li>';
-        return node;
+        return treeExpandableNode({ kind: 'objectType', index: objectIndex }, item.name || 'Новый тип объекта', undefined, node);
       }).join(''));
       html += treeGroup({ kind: 'rootPropertiesGroup' }, 'Корневые свойства', rootProperties.length, rootProperties.map((item, index) =>
         `<li>${treeButton({ kind: 'rootProperty', index }, propertyLabel(item), '•')}</li>`
@@ -1014,7 +1030,7 @@
       const button = event.target.closest('button[data-node]');
       if (!button) { return; }
       const node = JSON.parse(button.dataset.node);
-      if (isGroupNode(node)) {
+      if (isExpandableNode(node)) {
         selection = node;
         toggleGroup(node);
         return;

@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.47.9",
+  "version": "0.48.0",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -263,6 +263,11 @@
       {
         "command": "1c-metadata-tree.importXsdAsNewXdtoPackage",
         "title": "XDTO-пакет: создать из XSD",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.compareMergeXdtoPackage",
+        "title": "XDTO-пакет: сравнить/объединить",
         "category": "CDT 41"
       },
       {
@@ -922,6 +927,11 @@
           "command": "1c-metadata-tree.importXsdAsNewXdtoPackage",
           "when": "view == 1c-metadata-tree && viewItem =~ /^XDTOPackage\\b/",
           "group": "2_xdto@3"
+        },
+        {
+          "command": "1c-metadata-tree.compareMergeXdtoPackage",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^XDTOPackage\\b/",
+          "group": "2_xdto@4"
         },
         {
           "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",

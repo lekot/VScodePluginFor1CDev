@@ -40,4 +40,13 @@ suite('xdtoPackageWebview content', () => {
     assert.ok(html.includes("'▸'"), 'collapsed groups must render a right chevron');
     assert.ok(html.includes("'▾'"), 'expanded groups must render a down chevron');
   });
+
+  test('renders object types as expandable tree nodes', () => {
+    const html = readWebviewHtml();
+
+    assert.ok(html.includes('isExpandableNode'), 'tree must distinguish expandable nodes from plain leaf nodes');
+    assert.ok(html.includes("node.kind === 'objectType'"), 'object types must be treated as expandable nodes');
+    assert.ok(html.includes("treeExpandableNode({ kind: 'objectType'"), 'object type rows must render with expandable state');
+    assert.ok(html.includes('objectTypeKey'), 'collapsed object type state must be scoped by object index');
+  });
 });

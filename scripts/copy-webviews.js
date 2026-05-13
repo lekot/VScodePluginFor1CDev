@@ -6,6 +6,7 @@ const sources = [
   'src/compositionEditor/compositionWebview.html',
   'src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceWebview.html',
   'src/xdtoPackageEditor/xdtoPackageWebview.html',
+  'src/xdtoPackageCompare/xdtoPackageCompareWebview.html',
 ];
 
 const outDirs = ['dist', 'out/src'];
