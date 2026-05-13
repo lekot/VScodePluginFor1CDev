@@ -32,7 +32,7 @@ suite('editorCommands', () => {
 
     const disposables = registerEditorCommands({ state: {} as any });
 
-    assert.strictEqual(disposables.length, 20);
+    assert.strictEqual(disposables.length, ids.length);
     assert.deepStrictEqual(ids, [
       '1c-metadata-tree.showProperties',
       '1c-metadata-tree.openXML',
@@ -52,6 +52,7 @@ suite('editorCommands', () => {
       '1c-metadata-tree.exportXdtoPackageToXsd',
       '1c-metadata-tree.importXsdIntoXdtoPackage',
       '1c-metadata-tree.importXsdAsNewXdtoPackage',
+      '1c-metadata-tree.compareMergeXdtoPackage',
       '1c-metadata-tree.viewChartOfCharacteristicTypesPredefined',
       '1c-metadata-tree.startDebugging',
     ]);

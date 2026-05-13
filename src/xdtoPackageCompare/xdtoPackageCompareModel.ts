@@ -42,7 +42,7 @@ function isXsdSource(fileName: string, source: string): boolean {
   const ext = path.extname(fileName).toLowerCase();
   const trimmed = stripUtf8Bom(source).slice(0, 400);
   return ext === '.xsd' || /<([A-Za-z0-9_-]+:)?schema\b/.test(trimmed)
-    && trimmed.includes('http://www.w3.org/2001/XMLSchema');
+    && /\bxmlns(?::[A-Za-z_][\w.-]*)?\s*=\s*["']http:\/\/www\.w3\.org\/2001\/XMLSchema["']/.test(trimmed);
 }
 
 function parseWithoutBlockingErrors(source: string): XdtoPackageModel {
