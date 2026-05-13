@@ -157,6 +157,13 @@ function parseProperty(raw: unknown): XdtoProperty | null {
   return {
     name,
     type: getAttribute(raw, 'type'),
+    ref: getAttribute(raw, 'ref'),
+    namespaceURI: getAttribute(raw, 'namespaceURI'),
+    localName: getAttribute(raw, 'localName'),
+    qualified: getAttribute(raw, 'qualified'),
+    nillable: getAttribute(raw, 'nillable'),
+    fixed: getAttribute(raw, 'fixed'),
+    defaultValue: getAttribute(raw, 'default'),
     minOccurs: getAttribute(raw, 'minOccurs'),
     maxOccurs: getAttribute(raw, 'maxOccurs'),
     lowerBound: getAttribute(raw, 'lowerBound'),

@@ -158,6 +158,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentBridgeActivation.test.js',
   'suite/objectTypeParser.test.js',
   'suite/xdtoPackageParser.test.js',
+  'suite/xdtoPackageSerializer.test.js',
   'suite/xdtoPackageEditorProvider.test.js',
   'suite/xdtoXsdConverter.test.js',
   'suite/objectTypeSerializer.test.js',

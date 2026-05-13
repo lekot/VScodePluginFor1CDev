@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>XDTO Package</title>
+  <title>Редактор пакета XDTO</title>
   <style nonce="${nonce}">
     :root {
       color-scheme: light dark;
@@ -13,6 +13,11 @@
       --button: var(--vscode-button-background, #0e639c);
       --button-fg: var(--vscode-button-foreground, #fff);
       --danger: var(--vscode-errorForeground, #f48771);
+      --input-bg: var(--vscode-input-background, var(--vscode-editor-background));
+      --input-fg: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+      --list-hover: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.14));
+      --list-active: var(--vscode-list-activeSelectionBackground, rgba(0, 127, 212, 0.28));
+      --panel: var(--vscode-sideBar-background, var(--vscode-editor-background));
     }
     * { box-sizing: border-box; }
     body {
@@ -25,10 +30,10 @@
     }
     header {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 12px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
     h1 {
       margin: 0;
@@ -41,12 +46,24 @@
       margin-top: 4px;
       word-break: break-all;
     }
-    .toolbar {
+    .toolbar,
+    .tabs {
       display: flex;
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
-      margin-bottom: 14px;
+    }
+    .toolbar {
+      margin-bottom: 10px;
+    }
+    .tabs {
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    button,
+    select,
+    input {
+      font: inherit;
     }
     button {
       border: 1px solid var(--border);
@@ -55,128 +72,308 @@
       padding: 6px 10px;
       border-radius: 4px;
       cursor: pointer;
+      min-height: 28px;
+    }
+    button:hover {
+      background: var(--list-hover);
     }
     button.primary {
       color: var(--button-fg);
       background: var(--button);
       border-color: var(--button);
     }
+    button.tab {
+      border-bottom: 0;
+      border-radius: 4px 4px 0 0;
+      margin-bottom: -1px;
+    }
     button.active {
-      outline: 1px solid var(--vscode-focusBorder, #007fd4);
+      color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+      background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+      border-color: var(--vscode-focusBorder, #007fd4);
+    }
+    button:disabled,
+    select:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    select,
+    input,
+    textarea {
+      border: 1px solid var(--vscode-input-border, var(--border));
+      color: var(--input-fg);
+      background: var(--input-bg);
+    }
+    select {
+      min-height: 28px;
+      padding: 4px 26px 4px 8px;
     }
     .status {
       min-height: 18px;
       color: var(--muted);
+      margin-left: auto;
     }
     .status.error { color: var(--danger); }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-      gap: 8px;
-      margin-bottom: 16px;
-    }
-    .stat {
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 10px;
-    }
-    .stat strong {
-      display: block;
-      font-size: 20px;
-      margin-bottom: 2px;
-    }
     section { display: none; }
     section.active { display: block; }
-    h2 {
-      font-size: 14px;
-      margin: 18px 0 8px;
+    .constructor {
+      display: grid;
+      grid-template-columns: minmax(240px, 38%) minmax(320px, 1fr);
+      gap: 12px;
+      min-height: calc(100vh - 150px);
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 10px;
+    .pane {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      min-height: 0;
     }
-    th, td {
+    .pane-title {
+      padding: 8px 10px;
       border-bottom: 1px solid var(--border);
-      padding: 6px 8px;
-      text-align: left;
-      vertical-align: top;
+      color: var(--muted);
+      font-weight: 600;
     }
-    th { color: var(--muted); font-weight: 600; }
-    .empty { color: var(--muted); font-style: italic; }
+    .tree {
+      padding: 6px;
+      overflow: auto;
+      max-height: calc(100vh - 198px);
+    }
+    .tree ul {
+      list-style: none;
+      margin: 0;
+      padding-left: 16px;
+    }
+    .tree > ul {
+      padding-left: 0;
+    }
+    .tree button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 0;
+      border-radius: 3px;
+      padding: 4px 6px;
+      color: var(--vscode-foreground);
+      background: transparent;
+      text-align: left;
+    }
+    .tree button.selected {
+      background: var(--list-active);
+      outline: 1px solid var(--vscode-focusBorder, transparent);
+    }
+    .node-icon {
+      width: 16px;
+      flex: 0 0 16px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .node-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .node-count {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .inspector {
+      padding: 12px;
+      overflow: auto;
+      max-height: calc(100vh - 198px);
+    }
+    .inspector h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: minmax(130px, 190px) minmax(180px, 1fr);
+      gap: 8px 12px;
+      align-items: center;
+    }
+    label {
+      color: var(--muted);
+    }
+    input {
+      width: 100%;
+      min-height: 28px;
+      padding: 4px 7px;
+    }
+    input[type="checkbox"] {
+      width: auto;
+      min-height: 0;
+      justify-self: start;
+    }
+    .readonly {
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
     .diagnostics {
       margin: 0 0 12px;
       padding: 8px 10px;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 4px;
     }
     .diagnostics.error { border-color: var(--danger); color: var(--danger); }
+    .empty {
+      color: var(--muted);
+      padding: 8px 0;
+      font-style: italic;
+    }
     textarea {
       width: 100%;
-      min-height: calc(100vh - 190px);
+      min-height: calc(100vh - 150px);
       resize: vertical;
       padding: 10px;
-      border: 1px solid var(--border);
-      background: var(--vscode-editor-background);
-      color: var(--vscode-editor-foreground);
       font-family: var(--vscode-editor-font-family, monospace);
       font-size: var(--vscode-editor-font-size, 13px);
       line-height: 1.4;
       white-space: pre;
+    }
+    @media (max-width: 760px) {
+      .constructor {
+        grid-template-columns: 1fr;
+      }
+      .tree,
+      .inspector {
+        max-height: none;
+      }
+      .field-grid {
+        grid-template-columns: 1fr;
+      }
+      .status {
+        flex-basis: 100%;
+        margin-left: 0;
+      }
     }
   </style>
 </head>
 <body>
   <header>
     <div>
-      <h1 id="title">XDTO Package</h1>
+      <h1 id="title">Редактор пакета XDTO</h1>
       <div class="path" id="schema-path"></div>
     </div>
-    <button class="primary" id="save-button">Сохранить</button>
   </header>
+
   <div class="toolbar">
-    <button id="summary-tab" class="active">Структура</button>
-    <button id="source-tab">Исходник</button>
+    <button class="primary" id="save-button">Сохранить</button>
+    <select id="add-kind" title="Что добавить">
+      <option value="auto">Добавить по выбору</option>
+      <option value="import">Директива импорта</option>
+      <option value="valueType">Тип значения</option>
+      <option value="objectType">Тип объекта</option>
+      <option value="rootProperty">Корневое свойство</option>
+      <option value="objectProperty">Свойство объекта</option>
+      <option value="objectAttribute">Атрибут объекта</option>
+    </select>
+    <button id="add-button">Добавить</button>
+    <button id="delete-button">Удалить</button>
     <span id="status" class="status"></span>
   </div>
-  <section id="summary-section" class="active">
+
+  <div class="tabs">
+    <button id="constructor-tab" class="tab active">Конструктор</button>
+    <button id="source-tab" class="tab">XML</button>
+  </div>
+
+  <section id="constructor-section" class="active">
     <div id="diagnostics"></div>
-    <div class="stats">
-      <div class="stat"><strong id="value-count">0</strong><span>Типы значений</span></div>
-      <div class="stat"><strong id="object-count">0</strong><span>Объектные типы</span></div>
-      <div class="stat"><strong id="root-count">0</strong><span>Корневые свойства</span></div>
-      <div class="stat"><strong id="import-count">0</strong><span>Импорты</span></div>
+    <div class="constructor">
+      <aside class="pane">
+        <div class="pane-title">Структура пакета</div>
+        <nav class="tree" id="tree" aria-label="Структура пакета XDTO"></nav>
+      </aside>
+      <main class="pane">
+        <div class="pane-title">Инспектор свойств</div>
+        <div class="inspector" id="inspector"></div>
+      </main>
     </div>
-    <h2>Типы значений</h2>
-    <div id="value-types"></div>
-    <h2>Объектные типы</h2>
-    <div id="object-types"></div>
-    <h2>Корневые свойства</h2>
-    <div id="root-properties"></div>
   </section>
+
   <section id="source-section">
     <textarea id="source" spellcheck="false"></textarea>
   </section>
+
+  <datalist id="type-options"></datalist>
+
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     // __XDTO_DATA_PLACEHOLDER__
 
     const data = window.__xdtoData;
-    let model = data.model;
+    let model = normalizeModel(data.model);
+    let activeTab = 'constructor';
+    let selection = { kind: 'package' };
+    let dirty = false;
+    let dirtyKind = undefined;
+    let sourceHasPreview = false;
+
+    const builtInTypes = [
+      'xs:string', 'xs:boolean', 'xs:decimal', 'xs:integer', 'xs:int', 'xs:long',
+      'xs:date', 'xs:dateTime', 'xs:time', 'xs:double', 'xs:float', 'xs:base64Binary',
+      'xsd:string', 'xsd:boolean', 'xsd:decimal', 'xsd:integer', 'xsd:int', 'xsd:long',
+      'xsd:date', 'xsd:dateTime', 'xsd:time', 'xsd:double', 'xsd:float'
+    ];
 
     const title = document.getElementById('title');
     const schemaPath = document.getElementById('schema-path');
     const source = document.getElementById('source');
     const status = document.getElementById('status');
     const saveButton = document.getElementById('save-button');
-    const summaryTab = document.getElementById('summary-tab');
+    const addKind = document.getElementById('add-kind');
+    const addButton = document.getElementById('add-button');
+    const deleteButton = document.getElementById('delete-button');
+    const constructorTab = document.getElementById('constructor-tab');
     const sourceTab = document.getElementById('source-tab');
-    const summarySection = document.getElementById('summary-section');
+    const constructorSection = document.getElementById('constructor-section');
     const sourceSection = document.getElementById('source-section');
+    const tree = document.getElementById('tree');
+    const inspector = document.getElementById('inspector');
+    const typeOptions = document.getElementById('type-options');
 
     title.textContent = `${data.strings.title}: ${data.packageName}`;
     schemaPath.textContent = data.schemaPath;
-    source.value = data.source;
+    source.value = data.source || '';
+
+    function normalizeModel(value) {
+      const next = value && typeof value === 'object' ? value : {};
+      next.imports = Array.isArray(next.imports) ? next.imports : [];
+      next.valueTypes = Array.isArray(next.valueTypes) ? next.valueTypes : [];
+      next.objectTypes = Array.isArray(next.objectTypes) ? next.objectTypes : [];
+      next.rootProperties = Array.isArray(next.rootProperties) ? next.rootProperties : [];
+      next.diagnostics = Array.isArray(next.diagnostics) ? next.diagnostics : [];
+      next.imports.forEach((item) => ensureRaw(item));
+      next.valueTypes.forEach(normalizeType);
+      next.objectTypes.forEach(normalizeType);
+      next.rootProperties.forEach(normalizeProperty);
+      return next;
+    }
+
+    function normalizeType(type) {
+      ensureRaw(type);
+      type.properties = Array.isArray(type.properties) ? type.properties : [];
+      type.attributes = Array.isArray(type.attributes) ? type.attributes : [];
+      type.properties.forEach(normalizeProperty);
+      type.attributes.forEach(normalizeProperty);
+      return type;
+    }
+
+    function normalizeProperty(property) {
+      ensureRaw(property);
+      property.unknownNodes = Array.isArray(property.unknownNodes) ? property.unknownNodes : [];
+      return property;
+    }
+
+    function ensureRaw(item) {
+      if (!item.raw || typeof item.raw !== 'object') {
+        item.raw = {};
+      }
+      return item;
+    }
 
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -184,21 +381,44 @@
       })[ch]);
     }
 
-    function setTab(name) {
-      const summary = name === 'summary';
-      summaryTab.classList.toggle('active', summary);
-      sourceTab.classList.toggle('active', !summary);
-      summarySection.classList.toggle('active', summary);
-      sourceSection.classList.toggle('active', !summary);
+    function attr(value) {
+      return esc(value);
     }
 
-    function table(headers, rows) {
-      if (rows.length === 0) {
-        return '<div class="empty">Нет данных</div>';
+    function isTruthy(value) {
+      return value === true || value === 'true' || value === '1';
+    }
+
+    function setStatus(text, isError = false) {
+      status.className = isError ? 'status error' : 'status';
+      status.textContent = text || '';
+    }
+
+    function markModelDirty() {
+      dirty = true;
+      dirtyKind = 'model';
+      sourceHasPreview = false;
+      setStatus('Есть несохранённые изменения конструктора');
+    }
+
+    function markSourceDirty() {
+      dirty = true;
+      dirtyKind = 'source';
+      setStatus('Есть несохранённые изменения XML');
+    }
+
+    function setTab(name) {
+      activeTab = name;
+      const constructor = name === 'constructor';
+      constructorTab.classList.toggle('active', constructor);
+      sourceTab.classList.toggle('active', !constructor);
+      constructorSection.classList.toggle('active', constructor);
+      sourceSection.classList.toggle('active', !constructor);
+      if (!constructor && dirtyKind === 'model') {
+        source.value = createSourcePreview();
+        sourceHasPreview = true;
+        setStatus('XML показан как предварительный просмотр несохранённых изменений конструктора');
       }
-      const head = `<tr>${headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr>`;
-      const body = rows.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('');
-      return `<table>${head}${body}</table>`;
     }
 
     function renderDiagnostics() {
@@ -214,54 +434,438 @@
         '</div>';
     }
 
-    function renderModel() {
-      document.getElementById('value-count').textContent = String((model.valueTypes || []).length);
-      document.getElementById('object-count').textContent = String((model.objectTypes || []).length);
-      document.getElementById('root-count').textContent = String((model.rootProperties || []).length);
-      document.getElementById('import-count').textContent = String((model.imports || []).length);
-
-      document.getElementById('value-types').innerHTML = table(
-        ['Имя', 'Базовый тип'],
-        (model.valueTypes || []).map((t) => [t.name, t.baseType || ''])
-      );
-      document.getElementById('object-types').innerHTML = table(
-        ['Имя', 'Базовый тип', 'Свойства', 'Атрибуты'],
-        (model.objectTypes || []).map((t) => [
-          t.name,
-          t.baseType || '',
-          (t.properties || []).map((p) => `${p.name}${p.type ? ': ' + p.type : ''}`).join(', '),
-          (t.attributes || []).map((p) => `${p.name}${p.type ? ': ' + p.type : ''}`).join(', ')
-        ])
-      );
-      document.getElementById('root-properties').innerHTML = table(
-        ['Имя', 'Тип'],
-        (model.rootProperties || []).map((p) => [p.name, p.type || ''])
-      );
-      renderDiagnostics();
+    function nodeId(node) {
+      const parts = [node.kind];
+      if (node.objectIndex !== undefined) { parts.push(node.objectIndex); }
+      if (node.index !== undefined) { parts.push(node.index); }
+      return parts.join(':');
     }
 
-    summaryTab.addEventListener('click', () => setTab('summary'));
+    function sameNode(a, b) {
+      return nodeId(a) === nodeId(b);
+    }
+
+    function selectNode(node) {
+      selection = node;
+      render();
+    }
+
+    function treeButton(node, label, icon, count) {
+      const selected = sameNode(node, selection) ? ' selected' : '';
+      const countHtml = count === undefined ? '' : `<span class="node-count">${count}</span>`;
+      return `<button class="${selected}" data-node="${attr(JSON.stringify(node))}" title="${attr(label)}">` +
+        `<span class="node-icon">${esc(icon)}</span><span class="node-text">${esc(label)}</span>${countHtml}</button>`;
+    }
+
+    function renderTree() {
+      const imports = model.imports || [];
+      const valueTypes = model.valueTypes || [];
+      const objectTypes = model.objectTypes || [];
+      const rootProperties = model.rootProperties || [];
+      let html = '<ul>';
+      html += `<li>${treeButton({ kind: 'package' }, packageLabel(), '□')}</li>`;
+      html += `<li>${treeButton({ kind: 'importsGroup' }, 'Директивы импорта', '▸', imports.length)}<ul>`;
+      html += imports.map((item, index) =>
+        `<li>${treeButton({ kind: 'import', index }, item.namespace || item.schemaLocation || 'Новая директива импорта', '↳')}</li>`
+      ).join('');
+      html += '</ul></li>';
+      html += `<li>${treeButton({ kind: 'valueTypesGroup' }, 'Типы значений', '▸', valueTypes.length)}<ul>`;
+      html += valueTypes.map((item, index) =>
+        `<li>${treeButton({ kind: 'valueType', index }, item.name || 'Новый тип значения', 'T')}</li>`
+      ).join('');
+      html += '</ul></li>';
+      html += `<li>${treeButton({ kind: 'objectTypesGroup' }, 'Типы объектов', '▸', objectTypes.length)}<ul>`;
+      html += objectTypes.map((item, objectIndex) => {
+        const attributes = item.attributes || [];
+        const properties = item.properties || [];
+        let node = `<li>${treeButton({ kind: 'objectType', index: objectIndex }, item.name || 'Новый тип объекта', 'O')}`;
+        node += `<ul><li>${treeButton({ kind: 'objectAttributesGroup', objectIndex }, 'Атрибуты', '▸', attributes.length)}<ul>`;
+        node += attributes.map((attribute, index) =>
+          `<li>${treeButton({ kind: 'objectAttribute', objectIndex, index }, propertyLabel(attribute), '@')}</li>`
+        ).join('');
+        node += `</ul></li><li>${treeButton({ kind: 'objectPropertiesGroup', objectIndex }, 'Свойства', '▸', properties.length)}<ul>`;
+        node += properties.map((property, index) =>
+          `<li>${treeButton({ kind: 'objectProperty', objectIndex, index }, propertyLabel(property), '•')}</li>`
+        ).join('');
+        node += '</ul></li></ul></li>';
+        return node;
+      }).join('');
+      html += '</ul></li>';
+      html += `<li>${treeButton({ kind: 'rootPropertiesGroup' }, 'Корневые свойства', '▸', rootProperties.length)}<ul>`;
+      html += rootProperties.map((item, index) =>
+        `<li>${treeButton({ kind: 'rootProperty', index }, propertyLabel(item), '•')}</li>`
+      ).join('');
+      html += '</ul></li></ul>';
+      tree.innerHTML = html;
+    }
+
+    function packageLabel() {
+      return model.targetNamespace || data.packageName || 'Пакет XDTO';
+    }
+
+    function propertyLabel(property) {
+      if (!property) { return 'Новое свойство'; }
+      return property.name || property.ref || property.localName || 'Новое свойство';
+    }
+
+    function getSelectedObjectType() {
+      if (selection.objectIndex !== undefined) {
+        return model.objectTypes[selection.objectIndex];
+      }
+      if (selection.kind === 'objectType') {
+        return model.objectTypes[selection.index];
+      }
+      return undefined;
+    }
+
+    function getSelectedEntity() {
+      switch (selection.kind) {
+        case 'package': return model;
+        case 'import': return model.imports[selection.index];
+        case 'valueType': return model.valueTypes[selection.index];
+        case 'objectType': return model.objectTypes[selection.index];
+        case 'rootProperty': return model.rootProperties[selection.index];
+        case 'objectProperty': return model.objectTypes[selection.objectIndex]?.properties?.[selection.index];
+        case 'objectAttribute': return model.objectTypes[selection.objectIndex]?.attributes?.[selection.index];
+        default: return undefined;
+      }
+    }
+
+    function field(label, key, value, options = {}) {
+      const disabled = options.disabled ? ' disabled' : '';
+      const list = options.list ? ` list="${attr(options.list)}"` : '';
+      const placeholder = options.placeholder ? ` placeholder="${attr(options.placeholder)}"` : '';
+      const type = options.type || 'text';
+      return `<label for="field-${attr(key)}">${esc(label)}</label>` +
+        `<input id="field-${attr(key)}" data-field="${attr(key)}" type="${attr(type)}" value="${attr(value || '')}"${list}${placeholder}${disabled}>`;
+    }
+
+    function checkboxField(label, key, value) {
+      const checked = isTruthy(value) ? ' checked' : '';
+      return `<label for="field-${attr(key)}">${esc(label)}</label>` +
+        `<input id="field-${attr(key)}" data-field="${attr(key)}" type="checkbox"${checked}>`;
+    }
+
+    function renderInspector() {
+      const entity = getSelectedEntity();
+      deleteButton.disabled = !canDeleteSelection();
+      addButton.disabled = !canAdd(resolveAddKind());
+      addKind.value = canAdd(addKind.value) ? addKind.value : 'auto';
+
+      if (selection.kind.endsWith('Group')) {
+        inspector.innerHTML = renderGroupInspector();
+        return;
+      }
+      if (!entity) {
+        inspector.innerHTML = '<div class="empty">Выберите элемент дерева</div>';
+        return;
+      }
+
+      if (selection.kind === 'package') {
+        inspector.innerHTML = `<h2>Пакет</h2><div class="field-grid">` +
+          field('Пространство имён', 'targetNamespace', model.targetNamespace || '') +
+          `<label>Файл</label><div class="readonly">${esc(data.schemaPath)}</div>` +
+          `</div>`;
+        return;
+      }
+      if (selection.kind === 'import') {
+        inspector.innerHTML = `<h2>Директива импорта</h2><div class="field-grid">` +
+          field('Пространство имён', 'namespace', entity.namespace || '') +
+          field('Расположение схемы', 'schemaLocation', entity.schemaLocation || '') +
+          `</div>`;
+        return;
+      }
+      if (selection.kind === 'valueType' || selection.kind === 'objectType') {
+        inspector.innerHTML = `<h2>${selection.kind === 'valueType' ? 'Тип значения' : 'Тип объекта'}</h2><div class="field-grid">` +
+          field('Имя', 'name', entity.name || '') +
+          field('Базовый тип', 'baseType', entity.baseType || '', { list: 'type-options' }) +
+          `</div>`;
+        return;
+      }
+      inspector.innerHTML = `<h2>${selection.kind === 'objectAttribute' ? 'Атрибут' : 'Свойство'}</h2><div class="field-grid">` +
+        field('Имя', 'name', entity.name || '') +
+        field('Ссылка', 'ref', entity.ref || '') +
+        field('Тип', 'type', entity.type || '', { list: 'type-options' }) +
+        field('Минимальное количество', 'lowerBound', entity.lowerBound || '') +
+        field('Максимальное количество', 'upperBound', entity.upperBound || '') +
+        field('minOccurs', 'minOccurs', entity.minOccurs || '') +
+        field('maxOccurs', 'maxOccurs', entity.maxOccurs || '') +
+        checkboxField('Возможно пустое', 'nillable', entity.nillable) +
+        field('Фиксированное', 'fixed', entity.fixed || '') +
+        field('По умолчанию', 'defaultValue', entity.defaultValue || '') +
+        field('Форма', 'form', entity.form || '') +
+        field('Локальное имя', 'localName', entity.localName || '') +
+        field('URI пространства имён', 'namespaceURI', entity.namespaceURI || '') +
+        checkboxField('Квалифицированное', 'qualified', entity.qualified) +
+        field('Использование', 'use', entity.use || '') +
+        `</div>`;
+    }
+
+    function renderGroupInspector() {
+      const titleByKind = {
+        importsGroup: 'Директивы импорта',
+        valueTypesGroup: 'Типы значений',
+        objectTypesGroup: 'Типы объектов',
+        rootPropertiesGroup: 'Корневые свойства',
+        objectAttributesGroup: 'Атрибуты объекта',
+        objectPropertiesGroup: 'Свойства объекта'
+      };
+      const objectType = getSelectedObjectType();
+      const detail = objectType ? `<p class="readonly">Тип объекта: ${esc(objectType.name || 'Без имени')}</p>` : '';
+      return `<h2>${esc(titleByKind[selection.kind] || 'Группа')}</h2>${detail}` +
+        '<div class="empty">Используйте кнопку «Добавить», чтобы создать новый элемент в этой группе.</div>';
+    }
+
+    function updateTypeOptions() {
+      const localTypes = []
+        .concat(model.valueTypes || [], model.objectTypes || [])
+        .map((item) => item.name)
+        .filter(Boolean);
+      const importTypes = (model.imports || [])
+        .map((item) => item.namespace)
+        .filter(Boolean);
+      const prefixedTypes = namespacePrefixes().map((prefix) => `${prefix}:`);
+      const values = Array.from(new Set(builtInTypes.concat(localTypes, importTypes, prefixedTypes)));
+      typeOptions.innerHTML = values.map((value) => `<option value="${attr(value)}"></option>`).join('');
+    }
+
+    function namespacePrefixes() {
+      const rawRoot = model.rawRoot && typeof model.rawRoot === 'object' ? model.rawRoot : {};
+      return Object.keys(rawRoot)
+        .filter((key) => key.startsWith('@_xmlns:'))
+        .map((key) => key.slice('@_xmlns:'.length))
+        .filter((prefix) => prefix && prefix !== 'xs' && prefix !== 'xsi');
+    }
+
+    function updateField(key, value) {
+      const entity = getSelectedEntity();
+      if (!entity) { return; }
+      if (value === '') {
+        delete entity[key];
+      } else {
+        entity[key] = value;
+      }
+      markModelDirty();
+      renderTree();
+      updateTypeOptions();
+    }
+
+    function updateCheckbox(key, checked) {
+      const entity = getSelectedEntity();
+      if (!entity) { return; }
+      entity[key] = checked ? 'true' : 'false';
+      markModelDirty();
+      renderTree();
+    }
+
+    function canDeleteSelection() {
+      return ['import', 'valueType', 'objectType', 'rootProperty', 'objectProperty', 'objectAttribute'].includes(selection.kind);
+    }
+
+    function resolveAddKind() {
+      if (addKind.value && addKind.value !== 'auto') {
+        return addKind.value;
+      }
+      switch (selection.kind) {
+        case 'importsGroup':
+        case 'import': return 'import';
+        case 'valueTypesGroup':
+        case 'valueType': return 'valueType';
+        case 'objectTypesGroup':
+        case 'objectType': return 'objectType';
+        case 'rootPropertiesGroup':
+        case 'rootProperty': return 'rootProperty';
+        case 'objectAttributesGroup':
+        case 'objectAttribute': return 'objectAttribute';
+        case 'objectPropertiesGroup':
+        case 'objectProperty': return 'objectProperty';
+        default: return 'rootProperty';
+      }
+    }
+
+    function canAdd(kind) {
+      if (['import', 'valueType', 'objectType', 'rootProperty'].includes(kind)) {
+        return true;
+      }
+      if (kind === 'objectProperty' || kind === 'objectAttribute') {
+        return Boolean(getSelectedObjectType());
+      }
+      return false;
+    }
+
+    function uniqueName(prefix, items) {
+      const used = new Set((items || []).map((item) => item.name).filter(Boolean));
+      let index = 1;
+      let value = `${prefix}${index}`;
+      while (used.has(value)) {
+        index++;
+        value = `${prefix}${index}`;
+      }
+      return value;
+    }
+
+    function addItem() {
+      const kind = resolveAddKind();
+      if (!canAdd(kind)) {
+        setStatus('Сначала выберите тип объекта для добавления свойства или атрибута', true);
+        return;
+      }
+      if (kind === 'import') {
+        const item = { namespace: '', schemaLocation: '', raw: {} };
+        model.imports.push(item);
+        selection = { kind: 'import', index: model.imports.length - 1 };
+      } else if (kind === 'valueType') {
+        const item = normalizeType({ name: uniqueName('ValueType', model.valueTypes), baseType: 'xs:string', properties: [], attributes: [], raw: {}, unknownNodes: [] });
+        model.valueTypes.push(item);
+        selection = { kind: 'valueType', index: model.valueTypes.length - 1 };
+      } else if (kind === 'objectType') {
+        const item = normalizeType({ name: uniqueName('ObjectType', model.objectTypes), baseType: '', properties: [], attributes: [], raw: {}, unknownNodes: [] });
+        model.objectTypes.push(item);
+        selection = { kind: 'objectType', index: model.objectTypes.length - 1 };
+      } else if (kind === 'rootProperty') {
+        const item = normalizeProperty({ name: uniqueName('Property', model.rootProperties), type: 'xs:string', raw: {}, unknownNodes: [] });
+        model.rootProperties.push(item);
+        selection = { kind: 'rootProperty', index: model.rootProperties.length - 1 };
+      } else {
+        const objectIndex = selection.objectIndex !== undefined ? selection.objectIndex : selection.index;
+        const objectType = model.objectTypes[objectIndex];
+        const collection = kind === 'objectAttribute' ? objectType.attributes : objectType.properties;
+        const item = normalizeProperty({ name: uniqueName(kind === 'objectAttribute' ? 'Attribute' : 'Property', collection), type: 'xs:string', raw: {}, unknownNodes: [] });
+        collection.push(item);
+        selection = { kind, objectIndex, index: collection.length - 1 };
+      }
+      markModelDirty();
+      render();
+    }
+
+    function deleteItem() {
+      if (!canDeleteSelection()) { return; }
+      if (selection.kind === 'import') {
+        model.imports.splice(selection.index, 1);
+        selection = { kind: 'importsGroup' };
+      } else if (selection.kind === 'valueType') {
+        model.valueTypes.splice(selection.index, 1);
+        selection = { kind: 'valueTypesGroup' };
+      } else if (selection.kind === 'objectType') {
+        model.objectTypes.splice(selection.index, 1);
+        selection = { kind: 'objectTypesGroup' };
+      } else if (selection.kind === 'rootProperty') {
+        model.rootProperties.splice(selection.index, 1);
+        selection = { kind: 'rootPropertiesGroup' };
+      } else if (selection.kind === 'objectProperty') {
+        model.objectTypes[selection.objectIndex]?.properties?.splice(selection.index, 1);
+        selection = { kind: 'objectPropertiesGroup', objectIndex: selection.objectIndex };
+      } else if (selection.kind === 'objectAttribute') {
+        model.objectTypes[selection.objectIndex]?.attributes?.splice(selection.index, 1);
+        selection = { kind: 'objectAttributesGroup', objectIndex: selection.objectIndex };
+      }
+      markModelDirty();
+      render();
+    }
+
+    function save() {
+      setStatus('Сохранение...');
+      if (activeTab === 'source') {
+        vscode.postMessage({ type: 'save', source: source.value });
+        return;
+      }
+      vscode.postMessage({ type: 'saveModel', model });
+    }
+
+    function render() {
+      renderDiagnostics();
+      updateTypeOptions();
+      renderTree();
+      renderInspector();
+    }
+
+    function createSourcePreview() {
+      const lines = [
+        '<!-- Предварительный просмотр несохранённых изменений конструктора. Реальный XML сформирует расширение при сохранении. -->',
+        `<package xmlns="http://v8.1c.ru/8.1/xdto"${model.targetNamespace ? ` targetNamespace="${xmlAttr(model.targetNamespace)}"` : ''}>`
+      ];
+      (model.imports || []).forEach((item) => {
+        lines.push(`  <import${xmlAttrPart('namespace', item.namespace)}${xmlAttrPart('schemaLocation', item.schemaLocation)}/>`);
+      });
+      (model.valueTypes || []).forEach((item) => {
+        lines.push(`  <valueType name="${xmlAttr(item.name || '')}"${xmlAttrPart('base', item.baseType)}/>`);
+      });
+      (model.objectTypes || []).forEach((item) => {
+        lines.push(`  <objectType name="${xmlAttr(item.name || '')}"${xmlAttrPart('base', item.baseType)}>`);
+        (item.attributes || []).forEach((property) => lines.push(`    ${previewProperty('property', { ...property, form: 'Attribute' })}`));
+        (item.properties || []).forEach((property) => lines.push(`    ${previewProperty('property', property)}`));
+        lines.push('  </objectType>');
+      });
+      (model.rootProperties || []).forEach((property) => lines.push(`  ${previewProperty('property', property)}`));
+      lines.push('</package>');
+      return lines.join('\n');
+    }
+
+    function previewProperty(tag, property) {
+      return `<${tag}${xmlAttrPart('name', property.name)}${xmlAttrPart('ref', property.ref)}${xmlAttrPart('type', property.type)}${xmlAttrPart('lowerBound', property.lowerBound)}${xmlAttrPart('upperBound', property.upperBound)}${xmlAttrPart('nillable', property.nillable)}${xmlAttrPart('fixed', property.fixed)}${xmlAttrPart('default', property.defaultValue)}${xmlAttrPart('form', property.form)}${xmlAttrPart('localName', property.localName)}${xmlAttrPart('namespaceURI', property.namespaceURI)}${xmlAttrPart('qualified', property.qualified)}${xmlAttrPart('use', property.use)}/>`;
+    }
+
+    function xmlAttrPart(name, value) {
+      if (value === undefined || value === null || value === '') { return ''; }
+      return ` ${name}="${xmlAttr(String(value))}"`;
+    }
+
+    function xmlAttr(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
+      })[ch]);
+    }
+
+    tree.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-node]');
+      if (!button) { return; }
+      selectNode(JSON.parse(button.dataset.node));
+    });
+
+    inspector.addEventListener('input', (event) => {
+      const input = event.target;
+      if (!input.dataset || !input.dataset.field) { return; }
+      if (input.type === 'checkbox') {
+        updateCheckbox(input.dataset.field, input.checked);
+      } else {
+        updateField(input.dataset.field, input.value);
+      }
+    });
+
+    source.addEventListener('input', () => {
+      sourceHasPreview = false;
+      markSourceDirty();
+    });
+
+    constructorTab.addEventListener('click', () => setTab('constructor'));
     sourceTab.addEventListener('click', () => setTab('source'));
-    saveButton.addEventListener('click', () => {
-      status.className = 'status';
-      status.textContent = 'Сохранение...';
-      vscode.postMessage({ type: 'save', source: source.value });
+    saveButton.addEventListener('click', save);
+    addButton.addEventListener('click', addItem);
+    deleteButton.addEventListener('click', deleteItem);
+    addKind.addEventListener('change', () => {
+      addButton.disabled = !canAdd(resolveAddKind());
     });
 
     window.addEventListener('message', (event) => {
       const message = event.data || {};
       if (message.type === 'saveSuccess') {
-        model = message.model || model;
-        renderModel();
-        status.className = 'status';
-        status.textContent = data.strings.saved;
+        model = normalizeModel(message.model || model);
+        if (typeof message.source === 'string') {
+          source.value = message.source;
+          sourceHasPreview = false;
+        } else if (sourceHasPreview && dirtyKind === 'model') {
+          source.value = createSourcePreview();
+        }
+        dirty = false;
+        dirtyKind = undefined;
+        render();
+        setStatus(data.strings.saved);
       } else if (message.type === 'saveError') {
-        status.className = 'status error';
-        status.textContent = message.message || 'Не удалось сохранить Package.xdto';
+        setStatus(message.message || 'Не удалось сохранить файл XDTO-пакета', true);
       }
     });
 
-    renderModel();
+    render();
   </script>
 </body>
 </html>

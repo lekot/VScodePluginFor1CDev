@@ -184,6 +184,77 @@ suite('XdtoPackageParser', () => {
     );
   });
 
+  test('parses editable property attributes from 1C property and XSD nodes', () => {
+    const xml = `<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <objectType name="Contract">
+    <property name="Owner" ref="common:Owner" namespaceURI="urn:common" localName="owner" qualified="true" nillable="true" fixed="fixed-owner" default="guest" lowerBound="0" upperBound="1"/>
+    <xs:element name="ExternalCode" type="xs:string" minOccurs="0" maxOccurs="unbounded" nillable="false" default="A1"/>
+    <xs:attribute name="Version" type="xs:string" use="required" fixed="v1"/>
+  </objectType>
+</package>`;
+
+    const model = parseXdtoPackage(xml);
+    const [owner, externalCode] = model.objectTypes[0].properties;
+    const [version] = model.objectTypes[0].attributes;
+
+    assert.deepStrictEqual(
+      {
+        ref: owner.ref,
+        namespaceURI: owner.namespaceURI,
+        localName: owner.localName,
+        qualified: owner.qualified,
+        nillable: owner.nillable,
+        fixed: owner.fixed,
+        defaultValue: owner.defaultValue,
+        lowerBound: owner.lowerBound,
+        upperBound: owner.upperBound,
+      },
+      {
+        ref: 'common:Owner',
+        namespaceURI: 'urn:common',
+        localName: 'owner',
+        qualified: 'true',
+        nillable: 'true',
+        fixed: 'fixed-owner',
+        defaultValue: 'guest',
+        lowerBound: '0',
+        upperBound: '1',
+      }
+    );
+    assert.deepStrictEqual(
+      {
+        name: externalCode.name,
+        type: externalCode.type,
+        minOccurs: externalCode.minOccurs,
+        maxOccurs: externalCode.maxOccurs,
+        nillable: externalCode.nillable,
+        defaultValue: externalCode.defaultValue,
+      },
+      {
+        name: 'ExternalCode',
+        type: 'xs:string',
+        minOccurs: '0',
+        maxOccurs: 'unbounded',
+        nillable: 'false',
+        defaultValue: 'A1',
+      }
+    );
+    assert.deepStrictEqual(
+      {
+        name: version.name,
+        type: version.type,
+        use: version.use,
+        fixed: version.fixed,
+      },
+      {
+        name: 'Version',
+        type: 'xs:string',
+        use: 'required',
+        fixed: 'v1',
+      }
+    );
+  });
+
   test('malformed XML returns diagnostic instead of throwing', () => {
     const model = parseXdtoPackage('<xs:schema><xs:complexType name="Broken"></xs:schema>');
 

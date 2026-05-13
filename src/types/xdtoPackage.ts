@@ -23,6 +23,13 @@ export interface XdtoImport {
 export interface XdtoProperty {
   name: string;
   type?: string;
+  ref?: string;
+  namespaceURI?: string;
+  localName?: string;
+  qualified?: string;
+  nillable?: string;
+  fixed?: string;
+  defaultValue?: string;
   minOccurs?: string;
   maxOccurs?: string;
   lowerBound?: string;

@@ -4,6 +4,11 @@ import * as os from 'os';
 import * as path from 'path';
 import { resolveXdtoPackageSchemaPath } from '../../src/xdtoPackageEditor/xdtoPackagePaths';
 import { buildXdtoPackageSkeleton } from '../../src/xdtoPackageEditor/xdtoPackageFiles';
+import {
+  parseAndValidateXdtoSourceForSave,
+  serializeAndValidateXdtoModelForSave,
+} from '../../src/xdtoPackageEditor/xdtoPackageEditorProvider';
+import type { XdtoPackageModel } from '../../src/types/xdtoPackage';
 
 suite('XdtoPackageEditorProvider (pure helpers)', () => {
   test('resolves Designer Package.bin path from flat metadata XML', () => {
@@ -38,5 +43,60 @@ suite('XdtoPackageEditorProvider (pure helpers)', () => {
 
     assert.ok(skeleton.includes('<package xmlns="http://v8.1c.ru/8.1/xdto"'));
     assert.ok(!skeleton.includes('targetNamespace=""'));
+  });
+
+  test('serializes structured save model to package XML and parsed model without empty targetNamespace', () => {
+    const model: XdtoPackageModel = {
+      imports: [],
+      valueTypes: [{ name: 'BoolFlag', baseType: 'xs:boolean', properties: [], attributes: [], raw: {}, unknownNodes: [] }],
+      objectTypes: [],
+      rootProperties: [{ name: 'Flag', type: 'BoolFlag', raw: {}, unknownNodes: [] }],
+      diagnostics: [],
+      unknownNodes: [],
+    };
+
+    const result = serializeAndValidateXdtoModelForSave(model);
+
+    assert.strictEqual(result.ok, true);
+    assert.ok(result.source.includes('<package xmlns="http://v8.1c.ru/8.1/xdto"'));
+    assert.ok(result.source.includes('<valueType name="BoolFlag" base="xs:boolean"/>'));
+    assert.ok(result.source.includes('<property name="Flag" type="BoolFlag"/>'));
+    assert.ok(!result.source.includes('targetNamespace=""'));
+    assert.strictEqual(result.model.valueTypes[0]?.name, 'BoolFlag');
+    assert.strictEqual(result.model.rootProperties[0]?.name, 'Flag');
+  });
+
+  test('returns source with parsed model for raw source save', () => {
+    const source = '\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto"><valueType name="Amount" base="xs:decimal"/></package>';
+
+    const result = parseAndValidateXdtoSourceForSave(source);
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.source, source);
+    assert.strictEqual(result.model.valueTypes[0]?.name, 'Amount');
+  });
+
+  test('rejects model save when serialized source fails XML validation', () => {
+    const model: XdtoPackageModel = {
+      imports: [],
+      valueTypes: [],
+      objectTypes: [],
+      rootProperties: [],
+      diagnostics: [],
+      rawRoot: { '@_xmlns:bad prefix': 'urn:bad' },
+      unknownNodes: [],
+    };
+
+    const result = serializeAndValidateXdtoModelForSave(model);
+
+    assert.strictEqual(result.ok, false);
+    assert.ok(result.message.length > 0);
+  });
+
+  test('rejects malformed raw source save', () => {
+    const result = parseAndValidateXdtoSourceForSave('<package><valueType></package>');
+
+    assert.strictEqual(result.ok, false);
+    assert.ok(result.message.length > 0);
   });
 });

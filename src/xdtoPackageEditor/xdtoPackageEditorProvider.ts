@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as vscode from 'vscode';
+import type * as vscode from 'vscode';
 import type { TreeNode } from '../models/treeNode';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
 import type { XdtoPackageModel } from '../types/xdtoPackage';
@@ -9,8 +9,15 @@ import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { resolveXdtoPackageSchemaPath } from './xdtoPackagePaths';
 import { ensureXdtoPackageSourceFile } from './xdtoPackageFiles';
+import { serializeXdtoPackageModel } from './xdtoPackageSerializer';
 
-type XdtoWebviewMessage = { type: 'save'; source: string };
+type XdtoWebviewMessage =
+  | { type: 'save'; source: string }
+  | { type: 'saveModel'; model: XdtoPackageModel };
+
+type XdtoSaveValidationResult =
+  | { ok: true; source: string; model: XdtoPackageModel }
+  | { ok: false; message: string };
 
 interface XdtoViewPayload {
   packageName: string;
@@ -30,6 +37,27 @@ function createNonce(): string {
     value += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return value;
+}
+
+async function getVscode(): Promise<typeof vscode> {
+  return await import('vscode');
+}
+
+export function parseAndValidateXdtoSourceForSave(source: string): XdtoSaveValidationResult {
+  const model = parseXdtoPackage(source);
+  const blocking = model.diagnostics.find((d) => d.severity === 'error');
+  if (blocking) {
+    return { ok: false, message: blocking.message };
+  }
+  return { ok: true, source, model };
+}
+
+export function serializeAndValidateXdtoModelForSave(model: XdtoPackageModel): XdtoSaveValidationResult {
+  try {
+    return parseAndValidateXdtoSourceForSave(serializeXdtoPackageModel(model));
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export class XdtoPackageEditorProvider implements vscode.Disposable {
@@ -55,12 +83,16 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
   private isValidMessage(msg: unknown): msg is XdtoWebviewMessage {
     if (!msg || typeof msg !== 'object') { return false; }
     const m = msg as Record<string, unknown>;
-    return m['type'] === 'save' && typeof m['source'] === 'string';
+    if (m['type'] === 'save') {
+      return typeof m['source'] === 'string';
+    }
+    return m['type'] === 'saveModel' && !!m['model'] && typeof m['model'] === 'object';
   }
 
   async show(node: TreeNode): Promise<void> {
+    const vscodeApi = await getVscode();
     if (!node.filePath) {
-      void vscode.window.showErrorMessage(MESSAGES.XDTO_PACKAGE_NO_METADATA_FILE);
+      void vscodeApi.window.showErrorMessage(MESSAGES.XDTO_PACKAGE_NO_METADATA_FILE);
       return;
     }
 
@@ -69,8 +101,8 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
     try {
       source = ensureXdtoPackageSourceFile(node, schemaPath);
     } catch (err) {
-      Logger.error('Failed to read or create Package.xdto', err);
-      void vscode.window.showErrorMessage(MESSAGES.XDTO_PACKAGE_READ_FAILED);
+      Logger.error('Failed to read or create XDTO package file', err);
+      void vscodeApi.window.showErrorMessage(MESSAGES.XDTO_PACKAGE_READ_FAILED);
       return;
     }
 
@@ -79,13 +111,13 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
 
     const title = `${MESSAGES.XDTO_PACKAGE_TITLE}: ${node.name}`;
     if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Beside);
+      this.panel.reveal(vscodeApi.ViewColumn.Beside);
       this.panel.title = title;
     } else {
-      this.panel = vscode.window.createWebviewPanel(
+      this.panel = vscodeApi.window.createWebviewPanel(
         'xdtoPackageEditor',
         title,
-        vscode.ViewColumn.Beside,
+        vscodeApi.ViewColumn.Beside,
         {
           enableScripts: true,
           retainContextWhenHidden: true,
@@ -142,27 +174,27 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
 
   private async handleMessage(msg: XdtoWebviewMessage): Promise<void> {
     if (msg.type === 'save') {
-      await this.handleSave(msg.source);
+      await this.handleSave(parseAndValidateXdtoSourceForSave(msg.source));
+      return;
     }
+    await this.handleSave(serializeAndValidateXdtoModelForSave(msg.model));
   }
 
-  private async handleSave(source: string): Promise<void> {
+  private async handleSave(result: XdtoSaveValidationResult): Promise<void> {
     if (this.saveInProgress || !this.currentSchemaPath || !this.panel) { return; }
     this.saveInProgress = true;
     try {
-      const model = parseXdtoPackage(source);
-      const blocking = model.diagnostics.find((d) => d.severity === 'error');
-      if (blocking) {
+      if (!result.ok) {
         this.postMessage({
           type: 'saveError',
-          message: `${MESSAGES.XDTO_PACKAGE_VALIDATION_FAILED}: ${blocking.message}`,
+          message: `${MESSAGES.XDTO_PACKAGE_VALIDATION_FAILED}: ${result.message}`,
         });
         return;
       }
-      fs.writeFileSync(this.currentSchemaPath, source, 'utf8');
-      this.postMessage({ type: 'saveSuccess', model });
+      fs.writeFileSync(this.currentSchemaPath, result.source, 'utf8');
+      this.postMessage({ type: 'saveSuccess', model: result.model, source: result.source });
     } catch (err) {
-      Logger.error('Failed to save Package.xdto', err);
+      Logger.error('Failed to save XDTO package file', err);
       this.postMessage({
         type: 'saveError',
         message: MESSAGES.XDTO_PACKAGE_WRITE_FAILED,
