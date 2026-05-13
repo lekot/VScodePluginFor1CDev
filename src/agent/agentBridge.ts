@@ -13,7 +13,7 @@ import { randomBytes } from 'crypto';
 // Constants
 // ---------------------------------------------------------------------------
 
-const BODY_LIMIT_BYTES = 1024 * 1024; // 1 MB
+const BODY_LIMIT_BYTES = 16 * 1024 * 1024; // 16 MB, enough for large XDTO/XSD payloads
 
 // ---------------------------------------------------------------------------
 // Public types

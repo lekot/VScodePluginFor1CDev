@@ -102,6 +102,28 @@ suite('AgentBridge — HTTP server', () => {
         bridge = undefined;
     });
 
+    test('body around platform XDTO size is accepted', async () => {
+        setExecuteCommandHandler((_name, args) => ({ success: true, size: (args as { source: string }).source.length }));
+
+        const source = 'x'.repeat(2 * 1024 * 1024);
+
+        const res = await httpRequest({
+            port,
+            method: 'POST',
+            path: '/command',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ name: 'test.allowed.big', args: { source } }),
+        });
+
+        assert.strictEqual(res.status, 200);
+        const json = JSON.parse(res.body) as Record<string, unknown>;
+        assert.strictEqual(json['success'], true);
+        assert.strictEqual(json['size'], source.length);
+    });
+
     // -------------------------------------------------------------------------
     // 1. Старт сервера
     // -------------------------------------------------------------------------
@@ -476,9 +498,9 @@ suite('AgentBridge — HTTP server', () => {
     // 19. Body > 1MB → 413 + { error: 'payload too large' }
     // -------------------------------------------------------------------------
 
-    test('body > 1MB → 413 + { error: "payload too large" }', async () => {
-        const hugeValue = 'x'.repeat(1024 * 1024 + 100);
-        const largeBody = JSON.stringify({ name: 'test.allowed.big', data: hugeValue });
+    test('body above bridge limit → 413 + { error: "payload too large" }', async () => {
+        const hugeValue = 'x'.repeat(16 * 1024 * 1024 + 100);
+        const largeBody = JSON.stringify({ name: 'test.allowed.big', args: { source: hugeValue } });
 
         const res = await httpRequest({
             port,
