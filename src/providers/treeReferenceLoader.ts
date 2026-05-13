@@ -3,6 +3,7 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import type { ReferenceableGroup } from '../types/typeDefinitions';
 import { MetadataParser } from '../parsers/metadataParser';
+import { ConfigFormat } from '../parsers/formatDetector';
 import { METADATA_TYPE_TO_REFERENCE_KIND } from '../constants/metadataTypeReferenceKinds';
 import { TreeCacheService } from './treeCacheService';
 
@@ -191,7 +192,7 @@ export async function getReferenceableObjectsForTypeEditor(
     return [];
   }
 
-  type LoadTask = { typeNode: TreeNode; configPath: string };
+  type LoadTask = { typeNode: TreeNode; configPath: string; format?: ConfigFormat };
   const loadTasks: LoadTask[] = [];
 
   for (const root of rootsToUse) {
@@ -199,8 +200,8 @@ export async function getReferenceableObjectsForTypeEditor(
       continue;
     }
 
-    const configPath =
-      cache.getLoadContext(root.id)?.configPath ?? (root.filePath ? path.dirname(root.filePath) : null);
+    const loadContext = cache.getLoadContext(root.id);
+    const configPath = loadContext?.configPath ?? (root.filePath ? path.dirname(root.filePath) : null);
 
     if (!configPath) {
       continue;
@@ -213,15 +214,15 @@ export async function getReferenceableObjectsForTypeEditor(
       if (typeNode.children && typeNode.children.length > 0) {
         continue;
       }
-      loadTasks.push({ typeNode, configPath });
+      loadTasks.push({ typeNode, configPath, format: loadContext?.format });
     }
   }
 
   if (loadTasks.length > 0) {
     const settled = await Promise.all(
-      loadTasks.map(async ({ typeNode, configPath }) => {
+      loadTasks.map(async ({ typeNode, configPath, format }) => {
         try {
-          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id);
+          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id, { format });
           return { typeNode, children };
         } catch (e) {
           Logger.warn('Failed to eager load referenceable type contents for type editor', {

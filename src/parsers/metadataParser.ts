@@ -1,8 +1,16 @@
+import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { DesignerParser } from './designerParser';
 import { EdtParser } from './edtParser';
 import { FormatDetector, ConfigFormat } from './formatDetector';
+import {
+  clearTypeContentsCache,
+  computeTypeContentsSignature,
+  invalidateTypeContentsCache,
+  loadTypeContentsFromCache,
+  saveTypeContentsToCache,
+} from '../utils/typeContentsCache';
 import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
@@ -35,6 +43,50 @@ const R6_OBJECT_TYPES = new Set<MetadataType>([
  * Main metadata parser that handles both EDT and Designer formats
  */
 export class MetadataParser {
+  private static typeContentsCacheStoragePath: string | null = null;
+
+  static setTypeContentsCacheStoragePath(storagePath: string | null): void {
+    this.typeContentsCacheStoragePath = storagePath && storagePath.trim() ? storagePath : null;
+  }
+
+  static async invalidateTypeContentsCache(configPath: string): Promise<void> {
+    if (!this.typeContentsCacheStoragePath) {
+      return;
+    }
+    await invalidateTypeContentsCache(this.typeContentsCacheStoragePath, configPath);
+  }
+
+  static async clearTypeContentsCache(): Promise<void> {
+    if (!this.typeContentsCacheStoragePath) {
+      return;
+    }
+    await clearTypeContentsCache(this.typeContentsCacheStoragePath);
+  }
+
+  private static getTypePath(configPath: string, typeName: string, format: ConfigFormat): string | null {
+    if (format === ConfigFormat.Designer) {
+      return path.join(configPath, typeName);
+    }
+    if (format === ConfigFormat.EDT) {
+      return path.join(configPath, 'src', typeName);
+    }
+    return null;
+  }
+
+  private static async parseTypeContentsUncached(
+    configPath: string,
+    typeName: string,
+    format: ConfigFormat
+  ): Promise<TreeNode[]> {
+    if (format === ConfigFormat.Designer) {
+      return await DesignerParser.parseTypeContents(configPath, typeName);
+    }
+    if (format === ConfigFormat.EDT) {
+      return await EdtParser.parseTypeContents(configPath, typeName);
+    }
+    return [];
+  }
+
   /**
    * Build only root and type nodes without loading element contents (for lazy loading).
    * @param configPath Path to configuration root directory
@@ -60,15 +112,31 @@ export class MetadataParser {
    * @param typeName Type directory name (e.g. Catalogs)
    * @returns Array of element tree nodes for this type
    */
-  static async parseTypeContents(configPath: string, typeName: string): Promise<TreeNode[]> {
-    const format = await FormatDetector.detect(configPath);
-    if (format === ConfigFormat.Designer) {
-      return await DesignerParser.parseTypeContents(configPath, typeName);
+  static async parseTypeContents(
+    configPath: string,
+    typeName: string,
+    options?: { format?: ConfigFormat; bypassCache?: boolean }
+  ): Promise<TreeNode[]> {
+    const format = options?.format ?? await FormatDetector.detect(configPath);
+    const typePath = this.getTypePath(configPath, typeName, format);
+    const storagePath = this.typeContentsCacheStoragePath;
+    if (!typePath || options?.bypassCache === true || !storagePath) {
+      return await this.parseTypeContentsUncached(configPath, typeName, format);
     }
-    if (format === ConfigFormat.EDT) {
-      return await EdtParser.parseTypeContents(configPath, typeName);
+
+    const signature = await computeTypeContentsSignature(typePath, format);
+    if (!signature) {
+      return await this.parseTypeContentsUncached(configPath, typeName, format);
     }
-    return [];
+
+    const cached = await loadTypeContentsFromCache(storagePath, configPath, typeName, signature);
+    if (cached) {
+      return cached;
+    }
+
+    const children = await this.parseTypeContentsUncached(configPath, typeName, format);
+    await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children);
+    return children;
   }
 
   /**

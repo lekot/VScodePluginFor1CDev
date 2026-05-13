@@ -5,6 +5,7 @@ import { TreeNode } from '../models/treeNode';
 import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
 import { clearTreeCache } from '../utils/diskCache';
+import { MetadataParser } from '../parsers/metadataParser';
 import { FormatDetector } from '../parsers/formatDetector';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { buildDiagnosticsSummaryText } from '../utils/diagnosticsSummary';
@@ -170,6 +171,7 @@ export function registerUtilityCommandsTrailing(deps: RegisterUtilityCommandsDep
     async () => {
       if (state.extensionContext?.globalStoragePath) {
         await clearTreeCache(state.extensionContext.globalStoragePath);
+        await MetadataParser.clearTypeContentsCache();
         vscode.window.showInformationMessage('CDT 41: cache cleared.');
       }
     }

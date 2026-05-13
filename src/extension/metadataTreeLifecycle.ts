@@ -41,6 +41,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     if (state.extensionContext?.globalStoragePath) {
       await invalidateTreeCache(state.extensionContext.globalStoragePath, configPath);
     }
+    await MetadataParser.invalidateTypeContentsCache(configPath);
   }
 
   async function invalidateCacheAndReload(configPath: string): Promise<void> {
@@ -54,7 +55,6 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
   });
 
   let loadInProgress: Promise<void> | null = null;
-
   async function doLoadMetadataTree(): Promise<void> {
     if (!state.treeDataProvider) {
       Logger.error(MESSAGES.ERROR_PROVIDER_NOT_INITIALIZED);
@@ -124,6 +124,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
           } else {
             provider.setRootNodes(roots, loadContextMap);
           }
+          provider.startTypeContentsCacheWarmup();
 
           for (const w of state.metadataWatchers) {
             w.dispose();
