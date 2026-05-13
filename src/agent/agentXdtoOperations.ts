@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLParser } from 'fast-xml-parser';
 import type { AgentResult } from './types';
 import type {
   XdtoCompareParams,
@@ -25,6 +26,7 @@ import { XMLWriter } from '../utils/XMLWriter';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { metadataConverter, rulesRegistry } from '../rules';
 import { resolveXdtoPackageSchemaPath } from '../xdtoPackageEditor/xdtoPackagePaths';
+import { buildXdtoPackageSkeleton } from '../xdtoPackageEditor/xdtoPackageFiles';
 import { convert1cPackageToXsd, convertXsdTo1cPackage } from '../xdtoPackageEditor/xdtoXsdConverter';
 import { serializeAndValidateXdtoModelForSave } from '../xdtoPackageEditor/xdtoPackageEditorProvider';
 import {
@@ -32,6 +34,17 @@ import {
   buildXdtoPackageCompareTree,
   parseXdtoComparableSource,
 } from '../xdtoPackageCompare/xdtoPackageCompareModel';
+
+const METADATA_XML_OPTIONS = {
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  textNodeName: '#text',
+  parseTagValue: false,
+  parseAttributeValue: false,
+  trimValues: true,
+};
+
+const metadataParser = new XMLParser(METADATA_XML_OPTIONS);
 
 export class XdtoAgentOperations {
   constructor(private readonly configRoot: string) {}
@@ -57,9 +70,7 @@ export class XdtoAgentOperations {
   async getPackage(params: XdtoGetPackageParams): Promise<AgentResult<XdtoGetPackageResult>> {
     try {
       const resolved = this.resolvePackage(params);
-      const source = fs.existsSync(resolved.schemaPath)
-        ? fs.readFileSync(resolved.schemaPath, 'utf8')
-        : '';
+      const source = this.ensurePackageSource(resolved);
       const model = parseXdtoPackage(source);
       return {
         success: true,
@@ -78,7 +89,7 @@ export class XdtoAgentOperations {
   async exportXsd(params: XdtoExportXsdParams): Promise<AgentResult<XdtoExportXsdResult>> {
     try {
       const resolved = this.resolvePackage(params);
-      const source = fs.readFileSync(resolved.schemaPath, 'utf8');
+      const source = this.ensurePackageSource(resolved);
       const xsd = convert1cPackageToXsd(source);
       if (params.outputPath) {
         fs.mkdirSync(path.dirname(params.outputPath), { recursive: true });
@@ -147,7 +158,7 @@ export class XdtoAgentOperations {
   async compare(params: XdtoCompareParams): Promise<AgentResult<XdtoCompareResult>> {
     try {
       const resolved = this.resolvePackage(params);
-      const left = this.readPackageModel(resolved.schemaPath);
+      const left = this.readPackageModel(resolved);
       const rightSource = this.readOptionalExternalSource(params);
       const right = parseXdtoComparableSource(
         rightSource.fileName,
@@ -176,7 +187,7 @@ export class XdtoAgentOperations {
       }
 
       const resolved = this.resolvePackage(params);
-      const left = this.readPackageModel(resolved.schemaPath);
+      const left = this.readPackageModel(resolved);
       const rightSource = this.readOptionalExternalSource(params);
       const right = parseXdtoComparableSource(
         rightSource.fileName,
@@ -219,11 +230,22 @@ export class XdtoAgentOperations {
     const model = fs.existsSync(schemaPath)
       ? parseXdtoPackage(fs.readFileSync(schemaPath, 'utf8'))
       : undefined;
-    return { name, metadataPath, schemaPath, targetNamespace: model?.targetNamespace };
+    return { name, metadataPath, schemaPath, targetNamespace: model?.targetNamespace ?? readXdtoMetadataNamespace(metadataPath) };
   }
 
-  private readPackageModel(schemaPath: string): XdtoPackageModel {
-    return this.parseValidPackageSource(fs.readFileSync(schemaPath, 'utf8'));
+  private readPackageModel(info: XdtoPackageInfo): XdtoPackageModel {
+    return this.parseValidPackageSource(this.ensurePackageSource(info));
+  }
+
+  private ensurePackageSource(info: XdtoPackageInfo): string {
+    if (fs.existsSync(info.schemaPath)) {
+      return fs.readFileSync(info.schemaPath, 'utf8');
+    }
+
+    const source = buildXdtoPackageSkeleton(readXdtoMetadataNamespace(info.metadataPath));
+    fs.mkdirSync(path.dirname(info.schemaPath), { recursive: true });
+    fs.writeFileSync(info.schemaPath, source, 'utf8');
+    return source;
   }
 
   private parseValidPackageSource(source: string): XdtoPackageModel {
@@ -276,6 +298,81 @@ function buildXdtoPackageMetadataXml(packageName: string, namespace: string): st
 
 function sanitizePackageName(raw: string): string {
   return raw.trim().replace(/[\\/:*?"<>|]/g, '_');
+}
+
+function readXdtoMetadataNamespace(metadataPath: string): string {
+  if (!fs.existsSync(metadataPath)) {
+    return '';
+  }
+  try {
+    const parsed = metadataParser.parse(fs.readFileSync(metadataPath, 'utf8')) as unknown;
+    return findNamespaceValue(parsed) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function findNamespaceValue(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findNamespaceValue(item);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const [key, item] of Object.entries(record)) {
+    if (localXmlName(key) !== 'Namespace') {
+      continue;
+    }
+    if (typeof item === 'string') {
+      return item;
+    }
+    if (Array.isArray(item)) {
+      const text = item.map(extractTextNode).find((candidate) => candidate !== undefined);
+      if (text !== undefined) {
+        return text;
+      }
+    }
+    const text = extractTextNode(item);
+    if (text !== undefined) {
+      return text;
+    }
+  }
+
+  for (const item of Object.values(record)) {
+    const found = findNamespaceValue(item);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+function extractTextNode(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const text = (value as Record<string, unknown>)['#text'];
+  return typeof text === 'string' ? text : undefined;
+}
+
+function localXmlName(name: string): string {
+  const rawName = name.startsWith('@_') ? name.slice(2) : name;
+  const separator = rawName.indexOf(':');
+  return separator >= 0 ? rawName.slice(separator + 1) : rawName;
 }
 
 function failure<T>(err: unknown): AgentResult<T> {

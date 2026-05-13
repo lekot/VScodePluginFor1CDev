@@ -44,6 +44,21 @@ suite('XdtoAgentOperations', () => {
     assert.ok(result.data?.source?.includes('targetNamespace="urn:left"'));
   });
 
+  test('getPackage creates skeleton Package.bin when metadata exists without schema file', async () => {
+    const packageName = 'SkeletonOnly';
+    writeXdtoPackageMetadataOnly(tmpRoot, packageName, 'urn:skeleton');
+
+    const result = await ops.getPackage({ packageName, includeSource: true });
+
+    const schemaPath = path.join(tmpRoot, 'XDTOPackages', packageName, 'Ext', 'Package.bin');
+    assert.strictEqual(result.success, true, result.error);
+    assert.ok(fs.existsSync(schemaPath), 'Package.bin should be created');
+    assert.ok(result.data?.source?.includes('<package'));
+    assert.ok(result.data?.source?.includes('targetNamespace="urn:skeleton"'));
+    assert.strictEqual(result.data?.model.targetNamespace, 'urn:skeleton');
+    assert.strictEqual(result.data?.model.diagnostics.some((d) => d.severity === 'error'), false);
+  });
+
   test('exportXsd returns inline source or writes outputPath', async () => {
     const inline = await ops.exportXsd({ packageName: 'BasePackage', includeSource: true });
     assert.strictEqual(inline.success, true, inline.error);
@@ -115,8 +130,15 @@ function writeXdtoPackage(configRoot: string, packageName: string, source: strin
   fs.writeFileSync(path.join(packagesDir, packageName, 'Ext', 'Package.bin'), source, 'utf8');
 }
 
-function metadataXml(packageName: string): string {
-  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><XDTOPackage name="${packageName}"/></MetaDataObject>`;
+function writeXdtoPackageMetadataOnly(configRoot: string, packageName: string, namespace: string): void {
+  const packagesDir = path.join(configRoot, 'XDTOPackages');
+  fs.mkdirSync(packagesDir, { recursive: true });
+  fs.writeFileSync(path.join(packagesDir, `${packageName}.xml`), metadataXml(packageName, namespace), 'utf8');
+}
+
+function metadataXml(packageName: string, namespace = ''): string {
+  const namespaceNode = namespace ? `<Properties><Namespace>${namespace}</Namespace></Properties>` : '';
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><XDTOPackage name="${packageName}">${namespaceNode}</XDTOPackage></MetaDataObject>`;
 }
 
 function writeConfigurationXml(configRoot: string): void {
