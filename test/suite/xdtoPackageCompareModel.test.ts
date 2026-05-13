@@ -94,6 +94,35 @@ suite('XdtoPackageCompareModel', () => {
     assert.ok(facets.children.some((node) => node.leftValue === '13' && node.rightValue === '20'));
   });
 
+  test('matches enumeration facets by value instead of position', () => {
+    const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="ProductKind" base="xs:string">
+    <enumeration>Alpha</enumeration>
+    <enumeration>Bravo</enumeration>
+    <enumeration>Charlie</enumeration>
+  </valueType>
+</package>`);
+    const right = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="ProductKind" base="xs:string">
+    <enumeration>Alpha</enumeration>
+    <enumeration>Inserted</enumeration>
+    <enumeration>Bravo</enumeration>
+    <enumeration>Charlie</enumeration>
+  </valueType>
+</package>`);
+
+    const tree = buildXdtoPackageCompareTree(left, right);
+    const valueType = tree.root.children.find((node) => node.id === 'valueTypes')?.children
+      .find((node) => node.id === 'valueTypes:ProductKind');
+    const facets = valueType?.children.find((node) => node.id === 'valueTypes:ProductKind:facets');
+
+    assert.ok(facets, 'value type facets group must be present');
+    assert.strictEqual(facets.children.filter((node) => node.status === 'changed').length, 0);
+    assert.strictEqual(facets.children.filter((node) => node.status === 'rightOnly').length, 1);
+    assert.ok(facets.children.some((node) => node.status === 'rightOnly' && node.rightValue === 'Inserted'));
+    assert.strictEqual(tree.stats.different, 1);
+  });
+
   test('merges selected value type facet changes', () => {
     const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
   <valueType name="Code" base="xs:string" maxLength="13"/>

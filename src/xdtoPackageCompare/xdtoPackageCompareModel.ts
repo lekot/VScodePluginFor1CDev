@@ -222,7 +222,7 @@ function compareFacets(
     const leftEntry = leftEntries.find((entry) => entry.key === key);
     const rightEntry = rightEntries.find((entry) => entry.key === key);
     const facetName = rightEntry?.facet.name ?? leftEntry?.facet.name ?? key;
-    const labelSuffix = repeatedFacetIndex(key);
+    const labelSuffix = rightEntry?.labelSuffix ?? leftEntry?.labelSuffix ?? '';
     return compareScalarNode(
       `${id}:${key}`,
       labelSuffix ? `${facetName} ${labelSuffix}` : facetName,
@@ -233,22 +233,28 @@ function compareFacets(
   }));
 }
 
-function facetEntries(facets: readonly XdtoFacet[]): Array<{ key: string; facet: XdtoFacet }> {
+function facetEntries(facets: readonly XdtoFacet[]): Array<{ key: string; facet: XdtoFacet; labelSuffix: string }> {
   const counts = new Map<string, number>();
   return facets.map((facet) => {
-    const index = counts.get(facet.name) ?? 0;
-    counts.set(facet.name, index + 1);
+    if (facet.name !== 'enumeration') {
+      const ordinal = counts.get(facet.name) ?? 0;
+      counts.set(facet.name, ordinal + 1);
+      return {
+        key: `${encodeURIComponent(facet.name)}:${ordinal}`,
+        facet,
+        labelSuffix: ordinal > 0 ? `#${ordinal + 1}` : '',
+      };
+    }
+
+    const baseKey = `${encodeURIComponent(facet.name)}=${encodeURIComponent(valueText(facet.value))}`;
+    const index = counts.get(baseKey) ?? 0;
+    counts.set(baseKey, index + 1);
     return {
-      key: `${encodeURIComponent(facet.name)}:${index}`,
+      key: index > 0 ? `${baseKey}:${index}` : baseKey,
       facet,
+      labelSuffix: index > 0 ? `#${index + 1}` : '',
     };
   });
-}
-
-function repeatedFacetIndex(key: string): string {
-  const separator = key.lastIndexOf(':');
-  const index = separator >= 0 ? Number(key.slice(separator + 1)) : 0;
-  return Number.isFinite(index) && index > 0 ? `#${index + 1}` : '';
 }
 
 function compareObjectTypes(
