@@ -10,16 +10,20 @@ function readWebviewHtml(): string {
 }
 
 suite('xdtoPackageWebview content', () => {
-  test('renders type fields with an explicit picker instead of datalist-only inputs', () => {
+  test('renders type fields with a compact dialog chooser instead of an inline option list', () => {
     const html = readWebviewHtml();
 
     assert.ok(html.includes('type-picker'), 'type fields must render a picker container');
-    assert.ok(html.includes('type-picker-button'), 'type fields must render a dropdown button');
-    assert.ok(html.includes('type-picker-list'), 'type fields must render an option list');
-    assert.ok(html.includes('toggleTypePicker'), 'dropdown button must open and close the list');
-    assert.ok(html.includes('selectTypeOption'), 'option click must apply the selected type');
+    assert.ok(html.includes('type-picker-button'), 'type fields must render a chooser button');
+    assert.ok(html.includes('type-chooser-dialog'), 'type picker must open a separate dialog');
+    assert.ok(html.includes('type-chooser-search'), 'type chooser dialog must include search');
+    assert.ok(html.includes('openTypeChooser'), 'chooser button must open the dialog');
+    assert.ok(html.includes('applyTypeChoice'), 'chooser must apply the selected type explicitly');
+    assert.ok(html.includes('cancelTypeChoice'), 'chooser must close without changing the field');
     assert.ok(html.includes('data-type-picker-field'), 'picker must know the target field');
     assert.ok(html.includes('typePicker: true'), 'baseType/type fields must opt into the picker');
+    assert.ok(!html.includes('type-picker-list'), 'inspector must not render an inline option list');
+    assert.ok(!html.includes('data-type-picker-option'), 'inspector must not render inline type options');
     assert.ok(!html.includes("list: 'type-options'"), 'type fields must not rely on datalist');
     assert.ok(!html.includes('<datalist id="type-options">'), 'webview must not use datalist UI');
   });

@@ -223,22 +223,41 @@
       padding: 0;
       border-radius: 0;
     }
-    .type-picker-list {
-      position: absolute;
-      z-index: 10;
-      top: calc(100% + 2px);
-      left: 0;
-      right: 0;
-      max-height: 220px;
+    .type-chooser-dialog[hidden] {
+      display: none;
+    }
+    .type-chooser-dialog {
+      position: fixed;
+      z-index: 100;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.38);
+    }
+    .type-chooser-panel {
+      width: min(560px, 100%);
+      max-height: min(640px, calc(100vh - 48px));
+      display: grid;
+      grid-template-rows: auto auto minmax(160px, 1fr) auto;
+      gap: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
+      padding: 14px;
+    }
+    .type-chooser-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .type-chooser-options {
       overflow: auto;
       border: 1px solid var(--vscode-input-border, var(--border));
       background: var(--input-bg);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
+      min-height: 160px;
     }
-    .type-picker-list[hidden] {
-      display: none;
-    }
-    .type-picker-option {
+    .type-chooser-option {
       width: 100%;
       justify-content: flex-start;
       border: 0;
@@ -248,9 +267,18 @@
       background: var(--input-bg);
       text-align: left;
     }
-    .type-picker-empty {
+    .type-chooser-option.selected {
+      background: var(--list-active);
+      outline: 1px solid var(--vscode-focusBorder, transparent);
+    }
+    .type-chooser-empty {
       padding: 6px 8px;
       color: var(--muted);
+    }
+    .type-chooser-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
     }
     .readonly {
       color: var(--muted);
@@ -343,6 +371,18 @@
     <textarea id="source" spellcheck="false"></textarea>
   </section>
 
+  <div id="type-chooser-dialog" class="type-chooser-dialog" role="dialog" aria-modal="true" aria-labelledby="type-chooser-title" hidden>
+    <div class="type-chooser-panel">
+      <h2 id="type-chooser-title" class="type-chooser-title">Выбор типа</h2>
+      <input id="type-chooser-search" type="search" placeholder="Найти тип" autocomplete="off">
+      <div id="type-chooser-options" class="type-chooser-options" role="listbox"></div>
+      <div class="type-chooser-actions">
+        <button type="button" id="type-chooser-cancel">Отмена</button>
+        <button type="button" id="type-chooser-apply" class="primary">Выбрать</button>
+      </div>
+    </div>
+  </div>
+
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     // __XDTO_DATA_PLACEHOLDER__
@@ -355,6 +395,8 @@
     let dirtyKind = undefined;
     let sourceHasPreview = false;
     let activeTypePickerField = undefined;
+    let selectedTypeChoice = undefined;
+    let typeChooserPreviousFocus = undefined;
     let typeOptionValues = [];
     const collapsedGroups = new Set();
 
@@ -379,6 +421,11 @@
     const sourceSection = document.getElementById('source-section');
     const tree = document.getElementById('tree');
     const inspector = document.getElementById('inspector');
+    const typeChooserDialog = document.getElementById('type-chooser-dialog');
+    const typeChooserSearch = document.getElementById('type-chooser-search');
+    const typeChooserOptions = document.getElementById('type-chooser-options');
+    const typeChooserApply = document.getElementById('type-chooser-apply');
+    const typeChooserCancel = document.getElementById('type-chooser-cancel');
 
     title.textContent = `${data.strings.title}: ${data.packageName}`;
     schemaPath.textContent = data.schemaPath;
@@ -609,8 +656,7 @@
         return `<label for="field-${attr(key)}">${esc(label)}</label>` +
           `<div class="type-picker" data-type-picker-field="${attr(key)}">` +
           `<input id="field-${attr(key)}" data-field="${attr(key)}" data-type-picker-input="true" type="${attr(type)}" value="${attr(value || '')}"${placeholder}${disabled}>` +
-          `<button type="button" class="type-picker-button" data-type-picker-button="${attr(key)}" aria-label="Открыть список типов" aria-expanded="false"${buttonDisabled}>▾</button>` +
-          `<div class="type-picker-list" data-type-picker-list="${attr(key)}" role="listbox" hidden>${renderTypePickerOptions(key)}</div>` +
+          `<button type="button" class="type-picker-button" data-type-picker-button="${attr(key)}" aria-label="Выбрать тип"${buttonDisabled}>...</button>` +
           `</div>`;
       }
       return `<label for="field-${attr(key)}">${esc(label)}</label>` +
@@ -693,22 +739,6 @@
         '<div class="empty">Используйте кнопку «Добавить», чтобы создать новый элемент в этой группе.</div>';
     }
 
-    function renderTypePickerOptions(fieldKey) {
-      if (typeOptionValues.length === 0) {
-        return '<div class="type-picker-empty">Нет доступных типов</div>';
-      }
-      return typeOptionValues.map((value) =>
-        `<button type="button" class="type-picker-option" data-type-picker-field="${attr(fieldKey)}" data-type-picker-option="${attr(value)}" role="option">${esc(value)}</button>`
-      ).join('');
-    }
-
-    function refreshTypePickerLists() {
-      inspector.querySelectorAll('.type-picker-list').forEach((list) => {
-        const fieldKey = list.dataset.typePickerList;
-        list.innerHTML = renderTypePickerOptions(fieldKey);
-      });
-    }
-
     function updateTypeOptions() {
       const localTypes = []
         .concat(model.valueTypes || [], model.objectTypes || [])
@@ -720,7 +750,9 @@
       const prefixedTypes = namespacePrefixes().map((prefix) => `${prefix}:`);
       const values = Array.from(new Set(builtInTypes.concat(localTypes, importTypes, prefixedTypes)));
       typeOptionValues = values;
-      refreshTypePickerLists();
+      if (!typeChooserDialog.hidden) {
+        renderTypeChoiceOptions();
+      }
     }
 
     function namespacePrefixes() {
@@ -752,40 +784,72 @@
       renderTree();
     }
 
-    function closeTypePicker() {
-      activeTypePickerField = undefined;
-      inspector.querySelectorAll('.type-picker-list').forEach((list) => {
-        list.hidden = true;
-      });
-      inspector.querySelectorAll('.type-picker-button').forEach((button) => {
-        button.setAttribute('aria-expanded', 'false');
-      });
-    }
-
-    function toggleTypePicker(fieldKey) {
-      const picker = inspector.querySelector(`.type-picker[data-type-picker-field="${fieldKey}"]`);
-      if (!picker) { return; }
-      const list = picker.querySelector('.type-picker-list');
-      const button = picker.querySelector('.type-picker-button');
-      if (!list || !button) { return; }
-      const shouldOpen = activeTypePickerField !== fieldKey || list.hidden;
-      closeTypePicker();
-      if (shouldOpen) {
-        list.innerHTML = renderTypePickerOptions(fieldKey);
-        list.hidden = false;
-        button.setAttribute('aria-expanded', 'true');
-        activeTypePickerField = fieldKey;
+    function renderTypeChoiceOptions() {
+      const query = typeChooserSearch.value.trim().toLowerCase();
+      const options = typeOptionValues.filter((value) => value.toLowerCase().includes(query));
+      if (options.length === 0) {
+        selectedTypeChoice = undefined;
+        typeChooserOptions.innerHTML = '<div class="type-chooser-empty">Нет доступных типов</div>';
+        typeChooserApply.disabled = true;
+        return;
       }
+      if (!selectedTypeChoice || !options.includes(selectedTypeChoice)) {
+        selectedTypeChoice = options[0];
+      }
+      typeChooserApply.disabled = false;
+      typeChooserOptions.innerHTML = options.map((value) => {
+        const selected = value === selectedTypeChoice;
+        return `<button type="button" class="type-chooser-option${selected ? ' selected' : ''}" data-type-choice="${attr(value)}" role="option" aria-selected="${selected ? 'true' : 'false'}">${esc(value)}</button>`;
+      }).join('');
     }
 
-    function selectTypeOption(fieldKey, value) {
+    function updateTypeChoiceSelection() {
+      typeChooserOptions.querySelectorAll('button[data-type-choice]').forEach((button) => {
+        const selected = button.dataset.typeChoice === selectedTypeChoice;
+        button.classList.toggle('selected', selected);
+        button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      });
+      typeChooserApply.disabled = !selectedTypeChoice;
+    }
+
+    function openTypeChooser(fieldKey) {
       const input = Array.from(inspector.querySelectorAll('input[data-field]'))
         .find((item) => item.dataset.field === fieldKey);
       if (!input) { return; }
-      input.value = value;
-      updateField(fieldKey, value);
-      closeTypePicker();
+      activeTypePickerField = undefined;
+      selectedTypeChoice = input.value && typeOptionValues.includes(input.value) ? input.value : undefined;
+      typeChooserPreviousFocus = document.activeElement;
+      typeChooserSearch.value = '';
+      typeChooserDialog.hidden = false;
+      activeTypePickerField = fieldKey;
+      renderTypeChoiceOptions();
+      typeChooserSearch.focus();
+    }
+
+    function chooseTypeOption(value) {
+      selectedTypeChoice = value;
+      updateTypeChoiceSelection();
+    }
+
+    function applyTypeChoice() {
+      if (!activeTypePickerField || !selectedTypeChoice) { return; }
+      const input = Array.from(inspector.querySelectorAll('input[data-field]'))
+        .find((item) => item.dataset.field === activeTypePickerField);
+      if (!input) { return; }
+      input.value = selectedTypeChoice;
+      updateField(activeTypePickerField, selectedTypeChoice);
+      cancelTypeChoice();
       input.focus();
+    }
+
+    function cancelTypeChoice() {
+      typeChooserDialog.hidden = true;
+      activeTypePickerField = undefined;
+      selectedTypeChoice = undefined;
+      if (typeChooserPreviousFocus && typeof typeChooserPreviousFocus.focus === 'function') {
+        typeChooserPreviousFocus.focus();
+      }
+      typeChooserPreviousFocus = undefined;
     }
 
     function canDeleteSelection() {
@@ -959,18 +1023,39 @@
     });
 
     inspector.addEventListener('click', (event) => {
-      const option = event.target.closest('button[data-type-picker-option]');
-      if (option) {
-        selectTypeOption(option.dataset.typePickerField, option.dataset.typePickerOption);
-        return;
-      }
       const button = event.target.closest('button[data-type-picker-button]');
       if (button) {
-        toggleTypePicker(button.dataset.typePickerButton);
+        openTypeChooser(button.dataset.typePickerButton);
         return;
       }
-      if (!event.target.closest('.type-picker')) {
-        closeTypePicker();
+    });
+
+    typeChooserOptions.addEventListener('click', (event) => {
+      const option = event.target.closest('button[data-type-choice]');
+      if (!option) { return; }
+      chooseTypeOption(option.dataset.typeChoice);
+    });
+
+    typeChooserOptions.addEventListener('dblclick', (event) => {
+      const option = event.target.closest('button[data-type-choice]');
+      if (!option) { return; }
+      chooseTypeOption(option.dataset.typeChoice);
+      applyTypeChoice();
+    });
+
+    typeChooserSearch.addEventListener('input', renderTypeChoiceOptions);
+    typeChooserApply.addEventListener('click', applyTypeChoice);
+    typeChooserCancel.addEventListener('click', cancelTypeChoice);
+    typeChooserDialog.addEventListener('click', (event) => {
+      if (event.target === typeChooserDialog) {
+        cancelTypeChoice();
+      }
+    });
+    typeChooserDialog.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        cancelTypeChoice();
+      } else if (event.key === 'Enter') {
+        applyTypeChoice();
       }
     });
 
