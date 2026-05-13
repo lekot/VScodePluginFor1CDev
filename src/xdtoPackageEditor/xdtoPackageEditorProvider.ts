@@ -8,6 +8,7 @@ import { MESSAGES } from '../constants/messages';
 import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { resolveXdtoPackageSchemaPath } from './xdtoPackagePaths';
+import { ensureXdtoPackageSourceFile } from './xdtoPackageFiles';
 
 type XdtoWebviewMessage = { type: 'save'; source: string };
 
@@ -22,38 +23,13 @@ interface XdtoViewPayload {
   };
 }
 
-function getNodeNamespace(node: TreeNode): string {
-  const props = (node.properties ?? {}) as Record<string, unknown>;
-  const raw = props['Namespace'] ?? props['namespace'];
-  return typeof raw === 'string' ? raw : '';
-}
-
-function buildInitialSchema(node: TreeNode): string {
-  const namespace = getNodeNamespace(node);
-  const targetNamespace = namespace ? ` targetNamespace="${escapeXml(namespace)}"` : '';
-  return (
-    `<?xml version="1.0" encoding="UTF-8"?>\n` +
-    `<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"${targetNamespace}>\n` +
-    `</xs:schema>\n`
-  );
-}
-
-function escapeXml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function ensureSchemaFile(node: TreeNode, schemaPath: string): string {
-  if (fs.existsSync(schemaPath)) {
-    return fs.readFileSync(schemaPath, 'utf8');
+function createNonce(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let value = '';
+  for (let i = 0; i < 32; i++) {
+    value += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  const xml = buildInitialSchema(node);
-  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-  fs.writeFileSync(schemaPath, xml, 'utf8');
-  return xml;
+  return value;
 }
 
 export class XdtoPackageEditorProvider implements vscode.Disposable {
@@ -91,7 +67,7 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
     const schemaPath = resolveXdtoPackageSchemaPath(node.filePath, node.name);
     let source: string;
     try {
-      source = ensureSchemaFile(node, schemaPath);
+      source = ensureXdtoPackageSourceFile(node, schemaPath);
     } catch (err) {
       Logger.error('Failed to read or create Package.xdto', err);
       void vscode.window.showErrorMessage(MESSAGES.XDTO_PACKAGE_READ_FAILED);
@@ -151,11 +127,14 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
     };
 
     const htmlPath = this.resolveWebviewHtmlPath();
+    const nonce = createNonce();
     let html = fs.readFileSync(htmlPath, 'utf8');
     html = html.replace(
       '// __XDTO_DATA_PLACEHOLDER__',
       `window.__xdtoData = ${escapeJsonForScript(JSON.stringify(payload))};`
     );
+    html = html.replace(/\$\{webview\.cspSource\}/g, this.panel?.webview.cspSource ?? '');
+    html = html.replace(/\$\{nonce\}/g, nonce);
     if (this.panel) {
       this.panel.webview.html = html;
     }

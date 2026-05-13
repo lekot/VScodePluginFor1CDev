@@ -2,9 +2,10 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>XDTO Package</title>
-  <style>
+  <style nonce="${nonce}">
     :root {
       color-scheme: light dark;
       --border: var(--vscode-panel-border, #3c3c3c);
@@ -156,7 +157,7 @@
   <section id="source-section">
     <textarea id="source" spellcheck="false"></textarea>
   </section>
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     // __XDTO_DATA_PLACEHOLDER__
 

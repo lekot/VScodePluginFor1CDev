@@ -127,6 +127,63 @@ suite('XdtoPackageParser', () => {
     assert.deepStrictEqual(model.diagnostics, []);
   });
 
+  test('parses inherited XSD members under complexContent extension', () => {
+    const xml = `<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:complexType name="Child">
+    <xs:complexContent>
+      <xs:extension base="Base">
+        <xs:sequence>
+          <xs:element name="Extra" type="xs:string"/>
+        </xs:sequence>
+        <xs:attribute name="Flag" type="xs:boolean"/>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>`;
+
+    const model = parseXdtoPackage(xml);
+
+    assert.strictEqual(model.objectTypes[0].baseType, 'Base');
+    assert.deepStrictEqual(
+      model.objectTypes[0].properties.map((property) => ({ name: property.name, type: property.type })),
+      [{ name: 'Extra', type: 'xs:string' }]
+    );
+    assert.deepStrictEqual(
+      model.objectTypes[0].attributes.map((attribute) => ({ name: attribute.name, type: attribute.type })),
+      [{ name: 'Flag', type: 'xs:boolean' }]
+    );
+  });
+
+  test('parses Designer Package.bin XML with 1C lowerBound and attribute form', () => {
+    const xml = `\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:rates">
+  <objectType name="Rate">
+    <property name="Code" type="xs:string" lowerBound="1" form="Attribute"/>
+    <property name="Value" type="xs:decimal" lowerBound="0"/>
+  </objectType>
+</package>`;
+
+    const model = parseXdtoPackage(xml);
+
+    assert.strictEqual(model.targetNamespace, 'urn:rates');
+    assert.deepStrictEqual(
+      model.objectTypes[0].attributes.map((property) => ({
+        name: property.name,
+        type: property.type,
+        lowerBound: property.lowerBound,
+        form: property.form,
+      })),
+      [{ name: 'Code', type: 'xs:string', lowerBound: '1', form: 'Attribute' }]
+    );
+    assert.deepStrictEqual(
+      model.objectTypes[0].properties.map((property) => ({
+        name: property.name,
+        type: property.type,
+        lowerBound: property.lowerBound,
+      })),
+      [{ name: 'Value', type: 'xs:decimal', lowerBound: '0' }]
+    );
+  });
+
   test('malformed XML returns diagnostic instead of throwing', () => {
     const model = parseXdtoPackage('<xs:schema><xs:complexType name="Broken"></xs:schema>');
 

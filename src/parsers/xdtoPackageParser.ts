@@ -159,36 +159,75 @@ function parseProperty(raw: unknown): XdtoProperty | null {
     type: getAttribute(raw, 'type'),
     minOccurs: getAttribute(raw, 'minOccurs'),
     maxOccurs: getAttribute(raw, 'maxOccurs'),
+    lowerBound: getAttribute(raw, 'lowerBound'),
+    upperBound: getAttribute(raw, 'upperBound'),
+    form: getAttribute(raw, 'form'),
     use: getAttribute(raw, 'use'),
     raw,
     unknownNodes: collectUnknownNodes(raw, PROPERTY_KNOWN_CHILDREN),
   };
 }
 
-function collectProperties(node: XdtoRawNode): XdtoProperty[] {
-  const rawProperties = [
-    ...childrenByLocalName(node, 'property'),
-    ...childrenByLocalName(node, 'element'),
-  ];
+function isAttributeProperty(property: XdtoProperty): boolean {
+  return property.form?.toLowerCase() === 'attribute';
+}
 
-  for (const groupName of ['sequence', 'choice', 'all']) {
-    for (const group of childrenByLocalName(node, groupName)) {
-      if (isRecord(group)) {
-        rawProperties.push(...childrenByLocalName(group, 'element'));
-        rawProperties.push(...childrenByLocalName(group, 'property'));
+function collectMemberContainers(node: XdtoRawNode): XdtoRawNode[] {
+  const containers: XdtoRawNode[] = [node];
+  const complexContent = firstRecordChild(node, 'complexContent');
+  const simpleContent = firstRecordChild(node, 'simpleContent');
+  for (const content of [complexContent, simpleContent]) {
+    if (!content) {
+      continue;
+    }
+    const extension = firstRecordChild(content, 'extension');
+    const restriction = firstRecordChild(content, 'restriction');
+    for (const derived of [extension, restriction]) {
+      if (derived) {
+        containers.push(derived);
+      }
+    }
+  }
+  return containers;
+}
+
+function collectProperties(node: XdtoRawNode): XdtoProperty[] {
+  const rawProperties: unknown[] = [];
+
+  for (const container of collectMemberContainers(node)) {
+    rawProperties.push(...childrenByLocalName(container, 'property'));
+    rawProperties.push(...childrenByLocalName(container, 'element'));
+
+    for (const groupName of ['sequence', 'choice', 'all']) {
+      for (const group of childrenByLocalName(container, groupName)) {
+        if (isRecord(group)) {
+          rawProperties.push(...childrenByLocalName(group, 'element'));
+          rawProperties.push(...childrenByLocalName(group, 'property'));
+        }
       }
     }
   }
 
   return rawProperties
     .map(parseProperty)
-    .filter((property): property is XdtoProperty => property !== null);
+    .filter((property): property is XdtoProperty => property !== null && !isAttributeProperty(property));
 }
 
 function collectAttributes(node: XdtoRawNode): XdtoProperty[] {
-  return childrenByLocalName(node, 'attribute')
+  const rawAttributeNodes: unknown[] = [];
+  const rawAttributeProperties: unknown[] = [];
+  for (const container of collectMemberContainers(node)) {
+    rawAttributeNodes.push(...childrenByLocalName(container, 'attribute'));
+    rawAttributeProperties.push(...childrenByLocalName(container, 'property'));
+  }
+
+  const attributes = rawAttributeNodes
     .map(parseProperty)
     .filter((attribute): attribute is XdtoProperty => attribute !== null);
+  const propertiesAsAttributes = rawAttributeProperties
+    .map(parseProperty)
+    .filter((attribute): attribute is XdtoProperty => attribute !== null && isAttributeProperty(attribute));
+  return [...attributes, ...propertiesAsAttributes];
 }
 
 function parseBaseType(node: XdtoRawNode): string | undefined {

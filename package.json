@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.47.5",
+  "version": "0.47.6",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -248,6 +248,21 @@
       {
         "command": "1c-metadata-tree.editXdtoPackageSchema",
         "title": "Редактор схемы XDTO-пакета",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.exportXdtoPackageToXsd",
+        "title": "XDTO-пакет: экспорт в XSD",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.importXsdIntoXdtoPackage",
+        "title": "XDTO-пакет: импорт XSD в текущий",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.importXsdAsNewXdtoPackage",
+        "title": "XDTO-пакет: создать из XSD",
         "category": "CDT 41"
       },
       {
@@ -892,6 +907,21 @@
           "command": "1c-metadata-tree.editXdtoPackageSchema",
           "when": "view == 1c-metadata-tree && viewItem =~ /^XDTOPackage\\b/",
           "group": "2_xdto@0"
+        },
+        {
+          "command": "1c-metadata-tree.exportXdtoPackageToXsd",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^XDTOPackage\\b/",
+          "group": "2_xdto@1"
+        },
+        {
+          "command": "1c-metadata-tree.importXsdIntoXdtoPackage",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^XDTOPackage\\b/",
+          "group": "2_xdto@2"
+        },
+        {
+          "command": "1c-metadata-tree.importXsdAsNewXdtoPackage",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^XDTOPackage\\b/",
+          "group": "2_xdto@3"
         },
         {
           "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",

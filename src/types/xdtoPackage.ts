@@ -25,6 +25,9 @@ export interface XdtoProperty {
   type?: string;
   minOccurs?: string;
   maxOccurs?: string;
+  lowerBound?: string;
+  upperBound?: string;
+  form?: string;
   use?: string;
   raw: XdtoRawNode;
   unknownNodes: XdtoUnknownNode[];
