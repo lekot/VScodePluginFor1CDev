@@ -134,6 +134,9 @@ function xsdPropertyAttrs(
     attr('type', xsdTypeReference(property.type, model, localTypeNames)),
     attr('minOccurs', minOccurs),
     attr('maxOccurs', maxOccurs),
+    attr('nillable', property.nillable),
+    attr('fixed', property.fixed),
+    attr('default', property.defaultValue),
   ].join('');
 }
 
@@ -147,6 +150,8 @@ function xsdAttributeAttrs(
     attr('name', property.name),
     attr('type', xsdTypeReference(property.type, model, localTypeNames)),
     attr('use', use),
+    attr('fixed', property.fixed),
+    attr('default', property.defaultValue),
   ].join('');
 }
 
@@ -204,6 +209,9 @@ function oneCPackagePropertyAttrs(property: XdtoProperty, asAttribute: boolean):
     attr('type', property.type),
     attr('lowerBound', lowerBound),
     attr('upperBound', property.upperBound ?? normalizeMaxOccurs(property.maxOccurs)),
+    attr('nillable', property.nillable),
+    attr('fixed', property.fixed),
+    attr('default', property.defaultValue),
     asAttribute ? attr('form', 'Attribute') : '',
   ].join('');
 }

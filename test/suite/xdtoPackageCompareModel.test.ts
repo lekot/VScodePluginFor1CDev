@@ -43,7 +43,37 @@ suite('XdtoPackageCompareModel', () => {
     );
     assert.ok(postedProperty, 'right-only property node must be present');
     assert.strictEqual(postedProperty.status, 'rightOnly');
-    assert.strictEqual(tree.stats.different, 5);
+    assert.strictEqual(tree.stats.different, 4);
+  });
+
+  test('does not report QName differences when only namespace prefixes differ', () => {
+    const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:local">
+  <import namespace="urn:common"/>
+  <valueType name="DocumentRef" base="d2p1:Ref"/>
+  <objectType name="Order" base="LocalBase">
+    <property name="Owner" type="d2p1:CatalogRef"/>
+    <property name="Local" type="LocalBase"/>
+    <property name="Nested" type="d3p1:Order.Line" lowerBound="1" upperBound="1" nillable="false"/>
+  </objectType>
+  <objectType name="LocalBase"/>
+  <objectType name="Order.Line"/>
+</package>`);
+    const right = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:ns1="urn:common" xmlns:tns="urn:local" targetNamespace="urn:local">
+  <import namespace="urn:common"/>
+  <valueType name="DocumentRef" base="ns1:Ref"/>
+  <objectType name="Order" base="tns:LocalBase">
+    <property name="Owner" type="ns1:CatalogRef"/>
+    <property name="Local" type="tns:LocalBase"/>
+    <property name="Nested" type="tns:Order.Line"/>
+  </objectType>
+  <objectType name="LocalBase"/>
+  <objectType name="Order.Line"/>
+</package>`);
+
+    const tree = buildXdtoPackageCompareTree(left, right);
+
+    assert.strictEqual(tree.stats.different, 0);
+    assert.strictEqual(tree.stats.mergeable, 0);
   });
 
   test('merges selected right-side object property changes without deleting left-only nodes', () => {

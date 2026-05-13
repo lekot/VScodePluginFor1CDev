@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
 import type { CompareTreeNode, CompareTreeStats, CompareTreeStatus } from '../compareMerge/compareTreeTypes';
-import type { XdtoImport, XdtoPackageModel, XdtoProperty, XdtoTypeDefinition } from '../types/xdtoPackage';
+import type { XdtoImport, XdtoPackageModel, XdtoProperty, XdtoRawNode, XdtoTypeDefinition } from '../types/xdtoPackage';
 import { stripUtf8Bom } from '../xdtoPackageEditor/xdtoPackageFiles';
 import { convertXsdTo1cPackage } from '../xdtoPackageEditor/xdtoXsdConverter';
 
@@ -25,6 +25,13 @@ const PROPERTY_FIELD_LABELS = [
 type PropertyField = typeof PROPERTY_FIELD_LABELS[number][0];
 type TypeSection = 'valueTypes' | 'objectTypes';
 type PropertySection = 'properties' | 'attributes';
+
+interface XdtoCompareContext {
+  targetNamespace: string;
+  importNamespaces: string[];
+  localTypeNames: ReadonlySet<string>;
+  prefixToNamespace: ReadonlyMap<string, string>;
+}
 
 export interface XdtoPackageCompareTree {
   root: CompareTreeNode;
@@ -62,12 +69,14 @@ export function buildXdtoPackageCompareTree(
   left: XdtoPackageModel,
   right: XdtoPackageModel
 ): XdtoPackageCompareTree {
+  const leftContext = buildCompareContext(left);
+  const rightContext = buildCompareContext(right);
   const children: CompareTreeNode[] = [
     compareScalarNode('root:targetNamespace', 'Пространство имен', 'packageField', left.targetNamespace, right.targetNamespace),
     compareImports(left.imports, right.imports),
-    compareTypes('valueTypes', 'Типы значений', left.valueTypes, right.valueTypes),
-    compareObjectTypes(left.objectTypes, right.objectTypes),
-    compareRootProperties(left.rootProperties, right.rootProperties),
+    compareTypes('valueTypes', 'Типы значений', left.valueTypes, right.valueTypes, leftContext, rightContext),
+    compareObjectTypes(left.objectTypes, right.objectTypes, leftContext, rightContext),
+    compareRootProperties(left.rootProperties, right.rootProperties, leftContext, rightContext),
   ];
   const root = branchNode('package', 'XDTO-пакет', 'package', children);
   const stats = collectStats(root);
@@ -130,9 +139,11 @@ function compareScalarNode(
   label: string,
   kind: string,
   left: string | undefined,
-  right: string | undefined
+  right: string | undefined,
+  comparableLeft = left,
+  comparableRight = right
 ): CompareTreeNode {
-  const status = statusForValues(left, right);
+  const status = statusForValues(comparableLeft, comparableRight);
   return {
     id,
     label,
@@ -176,7 +187,9 @@ function compareTypes(
   section: TypeSection,
   label: string,
   left: readonly XdtoTypeDefinition[],
-  right: readonly XdtoTypeDefinition[]
+  right: readonly XdtoTypeDefinition[],
+  leftContext: XdtoCompareContext,
+  rightContext: XdtoCompareContext
 ): CompareTreeNode {
   const keys = unionKeys(left.map((type) => type.name), right.map((type) => type.name));
   return branchNode(section, label, `${section}Group`, keys.map((name) => {
@@ -186,14 +199,16 @@ function compareTypes(
       return collectionNode(`${section}:${name}`, name, section.slice(0, -1), leftType, rightType, typeSummary);
     }
     return branchNode(`${section}:${name}`, name, section.slice(0, -1), [
-      compareScalarNode(`${section}:${name}:baseType`, 'Базовый тип', 'typeField', leftType.baseType, rightType.baseType),
+      compareQNameNode(`${section}:${name}:baseType`, 'Базовый тип', 'typeField', leftType.baseType, rightType.baseType, leftContext, rightContext),
     ]);
   }));
 }
 
 function compareObjectTypes(
   left: readonly XdtoTypeDefinition[],
-  right: readonly XdtoTypeDefinition[]
+  right: readonly XdtoTypeDefinition[],
+  leftContext: XdtoCompareContext,
+  rightContext: XdtoCompareContext
 ): CompareTreeNode {
   const keys = unionKeys(left.map((type) => type.name), right.map((type) => type.name));
   return branchNode('objectTypes', 'Типы объектов', 'objectTypesGroup', keys.map((name) => {
@@ -203,15 +218,20 @@ function compareObjectTypes(
       return collectionNode(`objectTypes:${name}`, name, 'objectType', leftType, rightType, typeSummary);
     }
     return branchNode(`objectTypes:${name}`, name, 'objectType', [
-      compareScalarNode(`objectTypes:${name}:baseType`, 'Базовый тип', 'typeField', leftType.baseType, rightType.baseType),
-      compareProperties(`objectTypes:${name}:attributes`, 'Атрибуты', 'attributes', leftType.attributes, rightType.attributes),
-      compareProperties(`objectTypes:${name}:properties`, 'Свойства', 'properties', leftType.properties, rightType.properties),
+      compareQNameNode(`objectTypes:${name}:baseType`, 'Базовый тип', 'typeField', leftType.baseType, rightType.baseType, leftContext, rightContext),
+      compareProperties(`objectTypes:${name}:attributes`, 'Атрибуты', 'attributes', leftType.attributes, rightType.attributes, leftContext, rightContext),
+      compareProperties(`objectTypes:${name}:properties`, 'Свойства', 'properties', leftType.properties, rightType.properties, leftContext, rightContext),
     ]);
   }));
 }
 
-function compareRootProperties(left: readonly XdtoProperty[], right: readonly XdtoProperty[]): CompareTreeNode {
-  return compareProperties('rootProperties', 'Корневые свойства', 'rootProperties', left, right);
+function compareRootProperties(
+  left: readonly XdtoProperty[],
+  right: readonly XdtoProperty[],
+  leftContext: XdtoCompareContext,
+  rightContext: XdtoCompareContext
+): CompareTreeNode {
+  return compareProperties('rootProperties', 'Корневые свойства', 'rootProperties', left, right, leftContext, rightContext);
 }
 
 function compareProperties(
@@ -219,7 +239,9 @@ function compareProperties(
   label: string,
   section: PropertySection | 'rootProperties',
   left: readonly XdtoProperty[],
-  right: readonly XdtoProperty[]
+  right: readonly XdtoProperty[],
+  leftContext: XdtoCompareContext,
+  rightContext: XdtoCompareContext
 ): CompareTreeNode {
   const keys = unionKeys(left.map((property) => property.name), right.map((property) => property.name));
   return branchNode(id, label, `${section}Group`, keys.map((name) => {
@@ -229,15 +251,62 @@ function compareProperties(
       return collectionNode(`${id}:${name}`, name, 'property', leftProperty, rightProperty, propertySummary);
     }
     return branchNode(`${id}:${name}`, name, 'property', PROPERTY_FIELD_LABELS.map(([field, fieldLabel]) =>
-      compareScalarNode(
+      comparePropertyFieldNode(
         `${id}:${name}:${field}`,
         fieldLabel,
         'propertyField',
+        field,
         propertyFieldValue(leftProperty, field),
-        propertyFieldValue(rightProperty, field)
+        propertyFieldValue(rightProperty, field),
+        leftContext,
+        rightContext
       )
     ));
   }));
+}
+
+function comparePropertyFieldNode(
+  id: string,
+  label: string,
+  kind: string,
+  field: PropertyField,
+  left: string | undefined,
+  right: string | undefined,
+  leftContext: XdtoCompareContext,
+  rightContext: XdtoCompareContext
+): CompareTreeNode {
+  if (field === 'type' || field === 'ref') {
+    return compareQNameNode(id, label, kind, left, right, leftContext, rightContext);
+  }
+  return compareScalarNode(
+    id,
+    label,
+    kind,
+    left,
+    right,
+    normalizeComparablePropertyField(field, left),
+    normalizeComparablePropertyField(field, right)
+  );
+}
+
+function compareQNameNode(
+  id: string,
+  label: string,
+  kind: string,
+  left: string | undefined,
+  right: string | undefined,
+  leftContext: XdtoCompareContext,
+  rightContext: XdtoCompareContext
+): CompareTreeNode {
+  return compareScalarNode(
+    id,
+    label,
+    kind,
+    left,
+    right,
+    canonicalQName(left, leftContext),
+    canonicalQName(right, rightContext)
+  );
 }
 
 function collectionNode<T>(
@@ -265,6 +334,17 @@ function propertyFieldValue(property: XdtoProperty, field: PropertyField): strin
   return property[field];
 }
 
+function normalizeComparablePropertyField(field: PropertyField, value: string | undefined): string | undefined {
+  const text = valueText(value);
+  if ((field === 'lowerBound' || field === 'upperBound' || field === 'minOccurs' || field === 'maxOccurs') && !text) {
+    return '1';
+  }
+  if ((field === 'nillable' || field === 'qualified') && !text) {
+    return 'false';
+  }
+  return value;
+}
+
 function propertySummary(property: XdtoProperty): string {
   return property.type || property.ref || '';
 }
@@ -279,6 +359,65 @@ function importSummary(item: XdtoImport): string {
 
 function importKey(item: XdtoImport): string {
   return encodeURIComponent(`${item.namespace ?? ''}|${item.schemaLocation ?? ''}`);
+}
+
+function buildCompareContext(model: XdtoPackageModel): XdtoCompareContext {
+  return {
+    targetNamespace: model.targetNamespace ?? '',
+    importNamespaces: model.imports.map((item) => item.namespace).filter((value): value is string => Boolean(value)),
+    localTypeNames: new Set([
+      ...model.valueTypes.map((type) => type.name),
+      ...model.objectTypes.map((type) => type.name),
+    ]),
+    prefixToNamespace: collectNamespacePrefixes(model.rawRoot),
+  };
+}
+
+function collectNamespacePrefixes(rawRoot: XdtoRawNode | undefined): ReadonlyMap<string, string> {
+  const result = new Map<string, string>();
+  if (!rawRoot) {
+    return result;
+  }
+  for (const [key, value] of Object.entries(rawRoot)) {
+    if (!key.startsWith('@_xmlns:') || typeof value !== 'string') {
+      continue;
+    }
+    result.set(key.slice('@_xmlns:'.length), value);
+  }
+  return result;
+}
+
+function canonicalQName(value: string | undefined, context: XdtoCompareContext): string | undefined {
+  const text = valueText(value);
+  if (!text) {
+    return undefined;
+  }
+
+  const separator = text.indexOf(':');
+  if (separator < 0) {
+    return context.targetNamespace && context.localTypeNames.has(text)
+      ? `{${context.targetNamespace}}${text}`
+      : text;
+  }
+
+  const prefix = text.slice(0, separator);
+  const local = text.slice(separator + 1);
+  const namespace = context.prefixToNamespace.get(prefix) ?? inferMissingPrefixNamespace(prefix, local, context);
+  return namespace ? `{${namespace}}${local}` : text;
+}
+
+function inferMissingPrefixNamespace(
+  prefix: string,
+  local: string,
+  context: XdtoCompareContext
+): string | undefined {
+  if (context.targetNamespace && context.localTypeNames.has(local) && /^d\d+p\d+$/i.test(prefix)) {
+    return context.targetNamespace;
+  }
+  if (context.importNamespaces.length === 1 && /^d\d+p\d+$/i.test(prefix)) {
+    return context.importNamespaces[0];
+  }
+  return undefined;
 }
 
 function unionKeys(left: readonly string[], right: readonly string[]): string[] {

@@ -62,9 +62,9 @@ suite('XdtoXsdConverter', () => {
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:rates">
   <xs:complexType name="Rate">
     <xs:sequence>
-      <xs:element name="Value" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="Value" type="xs:decimal" minOccurs="0" maxOccurs="unbounded" nillable="true" default="0"/>
     </xs:sequence>
-    <xs:attribute name="Code" type="xs:string" use="required"/>
+    <xs:attribute name="Code" type="xs:string" use="required" fixed="A"/>
   </xs:complexType>
 </xs:schema>`;
 
@@ -78,8 +78,9 @@ suite('XdtoXsdConverter', () => {
         type: property.type,
         form: property.form,
         lowerBound: property.lowerBound,
+        fixed: property.fixed,
       })),
-      [{ name: 'Code', type: 'xs:string', form: 'Attribute', lowerBound: '1' }]
+      [{ name: 'Code', type: 'xs:string', form: 'Attribute', lowerBound: '1', fixed: 'A' }]
     );
     assert.deepStrictEqual(
       model.objectTypes[0].properties.map((property) => ({
@@ -87,8 +88,10 @@ suite('XdtoXsdConverter', () => {
         type: property.type,
         lowerBound: property.lowerBound,
         upperBound: property.upperBound,
+        nillable: property.nillable,
+        defaultValue: property.defaultValue,
       })),
-      [{ name: 'Value', type: 'xs:decimal', lowerBound: '0', upperBound: '-1' }]
+      [{ name: 'Value', type: 'xs:decimal', lowerBound: '0', upperBound: '-1', nillable: 'true', defaultValue: '0' }]
     );
   });
 
