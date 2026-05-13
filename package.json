@@ -246,6 +246,11 @@
         "title": "CDT 41: Редактировать состав критерия отбора"
       },
       {
+        "command": "1c-metadata-tree.editXdtoPackageSchema",
+        "title": "Редактор схемы XDTO-пакета",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",
         "title": "ПВХ: Предопределённые виды",
         "category": "1C Metadata"
@@ -882,6 +887,11 @@
           "command": "1c-metadata-tree.editFilterCriterionContent",
           "when": "view == 1c-metadata-tree && viewItem =~ /^FilterCriterion\\b/",
           "group": "2_composition@0"
+        },
+        {
+          "command": "1c-metadata-tree.editXdtoPackageSchema",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^XDTOPackage\\b/",
+          "group": "2_xdto@0"
         },
         {
           "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",

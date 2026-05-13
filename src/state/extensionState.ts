@@ -6,6 +6,7 @@ import { TypeEditorProvider } from '../providers/typeEditorProvider';
 import { RolesRightsEditorProvider } from '../rolesEditor/rolesRightsEditorProvider';
 import type { CompositionEditorProvider } from '../compositionEditor/compositionEditorProvider';
 import type { SubsystemCommandInterfaceProvider } from '../subsystemCommandInterfaceEditor';
+import type { XdtoPackageEditorProvider } from '../xdtoPackageEditor';
 import { FormEditorProvider } from '../formEditor/formEditorProvider';
 import { MxlPreviewProvider } from '../mxlPreview/mxlPreviewProvider';
 import { MetadataWatcherService } from '../services/metadataWatcherService';
@@ -32,6 +33,7 @@ export class ExtensionState {
   private _functionalOptionCompositionEditorProvider: CompositionEditorProvider | null = null;
   private _filterCriterionCompositionEditorProvider: CompositionEditorProvider | null = null;
   private _subsystemCommandInterfaceProvider: SubsystemCommandInterfaceProvider | null = null;
+  private _xdtoPackageEditorProvider: XdtoPackageEditorProvider | null = null;
   private _formEditorProvider: FormEditorProvider | null = null;
   private _mxlPreviewProvider: MxlPreviewProvider | null = null;
   private _extensionContext: vscode.ExtensionContext | undefined;
@@ -57,6 +59,7 @@ export class ExtensionState {
   get functionalOptionCompositionEditorProvider(): CompositionEditorProvider | null { return this._functionalOptionCompositionEditorProvider; }
   get filterCriterionCompositionEditorProvider(): CompositionEditorProvider | null { return this._filterCriterionCompositionEditorProvider; }
   get subsystemCommandInterfaceProvider(): SubsystemCommandInterfaceProvider | null { return this._subsystemCommandInterfaceProvider; }
+  get xdtoPackageEditorProvider(): XdtoPackageEditorProvider | null { return this._xdtoPackageEditorProvider; }
   get formEditorProvider(): FormEditorProvider | null { return this._formEditorProvider; }
   get mxlPreviewProvider(): MxlPreviewProvider | null { return this._mxlPreviewProvider; }
   get extensionContext(): vscode.ExtensionContext | undefined { return this._extensionContext; }
@@ -83,6 +86,7 @@ export class ExtensionState {
   set functionalOptionCompositionEditorProvider(v: CompositionEditorProvider | null) { this._functionalOptionCompositionEditorProvider = v; }
   set filterCriterionCompositionEditorProvider(v: CompositionEditorProvider | null) { this._filterCriterionCompositionEditorProvider = v; }
   set subsystemCommandInterfaceProvider(v: SubsystemCommandInterfaceProvider | null) { this._subsystemCommandInterfaceProvider = v; }
+  set xdtoPackageEditorProvider(v: XdtoPackageEditorProvider | null) { this._xdtoPackageEditorProvider = v; }
   set formEditorProvider(v: FormEditorProvider | null) { this._formEditorProvider = v; }
   set mxlPreviewProvider(v: MxlPreviewProvider | null) { this._mxlPreviewProvider = v; }
   set metadataWatchers(v: MetadataWatcherService[]) { this._metadataWatchers = v; }
@@ -122,6 +126,8 @@ export class ExtensionState {
     this._filterCriterionCompositionEditorProvider = null;
     this._subsystemCommandInterfaceProvider?.dispose();
     this._subsystemCommandInterfaceProvider = null;
+    this._xdtoPackageEditorProvider?.dispose();
+    this._xdtoPackageEditorProvider = null;
     this._infobaseTreeProvider = null;
     this._infobaseTreeView = null;
     this._refreshBindingTreeDecorations = null;

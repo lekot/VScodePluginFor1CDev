@@ -5,6 +5,7 @@ const sources = [
   'src/rolesEditor/rolesEditorWebview.html',
   'src/compositionEditor/compositionWebview.html',
   'src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceWebview.html',
+  'src/xdtoPackageEditor/xdtoPackageWebview.html',
 ];
 
 const outDirs = ['dist', 'out/src'];

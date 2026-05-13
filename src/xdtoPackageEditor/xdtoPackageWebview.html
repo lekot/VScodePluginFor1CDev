@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XDTO Package</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --border: var(--vscode-panel-border, #3c3c3c);
+      --muted: var(--vscode-descriptionForeground, #888);
+      --button: var(--vscode-button-background, #0e639c);
+      --button-fg: var(--vscode-button-foreground, #fff);
+      --danger: var(--vscode-errorForeground, #f48771);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .path {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      word-break: break-all;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    button {
+      border: 1px solid var(--border);
+      color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+      background: var(--vscode-button-secondaryBackground, transparent);
+      padding: 6px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button.primary {
+      color: var(--button-fg);
+      background: var(--button);
+      border-color: var(--button);
+    }
+    button.active {
+      outline: 1px solid var(--vscode-focusBorder, #007fd4);
+    }
+    .status {
+      min-height: 18px;
+      color: var(--muted);
+    }
+    .status.error { color: var(--danger); }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .stat {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+    }
+    .stat strong {
+      display: block;
+      font-size: 20px;
+      margin-bottom: 2px;
+    }
+    section { display: none; }
+    section.active { display: block; }
+    h2 {
+      font-size: 14px;
+      margin: 18px 0 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 10px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 6px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; }
+    .empty { color: var(--muted); font-style: italic; }
+    .diagnostics {
+      margin: 0 0 12px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .diagnostics.error { border-color: var(--danger); color: var(--danger); }
+    textarea {
+      width: 100%;
+      min-height: calc(100vh - 190px);
+      resize: vertical;
+      padding: 10px;
+      border: 1px solid var(--border);
+      background: var(--vscode-editor-background);
+      color: var(--vscode-editor-foreground);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--vscode-editor-font-size, 13px);
+      line-height: 1.4;
+      white-space: pre;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="title">XDTO Package</h1>
+      <div class="path" id="schema-path"></div>
+    </div>
+    <button class="primary" id="save-button">Сохранить</button>
+  </header>
+  <div class="toolbar">
+    <button id="summary-tab" class="active">Структура</button>
+    <button id="source-tab">Исходник</button>
+    <span id="status" class="status"></span>
+  </div>
+  <section id="summary-section" class="active">
+    <div id="diagnostics"></div>
+    <div class="stats">
+      <div class="stat"><strong id="value-count">0</strong><span>Типы значений</span></div>
+      <div class="stat"><strong id="object-count">0</strong><span>Объектные типы</span></div>
+      <div class="stat"><strong id="root-count">0</strong><span>Корневые свойства</span></div>
+      <div class="stat"><strong id="import-count">0</strong><span>Импорты</span></div>
+    </div>
+    <h2>Типы значений</h2>
+    <div id="value-types"></div>
+    <h2>Объектные типы</h2>
+    <div id="object-types"></div>
+    <h2>Корневые свойства</h2>
+    <div id="root-properties"></div>
+  </section>
+  <section id="source-section">
+    <textarea id="source" spellcheck="false"></textarea>
+  </section>
+  <script>
+    const vscode = acquireVsCodeApi();
+    // __XDTO_DATA_PLACEHOLDER__
+
+    const data = window.__xdtoData;
+    let model = data.model;
+
+    const title = document.getElementById('title');
+    const schemaPath = document.getElementById('schema-path');
+    const source = document.getElementById('source');
+    const status = document.getElementById('status');
+    const saveButton = document.getElementById('save-button');
+    const summaryTab = document.getElementById('summary-tab');
+    const sourceTab = document.getElementById('source-tab');
+    const summarySection = document.getElementById('summary-section');
+    const sourceSection = document.getElementById('source-section');
+
+    title.textContent = `${data.strings.title}: ${data.packageName}`;
+    schemaPath.textContent = data.schemaPath;
+    source.value = data.source;
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      })[ch]);
+    }
+
+    function setTab(name) {
+      const summary = name === 'summary';
+      summaryTab.classList.toggle('active', summary);
+      sourceTab.classList.toggle('active', !summary);
+      summarySection.classList.toggle('active', summary);
+      sourceSection.classList.toggle('active', !summary);
+    }
+
+    function table(headers, rows) {
+      if (rows.length === 0) {
+        return '<div class="empty">Нет данных</div>';
+      }
+      const head = `<tr>${headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr>`;
+      const body = rows.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`).join('');
+      return `<table>${head}${body}</table>`;
+    }
+
+    function renderDiagnostics() {
+      const host = document.getElementById('diagnostics');
+      const diagnostics = model.diagnostics || [];
+      if (diagnostics.length === 0) {
+        host.innerHTML = '';
+        return;
+      }
+      const hasError = diagnostics.some((d) => d.severity === 'error');
+      host.innerHTML = `<div class="diagnostics ${hasError ? 'error' : ''}">` +
+        diagnostics.map((d) => `${esc(d.severity)}: ${esc(d.message)}`).join('<br>') +
+        '</div>';
+    }
+
+    function renderModel() {
+      document.getElementById('value-count').textContent = String((model.valueTypes || []).length);
+      document.getElementById('object-count').textContent = String((model.objectTypes || []).length);
+      document.getElementById('root-count').textContent = String((model.rootProperties || []).length);
+      document.getElementById('import-count').textContent = String((model.imports || []).length);
+
+      document.getElementById('value-types').innerHTML = table(
+        ['Имя', 'Базовый тип'],
+        (model.valueTypes || []).map((t) => [t.name, t.baseType || ''])
+      );
+      document.getElementById('object-types').innerHTML = table(
+        ['Имя', 'Базовый тип', 'Свойства', 'Атрибуты'],
+        (model.objectTypes || []).map((t) => [
+          t.name,
+          t.baseType || '',
+          (t.properties || []).map((p) => `${p.name}${p.type ? ': ' + p.type : ''}`).join(', '),
+          (t.attributes || []).map((p) => `${p.name}${p.type ? ': ' + p.type : ''}`).join(', ')
+        ])
+      );
+      document.getElementById('root-properties').innerHTML = table(
+        ['Имя', 'Тип'],
+        (model.rootProperties || []).map((p) => [p.name, p.type || ''])
+      );
+      renderDiagnostics();
+    }
+
+    summaryTab.addEventListener('click', () => setTab('summary'));
+    sourceTab.addEventListener('click', () => setTab('source'));
+    saveButton.addEventListener('click', () => {
+      status.className = 'status';
+      status.textContent = 'Сохранение...';
+      vscode.postMessage({ type: 'save', source: source.value });
+    });
+
+    window.addEventListener('message', (event) => {
+      const message = event.data || {};
+      if (message.type === 'saveSuccess') {
+        model = message.model || model;
+        renderModel();
+        status.className = 'status';
+        status.textContent = data.strings.saved;
+      } else if (message.type === 'saveError') {
+        status.className = 'status error';
+        status.textContent = message.message || 'Не удалось сохранить Package.xdto';
+      }
+    });
+
+    renderModel();
+  </script>
+</body>
+</html>

@@ -482,6 +482,29 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const editXdtoPackageSchemaCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.editXdtoPackageSchema',
+    async (node?: TreeNode) => {
+      const target = getSelectedNode(state, node);
+      if (!target || target.type !== MetadataType.XDTOPackage) {
+        vscode.window.showWarningMessage('Выберите узел XDTO-пакета в дереве метаданных.');
+        return;
+      }
+      if (!target.filePath || !state.xdtoPackageEditorProvider) {
+        vscode.window.showErrorMessage('CDT 41: не удалось открыть редактор XDTO-пакета.');
+        return;
+      }
+      try {
+        await state.xdtoPackageEditorProvider.show(target);
+      } catch (err) {
+        Logger.error('Failed to open XDTO package editor', err);
+        vscode.window.showErrorMessage(
+          `CDT 41: ошибка открытия редактора XDTO-пакета: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  );
+
   const viewCotPredefinedCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.viewChartOfCharacteristicTypesPredefined',
     async (node?: TreeNode) => {
@@ -575,6 +598,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     editFunctionalOptionContentCommand,
     editFilterCriterionContentCommand,
     editSubsystemCommandInterfaceCommand,
+    editXdtoPackageSchemaCommand,
     viewCotPredefinedCommand,
     startDebuggingCommand,
   ];
