@@ -8,6 +8,7 @@ export const coreSuiteFiles: string[] = [
   'suite/formXmlWriter.test.js',
   'suite/metadataParser.test.js',
   'suite/metadataParser.edge.test.js',
+  'suite/typeContentsCache.test.js',
   'suite/metadataDefaultValues.test.js',
   'suite/metadataFileLocator.test.js',
   'suite/metadataTypeMapper.test.js',
