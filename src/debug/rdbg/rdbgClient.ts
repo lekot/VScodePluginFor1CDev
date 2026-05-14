@@ -16,6 +16,7 @@ import {
     RdbgBreakpoint,
     RdbgCallStackItem,
     RdbgVariable,
+    RdbgEvalOptions,
     RdbgEvalResult,
     RdbgExceptionBreakpointState,
     ViewInterface,
@@ -33,6 +34,14 @@ import {
     RdbgBreakpointCorrectedEvent,
     RdbgExpressionEvaluatedEvent,
 } from './rdbgEvents';
+
+function describeExpressionPath(path: SourceCalcItem[]): string {
+    const firstExpression = path.find((item) => item.type === 'expression');
+    if (!firstExpression || firstExpression.type !== 'expression') {
+        return '<path>';
+    }
+    return firstExpression.expression.replace(/\s+/g, ' ').slice(0, 80);
+}
 
 // ---------------------------------------------------------------------------
 // State machine type
@@ -301,14 +310,19 @@ export class RdbgClient extends EventEmitter {
         targetId: string,
         frameLevel: number,
         path: SourceCalcItem[],
-        view: ViewInterface
+        view: ViewInterface,
+        options?: RdbgEvalOptions
     ): Promise<DecodedEvalResult> {
         this.requireAttached('evalExpressionPath');
         const body = codec.encodeEvalExpressionPath(
-            this.debugUiId, targetId, frameLevel, path, view, this._infobaseAlias
+            this.debugUiId, targetId, frameLevel, path, view, this._infobaseAlias, options
         );
-        this.emit('log', `[evalExpressionPath] path=${path.length} view=${view} target=${targetId} frame=${frameLevel}`);
+        const started = Date.now();
+        const wait = options?.calcWaitingTimeMs ?? 5000;
+        const expressionLabel = describeExpressionPath(path);
+        this.emit('log', `[evalExpressionPath] purpose=${options?.purpose ?? 'unknown'} wait=${wait} path=${path.length} expr=${expressionLabel} view=${view} target=${targetId} frame=${frameLevel}`);
         const xml = await this.transport.send('evalExpr', body);
+        this.emit('log', `[evalExpressionPath] purpose=${options?.purpose ?? 'unknown'} duration=${Date.now() - started}ms path=${path.length} expr=${expressionLabel}`);
         return codec.decodeEvalResultExpanded(xml);
     }
 
@@ -330,14 +344,16 @@ export class RdbgClient extends EventEmitter {
     async evaluate(
         targetId: string,
         expression: string,
-        frameIndex: number
+        frameIndex: number,
+        options?: RdbgEvalOptions
     ): Promise<RdbgEvalResult> {
         this.requireAttached('evaluate');
         const result = await this.evalExpressionPath(
             targetId,
             frameIndex,
             [{ type: 'expression', expression }],
-            'context'
+            'context',
+            options
         );
         return result.root;
     }

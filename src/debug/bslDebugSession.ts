@@ -22,11 +22,16 @@ import {
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { RdbgClient } from './rdbg/rdbgClient';
 import { RdbgTransport } from './rdbg/rdbgTransport';
-import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode, RdbgEvalResult } from './rdbg/rdbgTypes';
+import { RdbgRuntimeError, RdbgBreakpointRequest, RdbgCallStackItem, RdbgModuleId, RdbgExceptionBreakpointState, RdbgExceptionFilterItem, ViewInterface, SourceCalcItem, RdbgVariableNode, RdbgEvalResult, RdbgEvalOptions } from './rdbg/rdbgTypes';
 import { ReferencesTable } from './referencesTable';
 import { BslAttachConfiguration, BslLaunchConfiguration } from './types';
 import { DebuggeeLauncher, getFreePort } from './debuggeeLauncher';
 import { resolveModuleId, resolveBslPathFromRdbgModule, readExtensionName, ResolverConfigRoot } from './moduleIdResolver';
+import { BslLocalCandidate, extractLocalCandidatesFromBsl } from './bslSourceLocals';
+
+const FAST_EVALUATE_WAIT_MS = 500;
+const FULL_EVALUATE_WAIT_MS = 5000;
+const UNEVALUATED_LOCAL_VALUE = 'не вычислено';
 
 // ---------------------------------------------------------------------------
 // BpWorkspaceEntry — internal state for one BSL module's breakpoints.
@@ -44,6 +49,8 @@ interface BpWorkspaceEntry {
 interface FrameRef {
     threadId: number;
     frameLevel: number;
+    sourcePath?: string;
+    sourceLine?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +61,8 @@ export interface VariableRef {
     frameLevel: number;
     path: SourceCalcItem[];
     view: ViewInterface;
+    sourcePath?: string;
+    sourceLine?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +111,14 @@ export function buildDapVariables(
             node.value,
             variablesReference
         ) as DebugProtocol.Variable;
+    });
+}
+
+function buildSourceLocalVariables(candidates: BslLocalCandidate[]): DebugProtocol.Variable[] {
+    return candidates.map((candidate) => {
+        const variable = new Variable(candidate.name, UNEVALUATED_LOCAL_VALUE, 0) as DebugProtocol.Variable;
+        variable.evaluateName = candidate.name;
+        return variable;
     });
 }
 
@@ -862,6 +879,8 @@ export class BslDebugSession extends DebugSession {
             frameLevel: frameRef.frameLevel,
             path: [],
             view: 'context',
+            sourcePath: frameRef.sourcePath,
+            sourceLine: frameRef.sourceLine,
         });
         const scope = new Scope('Локальные', varRef, false);
         response.body = { scopes: [scope] };
@@ -899,6 +918,13 @@ export class BslDebugSession extends DebugSession {
 
         try {
             let children: RdbgVariableNode[];
+            if (state.path.length === 0 && state.sourcePath && state.sourceLine !== undefined) {
+                const source = await fs.promises.readFile(state.sourcePath, 'utf8');
+                const candidates = extractLocalCandidatesFromBsl(source, state.sourceLine);
+                response.body = { variables: buildSourceLocalVariables(candidates) };
+                this.sendResponse(response);
+                return;
+            }
             if (state.path.length === 0 && this._isWebServer) {
                 // ibsrv crashes on evalLocalVariables — skip locals enumeration.
                 // Individual expressions work via evaluateRequest (evalExpr).
@@ -969,7 +995,12 @@ export class BslDebugSession extends DebugSession {
             let result: RdbgEvalResult | undefined =
                 watchCacheKey !== undefined ? this._watchEvaluateCache.get(watchCacheKey) : undefined;
             if (result === undefined) {
-                result = await this._client.evaluate(targetId, args.expression, frameLevel);
+                result = await this._client.evaluate(
+                    targetId,
+                    args.expression,
+                    frameLevel,
+                    this._evaluateOptionsForContext(args.context)
+                );
                 if (watchCacheKey !== undefined && !result.error) {
                     this._watchEvaluateCache.set(watchCacheKey, result);
                 }
@@ -992,6 +1023,15 @@ export class BslDebugSession extends DebugSession {
         }
 
         this.sendResponse(response);
+    }
+
+    private _evaluateOptionsForContext(context: DebugProtocol.EvaluateArguments['context']): RdbgEvalOptions {
+        const purpose = context ?? 'repl';
+        const calcWaitingTimeMs =
+            purpose === 'watch' || purpose === 'hover'
+                ? FAST_EVALUATE_WAIT_MS
+                : FULL_EVALUATE_WAIT_MS;
+        return { purpose, calcWaitingTimeMs };
     }
 
     // -------------------------------------------------------------------------
@@ -1155,7 +1195,12 @@ export class BslDebugSession extends DebugSession {
                 ? new Source(sourceName, resolvedPath)
                 : new Source(label);
             // Phase 4: use ReferencesTable for frameId (1-based, monotonic, thread-aware)
-            const frameId = this._frameRefs.add({ threadId, frameLevel: index });
+            const frameId = this._frameRefs.add({
+                threadId,
+                frameLevel: index,
+                sourcePath: resolvedPath,
+                sourceLine: item.lineNo,
+            });
             out.push(new StackFrame(frameId, label, source, item.lineNo));
         }
         return out;
