@@ -510,7 +510,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
   });
 
-  test('getChildren for a lazy type folder stops remaining background type warmup', async () => {
+  test('getChildren for a lazy type folder pauses then resumes background type warmup', async () => {
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     const parseCalls: string[] = [];
     let releaseWarmupCatalogs!: () => void;
@@ -560,7 +560,10 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       releaseWarmupCatalogs();
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
 
-      assert.ok(!parseCalls.includes('Documents'), 'foreground lazy load must stop remaining warmup items');
+      assert.ok(!parseCalls.includes('Documents'), 'foreground lazy load must pause remaining warmup items immediately');
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+      assert.ok(parseCalls.includes('Documents'), 'background warmup must resume after foreground lazy load settles');
     } finally {
       releaseWarmupCatalogs?.();
       MetadataParser.parseTypeContents = originalParseTypeContents;
