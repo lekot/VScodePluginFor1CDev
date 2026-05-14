@@ -178,6 +178,34 @@ export class EdtParser {
   }
 
   /**
+   * Build only direct object nodes for a metadata type without parsing .mdo/XML.
+   * Per-object details are loaded later through loadChildrenForElement.
+   */
+  static async parseTypeIndex(configPath: string, typeName: string): Promise<TreeNode[]> {
+    const typePath = path.join(configPath, 'src', typeName);
+    const metadataType = MetadataTypeMapper.map(typeName);
+
+    if (typeName === 'Subsystems') {
+      const typeNode = await this.parseMetadataType(typePath, typeName, { shallow: true });
+      return typeNode.children || [];
+    }
+
+    const entries = await fs.promises.readdir(typePath, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b, 'ru', { sensitivity: 'base' }))
+      .map((name) => ({
+        id: `${typeName}.${name}`,
+        name,
+        type: metadataType,
+        properties: { type: typeName, _lazy: true },
+        children: [],
+        filePath: path.join(typePath, name),
+      }));
+  }
+
+  /**
    * Load direct children (Attributes, TabularSections from .mdo; Forms, Ext from filesystem) for a metadata element.
    * For Subsystems, child subsystems are already in the tree; path is derived from element.filePath when provided.
    */

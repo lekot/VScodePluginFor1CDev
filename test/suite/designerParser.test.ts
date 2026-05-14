@@ -1,7 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { DesignerParser } from '../../src/parsers/designerParser';
+import { XmlParser } from '../../src/parsers/xmlParser';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import {
   ensureTabularSectionColumnsPlaceholder,
@@ -180,6 +182,32 @@ suite('DesignerParser', () => {
     assert.ok(names.includes('Справочник55'), 'flat xml Справочник55.xml');
     assert.ok(names.includes('СтарееСтарых'), 'flat xml СтарееСтарых.xml');
     assert.ok(names.includes('табатаба'), 'flat xml табатаба.xml');
+  });
+
+  test('parseTypeIndex lists flat and directory objects without parsing object XML', async () => {
+    const configPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-type-index-'));
+    const catalogsPath = path.join(configPath, 'Catalogs');
+    const originalParseFileAsync = XmlParser.parseFileAsync;
+    await fs.promises.mkdir(path.join(catalogsPath, 'FolderCatalog'), { recursive: true });
+    await fs.promises.writeFile(path.join(catalogsPath, 'FolderCatalog.xml'), '<MetaDataObject/>', 'utf-8');
+    await fs.promises.writeFile(path.join(catalogsPath, 'FlatCatalog.xml'), '<broken>', 'utf-8');
+    await fs.promises.writeFile(path.join(catalogsPath, 'readme.txt'), 'skip', 'utf-8');
+
+    try {
+      (XmlParser.parseFileAsync as unknown as typeof XmlParser.parseFileAsync) = async () => {
+        throw new Error('parseTypeIndex must not parse object XML');
+      };
+
+      const children = await (DesignerParser as any).parseTypeIndex(configPath, 'Catalogs') as TreeNode[];
+      const names = children.map((c) => c.name);
+
+      assert.deepStrictEqual(names, ['FlatCatalog', 'FolderCatalog']);
+      assert.ok(children.every((c) => c.properties._lazy === true));
+      assert.ok(children.every((c) => c.children?.length === 0));
+    } finally {
+      XmlParser.parseFileAsync = originalParseFileAsync;
+      await fs.promises.rm(configPath, { recursive: true, force: true });
+    }
   });
 
   test('should parse extensions_samples if present (configuration extension with Ext)', async function () {

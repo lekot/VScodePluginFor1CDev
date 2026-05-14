@@ -222,7 +222,7 @@ export async function getReferenceableObjectsForTypeEditor(
     const settled = await Promise.all(
       loadTasks.map(async ({ typeNode, configPath, format }) => {
         try {
-          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id, { format });
+          const children = await MetadataParser.parseTypeIndex(configPath, typeNode.id, { format });
           return { typeNode, children };
         } catch (e) {
           Logger.warn('Failed to eager load referenceable type contents for type editor', {

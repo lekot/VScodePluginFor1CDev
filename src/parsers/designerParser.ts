@@ -193,6 +193,50 @@ export class DesignerParser {
   }
 
   /**
+   * Build only direct object nodes for a metadata type without parsing object XML.
+   * This is used by tree warmup and first type-folder expansion where the UI needs
+   * a fast object list; per-object details stay lazy.
+   */
+  static async parseTypeIndex(configPath: string, typeName: string): Promise<TreeNode[]> {
+    const typePath = path.join(configPath, typeName);
+    const metadataType = MetadataTypeMapper.map(typeName);
+
+    if (typeName === 'Subsystems') {
+      const typeNode = await this.parseMetadataType(typePath, typeName, { shallow: true });
+      return typeNode.children || [];
+    }
+
+    const entries = await fs.promises.readdir(typePath, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+    const directoryNames = new Set<string>();
+    const flatXmlNames = new Set<string>();
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        directoryNames.add(entry.name);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.xml')) {
+        flatXmlNames.add(path.basename(entry.name, path.extname(entry.name)));
+      }
+    }
+
+    const names = new Set<string>([...directoryNames, ...flatXmlNames]);
+    return Array.from(names)
+      .sort((a, b) => a.localeCompare(b, 'ru', { sensitivity: 'base' }))
+      .map((name) => {
+        const flatXmlPath = path.join(typePath, `${name}.xml`);
+        const directoryPath = path.join(typePath, name);
+        const filePath = flatXmlNames.has(name) ? flatXmlPath : directoryPath;
+        return {
+          id: `${typeName}.${name}`,
+          name,
+          type: metadataType,
+          properties: { type: typeName, _lazy: true },
+          children: [],
+          filePath,
+        };
+      });
+  }
+
+  /**
    * Load direct children (Attributes, Forms, Ext, TabularSections) for a metadata element.
    * For Subsystems, child subsystems are already in the tree; path is derived from element.filePath when provided.
    */

@@ -351,7 +351,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
         Logger.info('Eager loading type for subsystem filter', { folder });
         try {
-          const children = await MetadataParser.parseTypeContents(ctx.configPath, folder, { format: ctx.format });
+          const children = await MetadataParser.parseTypeIndex(ctx.configPath, folder, { format: ctx.format });
           for (const c of children) {
             c.parent = typeNode;
             this.cache.buildCache(c);
@@ -569,7 +569,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (!this.isLazyTypeNode(typeFolder)) { continue; }
 
       try {
-        const children = await MetadataParser.parseTypeContents(ctx.configPath, typeFolder.id, { format: ctx.format });
+        const children = await MetadataParser.parseTypeIndex(ctx.configPath, typeFolder.id, { format: ctx.format });
         for (const c of children) {
           c.parent = typeFolder;
           this.cache.buildCache(c);
@@ -651,7 +651,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           continue;
         }
         const startedAt = Date.now();
-        await MetadataParser.parseTypeContents(ctx.configPath, typeFolder.id, { format: ctx.format });
+        await MetadataParser.parseTypeIndex(ctx.configPath, typeFolder.id, { format: ctx.format });
         const durationMs = Date.now() - startedAt;
         if (durationMs >= 1000) {
           Logger.info('Type contents cache warmup item completed', { typeName: typeFolder.id, durationMs });
@@ -865,7 +865,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         this.cancelTypeContentsCacheWarmup();
-        return MetadataParser.parseTypeContents(ctx.configPath, activeElement.id, { format: ctx.format }).then((children) => {
+        return MetadataParser.parseTypeIndex(ctx.configPath, activeElement.id, { format: ctx.format }).then((children) => {
           for (const c of children) {
             c.parent = activeElement;
             this.cache.buildCache(c);
