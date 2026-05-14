@@ -44,6 +44,7 @@ const R6_OBJECT_TYPES = new Set<MetadataType>([
  */
 export class MetadataParser {
   private static typeContentsCacheStoragePath: string | null = null;
+  private static readonly inFlightTypeContents = new Map<string, Promise<TreeNode[]>>();
 
   static setTypeContentsCacheStoragePath(storagePath: string | null): void {
     this.typeContentsCacheStoragePath = storagePath && storagePath.trim() ? storagePath : null;
@@ -71,6 +72,14 @@ export class MetadataParser {
       return path.join(configPath, 'src', typeName);
     }
     return null;
+  }
+
+  private static getTypeContentsInFlightKey(
+    configPath: string,
+    typeName: string,
+    format: ConfigFormat
+  ): string {
+    return `${format}:${path.normalize(configPath).toLowerCase()}:${typeName}`;
   }
 
   private static async parseTypeContentsUncached(
@@ -118,9 +127,36 @@ export class MetadataParser {
     options?: { format?: ConfigFormat; bypassCache?: boolean }
   ): Promise<TreeNode[]> {
     const format = options?.format ?? await FormatDetector.detect(configPath);
+    if (options?.bypassCache === true) {
+      return await this.parseTypeContentsUncached(configPath, typeName, format);
+    }
+
+    const inFlightKey = this.getTypeContentsInFlightKey(configPath, typeName, format);
+    const existing = this.inFlightTypeContents.get(inFlightKey);
+    if (existing) {
+      return await existing;
+    }
+
+    const pending = (async () => {
+      return await this.parseTypeContentsWithCache(configPath, typeName, format);
+    })().finally(() => {
+      if (this.inFlightTypeContents.get(inFlightKey) === pending) {
+        this.inFlightTypeContents.delete(inFlightKey);
+      }
+    });
+
+    this.inFlightTypeContents.set(inFlightKey, pending);
+    return await pending;
+  }
+
+  private static async parseTypeContentsWithCache(
+    configPath: string,
+    typeName: string,
+    format: ConfigFormat
+  ): Promise<TreeNode[]> {
     const typePath = this.getTypePath(configPath, typeName, format);
     const storagePath = this.typeContentsCacheStoragePath;
-    if (!typePath || options?.bypassCache === true || !storagePath) {
+    if (!typePath || !storagePath) {
       return await this.parseTypeContentsUncached(configPath, typeName, format);
     }
 

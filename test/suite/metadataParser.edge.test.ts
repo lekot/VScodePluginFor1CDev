@@ -107,6 +107,51 @@ suite('MetadataParser edge branches', () => {
     }
   });
 
+  test('parseTypeContents joins concurrent requests for the same type folder', async () => {
+    const configPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-type-cache-inflight-cfg-'));
+    const storagePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-type-cache-inflight-store-'));
+    await fs.promises.mkdir(path.join(configPath, 'Catalogs'), { recursive: true });
+    await fs.promises.writeFile(path.join(configPath, 'Catalogs', 'Goods.xml'), '<MetaDataObject/>', 'utf-8');
+
+    const originalDetect = FormatDetector.detect;
+    const originalDesigner = DesignerParser.parseTypeContents;
+    let parseCount = 0;
+    let releaseParse!: () => void;
+    const parseBarrier = new Promise<void>((resolve) => {
+      releaseParse = resolve;
+    });
+    try {
+      MetadataParser.setTypeContentsCacheStoragePath(storagePath);
+      (FormatDetector.detect as unknown as (p: string) => Promise<ConfigFormat>) = async () => ConfigFormat.Designer;
+      (DesignerParser.parseTypeContents as unknown as (a: string, b: string) => Promise<TreeNode[]>) = async () => {
+        parseCount += 1;
+        await parseBarrier;
+        return [{ id: 'Catalogs.Goods', name: 'Goods', type: MetadataType.Catalog, properties: {} }];
+      };
+
+      const first = MetadataParser.parseTypeContents(configPath, 'Catalogs');
+      while (parseCount === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      const second = MetadataParser.parseTypeContents(configPath, 'Catalogs');
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      releaseParse();
+
+      const [firstChildren, secondChildren] = await Promise.all([first, second]);
+
+      assert.strictEqual(firstChildren[0].id, 'Catalogs.Goods');
+      assert.strictEqual(secondChildren[0].id, 'Catalogs.Goods');
+      assert.strictEqual(parseCount, 1, 'concurrent callers must share one parse operation');
+    } finally {
+      releaseParse?.();
+      MetadataParser.setTypeContentsCacheStoragePath(null);
+      (FormatDetector.detect as unknown as typeof FormatDetector.detect) = originalDetect;
+      (DesignerParser.parseTypeContents as unknown as typeof DesignerParser.parseTypeContents) = originalDesigner;
+      await fs.promises.rm(configPath, { recursive: true, force: true });
+      await fs.promises.rm(storagePath, { recursive: true, force: true });
+    }
+  });
+
   test('loadElementChildren covers R6 placeholder branch and generic branch', async () => {
     const originalDesignerLoad = DesignerParser.loadChildrenForElement;
     const originalEdtLoad = EdtParser.loadChildrenForElement;

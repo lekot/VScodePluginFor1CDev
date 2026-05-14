@@ -510,6 +510,63 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
   });
 
+  test('getChildren for a lazy type folder stops remaining background type warmup', async () => {
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    const parseCalls: string[] = [];
+    let releaseWarmupCatalogs!: () => void;
+    const warmupCatalogsBarrier = new Promise<void>((resolve) => {
+      releaseWarmupCatalogs = resolve;
+    });
+
+    let catalogsCalls = 0;
+    (MetadataParser as any).parseTypeContents = async (_configPath: string, typeName: string) => {
+      parseCalls.push(typeName);
+      if (typeName === 'Catalogs') {
+        catalogsCalls += 1;
+        if (catalogsCalls === 1) {
+          await warmupCatalogsBarrier;
+        }
+        return [{ id: 'Catalogs.Goods', name: 'Goods', type: MetadataType.Catalog, properties: {} }];
+      }
+      return [{ id: `${typeName}.Item`, name: 'Item', type: MetadataType.Document, properties: {} }];
+    };
+
+    try {
+      const cfgPath = path.join('C:', 'cfg');
+      const root: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join(cfgPath, 'Configuration.xml'),
+        children: [
+          { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+          { id: 'Documents', name: 'Documents', type: MetadataType.Document, properties: {}, children: [] },
+        ],
+      };
+      for (const child of root.children!) {
+        child.parent = root;
+      }
+      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+      provider.startTypeContentsCacheWarmup(0);
+
+      while (!parseCalls.includes('Catalogs')) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+
+      const foregroundChildren = await provider.getChildren(root.children![0]);
+      assert.deepStrictEqual(foregroundChildren.map((n) => n.name), ['Goods']);
+
+      releaseWarmupCatalogs();
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+      assert.ok(!parseCalls.includes('Documents'), 'foreground lazy load must stop remaining warmup items');
+    } finally {
+      releaseWarmupCatalogs?.();
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
+  });
+
   test('setRootNodes resolves stale ref in correct root when multi-root branches are identical', async () => {
     const makeFormsBranch = (formName: string): { root: TreeNode; forms: TreeNode } => {
       const forms: TreeNode = {

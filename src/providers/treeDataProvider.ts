@@ -591,6 +591,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }, delayMs);
   }
 
+  private stopTypeContentsCacheWarmup(): void {
+    this.typeContentsWarmupGeneration++;
+  }
+
   private collectWarmupTypeFolders(root: TreeNode): TreeNode[] {
     const folders: TreeNode[] = [];
     for (const child of root.children ?? []) {
@@ -842,6 +846,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
       // Lazy load: type node with no children yet
       if (this.isLazyTypeNode(activeElement)) {
+        this.stopTypeContentsCacheWarmup();
         const configRoot = this.cache.getConfigurationRoot(activeElement);
         const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
         if (!ctx) {return Promise.resolve([]);}
