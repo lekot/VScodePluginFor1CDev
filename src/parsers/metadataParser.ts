@@ -45,6 +45,7 @@ const R6_OBJECT_TYPES = new Set<MetadataType>([
 export class MetadataParser {
   private static typeContentsCacheStoragePath: string | null = null;
   private static readonly inFlightTypeContents = new Map<string, Promise<TreeNode[]>>();
+  private static readonly inFlightTypeIndex = new Map<string, Promise<TreeNode[]>>();
 
   static setTypeContentsCacheStoragePath(storagePath: string | null): void {
     this.typeContentsCacheStoragePath = storagePath && storagePath.trim() ? storagePath : null;
@@ -94,6 +95,40 @@ export class MetadataParser {
       return await EdtParser.parseTypeContents(configPath, typeName);
     }
     return [];
+  }
+
+  private static async parseTypeIndexUncached(
+    configPath: string,
+    typeName: string,
+    format: ConfigFormat
+  ): Promise<TreeNode[]> {
+    if (format === ConfigFormat.Designer) {
+      return await DesignerParser.parseTypeIndex(configPath, typeName);
+    }
+    if (format === ConfigFormat.EDT) {
+      return await EdtParser.parseTypeIndex(configPath, typeName);
+    }
+    return [];
+  }
+
+  private static cloneTreeNode(node: TreeNode, parent?: TreeNode): TreeNode {
+    const clone: TreeNode = {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      properties: { ...node.properties },
+      filePath: node.filePath,
+      parentFilePath: node.parentFilePath,
+      parent,
+    };
+    if (node.children) {
+      clone.children = node.children.map((child) => this.cloneTreeNode(child, clone));
+    }
+    return clone;
+  }
+
+  private static cloneTreeNodes(nodes: readonly TreeNode[]): TreeNode[] {
+    return nodes.map((node) => this.cloneTreeNode(node));
   }
 
   /**
@@ -147,6 +182,32 @@ export class MetadataParser {
 
     this.inFlightTypeContents.set(inFlightKey, pending);
     return await pending;
+  }
+
+  /**
+   * Load only direct object nodes for a metadata type without parsing every object XML.
+   * This is the fast path for tree type-folder expansion and background warmup.
+   */
+  static async parseTypeIndex(
+    configPath: string,
+    typeName: string,
+    options?: { format?: ConfigFormat }
+  ): Promise<TreeNode[]> {
+    const format = options?.format ?? await FormatDetector.detect(configPath);
+    const inFlightKey = this.getTypeContentsInFlightKey(configPath, typeName, format);
+    const existing = this.inFlightTypeIndex.get(inFlightKey);
+    if (existing) {
+      return this.cloneTreeNodes(await existing);
+    }
+
+    const pending = this.parseTypeIndexUncached(configPath, typeName, format).finally(() => {
+      if (this.inFlightTypeIndex.get(inFlightKey) === pending) {
+        this.inFlightTypeIndex.delete(inFlightKey);
+      }
+    });
+
+    this.inFlightTypeIndex.set(inFlightKey, pending);
+    return this.cloneTreeNodes(await pending);
   }
 
   private static async parseTypeContentsWithCache(

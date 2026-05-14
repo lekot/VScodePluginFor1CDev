@@ -63,7 +63,7 @@ export function getObjectableObjects(rootNodes: readonly TreeNode[]): Objectable
 
 /**
  * Returns object-kind groups for the ObjectTypeEditor, ensuring that the underlying
- * metadata type nodes are loaded (parallel lazy load via MetadataParser.parseTypeContents).
+ * metadata type nodes are loaded (parallel lazy load via MetadataParser.parseTypeIndex).
  */
 export async function getObjectableObjectsForEditor(
   node: TreeNode | undefined,
@@ -110,7 +110,7 @@ export async function getObjectableObjectsForEditor(
     const settled = await Promise.all(
       loadTasks.map(async ({ typeNode, configPath, format }) => {
         try {
-          const children = await MetadataParser.parseTypeContents(configPath, typeNode.id, { format });
+          const children = await MetadataParser.parseTypeIndex(configPath, typeNode.id, { format });
           return { typeNode, children };
         } catch (e) {
           Logger.warn('Failed to eager load objectable type contents for object type editor', {

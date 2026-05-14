@@ -409,13 +409,17 @@ suite('MetadataTreeDataProvider Test Suite', () => {
   });
 
   test('getChildren resolves stale lazy type node against reloaded root context', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     const parseCalls: Array<{ configPath: string; typeName: string }> = [];
-    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
       parseCalls.push({ configPath, typeName });
       return [
         { id: `${typeName}.Reloaded`, name: 'ReloadedCatalog', type: MetadataType.Catalog, properties: {} },
       ];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('lazy type expansion must use parseTypeIndex');
     };
 
     try {
@@ -449,20 +453,25 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
       const children = await provider.getChildren(staleCatalogsRef);
       assert.deepStrictEqual(children.map((n) => n.name), ['ReloadedCatalog']);
-      assert.strictEqual(parseCalls.length, 1, 'parseTypeContents should be called exactly once');
+      assert.strictEqual(parseCalls.length, 1, 'parseTypeIndex should be called exactly once');
       assert.strictEqual(parseCalls[0].typeName, 'Catalogs');
       assert.strictEqual(parseCalls[0].configPath, path.join('C:', 'cfgA'));
     } finally {
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
       MetadataParser.parseTypeContents = originalParseTypeContents;
     }
   });
 
   test('getChildren lazy-loads Roles under Общие using Configuration root load context', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     const parseCalls: Array<{ configPath: string; typeName: string }> = [];
-    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
       parseCalls.push({ configPath, typeName });
       return [{ id: 'Roles.R1', name: 'R1', type: MetadataType.Role, properties: {} }];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('lazy type expansion must use parseTypeIndex');
     };
 
     try {
@@ -506,11 +515,13 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       assert.strictEqual(parseCalls[0].configPath, cfgPath);
       assert.strictEqual(parseCalls[0].typeName, 'Roles');
     } finally {
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
       MetadataParser.parseTypeContents = originalParseTypeContents;
     }
   });
 
-  test('getChildren for a lazy type folder stops remaining background type warmup', async () => {
+  test('getChildren for a lazy type folder pauses then resumes background type warmup', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     const parseCalls: string[] = [];
     let releaseWarmupCatalogs!: () => void;
@@ -519,7 +530,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     });
 
     let catalogsCalls = 0;
-    (MetadataParser as any).parseTypeContents = async (_configPath: string, typeName: string) => {
+    (MetadataParser as any).parseTypeIndex = async (_configPath: string, typeName: string) => {
       parseCalls.push(typeName);
       if (typeName === 'Catalogs') {
         catalogsCalls += 1;
@@ -529,6 +540,9 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         return [{ id: 'Catalogs.Goods', name: 'Goods', type: MetadataType.Catalog, properties: {} }];
       }
       return [{ id: `${typeName}.Item`, name: 'Item', type: MetadataType.Document, properties: {} }];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('type warmup must use parseTypeIndex');
     };
 
     try {
@@ -560,9 +574,13 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       releaseWarmupCatalogs();
       await new Promise<void>((resolve) => setTimeout(resolve, 20));
 
-      assert.ok(!parseCalls.includes('Documents'), 'foreground lazy load must stop remaining warmup items');
+      assert.ok(!parseCalls.includes('Documents'), 'foreground lazy load must pause remaining warmup items immediately');
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+      assert.ok(parseCalls.includes('Documents'), 'background warmup must resume after foreground lazy load settles');
     } finally {
       releaseWarmupCatalogs?.();
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
       MetadataParser.parseTypeContents = originalParseTypeContents;
     }
   });
@@ -1053,10 +1071,11 @@ suite('MetadataTreeDataProvider Test Suite', () => {
   });
 
   test('getReferenceableObjectsForTypeEditor loads empty type children', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     const calls: Array<{ configPath: string; typeName: string }> = [];
 
-    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
       calls.push({ configPath, typeName });
       if (typeName === 'Documents') {
         const node: TreeNode = {
@@ -1079,6 +1098,9 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         return [node];
       }
       return [];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('type editor reference list must use parseTypeIndex');
     };
 
     try {
@@ -1115,18 +1137,20 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
       assert.ok(
         calls.some((c) => c.typeName === 'Documents'),
-        'parseTypeContents should be called for Documents when type node children are empty'
+        'parseTypeIndex should be called for Documents when type node children are empty'
       );
     } finally {
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
       MetadataParser.parseTypeContents = originalParseTypeContents;
     }
   });
 
   test('getReferenceableObjectsForTypeEditor caches result (no second parse pass)', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     let parseCalls = 0;
 
-    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
       parseCalls++;
       if (typeName === 'Documents') {
         return [
@@ -1140,6 +1164,9 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         ];
       }
       return [];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('type editor reference list must use parseTypeIndex');
     };
 
     try {
@@ -1162,7 +1189,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
       provider.setRootNode(rootNode);
       await provider.getReferenceableObjectsForTypeEditor();
-      assert.ok(parseCalls > 0, 'first call should hit parseTypeContents');
+      assert.ok(parseCalls > 0, 'first call should hit parseTypeIndex');
       const afterFirst = parseCalls;
       await provider.getReferenceableObjectsForTypeEditor();
       assert.strictEqual(
@@ -1171,15 +1198,107 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         'second call should use treeDataProvider cache and not parse again'
       );
     } finally {
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
+  });
+
+  test('getReferenceableObjectsForTypeEditor reuses type folders populated by warmup', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    let allowParse = true;
+    const calls: string[] = [];
+
+    (MetadataParser as any).parseTypeIndex = async (_configPath: string, typeName: string) => {
+      if (!allowParse) {
+        throw new Error('type editor must reuse warmed tree children instead of reparsing');
+      }
+      calls.push(typeName);
+      if (typeName === 'Catalogs') {
+        return [
+          {
+            id: 'Catalogs.Products',
+            name: 'Products',
+            type: MetadataType.Catalog,
+            properties: {},
+            children: [],
+          },
+        ];
+      }
+      if (typeName === 'Documents') {
+        return [
+          {
+            id: 'Documents.Orders',
+            name: 'Orders',
+            type: MetadataType.Document,
+            properties: {},
+            children: [],
+          },
+        ];
+      }
+      return [];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('type editor reference list must use parseTypeIndex');
+    };
+
+    try {
+      const catalogNode: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [],
+      };
+      const documentsNode: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: {},
+        children: [],
+      };
+      const rootNode: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'reps', 'myconfig', 'Configuration.xml'),
+        children: [catalogNode, documentsNode],
+      };
+      catalogNode.parent = rootNode;
+      documentsNode.parent = rootNode;
+
+      provider.setRootNode(rootNode, { configPath: path.join('C:', 'reps', 'myconfig'), format: ConfigFormat.Designer });
+      provider.startTypeContentsCacheWarmup(0);
+
+      for (let i = 0; i < 20 && calls.length < 2; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      assert.deepStrictEqual(calls.sort(), ['Catalogs', 'Documents']);
+
+      allowParse = false;
+      const result = await provider.getReferenceableObjectsForTypeEditor();
+
+      assert.deepStrictEqual(
+        result.find((g) => g.referenceKind === 'CatalogRef')?.objectNames,
+        ['Products']
+      );
+      assert.deepStrictEqual(
+        result.find((g) => g.referenceKind === 'DocumentRef')?.objectNames,
+        ['Orders']
+      );
+    } finally {
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
       MetadataParser.parseTypeContents = originalParseTypeContents;
     }
   });
 
   test('getReferenceableObjectsForTypeEditor restricts to current config root', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
     const originalParseTypeContents = MetadataParser.parseTypeContents;
     const calls: Array<{ configPath: string; typeName: string }> = [];
 
-    (MetadataParser as any).parseTypeContents = async (configPath: string, typeName: string) => {
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
       calls.push({ configPath, typeName });
       if (typeName === 'Documents') {
         return [
@@ -1193,6 +1312,9 @@ suite('MetadataTreeDataProvider Test Suite', () => {
         ];
       }
       return [];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('type editor reference list must use parseTypeIndex');
     };
 
     try {
@@ -1283,13 +1405,14 @@ suite('MetadataTreeDataProvider Test Suite', () => {
       assert.ok(docRef, 'DocumentRef group must exist');
       assert.deepStrictEqual(docRef!.objectNames, ['Orders'], 'Only Orders from config A should be included');
 
-      // parseTypeContents should be called only for config A's missing Documents.
+      // parseTypeIndex should be called only for config A's missing Documents.
       assert.deepStrictEqual(
         calls.map((c) => c.typeName),
         ['Documents'],
-        'parseTypeContents should be called only once for Documents in the current config root'
+        'parseTypeIndex should be called only once for Documents in the current config root'
       );
     } finally {
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
       MetadataParser.parseTypeContents = originalParseTypeContents;
     }
   });
