@@ -1203,6 +1203,96 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
   });
 
+  test('getReferenceableObjectsForTypeEditor reuses type folders populated by warmup', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const originalParseTypeContents = MetadataParser.parseTypeContents;
+    let allowParse = true;
+    const calls: string[] = [];
+
+    (MetadataParser as any).parseTypeIndex = async (_configPath: string, typeName: string) => {
+      if (!allowParse) {
+        throw new Error('type editor must reuse warmed tree children instead of reparsing');
+      }
+      calls.push(typeName);
+      if (typeName === 'Catalogs') {
+        return [
+          {
+            id: 'Catalogs.Products',
+            name: 'Products',
+            type: MetadataType.Catalog,
+            properties: {},
+            children: [],
+          },
+        ];
+      }
+      if (typeName === 'Documents') {
+        return [
+          {
+            id: 'Documents.Orders',
+            name: 'Orders',
+            type: MetadataType.Document,
+            properties: {},
+            children: [],
+          },
+        ];
+      }
+      return [];
+    };
+    (MetadataParser as any).parseTypeContents = async () => {
+      throw new Error('type editor reference list must use parseTypeIndex');
+    };
+
+    try {
+      const catalogNode: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [],
+      };
+      const documentsNode: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: {},
+        children: [],
+      };
+      const rootNode: TreeNode = {
+        id: 'root',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        filePath: path.join('C:', 'reps', 'myconfig', 'Configuration.xml'),
+        children: [catalogNode, documentsNode],
+      };
+      catalogNode.parent = rootNode;
+      documentsNode.parent = rootNode;
+
+      provider.setRootNode(rootNode, { configPath: path.join('C:', 'reps', 'myconfig'), format: ConfigFormat.Designer });
+      provider.startTypeContentsCacheWarmup(0);
+
+      for (let i = 0; i < 20 && calls.length < 2; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      assert.deepStrictEqual(calls.sort(), ['Catalogs', 'Documents']);
+
+      allowParse = false;
+      const result = await provider.getReferenceableObjectsForTypeEditor();
+
+      assert.deepStrictEqual(
+        result.find((g) => g.referenceKind === 'CatalogRef')?.objectNames,
+        ['Products']
+      );
+      assert.deepStrictEqual(
+        result.find((g) => g.referenceKind === 'DocumentRef')?.objectNames,
+        ['Orders']
+      );
+    } finally {
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+      MetadataParser.parseTypeContents = originalParseTypeContents;
+    }
+  });
+
   test('getReferenceableObjectsForTypeEditor restricts to current config root', async () => {
     const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
     const originalParseTypeContents = MetadataParser.parseTypeContents;

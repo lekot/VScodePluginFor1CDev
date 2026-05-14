@@ -351,12 +351,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
         Logger.info('Eager loading type for subsystem filter', { folder });
         try {
-          const children = await MetadataParser.parseTypeIndex(ctx.configPath, folder, { format: ctx.format });
-          for (const c of children) {
-            c.parent = typeNode;
-            this.cache.buildCache(c);
-          }
-          typeNode.children = children;
+          await this.populateTypeFolderIndex(typeNode, ctx);
         } catch (error) {
           Logger.warn('Failed to eager load type for subsystem filter', { folder, error });
         }
@@ -569,17 +564,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       if (!this.isLazyTypeNode(typeFolder)) { continue; }
 
       try {
-        const children = await MetadataParser.parseTypeIndex(ctx.configPath, typeFolder.id, { format: ctx.format });
-        for (const c of children) {
-          c.parent = typeFolder;
-          this.cache.buildCache(c);
-        }
-        typeFolder.children = children;
+        await this.populateTypeFolderIndex(typeFolder, ctx);
       } catch (error) {
         Logger.warn('Failed to eager load type folder', { folder: typeFolder.id, error });
       }
     }
-    this.clearTypeEditorReferenceableCache();
   }
 
   startTypeContentsCacheWarmup(delayMs = 1000): void {
@@ -651,7 +640,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           continue;
         }
         const startedAt = Date.now();
-        await MetadataParser.parseTypeIndex(ctx.configPath, typeFolder.id, { format: ctx.format });
+        await this.populateTypeFolderIndex(typeFolder, ctx);
         const durationMs = Date.now() - startedAt;
         if (durationMs >= 1000) {
           Logger.info('Type contents cache warmup item completed', { typeName: typeFolder.id, durationMs });
@@ -659,6 +648,25 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
+  }
+
+  private async populateTypeFolderIndex(
+    typeFolder: TreeNode,
+    ctx: { configPath: string; format: ConfigFormat }
+  ): Promise<TreeNode[]> {
+    if (typeFolder.children && typeFolder.children.length > 0) {
+      return typeFolder.children;
+    }
+
+    const children = await MetadataParser.parseTypeIndex(ctx.configPath, typeFolder.id, { format: ctx.format });
+    for (const c of children) {
+      c.parent = typeFolder;
+      this.cache.buildCache(c);
+      ensureR6PlaceholdersForInstanceNode(c, { configPath: ctx.configPath, format: ctx.format });
+    }
+    typeFolder.children = children;
+    this.clearTypeEditorReferenceableCache();
+    return children;
   }
 
   /**
@@ -865,15 +873,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         const ctx = configRoot ? this.cache.getLoadContext(configRoot.id) : undefined;
         if (!ctx) {return Promise.resolve([]);}
         this.cancelTypeContentsCacheWarmup();
-        return MetadataParser.parseTypeIndex(ctx.configPath, activeElement.id, { format: ctx.format }).then((children) => {
-          for (const c of children) {
-            c.parent = activeElement;
-            this.cache.buildCache(c);
-          }
-          activeElement.children = children;
-          for (const c of children) {
-            ensureR6PlaceholdersForInstanceNode(c, { configPath: ctx.configPath, format: ctx.format });
-          }
+        return this.populateTypeFolderIndex(activeElement, ctx).then((children) => {
           Logger.info('Tree cache size after lazy load', {
             type: activeElement.id,
             nodeCount: this.cache.size,
