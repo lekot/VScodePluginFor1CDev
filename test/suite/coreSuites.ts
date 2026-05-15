@@ -141,6 +141,7 @@ export const coreSuiteFiles: string[] = [
   'suite/rdbgXmlCodec.test.js',
   'suite/referencesTable.test.js',
   'suite/moduleIdResolver.test.js',
+  'suite/bslSourceLocals.test.js',
   'suite/bslDebugSessionWatchCache.test.js',
   'suite/rdbgClientVariables.test.js',
   'suite/bslDebugSessionBreakpoints.test.js',
