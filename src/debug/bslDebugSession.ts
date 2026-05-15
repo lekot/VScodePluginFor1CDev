@@ -31,6 +31,7 @@ import { BslLocalCandidate, extractLocalCandidatesFromBsl } from './bslSourceLoc
 
 const FAST_EVALUATE_WAIT_MS = 500;
 const FULL_EVALUATE_WAIT_MS = 5000;
+const MAX_SOURCE_LOCAL_EVALUATIONS = 12;
 const UNEVALUATED_LOCAL_VALUE = 'не вычислено';
 
 // ---------------------------------------------------------------------------
@@ -921,7 +922,9 @@ export class BslDebugSession extends DebugSession {
             if (state.path.length === 0 && state.sourcePath && state.sourceLine !== undefined) {
                 const source = await fs.promises.readFile(state.sourcePath, 'utf8');
                 const candidates = extractLocalCandidatesFromBsl(source, state.sourceLine);
-                response.body = { variables: buildSourceLocalVariables(candidates) };
+                response.body = {
+                    variables: await this._buildSourceLocalVariables(targetId, state.frameLevel, candidates),
+                };
                 this.sendResponse(response);
                 return;
             }
@@ -1032,6 +1035,36 @@ export class BslDebugSession extends DebugSession {
                 ? FAST_EVALUATE_WAIT_MS
                 : FULL_EVALUATE_WAIT_MS;
         return { purpose, calcWaitingTimeMs };
+    }
+
+    private async _buildSourceLocalVariables(
+        targetId: string,
+        frameLevel: number,
+        candidates: BslLocalCandidate[]
+    ): Promise<DebugProtocol.Variable[]> {
+        const variables = buildSourceLocalVariables(candidates);
+        if (!this._client) {
+            return variables;
+        }
+
+        for (let index = 0; index < Math.min(variables.length, MAX_SOURCE_LOCAL_EVALUATIONS); index += 1) {
+            const candidate = candidates[index];
+            const variable = variables[index];
+            try {
+                const result = await this._client.evaluate(targetId, candidate.name, frameLevel, {
+                    purpose: 'variables',
+                    calcWaitingTimeMs: FAST_EVALUATE_WAIT_MS,
+                });
+                if (!result.error) {
+                    variable.value = result.value;
+                    variable.type = result.typeName;
+                }
+            } catch {
+                // Keep the source-derived local visible even when the platform cannot evaluate it quickly.
+            }
+        }
+
+        return variables;
     }
 
     // -------------------------------------------------------------------------
