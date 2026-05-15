@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { DebugProtocol } from '@vscode/debugprotocol';
 
 import { BslDebugSession } from '../../src/debug/bslDebugSession';
-import { RdbgEvalResult } from '../../src/debug/rdbg/rdbgTypes';
+import { RdbgEvalOptions, RdbgEvalResult } from '../../src/debug/rdbg/rdbgTypes';
 
 class TestBslDebugSession extends BslDebugSession {
   public readonly responses: DebugProtocol.EvaluateResponse[] = [];
@@ -85,5 +85,45 @@ suite('BslDebugSession - watch evaluate cache', () => {
     assert.strictEqual(evaluateCalls, 2);
     assert.strictEqual(session.responses[0].body?.result, 'Сумма:1');
     assert.strictEqual(session.responses[1].body?.result, 'Сумма:2');
+  });
+  test('watch and hover use short calcWaitingTime while repl keeps the long wait', async () => {
+    const session = new TestBslDebugSession();
+    const calls: Array<{ purpose: string | undefined; options: RdbgEvalOptions | undefined }> = [];
+    const fakeClient = {
+      async evaluate(
+        _targetId: string,
+        _expression: string,
+        _frameLevel: number,
+        options?: RdbgEvalOptions
+      ): Promise<RdbgEvalResult> {
+        calls.push({ purpose: options?.purpose, options });
+        return {
+          value: 'ok',
+          typeName: 'Boolean',
+          isExpandable: false,
+        };
+      },
+    };
+
+    const internals = session as unknown as {
+      _client: unknown;
+      _pausedThreadId: number;
+      _threadMap: Map<number, string>;
+    };
+    internals._client = fakeClient;
+    internals._pausedThreadId = 1;
+    internals._threadMap.set(1, 'target-1');
+
+    await session.evaluateForTest({ expression: 'A', context: 'watch' });
+    await session.evaluateForTest({ expression: 'B', context: 'hover' });
+    await session.evaluateForTest({ expression: 'C', context: 'repl' });
+
+    assert.strictEqual(calls.length, 3);
+    assert.strictEqual(calls[0].purpose, 'watch');
+    assert.strictEqual(calls[0].options?.calcWaitingTimeMs, 500);
+    assert.strictEqual(calls[1].purpose, 'hover');
+    assert.strictEqual(calls[1].options?.calcWaitingTimeMs, 500);
+    assert.strictEqual(calls[2].purpose, 'repl');
+    assert.strictEqual(calls[2].options?.calcWaitingTimeMs, 5000);
   });
 });

@@ -219,13 +219,14 @@ export class DesignerParser {
     }
 
     const names = new Set<string>([...directoryNames, ...flatXmlNames]);
-    return Array.from(names)
-      .sort((a, b) => a.localeCompare(b, 'ru', { sensitivity: 'base' }))
-      .map((name) => {
+    const sortedNames = Array.from(names)
+      .sort((a, b) => a.localeCompare(b, 'ru', { sensitivity: 'base' }));
+
+    return Promise.all(sortedNames.map(async (name) => {
         const flatXmlPath = path.join(typePath, `${name}.xml`);
         const directoryPath = path.join(typePath, name);
         const filePath = flatXmlNames.has(name) ? flatXmlPath : directoryPath;
-        return {
+        const node: TreeNode = {
           id: `${typeName}.${name}`,
           name,
           type: metadataType,
@@ -233,7 +234,17 @@ export class DesignerParser {
           children: [],
           filePath,
         };
-      });
+        if (STANDARD_MODULES[metadataType] !== undefined) {
+          const extNode = await this.parseExtensions(
+            path.join(directoryPath, 'Ext'),
+            typeName === 'CommonModules' ? `${typeName}.${name}` : undefined,
+            metadataType
+          );
+          extNode.parent = node;
+          node.children = [extNode];
+        }
+        return node;
+      }));
   }
 
   /**

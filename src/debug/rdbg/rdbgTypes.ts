@@ -71,6 +71,13 @@ export interface RdbgEvalResult {
   error?: string;
 }
 
+export interface RdbgEvalOptions {
+  /** Server-side expression calculation wait in milliseconds. */
+  calcWaitingTimeMs?: number;
+  /** Diagnostic purpose propagated from DAP evaluate context. */
+  purpose?: 'watch' | 'hover' | 'repl' | 'clipboard' | 'variables' | string;
+}
+
 /**
  * View interface for path-based expression evaluation.
  * Maps to ViewInterface enum in Messages.cs (namespace debugCalculations).

@@ -757,6 +757,20 @@ suite('rdbgXmlCodec — Phase 4 encodeEvalExpressionPath', () => {
       assert.ok(xml.includes(':stackLevel>3<'), 'stackLevel=3 present');
     });
 
+    test('custom calcWaitingTime is emitted for fast interactive evaluation', () => {
+      const xml = encodeEvalExpressionPath(
+        DBG_UI_ID,
+        TARGET_ID,
+        0,
+        [{ type: 'expression', expression: 'x' }],
+        'context',
+        undefined,
+        { calcWaitingTimeMs: 500 }
+      );
+      assert.ok(xml.includes(':calcWaitingTime>500<'), 'calcWaitingTime=500 present');
+      assert.ok(!xml.includes(':calcWaitingTime>5000<'), 'default calcWaitingTime absent');
+    });
+
     test('property step uses itemType=property and <property> element', () => {
       const xml = encodeEvalExpressionPath(DBG_UI_ID, TARGET_ID, 0, [{ type: 'property', property: 'МоёПоле' }], 'context');
       assert.ok(xml.includes('>property<'), 'itemType=property');

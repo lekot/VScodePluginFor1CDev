@@ -473,9 +473,11 @@ export function encodeEvalExpressionPath(
   frameLevel: number,
   path: SourceCalcItem[],
   _view: ViewInterface,
-  infobaseAlias?: string
+  infobaseAlias?: string,
+  options?: { calcWaitingTimeMs?: number }
 ): string {
   const alias = infobaseAlias ?? DEF_ALIAS;
+  const calcWaitingTime = normalizeCalcWaitingTime(options?.calcWaitingTimeMs);
 
   // Build calcItem elements for each step in the path
   let calcItems = '';
@@ -503,7 +505,7 @@ export function encodeEvalExpressionPath(
   const fields =
     `  <${P_RDBG}:infoBaseAlias>${escapeXml(alias)}</${P_RDBG}:infoBaseAlias>\n` +
     `  <${P_RDBG}:idOfDebuggerUI>${escapeXml(debugUiId)}</${P_RDBG}:idOfDebuggerUI>\n` +
-    `  <${P_RDBG}:calcWaitingTime>5000</${P_RDBG}:calcWaitingTime>\n` +
+    `  <${P_RDBG}:calcWaitingTime>${calcWaitingTime}</${P_RDBG}:calcWaitingTime>\n` +
     targetIdToXml(targetId, '  ') +
     `  <${P_RDBG}:expr>\n` +
     `    <${P_CALC}:stackLevel>${frameLevel}</${P_CALC}:stackLevel>\n` +
@@ -512,6 +514,13 @@ export function encodeEvalExpressionPath(
       : '') +
     `  </${P_RDBG}:expr>\n`;
   return wrapRequest(fields);
+}
+
+function normalizeCalcWaitingTime(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return 5000;
+  }
+  return Math.max(0, Math.min(5000, Math.trunc(value)));
 }
 
 /**
@@ -526,7 +535,8 @@ export function encodeEvaluate(
   _seanceId: string,
   expression: string,
   frameIndex: number,
-  infobaseAlias?: string
+  infobaseAlias?: string,
+  options?: { calcWaitingTimeMs?: number }
 ): string {
   return encodeEvalExpressionPath(
     debugUiId,
@@ -534,7 +544,8 @@ export function encodeEvaluate(
     frameIndex,
     [{ type: 'expression', expression }],
     'context',
-    infobaseAlias
+    infobaseAlias,
+    options
   );
 }
 

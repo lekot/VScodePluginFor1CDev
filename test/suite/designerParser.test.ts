@@ -5,6 +5,8 @@ import * as path from 'path';
 import { DesignerParser } from '../../src/parsers/designerParser';
 import { XmlParser } from '../../src/parsers/xmlParser';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
+import { STANDARD_MODULES } from '../../src/constants/moduleTypes';
+import { MetadataTypeMapper } from '../../src/utils/metadataTypeMapper';
 import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
@@ -189,7 +191,10 @@ suite('DesignerParser', () => {
     const catalogsPath = path.join(configPath, 'Catalogs');
     const originalParseFileAsync = XmlParser.parseFileAsync;
     await fs.promises.mkdir(path.join(catalogsPath, 'FolderCatalog'), { recursive: true });
+    await fs.promises.mkdir(path.join(catalogsPath, 'FolderCatalog', 'Ext'), { recursive: true });
     await fs.promises.writeFile(path.join(catalogsPath, 'FolderCatalog.xml'), '<MetaDataObject/>', 'utf-8');
+    await fs.promises.writeFile(path.join(catalogsPath, 'FolderCatalog', 'Ext', 'ObjectModule.bsl'), '', 'utf-8');
+    await fs.promises.writeFile(path.join(catalogsPath, 'FolderCatalog', 'Ext', 'ManagerModule.bsl'), '', 'utf-8');
     await fs.promises.writeFile(path.join(catalogsPath, 'FlatCatalog.xml'), '<broken>', 'utf-8');
     await fs.promises.writeFile(path.join(catalogsPath, 'readme.txt'), 'skip', 'utf-8');
 
@@ -203,7 +208,53 @@ suite('DesignerParser', () => {
 
       assert.deepStrictEqual(names, ['FlatCatalog', 'FolderCatalog']);
       assert.ok(children.every((c) => c.properties._lazy === true));
-      assert.ok(children.every((c) => c.children?.length === 0));
+      const folderCatalog = children.find((c) => c.name === 'FolderCatalog');
+      assert.ok(folderCatalog, 'FolderCatalog should be listed');
+      const ext = folderCatalog.children?.find((c) => c.id === 'Ext');
+      assert.ok(ext, 'parseTypeIndex should preserve Ext/modules for shallow object nodes');
+      assert.deepStrictEqual(
+        ext.children?.map((c) => c.name).sort(),
+        ['ManagerModule.bsl', 'ObjectModule.bsl']
+      );
+    } finally {
+      XmlParser.parseFileAsync = originalParseFileAsync;
+      await fs.promises.rm(configPath, { recursive: true, force: true });
+    }
+  });
+
+  test('parseTypeIndex preserves standard module nodes for all module-bearing metadata types', async () => {
+    const configPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-type-index-modules-'));
+    const originalParseFileAsync = XmlParser.parseFileAsync;
+    try {
+      (XmlParser.parseFileAsync as unknown as typeof XmlParser.parseFileAsync) = async () => {
+        throw new Error('parseTypeIndex must not parse object XML');
+      };
+
+      for (const [metadataType, modules] of Object.entries(STANDARD_MODULES)) {
+        if (metadataType === MetadataType.Configuration) {
+          continue;
+        }
+        const folderId = MetadataTypeMapper.getDesignerFolderIdForMetadataType(metadataType as MetadataType);
+        assert.ok(folderId, `folderId must exist for ${metadataType}`);
+        const typePath = path.join(configPath, folderId);
+        const objectName = `${folderId}Object`;
+        await fs.promises.mkdir(path.join(typePath, objectName, 'Ext'), { recursive: true });
+        await fs.promises.writeFile(path.join(typePath, `${objectName}.xml`), '<MetaDataObject/>', 'utf-8');
+        for (const mod of modules) {
+          await fs.promises.writeFile(path.join(typePath, objectName, 'Ext', mod.fileName), '', 'utf-8');
+        }
+
+        const children = await DesignerParser.parseTypeIndex(configPath, folderId);
+        const node = children.find((c) => c.name === objectName);
+        assert.ok(node, `${folderId}: object should be indexed`);
+        const ext = node.children?.find((c) => c.name === 'Extensions');
+        assert.ok(ext, `${folderId}: Extensions node should be preserved`);
+        assert.deepStrictEqual(
+          ext.children?.map((c) => c.name).sort(),
+          modules.map((m) => m.fileName).sort(),
+          `${folderId}: standard module list should match`
+        );
+      }
     } finally {
       XmlParser.parseFileAsync = originalParseFileAsync;
       await fs.promises.rm(configPath, { recursive: true, force: true });
