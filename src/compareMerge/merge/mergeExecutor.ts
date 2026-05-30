@@ -4,7 +4,11 @@ import { fileURLToPath } from 'url';
 
 import { parseBslRoutines } from '../../bsl/routineRangeProvider';
 import { validateBslRoutineLogicalMergePlan } from '../bsl/bslRoutineMergeExecutorGuard';
-import { hashText, scanBslRoutineLogicalOutline, splitSourceLines } from '../bsl/bslRoutineLogicalScanner';
+import {
+  hashText,
+  scanBslRoutineLogicalOutline,
+  splitSourceLines,
+} from '../bsl/bslRoutineLogicalScanner';
 import type {
   BslRoutineLogicalAnchor,
   BslRoutineLogicalMergePlan,
@@ -20,6 +24,7 @@ import {
   type MergePreview,
   type PreflightResult,
 } from './mergePlanner';
+import { writeAtomicWithBackup, type AtomicWriteFileSystem } from './atomicFileWriter';
 
 export interface MergeExecutorInput {
   session: CompareSession;
@@ -27,11 +32,7 @@ export interface MergeExecutorInput {
   fileSystem?: MergeExecutorFileSystem;
 }
 
-export interface MergeExecutorFileSystem {
-  mkdir(directoryPath: string, options: { recursive: true }): Promise<void>;
-  readFile(filePath: string, encoding: 'utf8'): Promise<string>;
-  writeFile(filePath: string, content: string, encoding: 'utf8'): Promise<void>;
-}
+export type MergeExecutorFileSystem = AtomicWriteFileSystem;
 
 export interface MergeExecutionOperationResult {
   operationId: string;
@@ -56,6 +57,7 @@ interface ResolvedLogicalOperation {
   operation: MergeOperation;
   targetPath: string;
   backupPath: string;
+  rootUri?: string;
   currentSource: string;
   nextSource: string;
 }
@@ -64,11 +66,23 @@ const nodeFileSystem: MergeExecutorFileSystem = {
   async mkdir(directoryPath, options) {
     await fs.mkdir(directoryPath, options);
   },
+  realpath(filePath) {
+    return fs.realpath(filePath);
+  },
   readFile(filePath, encoding) {
     return fs.readFile(filePath, encoding);
   },
-  writeFile(filePath, content, encoding) {
-    return fs.writeFile(filePath, content, encoding);
+  open(filePath, flags) {
+    return fs.open(filePath, flags);
+  },
+  rename(oldPath, newPath) {
+    return fs.rename(oldPath, newPath);
+  },
+  copyFile(sourcePath, targetPath) {
+    return fs.copyFile(sourcePath, targetPath);
+  },
+  async rm(filePath, options) {
+    await fs.rm(filePath, options);
   },
 };
 
@@ -143,10 +157,27 @@ export async function executeBslMergePreview(
   }
 
   const fileSystem = input.fileSystem ?? nodeFileSystem;
+  const rootUri = targetRootUriFor(input.session, trustedPreview.targetSourceId);
+  if (!rootUri) {
+    result.failed.push(
+      failureForPreview(
+        input.preflight.approvedPreviewId,
+        'MERGE_TARGET_ROOT_MISSING',
+        'Left configuration root is not available for merge execution.'
+      )
+    );
+    return result;
+  }
+
   const resolvedOperations: ResolvedLogicalOperation[] = [];
 
   for (const operation of trustedOperations) {
-    const resolved = await resolveLogicalOperation(operation, trustedPreflight.backupPlan, fileSystem);
+    const resolved = await resolveLogicalOperation(
+      operation,
+      trustedPreflight.backupPlan,
+      fileSystem,
+      rootUri
+    );
     if ('failure' in resolved) {
       result.failed.push(resolved.failure);
       continue;
@@ -160,17 +191,25 @@ export async function executeBslMergePreview(
   }
 
   for (const resolved of resolvedOperations) {
-    try {
-      await fileSystem.mkdir(path.dirname(resolved.backupPath), { recursive: true });
-      await fileSystem.writeFile(resolved.backupPath, resolved.currentSource, 'utf8');
-      await fileSystem.writeFile(resolved.targetPath, resolved.nextSource, 'utf8');
-    } catch (error) {
+    const writeResult = await writeAtomicWithBackup({
+      rootUri: resolved.rootUri,
+      targetUri: resolved.operation.targetUri ?? '',
+      backupPath: resolved.backupPath,
+      expectedOldHash: resolved.operation.expectedOldHash ?? '',
+      nextContent: resolved.nextSource,
+      newHash: resolved.operation.newHash ?? '',
+      sourceId: resolved.operation.sourceId,
+      nodeId: resolved.operation.nodeId,
+      fileSystem,
+    });
+    result.diagnostics.push(...writeResult.diagnostics.map(cloneCompareMessage));
+    if (!writeResult.ok) {
       result.failed.push(
         failure(
           resolved.operation,
-          'MERGE_WRITE_FAILED',
-          `Failed to write merge operation: ${error instanceof Error ? error.message : String(error)}`,
-          resolved.backupPath
+          writeResult.code,
+          writeResult.message,
+          writeResult.backupPath ?? resolved.backupPath
         )
       );
       return result;
@@ -196,11 +235,16 @@ export async function executeBslMergePreview(
 async function resolveLogicalOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  fileSystem: MergeExecutorFileSystem
+  fileSystem: MergeExecutorFileSystem,
+  rootUri: string
 ): Promise<{ resolved: ResolvedLogicalOperation } | { failure: MergeExecutionOperationResult }> {
   if (!operation.targetUri || !operation.expectedOldHash || !operation.logicalRoutine) {
     return {
-      failure: failure(operation, 'MERGE_TARGET_GUARD_MISSING', 'Logical merge operation is incomplete.'),
+      failure: failure(
+        operation,
+        'MERGE_TARGET_GUARD_MISSING',
+        'Logical merge operation is incomplete.'
+      ),
     };
   }
 
@@ -212,7 +256,11 @@ async function resolveLogicalOperation(
     backup.expectedOldHash !== operation.expectedOldHash
   ) {
     return {
-      failure: failure(operation, 'MERGE_BACKUP_PLAN_INCOMPLETE', 'Backup plan is missing for operation.'),
+      failure: failure(
+        operation,
+        'MERGE_BACKUP_PLAN_INCOMPLETE',
+        'Backup plan is missing for operation.'
+      ),
     };
   }
 
@@ -237,14 +285,22 @@ async function resolveLogicalOperation(
   }
   if (hashText(currentSource) !== operation.expectedOldHash) {
     return {
-      failure: failure(operation, 'MERGE_STALE_TARGET_HASH', 'Target file hash changed before execution.'),
+      failure: failure(
+        operation,
+        'MERGE_STALE_TARGET_HASH',
+        'Target file hash changed before execution.'
+      ),
     };
   }
 
   const current = currentSnapshotFor(operation, currentSource);
   if (!current) {
     return {
-      failure: failure(operation, 'MERGE_LOGICAL_GUARD_BLOCKED', 'Current target routine cannot be parsed.'),
+      failure: failure(
+        operation,
+        'MERGE_LOGICAL_GUARD_BLOCKED',
+        'Current target routine cannot be parsed.'
+      ),
     };
   }
 
@@ -265,7 +321,11 @@ async function resolveLogicalOperation(
   const nextSource = applyLogicalInsertBlocks(current, operation.logicalRoutine.plan);
   if (!nextSource) {
     return {
-      failure: failure(operation, 'MERGE_LOGICAL_GUARD_BLOCKED', 'Logical insert anchor cannot be resolved.'),
+      failure: failure(
+        operation,
+        'MERGE_LOGICAL_GUARD_BLOCKED',
+        'Logical insert anchor cannot be resolved.'
+      ),
     };
   }
 
@@ -274,6 +334,7 @@ async function resolveLogicalOperation(
       operation,
       targetPath,
       backupPath,
+      rootUri,
       currentSource,
       nextSource,
     },
@@ -301,6 +362,17 @@ function validateExecutableOperations(
     return failures;
   }
 
+  if (operations.length > 1) {
+    const targetKeys = new Set(operations.map(targetKeyFor).filter(isDefined));
+    const code =
+      targetKeys.size > 1 ? 'MERGE_MULTIPLE_TARGET_FILES' : 'MERGE_MULTIPLE_EXECUTABLE_OPERATIONS';
+    const message =
+      targetKeys.size > 1
+        ? 'Executor applies only one target file per approved merge preview.'
+        : 'Executor applies exactly one logical BSL routine operation per approved merge preview.';
+    return operations.map((operation) => failure(operation, code, message));
+  }
+
   const operationsByTarget = new Map<string, MergeOperation[]>();
   for (const operation of operations) {
     const targetKey = targetKeyFor(operation);
@@ -322,14 +394,18 @@ function validateExecutableOperations(
       ...targetOperations.map((operation) =>
         failure(
           operation,
-          'MERGE_MULTIPLE_OPERATIONS_SAME_TARGET',
-          'Executor MVP blocks multiple logical operations targeting the same file.'
+          'MERGE_MULTIPLE_EXECUTABLE_OPERATIONS',
+          'Executor applies exactly one logical BSL routine operation per approved merge preview.'
         )
       )
     );
   }
 
   return failures;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
 
 function targetKeyFor(operation: MergeOperation): string | undefined {
@@ -472,6 +548,23 @@ function failure(
     code,
     message,
   };
+}
+
+function failureForPreview(
+  previewId: string,
+  code: string,
+  message: string
+): MergeExecutionOperationResult {
+  return {
+    operationId: previewId,
+    kind: 'bslLogicalRoutineMerge',
+    code,
+    message,
+  };
+}
+
+function targetRootUriFor(session: CompareSession, targetSourceId: string): string | undefined {
+  return session.state.sources.find((source) => source.sourceId === targetSourceId)?.rootUri;
 }
 
 function cloneCompareMessage(message: CompareMessage): CompareMessage {

@@ -24,6 +24,7 @@ export interface BslRoutineDiffProjectionInput {
   diagnostics?: readonly BslModuleDiagnostic[];
   targetFilePath?: string;
   targetAmbiguous?: boolean;
+  mergeableRoutineIds?: readonly string[];
 }
 
 export interface CompareTreeProjectionInput {
@@ -97,7 +98,7 @@ function projectMetadataMatch(match: MatchResult['matches'][number]): CompareTre
         ? undefined
         : {
             state: 'readOnly',
-            reason: 'Metadata identity match is read-only in MVP.',
+            reason: 'Metadata identity match is read-only in this merge mode.',
           },
   });
 }
@@ -169,7 +170,7 @@ function projectUnmatchedMetadata(
     payloadRef: `metadata:${identity.sourceId}:${identity.qualifiedName}`,
     mergeState: {
       state: 'blocked',
-      reason: 'Structural metadata merge is not supported in MVP.',
+      reason: 'Structural metadata merge is not supported in this merge mode.',
     },
   });
 }
@@ -191,6 +192,9 @@ function projectBsl(items: readonly BslRoutineDiffProjectionInput[]): CompareTre
 
 function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
   const diff = requireDiff(input);
+  const mergeableRoutineIds = input.mergeableRoutineIds
+    ? new Set(input.mergeableRoutineIds)
+    : undefined;
   const blockingDiagnostics = [
     ...(input.diagnostics ?? []),
     ...diff.diagnostics,
@@ -198,9 +202,10 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
   const moduleChildren: CompareTreeNode[] = [
     ...diff.routines.map((routine) => {
       const mergeState = createBslMergeState(input, blockingDiagnostics);
-      const mergeable = isBslRoutineMergeable(routine.status, mergeState);
+      const nodeId = `bsl:routine:${diff.moduleId}:${routine.normalizedName}`;
+      const mergeable = isBslRoutineMergeable(routine.status, mergeState, nodeId, mergeableRoutineIds);
       return leafNode({
-        id: `bsl:routine:${diff.moduleId}:${routine.normalizedName}`,
+        id: nodeId,
         label: routine.name,
         kind: 'bslRoutine',
         status: routineStatus(routine.status),
@@ -208,7 +213,7 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
         rightValue: routine.right ? routineSummary(routine.right.kind, routine.rightIndex) : '',
         mergeable,
         payloadRef: `bslRoutine:${diff.moduleId}:${routine.normalizedName}`,
-        mergeState: mergeable ? mergeState : nonMergeableState(mergeState),
+        mergeState: mergeable ? mergeState : nonMergeableState(mergeState, routine.status),
       });
     }),
     ...diff.diagnostics.map((diagnostic) => projectBslDiagnostic(diagnostic)),
@@ -342,13 +347,33 @@ function createBslMergeState(
 
 function isBslRoutineMergeable(
   status: BslRoutineDiffStatus,
-  mergeState: CompareTreeMergeState
+  mergeState: CompareTreeMergeState,
+  nodeId: string,
+  mergeableRoutineIds: ReadonlySet<string> | undefined
 ): boolean {
-  return status !== 'unchanged' && mergeState.state === 'ready';
+  if (mergeableRoutineIds) {
+    return mergeState.state === 'ready' && mergeableRoutineIds.has(nodeId);
+  }
+
+  return status === 'changed' && mergeState.state === 'ready';
 }
 
-function nonMergeableState(mergeState: CompareTreeMergeState): CompareTreeMergeState | undefined {
-  return mergeState.state === 'ready' ? undefined : mergeState;
+function nonMergeableState(
+  mergeState: CompareTreeMergeState,
+  status?: BslRoutineDiffStatus
+): CompareTreeMergeState | undefined {
+  if (mergeState.state !== 'ready') {
+    return mergeState;
+  }
+  if (status === 'added' || status === 'deleted' || status === 'reordered') {
+    return {
+      state: 'readOnly',
+      reason: 'Structural BSL routine changes are visible but require manual merge in this mode.',
+      targetFilePath: mergeState.targetFilePath,
+    };
+  }
+
+  return undefined;
 }
 
 function routineStatus(status: BslRoutineDiffStatus): CompareTreeStatus {

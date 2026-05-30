@@ -73,7 +73,7 @@ suite('CompareTreeProjection', () => {
     assert.strictEqual(conflictNode.mergeState?.state, 'identityConflict');
   });
 
-  test('projects BSL routine changed added deleted and reordered statuses', () => {
+  test('projects only changed BSL routines as mergeable and keeps structural routine changes visible', () => {
     const tree = buildCompareTreeProjection({
       bsl: [
         {
@@ -84,19 +84,39 @@ suite('CompareTreeProjection', () => {
             ['reorderedRoutine', 'reordered'],
           ]),
           targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+          mergeableRoutineIds: ['bsl:routine:Catalog.Products.Object:changedroutine'],
         },
       ],
     });
 
     const moduleNode = requireNode(tree.root, 'bsl:module:Catalog.Products.Object');
-    const statuses = moduleNode.children.map((node) => [node.label, node.status, node.mergeState?.state]);
+    const statuses = moduleNode.children.map((node) => [
+      node.label,
+      node.status,
+      node.mergeable,
+      node.mergeState?.state,
+    ]);
 
     assert.deepStrictEqual(statuses, [
-      ['changedRoutine', 'changed', 'ready'],
-      ['addedRoutine', 'rightOnly', 'ready'],
-      ['deletedRoutine', 'leftOnly', 'ready'],
-      ['reorderedRoutine', 'changed', 'ready'],
+      ['changedRoutine', 'changed', true, 'ready'],
+      ['addedRoutine', 'rightOnly', false, 'readOnly'],
+      ['deletedRoutine', 'leftOnly', false, 'readOnly'],
+      ['reorderedRoutine', 'changed', false, 'readOnly'],
     ]);
+  });
+
+  test('does not mark changed BSL routine mergeable when service did not prove auto plan', () => {
+    const tree = buildCompareTreeProjection({
+      bsl: [
+        {
+          diff: bslDiff([['Save', 'changed']]),
+          targetFilePath: 'Catalogs/Products/Ext/ObjectModule.bsl',
+          mergeableRoutineIds: [],
+        },
+      ],
+    });
+
+    assert.strictEqual(requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:save').mergeable, false);
   });
 
   test('marks BSL routine nodes mergeable only with unambiguous target and no blocking diagnostics', () => {
@@ -275,6 +295,45 @@ suite('CompareTreeProjection', () => {
     assert.strictEqual(diagnostic.mergeable, false);
     assert.strictEqual(diagnostic.rightValue, 'BSL module kind "ValueManagerModule" is not supported by procedural diff.');
     assert.strictEqual(diagnostic.mergeState?.state, 'blocked');
+  });
+
+  test('does not expose MVP wording in user-visible merge reasons', () => {
+    const tree = buildCompareTreeProjection({
+      metadata: matchResult({
+        matches: [
+          {
+            left: metadataIdentity('left', 'Catalog.Products', 'left-uuid'),
+            right: metadataIdentity('right', 'Catalog.ProductsRenamed', 'left-uuid'),
+            matchKind: 'uuid',
+            confidence: 'strong',
+          },
+        ],
+        unmatchedRight: [metadataIdentity('right', 'Catalog.NewProducts', 'new-uuid')],
+      }),
+      bsl: [
+        {
+          diff: bslDiff([
+            ['AddedRoutine', 'added'],
+            ['DeletedRoutine', 'deleted'],
+            ['ReorderedRoutine', 'reordered'],
+          ]),
+          targetFilePath: 'Catalogs/Products/Ext/ObjectModule.bsl',
+        },
+      ],
+    });
+
+    const visibleText = collectNodes(tree.root, () => true)
+      .flatMap((node) => [
+        node.label,
+        node.leftValue,
+        node.rightValue,
+        node.mergeState?.reason,
+        node.conflict?.message,
+      ])
+      .filter((value): value is string => typeof value === 'string')
+      .join('\n');
+
+    assert.doesNotMatch(visibleText, /\bMVP\b/i);
   });
 
   test('keeps metadata diagnostic id and payload ref stable when earlier same-code diagnostic is inserted', () => {

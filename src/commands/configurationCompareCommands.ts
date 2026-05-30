@@ -1,16 +1,29 @@
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 
 import type { TreeNode } from '../models/treeNode';
 import type { ExtensionState } from '../state/extensionState';
 import { showConfigurationCompare } from '../compareMerge/configCompareProvider';
-import { buildConfigurationCompare } from '../compareMerge/configurationCompareService';
+import {
+  buildConfigurationCompare,
+  type ConfigurationCompareInput,
+  type ConfigurationCompareResult,
+} from '../compareMerge/configurationCompareService';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { Logger } from '../utils/logger';
 
 export interface RegisterConfigurationCompareCommandsDeps {
   context: vscode.ExtensionContext;
   state: ExtensionState;
+  pickRightRoot?: () => Promise<string | undefined>;
+  withCompareProgress?: (title: string, task: () => Promise<void>) => Promise<void>;
+  buildCompare?: (input: ConfigurationCompareInput) => Promise<ConfigurationCompareResult>;
+  showCompare?: (
+    context: vscode.ExtensionContext,
+    workspace: ConfigurationCompareResult['workspace'],
+    title?: string
+  ) => vscode.WebviewPanel;
 }
 
 export function registerConfigurationCompareCommands(
@@ -50,6 +63,56 @@ export async function executeConfigurationCompareCommand(
     return;
   }
 
+  const rightRootPath = await pickConfigurationCompareRightRoot(deps);
+  if (!rightRootPath) {
+    return;
+  }
+
+  try {
+    const progressTitle = 'Сравнение конфигураций';
+    await withConfigurationCompareProgress(deps, progressTitle, async () => {
+      const result = await (deps.buildCompare ?? buildConfigurationCompare)({
+        leftRootPath,
+        rightRootPath,
+        backupRootPath: createConfigurationCompareBackupRootPath(
+          deps.context,
+          leftRootPath,
+          rightRootPath
+        ),
+      });
+      (deps.showCompare ?? showConfigurationCompare)(
+        deps.context,
+        result.workspace,
+        `Сравнение конфигураций: ${path.basename(leftRootPath)} - ${path.basename(rightRootPath)}`
+      );
+    });
+  } catch (error) {
+    Logger.error('Failed to compare configuration folders', error);
+    void vscode.window.showErrorMessage(
+      `Не удалось сравнить конфигурации: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+export function createConfigurationCompareBackupRootPath(
+  context: Pick<vscode.ExtensionContext, 'globalStorageUri'>,
+  _leftRootPath: string,
+  _rightRootPath: string
+): string {
+  return path.join(
+    context.globalStorageUri.fsPath,
+    'merge-backups',
+    `${Date.now()}-${randomBytes(8).toString('hex')}`
+  );
+}
+
+async function pickConfigurationCompareRightRoot(
+  deps: RegisterConfigurationCompareCommandsDeps
+): Promise<string | undefined> {
+  if (deps.pickRightRoot) {
+    return deps.pickRightRoot();
+  }
+
   const pickedRight = await vscode.window.showOpenDialog({
     canSelectFiles: false,
     canSelectFolders: true,
@@ -57,34 +120,25 @@ export async function executeConfigurationCompareCommand(
     title: 'Выберите папку правой конфигурации для сравнения',
     openLabel: 'Сравнить',
   });
-  const rightRootPath = pickedRight?.[0]?.fsPath;
-  if (!rightRootPath) {
+  return pickedRight?.[0]?.fsPath;
+}
+
+async function withConfigurationCompareProgress(
+  deps: RegisterConfigurationCompareCommandsDeps,
+  title: string,
+  task: () => Promise<void>
+): Promise<void> {
+  if (deps.withCompareProgress) {
+    await deps.withCompareProgress(title, task);
     return;
   }
 
-  try {
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: 'Сравнение конфигураций',
-        cancellable: false,
-      },
-      async () => {
-        const result = await buildConfigurationCompare({
-          leftRootPath,
-          rightRootPath,
-        });
-        showConfigurationCompare(
-          deps.context,
-          result.projection,
-          `Сравнение конфигураций: ${path.basename(leftRootPath)} - ${path.basename(rightRootPath)}`
-        );
-      }
-    );
-  } catch (error) {
-    Logger.error('Failed to compare configuration folders', error);
-    void vscode.window.showErrorMessage(
-      `Не удалось сравнить конфигурации: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title,
+      cancellable: false,
+    },
+    task
+  );
 }
