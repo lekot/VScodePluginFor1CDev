@@ -3,15 +3,13 @@
  */
 
 import * as fs from 'fs';
+import { parseBslRoutines } from '../bsl/routineRangeProvider';
 import { Logger } from '../utils/logger';
 
 export interface BslProcedureInfo {
   name: string;
   line: number;
 }
-
-/** Match "Процедура Имя(" or "Функция Имя(" (BSL). Supports Cyrillic identifiers. */
-const PROC_FUNC_REGEX = /^\s*(?:Процедура|Функция)\s+(\S+?)\s*\(/i;
 
 /**
  * Read Module.bsl and return list of procedure/function names with line numbers (1-based).
@@ -24,13 +22,8 @@ export async function parseBslModuleProcedures(modulePath: string): Promise<BslP
     Logger.debug(`Cannot read Module.bsl: ${modulePath}`, err);
     return [];
   }
-  const result: BslProcedureInfo[] = [];
-  const lines = content.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(PROC_FUNC_REGEX);
-    if (match) {
-      result.push({ name: match[1], line: i + 1 });
-    }
-  }
-  return result;
+  return parseBslRoutines(content).routines.map((routine) => ({
+    name: routine.name,
+    line: routine.range.startLine,
+  }));
 }

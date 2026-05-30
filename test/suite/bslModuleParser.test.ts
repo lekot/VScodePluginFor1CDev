@@ -2,8 +2,7 @@
  * Tests for bslModuleParser — extraction of procedure/function names from BSL module text.
  *
  * The parser reads a .bsl file and returns BslProcedureInfo[] with name + 1-based line number.
- * Regex matches lines starting with (optional whitespace) Процедура|Функция (case-insensitive).
- * English keywords Procedure/Function are NOT matched by the current implementation.
+ * Shared parser matches Russian and English procedure/function keywords.
  */
 
 import * as assert from 'assert';
@@ -56,6 +55,14 @@ suite('bslModuleParser — parseBslModuleProcedures', () => {
     assert.strictEqual(result.length, 1);
     assert.strictEqual(result[0].name, 'ПриОткрытии');
     assert.strictEqual(result[0].line, 1);
+  });
+
+  test('extracts procedure name from partially typed declaration', async () => {
+    const bsl = `Процедура ПриЗаписи(
+  Отказ = Истина;`;
+    const filePath = await writeBsl(tmpDir, bsl);
+    const result = await parseBslModuleProcedures(filePath);
+    assert.deepStrictEqual(result, [{ name: 'ПриЗаписи', line: 1 }]);
   });
 
   test('extracts single function', async () => {
@@ -228,32 +235,35 @@ suite('bslModuleParser — parseBslModuleProcedures', () => {
   });
 
   // -------------------------------------------------------------------------
-  // English keywords — NOT supported by current regex
+  // English keywords
   // -------------------------------------------------------------------------
 
-  test('does NOT match English keyword Procedure', async () => {
+  test('matches English keyword Procedure', async () => {
     const bsl = `Procedure EnglishProc()
 EndProcedure`;
     const filePath = await writeBsl(tmpDir, bsl);
     const result = await parseBslModuleProcedures(filePath);
-    // Current regex only matches Процедура|Функция, not English keywords
-    assert.strictEqual(result.length, 0);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].name, 'EnglishProc');
+    assert.strictEqual(result[0].line, 1);
   });
 
-  test('does NOT match English keyword Function', async () => {
+  test('matches English keyword Function', async () => {
     const bsl = `Function EnglishFunc()
   Return Undefined;
 EndFunction`;
     const filePath = await writeBsl(tmpDir, bsl);
     const result = await parseBslModuleProcedures(filePath);
-    assert.strictEqual(result.length, 0);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].name, 'EnglishFunc');
+    assert.strictEqual(result[0].line, 1);
   });
 
   // -------------------------------------------------------------------------
   // Mixed: Russian and English in same file
   // -------------------------------------------------------------------------
 
-  test('extracts only Russian declarations in mixed file', async () => {
+  test('extracts Russian and English declarations in mixed file', async () => {
     const bsl = `Процедура РусскаяПроцедура()
 КонецПроцедуры
 
@@ -265,9 +275,10 @@ EndProcedure
 КонецФункции`;
     const filePath = await writeBsl(tmpDir, bsl);
     const result = await parseBslModuleProcedures(filePath);
-    assert.strictEqual(result.length, 2);
+    assert.strictEqual(result.length, 3);
     assert.strictEqual(result[0].name, 'РусскаяПроцедура');
-    assert.strictEqual(result[1].name, 'РусскаяФункция');
+    assert.strictEqual(result[1].name, 'EnglishProc');
+    assert.strictEqual(result[2].name, 'РусскаяФункция');
   });
 
   // -------------------------------------------------------------------------

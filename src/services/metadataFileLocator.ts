@@ -110,7 +110,7 @@ export function locateMetadataFile(
   const relative = path.relative(normalizedRoot, normalizedFile);
   let segments = relative.split(path.sep);
 
-  let extensionName: string | undefined;
+  let extensionName = getExtensionNameFromRoot(normalizedRoot);
 
   // Strip ConfigurationExtensions/<ExtName>/ prefix
   if (segments[0] === 'ConfigurationExtensions' && segments.length >= 3) {
@@ -187,8 +187,49 @@ export function locateMetadataFile(
     return null;
   }
 
+  // --- CommonForms ---
+  if (objectType === 'CommonForms') {
+    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
+      return { ...base, objectName: stripXmlExt(rest[0]) };
+    }
+    if (
+      rest.length === 4 &&
+      rest[1] === 'Ext' &&
+      rest[2] === 'Form' &&
+      rest[3] === 'Module.bsl'
+    ) {
+      const formName = rest[0];
+      return {
+        ...base,
+        objectName: formName,
+        subPath: { kind: 'form', name: formName, subFile: 'module' },
+      };
+    }
+    return null;
+  }
+
+  // --- CommonCommands ---
+  if (objectType === 'CommonCommands') {
+    if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
+      return { ...base, objectName: stripXmlExt(rest[0]) };
+    }
+    if (rest.length === 3 && rest[1] === 'Ext' && rest[2] === 'CommandModule.bsl') {
+      const commandName = rest[0];
+      return {
+        ...base,
+        objectName: commandName,
+        subPath: { kind: 'command', name: commandName, subFile: 'module' },
+      };
+    }
+    return null;
+  }
+
   // --- Flat XML types (single-level: just TypeFolder/Name.xml) ---
-  if (FLAT_XML_TYPE_FOLDERS.has(objectType) && objectType !== 'Roles') {
+  if (
+    FLAT_XML_TYPE_FOLDERS.has(objectType) &&
+    objectType !== 'Roles' &&
+    !TOP_LEVEL_TYPE_FOLDERS.has(objectType)
+  ) {
     if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
       return { ...base, objectName: stripXmlExt(rest[0]) };
     }
@@ -209,6 +250,16 @@ export function locateMetadataFile(
 
 function stripXmlExt(segment: string): string {
   return path.basename(segment, path.extname(segment));
+}
+
+function getExtensionNameFromRoot(normalizedRoot: string): string | undefined {
+  const rootSegments = normalizedRoot.split(path.sep).filter((segment) => segment.length > 0);
+  const extensionFolderIndex = rootSegments.lastIndexOf('ConfigurationExtensions');
+  if (extensionFolderIndex < 0 || extensionFolderIndex + 1 >= rootSegments.length) {
+    return undefined;
+  }
+
+  return rootSegments[extensionFolderIndex + 1];
 }
 
 /**

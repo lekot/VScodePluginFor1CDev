@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration compare</title>
+  <style nonce="${nonce}">
+    :root {
+      color-scheme: light dark;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+    }
+
+    body {
+      margin: 0;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+    }
+
+    main {
+      padding: 16px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .stat {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    .tree {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .node {
+      margin: 4px 0;
+      line-height: 1.4;
+    }
+
+    .label {
+      font-weight: 600;
+    }
+
+    .status {
+      color: var(--vscode-descriptionForeground);
+      margin-left: 6px;
+    }
+
+    .blocked {
+      color: var(--vscode-errorForeground);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Configuration compare</h1>
+    <div class="stats" id="stats"></div>
+    <ul class="tree" id="tree"></ul>
+  </main>
+  <script nonce="${nonce}">
+    // __CONFIG_COMPARE_DATA_PLACEHOLDER__
+    const data = window.__configCompareData;
+
+    function renderStats(stats) {
+      const container = document.getElementById('stats');
+      container.replaceChildren(
+        stat('Total', stats.total),
+        stat('Different', stats.different),
+        stat('Mergeable', stats.mergeable)
+      );
+    }
+
+    function stat(label, value) {
+      const item = document.createElement('div');
+      item.className = 'stat';
+      item.textContent = `${label}: ${value}`;
+      return item;
+    }
+
+    function renderTree(root) {
+      const container = document.getElementById('tree');
+      container.replaceChildren(...root.children.map(renderNode));
+    }
+
+    function renderNode(node) {
+      const item = document.createElement('li');
+      item.className = 'node';
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = node.label;
+      const status = document.createElement('span');
+      status.className = node.mergeState?.state === 'blocked' ? 'status blocked' : 'status';
+      status.textContent = node.mergeState?.state ? `${node.status} / ${node.mergeState.state}` : node.status;
+      item.append(label, status);
+      if (node.children.length > 0) {
+        const children = document.createElement('ul');
+        children.className = 'tree';
+        children.append(...node.children.map(renderNode));
+        item.append(children);
+      }
+      return item;
+    }
+
+    if (data) {
+      document.getElementById('title').textContent = data.title;
+      renderStats(data.stats);
+      renderTree(data.tree);
+    }
+  </script>
+</body>
+</html>

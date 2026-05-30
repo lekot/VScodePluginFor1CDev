@@ -271,6 +271,12 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.compareMergeConfiguration",
+        "title": "Сравнить/объединить конфигурацию из файлов...",
+        "category": "CDT 41",
+        "icon": "$(diff)"
+      },
+      {
         "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",
         "title": "ПВХ: Предопределённые виды",
         "category": "1C Metadata"
@@ -777,6 +783,11 @@
           "command": "1c-metadata-tree.validateCurrentXml",
           "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
           "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.compareMergeConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
+          "group": "infobase@2a"
         },
         {
           "command": "1c-metadata-tree.validateCurrentXml",

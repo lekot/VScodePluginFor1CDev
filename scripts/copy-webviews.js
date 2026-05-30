@@ -7,6 +7,7 @@ const sources = [
   'src/subsystemCommandInterfaceEditor/subsystemCommandInterfaceWebview.html',
   'src/xdtoPackageEditor/xdtoPackageWebview.html',
   'src/xdtoPackageCompare/xdtoPackageCompareWebview.html',
+  'src/compareMerge/configCompareWebview.html',
 ];
 
 const outDirs = ['dist', 'out/src'];
