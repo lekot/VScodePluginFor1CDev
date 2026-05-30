@@ -15,6 +15,8 @@ suite('xdtoPackageCompareWebview content', () => {
 
     assert.ok(html.includes('compare-tree'), 'compare view must render a tree surface');
     assert.ok(html.includes('show-different-only'), 'compare view must have a differing-only filter');
+    assert.ok(html.includes('join-strategy'), 'compare view must expose join strategy selector');
+    assert.ok(html.includes('setStrategy'), 'compare view must request tree rebuilds when strategy changes');
     assert.ok(html.includes('data-merge-checkbox'), 'mergeable nodes must render checkboxes');
     assert.ok(html.includes('selectedIds'), 'webview must post selected node ids');
     assert.ok(html.includes('merge-selected'), 'compare view must expose merge selected action');

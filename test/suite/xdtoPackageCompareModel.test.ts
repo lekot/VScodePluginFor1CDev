@@ -7,6 +7,10 @@ import {
 } from '../../src/xdtoPackageCompare/xdtoPackageCompareModel';
 
 suite('XdtoPackageCompareModel', () => {
+  function collectIds(node: { id: string; children: Array<{ id: string; children: any[] }> }): string[] {
+    return [node.id, ...node.children.flatMap((child) => collectIds(child))];
+  }
+
   test('builds a compare tree down to object property fields', () => {
     const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:left">
   <objectType name="Order">
@@ -121,6 +125,58 @@ suite('XdtoPackageCompareModel', () => {
     assert.strictEqual(facets.children.filter((node) => node.status === 'rightOnly').length, 1);
     assert.ok(facets.children.some((node) => node.status === 'rightOnly' && node.rightValue === 'Inserted'));
     assert.strictEqual(tree.stats.different, 1);
+  });
+
+  test('applies left, right and full join strategies to compared package members', () => {
+    const left = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="CommonValue" base="xs:string">
+    <enumeration>ConfigOnlyEnum</enumeration>
+  </valueType>
+  <valueType name="ConfigOnlyValue" base="xs:string"/>
+  <objectType name="CommonObject">
+    <property name="ConfigOnlyProperty" type="xs:string"/>
+    <property name="ChangedProperty" type="xs:string"/>
+  </objectType>
+  <objectType name="ConfigOnlyObject"/>
+</package>`);
+    const right = parseXdtoPackage(`\uFEFF<package xmlns="http://v8.1c.ru/8.1/xdto">
+  <valueType name="CommonValue" base="xs:string">
+    <enumeration>FileOnlyEnum</enumeration>
+  </valueType>
+  <valueType name="FileOnlyValue" base="xs:string"/>
+  <objectType name="CommonObject">
+    <property name="FileOnlyProperty" type="xs:string"/>
+    <property name="ChangedProperty" type="xs:integer"/>
+  </objectType>
+  <objectType name="FileOnlyObject"/>
+</package>`);
+
+    const leftIds = collectIds(buildXdtoPackageCompareTree(left, right, 'left').root);
+    const rightIds = collectIds(buildXdtoPackageCompareTree(left, right, 'right').root);
+    const fullIds = collectIds(buildXdtoPackageCompareTree(left, right, 'full').root);
+
+    assert.ok(leftIds.includes('valueTypes:ConfigOnlyValue'));
+    assert.ok(leftIds.includes('objectTypes:ConfigOnlyObject'));
+    assert.ok(leftIds.includes('objectTypes:CommonObject:properties:ConfigOnlyProperty'));
+    assert.ok(leftIds.includes('objectTypes:CommonObject:properties:ChangedProperty:type'));
+    assert.ok(!leftIds.includes('valueTypes:FileOnlyValue'));
+    assert.ok(!leftIds.includes('objectTypes:FileOnlyObject'));
+    assert.ok(!leftIds.includes('objectTypes:CommonObject:properties:FileOnlyProperty'));
+
+    assert.ok(rightIds.includes('valueTypes:FileOnlyValue'));
+    assert.ok(rightIds.includes('objectTypes:FileOnlyObject'));
+    assert.ok(rightIds.includes('objectTypes:CommonObject:properties:FileOnlyProperty'));
+    assert.ok(rightIds.includes('objectTypes:CommonObject:properties:ChangedProperty:type'));
+    assert.ok(!rightIds.includes('valueTypes:ConfigOnlyValue'));
+    assert.ok(!rightIds.includes('objectTypes:ConfigOnlyObject'));
+    assert.ok(!rightIds.includes('objectTypes:CommonObject:properties:ConfigOnlyProperty'));
+
+    assert.ok(fullIds.includes('valueTypes:ConfigOnlyValue'));
+    assert.ok(fullIds.includes('valueTypes:FileOnlyValue'));
+    assert.ok(fullIds.includes('objectTypes:ConfigOnlyObject'));
+    assert.ok(fullIds.includes('objectTypes:FileOnlyObject'));
+    assert.ok(fullIds.includes('objectTypes:CommonObject:properties:ConfigOnlyProperty'));
+    assert.ok(fullIds.includes('objectTypes:CommonObject:properties:FileOnlyProperty'));
   });
 
   test('merges selected value type facet changes', () => {

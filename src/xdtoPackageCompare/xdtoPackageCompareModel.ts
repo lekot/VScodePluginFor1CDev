@@ -38,6 +38,8 @@ export interface XdtoPackageCompareTree {
   stats: CompareTreeStats;
 }
 
+export type XdtoCompareJoinStrategy = 'left' | 'right' | 'full';
+
 function isXsdSource(fileName: string, source: string): boolean {
   const ext = path.extname(fileName).toLowerCase();
   const trimmed = stripUtf8Bom(source).slice(0, 400);
@@ -67,16 +69,17 @@ export function parseXdtoComparableSource(
 
 export function buildXdtoPackageCompareTree(
   left: XdtoPackageModel,
-  right: XdtoPackageModel
+  right: XdtoPackageModel,
+  strategy: XdtoCompareJoinStrategy = 'full'
 ): XdtoPackageCompareTree {
   const leftContext = buildCompareContext(left);
   const rightContext = buildCompareContext(right);
   const children: CompareTreeNode[] = [
     compareScalarNode('root:targetNamespace', 'Пространство имен', 'packageField', left.targetNamespace, right.targetNamespace),
-    compareImports(left.imports, right.imports),
-    compareTypes('valueTypes', 'Типы значений', left.valueTypes, right.valueTypes, leftContext, rightContext),
-    compareObjectTypes(left.objectTypes, right.objectTypes, leftContext, rightContext),
-    compareRootProperties(left.rootProperties, right.rootProperties, leftContext, rightContext),
+    compareImports(left.imports, right.imports, strategy),
+    compareTypes('valueTypes', 'Типы значений', left.valueTypes, right.valueTypes, leftContext, rightContext, strategy),
+    compareObjectTypes(left.objectTypes, right.objectTypes, leftContext, rightContext, strategy),
+    compareRootProperties(left.rootProperties, right.rootProperties, leftContext, rightContext, strategy),
   ];
   const root = branchNode('package', 'XDTO-пакет', 'package', children);
   const stats = collectStats(root);
@@ -177,8 +180,8 @@ function summarizeChildren(children: readonly CompareTreeNode[]): CompareTreeSta
   return 'equal';
 }
 
-function compareImports(left: readonly XdtoImport[], right: readonly XdtoImport[]): CompareTreeNode {
-  const keys = unionKeys(left.map(importKey), right.map(importKey));
+function compareImports(left: readonly XdtoImport[], right: readonly XdtoImport[], strategy: XdtoCompareJoinStrategy): CompareTreeNode {
+  const keys = joinKeys(left.map(importKey), right.map(importKey), strategy);
   return branchNode('imports', 'Директивы импорта', 'importsGroup', keys.map((key) => {
     const leftItem = left.find((item) => importKey(item) === key);
     const rightItem = right.find((item) => importKey(item) === key);
@@ -193,9 +196,10 @@ function compareTypes(
   left: readonly XdtoTypeDefinition[],
   right: readonly XdtoTypeDefinition[],
   leftContext: XdtoCompareContext,
-  rightContext: XdtoCompareContext
+  rightContext: XdtoCompareContext,
+  strategy: XdtoCompareJoinStrategy
 ): CompareTreeNode {
-  const keys = unionKeys(left.map((type) => type.name), right.map((type) => type.name));
+  const keys = joinKeys(left.map((type) => type.name), right.map((type) => type.name), strategy);
   return branchNode(section, label, `${section}Group`, keys.map((name) => {
     const leftType = left.find((type) => type.name === name);
     const rightType = right.find((type) => type.name === name);
@@ -204,7 +208,7 @@ function compareTypes(
     }
     return branchNode(`${section}:${name}`, name, section.slice(0, -1), [
       compareQNameNode(`${section}:${name}:baseType`, 'Базовый тип', 'typeField', leftType.baseType, rightType.baseType, leftContext, rightContext),
-      compareFacets(`${section}:${name}:facets`, 'Ограничения', leftType.facets, rightType.facets),
+      compareFacets(`${section}:${name}:facets`, 'Ограничения', leftType.facets, rightType.facets, strategy),
     ]);
   }));
 }
@@ -213,11 +217,12 @@ function compareFacets(
   id: string,
   label: string,
   left: readonly XdtoFacet[],
-  right: readonly XdtoFacet[]
+  right: readonly XdtoFacet[],
+  strategy: XdtoCompareJoinStrategy
 ): CompareTreeNode {
   const leftEntries = facetEntries(left);
   const rightEntries = facetEntries(right);
-  const keys = unionKeys(leftEntries.map((entry) => entry.key), rightEntries.map((entry) => entry.key));
+  const keys = joinKeys(leftEntries.map((entry) => entry.key), rightEntries.map((entry) => entry.key), strategy);
   return branchNode(id, label, 'facetsGroup', keys.map((key) => {
     const leftEntry = leftEntries.find((entry) => entry.key === key);
     const rightEntry = rightEntries.find((entry) => entry.key === key);
@@ -261,9 +266,10 @@ function compareObjectTypes(
   left: readonly XdtoTypeDefinition[],
   right: readonly XdtoTypeDefinition[],
   leftContext: XdtoCompareContext,
-  rightContext: XdtoCompareContext
+  rightContext: XdtoCompareContext,
+  strategy: XdtoCompareJoinStrategy
 ): CompareTreeNode {
-  const keys = unionKeys(left.map((type) => type.name), right.map((type) => type.name));
+  const keys = joinKeys(left.map((type) => type.name), right.map((type) => type.name), strategy);
   return branchNode('objectTypes', 'Типы объектов', 'objectTypesGroup', keys.map((name) => {
     const leftType = left.find((type) => type.name === name);
     const rightType = right.find((type) => type.name === name);
@@ -272,8 +278,8 @@ function compareObjectTypes(
     }
     return branchNode(`objectTypes:${name}`, name, 'objectType', [
       compareQNameNode(`objectTypes:${name}:baseType`, 'Базовый тип', 'typeField', leftType.baseType, rightType.baseType, leftContext, rightContext),
-      compareProperties(`objectTypes:${name}:attributes`, 'Атрибуты', 'attributes', leftType.attributes, rightType.attributes, leftContext, rightContext),
-      compareProperties(`objectTypes:${name}:properties`, 'Свойства', 'properties', leftType.properties, rightType.properties, leftContext, rightContext),
+      compareProperties(`objectTypes:${name}:attributes`, 'Атрибуты', 'attributes', leftType.attributes, rightType.attributes, leftContext, rightContext, strategy),
+      compareProperties(`objectTypes:${name}:properties`, 'Свойства', 'properties', leftType.properties, rightType.properties, leftContext, rightContext, strategy),
     ]);
   }));
 }
@@ -282,9 +288,10 @@ function compareRootProperties(
   left: readonly XdtoProperty[],
   right: readonly XdtoProperty[],
   leftContext: XdtoCompareContext,
-  rightContext: XdtoCompareContext
+  rightContext: XdtoCompareContext,
+  strategy: XdtoCompareJoinStrategy
 ): CompareTreeNode {
-  return compareProperties('rootProperties', 'Корневые свойства', 'rootProperties', left, right, leftContext, rightContext);
+  return compareProperties('rootProperties', 'Корневые свойства', 'rootProperties', left, right, leftContext, rightContext, strategy);
 }
 
 function compareProperties(
@@ -294,9 +301,10 @@ function compareProperties(
   left: readonly XdtoProperty[],
   right: readonly XdtoProperty[],
   leftContext: XdtoCompareContext,
-  rightContext: XdtoCompareContext
+  rightContext: XdtoCompareContext,
+  strategy: XdtoCompareJoinStrategy
 ): CompareTreeNode {
-  const keys = unionKeys(left.map((property) => property.name), right.map((property) => property.name));
+  const keys = joinKeys(left.map((property) => property.name), right.map((property) => property.name), strategy);
   return branchNode(id, label, `${section}Group`, keys.map((name) => {
     const leftProperty = left.find((property) => property.name === name);
     const rightProperty = right.find((property) => property.name === name);
@@ -475,6 +483,16 @@ function inferMissingPrefixNamespace(
 
 function unionKeys(left: readonly string[], right: readonly string[]): string[] {
   return Array.from(new Set([...left, ...right].filter((key) => key !== ''))).sort((a, b) => a.localeCompare(b));
+}
+
+function joinKeys(left: readonly string[], right: readonly string[], strategy: XdtoCompareJoinStrategy): string[] {
+  if (strategy === 'left') {
+    return unionKeys(left, []);
+  }
+  if (strategy === 'right') {
+    return unionKeys(right, []);
+  }
+  return unionKeys(left, right);
 }
 
 function collectStats(root: CompareTreeNode): CompareTreeStats {
