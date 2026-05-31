@@ -96,6 +96,10 @@ export type WorkspaceExecutionResult =
       result?: MergeExecutionResult;
     };
 
+export interface WorkspaceExecutionOptions {
+  destructiveConfirmed?: boolean;
+}
+
 export type WorkspaceRefreshResult =
   | {
       ok: true;
@@ -385,7 +389,10 @@ export class ConfigurationCompareWorkspace {
     };
   }
 
-  async executeApprovedPreview(previewId: string): Promise<WorkspaceExecutionResult> {
+  async executeApprovedPreview(
+    previewId: string,
+    options: WorkspaceExecutionOptions = {}
+  ): Promise<WorkspaceExecutionResult> {
     const unavailable = this.unavailableDiagnostic();
     if (unavailable) {
       return { ok: false, locked: this.locked, diagnostics: [unavailable] };
@@ -407,6 +414,18 @@ export class ConfigurationCompareWorkspace {
           diagnostic(
             'CONFIG_COMPARE_PREVIEW_NOT_APPROVED',
             'Подтвердите текущий preview перед выполнением.'
+          ),
+        ],
+      };
+    }
+    if (previewHasDestructiveOperations(record.preview) && options.destructiveConfirmed !== true) {
+      return {
+        ok: false,
+        locked: this.locked,
+        diagnostics: [
+          diagnostic(
+            'CONFIG_COMPARE_DESTRUCTIVE_CONFIRMATION_REQUIRED',
+            'Merge содержит destructive-операции. Подтвердите выполнение повторно.'
           ),
         ],
       };
@@ -628,6 +647,20 @@ function currentTargetHashes(
       .filter((operation) => operation.targetUri && operation.expectedOldHash)
       .map((operation) => [operation.targetUri!, operation.expectedOldHash!])
   );
+}
+
+function previewHasDestructiveOperations(preview: MergePreview): boolean {
+  return preview.operations.some((operation) => {
+    if (operation.fileOperation?.destructive === true) {
+      return true;
+    }
+    return (
+      operation.kind === 'xmlNodeDelete' ||
+      operation.kind === 'fileDelete' ||
+      operation.kind === 'folderDelete' ||
+      operation.kind === 'bslRoutineDelete'
+    );
+  });
 }
 
 function findNode(node: CompareTreeNode, id: string): CompareTreeNode | undefined {

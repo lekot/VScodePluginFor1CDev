@@ -72,7 +72,9 @@ suite('ConfigurationCompareService', () => {
       ]);
 
       result.workspace.approvePreview(preview.preview.previewId);
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       assert.strictEqual(await readText(leftModulePath), expectedMergedSource);
@@ -136,7 +138,9 @@ suite('ConfigurationCompareService', () => {
       ]);
 
       result.workspace.approvePreview(preview.preview.previewId);
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       assert.strictEqual(await readText(leftModulePath), `${sharedRoutine}\n`);
@@ -291,7 +295,9 @@ suite('ConfigurationCompareService', () => {
       const approval = result.workspace.approvePreview(preview.preview.previewId);
       assert.strictEqual(approval.ok, true);
 
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       assert.strictEqual(await readText(leftModulePath), logicalIncomingRoutine());
@@ -343,7 +349,9 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(preview.ok, true);
       result.workspace.approvePreview(preview.preview.previewId);
 
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       assert.strictEqual(await readText(leftModulePath), `${logicalIncomingRoutine()}\n\n${secondBaseRoutine()}`);
@@ -628,7 +636,9 @@ suite('ConfigurationCompareService', () => {
       const preview = await result.workspace.createPreviewForNodeIds([logo.id]);
       assert.strictEqual(preview.ok, true, JSON.stringify(preview));
       result.workspace.approvePreview(preview.preview.previewId);
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       assert.deepStrictEqual(await fs.readFile(leftLogoPath), rightBytes);
@@ -669,7 +679,9 @@ suite('ConfigurationCompareService', () => {
       const preview = await result.workspace.createPreviewForNodeIds([logo.id]);
       assert.strictEqual(preview.ok, true, JSON.stringify(preview));
       result.workspace.approvePreview(preview.preview.previewId);
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       await assert.rejects(fs.stat(leftLogoPath));
@@ -712,7 +724,9 @@ suite('ConfigurationCompareService', () => {
       const preview = await result.workspace.createPreviewForNodeIds([products.id]);
       assert.strictEqual(preview.ok, true, JSON.stringify(preview));
       result.workspace.approvePreview(preview.preview.previewId);
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       assert.deepStrictEqual(
@@ -757,7 +771,9 @@ suite('ConfigurationCompareService', () => {
       const preview = await result.workspace.createPreviewForNodeIds([products.id]);
       assert.strictEqual(preview.ok, true, JSON.stringify(preview));
       result.workspace.approvePreview(preview.preview.previewId);
-      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId, {
+        destructiveConfirmed: true,
+      });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       await assert.rejects(fs.stat(leftCatalogPath));

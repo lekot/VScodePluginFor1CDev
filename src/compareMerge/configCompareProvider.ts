@@ -297,7 +297,7 @@ async function executeMerge(
 
   state.busy = true;
   await postState(webview, workspace, title, state);
-  const result = await workspace.executeApprovedPreview(previewId);
+  const result = await workspace.executeApprovedPreview(previewId, { destructiveConfirmed });
   state.busy = false;
   if (!result.ok) {
     state.diagnostics = result.diagnostics;

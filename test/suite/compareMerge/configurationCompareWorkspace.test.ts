@@ -151,6 +151,33 @@ suite('ConfigurationCompareWorkspace', () => {
     assert.strictEqual(wrongPreview.diagnostics[0]?.code, 'CONFIG_COMPARE_PREVIEW_NOT_FOUND');
   });
 
+  test('requires workspace-level confirmation for destructive approved preview', async () => {
+    let executeCalls = 0;
+    const workspace = makeWorkspace({
+      candidate: fileDeleteCandidate(),
+      executeMerge: async (input) => {
+        executeCalls += 1;
+        return emptyExecutionResult(input.preflight.previewId);
+      },
+    });
+    const preview = await workspace.createPreviewForNodeIds(['bsl:routine:Catalog.Products.Object:run']);
+    assert.strictEqual(preview.ok, true);
+    workspace.approvePreview(preview.preview.previewId);
+
+    const withoutConfirmation = await workspace.executeApprovedPreview(preview.preview.previewId);
+    const withConfirmation = await workspace.executeApprovedPreview(preview.preview.previewId, {
+      destructiveConfirmed: true,
+    });
+
+    assert.strictEqual(withoutConfirmation.ok, false);
+    assert.strictEqual(
+      withoutConfirmation.diagnostics[0]?.code,
+      'CONFIG_COMPARE_DESTRUCTIVE_CONFIRMATION_REQUIRED'
+    );
+    assert.strictEqual(withConfirmation.ok, true);
+    assert.strictEqual(executeCalls, 1);
+  });
+
   test('refresh and dispose invalidate stale previews safely', async () => {
     const workspace = makeWorkspace();
     const preview = await workspace.createPreviewForNodeIds(['bsl:routine:Catalog.Products.Object:run']);
@@ -379,6 +406,23 @@ function manualCandidate(): MergeCandidate {
       },
     ],
   });
+}
+
+function fileDeleteCandidate(): MergeCandidate {
+  return {
+    kind: 'fileDelete',
+    sourceId: 'right-source',
+    snapshotId: 'snapshot-right-1',
+    nodeId: 'bsl:routine:Catalog.Products.Object:run',
+    targetUri: 'file:///repo/Catalogs/Products/Ext/ObjectModule.bsl',
+    expectedOldHash: 'sha256:old',
+    fileOperation: {
+      kind: 'fileDelete',
+      targetPath: 'file:///repo/Catalogs/Products/Ext/ObjectModule.bsl',
+      expectedOldHash: 'sha256:old',
+      destructive: true,
+    },
+  };
 }
 
 function createAutoLogicalPlan(): BslRoutineLogicalMergePlan {
