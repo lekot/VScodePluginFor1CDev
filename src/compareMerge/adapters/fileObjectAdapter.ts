@@ -45,17 +45,19 @@ async function compareObjectPresence(
     !input.match.left &&
     shouldShowStatus('rightOnly', input.strategy)
   ) {
+    const sourcePath = await objectCopySourcePath(input.match.right);
+    const sourceHash = await hashObjectSource(input.match.right, sourcePath);
     return objectOperationNode({
       input,
       object: input.match.right,
       status: 'rightOnly',
       destructive: false,
       operation: {
-        kind: 'folderCopy',
-        sourcePath: input.match.right.containerPath,
-        targetPath: targetContainerPath(input, input.match.right),
+        kind: sourcePath === input.match.right.containerPath ? 'folderCopy' : 'fileCopy',
+        sourcePath,
+        targetPath: targetObjectPath(input, sourcePath),
         expectedOldHash: MISSING_TARGET_HASH,
-        sourceHash: await hashDirectory(input.match.right.containerPath),
+        sourceHash,
         destructive: false,
       },
       candidateFactories,
@@ -67,15 +69,16 @@ async function compareObjectPresence(
     !input.match.right &&
     shouldShowStatus('leftOnly', input.strategy)
   ) {
+    const targetPath = await objectCopySourcePath(input.match.left);
     return objectOperationNode({
       input,
       object: input.match.left,
       status: 'leftOnly',
       destructive: true,
       operation: {
-        kind: 'folderDelete',
-        targetPath: input.match.left.containerPath,
-        expectedOldHash: await hashDirectory(input.match.left.containerPath),
+        kind: targetPath === input.match.left.containerPath ? 'folderDelete' : 'fileDelete',
+        targetPath,
+        expectedOldHash: await hashObjectSource(input.match.left, targetPath),
         destructive: true,
       },
       candidateFactories,
@@ -101,6 +104,9 @@ function compareFileArtifacts(
   for (const relativePath of relativePaths) {
     const left = leftArtifacts.get(relativePath);
     const right = rightArtifacts.get(relativePath);
+    if (left?.kind === 'metadataXml' || right?.kind === 'metadataXml') {
+      continue;
+    }
     if (left && right && !isFileOperationArtifact(left, right)) {
       continue;
     }
@@ -253,8 +259,11 @@ function shouldShowStatus(
   return strategy === 'left' ? status === 'leftOnly' : status === 'rightOnly';
 }
 
-function targetContainerPath(input: AdapterCompareInput, right: MetadataObjectUnit): string {
-  const relativePath = path.relative(input.rightInventory.rootPath, right.containerPath);
+function targetObjectPath(
+  input: AdapterCompareInput,
+  sourcePath: string
+): string {
+  const relativePath = path.relative(input.rightInventory.rootPath, sourcePath);
   return path.join(input.leftInventory.rootPath, relativePath);
 }
 
@@ -296,4 +305,26 @@ async function hashFileBytes(filePath: string): Promise<string> {
 
 function hashText(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+async function objectCopySourcePath(object: MetadataObjectUnit): Promise<string> {
+  return await directoryExists(object.containerPath) ? object.containerPath : object.descriptorPath;
+}
+
+async function hashObjectSource(object: MetadataObjectUnit, sourcePath: string): Promise<string> {
+  return sourcePath === object.containerPath
+    ? await hashDirectory(sourcePath)
+    : await hashFileBytes(sourcePath);
+}
+
+async function directoryExists(folderPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(folderPath);
+    return stat.isDirectory();
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
 }

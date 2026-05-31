@@ -35,10 +35,10 @@ import type {
   MetadataObjectMatch,
 } from './adapters/mergeAdapter';
 import { CompareSession } from './domain/compareSession';
-import type { CompareMessage } from './domain/compareContracts';
+import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
 import type { ArtifactUnit, ConfigurationInventory, MetadataObjectUnit } from './inventory/configurationInventory';
-import { indexMetadataFolder } from './metadata/metadataIndexer';
+import { indexMetadataFile, indexMetadataFolder } from './metadata/metadataIndexer';
 import { matchMetadataIdentities } from './metadata/metadataMatcher';
 import {
   buildCompareTreeProjection,
@@ -48,6 +48,60 @@ import {
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
+const TARGETED_METADATA_INDEX_THRESHOLD = 2000;
+const METADATA_TYPE_FOLDERS: Record<string, string> = {
+  AccumulationRegister: 'AccumulationRegisters',
+  AccountingRegister: 'AccountingRegisters',
+  Attribute: 'Attributes',
+  BusinessProcess: 'BusinessProcesses',
+  CalculationRegister: 'CalculationRegisters',
+  Catalog: 'Catalogs',
+  ChartOfAccounts: 'ChartsOfAccounts',
+  ChartOfCalculationTypes: 'ChartsOfCalculationTypes',
+  ChartOfCharacteristicTypes: 'ChartsOfCharacteristicTypes',
+  Command: 'Commands',
+  CommonAttribute: 'CommonAttributes',
+  CommonCommand: 'CommonCommands',
+  CommonForm: 'CommonForms',
+  CommonModule: 'CommonModules',
+  CommonPicture: 'CommonPictures',
+  CommonTemplate: 'CommonTemplates',
+  CommandGroup: 'CommandGroups',
+  Constant: 'Constants',
+  DataProcessor: 'DataProcessors',
+  DefinedType: 'DefinedTypes',
+  Dimension: 'Dimensions',
+  Document: 'Documents',
+  DocumentJournal: 'DocumentJournals',
+  DocumentNumerator: 'DocumentNumerators',
+  Enum: 'Enums',
+  EventSubscription: 'EventSubscriptions',
+  ExchangePlan: 'ExchangePlans',
+  ExternalDataSource: 'ExternalDataSources',
+  FilterCriterion: 'FilterCriteria',
+  Form: 'Forms',
+  FunctionalOption: 'FunctionalOptions',
+  FunctionalOptionsParameter: 'FunctionalOptionsParameters',
+  HTTPService: 'HTTPServices',
+  InformationRegister: 'InformationRegisters',
+  IntegrationService: 'IntegrationServices',
+  Interface: 'Interfaces',
+  Language: 'Languages',
+  Report: 'Reports',
+  Resource: 'Resources',
+  Role: 'Roles',
+  ScheduledJob: 'ScheduledJobs',
+  SessionParameter: 'SessionParameters',
+  SettingsStorage: 'SettingsStorages',
+  Style: 'Styles',
+  Subsystem: 'Subsystems',
+  TabularSection: 'TabularSections',
+  Task: 'Tasks',
+  Template: 'Templates',
+  WebService: 'WebServices',
+  WSReference: 'WSReferences',
+  XDTOPackage: 'XDTOPackages',
+};
 
 export interface ConfigurationCompareInput {
   leftRootPath: string;
@@ -82,6 +136,295 @@ export async function buildConfigurationCompare(
   };
 }
 
+async function indexMetadataForStrategy(input: {
+  strategy: CompareJoinStrategy;
+  leftRootPath: string;
+  rightRootPath: string;
+}): Promise<readonly [MetadataIdentity[], MetadataIdentity[]]> {
+  if (input.strategy === 'right') {
+    const rightMetadata = await indexMetadataFolder({
+      sourceId: RIGHT_SOURCE_ID,
+      side: 'right',
+      folderPath: input.rightRootPath,
+    });
+    const leftMetadata = await indexCounterpartMetadata({
+      rootPath: input.leftRootPath,
+      sourceId: LEFT_SOURCE_ID,
+      side: 'left',
+      counterparts: rightMetadata,
+    });
+    return [leftMetadata, rightMetadata] as const;
+  }
+
+  if (input.strategy === 'left') {
+    const leftMetadata = await indexMetadataFolder({
+      sourceId: LEFT_SOURCE_ID,
+      side: 'left',
+      folderPath: input.leftRootPath,
+    });
+    const rightMetadata = await indexCounterpartMetadata({
+      rootPath: input.rightRootPath,
+      sourceId: RIGHT_SOURCE_ID,
+      side: 'right',
+      counterparts: leftMetadata,
+    });
+    return [leftMetadata, rightMetadata] as const;
+  }
+
+  return Promise.all([
+    indexMetadataFolder({
+      sourceId: LEFT_SOURCE_ID,
+      side: 'left',
+      folderPath: input.leftRootPath,
+    }),
+    indexMetadataFolder({
+      sourceId: RIGHT_SOURCE_ID,
+      side: 'right',
+      folderPath: input.rightRootPath,
+    }),
+  ]);
+}
+
+async function indexCounterpartMetadata(input: {
+  rootPath: string;
+  sourceId: string;
+  side: CompareSide;
+  counterparts: readonly MetadataIdentity[];
+}): Promise<MetadataIdentity[]> {
+  if (input.counterparts.length > TARGETED_METADATA_INDEX_THRESHOLD) {
+    return indexMetadataFolder({
+      sourceId: input.sourceId,
+      side: input.side,
+      folderPath: input.rootPath,
+    });
+  }
+
+  const identities: MetadataIdentity[] = [];
+  const seen = new Set<string>();
+  const topLevelTypeCache = new Map<string, Promise<ReadonlyMap<string, string>>>();
+  for (const counterpart of input.counterparts) {
+    let matchedByPath = false;
+    for (const filePath of descriptorPathCandidates(input.rootPath, counterpart.qualifiedName)) {
+      const key = path.normalize(filePath).toLowerCase();
+      if (seen.has(key) || !(await fileExists(filePath))) {
+        continue;
+      }
+      seen.add(key);
+      identities.push(
+        await indexMetadataFile({
+          sourceId: input.sourceId,
+          side: input.side,
+          filePath,
+          metadataType: counterpart.metadataType,
+          qualifiedName: counterpart.qualifiedName,
+        })
+      );
+      matchedByPath = true;
+      break;
+    }
+    if (!matchedByPath && counterpart.uuid) {
+      const uuidMatch = await findTopLevelMetadataByUuid({
+        rootPath: input.rootPath,
+        sourceId: input.sourceId,
+        side: input.side,
+        counterpart,
+        cache: topLevelTypeCache,
+      });
+      if (uuidMatch && !seen.has(path.normalize(uuidMatch.filePath).toLowerCase())) {
+        seen.add(path.normalize(uuidMatch.filePath).toLowerCase());
+        identities.push(uuidMatch);
+      }
+    }
+  }
+
+  return identities;
+}
+
+async function findTopLevelMetadataByUuid(input: {
+  rootPath: string;
+  sourceId: string;
+  side: CompareSide;
+  counterpart: MetadataIdentity;
+  cache: Map<string, Promise<ReadonlyMap<string, string>>>;
+}): Promise<MetadataIdentity | undefined> {
+  const uuid = input.counterpart.uuid;
+  if (!uuid) {
+    return undefined;
+  }
+  const folderPath = descriptorSiblingFolder(input.rootPath, input.counterpart.qualifiedName);
+  if (!folderPath) {
+    return undefined;
+  }
+  const cacheKey = path.normalize(folderPath).toLowerCase();
+  let uuidIndex = input.cache.get(cacheKey);
+  if (!uuidIndex) {
+    uuidIndex = collectDirectDescriptorUuidIndex(folderPath);
+    input.cache.set(cacheKey, uuidIndex);
+  }
+
+  const filePath = (await uuidIndex).get(uuid);
+  if (!filePath) {
+    return undefined;
+  }
+
+  return indexMetadataFile({
+    sourceId: input.sourceId,
+    side: input.side,
+    filePath,
+    metadataType: input.counterpart.metadataType,
+  });
+}
+
+function descriptorPathCandidates(rootPath: string, qualifiedName: string): string[] {
+  const parts = qualifiedName.split('.').filter(Boolean);
+  if (parts.length < 2 || parts.length % 2 !== 0) {
+    return [];
+  }
+
+  const folders: string[] = [];
+  for (let index = 0; index < parts.length; index += 2) {
+    const metadataType = parts[index];
+    const objectName = parts[index + 1];
+    const folderName = metadataFolderName(metadataType);
+    if (!folderName || !objectName) {
+      return [];
+    }
+    folders.push(folderName, objectName);
+  }
+
+  const objectName = parts[parts.length - 1];
+  const objectFolder = path.join(rootPath, ...folders);
+  const descriptorFolder = path.join(rootPath, ...folders.slice(0, -1));
+  return [
+    path.join(descriptorFolder, `${objectName}.xml`),
+    path.join(objectFolder, `${objectName}.xml`),
+  ];
+}
+
+function descriptorSiblingFolder(rootPath: string, qualifiedName: string): string | undefined {
+  const parts = qualifiedName.split('.').filter(Boolean);
+  if (parts.length < 2 || parts.length % 2 !== 0) {
+    return undefined;
+  }
+
+  const folders: string[] = [];
+  for (let index = 0; index < parts.length - 2; index += 2) {
+    const folderName = metadataFolderName(parts[index]);
+    const objectName = parts[index + 1];
+    if (!folderName || !objectName) {
+      return undefined;
+    }
+    folders.push(folderName, objectName);
+  }
+
+  const targetFolder = metadataFolderName(parts[parts.length - 2]);
+  return targetFolder ? path.join(rootPath, ...folders, targetFolder) : undefined;
+}
+
+async function collectDirectDescriptorCandidates(folderPath: string): Promise<string[]> {
+  if (!(await directoryExists(folderPath))) {
+    return [];
+  }
+
+  const entries = await fs.readdir(folderPath, { withFileTypes: true });
+  const candidates: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const entryPath = path.join(folderPath, entry.name);
+    if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
+      candidates.push(entryPath);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      const descriptorPath = path.join(entryPath, `${entry.name}.xml`);
+      if (await fileExists(descriptorPath)) {
+        candidates.push(descriptorPath);
+      }
+    }
+  }
+
+  return candidates;
+}
+
+async function collectDirectDescriptorUuidIndex(folderPath: string): Promise<ReadonlyMap<string, string>> {
+  const candidates = await collectDirectDescriptorCandidates(folderPath);
+  const entries = await mapLimit(candidates, 64, async (filePath) => {
+    const uuid = await readMetadataUuidPrefix(filePath);
+    return uuid ? { uuid, filePath } : undefined;
+  });
+  const byUuid = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry && !byUuid.has(entry.uuid)) {
+      byUuid.set(entry.uuid, entry.filePath);
+    }
+  }
+
+  return byUuid;
+}
+
+async function readMetadataUuidPrefix(filePath: string): Promise<string | undefined> {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(65536);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return readMetadataUuidFast(buffer.toString('utf-8', 0, bytesRead));
+  } finally {
+    await handle.close();
+  }
+}
+
+function readMetadataUuidFast(content: string): string | undefined {
+  return content.match(/\buuid\s*=\s*"([^"]+)"/i)?.[1];
+}
+
+function metadataFolderName(metadataType: string): string | undefined {
+  return METADATA_TYPE_FOLDERS[metadataType];
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function directoryExists(folderPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(folderPath);
+    return stat.isDirectory();
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function mapLimit<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const limit = Math.max(1, Math.min(concurrency, items.length || 1));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function run(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, run));
+  return results;
+}
+
 async function buildConfigurationCompareState(
   input: ConfigurationCompareInput,
   strategy: CompareJoinStrategy = 'right'
@@ -113,34 +456,30 @@ async function buildConfigurationCompareState(
     ],
   });
 
-  const [
-    leftMetadata,
-    rightMetadata,
-    leftInventory,
-    rightInventory,
-    leftBslFiles,
-    rightBslFiles,
-  ] = await Promise.all([
-    indexMetadataFolder({
-      sourceId: LEFT_SOURCE_ID,
-      side: 'left',
-      folderPath: leftRootPath,
-    }),
-    indexMetadataFolder({
-      sourceId: RIGHT_SOURCE_ID,
-      side: 'right',
-      folderPath: rightRootPath,
-    }),
-    buildConfigurationInventory(leftRootPath),
-    buildConfigurationInventory(rightRootPath),
-    collectBslFileSources(leftRootPath),
-    collectBslFileSources(rightRootPath),
-  ]);
-
+  const [leftMetadata, rightMetadata] = await indexMetadataForStrategy({
+    strategy,
+    leftRootPath,
+    rightRootPath,
+  });
   const metadata = matchMetadataIdentities({
     left: leftMetadata,
     right: rightMetadata,
   });
+  const descriptorScope = descriptorScopeForStrategy(metadata, strategy);
+  const [leftInventory, rightInventory] = await Promise.all([
+    buildConfigurationInventory(leftRootPath, {
+      identities: leftMetadata,
+      includeDescriptorPaths: descriptorScope.left,
+    }),
+    buildConfigurationInventory(rightRootPath, {
+      identities: rightMetadata,
+      includeDescriptorPaths: descriptorScope.right,
+    }),
+  ]);
+  const [leftBslFiles, rightBslFiles] = await Promise.all([
+    collectBslFileSourcesFromInventory(leftInventory),
+    collectBslFileSourcesFromInventory(rightInventory),
+  ]);
   const [leftBsl, rightBsl] = await Promise.all([
     buildBslModuleIndex(
       leftBslFiles.map((filePath) => ({
@@ -344,9 +683,29 @@ function findInventoryObjectByDescriptor(
   descriptorPath: string
 ): MetadataObjectUnit | undefined {
   const normalizedDescriptorPath = path.normalize(descriptorPath).toLowerCase();
-  return inventory.objects.find(
-    (object) => object.descriptorPath.toLowerCase() === normalizedDescriptorPath
-  );
+  return inventory.objectsByDescriptorPath.get(normalizedDescriptorPath);
+}
+
+function descriptorScopeForStrategy(
+  metadata: ReturnType<typeof matchMetadataIdentities>,
+  strategy: CompareJoinStrategy
+): { left?: ReadonlySet<string>; right?: ReadonlySet<string> } {
+  if (strategy === 'full') {
+    return {};
+  }
+
+  const matchedLeft = new Set(metadata.matches.map((match) => path.normalize(match.left.filePath)));
+  const matchedRight = new Set(metadata.matches.map((match) => path.normalize(match.right.filePath)));
+
+  if (strategy === 'right') {
+    return {
+      left: matchedLeft,
+    };
+  }
+
+  return {
+    right: matchedRight,
+  };
 }
 
 interface BslFileSource {
@@ -354,23 +713,20 @@ interface BslFileSource {
   source: string;
 }
 
-async function collectBslFileSources(rootPath: string): Promise<BslFileSource[]> {
-  const entries = await fs.readdir(rootPath, { withFileTypes: true });
-  const files: BslFileSource[] = [];
+async function collectBslFileSourcesFromInventory(
+  inventory: ConfigurationInventory
+): Promise<BslFileSource[]> {
+  const bslArtifacts = [...inventory.artifactsByObjectId.values()]
+    .flat()
+    .filter((artifact) => artifact.kind === 'bslModule')
+    .sort((left, right) => left.filePath.localeCompare(right.filePath));
 
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const entryPath = path.join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await collectBslFileSources(entryPath)));
-    } else if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.bsl') {
-      files.push({
-        filePath: entryPath,
-        source: await fs.readFile(entryPath, 'utf-8'),
-      });
-    }
-  }
-
-  return files.sort((left, right) => left.filePath.localeCompare(right.filePath));
+  return Promise.all(
+    bslArtifacts.map(async (artifact) => ({
+      filePath: artifact.filePath,
+      source: await fs.readFile(artifact.filePath, 'utf-8'),
+    }))
+  );
 }
 
 function buildBslProjectionInputs(input: {

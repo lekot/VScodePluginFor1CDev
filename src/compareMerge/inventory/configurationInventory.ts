@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+import type { MetadataIdentity } from '../domain/compareContracts';
 import { indexMetadataFolder } from '../metadata/metadataIndexer';
 import {
   createArtifactUnit,
@@ -15,6 +16,7 @@ export interface ConfigurationInventory {
   rootPath: string;
   objects: MetadataObjectUnit[];
   artifactsByObjectId: ReadonlyMap<string, ArtifactUnit[]>;
+  objectsByDescriptorPath: ReadonlyMap<string, MetadataObjectUnit>;
 }
 
 export interface MetadataObjectUnit {
@@ -30,14 +32,32 @@ interface ObjectCandidate extends MetadataObjectUnit {
   descriptorDirectory: string;
 }
 
-export async function buildConfigurationInventory(rootPath: string): Promise<ConfigurationInventory> {
+export interface BuildConfigurationInventoryOptions {
+  identities?: readonly MetadataIdentity[];
+  includeDescriptorPaths?: ReadonlySet<string>;
+}
+
+interface ArtifactOwnerIndex {
+  exactDescriptorByPath: ReadonlyMap<string, ObjectCandidate>;
+  containerByPath: ReadonlyMap<string, ObjectCandidate>;
+  directSidecarDirByPath: ReadonlyMap<string, ObjectCandidate>;
+  rootPath: string;
+}
+
+export async function buildConfigurationInventory(
+  rootPath: string,
+  options: BuildConfigurationInventoryOptions = {}
+): Promise<ConfigurationInventory> {
   const normalizedRootPath = path.normalize(rootPath);
-  const identities = await indexMetadataFolder({
+  const metadataIdentities = options.identities ?? await indexMetadataFolder({
     sourceId: 'configuration-inventory',
     side: 'left',
     folderPath: normalizedRootPath,
   });
-  const objects: ObjectCandidate[] = identities
+  const includeDescriptorPaths = options.includeDescriptorPaths
+    ? new Set([...options.includeDescriptorPaths].map(normalizeKey))
+    : undefined;
+  const allObjects: ObjectCandidate[] = metadataIdentities
     .map((identity) => {
       const descriptorPath = path.normalize(identity.filePath);
       const objectId = identity.uuid
@@ -55,27 +75,44 @@ export async function buildConfigurationInventory(rootPath: string): Promise<Con
       };
     })
     .sort((left, right) => left.qualifiedName.localeCompare(right.qualifiedName));
+  const objects = includeDescriptorPaths
+    ? allObjects.filter((object) => includeDescriptorPaths.has(normalizeKey(object.descriptorPath)))
+    : allObjects;
 
-  const files = await collectFiles(normalizedRootPath);
+  const files = includeDescriptorPaths
+    ? await collectFilesForObjects(objects)
+    : await collectFiles(normalizedRootPath);
   const artifactsByObjectId = new Map<string, ArtifactUnit[]>();
+  const ownerIndex = buildArtifactOwnerIndex(normalizedRootPath, allObjects);
+  const objectsByDescriptorPath = new Map<string, MetadataObjectUnit>();
+  const includedObjectIds = new Set(objects.map((object) => object.objectId));
 
   for (const object of objects) {
     artifactsByObjectId.set(object.objectId, []);
+    objectsByDescriptorPath.set(normalizeKey(object.descriptorPath), object);
   }
 
+  const ownedFiles: { filePath: string; owner: ObjectCandidate }[] = [];
   for (const filePath of files) {
-    const owner = findArtifactOwner(filePath, objects);
-    if (!owner) {
+    const owner = findArtifactOwner(filePath, ownerIndex);
+    if (!owner || !includedObjectIds.has(owner.objectId)) {
       continue;
     }
+    ownedFiles.push({ filePath, owner });
+  }
 
-    const artifact = await createArtifactUnit({
+  const artifacts = await mapLimit(ownedFiles, 64, ({ filePath, owner }) =>
+    createArtifactUnit({
       rootPath: normalizedRootPath,
       ownerObjectId: owner.objectId,
       filePath,
       descriptorPath: owner.descriptorPath,
-    });
-    artifactsByObjectId.get(owner.objectId)?.push(artifact);
+    })
+  );
+  for (const artifact of artifacts) {
+    if (artifact.ownerObjectId) {
+      artifactsByObjectId.get(artifact.ownerObjectId)?.push(artifact);
+    }
   }
 
   for (const artifacts of artifactsByObjectId.values()) {
@@ -86,6 +123,7 @@ export async function buildConfigurationInventory(rootPath: string): Promise<Con
     rootPath: normalizedRootPath,
     objects,
     artifactsByObjectId,
+    objectsByDescriptorPath,
   };
 }
 
@@ -108,6 +146,24 @@ async function collectFiles(folderPath: string): Promise<string[]> {
   return files.sort((left, right) => left.localeCompare(right));
 }
 
+async function collectFilesForObjects(objects: readonly ObjectCandidate[]): Promise<string[]> {
+  const files = new Set<string>();
+  for (const object of objects) {
+    files.add(path.normalize(object.descriptorPath));
+    try {
+      for (const filePath of await collectFiles(object.containerPath)) {
+        files.add(path.normalize(filePath));
+      }
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  return [...files].sort((left, right) => left.localeCompare(right));
+}
+
 function resolveObjectContainerPath(descriptorPath: string): string {
   const descriptorDirectory = path.dirname(descriptorPath);
   const descriptorBaseName = path.basename(descriptorPath, path.extname(descriptorPath));
@@ -122,29 +178,57 @@ function resolveObjectContainerPath(descriptorPath: string): string {
 
 function findArtifactOwner(
   filePath: string,
-  objects: readonly ObjectCandidate[]
+  index: ArtifactOwnerIndex
 ): ObjectCandidate | undefined {
-  const matchingObjects = objects.filter(
-    (object) =>
-      samePath(filePath, object.descriptorPath) ||
-      isPathInside(filePath, object.containerPath) ||
-      isDirectDescriptorSidecar(filePath, object)
-  );
+  const normalizedFilePath = path.normalize(filePath);
+  const exact = index.exactDescriptorByPath.get(normalizeKey(normalizedFilePath));
+  if (exact) {
+    return exact;
+  }
 
-  return matchingObjects.sort(
-    (left, right) => ownerSpecificity(right) - ownerSpecificity(left)
-  )[0];
+  const sidecar = index.directSidecarDirByPath.get(normalizeKey(path.dirname(normalizedFilePath)));
+  if (sidecar) {
+    return sidecar;
+  }
+
+  let cursor = path.dirname(normalizedFilePath);
+  while (isSameOrInside(cursor, index.rootPath)) {
+    const owner = index.containerByPath.get(normalizeKey(cursor));
+    if (owner) {
+      return owner;
+    }
+    const parent = path.dirname(cursor);
+    if (samePath(parent, cursor)) {
+      break;
+    }
+    cursor = parent;
+  }
+
+  return undefined;
 }
 
-function isDirectDescriptorSidecar(filePath: string, object: ObjectCandidate): boolean {
-  return (
-    samePath(path.dirname(filePath), object.descriptorDirectory) &&
-    samePath(object.containerPath, object.descriptorDirectory)
-  );
-}
+function buildArtifactOwnerIndex(
+  rootPath: string,
+  objects: readonly ObjectCandidate[]
+): ArtifactOwnerIndex {
+  const exactDescriptorByPath = new Map<string, ObjectCandidate>();
+  const containerByPath = new Map<string, ObjectCandidate>();
+  const directSidecarDirByPath = new Map<string, ObjectCandidate>();
 
-function ownerSpecificity(object: ObjectCandidate): number {
-  return Math.max(object.containerPath.length, object.descriptorPath.length);
+  for (const object of objects) {
+    exactDescriptorByPath.set(normalizeKey(object.descriptorPath), object);
+    containerByPath.set(normalizeKey(object.containerPath), object);
+    if (samePath(object.containerPath, object.descriptorDirectory)) {
+      directSidecarDirByPath.set(normalizeKey(object.descriptorDirectory), object);
+    }
+  }
+
+  return {
+    exactDescriptorByPath,
+    containerByPath,
+    directSidecarDirByPath,
+    rootPath: path.normalize(rootPath),
+  };
 }
 
 function isPathInside(filePath: string, folderPath: string): boolean {
@@ -153,5 +237,38 @@ function isPathInside(filePath: string, folderPath: string): boolean {
 }
 
 function samePath(left: string, right: string): boolean {
-  return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
+  return normalizeKey(left) === normalizeKey(right);
+}
+
+function isSameOrInside(filePath: string, folderPath: string): boolean {
+  return samePath(filePath, folderPath) || isPathInside(filePath, folderPath);
+}
+
+function normalizeKey(filePath: string): string {
+  return path.normalize(filePath).toLowerCase();
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT';
+}
+
+async function mapLimit<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const limit = Math.max(1, Math.min(concurrency, items.length || 1));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function run(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, run));
+  return results;
 }

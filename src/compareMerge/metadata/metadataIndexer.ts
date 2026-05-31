@@ -18,6 +18,7 @@ export interface MetadataIndexFolderInput {
   side: CompareSide;
   folderPath: string;
   metadataType?: string;
+  concurrency?: number;
 }
 
 export async function indexMetadataFile(input: MetadataIndexFileInput): Promise<MetadataIdentity> {
@@ -53,33 +54,25 @@ export async function indexMetadataFile(input: MetadataIndexFileInput): Promise<
 }
 
 export async function indexMetadataFolder(input: MetadataIndexFolderInput): Promise<MetadataIdentity[]> {
-  const xmlFiles = await collectXmlFiles(input.folderPath);
-
-  const identities: MetadataIdentity[] = [];
-  for (const filePath of xmlFiles) {
-    if (isUnderExtFolder(input.folderPath, filePath)) {
-      continue;
-    }
-
+  const xmlFiles = await collectMetadataXmlFiles(input.folderPath);
+  const indexed = await mapLimit(xmlFiles, input.concurrency ?? 32, async (filePath) => {
     const pathContext = inferMetadataPathContext(input.folderPath, filePath, input.metadataType);
     if (!pathContext) {
       if (!(await isStandaloneMetadataFile(filePath))) {
-        continue;
+        return undefined;
       }
     }
 
-    identities.push(
-      await indexMetadataFile({
-        sourceId: input.sourceId,
-        side: input.side,
-        filePath,
-        metadataType: pathContext?.metadataType,
-        qualifiedName: pathContext?.qualifiedName,
-      })
-    );
-  }
+    return indexMetadataFile({
+      sourceId: input.sourceId,
+      side: input.side,
+      filePath,
+      metadataType: pathContext?.metadataType,
+      qualifiedName: pathContext?.qualifiedName,
+    });
+  });
 
-  return identities;
+  return indexed.filter((identity): identity is MetadataIdentity => Boolean(identity));
 }
 
 interface MetadataPathContext {
@@ -87,14 +80,17 @@ interface MetadataPathContext {
   qualifiedName?: string;
 }
 
-async function collectXmlFiles(folderPath: string): Promise<string[]> {
+async function collectMetadataXmlFiles(folderPath: string): Promise<string[]> {
   const entries = await fs.readdir(folderPath, { withFileTypes: true });
   const xmlFiles: string[] = [];
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     const entryPath = path.join(folderPath, entry.name);
     if (entry.isDirectory()) {
-      xmlFiles.push(...(await collectXmlFiles(entryPath)));
+      if (entry.name.toLowerCase() === 'ext') {
+        continue;
+      }
+      xmlFiles.push(...(await collectMetadataXmlFiles(entryPath)));
       continue;
     }
 
@@ -106,11 +102,25 @@ async function collectXmlFiles(folderPath: string): Promise<string[]> {
   return xmlFiles.sort((left, right) => left.localeCompare(right));
 }
 
-function isUnderExtFolder(folderPath: string, filePath: string): boolean {
-  return path
-    .relative(folderPath, filePath)
-    .split(path.sep)
-    .some((part) => part.toLowerCase() === 'ext');
+async function mapLimit<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const limit = Math.max(1, Math.min(concurrency, items.length || 1));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function run(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, run));
+  return results;
 }
 
 function inferMetadataPathContext(

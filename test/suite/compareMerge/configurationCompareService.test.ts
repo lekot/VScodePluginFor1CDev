@@ -8,6 +8,100 @@ import { buildConfigurationCompare } from '../../../src/compareMerge/configurati
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 
 suite('ConfigurationCompareService', () => {
+  test('default right strategy indexes only matching left descriptors for small incoming config', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+
+    try {
+      await writeCatalog(leftRoot, 'Products', 'catalog-products');
+      await writeCatalog(rightRoot, 'Products', 'catalog-products');
+      await writeFile(path.join(leftRoot, 'Catalogs', 'Unrelated.xml'), '<MetaDataObject><Catalog>');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      assert.strictEqual(result.projection.stats.total > 0, true);
+      assert.strictEqual(collectNodes(result.projection.root, (node) => node.label.includes('Unrelated')).length, 0);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('default right strategy handles flat right-only descriptor without object folder', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      await writeCatalog(rightRoot, 'Products', 'catalog-products');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const node = collectNodes(
+        result.projection.root,
+        (candidate) =>
+          candidate.kind === 'metadataObject' &&
+          candidate.label === 'Catalog.Products' &&
+          candidate.mergeState?.targetFilePath === path.join(leftRoot, 'Catalogs', 'Products.xml')
+      )[0];
+
+      assert.ok(node);
+      assert.strictEqual(node.status, 'rightOnly');
+      assert.strictEqual(node.mergeable, true);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('default right strategy preserves same-uuid different-name conflict with targeted indexing', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+
+    try {
+      await writeCatalog(leftRoot, 'OldName', 'catalog-shared');
+      await writeCatalog(rightRoot, 'NewName', 'catalog-shared');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const conflict = requireSingleNode(
+        result.projection.root,
+        (node) => node.kind === 'metadataConflict' && node.label.includes('catalog-shared')
+      );
+
+      assert.strictEqual(conflict.status, 'changed');
+      assert.strictEqual(conflict.mergeable, false);
+      assert.strictEqual(
+        collectNodes(result.projection.root, (node) => node.kind === 'metadataObject' && node.label === 'Catalog.NewName').length,
+        0
+      );
+      assert.strictEqual(
+        collectNodes(result.projection.root, (node) => node.kind === 'fileArtifact' && node.label === 'NewName.xml').length,
+        0
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test('workspace previews and executes right-only BSL routine insert from built compare', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
