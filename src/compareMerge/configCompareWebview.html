@@ -59,6 +59,25 @@
       padding: 10px 16px;
     }
 
+    .toolbar input[type="search"] {
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      color: var(--vscode-input-foreground);
+      font: inherit;
+      min-height: 28px;
+      min-width: 180px;
+      padding: 4px 8px;
+    }
+
+    .strategy {
+      display: inline-flex;
+      gap: 2px;
+    }
+
+    .strategy button.active {
+      outline: 1px solid var(--vscode-focusBorder);
+    }
+
     button {
       background: var(--vscode-button-background);
       border: 1px solid var(--vscode-button-border, transparent);
@@ -126,6 +145,18 @@
       margin-left: 6px;
     }
 
+    .values {
+      display: grid;
+      gap: 4px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      margin-top: 2px;
+    }
+
+    .value {
+      color: var(--vscode-descriptionForeground);
+      overflow-wrap: anywhere;
+    }
+
     .blocked,
     .error {
       color: var(--vscode-errorForeground);
@@ -156,6 +187,17 @@
       <h1 id="title">Сравнение конфигураций</h1>
       <div class="stats" id="stats"></div>
     </header>
+    <section class="toolbar" aria-label="Compare controls">
+      <span class="strategy" aria-label="Strategy">
+        <button class="secondary" data-strategy="left">Left</button>
+        <button class="secondary" data-strategy="right">Right</button>
+        <button class="secondary" data-strategy="full">Full</button>
+      </span>
+      <label><input id="onlyDifferences" type="checkbox" checked> Only differences</label>
+      <input id="searchInput" type="search" placeholder="Search">
+      <button id="selectVisibleButton" class="secondary">Select visible</button>
+      <button id="clearSelectionButton" class="secondary">Clear selection</button>
+    </section>
     <section class="toolbar" aria-label="Действия merge">
       <button id="previewButton" disabled>Построить preview</button>
       <button id="approveButton" class="secondary" disabled>Подтвердить</button>
@@ -180,7 +222,10 @@
       locked: false,
       preview: undefined,
       diagnostics: [],
-      notice: undefined
+      notice: undefined,
+      onlyDifferences: true,
+      search: '',
+      visibleNodeIds: []
     };
 
     const elements = {
@@ -191,6 +236,11 @@
       preview: document.getElementById('preview'),
       result: document.getElementById('result'),
       selectionText: document.getElementById('selectionText'),
+      onlyDifferences: document.getElementById('onlyDifferences'),
+      searchInput: document.getElementById('searchInput'),
+      selectVisibleButton: document.getElementById('selectVisibleButton'),
+      clearSelectionButton: document.getElementById('clearSelectionButton'),
+      strategyButtons: [...document.querySelectorAll('[data-strategy]')],
       previewButton: document.getElementById('previewButton'),
       approveButton: document.getElementById('approveButton'),
       executeButton: document.getElementById('executeButton'),
@@ -203,6 +253,27 @@
       return state.selectedNodeIds.filter((nodeId) => executable.has(nodeId));
     };
 
+    elements.strategyButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        vscode.postMessage({ type: 'setStrategy', strategy: button.dataset.strategy });
+      });
+    });
+    elements.onlyDifferences.addEventListener('change', () => {
+      state.onlyDifferences = elements.onlyDifferences.checked;
+      render();
+    });
+    elements.searchInput.addEventListener('input', () => {
+      state.search = elements.searchInput.value.trim().toLowerCase();
+      render();
+    });
+    elements.selectVisibleButton.addEventListener('click', () => {
+      const executable = executableNodeIds();
+      const selected = state.visibleNodeIds.filter((nodeId) => executable.has(nodeId));
+      vscode.postMessage({ type: 'selectionChanged', nodeIds: selected });
+    });
+    elements.clearSelectionButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'selectionChanged', nodeIds: [] });
+    });
     elements.previewButton.addEventListener('click', () => {
       vscode.postMessage({ type: 'createPreview', nodeIds: selectedExecutableIds() });
     });
@@ -275,10 +346,14 @@
       }
       elements.title.textContent = state.payload.title;
       renderStats(state.payload.stats);
+      const visible = state.payload.root.children
+        .map(filterNode)
+        .filter(Boolean);
+      state.visibleNodeIds = flattenNodeIds(visible);
       renderToolbar();
       renderPreview();
       renderNotice();
-      elements.tree.replaceChildren(...state.payload.root.children.map(renderNode));
+      elements.tree.replaceChildren(...visible.map(renderNode));
     }
 
     function renderStats(stats) {
@@ -298,19 +373,29 @@
 
     function renderToolbar() {
       const count = selectedExecutableIds().length;
-      const canPreview = !state.busy && !state.locked && count === 1;
+      const canPreview = !state.busy && !state.locked && count > 0;
       const approved = Boolean(state.preview?.approved);
+      elements.strategyButtons.forEach((button) => {
+        button.classList.toggle('active', button.dataset.strategy === state.payload.strategy);
+      });
       elements.previewButton.disabled = !canPreview;
       elements.approveButton.disabled = state.busy || state.locked || !state.preview || approved;
       elements.executeButton.disabled = state.busy || state.locked || !approved;
       elements.refreshButton.disabled = state.busy;
+      elements.selectVisibleButton.disabled = state.busy || state.locked || visibleExecutableIds().length === 0;
+      elements.clearSelectionButton.disabled = state.busy || state.locked || state.selectedNodeIds.length === 0;
       elements.selectionText.textContent = state.locked
         ? 'Состояние заблокировано; нужно обновить сравнение.'
         : count === 0
-          ? 'Выберите одну исполняемую BSL-процедуру.'
+          ? 'Выберите один или несколько исполняемых узлов для preview.'
           : count === 1
-            ? 'Выбран один исполняемый узел.'
-            : 'За один раз можно объединить только один исполняемый узел.';
+            ? 'Выбран 1 исполняемый узел.'
+            : `Выбрано исполняемых узлов: ${count}.`;
+    }
+
+    function visibleExecutableIds() {
+      const executable = executableNodeIds();
+      return state.visibleNodeIds.filter((nodeId) => executable.has(nodeId));
     }
 
     function renderPreview() {
@@ -384,6 +469,35 @@
       elements.result.replaceChildren(title, backups);
     }
 
+    function filterNode(node) {
+      const filteredChildren = node.children
+        .map(filterNode)
+        .filter(Boolean);
+      const text = [
+        node.label,
+        node.kind,
+        node.status,
+        node.leftValue,
+        node.rightValue,
+        node.mergeState?.reason
+      ].filter(Boolean).join(' ').toLowerCase();
+      const matchesSearch = !state.search || text.includes(state.search);
+      const matchesDifference = !state.onlyDifferences || node.status !== 'equal';
+      if ((matchesSearch && matchesDifference) || filteredChildren.length > 0) {
+        return { ...node, children: filteredChildren };
+      }
+
+      return undefined;
+    }
+
+    function flattenNodeIds(nodes) {
+      const ids = [];
+      for (const node of nodes) {
+        ids.push(node.id, ...flattenNodeIds(node.children));
+      }
+      return ids;
+    }
+
     function renderNode(node) {
       const item = document.createElement('li');
       item.className = 'node';
@@ -416,6 +530,18 @@
         reason.className = 'reason';
         reason.textContent = node.mergeState.reason;
         text.append(reason);
+      }
+      if (node.leftValue || node.rightValue) {
+        const values = document.createElement('div');
+        values.className = 'values';
+        const left = document.createElement('span');
+        left.className = 'value';
+        left.textContent = `L: ${node.leftValue ?? ''}`;
+        const right = document.createElement('span');
+        right.className = 'value';
+        right.textContent = `R: ${node.rightValue ?? ''}`;
+        values.append(left, right);
+        text.append(values);
       }
       row.append(input, text);
       item.append(row);

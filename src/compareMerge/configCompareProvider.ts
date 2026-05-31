@@ -19,6 +19,8 @@ import type {
   ConfigurationCompareWorkspace,
   WorkspacePreviewDto,
   WorkspaceSelectionState,
+  WorkspaceStrategyResult,
+  CompareJoinStrategy,
 } from './configurationCompareWorkspace';
 
 export interface ConfigCompareWebviewRenderInput {
@@ -41,6 +43,7 @@ type ConfigCompareWorkspaceLike = Pick<
   | 'dispose'
 > & {
   listMergeableNodeIds?: () => string[];
+  setStrategy?: (strategy: CompareJoinStrategy) => WorkspaceStrategyResult | Promise<WorkspaceStrategyResult>;
 };
 
 interface ControllerState {
@@ -158,6 +161,9 @@ async function handleWebviewMessage(
     case 'ready':
       await postState(webview, workspace, title, state);
       return;
+    case 'setStrategy':
+      await setStrategy(webview, workspace, title, state, message.strategy);
+      return;
     case 'selectionChanged':
       applySelection(state, workspace.selectNodeIds(message.nodeIds));
       state.preview = undefined;
@@ -182,6 +188,27 @@ async function handleWebviewMessage(
     default:
       assertNever(message);
   }
+}
+
+async function setStrategy(
+  webview: Pick<vscode.Webview, 'postMessage'>,
+  workspace: ConfigCompareWorkspaceLike,
+  title: string,
+  state: ControllerState,
+  strategy: CompareJoinStrategy
+): Promise<void> {
+  state.selectedNodeIds = [];
+  state.executableNodeIds = [];
+  state.canCreatePreview = false;
+  state.preview = undefined;
+  if (workspace.setStrategy) {
+    const result = await workspace.setStrategy(strategy);
+    state.diagnostics = result.diagnostics;
+    if (!result.ok) {
+      await postError(webview, 'Не удалось изменить стратегию сравнения.', result.diagnostics, workspace.payload.locked);
+    }
+  }
+  await postState(webview, workspace, title, state);
 }
 
 async function createPreview(
@@ -357,6 +384,7 @@ function toWebviewPayload(
     root: redactTreeNode(payload.root),
     stats: payload.stats,
     locked: lockedOverride ?? payload.locked,
+    strategy: payload.strategy ?? 'right',
     executableNodeIds: [...executableNodeIds],
   };
 }
@@ -367,7 +395,10 @@ function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
     label: node.label,
     kind: node.kind,
     status: node.status,
+    leftValue: redactTreeValue(node.leftValue),
+    rightValue: redactTreeValue(node.rightValue),
     mergeable: node.mergeable,
+    destructive: node.destructive,
     conflict: node.conflict,
     mergeState: node.mergeState
       ? {
@@ -377,6 +408,14 @@ function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
       : undefined,
     children: node.children.map(redactTreeNode),
   };
+}
+
+function redactTreeValue(value: string | undefined): string | undefined {
+  if (!value || /^sha256[:\w-]*/i.test(value) || /^[a-zA-Z]:[\\/]/.test(value)) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function toPreviewDto(preview: WorkspacePreviewDto, approved: boolean): ConfigComparePreviewDto {
@@ -413,6 +452,10 @@ function parseWebviewMessage(message: unknown): ConfigCompareWebviewToHostMessag
     case 'ready':
     case 'refresh':
       return hasOnlyKeys(message, ['type']) ? { type: message.type } : undefined;
+    case 'setStrategy':
+      return hasOnlyKeys(message, ['type', 'strategy']) && isCompareJoinStrategy(message.strategy)
+        ? { type: 'setStrategy', strategy: message.strategy }
+        : undefined;
     case 'selectionChanged':
     case 'createPreview':
       return hasOnlyKeys(message, ['type', 'nodeIds']) && isStringArray(message.nodeIds)
@@ -426,6 +469,10 @@ function parseWebviewMessage(message: unknown): ConfigCompareWebviewToHostMessag
     default:
       return undefined;
   }
+}
+
+function isCompareJoinStrategy(value: unknown): value is CompareJoinStrategy {
+  return value === 'left' || value === 'right' || value === 'full';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

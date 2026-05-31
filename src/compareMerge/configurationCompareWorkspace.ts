@@ -22,6 +22,7 @@ import {
 } from './merge/mergeExecutor';
 
 const LEFT_SOURCE_ID = 'left-source';
+export type CompareJoinStrategy = 'left' | 'right' | 'full';
 
 export interface ConfigCompareWebviewPayload {
   root: CompareTreeNode;
@@ -31,6 +32,7 @@ export interface ConfigCompareWebviewPayload {
     right: string;
   };
   locked: boolean;
+  strategy?: CompareJoinStrategy;
 }
 
 export interface WorkspaceSelectionState {
@@ -106,6 +108,18 @@ export type WorkspaceRefreshResult =
       diagnostics: CompareMessage[];
     };
 
+export type WorkspaceStrategyResult =
+  | {
+      ok: true;
+      payload: ConfigCompareWebviewPayload;
+      diagnostics: [];
+    }
+  | {
+      ok: false;
+      payload: ConfigCompareWebviewPayload;
+      diagnostics: CompareMessage[];
+    };
+
 export type ExecutableCandidateFactoryResult =
   | {
       ok: true;
@@ -129,7 +143,7 @@ export interface ConfigurationCompareWorkspaceInput extends ConfigurationCompare
   rightRootPath: string;
   createdAt?: Date;
   backupRootPath: string;
-  refreshWorkspace?: () => Promise<ConfigurationCompareWorkspaceState>;
+  refreshWorkspace?: (strategy: CompareJoinStrategy) => Promise<ConfigurationCompareWorkspaceState>;
   createPreview?: typeof createMergePreview;
   validatePreflight?: typeof validateMergePreflight;
   executeMerge?: (input: MergeExecutorInput) => Promise<MergeExecutionResult>;
@@ -148,7 +162,7 @@ export class ConfigurationCompareWorkspace {
   private readonly rightRootPath: string;
   private readonly createdAt: Date;
   private readonly backupRootPath: string;
-  private readonly refreshWorkspace?: () => Promise<ConfigurationCompareWorkspaceState>;
+  private readonly refreshWorkspace?: (strategy: CompareJoinStrategy) => Promise<ConfigurationCompareWorkspaceState>;
   private readonly createPreview: typeof createMergePreview;
   private readonly validatePreflight: typeof validateMergePreflight;
   private readonly executeMerge: (input: MergeExecutorInput) => Promise<MergeExecutionResult>;
@@ -157,6 +171,7 @@ export class ConfigurationCompareWorkspace {
   private previewCounter = 0;
   private disposed = false;
   private locked = false;
+  private strategy: CompareJoinStrategy = 'right';
 
   constructor(input: ConfigurationCompareWorkspaceInput) {
     this.session = input.session;
@@ -181,18 +196,19 @@ export class ConfigurationCompareWorkspace {
         right: this.rightRootPath,
       },
       locked: this.locked,
+      strategy: this.strategy,
     };
   }
 
   selectNodeIds(nodeIds: readonly string[]): WorkspaceSelectionState {
     const executableNodeIds = nodeIds.filter((nodeId) => this.candidateFactories.has(nodeId));
     const diagnostics =
-      executableNodeIds.length === 1 && nodeIds.length === 1
+      executableNodeIds.length > 0 && executableNodeIds.length === nodeIds.length
         ? []
         : [
             diagnostic(
               'CONFIG_COMPARE_SINGLE_EXECUTABLE_REQUIRED',
-              'Выберите ровно один исполняемый узел сравнения перед построением preview.'
+              'Выберите один или несколько исполняемых узлов сравнения перед построением preview.'
             ),
           ];
 
@@ -208,19 +224,50 @@ export class ConfigurationCompareWorkspace {
     return this.disposed ? [] : [...this.candidateFactories.keys()].sort();
   }
 
+  async setStrategy(strategy: CompareJoinStrategy): Promise<WorkspaceStrategyResult> {
+    const unavailable = this.unavailableDiagnostic();
+    if (unavailable) {
+      return { ok: false, payload: this.payload, diagnostics: [unavailable] };
+    }
+
+    this.strategy = strategy;
+    const refreshResult = await this.refresh();
+    return refreshResult.ok
+      ? { ok: true, payload: refreshResult.payload, diagnostics: [] }
+      : { ok: false, payload: refreshResult.payload, diagnostics: refreshResult.diagnostics };
+  }
+
   async createPreviewForNodeIds(nodeIds: readonly string[]): Promise<WorkspacePreviewResult> {
     const unavailable = this.unavailableDiagnostic();
     if (unavailable) {
       return { ok: false, diagnostics: [unavailable] };
     }
 
-    if (nodeIds.length !== 1) {
+    if (nodeIds.length === 0) {
       return {
         ok: false,
         diagnostics: [
           diagnostic(
             'CONFIG_COMPARE_SINGLE_EXECUTABLE_REQUIRED',
-            'Выберите ровно один исполняемый узел сравнения перед построением preview.'
+            'Выберите один или несколько исполняемых узлов сравнения перед построением preview.'
+          ),
+        ],
+      };
+    }
+
+    const unknownNodeIds = nodeIds.filter((nodeId) => !this.candidateFactories.has(nodeId));
+    if (unknownNodeIds.length > 0) {
+      return {
+        ok: false,
+        diagnostics: [
+          diagnostic(
+            nodeIds.length > 1
+              ? 'CONFIG_COMPARE_SINGLE_EXECUTABLE_REQUIRED'
+              : 'CONFIG_COMPARE_UNKNOWN_SELECTION',
+            nodeIds.length > 1
+              ? 'Выберите только исполняемые узлы сравнения перед построением preview.'
+              : 'Selected compare node is not registered as an executable host-side merge candidate.',
+            unknownNodeIds[0]
           ),
         ],
       };
@@ -245,6 +292,31 @@ export class ConfigurationCompareWorkspace {
     if (!candidateResult.ok) {
       return { ok: false, diagnostics: candidateResult.diagnostics.map(redactDiagnostic) };
     }
+    const candidates: MergeCandidate[] = [candidateResult.candidate];
+    const additionalDiagnostics: CompareMessage[] = [];
+    for (const extraNodeId of nodeIds.slice(1)) {
+      const extraFactory = this.candidateFactories.get(extraNodeId);
+      if (!extraFactory) {
+        additionalDiagnostics.push(
+          diagnostic(
+            'CONFIG_COMPARE_UNKNOWN_SELECTION',
+            'Selected compare node is not registered as an executable host-side merge candidate.',
+            extraNodeId
+          )
+        );
+        continue;
+      }
+
+      const extraCandidateResult = await extraFactory();
+      if (extraCandidateResult.ok) {
+        candidates.push(extraCandidateResult.candidate);
+      } else {
+        additionalDiagnostics.push(...extraCandidateResult.diagnostics.map(redactDiagnostic));
+      }
+    }
+    if (additionalDiagnostics.length > 0) {
+      return { ok: false, diagnostics: additionalDiagnostics };
+    }
 
     const previewId = this.nextPreviewId();
     const validation = this.createPreview({
@@ -253,8 +325,8 @@ export class ConfigurationCompareWorkspace {
       targetSourceId: LEFT_SOURCE_ID,
       snapshotIds: currentSnapshotIds(this.session),
       createdAt: this.createdAt.toISOString(),
-      candidates: [candidateResult.candidate],
-      currentTargetHashes: currentTargetHashes([candidateResult.candidate]),
+      candidates,
+      currentTargetHashes: currentTargetHashes(candidates),
     });
 
     if (!validation.ok) {
@@ -416,7 +488,7 @@ export class ConfigurationCompareWorkspace {
     }
 
     try {
-      const refreshed = await this.refreshWorkspace();
+      const refreshed = await this.refreshWorkspace(this.strategy);
       this.session = refreshed.session;
       this.projection = refreshed.projection;
       this.candidateFactories = new Map(refreshed.candidateFactories);

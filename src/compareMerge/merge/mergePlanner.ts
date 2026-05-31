@@ -17,13 +17,20 @@ import {
   type PreviewValidationResult,
   type RollbackPlan,
   type StoredMergePreviewPayload,
+  type BslRoutineOperationPayload,
+  type XmlPatchPayload,
 } from './mergePreview';
+
+export { MISSING_TARGET_HASH } from './mergePreview';
 
 export {
   type BackupPlan,
   type BackupPlanItem,
+  type BslRoutineIdentityPayload,
+  type BslRoutineOperationPayload,
   type ConflictResolutionChoice,
   type LogicalRoutineMergePayload,
+  type FileOperationPayload,
   type MergeCandidate,
   type MergeCandidateKind,
   type MergeOperation,
@@ -31,6 +38,8 @@ export {
   type MergePreviewRequest,
   type MergeSupportedOperationKind,
   type MergeUnsupportedOperationKind,
+  type XmlAddress,
+  type XmlPatchPayload,
   type PreflightInput,
   type PreflightResult,
   type PreviewValidationResult,
@@ -216,6 +225,15 @@ function candidateToOperation(
   if (candidate.kind === 'bslLogicalRoutineMerge') {
     validateLogicalRoutineCandidate(candidate, diagnostics);
   }
+  if (isBslRoutineOperationKind(candidate.kind)) {
+    validateBslRoutineOperationCandidate(candidate, diagnostics);
+  }
+  if (isXmlOperationKind(candidate.kind)) {
+    validateXmlPatchCandidate(candidate, diagnostics);
+  }
+  if (isFileOperationKind(candidate.kind)) {
+    validateFileOperationCandidate(candidate, diagnostics);
+  }
 
   if (diagnostics.length > 0) {
     return undefined;
@@ -232,6 +250,9 @@ function candidateToOperation(
     newHash: candidate.newHash,
     conflictId: candidate.conflictId,
     logicalRoutine: candidate.logicalRoutine,
+    xmlPatch: candidate.xmlPatch,
+    fileOperation: candidate.fileOperation,
+    bslRoutine: candidate.bslRoutine,
   };
 }
 
@@ -297,6 +318,276 @@ function validateTargetHash(
         nodeId: operation.nodeId,
         path: operation.targetUri,
         suggestedAction: 'Refresh compare snapshots before creating or executing the merge preview.',
+      })
+    );
+  }
+}
+
+function validateXmlPatchCandidate(
+  candidate: MergeCandidate,
+  diagnostics: CompareMessage[]
+): void {
+  if (!candidate.xmlPatch) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_XML_PATCH_MISSING',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'XML merge operation is missing patch payload.',
+      })
+    );
+    return;
+  }
+
+  if (xmlKindForOperation(candidate.kind) !== candidate.xmlPatch.kind) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_XML_PATCH_KIND_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'XML merge operation kind must match patch payload kind.',
+      })
+    );
+  }
+  if (
+    candidate.targetUri &&
+    candidate.xmlPatch.target.filePath &&
+    candidate.xmlPatch.target.filePath !== candidate.targetUri
+  ) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_XML_PATCH_TARGET_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'XML patch target must match operation target uri.',
+      })
+    );
+  }
+  if (candidate.expectedOldHash && candidate.xmlPatch.expectedOldHash !== candidate.expectedOldHash) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_XML_PATCH_GUARD_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'XML patch hash guard must match operation hash guard.',
+      })
+    );
+  }
+  if (candidate.newHash && candidate.xmlPatch.newHash !== candidate.newHash) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_XML_PATCH_NEW_HASH_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'XML patch new hash must match operation new hash.',
+      })
+    );
+  }
+  if (candidate.xmlPatch.kind !== 'deleteNode' && !candidate.xmlPatch.replacementXml) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_XML_PATCH_REPLACEMENT_MISSING',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'XML insert/replace operation must include replacement XML.',
+      })
+    );
+  }
+}
+
+function validateBslRoutineOperationCandidate(
+  candidate: MergeCandidate,
+  diagnostics: CompareMessage[]
+): void {
+  if (!candidate.bslRoutine) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_BSL_ROUTINE_PAYLOAD_MISSING',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'BSL routine insert/delete operation is missing routine payload.',
+      })
+    );
+    return;
+  }
+
+  const payload = candidate.bslRoutine;
+  const expectedPayloadKind = bslPayloadKindForOperation(candidate.kind);
+  if (payload.kind !== expectedPayloadKind) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_BSL_ROUTINE_KIND_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'BSL routine operation kind must match routine payload kind.',
+      })
+    );
+  }
+  if (candidate.targetUri && payload.targetPath !== candidate.targetUri) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_BSL_ROUTINE_TARGET_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'BSL routine payload target must match operation target uri.',
+      })
+    );
+  }
+  if (candidate.expectedOldHash && payload.expectedOldHash !== candidate.expectedOldHash) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_BSL_ROUTINE_GUARD_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'BSL routine hash guard must match operation hash guard.',
+      })
+    );
+  }
+  if (candidate.newHash && payload.newHash !== candidate.newHash) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_BSL_ROUTINE_NEW_HASH_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'BSL routine payload new hash must match operation new hash.',
+      })
+    );
+  }
+  if (!candidate.newHash) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_BSL_ROUTINE_NEW_HASH_MISSING',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'BSL routine insert/delete operation must include final module hash.',
+      })
+    );
+  }
+  if (!payload.sourceText || payload.sourceText.trim().length === 0) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_BSL_ROUTINE_SOURCE_MISSING',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'BSL routine insert/delete operation must include routine source text.',
+      })
+    );
+  }
+  if (payload.kind === 'insertRoutine' && !payload.sourceRange) {
+    diagnostics.push(bslRoutineRangeDiagnostic(candidate, 'MERGE_BSL_ROUTINE_SOURCE_RANGE_MISSING'));
+  }
+  if (payload.kind === 'deleteRoutine' && !payload.targetRange) {
+    diagnostics.push(bslRoutineRangeDiagnostic(candidate, 'MERGE_BSL_ROUTINE_TARGET_RANGE_MISSING'));
+  }
+}
+
+function bslRoutineRangeDiagnostic(candidate: MergeCandidate, code: string): CompareMessage {
+  return compareMessage({
+    severity: 'error',
+    code,
+    sourceId: candidate.sourceId,
+    nodeId: candidate.nodeId,
+    path: candidate.targetUri,
+    suggestedAction: 'BSL routine insert/delete operation must include the routine source and target range guards.',
+  });
+}
+
+function validateFileOperationCandidate(
+  candidate: MergeCandidate,
+  diagnostics: CompareMessage[]
+): void {
+  if (!candidate.fileOperation) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_FILE_OPERATION_MISSING',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'File merge operation is missing file operation payload.',
+      })
+    );
+    return;
+  }
+
+  if (candidate.fileOperation.kind !== candidate.kind) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_FILE_OPERATION_KIND_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'File merge operation kind must match file operation payload kind.',
+      })
+    );
+  }
+  if (candidate.targetUri && candidate.fileOperation.targetPath !== candidate.targetUri) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_FILE_OPERATION_TARGET_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'File operation target path must match operation target uri.',
+      })
+    );
+  }
+  if (
+    candidate.expectedOldHash &&
+    candidate.fileOperation.expectedOldHash &&
+    candidate.fileOperation.expectedOldHash !== candidate.expectedOldHash
+  ) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_FILE_OPERATION_GUARD_MISMATCH',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'File operation hash guard must match operation hash guard.',
+      })
+    );
+  }
+  if (
+    (candidate.kind === 'fileCopy' || candidate.kind === 'folderCopy') &&
+    (!candidate.fileOperation.sourcePath || !candidate.fileOperation.sourceHash)
+  ) {
+    diagnostics.push(
+      compareMessage({
+        severity: 'error',
+        code: 'MERGE_FILE_OPERATION_SOURCE_MISSING',
+        sourceId: candidate.sourceId,
+        nodeId: candidate.nodeId,
+        path: candidate.targetUri,
+        suggestedAction: 'Copy operation must include source path and source hash.',
       })
     );
   }
@@ -566,8 +857,56 @@ function isSupportedOperationKind(kind: unknown): kind is MergeSupportedOperatio
     kind === 'bslLogicalAutoInsert' ||
     kind === 'bslLeafReplace' ||
     kind === 'bslRoutineReplace' ||
-    kind === 'bslLogicalRoutineMerge'
+    kind === 'bslLogicalRoutineMerge' ||
+    kind === 'bslRoutineInsert' ||
+    kind === 'bslRoutineDelete' ||
+    kind === 'xmlNodeReplace' ||
+    kind === 'xmlNodeInsert' ||
+    kind === 'xmlNodeDelete' ||
+    kind === 'fileCopy' ||
+    kind === 'fileDelete' ||
+    kind === 'folderCopy' ||
+    kind === 'folderDelete'
   );
+}
+
+function isXmlOperationKind(kind: MergeCandidate['kind']): boolean {
+  return kind === 'xmlNodeReplace' || kind === 'xmlNodeInsert' || kind === 'xmlNodeDelete';
+}
+
+function isFileOperationKind(kind: MergeCandidate['kind']): boolean {
+  return kind === 'fileCopy' || kind === 'fileDelete' || kind === 'folderCopy' || kind === 'folderDelete';
+}
+
+function isBslRoutineOperationKind(kind: MergeCandidate['kind']): boolean {
+  return kind === 'bslRoutineInsert' || kind === 'bslRoutineDelete';
+}
+
+function bslPayloadKindForOperation(
+  kind: MergeCandidate['kind']
+): BslRoutineOperationPayload['kind'] | undefined {
+  if (kind === 'bslRoutineInsert') {
+    return 'insertRoutine';
+  }
+  if (kind === 'bslRoutineDelete') {
+    return 'deleteRoutine';
+  }
+
+  return undefined;
+}
+
+function xmlKindForOperation(kind: MergeCandidate['kind']): XmlPatchPayload['kind'] | undefined {
+  if (kind === 'xmlNodeReplace') {
+    return 'replaceNode';
+  }
+  if (kind === 'xmlNodeInsert') {
+    return 'insertNode';
+  }
+  if (kind === 'xmlNodeDelete') {
+    return 'deleteNode';
+  }
+
+  return undefined;
 }
 
 function summarizeOperations(operations: readonly MergeOperation[]): string {

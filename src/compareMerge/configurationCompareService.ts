@@ -17,13 +17,27 @@ import type {
   BslRoutineLogicalMergePlan,
   BslRoutineLogicalSnapshot,
 } from './bsl/bslRoutineMergePlanTypes';
+import type { BslRoutineInfo, BslTextRange } from '../bsl/bslRoutineTypes';
 import {
   ConfigurationCompareWorkspace,
   type ConfigurationCompareWorkspaceState,
   type ExecutableCandidateFactory,
 } from './configurationCompareWorkspace';
+import { metadataXmlAdapter } from './adapters/xmlMetadataAdapter';
+import { formXmlAdapter } from './adapters/formXmlAdapter';
+import { predefinedXmlAdapter } from './adapters/predefinedXmlAdapter';
+import { fileObjectAdapter } from './adapters/fileObjectAdapter';
+import type {
+  AdapterCompareInput,
+  AdapterCompareResult,
+  ArtifactKind,
+  CompareJoinStrategy,
+  MetadataObjectMatch,
+} from './adapters/mergeAdapter';
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage } from './domain/compareContracts';
+import { buildConfigurationInventory } from './inventory/configurationInventory';
+import type { ArtifactUnit, ConfigurationInventory, MetadataObjectUnit } from './inventory/configurationInventory';
 import { indexMetadataFolder } from './metadata/metadataIndexer';
 import { matchMetadataIdentities } from './metadata/metadataMatcher';
 import {
@@ -58,7 +72,7 @@ export async function buildConfigurationCompare(
     rightRootPath: path.normalize(input.rightRootPath),
     createdAt: input.createdAt,
     backupRootPath: input.backupRootPath,
-    refreshWorkspace: () => buildConfigurationCompareState(input),
+    refreshWorkspace: (strategy) => buildConfigurationCompareState(input, strategy),
   });
 
   return {
@@ -69,7 +83,8 @@ export async function buildConfigurationCompare(
 }
 
 async function buildConfigurationCompareState(
-  input: ConfigurationCompareInput
+  input: ConfigurationCompareInput,
+  strategy: CompareJoinStrategy = 'right'
 ): Promise<ConfigurationCompareWorkspaceState> {
   const leftRootPath = path.normalize(input.leftRootPath);
   const rightRootPath = path.normalize(input.rightRootPath);
@@ -98,7 +113,14 @@ async function buildConfigurationCompareState(
     ],
   });
 
-  const [leftMetadata, rightMetadata, leftBslFiles, rightBslFiles] = await Promise.all([
+  const [
+    leftMetadata,
+    rightMetadata,
+    leftInventory,
+    rightInventory,
+    leftBslFiles,
+    rightBslFiles,
+  ] = await Promise.all([
     indexMetadataFolder({
       sourceId: LEFT_SOURCE_ID,
       side: 'left',
@@ -109,6 +131,8 @@ async function buildConfigurationCompareState(
       side: 'right',
       folderPath: rightRootPath,
     }),
+    buildConfigurationInventory(leftRootPath),
+    buildConfigurationInventory(rightRootPath),
     collectBslFileSources(leftRootPath),
     collectBslFileSources(rightRootPath),
   ]);
@@ -173,6 +197,17 @@ async function buildConfigurationCompareState(
     session,
     rightSnapshotId,
   });
+  const adapterResults = await buildAdapterCompareResults({
+    strategy,
+    leftInventory,
+    rightInventory,
+    metadata,
+    session,
+  });
+  const candidateFactories = new Map<string, ExecutableCandidateFactory>(bsl.candidateFactories);
+  for (const result of adapterResults) {
+    result.candidateFactories.forEach((factory, nodeId) => candidateFactories.set(nodeId, factory));
+  }
   const projection = buildCompareTreeProjection({
     metadata,
     bsl: [
@@ -180,10 +215,138 @@ async function buildConfigurationCompareState(
       { diagnostics: leftBsl.diagnostics.filter((diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)) },
       { diagnostics: rightBsl.diagnostics.filter((diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)) },
     ],
+    adapterResults,
     messages: session.state.messages,
   });
 
-  return { session, projection, candidateFactories: bsl.candidateFactories };
+  return { session, projection, candidateFactories };
+}
+
+async function buildAdapterCompareResults(input: {
+  strategy: CompareJoinStrategy;
+  leftInventory: ConfigurationInventory;
+  rightInventory: ConfigurationInventory;
+  metadata: ReturnType<typeof matchMetadataIdentities>;
+  session: CompareSession;
+}): Promise<AdapterCompareResult[]> {
+  const results: AdapterCompareResult[] = [];
+  const matches = buildMetadataObjectMatches(input);
+
+  for (const match of matches) {
+    results.push(
+      await fileObjectAdapter.compare({
+        strategy: input.strategy,
+        leftInventory: input.leftInventory,
+        rightInventory: input.rightInventory,
+        match,
+        session: input.session,
+        snapshots: { left: '', right: '' },
+      })
+    );
+
+    if (!match.left || !match.right) {
+      continue;
+    }
+
+    for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml'] as const) {
+      const artifactPair = findArtifactPair(input.leftInventory, input.rightInventory, match, artifactKind);
+      if (!artifactPair || artifactPair.left.contentHash === artifactPair.right.contentHash) {
+        continue;
+      }
+
+      results.push(await compareXmlArtifact(input, match, artifactPair, artifactKind));
+    }
+  }
+
+  return results.filter((result) => result.nodes.length > 0 || result.diagnostics.length > 0);
+}
+
+function buildMetadataObjectMatches(input: {
+  leftInventory: ConfigurationInventory;
+  rightInventory: ConfigurationInventory;
+  metadata: ReturnType<typeof matchMetadataIdentities>;
+}): MetadataObjectMatch[] {
+  const matches: MetadataObjectMatch[] = [
+    ...input.metadata.matches.map((identity) => ({
+      left: findInventoryObjectByDescriptor(input.leftInventory, identity.left.filePath),
+      right: findInventoryObjectByDescriptor(input.rightInventory, identity.right.filePath),
+      identity,
+      leftIdentity: identity.left,
+      rightIdentity: identity.right,
+    })),
+    ...input.metadata.unmatchedLeft.map((identity) => ({
+      left: findInventoryObjectByDescriptor(input.leftInventory, identity.filePath),
+      leftIdentity: identity,
+    })),
+    ...input.metadata.unmatchedRight.map((identity) => ({
+      right: findInventoryObjectByDescriptor(input.rightInventory, identity.filePath),
+      rightIdentity: identity,
+    })),
+  ];
+
+  return matches.filter((match) => match.left || match.right);
+}
+
+async function compareXmlArtifact(
+  input: {
+    strategy: CompareJoinStrategy;
+    leftInventory: ConfigurationInventory;
+    rightInventory: ConfigurationInventory;
+    session: CompareSession;
+  },
+  match: MetadataObjectMatch,
+  artifactPair: { left: ArtifactUnit; right: ArtifactUnit },
+  artifactKind: 'metadataXml' | 'formXml' | 'predefinedXml'
+): Promise<AdapterCompareResult> {
+  const adapterInput: AdapterCompareInput = {
+    strategy: input.strategy,
+    leftInventory: input.leftInventory,
+    rightInventory: input.rightInventory,
+    match,
+    session: input.session,
+    snapshots: {
+      left: await fs.readFile(artifactPair.left.filePath, 'utf-8'),
+      right: await fs.readFile(artifactPair.right.filePath, 'utf-8'),
+    },
+  };
+
+  switch (artifactKind) {
+    case 'metadataXml':
+      return metadataXmlAdapter.compare(adapterInput);
+    case 'formXml':
+      return formXmlAdapter.compare(adapterInput);
+    case 'predefinedXml':
+      return predefinedXmlAdapter.compare(adapterInput);
+  }
+}
+
+function findArtifactPair(
+  leftInventory: ConfigurationInventory,
+  rightInventory: ConfigurationInventory,
+  match: MetadataObjectMatch,
+  kind: ArtifactKind
+): { left: ArtifactUnit; right: ArtifactUnit } | undefined {
+  const left = match.left ? findArtifact(leftInventory, match.left, kind) : undefined;
+  const right = match.right ? findArtifact(rightInventory, match.right, kind) : undefined;
+  return left && right ? { left, right } : undefined;
+}
+
+function findArtifact(
+  inventory: ConfigurationInventory,
+  object: MetadataObjectUnit,
+  kind: ArtifactKind
+): ArtifactUnit | undefined {
+  return inventory.artifactsByObjectId.get(object.objectId)?.find((artifact) => artifact.kind === kind);
+}
+
+function findInventoryObjectByDescriptor(
+  inventory: ConfigurationInventory,
+  descriptorPath: string
+): MetadataObjectUnit | undefined {
+  const normalizedDescriptorPath = path.normalize(descriptorPath).toLowerCase();
+  return inventory.objects.find(
+    (object) => object.descriptorPath.toLowerCase() === normalizedDescriptorPath
+  );
 }
 
 interface BslFileSource {
@@ -298,11 +461,32 @@ function registerExecutableRoutineCandidates(input: {
   }
 
   for (const routine of diff.routines) {
+    const nodeId = `bsl:routine:${diff.moduleId}:${routine.normalizedName}`;
+    if (routine.status === 'added' && routine.right) {
+      registerAddedRoutineCandidate({
+        left: input.left,
+        rightSource: input.rightSource,
+        rightSnapshotId: input.rightSnapshotId,
+        candidateFactories: input.candidateFactories,
+        nodeId,
+        routine: routine.right,
+      });
+      continue;
+    }
+    if (routine.status === 'deleted' && routine.left) {
+      registerDeletedRoutineCandidate({
+        left: input.left,
+        rightSnapshotId: input.rightSnapshotId,
+        candidateFactories: input.candidateFactories,
+        nodeId,
+        routine: routine.left,
+      });
+      continue;
+    }
     if (!isExecutableRoutineDiff(routine)) {
       continue;
     }
 
-    const nodeId = `bsl:routine:${diff.moduleId}:${routine.normalizedName}`;
     const base: BslRoutineLogicalSnapshot = {
       source: input.leftSource,
       routine: routine.left,
@@ -396,6 +580,152 @@ function registerExecutableRoutineCandidates(input: {
       };
     });
   }
+}
+
+function registerAddedRoutineCandidate(input: {
+  left: BslModuleIndexEntry;
+  rightSource: string;
+  rightSnapshotId: string;
+  candidateFactories: Map<string, ExecutableCandidateFactory>;
+  nodeId: string;
+  routine: BslRoutineInfo;
+}): void {
+  const sourceText = sourceTextForRange(input.rightSource, input.routine.range);
+  if (!sourceText) {
+    return;
+  }
+
+  input.candidateFactories.set(input.nodeId, async () => {
+    const currentTargetSource = await fs.readFile(input.left.identity.filePath, 'utf-8');
+    const current = indexBslModuleSource({
+      identity: input.left.identity,
+      source: currentTargetSource,
+    });
+    if (current.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+      return routineGuardDiagnostic(
+        input.nodeId,
+        input.left.identity.filePath,
+        'Current target BSL module cannot be parsed before preview.'
+      );
+    }
+    if (current.routines.some((routine) => sameRoutineIdentity(routine, input.routine))) {
+      return routineGuardDiagnostic(
+        input.nodeId,
+        input.left.identity.filePath,
+        'Current target BSL module already contains this routine.'
+      );
+    }
+
+    const targetUri = pathToFileURL(input.left.identity.filePath).toString();
+    const expectedOldHash = hashText(currentTargetSource);
+    const plannedNextSource = applyRoutineInsertPreview(currentTargetSource, sourceText);
+    const newHash = hashText(plannedNextSource);
+    return {
+      ok: true,
+      candidate: {
+        kind: 'bslRoutineInsert',
+        sourceId: RIGHT_SOURCE_ID,
+        snapshotId: input.rightSnapshotId,
+        nodeId: input.nodeId,
+        targetUri,
+        expectedOldHash,
+        newHash,
+        bslRoutine: {
+          kind: 'insertRoutine',
+          targetPath: targetUri,
+          expectedOldHash,
+          newHash,
+          routine: routineIdentity(input.routine),
+          sourceText,
+          sourceRange: input.routine.range,
+        },
+      },
+    };
+  });
+}
+
+function registerDeletedRoutineCandidate(input: {
+  left: BslModuleIndexEntry;
+  rightSnapshotId: string;
+  candidateFactories: Map<string, ExecutableCandidateFactory>;
+  nodeId: string;
+  routine: BslRoutineInfo;
+}): void {
+  input.candidateFactories.set(input.nodeId, async () => {
+    const currentTargetSource = await fs.readFile(input.left.identity.filePath, 'utf-8');
+    const current = indexBslModuleSource({
+      identity: input.left.identity,
+      source: currentTargetSource,
+    });
+    if (current.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+      return routineGuardDiagnostic(
+        input.nodeId,
+        input.left.identity.filePath,
+        'Current target BSL module cannot be parsed before preview.'
+      );
+    }
+
+    const currentRoutine = current.routines.find((routine) =>
+      sameRoutineIdentity(routine, input.routine)
+    );
+    const sourceText = currentRoutine
+      ? sourceTextForRange(currentTargetSource, currentRoutine.range)
+      : undefined;
+    const plannedNextSource = currentRoutine
+      ? applyRoutineDeletePreview(currentTargetSource, currentRoutine.range)
+      : undefined;
+    if (!currentRoutine || !sourceText || plannedNextSource === undefined) {
+      return routineGuardDiagnostic(
+        input.nodeId,
+        input.left.identity.filePath,
+        'Current target BSL routine cannot be resolved before preview.'
+      );
+    }
+
+    const targetUri = pathToFileURL(input.left.identity.filePath).toString();
+    const expectedOldHash = hashText(currentTargetSource);
+    const newHash = hashText(plannedNextSource);
+    return {
+      ok: true,
+      candidate: {
+        kind: 'bslRoutineDelete',
+        sourceId: RIGHT_SOURCE_ID,
+        snapshotId: input.rightSnapshotId,
+        nodeId: input.nodeId,
+        targetUri,
+        expectedOldHash,
+        newHash,
+        bslRoutine: {
+          kind: 'deleteRoutine',
+          targetPath: targetUri,
+          expectedOldHash,
+          newHash,
+          routine: routineIdentity(currentRoutine),
+          sourceText,
+          targetRange: currentRoutine.range,
+        },
+      },
+    };
+  });
+}
+
+function routineGuardDiagnostic(
+  nodeId: string,
+  filePath: string,
+  suggestedAction: string
+): ReturnType<ExecutableCandidateFactory> {
+  return Promise.resolve({
+    ok: false,
+    diagnostics: [
+      previewDiagnostic(
+        'MERGE_BSL_ROUTINE_GUARD_BLOCKED',
+        RIGHT_SOURCE_ID,
+        nodeId,
+        filePath,
+        suggestedAction
+      ),
+    ],
+  });
 }
 
 function currentSnapshotFor(input: {
@@ -498,6 +828,111 @@ function offsetAfterLine(source: string, lineNumber: number): number | undefined
   return lines
     .slice(0, lineNumber)
     .reduce((offset, line) => offset + line.text.length + line.eol.length, 0);
+}
+
+function sourceTextForRange(source: string, range: BslTextRange): string | undefined {
+  const offsetRange = offsetRangeFor(source, range);
+  return offsetRange ? source.slice(offsetRange.start, offsetRange.end) : undefined;
+}
+
+function applyRoutineInsertPreview(source: string, routineSourceText: string): string {
+  const eol = detectEol(source) ?? detectEol(routineSourceText) ?? '\n';
+  const currentText = trimTrailingLineBreaks(source);
+  const routineText = normalizeEol(trimTrailingLineBreaks(routineSourceText), eol);
+  return currentText.length === 0 ? routineText : `${currentText}${eol}${routineText}`;
+}
+
+function applyRoutineDeletePreview(source: string, range: BslTextRange): string | undefined {
+  const offsetRange = offsetRangeFor(source, range);
+  if (!offsetRange) {
+    return undefined;
+  }
+
+  const adjustedStart =
+    offsetRange.end === source.length
+      ? removePrecedingEolStart(source, offsetRange.start)
+      : offsetRange.start;
+  return source.slice(0, adjustedStart) + source.slice(offsetRange.end);
+}
+
+function routineIdentity(routine: BslRoutineInfo): {
+  name: string;
+  normalizedName: string;
+  kind: BslRoutineInfo['kind'];
+  exported: boolean;
+} {
+  return {
+    name: routine.name,
+    normalizedName: routine.normalizedName,
+    kind: routine.kind,
+    exported: routine.exported,
+  };
+}
+
+function sameRoutineIdentity(left: BslRoutineInfo, right: BslRoutineInfo): boolean {
+  return (
+    left.normalizedName === right.normalizedName &&
+    left.kind === right.kind &&
+    left.exported === right.exported
+  );
+}
+
+function offsetRangeFor(
+  source: string,
+  range: BslTextRange
+): { start: number; end: number } | undefined {
+  const start = offsetForPosition(source, range.startLine, range.startColumn);
+  const end = offsetForPosition(source, range.endLine, range.endColumn);
+  return start === undefined || end === undefined || end < start ? undefined : { start, end };
+}
+
+function offsetForPosition(
+  source: string,
+  lineNumber: number,
+  columnNumber: number
+): number | undefined {
+  if (lineNumber < 1 || columnNumber < 1) {
+    return undefined;
+  }
+
+  const lines = splitSourceLines(source);
+  const line = lines[lineNumber - 1];
+  if (!line || columnNumber > line.text.length + 1) {
+    return undefined;
+  }
+
+  const lineStart = lines
+    .slice(0, lineNumber - 1)
+    .reduce((offset, line) => offset + line.text.length + line.eol.length, 0);
+  return lineStart + columnNumber - 1;
+}
+
+function removePrecedingEolStart(source: string, start: number): number {
+  if (start >= 2 && source.slice(start - 2, start) === '\r\n') {
+    return start - 2;
+  }
+  if (start >= 1 && (source[start - 1] === '\n' || source[start - 1] === '\r')) {
+    return start - 1;
+  }
+
+  return start;
+}
+
+function detectEol(source: string): string | undefined {
+  const crlf = source.indexOf('\r\n');
+  if (crlf >= 0) {
+    return '\r\n';
+  }
+  const lf = source.indexOf('\n');
+  if (lf >= 0) {
+    return '\n';
+  }
+  const cr = source.indexOf('\r');
+  return cr >= 0 ? '\r' : undefined;
+}
+
+function trimTrailingLineBreaks(source: string): string {
+  return source.replace(/(?:\r\n|\r|\n)+$/g, '');
 }
 
 function isExecutableRoutineDiff(

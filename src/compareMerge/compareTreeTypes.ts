@@ -22,6 +22,7 @@ export interface CompareTreeNode {
   leftValue?: string;
   rightValue?: string;
   mergeable?: boolean;
+  destructive?: boolean;
   payloadRef?: string;
   conflict?: CompareTreeConflict;
   mergeState?: CompareTreeMergeState;

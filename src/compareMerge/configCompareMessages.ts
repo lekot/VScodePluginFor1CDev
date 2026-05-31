@@ -1,9 +1,10 @@
 import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
 import type { CompareMessage } from './domain/compareContracts';
-import type { WorkspacePreviewDto } from './configurationCompareWorkspace';
+import type { CompareJoinStrategy, WorkspacePreviewDto } from './configurationCompareWorkspace';
 
 export type ConfigCompareWebviewToHostMessage =
   | { type: 'ready' }
+  | { type: 'setStrategy'; strategy: CompareJoinStrategy }
   | { type: 'selectionChanged'; nodeIds: string[] }
   | { type: 'createPreview'; nodeIds: string[] }
   | { type: 'approvePreview'; previewId: string }
@@ -15,6 +16,7 @@ export interface ConfigCompareWebviewPayloadDto {
   root: CompareTreeNode;
   stats: CompareTreeStats;
   locked: boolean;
+  strategy: CompareJoinStrategy;
   executableNodeIds: string[];
 }
 

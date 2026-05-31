@@ -2,6 +2,7 @@ import type {
   BslRoutineLogicalGuardInput,
   BslRoutineLogicalMergePlan,
 } from '../bsl/bslRoutineMergePlanTypes';
+import type { BslRoutineKind, BslTextRange } from '../../bsl/bslRoutineTypes';
 import type { CompareMessage, ComparePreview, CompareSide, IdentityConflict } from '../domain/compareContracts';
 import type { CompareSession } from '../domain/compareSession';
 
@@ -9,7 +10,16 @@ export type MergeSupportedOperationKind =
   | 'bslLogicalAutoInsert'
   | 'bslLeafReplace'
   | 'bslRoutineReplace'
-  | 'bslLogicalRoutineMerge';
+  | 'bslLogicalRoutineMerge'
+  | 'bslRoutineInsert'
+  | 'bslRoutineDelete'
+  | 'xmlNodeReplace'
+  | 'xmlNodeInsert'
+  | 'xmlNodeDelete'
+  | 'fileCopy'
+  | 'fileDelete'
+  | 'folderCopy'
+  | 'folderDelete';
 
 export type MergeUnsupportedOperationKind =
   | 'metadataObjectCopy'
@@ -21,10 +31,54 @@ export type MergeUnsupportedOperationKind =
 
 export type MergeCandidateKind = MergeSupportedOperationKind | MergeUnsupportedOperationKind;
 
+export const MISSING_TARGET_HASH = '__missing__';
+
 export type ConflictResolutionChoice = 'acceptIncoming' | 'keepTarget' | 'manual';
 
 export interface LogicalRoutineMergePayload extends BslRoutineLogicalGuardInput {
   plan: BslRoutineLogicalMergePlan;
+}
+
+export interface XmlAddress {
+  filePath: string;
+  pointer: string;
+  displayPath: string;
+  identityKey?: string;
+}
+
+export interface XmlPatchPayload {
+  kind: 'replaceNode' | 'insertNode' | 'deleteNode';
+  target: XmlAddress;
+  expectedOldHash: string;
+  newHash: string;
+  replacementXml?: string;
+}
+
+export interface FileOperationPayload {
+  kind: 'fileCopy' | 'fileDelete' | 'folderCopy' | 'folderDelete';
+  sourcePath?: string;
+  targetPath: string;
+  expectedOldHash?: string;
+  sourceHash?: string;
+  destructive: boolean;
+}
+
+export interface BslRoutineIdentityPayload {
+  name: string;
+  normalizedName: string;
+  kind: BslRoutineKind;
+  exported: boolean;
+}
+
+export interface BslRoutineOperationPayload {
+  kind: 'insertRoutine' | 'deleteRoutine';
+  targetPath: string;
+  expectedOldHash: string;
+  newHash: string;
+  routine: BslRoutineIdentityPayload;
+  sourceText: string;
+  sourceRange?: BslTextRange;
+  targetRange?: BslTextRange;
 }
 
 export interface MergeCandidate {
@@ -37,6 +91,9 @@ export interface MergeCandidate {
   newHash?: string;
   conflictId?: string;
   logicalRoutine?: LogicalRoutineMergePayload;
+  xmlPatch?: XmlPatchPayload;
+  fileOperation?: FileOperationPayload;
+  bslRoutine?: BslRoutineOperationPayload;
 }
 
 export interface MergeOperation {
@@ -50,6 +107,9 @@ export interface MergeOperation {
   newHash?: string;
   conflictId?: string;
   logicalRoutine?: LogicalRoutineMergePayload;
+  xmlPatch?: XmlPatchPayload;
+  fileOperation?: FileOperationPayload;
+  bslRoutine?: BslRoutineOperationPayload;
 }
 
 export interface BackupPlanItem {
@@ -140,6 +200,41 @@ export function cloneMergeOperation(operation: MergeOperation): MergeOperation {
           moduleId: operation.logicalRoutine.moduleId,
           current: operation.logicalRoutine.current,
           plan: operation.logicalRoutine.plan,
+        }
+      : undefined,
+    xmlPatch: operation.xmlPatch
+      ? {
+          kind: operation.xmlPatch.kind,
+          target: { ...operation.xmlPatch.target },
+          expectedOldHash: operation.xmlPatch.expectedOldHash,
+          newHash: operation.xmlPatch.newHash,
+          replacementXml: operation.xmlPatch.replacementXml,
+        }
+      : undefined,
+    fileOperation: operation.fileOperation
+      ? {
+          kind: operation.fileOperation.kind,
+          sourcePath: operation.fileOperation.sourcePath,
+          targetPath: operation.fileOperation.targetPath,
+          expectedOldHash: operation.fileOperation.expectedOldHash,
+          sourceHash: operation.fileOperation.sourceHash,
+          destructive: operation.fileOperation.destructive,
+        }
+      : undefined,
+    bslRoutine: operation.bslRoutine
+      ? {
+          kind: operation.bslRoutine.kind,
+          targetPath: operation.bslRoutine.targetPath,
+          expectedOldHash: operation.bslRoutine.expectedOldHash,
+          newHash: operation.bslRoutine.newHash,
+          routine: { ...operation.bslRoutine.routine },
+          sourceText: operation.bslRoutine.sourceText,
+          sourceRange: operation.bslRoutine.sourceRange
+            ? { ...operation.bslRoutine.sourceRange }
+            : undefined,
+          targetRange: operation.bslRoutine.targetRange
+            ? { ...operation.bslRoutine.targetRange }
+            : undefined,
         }
       : undefined,
   };

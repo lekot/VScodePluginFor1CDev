@@ -8,56 +8,139 @@ import { buildConfigurationCompare } from '../../../src/compareMerge/configurati
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 
 suite('ConfigurationCompareService', () => {
-  test('builds session projection and workspace with non-executable right-only BSL routine', async () => {
+  test('workspace previews and executes right-only BSL routine insert from built compare', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
     const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
     const leftModulePath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
     const rightModulePath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const leftSource = [
+      'Procedure Shared()',
+      '  Value = 1;',
+      'EndProcedure',
+    ].join('\n');
+    const rightSource = [
+      leftSource,
+      '',
+      'Procedure AddedOnRight()',
+      '  Value = 2;',
+      'EndProcedure',
+    ].join('\n');
+    const expectedMergedSource = [
+      leftSource,
+      'Procedure AddedOnRight()',
+      '  Value = 2;',
+      'EndProcedure',
+    ].join('\n');
 
     try {
       await writeCatalog(leftRoot, 'Products', 'catalog-products');
       await writeCatalog(rightRoot, 'Products', 'catalog-products');
-      await writeFile(
-        leftModulePath,
-        [
-          'Procedure Shared()',
-          '  Value = 1;',
-          'EndProcedure',
-        ].join('\n')
-      );
-      await writeFile(
-        rightModulePath,
-        [
-          'Procedure Shared()',
-          '  Value = 1;',
-          'EndProcedure',
-          '',
-          'Procedure AddedOnRight()',
-          '  Value = 2;',
-          'EndProcedure',
-        ].join('\n')
-      );
+      await writeFile(leftModulePath, leftSource);
+      await writeFile(rightModulePath, rightSource);
 
       const result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
         rightRootPath: rightRoot,
-        backupRootPath: path.join(tempRoot, 'backups'),
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
       });
+      const nodeId = 'bsl:routine:Catalog.Products.Object:addedonright';
 
       assert.strictEqual(result.session.state.sources[0]?.rootUri, pathToFileURL(leftRoot).toString());
       assert.strictEqual(result.session.state.sources[1]?.rootUri, pathToFileURL(rightRoot).toString());
 
-      const addedRoutine = requireNode(
-        result.projection.root,
-        'bsl:routine:Catalog.Products.Object:addedonright'
-      );
+      const addedRoutine = requireNode(result.projection.root, nodeId);
       assert.strictEqual(addedRoutine.kind, 'bslRoutine');
       assert.strictEqual(addedRoutine.status, 'rightOnly');
-      assert.strictEqual(addedRoutine.mergeable, false);
-      assert.strictEqual(addedRoutine.mergeState?.state, 'readOnly');
+      assert.strictEqual(addedRoutine.mergeable, true);
+      assert.strictEqual(addedRoutine.mergeState?.state, 'ready');
       assert.ok(result.workspace, 'Expected build result to expose workspace for provider.');
-      assert.deepStrictEqual(result.workspace.listMergeableNodeIds(), []);
+      assert.deepStrictEqual(result.workspace.listMergeableNodeIds(), [nodeId]);
+
+      const preview = await result.workspace.createPreviewForNodeIds([nodeId]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(preview.preview.operationCount, 1);
+      assert.deepStrictEqual(preview.preview.items, [
+        {
+          nodeId,
+          label: 'AddedOnRight',
+          kind: 'bslRoutine',
+          status: 'rightOnly',
+        },
+      ]);
+
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      assert.strictEqual(await readText(leftModulePath), expectedMergedSource);
+      assert.strictEqual(await readText(rightModulePath), rightSource);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace previews and executes left-only BSL routine delete from built compare', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+    const leftModulePath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const rightModulePath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+    const sharedRoutine = [
+      'Procedure Shared()',
+      '  Value = 1;',
+      'EndProcedure',
+    ].join('\n');
+    const leftSource = [
+      sharedRoutine,
+      '',
+      'Procedure RemovedOnLeft()',
+      '  Value = 2;',
+      'EndProcedure',
+    ].join('\n');
+
+    try {
+      await writeCatalog(leftRoot, 'Products', 'catalog-products');
+      await writeCatalog(rightRoot, 'Products', 'catalog-products');
+      await writeFile(leftModulePath, leftSource);
+      await writeFile(rightModulePath, sharedRoutine);
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const nodeId = 'bsl:routine:Catalog.Products.Object:removedonleft';
+      const deletedRoutine = requireNode(result.projection.root, nodeId);
+
+      assert.strictEqual(deletedRoutine.kind, 'bslRoutine');
+      assert.strictEqual(deletedRoutine.status, 'leftOnly');
+      assert.strictEqual(deletedRoutine.mergeable, true);
+      assert.strictEqual(deletedRoutine.mergeState?.state, 'ready');
+      assert.deepStrictEqual(result.workspace.listMergeableNodeIds(), [nodeId]);
+
+      const preview = await result.workspace.createPreviewForNodeIds([nodeId]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      assert.strictEqual(preview.preview.operationCount, 1);
+      assert.deepStrictEqual(preview.preview.items, [
+        {
+          nodeId,
+          label: 'RemovedOnLeft',
+          kind: 'bslRoutine',
+          status: 'leftOnly',
+        },
+      ]);
+
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      assert.strictEqual(await readText(leftModulePath), `${sharedRoutine}\n`);
+      assert.strictEqual(await readText(rightModulePath), sharedRoutine);
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -302,6 +385,286 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('projects mergeable XML adapter differences from configuration inventory', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Old goods');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'New goods');
+      await writeFile(
+        path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'Form.xml'),
+        formXml('Old title')
+      );
+      await writeFile(
+        path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'Form.xml'),
+        formXml('New title')
+      );
+      await writeFile(
+        path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'Predefined.xml'),
+        predefinedXml('Old main')
+      );
+      await writeFile(
+        path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'Predefined.xml'),
+        predefinedXml('New main')
+      );
+      await writeFile(path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.txt'), 'old-logo');
+      await writeFile(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.txt'), 'new-logo');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const synonym = requireNodeByLabel(result.projection.root, 'Synonym', 'Old goods', 'New goods');
+      const title = requireNodeByLabel(result.projection.root, 'Title', 'Old title', 'New title');
+      const presentation = requireNodeByLabel(
+        result.projection.root,
+        'Presentation',
+        'Old main',
+        'New main'
+      );
+      const logo = requireSingleNode(
+        result.projection.root,
+        (node) => node.kind === 'fileArtifact' && node.label === 'logo.txt'
+      );
+
+      assert.strictEqual(synonym.mergeable, true);
+      assert.strictEqual(title.mergeable, true);
+      assert.strictEqual(presentation.mergeable, true);
+      assert.strictEqual(logo.mergeable, true);
+      assert.ok(result.workspace.listMergeableNodeIds().includes(synonym.id));
+      assert.ok(result.workspace.listMergeableNodeIds().includes(title.id));
+      assert.ok(result.workspace.listMergeableNodeIds().includes(presentation.id));
+      assert.ok(result.workspace.listMergeableNodeIds().includes(logo.id));
+
+      const preview = await result.workspace.createPreviewForNodeIds([title.id]);
+      const filePreview = await result.workspace.createPreviewForNodeIds([logo.id]);
+
+      assert.strictEqual(preview.ok, true);
+      assert.strictEqual(preview.preview.operationCount, 1);
+      assert.deepStrictEqual(preview.preview.items, [
+        {
+          nodeId: title.id,
+          label: 'Title',
+          kind: 'xmlProperty',
+          status: 'changed',
+        },
+      ]);
+      assert.strictEqual(filePreview.ok, true);
+      assert.strictEqual(filePreview.preview.operationCount, 1);
+      assert.deepStrictEqual(filePreview.preview.items, [
+        {
+          nodeId: logo.id,
+          label: 'logo.txt',
+          kind: 'fileArtifact',
+          status: 'changed',
+        },
+      ]);
+
+      result.workspace.approvePreview(preview.preview.previewId);
+      const xmlExecution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+      assert.strictEqual(xmlExecution.ok, true, JSON.stringify(xmlExecution));
+      assert.strictEqual(
+        await readText(path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'Form.xml')),
+        formXml('New title')
+      );
+
+      const refreshedLogo = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'fileArtifact' && node.label === 'logo.txt'
+      );
+      const refreshedFilePreview = await result.workspace.createPreviewForNodeIds([refreshedLogo.id]);
+      assert.strictEqual(refreshedFilePreview.ok, true);
+      result.workspace.approvePreview(refreshedFilePreview.preview.previewId);
+      const fileExecution = await result.workspace.executeApprovedPreview(refreshedFilePreview.preview.previewId);
+      assert.strictEqual(fileExecution.ok, true, JSON.stringify(fileExecution));
+      assert.strictEqual(
+        await readText(path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.txt')),
+        'new-logo'
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace executes right-only binary artifact copy preserving bytes', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+    const leftLogoPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const rightLogoPath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const rightBytes = Buffer.from([0x00, 0xff, 0x41, 0x80, 0x0a]);
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      await writeFileBytes(rightLogoPath, rightBytes);
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const strategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+      const logo = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'fileArtifact' && node.label === 'logo.bin'
+      );
+
+      const preview = await result.workspace.createPreviewForNodeIds([logo.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      assert.deepStrictEqual(await fs.readFile(leftLogoPath), rightBytes);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace executes left-only binary artifact delete backing up bytes', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+    const leftLogoPath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const leftBytes = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0xfe]);
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Products');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      await writeFileBytes(leftLogoPath, leftBytes);
+      await fs.rm(path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin'), {
+        force: true,
+      });
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const strategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+      const logo = requireSingleNode(
+        result.workspace.payload.root,
+        (node) => node.kind === 'fileArtifact' && node.label === 'logo.bin'
+      );
+
+      const preview = await result.workspace.createPreviewForNodeIds([logo.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      await assert.rejects(fs.stat(leftLogoPath));
+      assert.strictEqual(execution.result.backupPaths.length, 1);
+      assert.deepStrictEqual(await fs.readFile(execution.result.backupPaths[0]!), leftBytes);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace executes right-only object folder copy with missing-target guard', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+    const leftCatalogPath = path.join(leftRoot, 'Catalogs', 'Products');
+    const rightLogoPath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const rightBytes = Buffer.from([0xde, 0xad, 0xbe, 0xef]);
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      await writeFileBytes(rightLogoPath, rightBytes);
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const products = requireSingleNode(
+        result.projection.root,
+        (node) =>
+          node.kind === 'metadataObject' &&
+          node.label === 'Catalog.Products' &&
+          node.id.startsWith('fileObject:rightOnly:') &&
+          node.status === 'rightOnly'
+      );
+
+      const preview = await result.workspace.createPreviewForNodeIds([products.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      assert.deepStrictEqual(
+        await fs.readFile(path.join(leftCatalogPath, 'Ext', 'logo.bin')),
+        rightBytes
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('workspace executes left-only object folder delete with directory hash guard', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+    const leftCatalogPath = path.join(leftRoot, 'Catalogs', 'Products');
+    const leftBytes = Buffer.from([0xca, 0xfe, 0xba, 0xbe]);
+
+    try {
+      await writeFileBytes(path.join(leftCatalogPath, 'Ext', 'logo.bin'), leftBytes);
+      await writeCatalogDescriptor(leftRoot, 'Products', 'catalog-products', 'Products');
+      await fs.mkdir(rightRoot, { recursive: true });
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const strategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+      const products = requireSingleNode(
+        result.workspace.payload.root,
+        (node) =>
+          node.kind === 'metadataObject' &&
+          node.label === 'Catalog.Products' &&
+          node.id.startsWith('fileObject:leftOnly:') &&
+          node.status === 'leftOnly'
+      );
+
+      const preview = await result.workspace.createPreviewForNodeIds([products.id]);
+      assert.strictEqual(preview.ok, true, JSON.stringify(preview));
+      result.workspace.approvePreview(preview.preview.previewId);
+      const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
+
+      assert.strictEqual(execution.ok, true, JSON.stringify(execution));
+      await assert.rejects(fs.stat(leftCatalogPath));
+      assert.strictEqual(execution.result.backupPaths.length, 1);
+      assert.deepStrictEqual(
+        await fs.readFile(path.join(execution.result.backupPaths[0]!, 'Ext', 'logo.bin')),
+        leftBytes
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test('preview new hash is based on current target when unrelated text changed after compare', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -348,9 +711,35 @@ async function writeCatalog(root: string, name: string, uuid: string): Promise<v
   );
 }
 
+async function writeCatalogDescriptor(
+  root: string,
+  name: string,
+  uuid: string,
+  synonym: string
+): Promise<void> {
+  await writeFile(
+    path.join(root, 'Catalogs', name, `${name}.xml`),
+    [
+      '<MetaDataObject>',
+      `  <Catalog uuid="${uuid}">`,
+      '    <Properties>',
+      `      <Name>${name}</Name>`,
+      `      <Synonym>${synonym}</Synonym>`,
+      '    </Properties>',
+      '  </Catalog>',
+      '</MetaDataObject>',
+    ].join('\n')
+  );
+}
+
 async function writeFile(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, 'utf-8');
+}
+
+async function writeFileBytes(filePath: string, content: Buffer): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content);
 }
 
 async function readText(filePath: string): Promise<string> {
@@ -387,6 +776,33 @@ function collectNodes(
     }
   });
   return found;
+}
+
+function requireNodeByLabel(
+  root: CompareTreeNode,
+  label: string,
+  leftValue: string,
+  rightValue: string
+): CompareTreeNode {
+  const matches = collectNodes(
+    root,
+    (node) => node.label === label && node.leftValue === leftValue && node.rightValue === rightValue
+  );
+  assert.strictEqual(
+    matches.length,
+    1,
+    `Expected exactly one node ${label} with ${leftValue} -> ${rightValue}.`
+  );
+  return matches[0]!;
+}
+
+function requireSingleNode(
+  root: CompareTreeNode,
+  predicate: (node: CompareTreeNode) => boolean
+): CompareTreeNode {
+  const matches = collectNodes(root, predicate);
+  assert.strictEqual(matches.length, 1, 'Expected exactly one matching compare node.');
+  return matches[0]!;
 }
 
 function visit(node: CompareTreeNode, callback: (node: CompareTreeNode) => void): void {
@@ -478,5 +894,29 @@ function secondIncomingRoutine(): string {
     '    Y = 1;',
     '  EndIf;',
     'EndProcedure',
+  ].join('\n');
+}
+
+function formXml(title: string): string {
+  return [
+    '<Form>',
+    '  <ChildItems>',
+    '    <Item>',
+    '      <Name>ItemsTable</Name>',
+    `      <Title>${title}</Title>`,
+    '    </Item>',
+    '  </ChildItems>',
+    '</Form>',
+  ].join('\n');
+}
+
+function predefinedXml(presentation: string): string {
+  return [
+    '<PredefinedData>',
+    '  <Item id="main">',
+    '    <Name>Main</Name>',
+    `    <Presentation>${presentation}</Presentation>`,
+    '  </Item>',
+    '</PredefinedData>',
   ].join('\n');
 }

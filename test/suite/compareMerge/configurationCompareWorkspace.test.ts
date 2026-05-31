@@ -28,8 +28,8 @@ suite('ConfigurationCompareWorkspace', () => {
     assert.deepStrictEqual(workspace.listMergeableNodeIds(), ['bsl:routine:Catalog.Products.Object:run']);
   });
 
-  test('requires exactly one executable selected node for preview', async () => {
-    const workspace = makeWorkspace();
+  test('requires at least one executable selected node for preview and accepts bulk selection', async () => {
+    const workspace = makeWorkspace({ includeAddedCandidate: true });
 
     const empty = await workspace.createPreviewForNodeIds([]);
     const multiple = await workspace.createPreviewForNodeIds([
@@ -39,8 +39,8 @@ suite('ConfigurationCompareWorkspace', () => {
 
     assert.strictEqual(empty.ok, false);
     assert.strictEqual(empty.diagnostics[0]?.code, 'CONFIG_COMPARE_SINGLE_EXECUTABLE_REQUIRED');
-    assert.strictEqual(multiple.ok, false);
-    assert.strictEqual(multiple.diagnostics[0]?.code, 'CONFIG_COMPARE_SINGLE_EXECUTABLE_REQUIRED');
+    assert.strictEqual(multiple.ok, true);
+    assert.strictEqual(multiple.preview.operationCount, 2);
   });
 
   test('keeps added deleted and reordered routines non-executable while changed routine previews', async () => {
@@ -190,11 +190,38 @@ suite('ConfigurationCompareWorkspace', () => {
     assert.strictEqual(afterFailure.ok, false);
     assert.strictEqual(afterFailure.diagnostics[0]?.code, 'CONFIG_COMPARE_WORKSPACE_LOCKED');
   });
+
+  test('setStrategy refreshes projection stats and executable node ids for selected strategy', async () => {
+    const refreshStrategies: string[] = [];
+    const workspace = makeWorkspace({
+      refreshWorkspace: async (strategy) => {
+        refreshStrategies.push(strategy);
+        return {
+          session: makeSession(),
+          projection: makeProjectionForStrategy(strategy),
+          candidateFactories: makeCandidateFactoriesForStrategy(strategy),
+        };
+      },
+    });
+
+    const result = await workspace.setStrategy('full');
+
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(refreshStrategies, ['full']);
+    assert.strictEqual(result.payload.strategy, 'full');
+    assert.strictEqual(result.payload.root.id, 'configCompare:full');
+    assert.deepStrictEqual(result.payload.stats, { total: 3, different: 3, mergeable: 2 });
+    assert.deepStrictEqual(workspace.listMergeableNodeIds(), [
+      'bsl:routine:Catalog.Products.Object:added',
+      'bsl:routine:Catalog.Products.Object:run',
+    ]);
+  });
 });
 
 interface WorkspaceOptions {
   candidate?: MergeCandidate;
   candidateResult?: Awaited<ReturnType<ExecutableCandidateFactory>>;
+  includeAddedCandidate?: boolean;
   executeMerge?: ConstructorParameters<typeof ConfigurationCompareWorkspace>[0]['executeMerge'];
   refreshWorkspace?: ConstructorParameters<typeof ConfigurationCompareWorkspace>[0]['refreshWorkspace'];
 }
@@ -206,17 +233,7 @@ function makeWorkspace(options: WorkspaceOptions = {}): ConfigurationCompareWork
     projection: makeProjection(),
     leftRootPath: path.join('repo', 'left'),
     rightRootPath: path.join('repo', 'right'),
-    candidateFactories: new Map([
-      [
-        'bsl:routine:Catalog.Products.Object:run',
-        async () => ({
-          ...(options.candidateResult ?? {
-            ok: true,
-            candidate: options.candidate ?? logicalCandidate(createAutoLogicalPlan()),
-          }),
-        }),
-      ],
-    ]),
+    candidateFactories: makeCandidateFactories(options),
     createdAt: new Date('2026-05-30T10:10:00.000Z'),
     backupRootPath: path.join('repo', 'backups'),
     executeMerge: options.executeMerge ?? (async (input) => emptyExecutionResult(input.preflight.previewId)),
@@ -228,6 +245,43 @@ function makeWorkspace(options: WorkspaceOptions = {}): ConfigurationCompareWork
         candidateFactories: new Map(),
       })),
   });
+}
+
+function makeCandidateFactories(
+  options: Pick<WorkspaceOptions, 'candidate' | 'candidateResult' | 'includeAddedCandidate'> = {}
+): Map<string, ExecutableCandidateFactory> {
+  const candidateFactories = new Map<string, ExecutableCandidateFactory>([
+    [
+      'bsl:routine:Catalog.Products.Object:run',
+      async () => ({
+        ...(options.candidateResult ?? {
+          ok: true,
+          candidate: options.candidate ?? logicalCandidate(createAutoLogicalPlan(), 'run'),
+        }),
+      }),
+    ],
+  ]);
+  if (options.includeAddedCandidate) {
+    candidateFactories.set(
+      'bsl:routine:Catalog.Products.Object:added',
+      async () => ({
+        ok: true,
+        candidate: logicalCandidate(createAutoLogicalPlan(), 'added'),
+      })
+    );
+  }
+
+  return candidateFactories;
+}
+
+function makeCandidateFactoriesForStrategy(strategy: 'left' | 'right' | 'full'): Map<string, ExecutableCandidateFactory> {
+  if (strategy === 'full') {
+    return makeCandidateFactories({ includeAddedCandidate: true });
+  }
+
+  return new Map([
+    ['bsl:routine:Catalog.Products.Object:run', makeCandidateFactories().get('bsl:routine:Catalog.Products.Object:run')!],
+  ]);
 }
 
 function makeProjection() {
@@ -251,6 +305,21 @@ function makeProjection() {
   return {
     root,
     stats: { total: 6, different: 4, mergeable: 2 },
+  };
+}
+
+function makeProjectionForStrategy(strategy: 'left' | 'right' | 'full') {
+  const projection = makeProjection();
+  if (strategy !== 'full') {
+    return projection;
+  }
+
+  return {
+    root: {
+      ...projection.root,
+      id: 'configCompare:full',
+    },
+    stats: { total: 3, different: 3, mergeable: 2 },
   };
 }
 
@@ -281,12 +350,12 @@ function routineNode(
   };
 }
 
-function logicalCandidate(plan: BslRoutineLogicalMergePlan): MergeCandidate {
+function logicalCandidate(plan: BslRoutineLogicalMergePlan, suffix = 'run'): MergeCandidate {
   return {
     kind: 'bslLogicalRoutineMerge',
     sourceId: 'right-source',
     snapshotId: 'snapshot-right-1',
-    nodeId: 'bsl:routine:Catalog.Products.Object:run',
+    nodeId: `bsl:routine:Catalog.Products.Object:${suffix}`,
     targetUri: 'file:///repo/Catalogs/Products/Ext/ObjectModule.bsl',
     expectedOldHash: 'sha256:old',
     newHash: 'sha256:new',

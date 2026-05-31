@@ -13,6 +13,7 @@ import type {
   CompareTreeStats,
   CompareTreeStatus,
 } from '../compareTreeTypes';
+import type { AdapterCompareResult } from '../adapters/mergeAdapter';
 
 export interface CompareTreeProjection {
   root: CompareTreeNode;
@@ -30,6 +31,7 @@ export interface BslRoutineDiffProjectionInput {
 export interface CompareTreeProjectionInput {
   metadata?: MatchResult;
   bsl?: readonly BslRoutineDiffProjectionInput[];
+  adapterResults?: readonly AdapterCompareResult[];
   messages?: readonly CompareMessage[];
 }
 
@@ -48,10 +50,12 @@ interface DiagnosticProjectionInput {
 }
 
 export function buildCompareTreeProjection(input: CompareTreeProjectionInput): CompareTreeProjection {
+  const adapterDiagnostics = (input.adapterResults ?? []).flatMap((result) => result.diagnostics);
   const children = [
     projectMetadata(input.metadata),
     projectBsl(input.bsl ?? []),
-    projectMessages(input.messages ?? []),
+    projectAdapters(input.adapterResults ?? []),
+    projectMessages([...(input.messages ?? []), ...adapterDiagnostics]),
   ].filter((node): node is CompareTreeNode => Boolean(node));
   const root = branchNode('configCompare', 'Configuration compare', 'configCompare', children);
 
@@ -59,6 +63,13 @@ export function buildCompareTreeProjection(input: CompareTreeProjectionInput): C
     root,
     stats: collectStats(root),
   };
+}
+
+function projectAdapters(results: readonly AdapterCompareResult[]): CompareTreeNode | undefined {
+  const children = results.flatMap((result) => result.nodes);
+  return children.length === 0
+    ? undefined
+    : branchNode('adapterChanges', 'Adapter changes', 'adapterGroup', children);
 }
 
 function projectMetadata(metadata: MatchResult | undefined): CompareTreeNode | undefined {

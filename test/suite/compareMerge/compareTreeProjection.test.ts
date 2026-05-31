@@ -73,7 +73,7 @@ suite('CompareTreeProjection', () => {
     assert.strictEqual(conflictNode.mergeState?.state, 'identityConflict');
   });
 
-  test('projects only changed BSL routines as mergeable and keeps structural routine changes visible', () => {
+  test('projects registered BSL routine factories as mergeable including structural changes', () => {
     const tree = buildCompareTreeProjection({
       bsl: [
         {
@@ -84,7 +84,11 @@ suite('CompareTreeProjection', () => {
             ['reorderedRoutine', 'reordered'],
           ]),
           targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
-          mergeableRoutineIds: ['bsl:routine:Catalog.Products.Object:changedroutine'],
+          mergeableRoutineIds: [
+            'bsl:routine:Catalog.Products.Object:changedroutine',
+            'bsl:routine:Catalog.Products.Object:addedroutine',
+            'bsl:routine:Catalog.Products.Object:deletedroutine',
+          ],
         },
       ],
     });
@@ -99,10 +103,42 @@ suite('CompareTreeProjection', () => {
 
     assert.deepStrictEqual(statuses, [
       ['changedRoutine', 'changed', true, 'ready'],
-      ['addedRoutine', 'rightOnly', false, 'readOnly'],
-      ['deletedRoutine', 'leftOnly', false, 'readOnly'],
+      ['addedRoutine', 'rightOnly', true, 'ready'],
+      ['deletedRoutine', 'leftOnly', true, 'ready'],
       ['reorderedRoutine', 'changed', false, 'readOnly'],
     ]);
+  });
+
+  test('keeps added and deleted BSL routines read-only without registered factory', () => {
+    const tree = buildCompareTreeProjection({
+      bsl: [
+        {
+          diff: bslDiff([
+            ['addedRoutine', 'added'],
+            ['deletedRoutine', 'deleted'],
+          ]),
+          targetFilePath: path.join('left', 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+          mergeableRoutineIds: [],
+        },
+      ],
+    });
+
+    assert.strictEqual(
+      requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:addedroutine').mergeable,
+      false
+    );
+    assert.strictEqual(
+      requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:addedroutine').mergeState?.state,
+      'readOnly'
+    );
+    assert.strictEqual(
+      requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:deletedroutine').mergeable,
+      false
+    );
+    assert.strictEqual(
+      requireNode(tree.root, 'bsl:routine:Catalog.Products.Object:deletedroutine').mergeState?.state,
+      'readOnly'
+    );
   });
 
   test('does not mark changed BSL routine mergeable when service did not prove auto plan', () => {
