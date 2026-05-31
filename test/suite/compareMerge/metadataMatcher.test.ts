@@ -17,17 +17,21 @@ suite('MetadataMatcher', () => {
     assert.strictEqual(result.diagnostics.length, 0);
   });
 
-  test('reports same qualified name with different uuid as conflict', () => {
+  test('reports same qualified name with different uuid as conflict and keeps comparable name match', () => {
     const result = matchMetadataIdentities({
       left: [identity('left', 'Catalog.Products', 'left-uuid')],
       right: [identity('right', 'Catalog.Products', 'right-uuid')],
     });
 
-    assert.strictEqual(result.matches.length, 0);
+    assert.strictEqual(result.matches.length, 1);
+    assert.strictEqual(result.matches[0].matchKind, 'qualifiedName');
+    assert.strictEqual(result.matches[0].confidence, 'nameOnly');
     assert.strictEqual(result.conflicts.length, 1);
     assert.strictEqual(result.conflicts[0].kind, 'sameNameDifferentUuid');
     assert.strictEqual(result.conflicts[0].resolution, 'manual');
     assert.strictEqual(result.conflicts[0].blocking, true);
+    assert.deepStrictEqual(result.unmatchedLeft, []);
+    assert.deepStrictEqual(result.unmatchedRight, []);
   });
 
   test('reports same uuid with different qualified name as conflict and keeps strong uuid match', () => {

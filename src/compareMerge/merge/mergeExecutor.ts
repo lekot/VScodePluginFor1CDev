@@ -97,6 +97,7 @@ interface ResolvedFileCopyOperation {
   type: 'fileCopy';
   operation: MergeOperation;
   sourcePath: string;
+  sourceRootUri: string;
   targetPath: string;
   backupPath: string;
   expectedOldHash: string;
@@ -107,9 +108,11 @@ interface ResolvedFolderOperation {
   type: 'folderCopy' | 'folderDelete';
   operation: MergeOperation;
   sourcePath?: string;
+  sourceRootUri?: string;
   targetPath: string;
   backupPath: string;
   expectedOldHash: string;
+  sourceHash?: string;
 }
 
 const nodeFileSystem: MergeExecutorFileSystem = {
@@ -222,11 +225,13 @@ export async function executeBslMergePreview(
   const resolvedOperations: ResolvedOperation[] = [];
 
   for (const operation of trustedOperations) {
+    const sourceRootUri = sourceRootUriFor(input.session, operation.sourceId, operation.snapshotId);
     const resolved = await resolveOperation(
       operation,
       trustedPreflight.backupPlan,
       fileSystem,
-      rootUri
+      rootUri,
+      sourceRootUri
     );
     if ('failure' in resolved) {
       result.failed.push(resolved.failure);
@@ -284,7 +289,8 @@ async function resolveOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
   fileSystem: MergeExecutorFileSystem,
-  rootUri: string
+  rootUri: string,
+  sourceRootUri: string | undefined
 ): Promise<{ resolved: ResolvedOperation } | { failure: MergeExecutionOperationResult }> {
   if (operation.kind === 'bslLogicalRoutineMerge') {
     return resolveLogicalOperation(operation, backupPlan, fileSystem, rootUri);
@@ -296,13 +302,13 @@ async function resolveOperation(
     return resolveXmlOperation(operation, backupPlan, fileSystem, rootUri);
   }
   if (operation.kind === 'fileCopy') {
-    return resolveFileCopyOperation(operation, backupPlan, fileSystem, rootUri);
+    return resolveFileCopyOperation(operation, backupPlan, fileSystem, rootUri, sourceRootUri);
   }
   if (operation.kind === 'fileDelete') {
     return resolveFileDeleteOperation(operation, backupPlan, fileSystem, rootUri);
   }
   if (operation.kind === 'folderCopy' || operation.kind === 'folderDelete') {
-    return resolveFolderOperation(operation, backupPlan, rootUri);
+    return resolveFolderOperation(operation, backupPlan, rootUri, sourceRootUri);
   }
 
   return {
@@ -585,7 +591,8 @@ async function resolveFileCopyOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
   fileSystem: MergeExecutorFileSystem,
-  rootUri: string
+  rootUri: string,
+  sourceRootUri: string | undefined
 ): Promise<{ resolved: ResolvedFileCopyOperation } | { failure: MergeExecutionOperationResult }> {
   const payload = operation.fileOperation;
   if (
@@ -619,6 +626,10 @@ async function resolveFileCopyOperation(
   if (boundaryFailure) {
     return { failure: failure(operation, boundaryFailure.code, boundaryFailure.message) };
   }
+  const sourceBoundaryFailure = await ensureSourceInsideRoot(sourceRootUri, sourcePath);
+  if (sourceBoundaryFailure) {
+    return { failure: failure(operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message) };
+  }
 
   let sourceHash: string;
   try {
@@ -646,6 +657,7 @@ async function resolveFileCopyOperation(
       type: 'fileCopy',
       operation,
       sourcePath,
+      sourceRootUri: sourceRootUri!,
       targetPath,
       backupPath: backup.backupPath,
       expectedOldHash: operation.expectedOldHash,
@@ -707,7 +719,8 @@ async function resolveFileDeleteOperation(
 async function resolveFolderOperation(
   operation: MergeOperation,
   backupPlan: BackupPlan,
-  rootUri: string
+  rootUri: string,
+  sourceRootUri: string | undefined
 ): Promise<{ resolved: ResolvedFolderOperation } | { failure: MergeExecutionOperationResult }> {
   const payload = operation.fileOperation;
   if (!payload || !operation.targetUri || !operation.expectedOldHash) {
@@ -742,6 +755,10 @@ async function resolveFolderOperation(
         failure: failure(operation, 'MERGE_FILE_OPERATION_SOURCE_MISSING', 'Folder copy source is missing.'),
       };
     }
+    const sourceBoundaryFailure = await ensureSourceInsideRoot(sourceRootUri, sourcePath);
+    if (sourceBoundaryFailure) {
+      return { failure: failure(operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message) };
+    }
     const sourceHash = await hashDirectory(sourcePath);
     if (sourceHash !== payload.sourceHash || (operation.newHash && sourceHash !== operation.newHash)) {
       return {
@@ -755,9 +772,11 @@ async function resolveFolderOperation(
       type: operation.kind === 'folderCopy' ? 'folderCopy' : 'folderDelete',
       operation,
       sourcePath,
+      sourceRootUri,
       targetPath,
       backupPath: backup.backupPath,
       expectedOldHash: operation.expectedOldHash,
+      sourceHash: operation.kind === 'folderCopy' ? payload.sourceHash : undefined,
     },
   };
 }
@@ -1160,7 +1179,16 @@ async function applyFileCopy(
       diagnostics: [executeDiagnostic(resolved.operation, boundaryFailure.code, boundaryFailure.message)],
     };
   }
+  const sourceBoundaryFailure = await ensureSourceInsideRoot(resolved.sourceRootUri, resolved.sourcePath);
+  if (sourceBoundaryFailure) {
+    return {
+      ok: false,
+      ...sourceBoundaryFailure,
+      diagnostics: [executeDiagnostic(resolved.operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message)],
+    };
+  }
 
+  let targetMutationStarted = false;
   try {
     const sourceHash = hashBuffer(await readBinaryFile(resolved.sourcePath, fileSystem));
     if (sourceHash !== resolved.sourceHash || sourceHash !== resolved.operation.newHash) {
@@ -1199,21 +1227,29 @@ async function applyFileCopy(
       await fileSystem.mkdir(path.dirname(resolved.backupPath), { recursive: true });
       await fileSystem.copyFile(resolved.targetPath, resolved.backupPath);
     }
+    targetMutationStarted = true;
     await fileSystem.copyFile(resolved.sourcePath, resolved.targetPath);
     return { ok: true, backupPath: resolved.backupPath, diagnostics: [] };
   } catch (error) {
+    const diagnostics = [
+      executeDiagnostic(
+        resolved.operation,
+        'MERGE_FILE_COPY_FAILED',
+        `File copy failed: ${errorMessage(error)}`
+      ),
+    ];
+    if (targetMutationStarted) {
+      const restoreFailure = await restoreFileCopyAfterFailure(resolved, fileSystem);
+      if (restoreFailure) {
+        diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
+      }
+    }
     return {
       ok: false,
       code: 'MERGE_FILE_COPY_FAILED',
       message: `File copy failed: ${errorMessage(error)}`,
       backupPath: resolved.backupPath,
-      diagnostics: [
-        executeDiagnostic(
-          resolved.operation,
-          'MERGE_FILE_COPY_FAILED',
-          `File copy failed: ${errorMessage(error)}`
-        ),
-      ],
+      diagnostics,
     };
   }
 }
@@ -1231,6 +1267,7 @@ async function applyFolderOperation(
     };
   }
 
+  let targetMutationStarted = false;
   try {
     const currentHash = await hashDirectoryOrMissing(resolved.targetPath);
     if (currentHash !== resolved.expectedOldHash) {
@@ -1254,10 +1291,56 @@ async function applyFolderOperation(
         errorOnExist: true,
         force: false,
       });
+      targetMutationStarted = true;
       await fs.rm(resolved.targetPath, { recursive: true, force: true });
     }
     if (resolved.type === 'folderCopy' && resolved.sourcePath) {
+      const sourceBoundaryFailure = await ensureSourceInsideRoot(resolved.sourceRootUri, resolved.sourcePath);
+      if (sourceBoundaryFailure) {
+        const diagnostics = [
+          executeDiagnostic(resolved.operation, sourceBoundaryFailure.code, sourceBoundaryFailure.message),
+        ];
+        if (targetMutationStarted) {
+          const restoreFailure = await restoreFolderOperationAfterFailure(resolved);
+          if (restoreFailure) {
+            diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
+          }
+        }
+        return {
+          ok: false,
+          ...sourceBoundaryFailure,
+          backupPath: resolved.backupPath,
+          diagnostics,
+        };
+      }
+      const sourceHash = await hashDirectory(resolved.sourcePath);
+      if (
+        sourceHash !== resolved.sourceHash ||
+        (resolved.operation.newHash && sourceHash !== resolved.operation.newHash)
+      ) {
+        const diagnostics = [
+          executeDiagnostic(
+            resolved.operation,
+            'MERGE_SOURCE_HASH_MISMATCH',
+            'Source folder changed immediately before copy.'
+          ),
+        ];
+        if (targetMutationStarted) {
+          const restoreFailure = await restoreFolderOperationAfterFailure(resolved);
+          if (restoreFailure) {
+            diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
+          }
+        }
+        return {
+          ok: false,
+          code: 'MERGE_SOURCE_HASH_MISMATCH',
+          message: 'Source folder changed immediately before copy.',
+          backupPath: resolved.backupPath,
+          diagnostics,
+        };
+      }
       await fs.mkdir(path.dirname(resolved.targetPath), { recursive: true });
+      targetMutationStarted = true;
       await fs.cp(resolved.sourcePath, resolved.targetPath, {
         recursive: true,
         errorOnExist: true,
@@ -1267,18 +1350,68 @@ async function applyFolderOperation(
 
     return { ok: true, backupPath: resolved.backupPath, diagnostics: [] };
   } catch (error) {
+    const diagnostics = [
+      executeDiagnostic(
+        resolved.operation,
+        'MERGE_FOLDER_OPERATION_FAILED',
+        `Folder operation failed: ${errorMessage(error)}`
+      ),
+    ];
+    if (targetMutationStarted) {
+      const restoreFailure = await restoreFolderOperationAfterFailure(resolved);
+      if (restoreFailure) {
+        diagnostics.push(executeDiagnostic(resolved.operation, restoreFailure.code, restoreFailure.message));
+      }
+    }
     return {
       ok: false,
       code: 'MERGE_FOLDER_OPERATION_FAILED',
       message: `Folder operation failed: ${errorMessage(error)}`,
       backupPath: resolved.backupPath,
-      diagnostics: [
-        executeDiagnostic(
-          resolved.operation,
-          'MERGE_FOLDER_OPERATION_FAILED',
-          `Folder operation failed: ${errorMessage(error)}`
-        ),
-      ],
+      diagnostics,
+    };
+  }
+}
+
+async function restoreFileCopyAfterFailure(
+  resolved: ResolvedFileCopyOperation,
+  fileSystem: MergeExecutorFileSystem
+): Promise<{ code: string; message: string } | undefined> {
+  try {
+    if (resolved.expectedOldHash === MISSING_TARGET_HASH) {
+      await fileSystem.rm(resolved.targetPath, { force: true });
+      return undefined;
+    }
+
+    await fileSystem.mkdir(path.dirname(resolved.targetPath), { recursive: true });
+    await fileSystem.copyFile(resolved.backupPath, resolved.targetPath);
+    return undefined;
+  } catch (error) {
+    return {
+      code: 'MERGE_ROLLBACK_FAILED',
+      message: `Failed to restore file target after copy failure: ${errorMessage(error)}`,
+    };
+  }
+}
+
+async function restoreFolderOperationAfterFailure(
+  resolved: ResolvedFolderOperation
+): Promise<{ code: string; message: string } | undefined> {
+  try {
+    await fs.rm(resolved.targetPath, { recursive: true, force: true });
+    if (resolved.expectedOldHash !== MISSING_TARGET_HASH) {
+      await fs.mkdir(path.dirname(resolved.targetPath), { recursive: true });
+      await fs.cp(resolved.backupPath, resolved.targetPath, {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+      });
+    }
+    return undefined;
+  } catch (error) {
+    return {
+      code: 'MERGE_ROLLBACK_FAILED',
+      message: `Failed to restore folder target after operation failure: ${errorMessage(error)}`,
     };
   }
 }
@@ -1308,6 +1441,44 @@ async function ensureTargetInsideRoot(
     return {
       code: 'MERGE_TARGET_READ_FAILED',
       message: `Failed to canonicalize merge target path: ${errorMessage(error)}`,
+    };
+  }
+
+  return undefined;
+}
+
+async function ensureSourceInsideRoot(
+  rootUri: string | undefined,
+  sourcePath: string
+): Promise<{ code: string; message: string } | undefined> {
+  if (!rootUri) {
+    return {
+      code: 'MERGE_SOURCE_ROOT_MISSING',
+      message: 'Right source root uri is not available for copy operation.',
+    };
+  }
+
+  const rootPath = uriToPath(rootUri);
+  if (!rootPath) {
+    return {
+      code: 'MERGE_SOURCE_ROOT_MISSING',
+      message: 'Right source root uri is not a file uri.',
+    };
+  }
+
+  try {
+    const canonicalRoot = await fs.realpath(rootPath);
+    const canonicalSource = await fs.realpath(sourcePath);
+    if (!isPathInsideRoot(canonicalRoot, canonicalSource)) {
+      return {
+        code: 'MERGE_SOURCE_OUTSIDE_ROOT',
+        message: 'Merge source path is outside the right source root.',
+      };
+    }
+  } catch (error) {
+    return {
+      code: 'MERGE_SOURCE_READ_FAILED',
+      message: `Failed to canonicalize merge source path: ${errorMessage(error)}`,
     };
   }
 
@@ -1769,6 +1940,18 @@ function failureForPreview(
 
 function targetRootUriFor(session: CompareSession, targetSourceId: string): string | undefined {
   return session.state.sources.find((source) => source.sourceId === targetSourceId)?.rootUri;
+}
+
+function sourceRootUriFor(
+  session: CompareSession,
+  sourceId: string,
+  snapshotId: string
+): string | undefined {
+  const state = session.state;
+  return (
+    state.snapshots.find((snapshot) => snapshot.snapshotId === snapshotId)?.snapshotRoot ??
+    state.sources.find((source) => source.sourceId === sourceId)?.rootUri
+  );
 }
 
 function cloneCompareMessage(message: CompareMessage): CompareMessage {

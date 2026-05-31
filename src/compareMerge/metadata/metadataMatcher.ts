@@ -79,6 +79,14 @@ export function matchMetadataIdentities(input: MetadataMatchInput): MatchResult 
         right,
         identities: [left, right],
       });
+      if (!matchedLeft.has(left) && !matchedRight.has(right)) {
+        matches.push({
+          left,
+          right,
+          matchKind: 'qualifiedName',
+          confidence: 'nameOnly',
+        });
+      }
       matchedLeft.add(left);
       matchedRight.add(right);
       continue;

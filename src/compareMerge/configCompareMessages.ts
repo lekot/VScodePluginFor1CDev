@@ -1,6 +1,10 @@
 import type { CompareTreeNode, CompareTreeStats } from './compareTreeTypes';
 import type { CompareMessage } from './domain/compareContracts';
-import type { CompareJoinStrategy, WorkspacePreviewDto } from './configurationCompareWorkspace';
+import type {
+  CompareJoinStrategy,
+  WorkspacePreviewDto,
+  WorkspacePreviewItemDto,
+} from './configurationCompareWorkspace';
 
 export type ConfigCompareWebviewToHostMessage =
   | { type: 'ready' }
@@ -8,7 +12,7 @@ export type ConfigCompareWebviewToHostMessage =
   | { type: 'selectionChanged'; nodeIds: string[] }
   | { type: 'createPreview'; nodeIds: string[] }
   | { type: 'approvePreview'; previewId: string }
-  | { type: 'executeMerge'; previewId: string }
+  | { type: 'executeMerge'; previewId: string; destructiveConfirmed?: boolean }
   | { type: 'refresh' };
 
 export interface ConfigCompareWebviewPayloadDto {
@@ -20,7 +24,13 @@ export interface ConfigCompareWebviewPayloadDto {
   executableNodeIds: string[];
 }
 
-export interface ConfigComparePreviewDto extends WorkspacePreviewDto {
+export interface ConfigComparePreviewItemDto extends WorkspacePreviewItemDto {
+  destructive?: boolean;
+}
+
+export interface ConfigComparePreviewDto extends Omit<WorkspacePreviewDto, 'items'> {
+  items: ConfigComparePreviewItemDto[];
+  destructiveCount: number;
   approved?: boolean;
 }
 

@@ -47,12 +47,14 @@ export interface WorkspacePreviewItemDto {
   label: string;
   kind: string;
   status: CompareTreeNode['status'];
+  destructive?: boolean;
 }
 
 export interface WorkspacePreviewDto {
   previewId: string;
   summary: string;
   operationCount: number;
+  destructiveCount: number;
   items: WorkspacePreviewItemDto[];
   diagnostics: CompareMessage[];
 }
@@ -564,19 +566,23 @@ export class ConfigurationCompareWorkspace {
   }
 
   private redactPreview(preview: MergePreview): WorkspacePreviewDto {
+    const items = preview.operations.map((operation) => {
+      const node = findNode(this.projection.root, operation.nodeId);
+      return {
+        nodeId: operation.nodeId,
+        label: node?.label ?? operation.nodeId,
+        kind: node?.kind ?? 'unknown',
+        status: node?.status ?? 'changed',
+        ...(node?.destructive ? { destructive: true } : {}),
+      };
+    });
+
     return {
       previewId: preview.previewId,
       summary: preview.summary,
       operationCount: preview.operations.length,
-      items: preview.operations.map((operation) => {
-        const node = findNode(this.projection.root, operation.nodeId);
-        return {
-          nodeId: operation.nodeId,
-          label: node?.label ?? operation.nodeId,
-          kind: node?.kind ?? 'unknown',
-          status: node?.status ?? 'changed',
-        };
-      }),
+      destructiveCount: items.filter((item) => item.destructive).length,
+      items,
       diagnostics: preview.diagnostics.map(redactDiagnostic),
     };
   }

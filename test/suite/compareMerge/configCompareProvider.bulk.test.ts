@@ -38,6 +38,10 @@ suite('ConfigCompareProvider bulk controls', () => {
     assert.match(html, /id="clearSelectionButton"/);
     assert.match(html, /leftValue|rightValue/);
     assert.match(html, /"destructive":true/);
+    assert.match(html, /destructiveConfirmed/);
+    assert.match(html, /confirm\(/);
+    assert.match(html, /destructive-warning/);
+    assert.match(html, /strategyButtons[\s\S]+disabled = state\.busy/);
   });
 
   test('accepts strategy message and sends bulk create preview for selected visible nodes', async () => {
@@ -251,6 +255,7 @@ function makePreview() {
     previewId: 'preview-1',
     summary: '2 operations can be merged.',
     operationCount: 2,
+    destructiveCount: 0,
     items: [
       {
         nodeId: 'xml:name',

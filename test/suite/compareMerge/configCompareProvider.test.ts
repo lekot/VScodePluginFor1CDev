@@ -79,6 +79,55 @@ suite('ConfigCompareProvider', () => {
     );
   });
 
+  test('requires explicit confirmation before executing destructive preview', async () => {
+    const panel = makePanel();
+    const workspace = makeWorkspace({ destructivePreview: true });
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+
+    await panel.send({
+      type: 'createPreview',
+      nodeIds: ['bsl:routine:Catalog.Products.Object:run'],
+    });
+    await panel.send({ type: 'approvePreview', previewId: 'preview-1' });
+    await panel.send({ type: 'executeMerge', previewId: 'preview-1' });
+    await panel.send({ type: 'executeMerge', previewId: 'preview-1', destructiveConfirmed: true });
+
+    assert.deepStrictEqual(workspace.calls, [
+      'createPreview:bsl:routine:Catalog.Products.Object:run',
+      'approve:preview-1',
+      'execute:preview-1',
+    ]);
+    const error = panel.posts.find((message) => message.type === 'mergeError');
+    assert.ok(error);
+    assert.match(error.message, /destructive|удален|перезапис/i);
+    const preview = panel.posts.find((message) => message.type === 'previewReady');
+    assert.ok(preview);
+    assert.strictEqual(preview.destructiveCount, 1);
+    assert.strictEqual(preview.items[0].destructive, true);
+  });
+
+  test('rejects strategy changes while an operation is busy', async () => {
+    const panel = makePanel();
+    const workspace = makeWorkspace({ deferPreview: true });
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+
+    const previewRequest = panel.send({
+      type: 'createPreview',
+      nodeIds: ['bsl:routine:Catalog.Products.Object:run'],
+    });
+    await panel.waitForPost((message) => message.type === 'state' && message.busy);
+    await panel.send({ type: 'setStrategy', strategy: 'full' });
+    workspace.releasePreview();
+    await previewRequest;
+
+    assert.deepStrictEqual(workspace.calls, ['createPreview:bsl:routine:Catalog.Products.Object:run']);
+    const error = panel.posts.find((message) => message.type === 'mergeError');
+    assert.ok(error);
+    assert.match(error.message, /busy|выполняется/i);
+  });
+
   test('ignores invalid and forged messages without executing workspace actions', async () => {
     const panel = makePanel();
     const workspace = makeWorkspace();
@@ -91,6 +140,24 @@ suite('ConfigCompareProvider', () => {
 
     assert.deepStrictEqual(workspace.calls, []);
     assert.deepStrictEqual(panel.posts, []);
+  });
+
+  test('redacts POSIX absolute paths from rendered payload', () => {
+    const payload = makePayload();
+    payload.root.children[1].leftValue = '/home/max/config/Catalogs/Products.xml';
+    payload.root.children[1].rightValue = '/tmp/right/Catalogs/Products.xml';
+
+    const html = renderConfigCompareWebviewHtml({
+      webview: { cspSource: 'vscode-resource:' },
+      payload,
+      executableNodeIds: ['bsl:routine:Catalog.Products.Object:run'],
+      title: 'Compare',
+      nonce: 'nonce-test',
+      htmlPath: path.join(process.cwd(), 'src', 'compareMerge', 'configCompareWebview.html'),
+    });
+
+    assert.doesNotMatch(html, /\/home\/max\/config/);
+    assert.doesNotMatch(html, /\/tmp\/right/);
   });
 
   test('posts backup paths on failed execution after backup creation', async () => {
@@ -127,6 +194,10 @@ suite('ConfigCompareProvider', () => {
 function makePanel() {
   let messageHandler: ((message: unknown) => unknown) | undefined;
   let disposeHandler: (() => void) | undefined;
+  let postWaiters: Array<{
+    predicate: (message: ConfigCompareHostToWebviewMessage) => boolean;
+    resolve: () => void;
+  }> = [];
   const panel = {
     posts: [] as ConfigCompareHostToWebviewMessage[],
     webview: {
@@ -136,6 +207,9 @@ function makePanel() {
         (message as any).__payloadText = JSON.stringify((message as any).payload ?? {});
         delete (message as any).__payloadText;
         (panel.posts as ConfigCompareHostToWebviewMessage[]).push(message);
+        const ready = postWaiters.filter((waiter) => waiter.predicate(message));
+        postWaiters = postWaiters.filter((waiter) => !waiter.predicate(message));
+        ready.forEach((waiter) => waiter.resolve());
         return true;
       },
       onDidReceiveMessage: (handler: (message: unknown) => unknown) => {
@@ -150,6 +224,14 @@ function makePanel() {
     send: async (message: unknown) => {
       await messageHandler?.(message);
     },
+    waitForPost: async (predicate: (message: ConfigCompareHostToWebviewMessage) => boolean) => {
+      if (panel.posts.some(predicate)) {
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        postWaiters.push({ predicate, resolve });
+      });
+    },
     dispose: () => {
       disposeHandler?.();
     },
@@ -157,12 +239,13 @@ function makePanel() {
   return panel;
 }
 
-function makeWorkspace(options: { failExecutionWithBackup?: boolean } = {}) {
+function makeWorkspace(options: { failExecutionWithBackup?: boolean; destructivePreview?: boolean; deferPreview?: boolean } = {}) {
   const calls: string[] = [];
   const preview = makePreview();
+  let releasePreview: (() => void) | undefined;
   return {
     calls,
-    payload: makePayload(),
+    payload: makePayload(options.destructivePreview),
     listMergeableNodeIds: () => ['bsl:routine:Catalog.Products.Object:run'],
     selectNodeIds: (nodeIds: readonly string[]): WorkspaceSelectionState => {
       calls.push(`select:${nodeIds.join(',')}`);
@@ -175,6 +258,11 @@ function makeWorkspace(options: { failExecutionWithBackup?: boolean } = {}) {
     },
     createPreviewForNodeIds: async (nodeIds: readonly string[]): Promise<WorkspacePreviewResult> => {
       calls.push(`createPreview:${nodeIds.join(',')}`);
+      if (options.deferPreview) {
+        await new Promise<void>((resolve) => {
+          releasePreview = resolve;
+        });
+      }
       return { ok: true, preview, diagnostics: [] };
     },
     approvePreview: (previewId: string): WorkspaceApprovalResult => {
@@ -225,7 +313,7 @@ function makeWorkspace(options: { failExecutionWithBackup?: boolean } = {}) {
           backupPaths: ['C:\\extension\\storage\\merge-backups\\preview-1\\4b42f7ce-8a2a-4a7d-87cc-9f934dd44d8e.bak'],
           diagnostics: [],
         },
-        payload: makePayload(),
+        payload: makePayload(options.destructivePreview),
         locked: false,
         diagnostics: [],
       };
@@ -239,12 +327,13 @@ function makeWorkspace(options: { failExecutionWithBackup?: boolean } = {}) {
     dispose: () => {
       calls.push('dispose');
     },
+    releasePreview: () => releasePreview?.(),
   };
 }
 
-function makePayload(): ConfigCompareWebviewPayload {
+function makePayload(destructiveRoutine = false): ConfigCompareWebviewPayload {
   return {
-    root: makeTree(),
+    root: makeTree(destructiveRoutine),
     stats: { total: 3, different: 2, mergeable: 1 },
     sourceRoots: {
       left: 'C:/left',
@@ -254,7 +343,7 @@ function makePayload(): ConfigCompareWebviewPayload {
   };
 }
 
-function makeTree(): CompareTreeNode {
+function makeTree(destructiveRoutine = false): CompareTreeNode {
   return {
     id: 'configCompare',
     label: 'Configuration compare',
@@ -267,6 +356,7 @@ function makeTree(): CompareTreeNode {
         kind: 'bslRoutine',
         status: 'changed',
         mergeable: true,
+        destructive: destructiveRoutine,
         mergeState: { state: 'ready', targetFilePath: 'C:/left/ObjectModule.bsl' },
         leftValue: 'sha256:left',
         rightValue: 'sha256:right',
@@ -292,6 +382,7 @@ function makePreview() {
     previewId: 'preview-1',
     summary: '1 routine can be merged.',
     operationCount: 1,
+    destructiveCount: 0,
     items: [
       {
         nodeId: 'bsl:routine:Catalog.Products.Object:run',

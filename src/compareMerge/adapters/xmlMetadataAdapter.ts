@@ -20,6 +20,52 @@ import type {
 const RIGHT_SOURCE_ID = 'right-source';
 const ATTRIBUTE_PREFIX = '@_';
 const TEXT_NODE = '#text';
+const DESCRIPTOR_OBJECT_LOCAL_NAMES = new Set([
+  'AccumulationRegister',
+  'AccountingRegister',
+  'BusinessProcess',
+  'CalculationRegister',
+  'Catalog',
+  'ChartOfAccounts',
+  'ChartOfCalculationTypes',
+  'ChartOfCharacteristicTypes',
+  'CommonAttribute',
+  'CommonCommand',
+  'CommonForm',
+  'CommonModule',
+  'CommonPicture',
+  'CommonTemplate',
+  'CommandGroup',
+  'Constant',
+  'DataProcessor',
+  'DefinedType',
+  'Document',
+  'DocumentJournal',
+  'DocumentNumerator',
+  'Enum',
+  'EventSubscription',
+  'ExchangePlan',
+  'ExternalDataSource',
+  'FilterCriterion',
+  'FunctionalOption',
+  'FunctionalOptionsParameter',
+  'HTTPService',
+  'InformationRegister',
+  'IntegrationService',
+  'Interface',
+  'Language',
+  'Report',
+  'Role',
+  'ScheduledJob',
+  'SessionParameter',
+  'SettingsStorage',
+  'Style',
+  'Subsystem',
+  'Task',
+  'WebService',
+  'WSReference',
+  'XDTOPackage',
+]);
 
 export interface XmlElementNode {
   name: string;
@@ -57,6 +103,11 @@ interface XmlCompareLocation {
   pointer: string;
   displayPath: string;
   identityKey?: string;
+}
+
+interface IndexedXmlChild {
+  element: XmlElementNode;
+  selector: string;
 }
 
 interface PlannedXmlMergeCandidate extends MergeCandidate {
@@ -183,14 +234,15 @@ function compareChildren(
   const children: CompareTreeNode[] = [
     ...compareAttributes(leftParent, rightParent, parentLocation, context),
   ];
-  const leftChildren = indexChildren(leftParent.children);
-  const rightChildren = indexChildren(rightParent.children);
+  const leftChildren = indexChildren(leftParent.children, leftParent);
+  const rightChildren = indexChildren(rightParent.children, rightParent);
   const keys = [...new Set([...leftChildren.keys(), ...rightChildren.keys()])].sort();
 
   for (const key of keys) {
     const left = leftChildren.get(key);
     const right = rightChildren.get(key);
-    const node = compareElement(left, right, parentLocation, context, depth);
+    const selector = right?.selector ?? left?.selector;
+    const node = compareElement(left?.element, right?.element, parentLocation, selector, context, depth);
     if (node) {
       children.push(node);
     }
@@ -203,6 +255,7 @@ function compareElement(
   left: XmlElementNode | undefined,
   right: XmlElementNode | undefined,
   parentLocation: XmlCompareLocation,
+  selector: string | undefined,
   context: XmlCompareContext,
   depth: number
 ): CompareTreeNode | undefined {
@@ -216,7 +269,7 @@ function compareElement(
     return undefined;
   }
 
-  const location = childLocation(parentLocation, element);
+  const location = childLocation(parentLocation, element, selector ?? '0');
   if (isPropertyLeaf(left, right)) {
     return propertyNode({
       element,
@@ -312,7 +365,7 @@ function propertyNode(input: {
     leftValue: input.leftValue,
     rightValue: input.rightValue,
     mergeable: true,
-    destructive: input.status === 'leftOnly',
+    destructive: input.status === 'leftOnly' ? true : undefined,
     payloadRef: `xmlPatch:${input.location.pointer}`,
     mergeState: {
       state: 'ready',
@@ -338,6 +391,13 @@ function subtreeNode(input: {
     context: input.context,
   });
   input.context.candidateFactories.set(nodeId, xmlCandidateFactory(input.context, nodeId, patch));
+  const children = readonlySubtreeChildren({
+    element: input.element,
+    status: input.status,
+    location: input.location,
+    context: input.context,
+    depth: input.depth + 1,
+  });
 
   return {
     id: nodeId,
@@ -345,10 +405,121 @@ function subtreeNode(input: {
     kind: elementKind(input.context, input.element, input.depth),
     status: input.status,
     mergeable: true,
-    destructive: input.status === 'leftOnly',
+    destructive: input.status === 'leftOnly' ? true : undefined,
     payloadRef: `xmlPatch:${input.location.pointer}`,
     mergeState: {
       state: 'ready',
+      targetFilePath: input.context.options.targetFilePath,
+    },
+    children,
+  };
+}
+
+function readonlySubtreeChildren(input: {
+  element: XmlElementNode;
+  status: 'leftOnly' | 'rightOnly';
+  location: XmlCompareLocation;
+  context: XmlCompareContext;
+  depth: number;
+}): CompareTreeNode[] {
+  return [
+    ...readonlyAttributeNodes(input),
+    ...[...indexChildren(input.element.children, input.element).values()].map((child) =>
+      readonlySubtreeElement({
+        element: child.element,
+        selector: child.selector,
+        status: input.status,
+        parentLocation: input.location,
+        context: input.context,
+        depth: input.depth,
+      })
+    ),
+  ];
+}
+
+function readonlySubtreeElement(input: {
+  element: XmlElementNode;
+  selector: string;
+  status: 'leftOnly' | 'rightOnly';
+  parentLocation: XmlCompareLocation;
+  context: XmlCompareContext;
+  depth: number;
+}): CompareTreeNode {
+  const location = childLocation(input.parentLocation, input.element, input.selector);
+  if (input.element.children.length === 0) {
+    return readOnlyPropertyNode({
+      element: input.element,
+      leftValue: input.status === 'leftOnly' ? input.element.text ?? '' : '',
+      rightValue: input.status === 'rightOnly' ? input.element.text ?? '' : '',
+      status: input.status,
+      location,
+      context: input.context,
+    });
+  }
+
+  return branchNode({
+    id: `${input.context.options.nodeIdPrefix}:element:${encodeId(location.pointer)}`,
+    label: elementDisplayName(input.element),
+    kind: elementKind(input.context, input.element, input.depth),
+    children: readonlySubtreeChildren({
+      element: input.element,
+      status: input.status,
+      location,
+      context: input.context,
+      depth: input.depth + 1,
+    }),
+  });
+}
+
+function readonlyAttributeNodes(input: {
+  element: XmlElementNode;
+  status: 'leftOnly' | 'rightOnly';
+  location: XmlCompareLocation;
+  context: XmlCompareContext;
+}): CompareTreeNode[] {
+  return Object.keys(input.element.attributes)
+    .sort()
+    .map((name) =>
+      readOnlyPropertyNode({
+        element: {
+          name: `@${name}`,
+          attributes: {},
+          children: [],
+          text: input.element.attributes[name],
+        },
+        leftValue: input.status === 'leftOnly' ? input.element.attributes[name] ?? '' : '',
+        rightValue: input.status === 'rightOnly' ? input.element.attributes[name] ?? '' : '',
+        status: input.status,
+        location: {
+          pointer: `${input.location.pointer}/@${escapePointer(name)}`,
+          displayPath: `${input.location.displayPath}/@${name}`,
+          identityKey: input.location.identityKey,
+        },
+        context: input.context,
+      })
+    );
+}
+
+function readOnlyPropertyNode(input: {
+  element: XmlElementNode;
+  leftValue: string;
+  rightValue: string;
+  status: CompareTreeStatus;
+  location: XmlCompareLocation;
+  context: XmlCompareContext;
+}): CompareTreeNode {
+  return {
+    id: `${input.context.options.nodeIdPrefix}:property:${encodeId(input.location.pointer)}`,
+    label: input.element.name,
+    kind: 'xmlProperty',
+    status: input.status,
+    leftValue: input.leftValue,
+    rightValue: input.rightValue,
+    mergeable: false,
+    payloadRef: `xmlPatch:${input.location.pointer}`,
+    mergeState: {
+      state: 'readOnly',
+      reason: 'Parent XML subtree is mergeable as a whole.',
       targetFilePath: input.context.options.targetFilePath,
     },
     children: [],
@@ -451,29 +622,28 @@ function branchNode(input: {
   };
 }
 
-function indexChildren(children: readonly XmlElementNode[]): Map<string, XmlElementNode> {
-  const counts = new Map<string, number>();
-  const indexed = new Map<string, XmlElementNode>();
-  children.forEach((child, index) => {
-    const baseKey = `${localName(child.name)}:${identityKey(child, index)}`;
-    const count = counts.get(baseKey) ?? 0;
-    counts.set(baseKey, count + 1);
-    indexed.set(count === 0 ? baseKey : `${baseKey}:${count}`, child);
+function indexChildren(
+  children: readonly XmlElementNode[],
+  parent?: XmlElementNode
+): Map<string, IndexedXmlChild> {
+  const keyCounts = new Map<string, number>();
+  const ordinalCounts = new Map<string, number>();
+  const indexed = new Map<string, IndexedXmlChild>();
+  children.forEach((child) => {
+    const elementLocalName = localName(child.name);
+    const ordinal = ordinalCounts.get(elementLocalName) ?? 0;
+    ordinalCounts.set(elementLocalName, ordinal + 1);
+    const identity = identitySelectorForElement(child, parent);
+    const selector = identity ?? String(ordinal);
+    const baseKey = `${elementLocalName}:${identity ?? `#${ordinal}`}`;
+    const duplicateCount = keyCounts.get(baseKey) ?? 0;
+    keyCounts.set(baseKey, duplicateCount + 1);
+    indexed.set(duplicateCount === 0 ? baseKey : `${baseKey}:${duplicateCount}`, {
+      element: child,
+      selector,
+    });
   });
   return indexed;
-}
-
-function identityKey(element: XmlElementNode, ordinal: number): string {
-  return (
-    element.attributes.uuid ??
-    element.attributes.UUID ??
-    element.attributes.id ??
-    element.attributes.ID ??
-    childText(element, 'Name') ??
-    element.children.find((child) => child.name === 'Properties')?.children.find((child) => child.name === 'Name')
-      ?.text ??
-    `${element.name}[${ordinal}]`
-  );
 }
 
 function locationForRoot(left: XmlElementNode, right: XmlElementNode): XmlCompareLocation {
@@ -487,13 +657,13 @@ function locationForRoot(left: XmlElementNode, right: XmlElementNode): XmlCompar
 
 function childLocation(
   parentLocation: XmlCompareLocation,
-  element: XmlElementNode
+  element: XmlElementNode,
+  selector: string
 ): XmlCompareLocation {
-  const identity = selectorForElement(element);
   return {
-    pointer: `${parentLocation.pointer}/${escapePointer(localName(element.name))}[${escapePointer(identity)}]`,
-    displayPath: `${parentLocation.displayPath}/${element.name}[${identity}]`,
-    identityKey: identity,
+    pointer: `${parentLocation.pointer}/${escapePointer(localName(element.name))}[${escapePointer(selector)}]`,
+    displayPath: `${parentLocation.displayPath}/${element.name}[${selector}]`,
+    identityKey: selector,
   };
 }
 
@@ -608,7 +778,18 @@ function hashText(value: string): string {
   return createHash('sha256').update(value.replace(/\r\n/g, '\n').replace(/\r/g, '\n')).digest('hex');
 }
 
-function selectorForElement(element: XmlElementNode): string {
+function identitySelectorForElement(
+  element: XmlElementNode,
+  parent?: XmlElementNode
+): string | undefined {
+  if (
+    parent &&
+    localName(parent.name) === 'MetaDataObject' &&
+    DESCRIPTOR_OBJECT_LOCAL_NAMES.has(localName(element.name))
+  ) {
+    return undefined;
+  }
+
   const uuid = element.attributes.uuid ?? element.attributes.UUID;
   if (uuid) {
     return `uuid=${uuid}`;
@@ -632,7 +813,7 @@ function selectorForElement(element: XmlElementNode): string {
     return `Properties.Name=${propertiesName}`;
   }
 
-  return '0';
+  return undefined;
 }
 
 function normalizeText(value: unknown): string {

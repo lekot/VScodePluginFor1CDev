@@ -492,6 +492,112 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('same-name different-uuid metadata conflict still exposes descriptor property merge', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+
+    try {
+      await writeCatalogDescriptor(leftRoot, 'Products', 'left-catalog-products', 'Old goods');
+      await writeCatalogDescriptor(rightRoot, 'Products', 'right-catalog-products', 'New goods');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const identityConflict = requireSingleNode(
+        result.projection.root,
+        (node) =>
+          node.kind === 'metadataConflict' &&
+          node.label === 'Catalog.Products' &&
+          node.conflict?.kind === 'sameNameDifferentUuid'
+      );
+      const synonym = requireNodeByLabel(result.projection.root, 'Synonym', 'Old goods', 'New goods');
+
+      assert.strictEqual(identityConflict.mergeable, false);
+      assert.strictEqual(synonym.mergeable, true);
+      assert.ok(result.workspace.listMergeableNodeIds().includes(synonym.id));
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('projects merge nodes for representative non-catalog metadata types', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+
+    try {
+      for (const fixture of representativeMetadataFixtures()) {
+        await writeMetadataDescriptor(leftRoot, fixture.relativePath, fixture.metadataType, fixture.name, fixture.uuid, 'Old');
+        await writeMetadataDescriptor(rightRoot, fixture.relativePath, fixture.metadataType, fixture.name, fixture.uuid, 'New');
+      }
+      await writeFile(
+        path.join(leftRoot, 'CommonForms', 'Chooser', 'Ext', 'Form.xml'),
+        formXml('Old common form title')
+      );
+      await writeFile(
+        path.join(rightRoot, 'CommonForms', 'Chooser', 'Ext', 'Form.xml'),
+        formXml('New common form title')
+      );
+      await writeFile(
+        path.join(leftRoot, 'ChartsOfCharacteristicTypes', 'Properties', 'Ext', 'Predefined.xml'),
+        predefinedXml('Old predefined')
+      );
+      await writeFile(
+        path.join(rightRoot, 'ChartsOfCharacteristicTypes', 'Properties', 'Ext', 'Predefined.xml'),
+        predefinedXml('New predefined')
+      );
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+
+      const expectedDescriptorNodes = [
+        'Document.Order',
+        'Enum.Status',
+        'Role.Admin',
+        'InformationRegister.Stock.Dimension.Warehouse',
+        'Document.Order.TabularSection.Goods',
+      ];
+      for (const qualifiedName of expectedDescriptorNodes) {
+        const synonym = requireNodeByLabel(
+          result.projection.root,
+          'Synonym',
+          `${qualifiedName} Old`,
+          `${qualifiedName} New`
+        );
+        assert.strictEqual(synonym.mergeable, true, qualifiedName);
+      }
+
+      const commonFormTitle = requireNodeByLabel(
+        result.projection.root,
+        'Title',
+        'Old common form title',
+        'New common form title'
+      );
+      const predefinedPresentation = requireNodeByLabel(
+        result.projection.root,
+        'Presentation',
+        'Old predefined',
+        'New predefined'
+      );
+
+      assert.strictEqual(commonFormTitle.mergeable, true);
+      assert.strictEqual(predefinedPresentation.mergeable, true);
+      assert.ok(result.workspace.listMergeableNodeIds().includes(commonFormTitle.id));
+      assert.ok(result.workspace.listMergeableNodeIds().includes(predefinedPresentation.id));
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test('workspace executes right-only binary artifact copy preserving bytes', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -730,6 +836,108 @@ async function writeCatalogDescriptor(
       '</MetaDataObject>',
     ].join('\n')
   );
+}
+
+async function writeMetadataDescriptor(
+  root: string,
+  relativePath: string,
+  metadataType: string,
+  name: string,
+  uuid: string,
+  synonymSuffix: string
+): Promise<void> {
+  const qualifiedName = qualifiedNameForFixture(relativePath);
+  await writeFile(
+    path.join(root, relativePath),
+    [
+      '<MetaDataObject>',
+      `  <${metadataType} uuid="${uuid}">`,
+      '    <Properties>',
+      `      <Name>${name}</Name>`,
+      `      <Synonym>${qualifiedName} ${synonymSuffix}</Synonym>`,
+      '    </Properties>',
+      `  </${metadataType}>`,
+      '</MetaDataObject>',
+    ].join('\n')
+  );
+}
+
+function representativeMetadataFixtures(): Array<{
+  relativePath: string;
+  metadataType: string;
+  name: string;
+  uuid: string;
+}> {
+  return [
+    {
+      relativePath: path.join('Documents', 'Order', 'Order.xml'),
+      metadataType: 'Document',
+      name: 'Order',
+      uuid: 'document-order',
+    },
+    {
+      relativePath: path.join('Enums', 'Status', 'Status.xml'),
+      metadataType: 'Enum',
+      name: 'Status',
+      uuid: 'enum-status',
+    },
+    {
+      relativePath: path.join('Roles', 'Admin', 'Admin.xml'),
+      metadataType: 'Role',
+      name: 'Admin',
+      uuid: 'role-admin',
+    },
+    {
+      relativePath: path.join('CommonForms', 'Chooser', 'Chooser.xml'),
+      metadataType: 'CommonForm',
+      name: 'Chooser',
+      uuid: 'common-form-chooser',
+    },
+    {
+      relativePath: path.join('InformationRegisters', 'Stock', 'Dimensions', 'Warehouse.xml'),
+      metadataType: 'Dimension',
+      name: 'Warehouse',
+      uuid: 'dimension-warehouse',
+    },
+    {
+      relativePath: path.join('Documents', 'Order', 'TabularSections', 'Goods.xml'),
+      metadataType: 'TabularSection',
+      name: 'Goods',
+      uuid: 'tabular-section-goods',
+    },
+    {
+      relativePath: path.join('ChartsOfCharacteristicTypes', 'Properties', 'Properties.xml'),
+      metadataType: 'ChartOfCharacteristicTypes',
+      name: 'Properties',
+      uuid: 'cct-properties',
+    },
+  ];
+}
+
+function qualifiedNameForFixture(relativePath: string): string {
+  const normalized = relativePath.replace(/\\/g, '/');
+  if (normalized === 'Documents/Order/Order.xml') {
+    return 'Document.Order';
+  }
+  if (normalized === 'Enums/Status/Status.xml') {
+    return 'Enum.Status';
+  }
+  if (normalized === 'Roles/Admin/Admin.xml') {
+    return 'Role.Admin';
+  }
+  if (normalized === 'CommonForms/Chooser/Chooser.xml') {
+    return 'CommonForm.Chooser';
+  }
+  if (normalized === 'InformationRegisters/Stock/Dimensions/Warehouse.xml') {
+    return 'InformationRegister.Stock.Dimension.Warehouse';
+  }
+  if (normalized === 'Documents/Order/TabularSections/Goods.xml') {
+    return 'Document.Order.TabularSection.Goods';
+  }
+  if (normalized === 'ChartsOfCharacteristicTypes/Properties/Properties.xml') {
+    return 'ChartOfCharacteristicTypes.Properties';
+  }
+  throw new Error(`Unknown fixture path ${relativePath}`);
 }
 
 async function writeFile(filePath: string, content: string): Promise<void> {

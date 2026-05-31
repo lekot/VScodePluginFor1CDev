@@ -132,7 +132,10 @@ suite('Metadata XML merge adapter', () => {
     assert.strictEqual(item.status, 'rightOnly');
     assert.strictEqual(item.mergeable, true);
     assert.ok(result.candidateFactories.has(item.id));
-    assert.strictEqual(findNodeByLabel(item.children, 'Presentation'), undefined);
+    const presentation = requireNodeByLabel(item.children, 'Presentation');
+    assert.strictEqual(presentation.status, 'rightOnly');
+    assert.strictEqual(presentation.rightValue, 'Created');
+    assert.strictEqual(presentation.mergeable, false);
 
     const candidateResult = await result.candidateFactories.get(item.id)!();
     assert.strictEqual(candidateResult.ok, true);
@@ -165,7 +168,10 @@ suite('Metadata XML merge adapter', () => {
     assert.strictEqual(item.mergeable, true);
     assert.strictEqual(item.destructive, true);
     assert.ok(result.candidateFactories.has(item.id));
-    assert.strictEqual(findNodeByLabel(item.children, 'Presentation'), undefined);
+    const presentation = requireNodeByLabel(item.children, 'Presentation');
+    assert.strictEqual(presentation.status, 'leftOnly');
+    assert.strictEqual(presentation.leftValue, 'Removed');
+    assert.strictEqual(presentation.mergeable, false);
 
     const candidateResult = await result.candidateFactories.get(item.id)!();
     assert.strictEqual(candidateResult.ok, true);
@@ -231,6 +237,30 @@ suite('Metadata XML merge adapter', () => {
     assert.doesNotMatch(patch.target.pointer, /v8:/);
     const applied = applyXmlPatch(left, patch);
     assert.match(applied, /<v8:Synonym>New goods<\/v8:Synonym>/);
+  });
+
+  test('builds unique executable patches for repeated anonymous XML siblings', async () => {
+    const left = '<MetaDataObject><Value>Old first</Value><Value>Old second</Value></MetaDataObject>';
+    const result = await metadataXmlAdapter.compare(
+      makeInput({
+        left,
+        right: '<MetaDataObject><Value>New first</Value><Value>New second</Value></MetaDataObject>',
+      })
+    );
+
+    const values = findNodesByLabel(result.nodes, 'Value');
+    assert.strictEqual(values.length, 2);
+    assert.strictEqual(new Set(values.map((node) => node.id)).size, 2);
+    assert.ok(result.candidateFactories.has(values[0]!.id));
+    assert.ok(result.candidateFactories.has(values[1]!.id));
+
+    const secondCandidate = await result.candidateFactories.get(values[1]!.id)!();
+    assert.strictEqual(secondCandidate.ok, true);
+    const patch = secondCandidate.candidate.xmlPatch!;
+    assert.match(patch.target.pointer, /\/Value\[1\]$/);
+
+    const applied = applyXmlPatch(left, patch);
+    assert.match(applied, /<Value>Old first<\/Value><Value>New second<\/Value>/);
   });
 });
 

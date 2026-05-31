@@ -1,8 +1,11 @@
 import * as assert from 'assert';
+import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
+
+const fsPromises = require('fs/promises') as typeof import('fs/promises');
 
 import {
   indexBslModuleSource,
@@ -377,6 +380,129 @@ suite('MergeExecutor XML and file operations', () => {
     assert.strictEqual(await readText(context.firstTargetPath), context.firstSource);
     assert.strictEqual(await readText(context.firstBackupPath), context.firstTargetOld);
   });
+
+  test('restores current fileCopy target when source copy fails after backup', async () => {
+    const context = await createFileCopyOnlyContext(tempDirs);
+    const preflight = createApprovedFileCopyOnlyPreflight(context);
+
+    const result = await executeBslMergePreview({
+      session: context.session,
+      preflight,
+      fileSystem: {
+        ...nodeTestFileSystem(),
+        copyFile: async (sourcePath, targetPath) => {
+          if (sourcePath === context.fileSourcePath && targetPath === context.fileTargetPath) {
+            await fs.writeFile(targetPath, 'partial incoming bytes', 'utf8');
+            throw new Error('copy interrupted');
+          }
+          await fs.copyFile(sourcePath, targetPath);
+        },
+      },
+    });
+
+    assert.strictEqual(result.applied.length, 0);
+    assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
+    assert.strictEqual(result.failed[0].operationId, context.operationId);
+    assert.strictEqual(result.failed[0].code, 'MERGE_FILE_COPY_FAILED');
+    assert.strictEqual(await readText(context.fileTargetPath), context.fileTargetOld);
+    assert.strictEqual(await readText(context.fileBackupPath), context.fileTargetOld);
+  });
+
+  test('restores current folderCopy target when folder copy fails after target removal', async () => {
+    const context = await createFolderCopyOnlyContext(tempDirs);
+    const preflight = await createApprovedFolderCopyOnlyPreflight(context);
+    const originalCp = fsPromises.cp;
+    let targetWasRemoved = false;
+
+    try {
+      fsPromises.cp = async (sourcePath, targetPath, options) => {
+        if (sourcePath === context.folderSourcePath && targetPath === context.folderTargetPath) {
+          targetWasRemoved = !(await exists(path.join(context.folderTargetPath, 'old.txt')));
+          await fs.mkdir(context.folderTargetPath, { recursive: true });
+          await fs.writeFile(path.join(context.folderTargetPath, 'partial.txt'), 'partial', 'utf8');
+          throw new Error('folder copy interrupted');
+        }
+        return originalCp(sourcePath, targetPath, options);
+      };
+
+      const result = await executeBslMergePreview({
+        session: context.session,
+        preflight,
+      });
+
+      assert.strictEqual(targetWasRemoved, true);
+      assert.strictEqual(result.applied.length, 0);
+      assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
+      assert.strictEqual(result.failed[0].operationId, context.operationId);
+      assert.strictEqual(result.failed[0].code, 'MERGE_FOLDER_OPERATION_FAILED');
+      assert.strictEqual(await readText(path.join(context.folderTargetPath, 'old.txt')), 'old folder file');
+      assert.strictEqual(await exists(path.join(context.folderTargetPath, 'partial.txt')), false);
+      assert.strictEqual(await readText(path.join(context.folderBackupPath, 'old.txt')), 'old folder file');
+    } finally {
+      fsPromises.cp = originalCp;
+    }
+  });
+
+  test('rejects folderCopy when source folder hash changes immediately before copy', async () => {
+    const context = await createFolderCopyOnlyContext(tempDirs);
+    const preflight = await createApprovedFolderCopyOnlyPreflight(context);
+    const originalRm = fsPromises.rm;
+
+    try {
+      fsPromises.rm = async (targetPath, options) => {
+        const result = await originalRm(targetPath, options);
+        if (targetPath === context.folderTargetPath) {
+          await fs.writeFile(path.join(context.folderSourcePath, 'incoming.txt'), 'changed source', 'utf8');
+        }
+        return result;
+      };
+
+      const result = await executeBslMergePreview({
+        session: context.session,
+        preflight,
+      });
+
+      assert.strictEqual(result.applied.length, 0);
+      assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
+      assert.strictEqual(result.failed[0].operationId, context.operationId);
+      assert.strictEqual(result.failed[0].code, 'MERGE_SOURCE_HASH_MISMATCH');
+      assert.strictEqual(await readText(path.join(context.folderTargetPath, 'old.txt')), 'old folder file');
+    } finally {
+      fsPromises.rm = originalRm;
+    }
+  });
+
+  test('rejects fileCopy source outside the right source root', async () => {
+    const context = await createFileCopyOnlyContext(tempDirs, { sourceOutsideRightRoot: true });
+    const preflight = createApprovedFileCopyOnlyPreflight(context);
+
+    const result = await executeBslMergePreview({
+      session: context.session,
+      preflight,
+    });
+
+    assert.strictEqual(result.applied.length, 0);
+    assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
+    assert.strictEqual(result.failed[0].operationId, context.operationId);
+    assert.strictEqual(result.failed[0].code, 'MERGE_SOURCE_OUTSIDE_ROOT');
+    assert.strictEqual(await readText(context.fileTargetPath), context.fileTargetOld);
+  });
+
+  test('rejects folderCopy source outside the right source root', async () => {
+    const context = await createFolderCopyOnlyContext(tempDirs, { sourceOutsideRightRoot: true });
+    const preflight = await createApprovedFolderCopyOnlyPreflight(context);
+
+    const result = await executeBslMergePreview({
+      session: context.session,
+      preflight,
+    });
+
+    assert.strictEqual(result.applied.length, 0);
+    assert.strictEqual(result.failed.length, 1, JSON.stringify(result.failed));
+    assert.strictEqual(result.failed[0].operationId, context.operationId);
+    assert.strictEqual(result.failed[0].code, 'MERGE_SOURCE_OUTSIDE_ROOT');
+    assert.strictEqual(await readText(path.join(context.folderTargetPath, 'old.txt')), 'old folder file');
+  });
 });
 
 interface ExecutionContext {
@@ -426,6 +552,28 @@ interface BulkRollbackContext {
   secondTargetPath: string;
   session: CompareSession;
   targetUris: string[];
+}
+
+interface FileCopyOnlyContext {
+  fileBackupPath: string;
+  fileSource: string;
+  fileSourcePath: string;
+  fileTargetOld: string;
+  fileTargetPath: string;
+  operationId: string;
+  previewId: string;
+  session: CompareSession;
+  targetUri: string;
+}
+
+interface FolderCopyOnlyContext {
+  folderBackupPath: string;
+  folderSourcePath: string;
+  folderTargetPath: string;
+  operationId: string;
+  previewId: string;
+  session: CompareSession;
+  targetUri: string;
 }
 
 async function createContext(tempDirs: string[]): Promise<ExecutionContext> {
@@ -708,6 +856,214 @@ function createApprovedBulkRollbackPreflight(context: BulkRollbackContext): Pref
           targetUri: context.targetUris[1]!,
           backupUri: pathToFileURL(context.secondBackupPath).toString(),
           restoreHash: hashText(context.secondTargetOld),
+        },
+      ],
+    },
+  });
+  assert.strictEqual(preflight.ok, true, JSON.stringify(preflight.diagnostics));
+  return preflight;
+}
+
+async function createFileCopyOnlyContext(
+  tempDirs: string[],
+  options: { sourceOutsideRightRoot?: boolean } = {}
+): Promise<FileCopyOnlyContext> {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-file-copy-only-'));
+  tempDirs.push(rootDir);
+  const snapshotDir = path.join(rootDir, 'snapshot');
+  const outsideDir = path.join(rootDir, '..', `${path.basename(rootDir)}-outside`);
+  tempDirs.push(outsideDir);
+  const backupDir = path.join(rootDir, 'backups');
+  const fileSourcePath = path.join(
+    options.sourceOutsideRightRoot ? outsideDir : snapshotDir,
+    'Templates',
+    'Print.mxl'
+  );
+  const fileTargetPath = path.join(rootDir, 'Templates', 'Print.mxl');
+  const fileBackupPath = path.join(backupDir, 'Print.mxl.bak');
+  const fileTargetOld = 'old template';
+  const fileSource = 'incoming template';
+
+  await fs.mkdir(snapshotDir, { recursive: true });
+  await fs.mkdir(path.dirname(fileSourcePath), { recursive: true });
+  await fs.mkdir(path.dirname(fileTargetPath), { recursive: true });
+  await fs.writeFile(fileSourcePath, fileSource, 'utf8');
+  await fs.writeFile(fileTargetPath, fileTargetOld, 'utf8');
+
+  const session = makeSession(rootDir, snapshotDir);
+  const previewId = options.sourceOutsideRightRoot
+    ? 'preview-file-copy-outside-source'
+    : 'preview-file-copy-only';
+  const candidate = fileCopyCandidate(fileSourcePath, fileTargetPath, fileTargetOld, fileSource);
+  const preview = createMergePreview({
+    session,
+    previewId,
+    targetSourceId: 'left-source',
+    snapshotIds: { left: 'snapshot-left-1', right: 'snapshot-right-1' },
+    createdAt: '2026-05-30T10:10:00.000Z',
+    candidates: [candidate],
+    currentTargetHashes: {
+      [candidate.targetUri!]: candidate.expectedOldHash!,
+    },
+  });
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.diagnostics));
+
+  return {
+    fileBackupPath,
+    fileSource,
+    fileSourcePath,
+    fileTargetOld,
+    fileTargetPath,
+    operationId: preview.preview.operations[0].operationId,
+    previewId,
+    session,
+    targetUri: preview.preview.operations[0].targetUri!,
+  };
+}
+
+function createApprovedFileCopyOnlyPreflight(context: FileCopyOnlyContext): PreflightResult {
+  context.session.approvePreview(context.previewId);
+  const preflight = validateMergePreflight({
+    session: context.session,
+    previewId: context.previewId,
+    approvedPreviewId: context.previewId,
+    currentTargetHashes: {
+      [context.targetUri]: hashText(context.fileTargetOld),
+    },
+    backupPlan: {
+      previewId: context.previewId,
+      strategy: 'copyBeforeWrite',
+      items: [
+        {
+          operationId: context.operationId,
+          targetUri: context.targetUri,
+          backupUri: pathToFileURL(context.fileBackupPath).toString(),
+          expectedOldHash: hashText(context.fileTargetOld),
+        },
+      ],
+    },
+    rollbackPlan: {
+      previewId: context.previewId,
+      strategy: 'restoreBackups',
+      items: [
+        {
+          operationId: context.operationId,
+          targetUri: context.targetUri,
+          backupUri: pathToFileURL(context.fileBackupPath).toString(),
+          restoreHash: hashText(context.fileTargetOld),
+        },
+      ],
+    },
+  });
+  assert.strictEqual(preflight.ok, true, JSON.stringify(preflight.diagnostics));
+  return preflight;
+}
+
+async function createFolderCopyOnlyContext(
+  tempDirs: string[],
+  options: { sourceOutsideRightRoot?: boolean } = {}
+): Promise<FolderCopyOnlyContext> {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-folder-copy-only-'));
+  tempDirs.push(rootDir);
+  const snapshotDir = path.join(rootDir, 'snapshot');
+  const outsideDir = path.join(rootDir, '..', `${path.basename(rootDir)}-outside`);
+  tempDirs.push(outsideDir);
+  const backupDir = path.join(rootDir, 'backups');
+  const folderSourcePath = path.join(
+    options.sourceOutsideRightRoot ? outsideDir : snapshotDir,
+    'Catalogs',
+    'Incoming'
+  );
+  const folderTargetPath = path.join(rootDir, 'Catalogs', 'Incoming');
+  const folderBackupPath = path.join(backupDir, 'Incoming.bak');
+
+  await fs.mkdir(snapshotDir, { recursive: true });
+  await fs.mkdir(folderSourcePath, { recursive: true });
+  await fs.mkdir(folderTargetPath, { recursive: true });
+  await fs.writeFile(path.join(folderSourcePath, 'incoming.txt'), 'incoming folder file', 'utf8');
+  await fs.writeFile(path.join(folderTargetPath, 'old.txt'), 'old folder file', 'utf8');
+
+  const sourceHash = await hashTestDirectory(folderSourcePath);
+  const targetHash = await hashTestDirectory(folderTargetPath);
+  const session = makeSession(rootDir, snapshotDir);
+  const previewId = options.sourceOutsideRightRoot
+    ? 'preview-folder-copy-outside-source'
+    : 'preview-folder-copy-only';
+  const targetUri = pathToFileURL(folderTargetPath).toString();
+  const candidate: MergeCandidate = {
+    kind: 'folderCopy',
+    sourceId: 'right-source',
+    snapshotId: 'snapshot-right-1',
+    nodeId: 'folder:incoming',
+    targetUri,
+    expectedOldHash: targetHash,
+    newHash: sourceHash,
+    fileOperation: {
+      kind: 'folderCopy',
+      sourcePath: pathToFileURL(folderSourcePath).toString(),
+      targetPath: targetUri,
+      expectedOldHash: targetHash,
+      sourceHash,
+      destructive: true,
+    },
+  };
+  const preview = createMergePreview({
+    session,
+    previewId,
+    targetSourceId: 'left-source',
+    snapshotIds: { left: 'snapshot-left-1', right: 'snapshot-right-1' },
+    createdAt: '2026-05-30T10:10:00.000Z',
+    candidates: [candidate],
+    currentTargetHashes: {
+      [targetUri]: targetHash,
+    },
+  });
+  assert.strictEqual(preview.ok, true, JSON.stringify(preview.diagnostics));
+
+  return {
+    folderBackupPath,
+    folderSourcePath,
+    folderTargetPath,
+    operationId: preview.preview.operations[0].operationId,
+    previewId,
+    session,
+    targetUri,
+  };
+}
+
+async function createApprovedFolderCopyOnlyPreflight(
+  context: FolderCopyOnlyContext
+): Promise<PreflightResult> {
+  context.session.approvePreview(context.previewId);
+  const targetHash = await hashTestDirectory(context.folderTargetPath);
+  const preflight = validateMergePreflight({
+    session: context.session,
+    previewId: context.previewId,
+    approvedPreviewId: context.previewId,
+    currentTargetHashes: {
+      [context.targetUri]: targetHash,
+    },
+    backupPlan: {
+      previewId: context.previewId,
+      strategy: 'copyBeforeWrite',
+      items: [
+        {
+          operationId: context.operationId,
+          targetUri: context.targetUri,
+          backupUri: pathToFileURL(context.folderBackupPath).toString(),
+          expectedOldHash: targetHash,
+        },
+      ],
+    },
+    rollbackPlan: {
+      previewId: context.previewId,
+      strategy: 'restoreBackups',
+      items: [
+        {
+          operationId: context.operationId,
+          targetUri: context.targetUri,
+          backupUri: pathToFileURL(context.folderBackupPath).toString(),
+          restoreHash: targetHash,
         },
       ],
     },
@@ -1082,4 +1438,32 @@ function deletedRoutine(): string {
 
 async function readText(filePath: string): Promise<string> {
   return fs.readFile(filePath, 'utf8');
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hashTestDirectory(directoryPath: string): Promise<string> {
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+  const parts: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const entryPath = path.join(directoryPath, entry.name);
+    if (entry.isDirectory()) {
+      parts.push(`dir:${entry.name}:${await hashTestDirectory(entryPath)}`);
+    } else if (entry.isFile()) {
+      parts.push(`file:${entry.name}:${hashTestBuffer(await fs.readFile(entryPath))}`);
+    }
+  }
+
+  return hashText(parts.join('\n'));
+}
+
+function hashTestBuffer(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
 }

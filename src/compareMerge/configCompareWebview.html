@@ -158,7 +158,8 @@
     }
 
     .blocked,
-    .error {
+    .error,
+    .destructive {
       color: var(--vscode-errorForeground);
     }
 
@@ -174,6 +175,11 @@
     .result {
       display: grid;
       gap: 8px;
+    }
+
+    .destructive-warning {
+      border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      color: var(--vscode-errorForeground);
     }
 
     .hidden {
@@ -255,6 +261,9 @@
 
     elements.strategyButtons.forEach((button) => {
       button.addEventListener('click', () => {
+        if (state.busy || state.locked) {
+          return;
+        }
         vscode.postMessage({ type: 'setStrategy', strategy: button.dataset.strategy });
       });
     });
@@ -284,7 +293,16 @@
     });
     elements.executeButton.addEventListener('click', () => {
       if (state.preview) {
-        vscode.postMessage({ type: 'executeMerge', previewId: state.preview.previewId });
+        const requiresDestructiveConfirmation = (state.preview.destructiveCount ?? 0) > 0;
+        const destructiveConfirmed = !requiresDestructiveConfirmation || confirm('Merge содержит destructive-операции: удаление или перезапись файлов. Выполнить?');
+        if (!destructiveConfirmed) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'executeMerge',
+          previewId: state.preview.previewId,
+          destructiveConfirmed
+        });
       }
     });
     elements.refreshButton.addEventListener('click', () => {
@@ -377,6 +395,7 @@
       const approved = Boolean(state.preview?.approved);
       elements.strategyButtons.forEach((button) => {
         button.classList.toggle('active', button.dataset.strategy === state.payload.strategy);
+        button.disabled = state.busy || state.locked;
       });
       elements.previewButton.disabled = !canPreview;
       elements.approveButton.disabled = state.busy || state.locked || !state.preview || approved;
@@ -409,14 +428,19 @@
       title.textContent = preview.approved ? 'Preview подтверждён' : 'Preview';
       const summary = document.createElement('div');
       summary.textContent = `${preview.summary} Операций: ${preview.operationCount}`;
+      const warning = document.createElement('div');
+      warning.className = 'notice destructive-warning';
+      warning.textContent = `Destructive-операций: ${preview.destructiveCount ?? 0}. Требуется повторное подтверждение перед merge.`;
+      warning.classList.toggle('hidden', (preview.destructiveCount ?? 0) === 0);
       const list = document.createElement('ul');
       list.className = 'tree root';
       list.append(...preview.items.map((item) => {
         const li = document.createElement('li');
+        li.className = item.destructive ? 'destructive' : '';
         li.textContent = `${item.label} (${item.kind}, ${item.status})`;
         return li;
       }));
-      elements.preview.replaceChildren(title, summary, list);
+      elements.preview.replaceChildren(title, summary, warning, list);
     }
 
     function renderNotice() {

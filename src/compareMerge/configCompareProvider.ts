@@ -157,6 +157,11 @@ async function handleWebviewMessage(
   state: ControllerState,
   message: ConfigCompareWebviewToHostMessage
 ): Promise<void> {
+  if (state.busy && message.type !== 'ready') {
+    await rejectBusyMessage(webview, workspace, title, state);
+    return;
+  }
+
   switch (message.type) {
     case 'ready':
       await postState(webview, workspace, title, state);
@@ -180,7 +185,7 @@ async function handleWebviewMessage(
       await approvePreview(webview, workspace, title, state, message.previewId);
       return;
     case 'executeMerge':
-      await executeMerge(webview, workspace, title, state, message.previewId);
+      await executeMerge(webview, workspace, title, state, message.previewId, message.destructiveConfirmed === true);
       return;
     case 'refresh':
       await refresh(webview, workspace, title, state);
@@ -197,6 +202,8 @@ async function setStrategy(
   state: ControllerState,
   strategy: CompareJoinStrategy
 ): Promise<void> {
+  state.busy = true;
+  await postState(webview, workspace, title, state);
   state.selectedNodeIds = [];
   state.executableNodeIds = [];
   state.canCreatePreview = false;
@@ -208,6 +215,7 @@ async function setStrategy(
       await postError(webview, 'Не удалось изменить стратегию сравнения.', result.diagnostics, workspace.payload.locked);
     }
   }
+  state.busy = false;
   await postState(webview, workspace, title, state);
 }
 
@@ -227,7 +235,7 @@ async function createPreview(
     return;
   }
 
-  state.preview = toPreviewDto(result.preview, false);
+  state.preview = toPreviewDto(result.preview, false, workspace.payload.root);
   state.diagnostics = [];
   await postMessage(webview, { type: 'previewReady', ...state.preview });
   await postState(webview, workspace, title, state);
@@ -251,7 +259,7 @@ async function approvePreview(
     return;
   }
 
-  state.preview = toPreviewDto(result.preview, true);
+  state.preview = toPreviewDto(result.preview, true, workspace.payload.root);
   state.diagnostics = [];
   await postMessage(webview, { type: 'previewReady', ...state.preview });
   await postState(webview, workspace, title, state);
@@ -262,8 +270,20 @@ async function executeMerge(
   workspace: ConfigCompareWorkspaceLike,
   title: string,
   state: ControllerState,
-  previewId: string
+  previewId: string,
+  destructiveConfirmed: boolean
 ): Promise<void> {
+  if (previewRequiresDestructiveConfirmation(state.preview, previewId) && !destructiveConfirmed) {
+    await postError(
+      webview,
+      'Merge содержит destructive-операции: удаление или перезапись файлов. Подтвердите выполнение повторно.',
+      [],
+      workspace.payload.locked
+    );
+    await postState(webview, workspace, title, state);
+    return;
+  }
+
   state.busy = true;
   await postState(webview, workspace, title, state);
   const result = await workspace.executeApprovedPreview(previewId);
@@ -320,6 +340,21 @@ async function refresh(
   if (!result.ok) {
     await postError(webview, 'Не удалось обновить состояние сравнения.', result.diagnostics, result.locked);
   }
+  await postState(webview, workspace, title, state);
+}
+
+async function rejectBusyMessage(
+  webview: Pick<vscode.Webview, 'postMessage'>,
+  workspace: ConfigCompareWorkspaceLike,
+  title: string,
+  state: ControllerState
+): Promise<void> {
+  await postError(
+    webview,
+    'Операция сравнения уже выполняется. Дождитесь завершения текущего действия.',
+    [],
+    workspace.payload.locked
+  );
   await postState(webview, workspace, title, state);
 }
 
@@ -411,22 +446,56 @@ function redactTreeNode(node: CompareTreeNode): CompareTreeNode {
 }
 
 function redactTreeValue(value: string | undefined): string | undefined {
-  if (!value || /^sha256[:\w-]*/i.test(value) || /^[a-zA-Z]:[\\/]/.test(value)) {
+  if (
+    !value ||
+    /^sha256[:\w-]*/i.test(value) ||
+    /^[a-zA-Z]:[\\/]/.test(value) ||
+    /^\/(?!\/)[^\s]*/.test(value)
+  ) {
     return undefined;
   }
 
   return value;
 }
 
-function toPreviewDto(preview: WorkspacePreviewDto, approved: boolean): ConfigComparePreviewDto {
+function toPreviewDto(
+  preview: WorkspacePreviewDto,
+  approved: boolean,
+  root: CompareTreeNode
+): ConfigComparePreviewDto {
+  const items = preview.items.map((item) => ({
+    ...item,
+    destructive: findTreeNode(root, item.nodeId)?.destructive === true ? true : undefined,
+  }));
   return {
     previewId: preview.previewId,
     summary: preview.summary,
     operationCount: preview.operationCount,
-    items: preview.items.map((item) => ({ ...item })),
+    items,
+    destructiveCount: items.filter((item) => item.destructive === true).length,
     diagnostics: [...preview.diagnostics],
     approved,
   };
+}
+
+function previewRequiresDestructiveConfirmation(
+  preview: ConfigComparePreviewDto | undefined,
+  previewId: string
+): boolean {
+  return preview?.previewId === previewId && preview.destructiveCount > 0;
+}
+
+function findTreeNode(node: CompareTreeNode, nodeId: string): CompareTreeNode | undefined {
+  if (node.id === nodeId) {
+    return node;
+  }
+  for (const child of node.children) {
+    const found = findTreeNode(child, nodeId);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 function redactAppliedOperation(input: {
@@ -462,13 +531,31 @@ function parseWebviewMessage(message: unknown): ConfigCompareWebviewToHostMessag
         ? { type: message.type, nodeIds: message.nodeIds }
         : undefined;
     case 'approvePreview':
-    case 'executeMerge':
       return hasOnlyKeys(message, ['type', 'previewId']) && typeof message.previewId === 'string'
         ? { type: message.type, previewId: message.previewId }
+        : undefined;
+    case 'executeMerge':
+      return isExecuteMergeMessage(message)
+        ? {
+            type: 'executeMerge',
+            previewId: message.previewId,
+            destructiveConfirmed: message.destructiveConfirmed,
+          }
         : undefined;
     default:
       return undefined;
   }
+}
+
+function isExecuteMergeMessage(
+  message: Record<string, unknown>
+): message is { type: 'executeMerge'; previewId: string; destructiveConfirmed?: boolean } {
+  return (
+    hasOnlyAllowedKeys(message, ['type', 'previewId', 'destructiveConfirmed']) &&
+    message.type === 'executeMerge' &&
+    typeof message.previewId === 'string' &&
+    (message.destructiveConfirmed === undefined || typeof message.destructiveConfirmed === 'boolean')
+  );
 }
 
 function isCompareJoinStrategy(value: unknown): value is CompareJoinStrategy {
@@ -482,6 +569,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const expected = new Set(keys);
   return Object.keys(value).every((key) => expected.has(key)) && Object.keys(value).length === keys.length;
+}
+
+function hasOnlyAllowedKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const expected = new Set(keys);
+  return Object.keys(value).every((key) => expected.has(key));
 }
 
 function isStringArray(value: unknown): value is string[] {
