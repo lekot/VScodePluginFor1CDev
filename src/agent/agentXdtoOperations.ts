@@ -165,7 +165,7 @@ export class XdtoAgentOperations {
         rightSource.source,
         left.targetNamespace ?? '',
       );
-      const tree = buildXdtoPackageCompareTree(left, right);
+      const tree = buildXdtoPackageCompareTree(left, right, params.joinStrategy);
       return {
         success: true,
         data: {
@@ -194,7 +194,7 @@ export class XdtoAgentOperations {
         rightSource.source,
         left.targetNamespace ?? '',
       );
-      const beforeTree = buildXdtoPackageCompareTree(left, right);
+      const beforeTree = buildXdtoPackageCompareTree(left, right, params.joinStrategy);
       const model = applyXdtoPackageMerge(left, right, params.selectedIds);
       const validation = serializeAndValidateXdtoModelForSave(model);
       if (!validation.ok) {

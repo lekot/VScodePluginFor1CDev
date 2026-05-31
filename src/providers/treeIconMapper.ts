@@ -9,6 +9,7 @@ export function getIconForType(type: MetadataType): vscode.ThemeIcon {
   const iconMap: Record<MetadataType, string> = {
     // Root
     [MetadataType.Configuration]: 'package',
+    [MetadataType.ConfigurationPackage]: 'archive',
 
     // Main types
     [MetadataType.Catalog]: 'book',

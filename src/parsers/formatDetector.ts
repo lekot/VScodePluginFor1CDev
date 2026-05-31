@@ -3,7 +3,11 @@ import * as path from 'path';
 import { Logger } from '../utils/logger';
 import { DesignerParser } from './designerParser';
 import { EdtParser } from './edtParser';
-import { CONFIGURATION_XML } from '../constants/fileNames';
+import {
+  CONFIG_DUMP_INFO_XML,
+  CONFIGURATION_PACKAGE_EXTENSIONS,
+  CONFIGURATION_XML,
+} from '../constants/fileNames';
 
 /**
  * Configuration format types
@@ -17,7 +21,7 @@ export enum ConfigFormat {
 /* eslint-enable @typescript-eslint/naming-convention */
 
 const SKIPPED_DISCOVERY_DIRS = new Set(['node_modules', '.git', '.vscode', 'dist', 'out']);
-const CONFIG_ROOT_MARKERS = new Set(['1cv8.cf', '1cv8.cfe', CONFIGURATION_XML, 'ConfigDumpInfo.xml']);
+const XML_CONFIG_ROOT_MARKERS = new Set([CONFIGURATION_XML, CONFIG_DUMP_INFO_XML]);
 const NESTED_CONFIGURATION_CONTAINERS = [
   ['ConfigurationExtensions'],
   ['Extensions'],
@@ -66,7 +70,7 @@ export class FormatDetector {
   }
 
   /**
-   * Check if the given directory path is a configuration root (has 1cv8.cf, 1cv8.cfe, or valid Configuration.xml).
+   * Check if the given directory path is an XML configuration root.
    */
   private static async isConfigurationRoot(dirPath: string): Promise<boolean> {
     const entries = await this.readDirectoryEntries(dirPath);
@@ -84,7 +88,13 @@ export class FormatDetector {
 
   private static hasConfigurationRootMarkers(entries: readonly fs.Dirent[]): boolean {
     const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
-    return [...CONFIG_ROOT_MARKERS].some((marker) => names.has(marker));
+    return [...XML_CONFIG_ROOT_MARKERS].some((marker) => names.has(marker));
+  }
+
+  private static isConfigurationPackageFile(entry: fs.Dirent): boolean {
+    return entry.isFile() && CONFIGURATION_PACKAGE_EXTENSIONS.includes(
+      path.extname(entry.name).toLowerCase() as typeof CONFIGURATION_PACKAGE_EXTENSIONS[number]
+    );
   }
 
   private static getCandidateChildDirectories(dirPath: string, entries: readonly fs.Dirent[]): string[] {
@@ -176,6 +186,35 @@ export class FormatDetector {
   }
 
   /**
+   * Find all binary configuration package files (.cf/.cfe) outside XML configuration roots.
+   * @param workspacePaths Array of workspace folder paths
+   * @returns Pairs of package file path and the workspace folder it was found under
+   */
+  static async findAllConfigurationPackageFiles(
+    workspacePaths: string[]
+  ): Promise<Array<{ filePath: string; workspaceFolderPath: string }>> {
+    const seen = new Set<string>();
+    const result: Array<{ filePath: string; workspaceFolderPath: string }> = [];
+    const normalize = (p: string) => path.normalize(p);
+
+    for (const workspacePath of workspacePaths) {
+      try {
+        const files = await this.searchConfigurationPackagesRecursive(workspacePath, 0, 5);
+        for (const filePath of files) {
+          const n = normalize(filePath);
+          if (!seen.has(n)) {
+            seen.add(n);
+            result.push({ filePath, workspaceFolderPath: workspacePath });
+          }
+        }
+      } catch (error) {
+        Logger.debug(`Error scanning workspace folder for packages ${workspacePath}`, error);
+      }
+    }
+    return result;
+  }
+
+  /**
    * Recursively collect all configuration root paths under dirPath (does not check dirPath itself).
    */
   private static async searchAllConfigurationsRecursive(
@@ -212,6 +251,52 @@ export class FormatDetector {
         currentDepth + 1,
         maxDepth,
         child.entries
+      );
+      found.push(...sub);
+    }
+    return found;
+  }
+
+  /**
+   * Recursively collect binary package files under dirPath, pruning XML configuration roots.
+   */
+  private static async searchConfigurationPackagesRecursive(
+    dirPath: string,
+    currentDepth: number,
+    maxDepth: number,
+    knownEntries?: fs.Dirent[]
+  ): Promise<string[]> {
+    if (currentDepth > maxDepth) {return [];}
+    const found: string[] = [];
+    const entries = knownEntries ?? await this.readDirectoryEntries(dirPath);
+    if (!entries) {
+      return found;
+    }
+
+    if (this.hasConfigurationRootMarkers(entries)) {
+      return found;
+    }
+
+    for (const entry of entries) {
+      if (this.isConfigurationPackageFile(entry)) {
+        found.push(path.join(dirPath, entry.name));
+      }
+    }
+
+    if (currentDepth >= maxDepth) {
+      return found;
+    }
+
+    for (const itemPath of this.getCandidateChildDirectories(dirPath, entries)) {
+      const childEntries = await this.readDirectoryEntries(itemPath);
+      if (!childEntries || this.hasConfigurationRootMarkers(childEntries)) {
+        continue;
+      }
+      const sub = await this.searchConfigurationPackagesRecursive(
+        itemPath,
+        currentDepth + 1,
+        maxDepth,
+        childEntries
       );
       found.push(...sub);
     }
@@ -287,15 +372,11 @@ export class FormatDetector {
       }
 
       // Check for required files or directories
-      const cfPath = path.join(configPath, '1cv8.cf');
-      const cfePath = path.join(configPath, '1cv8.cfe');
       const configXmlPath = path.join(configPath, CONFIGURATION_XML);
-      const configDumpPath = path.join(configPath, 'ConfigDumpInfo.xml');
+      const configDumpPath = path.join(configPath, CONFIG_DUMP_INFO_XML);
 
       // Check all paths in parallel
       const checks = await Promise.allSettled([
-        fs.promises.access(cfPath),
-        fs.promises.access(cfePath),
         fs.promises.access(configXmlPath),
         fs.promises.access(configDumpPath),
       ]);

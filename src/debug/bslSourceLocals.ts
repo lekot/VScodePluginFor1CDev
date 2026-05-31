@@ -1,3 +1,5 @@
+import { findBslRoutineAtLine } from '../bsl/routineRangeProvider';
+
 export type BslLocalCandidateOrigin = 'parameter' | 'moduleVariable' | 'assignment';
 
 export interface BslLocalCandidate {
@@ -5,15 +7,7 @@ export interface BslLocalCandidate {
     origin: BslLocalCandidateOrigin;
 }
 
-interface RoutineRange {
-    startLine: number;
-    endLine: number;
-    params: string;
-}
-
 const IDENTIFIER = '[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*';
-const DECL_RE = new RegExp(`^\\s*(?:Процедура|Функция|Procedure|Function)\\s+(${IDENTIFIER})\\s*\\((.*)\\)`, 'i');
-const END_RE = /^\s*(?:КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)\b/i;
 const MODULE_VAR_RE = /^\s*(?:Перем|Var)\s+(.+?)(?:;|$)/i;
 const ASSIGNMENT_RE = new RegExp(`^\\s*(${IDENTIFIER})\\s*=`);
 const FOR_RE = new RegExp(`^\\s*(?:Для|For)\\s+(${IDENTIFIER})\\s*=`, 'i');
@@ -51,7 +45,7 @@ export function extractLocalCandidatesFromBsl(source: string, currentLine: numbe
     const lines = source.split(/\r?\n/);
     const safeLine = Math.max(1, Math.min(currentLine, lines.length));
     const stripped = lines.map(stripStringsAndComments);
-    const routine = findRoutineRange(stripped, safeLine);
+    const routine = findBslRoutineAtLine(source, safeLine);
     const candidates: BslLocalCandidate[] = [];
     const seen = new Set<string>();
 
@@ -65,12 +59,12 @@ export function extractLocalCandidatesFromBsl(source: string, currentLine: numbe
     };
 
     if (routine) {
-        for (const param of parseParameters(routine.params)) {
+        for (const param of parseParameters(routine.parameterText)) {
             add(param, 'parameter');
         }
     }
 
-    const moduleVariableEnd = routine ? routine.startLine - 1 : safeLine;
+    const moduleVariableEnd = routine ? routine.range.startLine - 1 : safeLine;
     for (let lineNo = 1; lineNo <= moduleVariableEnd; lineNo++) {
         const line = stripped[lineNo - 1];
         const match = MODULE_VAR_RE.exec(line);
@@ -82,7 +76,7 @@ export function extractLocalCandidatesFromBsl(source: string, currentLine: numbe
         }
     }
 
-    const scanStart = routine ? routine.startLine + 1 : 1;
+    const scanStart = routine ? routine.range.startLine + 1 : 1;
     for (let lineNo = scanStart; lineNo <= safeLine; lineNo++) {
         const line = stripped[lineNo - 1];
         const forEachMatch = FOR_EACH_RE.exec(line);
@@ -100,28 +94,6 @@ export function extractLocalCandidatesFromBsl(source: string, currentLine: numbe
     }
 
     return candidates;
-}
-
-function findRoutineRange(lines: string[], currentLine: number): RoutineRange | undefined {
-    let active: RoutineRange | undefined;
-    for (let i = 0; i < lines.length; i++) {
-        const lineNo = i + 1;
-        const decl = DECL_RE.exec(lines[i]);
-        if (decl) {
-            active = { startLine: lineNo, endLine: Number.MAX_SAFE_INTEGER, params: decl[2] };
-        } else if (active && END_RE.test(lines[i])) {
-            active.endLine = lineNo;
-            if (currentLine >= active.startLine && currentLine <= active.endLine) {
-                return active;
-            }
-            active = undefined;
-        }
-
-        if (lineNo >= currentLine && active) {
-            return active;
-        }
-    }
-    return active && currentLine >= active.startLine ? active : undefined;
 }
 
 function parseParameters(params: string): string[] {

@@ -89,4 +89,18 @@ suite('buildTreeItem (#80 — bindingBound context value)', () => {
     const item = buildTreeItem(node, makeOptions({ isExtensionInfobaseBindingRoot: true, bindingDeco: makeDeco(2, true) }));
     assert.strictEqual(item.contextValue, 'Extension extensionBindingRoot bindingBound deployMany');
   });
+  test('ConfigurationPackage uses CfFile context and file resource uri', () => {
+    const filePath = 'C:\\repo\\FormatSamples\\cf\\1Cv8.cf';
+    const node = makeNode({
+      type: MetadataType.ConfigurationPackage,
+      id: 'cf:C:\\repo\\FormatSamples\\cf\\1Cv8.cf',
+      name: '1Cv8.cf',
+      filePath,
+    });
+    const item = buildTreeItem(node, makeOptions({}));
+
+    assert.strictEqual(item.contextValue, 'CfFile');
+    assert.strictEqual(item.resourceUri?.fsPath, filePath);
+    assert.strictEqual((item.iconPath as { id?: string }).id, 'archive');
+  });
 });

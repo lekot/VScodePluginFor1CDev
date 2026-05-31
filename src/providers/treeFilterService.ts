@@ -325,6 +325,7 @@ export class TreeFilterService {
   /** Human-readable labels for filterable types. */
   static getFilterableTypeLabels(): { type: MetadataType; label: string }[] {
     const labels: Record<MetadataType, string> = {
+      [MetadataType.ConfigurationPackage]: 'Configuration package',
       [MetadataType.Configuration]: 'Конфигурация',
       [MetadataType.Catalog]: 'Справочник',
       [MetadataType.Document]: 'Документ',

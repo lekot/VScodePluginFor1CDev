@@ -4,6 +4,8 @@ import type { MetadataTreeLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
 import { registerNavigationCommands } from './navigationCommands';
 import { registerEditorCommands } from './editorCommands';
+import { registerConfigurationCompareCommands } from './configurationCompareCommands';
+import { registerCfCommands } from './cfCommands';
 import { registerFilterCommands } from './filterCommands';
 import {
   registerUtilityCommandsLeading,
@@ -77,6 +79,8 @@ export function registerAllCommands({
 
   return [
     ...registerUtilityCommandsLeading(utilityDeps),
+    ...registerConfigurationCompareCommands({ context, state }),
+    ...registerCfCommands({ state }),
     ...registerEditorCommands({ state }),
     ...registerElementCommands({
       state,

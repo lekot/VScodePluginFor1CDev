@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Сравнение конфигураций</title>
+  <style nonce="${nonce}">
+    :root {
+      color-scheme: light dark;
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+    }
+
+    body {
+      margin: 0;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+    }
+
+    main {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      min-height: 100vh;
+    }
+
+    header {
+      border-bottom: 1px solid var(--vscode-panel-border);
+      padding: 12px 16px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .stats,
+    .toolbar,
+    .preview-actions,
+    .result-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .stat,
+    .notice,
+    .preview,
+    .result {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    .toolbar {
+      align-items: center;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      padding: 10px 16px;
+    }
+
+    .toolbar input[type="search"] {
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+      color: var(--vscode-input-foreground);
+      font: inherit;
+      min-height: 28px;
+      min-width: 180px;
+      padding: 4px 8px;
+    }
+
+    .strategy {
+      display: inline-flex;
+      gap: 2px;
+    }
+
+    .strategy button.active {
+      outline: 1px solid var(--vscode-focusBorder);
+    }
+
+    button {
+      background: var(--vscode-button-background);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: 3px;
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+      font: inherit;
+      min-height: 28px;
+      padding: 4px 10px;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    button:disabled {
+      cursor: default;
+      opacity: 0.55;
+    }
+
+    .secondary {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+
+    .content {
+      display: grid;
+      gap: 12px;
+      padding: 12px 16px 18px;
+    }
+
+    .tree {
+      list-style: none;
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .tree.root {
+      padding-left: 0;
+    }
+
+    .node {
+      margin: 4px 0;
+      line-height: 1.4;
+    }
+
+    .row {
+      align-items: flex-start;
+      display: flex;
+      gap: 8px;
+      min-height: 24px;
+    }
+
+    .label {
+      font-weight: 600;
+    }
+
+    .status,
+    .reason,
+    .selection {
+      color: var(--vscode-descriptionForeground);
+    }
+
+    .status {
+      margin-left: 6px;
+    }
+
+    .values {
+      display: grid;
+      gap: 4px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      margin-top: 2px;
+    }
+
+    .value {
+      color: var(--vscode-descriptionForeground);
+      overflow-wrap: anywhere;
+    }
+
+    .blocked,
+    .error,
+    .destructive {
+      color: var(--vscode-errorForeground);
+    }
+
+    .success {
+      color: var(--vscode-testing-iconPassed);
+    }
+
+    .notice {
+      background: var(--vscode-editorWidget-background);
+    }
+
+    .preview,
+    .result {
+      display: grid;
+      gap: 8px;
+    }
+
+    .destructive-warning {
+      border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+      color: var(--vscode-errorForeground);
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1 id="title">Сравнение конфигураций</h1>
+      <div class="stats" id="stats"></div>
+    </header>
+    <section class="toolbar" aria-label="Compare controls">
+      <span class="strategy" aria-label="Strategy">
+        <button class="secondary" data-strategy="left">Left</button>
+        <button class="secondary" data-strategy="right">Right</button>
+        <button class="secondary" data-strategy="full">Full</button>
+      </span>
+      <label><input id="onlyDifferences" type="checkbox" checked> Only differences</label>
+      <input id="searchInput" type="search" placeholder="Search">
+      <button id="selectVisibleButton" class="secondary">Select visible</button>
+      <button id="clearSelectionButton" class="secondary">Clear selection</button>
+    </section>
+    <section class="toolbar" aria-label="Действия merge">
+      <button id="previewButton" disabled>Построить preview</button>
+      <button id="approveButton" class="secondary" disabled>Подтвердить</button>
+      <button id="executeButton" disabled>Выполнить merge</button>
+      <button id="refreshButton" class="secondary">Обновить</button>
+      <span class="selection" id="selectionText"></span>
+    </section>
+    <section class="content">
+      <div class="notice hidden" id="notice"></div>
+      <section class="preview hidden" id="preview"></section>
+      <section class="result hidden" id="result"></section>
+      <ul class="tree root" id="tree"></ul>
+    </section>
+  </main>
+  <script nonce="${nonce}">
+    // __CONFIG_COMPARE_DATA_PLACEHOLDER__
+    const vscode = acquireVsCodeApi();
+    const state = {
+      payload: window.__configCompareData,
+      selectedNodeIds: [],
+      busy: false,
+      locked: false,
+      preview: undefined,
+      diagnostics: [],
+      notice: undefined,
+      onlyDifferences: true,
+      search: '',
+      visibleNodeIds: []
+    };
+
+    const elements = {
+      title: document.getElementById('title'),
+      stats: document.getElementById('stats'),
+      tree: document.getElementById('tree'),
+      notice: document.getElementById('notice'),
+      preview: document.getElementById('preview'),
+      result: document.getElementById('result'),
+      selectionText: document.getElementById('selectionText'),
+      onlyDifferences: document.getElementById('onlyDifferences'),
+      searchInput: document.getElementById('searchInput'),
+      selectVisibleButton: document.getElementById('selectVisibleButton'),
+      clearSelectionButton: document.getElementById('clearSelectionButton'),
+      strategyButtons: [...document.querySelectorAll('[data-strategy]')],
+      previewButton: document.getElementById('previewButton'),
+      approveButton: document.getElementById('approveButton'),
+      executeButton: document.getElementById('executeButton'),
+      refreshButton: document.getElementById('refreshButton')
+    };
+
+    const executableNodeIds = () => new Set(state.payload?.executableNodeIds ?? []);
+    const selectedExecutableIds = () => {
+      const executable = executableNodeIds();
+      return state.selectedNodeIds.filter((nodeId) => executable.has(nodeId));
+    };
+
+    elements.strategyButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        if (state.busy || state.locked) {
+          return;
+        }
+        vscode.postMessage({ type: 'setStrategy', strategy: button.dataset.strategy });
+      });
+    });
+    elements.onlyDifferences.addEventListener('change', () => {
+      state.onlyDifferences = elements.onlyDifferences.checked;
+      render();
+    });
+    elements.searchInput.addEventListener('input', () => {
+      state.search = elements.searchInput.value.trim().toLowerCase();
+      render();
+    });
+    elements.selectVisibleButton.addEventListener('click', () => {
+      const executable = executableNodeIds();
+      const selected = state.visibleNodeIds.filter((nodeId) => executable.has(nodeId));
+      vscode.postMessage({ type: 'selectionChanged', nodeIds: selected });
+    });
+    elements.clearSelectionButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'selectionChanged', nodeIds: [] });
+    });
+    elements.previewButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'createPreview', nodeIds: selectedExecutableIds() });
+    });
+    elements.approveButton.addEventListener('click', () => {
+      if (state.preview) {
+        vscode.postMessage({ type: 'approvePreview', previewId: state.preview.previewId });
+      }
+    });
+    elements.executeButton.addEventListener('click', () => {
+      if (state.preview) {
+        const requiresDestructiveConfirmation = (state.preview.destructiveCount ?? 0) > 0;
+        const destructiveConfirmed = !requiresDestructiveConfirmation || confirm('Merge содержит destructive-операции: удаление или перезапись файлов. Выполнить?');
+        if (!destructiveConfirmed) {
+          return;
+        }
+        vscode.postMessage({
+          type: 'executeMerge',
+          previewId: state.preview.previewId,
+          destructiveConfirmed
+        });
+      }
+    });
+    elements.refreshButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'refresh' });
+    });
+
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (!message || typeof message.type !== 'string') {
+        return;
+      }
+
+      if (message.type === 'state') {
+        state.payload = message.payload;
+        state.selectedNodeIds = message.selectedNodeIds;
+        state.busy = message.busy;
+        state.locked = message.locked;
+        state.preview = message.preview;
+        state.diagnostics = message.diagnostics ?? [];
+        state.notice = undefined;
+        render();
+        return;
+      }
+
+      if (message.type === 'previewReady') {
+        state.preview = message;
+        state.diagnostics = message.diagnostics ?? [];
+        state.notice = undefined;
+        render();
+        return;
+      }
+
+      if (message.type === 'mergeSuccess') {
+        state.payload = message.payload;
+        state.locked = message.locked;
+        state.preview = undefined;
+        state.selectedNodeIds = [];
+        state.diagnostics = message.diagnostics ?? [];
+        state.notice = undefined;
+        renderResult(message);
+        render();
+        return;
+      }
+
+      if (message.type === 'mergeError') {
+        state.locked = message.locked;
+        state.diagnostics = message.diagnostics ?? [];
+        state.notice = message.message;
+        if (message.backupPaths && message.backupPaths.length > 0) {
+          renderFailureBackups(message.backupPaths);
+        }
+        render();
+      }
+    });
+
+    function render() {
+      if (!state.payload) {
+        return;
+      }
+      elements.title.textContent = state.payload.title;
+      renderStats(state.payload.stats);
+      const visible = state.payload.root.children
+        .map(filterNode)
+        .filter(Boolean);
+      state.visibleNodeIds = flattenNodeIds(visible);
+      renderToolbar();
+      renderPreview();
+      renderNotice();
+      elements.tree.replaceChildren(...visible.map(renderNode));
+    }
+
+    function renderStats(stats) {
+      elements.stats.replaceChildren(
+        stat('Всего', stats.total),
+        stat('Различий', stats.different),
+        stat('Исполняемых', stats.mergeable)
+      );
+    }
+
+    function stat(label, value) {
+      const item = document.createElement('div');
+      item.className = 'stat';
+      item.textContent = `${label}: ${value}`;
+      return item;
+    }
+
+    function renderToolbar() {
+      const count = selectedExecutableIds().length;
+      const canPreview = !state.busy && !state.locked && count > 0;
+      const approved = Boolean(state.preview?.approved);
+      elements.strategyButtons.forEach((button) => {
+        button.classList.toggle('active', button.dataset.strategy === state.payload.strategy);
+        button.disabled = state.busy || state.locked;
+      });
+      elements.previewButton.disabled = !canPreview;
+      elements.approveButton.disabled = state.busy || state.locked || !state.preview || approved;
+      elements.executeButton.disabled = state.busy || state.locked || !approved;
+      elements.refreshButton.disabled = state.busy;
+      elements.selectVisibleButton.disabled = state.busy || state.locked || visibleExecutableIds().length === 0;
+      elements.clearSelectionButton.disabled = state.busy || state.locked || state.selectedNodeIds.length === 0;
+      elements.selectionText.textContent = state.locked
+        ? 'Состояние заблокировано; нужно обновить сравнение.'
+        : count === 0
+          ? 'Выберите один или несколько исполняемых узлов для preview.'
+          : count === 1
+            ? 'Выбран 1 исполняемый узел.'
+            : `Выбрано исполняемых узлов: ${count}.`;
+    }
+
+    function visibleExecutableIds() {
+      const executable = executableNodeIds();
+      return state.visibleNodeIds.filter((nodeId) => executable.has(nodeId));
+    }
+
+    function renderPreview() {
+      const preview = state.preview;
+      elements.preview.classList.toggle('hidden', !preview);
+      if (!preview) {
+        elements.preview.replaceChildren();
+        return;
+      }
+      const title = document.createElement('strong');
+      title.textContent = preview.approved ? 'Preview подтверждён' : 'Preview';
+      const summary = document.createElement('div');
+      summary.textContent = `${preview.summary} Операций: ${preview.operationCount}`;
+      const warning = document.createElement('div');
+      warning.className = 'notice destructive-warning';
+      warning.textContent = `Destructive-операций: ${preview.destructiveCount ?? 0}. Требуется повторное подтверждение перед merge.`;
+      warning.classList.toggle('hidden', (preview.destructiveCount ?? 0) === 0);
+      const list = document.createElement('ul');
+      list.className = 'tree root';
+      list.append(...preview.items.map((item) => {
+        const li = document.createElement('li');
+        li.className = item.destructive ? 'destructive' : '';
+        li.textContent = `${item.label} (${item.kind}, ${item.status})`;
+        return li;
+      }));
+      elements.preview.replaceChildren(title, summary, warning, list);
+    }
+
+    function renderNotice() {
+      if (state.diagnostics.length === 0 && !state.notice) {
+        elements.notice.classList.add('hidden');
+        elements.notice.replaceChildren();
+        return;
+      }
+      const list = document.createElement('ul');
+      list.className = 'tree root';
+      if (state.notice) {
+        const notice = document.createElement('li');
+        notice.textContent = state.notice;
+        notice.className = 'error';
+        list.append(notice);
+      }
+      list.append(...state.diagnostics.map((diagnostic) => {
+        const li = document.createElement('li');
+        li.textContent = diagnostic.suggestedAction ?? diagnostic.code;
+        li.className = diagnostic.severity === 'error' ? 'error' : '';
+        return li;
+      }));
+      elements.notice.classList.remove('hidden');
+      elements.notice.replaceChildren(list);
+    }
+
+    function renderResult(message) {
+      const title = document.createElement('strong');
+      title.className = message.locked ? 'error' : 'success';
+      title.textContent = message.locked ? 'Merge выполнен, refresh не прошёл' : 'Merge выполнен';
+      const applied = document.createElement('div');
+      applied.textContent = `Применено операций: ${message.applied.length}`;
+      const backups = document.createElement('div');
+      backups.className = 'result-list';
+      backups.textContent = message.backupPaths.length > 0
+        ? `Backup-файлы: ${message.backupPaths.join(', ')}`
+        : 'Backup-файлы: нет';
+      elements.result.classList.remove('hidden');
+      elements.result.replaceChildren(title, applied, backups);
+    }
+
+    function renderFailureBackups(backupPaths) {
+      const title = document.createElement('strong');
+      title.className = 'error';
+      title.textContent = 'Merge не выполнен, backup доступен';
+      const backups = document.createElement('div');
+      backups.className = 'result-list';
+      backups.textContent = `Backup-файлы: ${backupPaths.join(', ')}`;
+      elements.result.classList.remove('hidden');
+      elements.result.replaceChildren(title, backups);
+    }
+
+    function filterNode(node) {
+      const filteredChildren = node.children
+        .map(filterNode)
+        .filter(Boolean);
+      const text = [
+        node.label,
+        node.kind,
+        node.status,
+        node.leftValue,
+        node.rightValue,
+        node.mergeState?.reason
+      ].filter(Boolean).join(' ').toLowerCase();
+      const matchesSearch = !state.search || text.includes(state.search);
+      const matchesDifference = !state.onlyDifferences || node.status !== 'equal';
+      if ((matchesSearch && matchesDifference) || filteredChildren.length > 0) {
+        return { ...node, children: filteredChildren };
+      }
+
+      return undefined;
+    }
+
+    function flattenNodeIds(nodes) {
+      const ids = [];
+      for (const node of nodes) {
+        ids.push(node.id, ...flattenNodeIds(node.children));
+      }
+      return ids;
+    }
+
+    function renderNode(node) {
+      const item = document.createElement('li');
+      item.className = 'node';
+      const row = document.createElement('div');
+      row.className = 'row';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.disabled = !executableNodeIds().has(node.id) || state.locked || state.busy;
+      input.checked = state.selectedNodeIds.includes(node.id);
+      input.addEventListener('change', () => {
+        const selected = new Set(state.selectedNodeIds);
+        if (input.checked) {
+          selected.add(node.id);
+        } else {
+          selected.delete(node.id);
+        }
+        vscode.postMessage({ type: 'selectionChanged', nodeIds: [...selected] });
+      });
+
+      const text = document.createElement('span');
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = node.label;
+      const status = document.createElement('span');
+      status.className = node.mergeState?.state === 'blocked' ? 'status blocked' : 'status';
+      status.textContent = node.mergeState?.state ? `${node.status} / ${node.mergeState.state}` : node.status;
+      text.append(label, status);
+      if (node.mergeState?.reason) {
+        const reason = document.createElement('div');
+        reason.className = 'reason';
+        reason.textContent = node.mergeState.reason;
+        text.append(reason);
+      }
+      if (node.leftValue || node.rightValue) {
+        const values = document.createElement('div');
+        values.className = 'values';
+        const left = document.createElement('span');
+        left.className = 'value';
+        left.textContent = `L: ${node.leftValue ?? ''}`;
+        const right = document.createElement('span');
+        right.className = 'value';
+        right.textContent = `R: ${node.rightValue ?? ''}`;
+        values.append(left, right);
+        text.append(values);
+      }
+      row.append(input, text);
+      item.append(row);
+      if (node.children.length > 0) {
+        const children = document.createElement('ul');
+        children.className = 'tree';
+        children.append(...node.children.map(renderNode));
+        item.append(children);
+      }
+      return item;
+    }
+
+    render();
+    vscode.postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>

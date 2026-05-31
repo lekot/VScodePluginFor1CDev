@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   buildInfobaseConfigCheckArgs,
+  buildInfobaseConfigCreateFileDbArgs,
   buildInfobaseConfigExportArgs,
   buildInfobaseConfigExportObjectsArgs,
   buildInfobaseConfigImportArgs,
@@ -106,6 +107,24 @@ suite('ibcmdInfobaseConfigArgs', () => {
     assert.ok(!args.includes('-F'));
   });
 
+  test('buildInfobaseConfigImportArgs: builds direct XML to CF args', () => {
+    const args = buildInfobaseConfigImportArgs(
+      { kind: 'fileDb', dbCatalogPath: '/ib', offlineDataDir: DATA },
+      '/src/xml',
+      { outFile: '/out/1Cv8.cf' },
+    );
+
+    assert.deepStrictEqual(args, [
+      'infobase',
+      'config',
+      'import',
+      '--db-path=/ib',
+      `--data=${DATA}`,
+      '--out=/out/1Cv8.cf',
+      '/src/xml',
+    ]);
+  });
+
   test('buildInfobaseConfigExportArgs: positional out dir', () => {
     const args = buildInfobaseConfigExportArgs(
       { kind: 'yaml', absoluteConfigPath: 'D:\\a.yaml', offlineDataDir: DATA },
@@ -128,6 +147,37 @@ suite('ibcmdInfobaseConfigArgs', () => {
     );
     assert.ok(args.includes('--extension=Ext1'));
     assert.ok(args.includes('--format=xml'));
+  });
+
+  test('buildInfobaseConfigExportArgs: builds direct CF to XML args', () => {
+    const args = buildInfobaseConfigExportArgs(
+      { kind: 'fileDb', dbCatalogPath: '/ib', offlineDataDir: DATA },
+      '/out/xml',
+      { file: '/in/1Cv8.cf', force: true },
+    );
+
+    assert.deepStrictEqual(args, [
+      'infobase',
+      'config',
+      'export',
+      '--db-path=/ib',
+      `--data=${DATA}`,
+      '--file=/in/1Cv8.cf',
+      '--force',
+      '/out/xml',
+    ]);
+  });
+
+  test('buildInfobaseConfigCreateFileDbArgs: creates temp file db with offline data', () => {
+    const args = buildInfobaseConfigCreateFileDbArgs('/tmp/cf-db', DATA, { force: true });
+
+    assert.deepStrictEqual(args, [
+      'infobase',
+      'create',
+      '--db-path=/tmp/cf-db',
+      `--data=${DATA}`,
+      '--force',
+    ]);
   });
 
   test('import: paths with spaces in db-path', () => {

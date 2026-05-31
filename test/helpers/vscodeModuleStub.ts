@@ -211,6 +211,8 @@ export const vscodeTestState = {
   quickPickQueue: [] as unknown[],
   /** Sequential results for `showOpenDialog` (shifted each call). */
   openDialogQueue: [] as { fsPath: string; scheme: string }[][],
+  /** Sequential results for `showSaveDialog` (shifted each call). */
+  saveDialogQueue: [] as ({ fsPath: string; scheme: string } | undefined)[],
   /** Sequential results for `showInputBox` (shifted each call). */
   inputBoxQueue: [] as (string | undefined)[],
   /**
@@ -312,6 +314,12 @@ const windowStub = {
   showOpenDialog: async (_options?: unknown): Promise<{ fsPath: string; scheme: string }[] | undefined> => {
     if (vscodeTestState.openDialogQueue.length > 0) {
       return vscodeTestState.openDialogQueue.shift();
+    }
+    return undefined;
+  },
+  showSaveDialog: async (_options?: unknown): Promise<{ fsPath: string; scheme: string } | undefined> => {
+    if (vscodeTestState.saveDialogQueue.length > 0) {
+      return vscodeTestState.saveDialogQueue.shift();
     }
     return undefined;
   },
@@ -450,6 +458,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.informationLog = [];
   vscodeTestState.quickPickQueue = [];
   vscodeTestState.openDialogQueue = [];
+  vscodeTestState.saveDialogQueue = [];
   vscodeTestState.inputBoxQueue = [];
   vscodeTestState.inputBoxValidationFailures = [];
   vscodeTestState.warningMessageReturnQueue = [];

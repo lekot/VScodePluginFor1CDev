@@ -53,8 +53,17 @@
       margin-bottom: 10px;
     }
     button,
-    input {
+    input,
+    select {
       font: inherit;
+    }
+    select {
+      min-height: 28px;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--vscode-input-foreground, var(--vscode-foreground));
+      background: var(--input-bg);
     }
     button {
       min-height: 28px;
@@ -173,6 +182,13 @@
     </div>
   </header>
   <div class="toolbar">
+    <label>Стратегия
+      <select id="join-strategy">
+        <option value="left">Левая: пробелы файла</option>
+        <option value="right">Правая: пробелы конфигурации</option>
+        <option value="full">Полная: все несовпадения</option>
+      </select>
+    </label>
     <label><input id="show-different-only" type="checkbox" checked> Только различия</label>
     <button id="select-visible">Отметить видимые</button>
     <button id="clear-selection">Снять отметки</button>
@@ -204,6 +220,7 @@
     const tree = document.getElementById('compare-tree');
     const status = document.getElementById('status');
     const showDifferentOnlyInput = document.getElementById('show-different-only');
+    const joinStrategyInput = document.getElementById('join-strategy');
     const mergeButton = document.getElementById('merge-selected');
 
     function esc(value) {
@@ -262,6 +279,7 @@
       title.textContent = payload.title;
       leftTitle.textContent = payload.leftTitle;
       rightTitle.textContent = payload.rightTitle;
+      joinStrategyInput.value = payload.strategy || 'left';
       paths.textContent = `${payload.schemaPath} ⇄ ${payload.sourcePath}`;
       summary.textContent = `Различий: ${payload.stats.different}; доступно к объединению: ${payload.stats.mergeable}`;
       const html = renderNode(payload.tree, 0);
@@ -273,6 +291,12 @@
     showDifferentOnlyInput.addEventListener('change', () => {
       showDifferentOnly = showDifferentOnlyInput.checked;
       render();
+    });
+
+    joinStrategyInput.addEventListener('change', () => {
+      selectedIds.clear();
+      vscode.postMessage({ type: 'setStrategy', strategy: joinStrategyInput.value });
+      status.textContent = 'Перестраиваю сравнение...';
     });
 
     document.getElementById('select-visible').addEventListener('click', () => {
@@ -307,6 +331,11 @@
         payload = message.payload;
         selectedIds.clear();
         status.textContent = 'Сохранено';
+        render();
+      } else if (message.type === 'strategyChanged') {
+        payload = message.payload;
+        selectedIds.clear();
+        status.textContent = '';
         render();
       } else if (message.type === 'mergeError') {
         status.textContent = message.message || 'Ошибка объединения';

@@ -12,12 +12,12 @@ import {
   applyXdtoPackageMerge,
   buildXdtoPackageCompareTree,
   parseXdtoComparableSource,
+  type XdtoCompareJoinStrategy,
 } from './xdtoPackageCompareModel';
 
-type XdtoPackageCompareMessage = {
-  type: 'merge';
-  selectedIds: string[];
-};
+type XdtoPackageCompareMessage =
+  | { type: 'merge'; selectedIds: string[] }
+  | { type: 'setStrategy'; strategy: XdtoCompareJoinStrategy };
 
 interface XdtoPackageComparePayload {
   title: string;
@@ -25,6 +25,7 @@ interface XdtoPackageComparePayload {
   rightTitle: string;
   schemaPath: string;
   sourcePath: string;
+  strategy: XdtoCompareJoinStrategy;
   tree: ReturnType<typeof buildXdtoPackageCompareTree>['root'];
   stats: ReturnType<typeof buildXdtoPackageCompareTree>['stats'];
 }
@@ -36,6 +37,7 @@ interface XdtoPackageCompareSession {
   packageName: string;
   leftModel: XdtoPackageModel;
   rightModel: XdtoPackageModel;
+  strategy: XdtoCompareJoinStrategy;
 }
 
 function createNonce(): string {
@@ -56,9 +58,15 @@ function isValidMessage(message: unknown): message is XdtoPackageCompareMessage 
     return false;
   }
   const record = message as Record<string, unknown>;
-  return record['type'] === 'merge'
-    && Array.isArray(record['selectedIds'])
-    && record['selectedIds'].every((item) => typeof item === 'string');
+  if (record['type'] === 'merge') {
+    return Array.isArray(record['selectedIds'])
+      && record['selectedIds'].every((item) => typeof item === 'string');
+  }
+  return record['type'] === 'setStrategy' && isJoinStrategy(record['strategy']);
+}
+
+function isJoinStrategy(value: unknown): value is XdtoCompareJoinStrategy {
+  return value === 'left' || value === 'right' || value === 'full';
 }
 
 function resolveWebviewHtmlPath(context: vscode.ExtensionContext): string {
@@ -86,13 +94,14 @@ async function pickComparableFile(): Promise<vscode.Uri | undefined> {
 }
 
 function buildPayload(session: XdtoPackageCompareSession): XdtoPackageComparePayload {
-  const compare = buildXdtoPackageCompareTree(session.leftModel, session.rightModel);
+  const compare = buildXdtoPackageCompareTree(session.leftModel, session.rightModel, session.strategy);
   return {
     title: `Сравнение XDTO-пакета: ${session.packageName}`,
     leftTitle: 'В конфигурации',
     rightTitle: path.basename(session.sourcePath),
     schemaPath: session.schemaPath,
     sourcePath: session.sourcePath,
+    strategy: session.strategy,
     tree: compare.root,
     stats: compare.stats,
   };
@@ -110,7 +119,10 @@ function render(context: vscode.ExtensionContext, session: XdtoPackageCompareSes
   session.panel.webview.html = html;
 }
 
-async function handleMerge(session: XdtoPackageCompareSession, message: XdtoPackageCompareMessage): Promise<void> {
+async function handleMerge(
+  session: XdtoPackageCompareSession,
+  message: Extract<XdtoPackageCompareMessage, { type: 'merge' }>
+): Promise<void> {
   try {
     const nextModel = applyXdtoPackageMerge(session.leftModel, session.rightModel, message.selectedIds);
     const result = serializeAndValidateXdtoModelForSave(nextModel);
@@ -169,9 +181,15 @@ export async function showXdtoPackageCompare(context: vscode.ExtensionContext, n
       packageName: node.name,
       leftModel,
       rightModel,
+      strategy: 'left',
     };
     panel.webview.onDidReceiveMessage((message: unknown) => {
       if (!isValidMessage(message)) {
+        return;
+      }
+      if (message.type === 'setStrategy') {
+        session.strategy = message.strategy;
+        void panel.webview.postMessage({ type: 'strategyChanged', payload: buildPayload(session) });
         return;
       }
       void handleMerge(session, message);

@@ -130,6 +130,21 @@ suite('metadataFileLocator', () => {
     });
   });
 
+  test('common form module (CommonForms/Y/Ext/Form/Module.bsl)', () => {
+    const result = locateMetadataFile(
+      p(root, 'CommonForms/CustomerPicker/Ext/Form/Module.bsl'),
+      roots
+    );
+    assert.ok(result);
+    assert.strictEqual(result.objectType, 'CommonForms');
+    assert.strictEqual(result.objectName, 'CustomerPicker');
+    assert.deepStrictEqual(result.subPath, {
+      kind: 'form',
+      name: 'CustomerPicker',
+      subFile: 'module',
+    });
+  });
+
   // -------------------------------------------------------------------------
   // 5a. Command: flat Commands/Z.xml
   // -------------------------------------------------------------------------
@@ -158,6 +173,21 @@ suite('metadataFileLocator', () => {
     assert.deepStrictEqual(result.subPath, {
       kind: 'command',
       name: 'СоздатьНаОснове',
+      subFile: 'module',
+    });
+  });
+
+  test('common command module (CommonCommands/Z/Ext/CommandModule.bsl)', () => {
+    const result = locateMetadataFile(
+      p(root, 'CommonCommands/OpenDashboard/Ext/CommandModule.bsl'),
+      roots
+    );
+    assert.ok(result);
+    assert.strictEqual(result.objectType, 'CommonCommands');
+    assert.strictEqual(result.objectName, 'OpenDashboard');
+    assert.deepStrictEqual(result.subPath, {
+      kind: 'command',
+      name: 'OpenDashboard',
       subFile: 'module',
     });
   });
@@ -258,6 +288,21 @@ suite('metadataFileLocator', () => {
     assert.strictEqual(result.extensionName, 'Базовое');
     assert.strictEqual(result.objectType, 'Catalogs');
     assert.strictEqual(result.objectName, 'Товары');
+    assert.deepStrictEqual(result.subPath, { kind: 'objectModule' });
+  });
+
+  test('extension path keeps extensionName when extension root is also configured', () => {
+    const extensionRoot = p(root, 'ConfigurationExtensions', 'SalesPatch');
+    const result = locateMetadataFile(
+      p(extensionRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl'),
+      [root, extensionRoot]
+    );
+
+    assert.ok(result);
+    assert.strictEqual(result.configRoot, extensionRoot);
+    assert.strictEqual(result.extensionName, 'SalesPatch');
+    assert.strictEqual(result.objectType, 'Catalogs');
+    assert.strictEqual(result.objectName, 'Products');
     assert.deepStrictEqual(result.subPath, { kind: 'objectModule' });
   });
 

@@ -1,5 +1,19 @@
 export type CompareTreeStatus = 'equal' | 'changed' | 'leftOnly' | 'rightOnly';
 
+export type CompareTreeMergeStateKind = 'ready' | 'blocked' | 'identityConflict' | 'readOnly';
+
+export interface CompareTreeMergeState {
+  state: CompareTreeMergeStateKind;
+  reason?: string;
+  targetFilePath?: string;
+}
+
+export interface CompareTreeConflict {
+  kind: string;
+  blocking: boolean;
+  message: string;
+}
+
 export interface CompareTreeNode {
   id: string;
   label: string;
@@ -8,6 +22,10 @@ export interface CompareTreeNode {
   leftValue?: string;
   rightValue?: string;
   mergeable?: boolean;
+  destructive?: boolean;
+  payloadRef?: string;
+  conflict?: CompareTreeConflict;
+  mergeState?: CompareTreeMergeState;
   children: CompareTreeNode[];
 }
 

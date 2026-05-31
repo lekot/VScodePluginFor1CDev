@@ -1,4 +1,5 @@
 import type { CompareTreeNode, CompareTreeStats } from '../compareMerge/compareTreeTypes';
+import type { XdtoCompareJoinStrategy } from '../xdtoPackageCompare/xdtoPackageCompareModel';
 import type { XdtoPackageModel } from '../types/xdtoPackage';
 
 export interface XdtoPackageSelector {
@@ -61,6 +62,7 @@ export interface XdtoCompareParams extends XdtoPackageSelector {
   inputPath?: string;
   source?: string;
   includeTree?: boolean;
+  joinStrategy?: XdtoCompareJoinStrategy;
 }
 
 export interface XdtoCompareResult {
@@ -74,6 +76,7 @@ export interface XdtoMergeParams extends XdtoPackageSelector {
   inputPath?: string;
   source?: string;
   selectedIds: string[];
+  joinStrategy?: XdtoCompareJoinStrategy;
 }
 
 export interface XdtoMergeResult {

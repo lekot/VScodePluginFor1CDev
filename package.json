@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.49.4",
+  "version": "0.50.0",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -269,6 +269,24 @@
         "command": "1c-metadata-tree.compareMergeXdtoPackage",
         "title": "XDTO-пакет: сравнить/объединить",
         "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.compareMergeConfiguration",
+        "title": "Сравнить/объединить конфигурацию из файлов...",
+        "category": "CDT 41",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "1c-metadata-tree.cf.decompose",
+        "title": "CF/CFE: разобрать в XML...",
+        "category": "CDT 41",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "1c-metadata-tree.cf.buildFromConfiguration",
+        "title": "CF: собрать из XML-конфигурации...",
+        "category": "CDT 41",
+        "icon": "$(package)"
       },
       {
         "command": "1c-metadata-tree.viewChartOfCharacteristicTypesPredefined",
@@ -777,6 +795,21 @@
           "command": "1c-metadata-tree.validateCurrentXml",
           "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
           "group": "infobase@2"
+        },
+        {
+          "command": "1c-metadata-tree.compareMergeConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
+          "group": "infobase@2a"
+        },
+        {
+          "command": "1c-metadata-tree.cf.buildFromConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",
+          "group": "infobase@2b"
+        },
+        {
+          "command": "1c-metadata-tree.cf.decompose",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^CfFile\\b/",
+          "group": "infobase@2b"
         },
         {
           "command": "1c-metadata-tree.validateCurrentXml",
