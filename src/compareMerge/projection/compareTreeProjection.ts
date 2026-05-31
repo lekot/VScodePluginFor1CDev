@@ -49,12 +49,18 @@ interface DiagnosticProjectionInput {
   stableKey?: string;
 }
 
-export function buildCompareTreeProjection(input: CompareTreeProjectionInput): CompareTreeProjection {
+export function buildCompareTreeProjection(
+  input: CompareTreeProjectionInput
+): CompareTreeProjection {
   const adapterDiagnostics = (input.adapterResults ?? []).flatMap((result) => result.diagnostics);
+  const metadataObjectOperations = metadataObjectOperationMap(input.adapterResults ?? []);
+  const consumedMetadataObjectOperations = input.metadata
+    ? new Set(metadataObjectOperations.values())
+    : new Set<CompareTreeNode>();
   const children = [
-    projectMetadata(input.metadata),
+    projectMetadata(input.metadata, metadataObjectOperations),
     projectBsl(input.bsl ?? []),
-    projectAdapters(input.adapterResults ?? []),
+    projectAdapters(input.adapterResults ?? [], consumedMetadataObjectOperations),
     projectMessages([...(input.messages ?? []), ...adapterDiagnostics]),
   ].filter((node): node is CompareTreeNode => Boolean(node));
   const root = branchNode('configCompare', 'Configuration compare', 'configCompare', children);
@@ -65,14 +71,39 @@ export function buildCompareTreeProjection(input: CompareTreeProjectionInput): C
   };
 }
 
-function projectAdapters(results: readonly AdapterCompareResult[]): CompareTreeNode | undefined {
-  const children = results.flatMap((result) => result.nodes);
+function metadataObjectOperationMap(
+  results: readonly AdapterCompareResult[]
+): ReadonlyMap<string, CompareTreeNode> {
+  const operations = new Map<string, CompareTreeNode>();
+  for (const node of results.flatMap((result) => result.nodes)) {
+    if (
+      node.kind === 'metadataObject' &&
+      (node.status === 'leftOnly' || node.status === 'rightOnly') &&
+      node.mergeable
+    ) {
+      operations.set(metadataObjectOperationKey(node.label, node.status), node);
+    }
+  }
+
+  return operations;
+}
+
+function projectAdapters(
+  results: readonly AdapterCompareResult[],
+  consumedMetadataObjectOperations: ReadonlySet<CompareTreeNode>
+): CompareTreeNode | undefined {
+  const children = results
+    .flatMap((result) => result.nodes)
+    .filter((node) => !consumedMetadataObjectOperations.has(node));
   return children.length === 0
     ? undefined
     : branchNode('adapterChanges', 'Adapter changes', 'adapterGroup', children);
 }
 
-function projectMetadata(metadata: MatchResult | undefined): CompareTreeNode | undefined {
+function projectMetadata(
+  metadata: MatchResult | undefined,
+  metadataObjectOperations: ReadonlyMap<string, CompareTreeNode>
+): CompareTreeNode | undefined {
   if (!metadata) {
     return undefined;
   }
@@ -81,9 +112,11 @@ function projectMetadata(metadata: MatchResult | undefined): CompareTreeNode | u
     ...metadata.matches.map(projectMetadataMatch),
     ...metadata.conflicts.map(projectIdentityConflict),
     ...metadata.diagnostics.map(projectMetadataDiagnostic),
-    ...metadata.unmatchedLeft.map((identity, index) => projectUnmatchedMetadata(identity, 'leftOnly', index)),
+    ...metadata.unmatchedLeft.map((identity, index) =>
+      projectUnmatchedMetadata(identity, 'leftOnly', index, metadataObjectOperations)
+    ),
     ...metadata.unmatchedRight.map((identity, index) =>
-      projectUnmatchedMetadata(identity, 'rightOnly', index)
+      projectUnmatchedMetadata(identity, 'rightOnly', index, metadataObjectOperations)
     ),
   ];
 
@@ -122,7 +155,9 @@ function projectIdentityConflict(conflict: IdentityConflict): CompareTreeNode {
     label: conflict.qualifiedName ?? conflict.uuid ?? conflict.kind,
     kind: 'metadataConflict',
     status: 'changed',
-    leftValue: identitySummary(conflict.left ?? conflict.identities.find((item) => item.side === 'left')),
+    leftValue: identitySummary(
+      conflict.left ?? conflict.identities.find((item) => item.side === 'left')
+    ),
     rightValue: identitySummary(
       conflict.right ?? conflict.identities.find((item) => item.side === 'right')
     ),
@@ -168,8 +203,16 @@ function projectMetadataDiagnostic(
 function projectUnmatchedMetadata(
   identity: MetadataIdentity,
   status: 'leftOnly' | 'rightOnly',
-  index: number
+  index: number,
+  metadataObjectOperations: ReadonlyMap<string, CompareTreeNode>
 ): CompareTreeNode {
+  const operation = metadataObjectOperations.get(
+    metadataObjectOperationKey(identity.qualifiedName, status)
+  );
+  if (operation) {
+    return operation;
+  }
+
   return leafNode({
     id: `metadata:${status}:${encodeId(identity.qualifiedName)}:${index}`,
     label: identity.qualifiedName,
@@ -186,6 +229,13 @@ function projectUnmatchedMetadata(
   });
 }
 
+function metadataObjectOperationKey(
+  qualifiedName: string,
+  status: 'leftOnly' | 'rightOnly'
+): string {
+  return `${status}:${qualifiedName}`;
+}
+
 function projectBsl(items: readonly BslRoutineDiffProjectionInput[]): CompareTreeNode | undefined {
   const children: CompareTreeNode[] = [];
 
@@ -198,7 +248,9 @@ function projectBsl(items: readonly BslRoutineDiffProjectionInput[]): CompareTre
     }
   });
 
-  return children.length === 0 ? undefined : branchNode('bsl', 'BSL routines', 'bslGroup', children);
+  return children.length === 0
+    ? undefined
+    : branchNode('bsl', 'BSL routines', 'bslGroup', children);
 }
 
 function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
@@ -206,15 +258,19 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
   const mergeableRoutineIds = input.mergeableRoutineIds
     ? new Set(input.mergeableRoutineIds)
     : undefined;
-  const blockingDiagnostics = [
-    ...(input.diagnostics ?? []),
-    ...diff.diagnostics,
-  ].filter((diagnostic) => diagnostic.blocking);
+  const blockingDiagnostics = [...(input.diagnostics ?? []), ...diff.diagnostics].filter(
+    (diagnostic) => diagnostic.blocking
+  );
   const moduleChildren: CompareTreeNode[] = [
     ...diff.routines.map((routine) => {
       const mergeState = createBslMergeState(input, blockingDiagnostics);
       const nodeId = `bsl:routine:${diff.moduleId}:${routine.normalizedName}`;
-      const mergeable = isBslRoutineMergeable(routine.status, mergeState, nodeId, mergeableRoutineIds);
+      const mergeable = isBslRoutineMergeable(
+        routine.status,
+        mergeState,
+        nodeId,
+        mergeableRoutineIds
+      );
       return leafNode({
         id: nodeId,
         label: routine.name,
@@ -239,9 +295,7 @@ function projectBslDiff(input: BslRoutineDiffProjectionInput): CompareTreeNode {
 }
 
 function projectMessages(messages: readonly CompareMessage[]): CompareTreeNode | undefined {
-  const children = messages.map((message, index) =>
-    projectCompareMessage(message, index)
-  );
+  const children = messages.map((message, index) => projectCompareMessage(message, index));
 
   return children.length === 0
     ? undefined
@@ -296,8 +350,8 @@ function diagnosticNode(input: DiagnosticProjectionInput): CompareTreeNode {
   const idSuffix = input.stableKey
     ? encodeId(input.stableKey)
     : input.context
-    ? `${encodeId(input.context)}:${diagnosticIndex(input.payloadRef)}`
-    : diagnosticIndex(input.payloadRef);
+      ? `${encodeId(input.context)}:${diagnosticIndex(input.payloadRef)}`
+      : diagnosticIndex(input.payloadRef);
   return leafNode({
     id: `diagnostic:${input.source}:${input.code}:${idSuffix}`,
     label: input.code,
@@ -472,11 +526,7 @@ function stableIdentityConflictKey(conflict: IdentityConflict): string {
     ['qualifiedName', conflict.qualifiedName],
     ['uuid', conflict.uuid],
   ]);
-  const identityContexts = [
-    conflict.left,
-    conflict.right,
-    ...conflict.identities,
-  ]
+  const identityContexts = [conflict.left, conflict.right, ...conflict.identities]
     .map(identityConflictContext)
     .filter((part): part is string => Boolean(part));
   return [
@@ -499,7 +549,9 @@ function identityConflictContext(identity: MetadataIdentity | undefined): string
   ]);
 }
 
-function metadataDiagnosticIdentitiesContext(identities: readonly MetadataIdentity[]): string | undefined {
+function metadataDiagnosticIdentitiesContext(
+  identities: readonly MetadataIdentity[]
+): string | undefined {
   if (identities.length === 0) {
     return undefined;
   }

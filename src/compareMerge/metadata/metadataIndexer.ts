@@ -11,6 +11,7 @@ export interface MetadataIndexFileInput {
   filePath: string;
   metadataType?: string;
   qualifiedName?: string;
+  readUuid?: boolean;
 }
 
 export interface MetadataIndexFolderInput {
@@ -19,13 +20,34 @@ export interface MetadataIndexFolderInput {
   folderPath: string;
   metadataType?: string;
   concurrency?: number;
+  readUuid?: boolean;
 }
 
 export async function indexMetadataFile(input: MetadataIndexFileInput): Promise<MetadataIdentity> {
+  if (input.metadataType && input.qualifiedName) {
+    const uuid =
+      input.readUuid === false ? undefined : await readMetadataUuidPrefix(input.filePath);
+    return {
+      sourceId: input.sourceId,
+      side: input.side,
+      metadataType: input.metadataType,
+      qualifiedName: input.qualifiedName,
+      uuid,
+      filePath: input.filePath,
+      containerPath: path.dirname(input.filePath),
+      objectPath: input.qualifiedName,
+      nameSource: 'callerInput',
+      uuidSource: uuid ? 'xmlAttribute' : 'missing',
+      confidence: uuid ? 'strong' : 'nameOnly',
+    };
+  }
+
   const parsed = await XmlParser.parseFileAsync(input.filePath);
   const root = getRootElement(parsed);
   const metadataType =
-    input.metadataType ?? inferMetadataTypeFromXml(root, parsed) ?? inferMetadataTypeFromPath(input.filePath);
+    input.metadataType ??
+    inferMetadataTypeFromXml(root, parsed) ??
+    inferMetadataTypeFromPath(input.filePath);
   const objectElement = findMetadataObjectElement(parsed, metadataType) ?? root.value;
   const xmlName = readPropertiesName(objectElement) ?? readPropertiesName(root.value);
   const pathName = path.basename(input.filePath, path.extname(input.filePath));
@@ -53,7 +75,24 @@ export async function indexMetadataFile(input: MetadataIndexFileInput): Promise<
   };
 }
 
-export async function indexMetadataFolder(input: MetadataIndexFolderInput): Promise<MetadataIdentity[]> {
+async function readMetadataUuidPrefix(filePath: string): Promise<string | undefined> {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(65536);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return readMetadataUuidFast(buffer.toString('utf-8', 0, bytesRead));
+  } finally {
+    await handle.close();
+  }
+}
+
+function readMetadataUuidFast(content: string): string | undefined {
+  return content.match(/\buuid\s*=\s*"([^"]+)"/i)?.[1];
+}
+
+export async function indexMetadataFolder(
+  input: MetadataIndexFolderInput
+): Promise<MetadataIdentity[]> {
   const xmlFiles = await collectMetadataXmlFiles(input.folderPath);
   const indexed = await mapLimit(xmlFiles, input.concurrency ?? 32, async (filePath) => {
     const pathContext = inferMetadataPathContext(input.folderPath, filePath, input.metadataType);
@@ -69,6 +108,7 @@ export async function indexMetadataFolder(input: MetadataIndexFolderInput): Prom
       filePath,
       metadataType: pathContext?.metadataType,
       qualifiedName: pathContext?.qualifiedName,
+      readUuid: input.readUuid,
     });
   });
 
@@ -81,24 +121,34 @@ interface MetadataPathContext {
 }
 
 async function collectMetadataXmlFiles(folderPath: string): Promise<string[]> {
-  const entries = await fs.readdir(folderPath, { withFileTypes: true });
   const xmlFiles: string[] = [];
+  const directories = [folderPath];
+  let nextDirectoryIndex = 0;
 
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const entryPath = path.join(folderPath, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name.toLowerCase() === 'ext') {
-        continue;
+  async function collect(): Promise<void> {
+    while (nextDirectoryIndex < directories.length) {
+      const directoryIndex = nextDirectoryIndex;
+      nextDirectoryIndex += 1;
+      const currentFolderPath = directories[directoryIndex];
+      const entries = await fs.readdir(currentFolderPath, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const entryPath = path.join(currentFolderPath, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name.toLowerCase() !== 'ext') {
+            directories.push(entryPath);
+          }
+          continue;
+        }
+
+        if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
+          xmlFiles.push(entryPath);
+        }
       }
-      xmlFiles.push(...(await collectMetadataXmlFiles(entryPath)));
-      continue;
-    }
-
-    if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
-      xmlFiles.push(entryPath);
     }
   }
 
+  await Promise.all(Array.from({ length: 64 }, collect));
   return xmlFiles.sort((left, right) => left.localeCompare(right));
 }
 
@@ -129,7 +179,8 @@ function inferMetadataPathContext(
   explicitMetadataType: string | undefined
 ): MetadataPathContext | undefined {
   const relativeParts = path.relative(folderPath, filePath).split(path.sep).filter(Boolean);
-  const folderMetadataType = explicitMetadataType ?? inferKnownMetadataTypeFromFolderName(path.basename(folderPath));
+  const folderMetadataType =
+    explicitMetadataType ?? inferKnownMetadataTypeFromFolderName(path.basename(folderPath));
   if (relativeParts.length === 0) {
     return folderMetadataType ? { metadataType: folderMetadataType } : undefined;
   }
@@ -155,7 +206,10 @@ function inferMetadataPathContext(
   }
 
   if (folderParts.length <= cursor) {
-    return { metadataType: rootMetadataType };
+    return {
+      metadataType: rootMetadataType,
+      qualifiedName: rootMetadataType ? `${rootMetadataType}.${fileBaseName}` : undefined,
+    };
   }
 
   if (folderParts.length === cursor + 1) {
@@ -207,7 +261,10 @@ function getRootElement(parsed: Record<string, unknown>): { name: string; value:
   return { name: 'Unknown', value: parsed };
 }
 
-function inferMetadataTypeFromXml(root: { name: string; value: unknown }, parsed: Record<string, unknown>): string | undefined {
+function inferMetadataTypeFromXml(
+  root: { name: string; value: unknown },
+  parsed: Record<string, unknown>
+): string | undefined {
   const rootName = localName(root.name);
   if (rootName !== 'MetaDataObject') {
     return rootName;

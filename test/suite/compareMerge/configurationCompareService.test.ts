@@ -17,7 +17,10 @@ suite('ConfigurationCompareService', () => {
     try {
       await writeCatalog(leftRoot, 'Products', 'catalog-products');
       await writeCatalog(rightRoot, 'Products', 'catalog-products');
-      await writeFile(path.join(leftRoot, 'Catalogs', 'Unrelated.xml'), '<MetaDataObject><Catalog>');
+      await writeFile(
+        path.join(leftRoot, 'Catalogs', 'Unrelated.xml'),
+        '<MetaDataObject><Catalog>'
+      );
 
       const result = await buildConfigurationCompare({
         leftRootPath: leftRoot,
@@ -27,7 +30,10 @@ suite('ConfigurationCompareService', () => {
       });
 
       assert.strictEqual(result.projection.stats.total > 0, true);
-      assert.strictEqual(collectNodes(result.projection.root, (node) => node.label.includes('Unrelated')).length, 0);
+      assert.strictEqual(
+        collectNodes(result.projection.root, (node) => node.label.includes('Unrelated')).length,
+        0
+      );
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -90,11 +96,17 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(conflict.status, 'changed');
       assert.strictEqual(conflict.mergeable, false);
       assert.strictEqual(
-        collectNodes(result.projection.root, (node) => node.kind === 'metadataObject' && node.label === 'Catalog.NewName').length,
+        collectNodes(
+          result.projection.root,
+          (node) => node.kind === 'metadataObject' && node.label === 'Catalog.NewName'
+        ).length,
         0
       );
       assert.strictEqual(
-        collectNodes(result.projection.root, (node) => node.kind === 'fileArtifact' && node.label === 'NewName.xml').length,
+        collectNodes(
+          result.projection.root,
+          (node) => node.kind === 'fileArtifact' && node.label === 'NewName.xml'
+        ).length,
         0
       );
     } finally {
@@ -109,11 +121,7 @@ suite('ConfigurationCompareService', () => {
     const backupRoot = path.join(tempRoot, 'backups');
     const leftModulePath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
     const rightModulePath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
-    const leftSource = [
-      'Procedure Shared()',
-      '  Value = 1;',
-      'EndProcedure',
-    ].join('\n');
+    const leftSource = ['Procedure Shared()', '  Value = 1;', 'EndProcedure'].join('\n');
     const rightSource = [
       leftSource,
       '',
@@ -142,8 +150,14 @@ suite('ConfigurationCompareService', () => {
       });
       const nodeId = 'bsl:routine:Catalog.Products.Object:addedonright';
 
-      assert.strictEqual(result.session.state.sources[0]?.rootUri, pathToFileURL(leftRoot).toString());
-      assert.strictEqual(result.session.state.sources[1]?.rootUri, pathToFileURL(rightRoot).toString());
+      assert.strictEqual(
+        result.session.state.sources[0]?.rootUri,
+        pathToFileURL(leftRoot).toString()
+      );
+      assert.strictEqual(
+        result.session.state.sources[1]?.rootUri,
+        pathToFileURL(rightRoot).toString()
+      );
 
       const addedRoutine = requireNode(result.projection.root, nodeId);
       assert.strictEqual(addedRoutine.kind, 'bslRoutine');
@@ -185,11 +199,7 @@ suite('ConfigurationCompareService', () => {
     const backupRoot = path.join(tempRoot, 'backups');
     const leftModulePath = path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
     const rightModulePath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
-    const sharedRoutine = [
-      'Procedure Shared()',
-      '  Value = 1;',
-      'EndProcedure',
-    ].join('\n');
+    const sharedRoutine = ['Procedure Shared()', '  Value = 1;', 'EndProcedure'].join('\n');
     const leftSource = [
       sharedRoutine,
       '',
@@ -255,11 +265,7 @@ suite('ConfigurationCompareService', () => {
       await writeCatalog(rightRoot, 'Products', 'catalog-products');
       await writeFile(
         rightModulePath,
-        [
-          'Procedure AddedOnRight()',
-          '  Value = 2;',
-          'EndProcedure',
-        ].join('\n')
+        ['Procedure AddedOnRight()', '  Value = 2;', 'EndProcedure'].join('\n')
       );
 
       const result = await buildConfigurationCompare({
@@ -399,7 +405,10 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(execution.result.backupPaths.length, 1);
       const backupPath = execution.result.backupPaths[0]!;
       assert.notStrictEqual(backupPath, deterministicBackupPath);
-      assert.strictEqual(path.dirname(backupPath), path.join(backupRoot, preview.preview.previewId));
+      assert.strictEqual(
+        path.dirname(backupPath),
+        path.join(backupRoot, preview.preview.previewId)
+      );
       assert.notStrictEqual(path.basename(backupPath), 'operation-0.bak');
       assert.strictEqual(await readText(backupPath), logicalBaseRoutine());
       assert.strictEqual(
@@ -448,8 +457,14 @@ suite('ConfigurationCompareService', () => {
       });
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
-      assert.strictEqual(await readText(leftModulePath), `${logicalIncomingRoutine()}\n\n${secondBaseRoutine()}`);
-      assert.strictEqual(await readText(rightModulePath), `${logicalIncomingRoutine()}\n\n${secondIncomingRoutine()}`);
+      assert.strictEqual(
+        await readText(leftModulePath),
+        `${logicalIncomingRoutine()}\n\n${secondBaseRoutine()}`
+      );
+      assert.strictEqual(
+        await readText(rightModulePath),
+        `${logicalIncomingRoutine()}\n\n${secondIncomingRoutine()}`
+      );
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -522,7 +537,12 @@ suite('ConfigurationCompareService', () => {
         createdAt: new Date('2026-05-30T10:00:00.000Z'),
       });
 
-      const synonym = requireNodeByLabel(result.projection.root, 'Synonym', 'Old goods', 'New goods');
+      const synonym = requireNodeByLabel(
+        result.projection.root,
+        'Synonym',
+        'Old goods',
+        'New goods'
+      );
       const title = requireNodeByLabel(result.projection.root, 'Title', 'Old title', 'New title');
       const presentation = requireNodeByLabel(
         result.projection.root,
@@ -580,10 +600,14 @@ suite('ConfigurationCompareService', () => {
         result.workspace.payload.root,
         (node) => node.kind === 'fileArtifact' && node.label === 'logo.txt'
       );
-      const refreshedFilePreview = await result.workspace.createPreviewForNodeIds([refreshedLogo.id]);
+      const refreshedFilePreview = await result.workspace.createPreviewForNodeIds([
+        refreshedLogo.id,
+      ]);
       assert.strictEqual(refreshedFilePreview.ok, true);
       result.workspace.approvePreview(refreshedFilePreview.preview.previewId);
-      const fileExecution = await result.workspace.executeApprovedPreview(refreshedFilePreview.preview.previewId);
+      const fileExecution = await result.workspace.executeApprovedPreview(
+        refreshedFilePreview.preview.previewId
+      );
       assert.strictEqual(fileExecution.ok, true, JSON.stringify(fileExecution));
       assert.strictEqual(
         await readText(path.join(leftRoot, 'Catalogs', 'Products', 'Ext', 'logo.txt')),
@@ -617,7 +641,12 @@ suite('ConfigurationCompareService', () => {
           node.label === 'Catalog.Products' &&
           node.conflict?.kind === 'sameNameDifferentUuid'
       );
-      const synonym = requireNodeByLabel(result.projection.root, 'Synonym', 'Old goods', 'New goods');
+      const synonym = requireNodeByLabel(
+        result.projection.root,
+        'Synonym',
+        'Old goods',
+        'New goods'
+      );
 
       assert.strictEqual(identityConflict.mergeable, false);
       assert.strictEqual(synonym.mergeable, true);
@@ -634,8 +663,22 @@ suite('ConfigurationCompareService', () => {
 
     try {
       for (const fixture of representativeMetadataFixtures()) {
-        await writeMetadataDescriptor(leftRoot, fixture.relativePath, fixture.metadataType, fixture.name, fixture.uuid, 'Old');
-        await writeMetadataDescriptor(rightRoot, fixture.relativePath, fixture.metadataType, fixture.name, fixture.uuid, 'New');
+        await writeMetadataDescriptor(
+          leftRoot,
+          fixture.relativePath,
+          fixture.metadataType,
+          fixture.name,
+          fixture.uuid,
+          'Old'
+        );
+        await writeMetadataDescriptor(
+          rightRoot,
+          fixture.relativePath,
+          fixture.metadataType,
+          fixture.name,
+          fixture.uuid,
+          'New'
+        );
       }
       await writeFile(
         path.join(leftRoot, 'CommonForms', 'Chooser', 'Ext', 'Form.xml'),
@@ -832,6 +875,50 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('full strategy keeps unmatched object copy selectable without indexing its internals', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const backupRoot = path.join(tempRoot, 'backups');
+    const rightLogoPath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'logo.bin');
+    const rightModulePath = path.join(rightRoot, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+
+    try {
+      await fs.mkdir(leftRoot, { recursive: true });
+      await writeCatalogDescriptor(rightRoot, 'Products', 'catalog-products', 'Products');
+      await writeFileBytes(rightLogoPath, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+      await writeFile(rightModulePath, 'Procedure RightOnly()\nEndProcedure');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: backupRoot,
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const strategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+      const productsNodes = collectNodes(
+        result.workspace.payload.root,
+        (node) =>
+          node.kind === 'metadataObject' &&
+          node.label === 'Catalog.Products' &&
+          node.status === 'rightOnly'
+      );
+      const rightOnlyBslDiagnostics = collectNodes(
+        result.workspace.payload.root,
+        (node) => node.kind === 'diagnostic' && node.label === 'BSL_MODULE_RIGHT_ONLY'
+      );
+
+      assert.strictEqual(productsNodes.length, 1);
+      assert.strictEqual(productsNodes[0]!.mergeable, true);
+      assert.strictEqual(productsNodes[0]!.mergeState?.state, 'ready');
+      assert.strictEqual(rightOnlyBslDiagnostics.length, 0);
+      assert.ok(result.workspace.listMergeableNodeIds().includes(productsNodes[0]!.id));
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test('workspace executes left-only object folder delete with directory hash guard', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -913,7 +1000,10 @@ suite('ConfigurationCompareService', () => {
       const execution = await result.workspace.executeApprovedPreview(preview.preview.previewId);
 
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
-      assert.strictEqual(await readText(leftModulePath), `// local header after compare\n${logicalIncomingRoutine()}`);
+      assert.strictEqual(
+        await readText(leftModulePath),
+        `// local header after compare\n${logicalIncomingRoutine()}`
+      );
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -1131,13 +1221,7 @@ function visit(node: CompareTreeNode, callback: (node: CompareTreeNode) => void)
 }
 
 function duplicateRoutineSource(): string {
-  return [
-    'Procedure Save()',
-    'EndProcedure',
-    '',
-    'Procedure Save()',
-    'EndProcedure',
-  ].join('\n');
+  return ['Procedure Save()', 'EndProcedure', '', 'Procedure Save()', 'EndProcedure'].join('\n');
 }
 
 function logicalBaseRoutine(): string {

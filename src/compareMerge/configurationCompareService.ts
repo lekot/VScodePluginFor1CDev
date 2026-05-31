@@ -10,7 +10,11 @@ import {
   type BslModuleDiagnostic,
 } from './bsl/bslModuleIndexer';
 import { createBslRoutineLogicalMergePlan } from './bsl/bslRoutineLogicalMerge';
-import { hashText, scanBslRoutineLogicalOutline, splitSourceLines } from './bsl/bslRoutineLogicalScanner';
+import {
+  hashText,
+  scanBslRoutineLogicalOutline,
+  splitSourceLines,
+} from './bsl/bslRoutineLogicalScanner';
 import { diffBslModules, type BslRoutineDiffItem } from './bsl/bslRoutineDiff';
 import type {
   BslRoutineLogicalAnchor,
@@ -37,7 +41,11 @@ import type {
 import { CompareSession } from './domain/compareSession';
 import type { CompareMessage, CompareSide, MetadataIdentity } from './domain/compareContracts';
 import { buildConfigurationInventory } from './inventory/configurationInventory';
-import type { ArtifactUnit, ConfigurationInventory, MetadataObjectUnit } from './inventory/configurationInventory';
+import type {
+  ArtifactUnit,
+  ConfigurationInventory,
+  MetadataObjectUnit,
+} from './inventory/configurationInventory';
 import { indexMetadataFile, indexMetadataFolder } from './metadata/metadataIndexer';
 import { matchMetadataIdentities } from './metadata/metadataMatcher';
 import {
@@ -176,11 +184,13 @@ async function indexMetadataForStrategy(input: {
       sourceId: LEFT_SOURCE_ID,
       side: 'left',
       folderPath: input.leftRootPath,
+      readUuid: false,
     }),
     indexMetadataFolder({
       sourceId: RIGHT_SOURCE_ID,
       side: 'right',
       folderPath: input.rightRootPath,
+      readUuid: false,
     }),
   ]);
 }
@@ -345,7 +355,9 @@ async function collectDirectDescriptorCandidates(folderPath: string): Promise<st
   return candidates;
 }
 
-async function collectDirectDescriptorUuidIndex(folderPath: string): Promise<ReadonlyMap<string, string>> {
+async function collectDirectDescriptorUuidIndex(
+  folderPath: string
+): Promise<ReadonlyMap<string, string>> {
   const candidates = await collectDirectDescriptorCandidates(folderPath);
   const entries = await mapLimit(candidates, 64, async (filePath) => {
     const uuid = await readMetadataUuidPrefix(filePath);
@@ -551,8 +563,16 @@ async function buildConfigurationCompareState(
     metadata,
     bsl: [
       ...bsl.items,
-      { diagnostics: leftBsl.diagnostics.filter((diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)) },
-      { diagnostics: rightBsl.diagnostics.filter((diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)) },
+      {
+        diagnostics: leftBsl.diagnostics.filter(
+          (diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)
+        ),
+      },
+      {
+        diagnostics: rightBsl.diagnostics.filter(
+          (diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)
+        ),
+      },
     ],
     adapterResults,
     messages: session.state.messages,
@@ -568,11 +588,10 @@ async function buildAdapterCompareResults(input: {
   metadata: ReturnType<typeof matchMetadataIdentities>;
   session: CompareSession;
 }): Promise<AdapterCompareResult[]> {
-  const results: AdapterCompareResult[] = [];
   const matches = buildMetadataObjectMatches(input);
 
-  for (const match of matches) {
-    results.push(
+  const results = await mapLimit(matches, 64, async (match) => {
+    const matchResults: AdapterCompareResult[] = [
       await fileObjectAdapter.compare({
         strategy: input.strategy,
         leftInventory: input.leftInventory,
@@ -580,27 +599,36 @@ async function buildAdapterCompareResults(input: {
         match,
         session: input.session,
         snapshots: { left: '', right: '' },
-      })
-    );
+      }),
+    ];
 
     if (!match.left || !match.right) {
-      continue;
+      return matchResults;
     }
 
     for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml'] as const) {
-      const artifactPair = findArtifactPair(input.leftInventory, input.rightInventory, match, artifactKind);
+      const artifactPair = findArtifactPair(
+        input.leftInventory,
+        input.rightInventory,
+        match,
+        artifactKind
+      );
       if (!artifactPair || artifactPair.left.contentHash === artifactPair.right.contentHash) {
         continue;
       }
 
-      results.push(await compareXmlArtifact(input, match, artifactPair, artifactKind));
+      matchResults.push(await compareXmlArtifact(input, match, artifactPair, artifactKind));
     }
-  }
+    return matchResults;
+  });
 
-  return results.filter((result) => result.nodes.length > 0 || result.diagnostics.length > 0);
+  return results
+    .flat()
+    .filter((result) => result.nodes.length > 0 || result.diagnostics.length > 0);
 }
 
 function buildMetadataObjectMatches(input: {
+  strategy: CompareJoinStrategy;
   leftInventory: ConfigurationInventory;
   rightInventory: ConfigurationInventory;
   metadata: ReturnType<typeof matchMetadataIdentities>;
@@ -614,16 +642,44 @@ function buildMetadataObjectMatches(input: {
       rightIdentity: identity.right,
     })),
     ...input.metadata.unmatchedLeft.map((identity) => ({
-      left: findInventoryObjectByDescriptor(input.leftInventory, identity.filePath),
+      left:
+        findInventoryObjectByDescriptor(input.leftInventory, identity.filePath) ??
+        (input.strategy === 'full' ? metadataIdentityToObjectUnit(identity) : undefined),
       leftIdentity: identity,
     })),
     ...input.metadata.unmatchedRight.map((identity) => ({
-      right: findInventoryObjectByDescriptor(input.rightInventory, identity.filePath),
+      right:
+        findInventoryObjectByDescriptor(input.rightInventory, identity.filePath) ??
+        (input.strategy === 'full' ? metadataIdentityToObjectUnit(identity) : undefined),
       rightIdentity: identity,
     })),
   ];
 
   return matches.filter((match) => match.left || match.right);
+}
+
+function metadataIdentityToObjectUnit(identity: MetadataIdentity): MetadataObjectUnit {
+  const descriptorPath = path.normalize(identity.filePath);
+  const objectId = identity.uuid ? `uuid:${identity.uuid}` : `name:${identity.qualifiedName}`;
+
+  return {
+    objectId,
+    qualifiedName: identity.qualifiedName,
+    metadataType: identity.metadataType,
+    uuid: identity.uuid,
+    descriptorPath,
+    containerPath: resolveObjectContainerPath(descriptorPath),
+  };
+}
+
+function resolveObjectContainerPath(descriptorPath: string): string {
+  const descriptorDirectory = path.dirname(descriptorPath);
+  const descriptorBaseName = path.basename(descriptorPath, path.extname(descriptorPath));
+  if (path.basename(descriptorDirectory).toLowerCase() === descriptorBaseName.toLowerCase()) {
+    return path.normalize(descriptorDirectory);
+  }
+
+  return path.normalize(path.join(descriptorDirectory, descriptorBaseName));
 }
 
 async function compareXmlArtifact(
@@ -675,7 +731,9 @@ function findArtifact(
   object: MetadataObjectUnit,
   kind: ArtifactKind
 ): ArtifactUnit | undefined {
-  return inventory.artifactsByObjectId.get(object.objectId)?.find((artifact) => artifact.kind === kind);
+  return inventory.artifactsByObjectId
+    .get(object.objectId)
+    ?.find((artifact) => artifact.kind === kind);
 }
 
 function findInventoryObjectByDescriptor(
@@ -690,12 +748,17 @@ function descriptorScopeForStrategy(
   metadata: ReturnType<typeof matchMetadataIdentities>,
   strategy: CompareJoinStrategy
 ): { left?: ReadonlySet<string>; right?: ReadonlySet<string> } {
-  if (strategy === 'full') {
-    return {};
-  }
-
   const matchedLeft = new Set(metadata.matches.map((match) => path.normalize(match.left.filePath)));
-  const matchedRight = new Set(metadata.matches.map((match) => path.normalize(match.right.filePath)));
+  const matchedRight = new Set(
+    metadata.matches.map((match) => path.normalize(match.right.filePath))
+  );
+
+  if (strategy === 'full') {
+    return {
+      left: matchedLeft,
+      right: matchedRight,
+    };
+  }
 
   if (strategy === 'right') {
     return {
@@ -764,7 +827,9 @@ function buildBslProjectionInputs(input: {
         rightSnapshotId: input.rightSnapshotId,
         candidateFactories: candidateFactoriesForModule,
       });
-      candidateFactoriesForModule.forEach((factory, nodeId) => candidateFactories.set(nodeId, factory));
+      candidateFactoriesForModule.forEach((factory, nodeId) =>
+        candidateFactories.set(nodeId, factory)
+      );
       projections.push({
         diff: diffBslModules({ left, right }),
         targetFilePath: left.identity.filePath,

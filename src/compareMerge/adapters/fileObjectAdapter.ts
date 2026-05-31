@@ -24,10 +24,9 @@ export const fileObjectAdapter: MergeAdapter = {
   async compare(input: AdapterCompareInput): Promise<AdapterCompareResult> {
     const candidateFactories = new Map<string, ExecutableCandidateFactory>();
     const objectPresence = await compareObjectPresence(input, candidateFactories);
-    const nodes = [
-      objectPresence,
-      ...compareFileArtifacts(input, candidateFactories),
-    ].filter((node): node is CompareTreeNode => Boolean(node));
+    const nodes = [objectPresence, ...compareFileArtifacts(input, candidateFactories)].filter(
+      (node): node is CompareTreeNode => Boolean(node)
+    );
     return {
       nodes,
       candidateFactories,
@@ -40,47 +39,38 @@ async function compareObjectPresence(
   input: AdapterCompareInput,
   candidateFactories: Map<string, ExecutableCandidateFactory>
 ): Promise<CompareTreeNode | undefined> {
-  if (
-    input.match.right &&
-    !input.match.left &&
-    shouldShowStatus('rightOnly', input.strategy)
-  ) {
+  if (input.match.right && !input.match.left && shouldShowStatus('rightOnly', input.strategy)) {
     const sourcePath = await objectCopySourcePath(input.match.right);
-    const sourceHash = await hashObjectSource(input.match.right, sourcePath);
+    const operation: FileOperationPayload = {
+      kind: sourcePath === input.match.right.containerPath ? 'folderCopy' : 'fileCopy',
+      sourcePath,
+      targetPath: targetObjectPath(input, sourcePath),
+      expectedOldHash: MISSING_TARGET_HASH,
+      destructive: false,
+    };
     return objectOperationNode({
       input,
       object: input.match.right,
       status: 'rightOnly',
       destructive: false,
-      operation: {
-        kind: sourcePath === input.match.right.containerPath ? 'folderCopy' : 'fileCopy',
-        sourcePath,
-        targetPath: targetObjectPath(input, sourcePath),
-        expectedOldHash: MISSING_TARGET_HASH,
-        sourceHash,
-        destructive: false,
-      },
+      operation,
       candidateFactories,
     });
   }
 
-  if (
-    input.match.left &&
-    !input.match.right &&
-    shouldShowStatus('leftOnly', input.strategy)
-  ) {
+  if (input.match.left && !input.match.right && shouldShowStatus('leftOnly', input.strategy)) {
     const targetPath = await objectCopySourcePath(input.match.left);
+    const operation: FileOperationPayload = {
+      kind: targetPath === input.match.left.containerPath ? 'folderDelete' : 'fileDelete',
+      targetPath,
+      destructive: true,
+    };
     return objectOperationNode({
       input,
       object: input.match.left,
       status: 'leftOnly',
       destructive: true,
-      operation: {
-        kind: targetPath === input.match.left.containerPath ? 'folderDelete' : 'fileDelete',
-        targetPath,
-        expectedOldHash: await hashObjectSource(input.match.left, targetPath),
-        destructive: true,
-      },
+      operation,
       candidateFactories,
     });
   }
@@ -111,7 +101,13 @@ function compareFileArtifacts(
       continue;
     }
 
-    const status = !left ? 'rightOnly' : !right ? 'leftOnly' : left.contentHash === right.contentHash ? 'equal' : 'changed';
+    const status = !left
+      ? 'rightOnly'
+      : !right
+        ? 'leftOnly'
+        : left.contentHash === right.contentHash
+          ? 'equal'
+          : 'changed';
     if (status === 'equal' || !shouldShowStatus(status, input.strategy)) {
       continue;
     }
@@ -159,7 +155,10 @@ function objectOperationNode(input: {
   candidateFactories: Map<string, ExecutableCandidateFactory>;
 }): CompareTreeNode {
   const nodeId = `fileObject:${input.status}:${encodeURIComponent(input.object.qualifiedName)}`;
-  input.candidateFactories.set(nodeId, fileCandidateFactory(input.input, nodeId, input.operation));
+  input.candidateFactories.set(
+    nodeId,
+    objectOperationCandidateFactory(input.input, nodeId, input.operation)
+  );
 
   return {
     id: nodeId,
@@ -176,6 +175,51 @@ function objectOperationNode(input: {
       targetFilePath: input.operation.targetPath,
     },
     children: [],
+  };
+}
+
+function objectOperationCandidateFactory(
+  input: AdapterCompareInput,
+  nodeId: string,
+  operation: FileOperationPayload
+): ExecutableCandidateFactory {
+  return async () => {
+    const completedOperation = await completeObjectOperation(operation);
+    const operationTargetUri = targetUri(completedOperation.targetPath);
+    const candidate: PlannedFileMergeCandidate = {
+      kind: completedOperation.kind,
+      sourceId: rightSourceId(input),
+      snapshotId: rightSnapshotId(input),
+      nodeId,
+      targetUri: operationTargetUri,
+      expectedOldHash: completedOperation.expectedOldHash,
+      newHash: completedOperation.sourceHash,
+      fileOperation: {
+        ...completedOperation,
+        targetPath: operationTargetUri,
+      },
+    };
+    return { ok: true, candidate };
+  };
+}
+
+async function completeObjectOperation(
+  operation: FileOperationPayload
+): Promise<FileOperationPayload> {
+  if (operation.kind === 'fileCopy' || operation.kind === 'folderCopy') {
+    const sourcePath = operation.sourcePath;
+    const sourceHash = sourcePath ? await hashOperationPath(operation.kind, sourcePath) : undefined;
+    return {
+      ...operation,
+      expectedOldHash: operation.expectedOldHash ?? MISSING_TARGET_HASH,
+      sourceHash,
+    };
+  }
+
+  return {
+    ...operation,
+    expectedOldHash:
+      operation.expectedOldHash ?? (await hashOperationPath(operation.kind, operation.targetPath)),
   };
 }
 
@@ -259,16 +303,16 @@ function shouldShowStatus(
   return strategy === 'left' ? status === 'leftOnly' : status === 'rightOnly';
 }
 
-function targetObjectPath(
-  input: AdapterCompareInput,
-  sourcePath: string
-): string {
+function targetObjectPath(input: AdapterCompareInput, sourcePath: string): string {
   const relativePath = path.relative(input.rightInventory.rootPath, sourcePath);
   return path.join(input.leftInventory.rootPath, relativePath);
 }
 
 function rightSourceId(input: AdapterCompareInput): string {
-  return input.session.state.sources.find((source) => source.side === 'right')?.sourceId ?? 'right-source';
+  return (
+    input.session.state.sources.find((source) => source.side === 'right')?.sourceId ??
+    'right-source'
+  );
 }
 
 function rightSnapshotId(input: AdapterCompareInput): string {
@@ -300,7 +344,9 @@ async function hashDirectory(directoryPath: string): Promise<string> {
 }
 
 async function hashFileBytes(filePath: string): Promise<string> {
-  return createHash('sha256').update(await fs.readFile(filePath)).digest('hex');
+  return createHash('sha256')
+    .update(await fs.readFile(filePath))
+    .digest('hex');
 }
 
 function hashText(content: string): string {
@@ -308,13 +354,26 @@ function hashText(content: string): string {
 }
 
 async function objectCopySourcePath(object: MetadataObjectUnit): Promise<string> {
-  return await directoryExists(object.containerPath) ? object.containerPath : object.descriptorPath;
+  if (samePath(path.dirname(object.descriptorPath), object.containerPath)) {
+    return object.containerPath;
+  }
+
+  return (await directoryExists(object.containerPath))
+    ? object.containerPath
+    : object.descriptorPath;
 }
 
-async function hashObjectSource(object: MetadataObjectUnit, sourcePath: string): Promise<string> {
-  return sourcePath === object.containerPath
-    ? await hashDirectory(sourcePath)
-    : await hashFileBytes(sourcePath);
+function samePath(left: string, right: string): boolean {
+  return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
+}
+
+async function hashOperationPath(
+  kind: FileOperationPayload['kind'],
+  targetPath: string
+): Promise<string> {
+  return kind === 'folderCopy' || kind === 'folderDelete'
+    ? await hashDirectory(targetPath)
+    : await hashFileBytes(targetPath);
 }
 
 async function directoryExists(folderPath: string): Promise<boolean> {
