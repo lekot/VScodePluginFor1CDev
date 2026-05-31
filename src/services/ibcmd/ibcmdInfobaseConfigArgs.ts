@@ -108,7 +108,7 @@ export function buildInfobaseConfigCheckArgs(
 export function buildInfobaseConfigImportArgs(
   connection: IbcmdOfflineConnection,
   sourcePath: string,
-  options?: { credentials?: IbcmdConfigCliCredentials; extension?: string },
+  options?: { credentials?: IbcmdConfigCliCredentials; extension?: string; outFile?: string },
 ): string[] {
   const src = resolveIbcmdCliPathForWindowsSpawn(sourcePath);
   const args = ['infobase', 'config', 'import'];
@@ -116,6 +116,10 @@ export function buildInfobaseConfigImportArgs(
   const ext = options?.extension?.trim();
   if (ext) {
     args.push(`--extension=${ext}`);
+  }
+  const outFile = options?.outFile?.trim();
+  if (outFile) {
+    args.push(`--out=${resolveIbcmdCliPathForWindowsSpawn(outFile)}`);
   }
   args.push(src);
   return args;
@@ -202,7 +206,13 @@ export function buildInfobaseConfigExportStatusArgs(
 export function buildInfobaseConfigExportArgs(
   connection: IbcmdOfflineConnection,
   outPath: string,
-  options?: { credentials?: IbcmdConfigCliCredentials; extension?: string; format?: string },
+  options?: {
+    credentials?: IbcmdConfigCliCredentials;
+    extension?: string;
+    format?: string;
+    file?: string;
+    force?: boolean;
+  },
 ): string[] {
   const out = resolveIbcmdCliPathForWindowsSpawn(outPath);
   const args = ['infobase', 'config', 'export'];
@@ -215,7 +225,31 @@ export function buildInfobaseConfigExportArgs(
   if (fmt) {
     args.push(`--format=${fmt}`);
   }
+  const file = options?.file?.trim();
+  if (file) {
+    args.push(`--file=${resolveIbcmdCliPathForWindowsSpawn(file)}`);
+  }
+  if (options?.force) {
+    args.push('--force');
+  }
   args.push(out);
+  return args;
+}
+
+export function buildInfobaseConfigCreateFileDbArgs(
+  dbPath: string,
+  offlineDataDir: string,
+  options?: { force?: boolean },
+): string[] {
+  const args = [
+    'infobase',
+    'create',
+    `--db-path=${resolveIbcmdCliPathForWindowsSpawn(dbPath)}`,
+    `--data=${resolveIbcmdCliPathForWindowsSpawn(offlineDataDir)}`,
+  ];
+  if (options?.force) {
+    args.push('--force');
+  }
   return args;
 }
 

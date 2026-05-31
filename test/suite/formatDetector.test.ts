@@ -107,4 +107,41 @@ suite('FormatDetector', () => {
       'nested markers inside an already discovered configuration root must be ignored'
     );
   });
+
+  test('cf-only directory is not treated as XML configuration root', async () => {
+    const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-only-'));
+    const cfOnlyPath = path.join(workspacePath, 'cf');
+
+    await fs.promises.mkdir(cfOnlyPath, { recursive: true });
+    await fs.promises.writeFile(path.join(cfOnlyPath, '1Cv8.cf'), Buffer.from([0xff, 0xff, 0xff, 0x7f]));
+
+    const roots = await FormatDetector.findAllConfigurationRoots([workspacePath]);
+    const configPaths = roots.map((r) => path.normalize(r.configPath));
+
+    assert.ok(!configPaths.includes(path.normalize(cfOnlyPath)), 'binary cf folder must not be parsed as config root');
+    assert.strictEqual(await FormatDetector.isValidConfigurationPath(cfOnlyPath), false);
+  });
+
+  test('findAllConfigurationPackageFiles discovers cf/cfe files outside configuration roots', async () => {
+    const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-discovery-'));
+    const externalDir = path.join(workspacePath, 'artifacts', 'releases');
+    const configRoot = path.join(workspacePath, 'src-config');
+
+    await fs.promises.mkdir(externalDir, { recursive: true });
+    await fs.promises.mkdir(configRoot, { recursive: true });
+    await fs.promises.writeFile(path.join(configRoot, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+    await fs.promises.writeFile(path.join(configRoot, '1Cv8.cf'), Buffer.from([1]));
+    await fs.promises.writeFile(path.join(externalDir, '1Cv8.cf'), Buffer.from([2]));
+    await fs.promises.writeFile(path.join(externalDir, 'Patch.cfe'), Buffer.from([3]));
+
+    const packages = await FormatDetector.findAllConfigurationPackageFiles([workspacePath]);
+    const packagePaths = packages.map((p) => path.normalize(p.filePath));
+
+    assert.ok(packagePaths.includes(path.normalize(path.join(externalDir, '1Cv8.cf'))));
+    assert.ok(packagePaths.includes(path.normalize(path.join(externalDir, 'Patch.cfe'))));
+    assert.ok(
+      !packagePaths.includes(path.normalize(path.join(configRoot, '1Cv8.cf'))),
+      'package discovery must not recurse into discovered XML configuration roots'
+    );
+  });
 });

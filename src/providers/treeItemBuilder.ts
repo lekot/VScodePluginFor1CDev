@@ -55,7 +55,9 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
 
     // Set context value for context menu (Forms folder vs concrete Form node vs BSL module leaf)
     const props = element.properties as Record<string, unknown> | undefined;
-    if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
+    if (element.type === MetadataType.ConfigurationPackage) {
+      treeItem.contextValue = 'CfFile';
+    } else if (element.type === MetadataType.Method && props?.fileType === 'bsl') {
       treeItem.contextValue = 'MethodBsl';
     } else if (props?.isVirtual && element.id.endsWith('.CommandInterface')) {
       treeItem.contextValue = 'SubsystemCommandInterface';
@@ -88,6 +90,8 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
         cv += many ? ' deployMany' : ' deployOne';
       }
       treeItem.contextValue = cv;
+    } else if (element.type === MetadataType.ConfigurationPackage) {
+      treeItem.contextValue = 'CfFile';
     } else if (bindingDeco && bindingDeco.boundCount > 0) {
       // Child node under a bound configuration/extension: append bindingBound so that
       // deploy-selected-objects context menu commands become visible.

@@ -135,6 +135,7 @@ export interface TreeNode {
 export enum MetadataType {
   // Root
   Configuration = 'Configuration',
+  ConfigurationPackage = 'ConfigurationPackage',
 
   // Main types
   Catalog = 'Catalog',

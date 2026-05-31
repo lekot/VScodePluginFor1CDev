@@ -12,6 +12,7 @@ export const METADATA_TYPE_TO_REFERENCE_KIND: Record<MetadataType, string | unde
   [MetadataType.ChartOfAccounts]: 'ChartOfAccountsRef',
   [MetadataType.ChartOfCalculationTypes]: 'ChartOfCalculationTypesRef',
   [MetadataType.Configuration]: undefined,
+  [MetadataType.ConfigurationPackage]: undefined,
   [MetadataType.Report]: undefined,
   [MetadataType.DataProcessor]: undefined,
   [MetadataType.InformationRegister]: undefined,
