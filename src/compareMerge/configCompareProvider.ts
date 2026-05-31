@@ -273,6 +273,17 @@ async function executeMerge(
   previewId: string,
   destructiveConfirmed: boolean
 ): Promise<void> {
+  if (!isCurrentApprovedPreview(state.preview, previewId)) {
+    await postError(
+      webview,
+      'Preview больше не активен. Постройте и подтвердите preview заново.',
+      [],
+      workspace.payload.locked
+    );
+    await postState(webview, workspace, title, state);
+    return;
+  }
+
   if (previewRequiresDestructiveConfirmation(state.preview, previewId) && !destructiveConfirmed) {
     await postError(
       webview,
@@ -483,6 +494,13 @@ function previewRequiresDestructiveConfirmation(
   previewId: string
 ): boolean {
   return preview?.previewId === previewId && preview.destructiveCount > 0;
+}
+
+function isCurrentApprovedPreview(
+  preview: ConfigComparePreviewDto | undefined,
+  previewId: string
+): boolean {
+  return preview?.previewId === previewId && preview.approved === true;
 }
 
 function findTreeNode(node: CompareTreeNode, nodeId: string): CompareTreeNode | undefined {

@@ -49,8 +49,8 @@ async function pickCfFileFromDialog(): Promise<string | undefined> {
     canSelectFolders: false,
     canSelectMany: false,
     filters: { '1C configuration packages': ['cf', 'cfe'] },
-    openLabel: 'Р’С‹Р±СЂР°С‚СЊ CF/CFE',
-    title: 'Р¤Р°Р№Р» РєРѕРЅС„РёРіСѓСЂР°С†РёРё 1РЎ',
+    openLabel: 'Выбрать CF/CFE',
+    title: 'Файл конфигурации 1С',
   });
   return picked?.[0]?.fsPath;
 }
@@ -60,8 +60,8 @@ async function pickXmlOutputDirectory(): Promise<string | undefined> {
     canSelectFiles: false,
     canSelectFolders: true,
     canSelectMany: false,
-    openLabel: 'Р’С‹Р±СЂР°С‚СЊ РєР°С‚Р°Р»РѕРі',
-    title: 'РљР°С‚Р°Р»РѕРі РґР»СЏ СЂР°Р·Р±РѕСЂР° CF/CFE РІ XML',
+    openLabel: 'Выбрать каталог',
+    title: 'Каталог для разбора CF/CFE в XML',
   });
   return picked?.[0]?.fsPath;
 }
@@ -71,8 +71,8 @@ async function pickConfigurationRoot(): Promise<string | undefined> {
     canSelectFiles: false,
     canSelectFolders: true,
     canSelectMany: false,
-    openLabel: 'Р’С‹Р±СЂР°С‚СЊ РєР°С‚Р°Р»РѕРі РєРѕРЅС„РёРіСѓСЂР°С†РёРё',
-    title: 'РљР°С‚Р°Р»РѕРі XML-РєРѕРЅС„РёРіСѓСЂР°С†РёРё СЃ Configuration.xml',
+    openLabel: 'Выбрать каталог конфигурации',
+    title: 'Каталог XML-конфигурации с Configuration.xml',
   });
   return picked?.[0]?.fsPath;
 }
@@ -81,8 +81,8 @@ async function pickCfOutputFile(configRoot: string): Promise<string | undefined>
   const picked = await vscode.window.showSaveDialog({
     defaultUri: vscode.Uri.file(path.join(path.dirname(configRoot), '1Cv8.cf')),
     filters: { '1C configuration packages': ['cf'] },
-    saveLabel: 'РЎРѕР±СЂР°С‚СЊ CF',
-    title: 'РљСѓРґР° СЃРѕС…СЂР°РЅРёС‚СЊ CF',
+    saveLabel: 'Собрать CF',
+    title: 'Куда сохранить CF',
   });
   return picked?.fsPath;
 }
@@ -94,12 +94,12 @@ async function prepareOutputDirectory(dir: string): Promise<boolean> {
     return true;
   }
   const answer = await vscode.window.showWarningMessage(
-    `РљР°С‚Р°Р»РѕРі РЅРµ РїСѓСЃС‚ (${entries.length} СЌР»РµРјРµРЅС‚РѕРІ). Р”Р»СЏ СЂР°Р·Р±РѕСЂР° CF/CFE ibcmd РЅСѓР¶РµРЅ РїСѓСЃС‚РѕР№ РєР°С‚Р°Р»РѕРі. РћС‡РёСЃС‚РёС‚СЊ РµРіРѕ Рё РїСЂРѕРґРѕР»Р¶РёС‚СЊ?`,
+    `Каталог не пуст (${entries.length} элементов). Для разбора CF/CFE ibcmd нужен пустой каталог. Очистить его и продолжить?`,
     { modal: true },
-    'РћС‡РёСЃС‚РёС‚СЊ Рё РїСЂРѕРґРѕР»Р¶РёС‚СЊ',
-    'РћС‚РјРµРЅР°',
+    'Очистить и продолжить',
+    'Отмена',
   );
-  if (answer !== 'РћС‡РёСЃС‚РёС‚СЊ Рё РїСЂРѕРґРѕР»Р¶РёС‚СЊ') {
+  if (answer !== 'Очистить и продолжить') {
     return false;
   }
   await emptyDirectoryContents(dir);
@@ -160,7 +160,7 @@ export function registerCfCommands({ state, service = DEFAULT_SERVICE }: Registe
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `Р Р°Р·Р±РѕСЂ ${path.basename(cfPath)} РІ XML`,
+          title: `Разбор ${path.basename(cfPath)} в XML`,
           cancellable: true,
         },
         async (_progress, token) => {
@@ -186,7 +186,7 @@ export function registerCfCommands({ state, service = DEFAULT_SERVICE }: Registe
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             void vscode.window.showErrorMessage(
-              `РќРµ СѓРґР°Р»РѕСЃСЊ СЃРєРѕРїРёСЂРѕРІР°С‚СЊ СЂРµР·СѓР»СЊС‚Р°С‚ СЂР°Р·Р±РѕСЂР° РІ РІС‹Р±СЂР°РЅРЅС‹Р№ РєР°С‚Р°Р»РѕРі. Staging РѕСЃС‚Р°РІР»РµРЅ Р·РґРµСЃСЊ: ${stagingOutDir}. ${message}`,
+              `Не удалось скопировать результат разбора в выбранный каталог. Staging оставлен здесь: ${stagingOutDir}. ${message}`,
             );
           } finally {
             if (copiedToFinal) {
@@ -214,7 +214,7 @@ export function registerCfCommands({ state, service = DEFAULT_SERVICE }: Registe
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `РЎР±РѕСЂРєР° CF РёР· ${path.basename(configRoot)}`,
+          title: `Сборка CF из ${path.basename(configRoot)}`,
           cancellable: true,
         },
         async (_progress, token) => {

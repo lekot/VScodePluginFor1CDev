@@ -107,6 +107,30 @@ suite('ConfigCompareProvider', () => {
     assert.strictEqual(preview.items[0].destructive, true);
   });
 
+  test('keeps approved destructive preview bound after selection changes', async () => {
+    const panel = makePanel();
+    const workspace = makeWorkspace({ destructivePreview: true });
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+
+    await panel.send({
+      type: 'createPreview',
+      nodeIds: ['bsl:routine:Catalog.Products.Object:run'],
+    });
+    await panel.send({ type: 'approvePreview', previewId: 'preview-1' });
+    await panel.send({ type: 'selectionChanged', nodeIds: [] });
+    await panel.send({ type: 'executeMerge', previewId: 'preview-1' });
+
+    assert.deepStrictEqual(workspace.calls, [
+      'createPreview:bsl:routine:Catalog.Products.Object:run',
+      'approve:preview-1',
+      'select:',
+    ]);
+    const error = panel.posts.find((message) => message.type === 'mergeError');
+    assert.ok(error);
+    assert.match(error.message, /Preview.*не активен/i);
+  });
+
   test('rejects strategy changes while an operation is busy', async () => {
     const panel = makePanel();
     const workspace = makeWorkspace({ deferPreview: true });
