@@ -1766,7 +1766,16 @@ function detectEol(source: string): string | undefined {
 }
 
 function trimTrailingLineBreaks(source: string): string {
-  return source.replace(/(?:\r\n|\r|\n)+$/g, '');
+  let end = source.length;
+  while (end > 0) {
+    const char = source.charCodeAt(end - 1);
+    if (char !== 10 && char !== 13) {
+      break;
+    }
+    end -= 1;
+  }
+
+  return end === source.length ? source : source.slice(0, end);
 }
 
 function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
