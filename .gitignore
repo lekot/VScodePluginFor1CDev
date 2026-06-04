@@ -19,17 +19,23 @@ FormatSamples/extensions_samples/
 FormatSamples/ut_demo_ForFormat/
 BUGS/
 docs/*
-# Документы, на которые ссылается docs/developer-backlog.md (остальной docs/ — локальный)
-!docs/developer-backlog.md
+# Публичная документация. Остальной docs/ — локальные планы, отчёты и черновики.
 !docs/analytics/
 docs/analytics/*
-!docs/analytics/edt-killer-target.md
-!docs/plans/
-docs/plans/*
-!docs/plans/issue-bsl-common-module-tree-plan.md
-# WOW — общий пакет дизайна Infobase Manager (остальной docs/ по-прежнему локальный)
-!docs/WOW/
-!docs/WOW/**
+!docs/analytics/edt-parity-roadmap.md
+!docs/analytics/user-workflow-without-edt.md
+!docs/design/
+docs/design/*
+!docs/design/configuration-compare-merge-design.md
+!docs/features/
+docs/features/*
+!docs/features/agent-api/
+docs/features/agent-api/*
+!docs/features/agent-api/agent-skill.md
+!docs/features/configuration-compare-merge.md
+!docs/features/diagnostics/
+docs/features/diagnostics/*
+!docs/features/diagnostics/diagnostics-summary-field-dictionary.md
 suite-reports/
 AGENTS.md
 # Specs (tracked only on branch local-specs, not pushed to origin)

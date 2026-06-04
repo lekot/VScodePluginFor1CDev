@@ -1,8 +1,8 @@
-# Production Configuration Merge Design
+# Configuration Compare/Merge Design
 
 ## Goal
 
-Bring the configuration compare/merge feature from foundation to production-ready for the first safe vertical slice:
+Bring the configuration compare/merge feature from foundation to the first safe executable slice:
 
 - compare two file-based configuration dumps;
 - select exactly one executable BSL routine change in the webview;
@@ -20,7 +20,7 @@ The current branch has a compare foundation:
 - `executeBslMergePreview()` can safely apply `bslLogicalRoutineMerge` operations;
 - the webview renders a static tree only.
 
-The production gap is the missing bridge:
+The remaining gap is the missing bridge:
 
 ```mermaid
 flowchart LR
@@ -48,13 +48,13 @@ Build a universal multi-file transaction engine for BSL, XML metadata, XDTO, rol
 
 Trade-off: architecturally clean, but too large and too slow for the current feature slice.
 
-### Option C: Production vertical slice
+### Option C: Safe vertical slice
 
 Add a host-side compare workspace with trusted candidate registry, wire BSL logical merge end-to-end, and keep metadata structural merge blocked until its own safe executor exists.
 
 Recommendation: **Option C**. It gives users a real, safe merge path and keeps unsupported changes visible but non-executable.
 
-## Scope For This Production Slice
+## Scope For This Safe Slice
 
 This slice deliberately ships one safe executable path:
 
@@ -63,7 +63,7 @@ This slice deliberately ships one safe executable path:
 - one atomic file replacement per execution;
 - metadata, XDTO, object add/delete/rename, uuid conflicts, routine add/delete/replace/reorder, and manual BSL edits remain visible but non-executable.
 
-This restriction is not a UI convenience. It is the transaction boundary that keeps the first production release honest. Multi-selection and coalesced multi-file writes require a separate transaction design.
+This restriction is not a UI convenience. It is the transaction boundary that keeps the first executable release honest. Multi-selection and coalesced multi-file writes require a separate transaction design.
 
 ## Architecture
 
@@ -257,9 +257,9 @@ Quality gate:
 - `cmd /c test-suite.bat`;
 - `build-all.bat` only when explicitly asked for release/build artifact.
 
-## Production Acceptance
+## Acceptance
 
-The feature is production-ready for this slice when:
+The feature is ready for this safe executable slice when:
 
 - no operation can write using data supplied by the webview;
 - every executable operation has preview, approval, preflight, backup, and stale hash guards;
