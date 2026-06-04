@@ -49,4 +49,4 @@
 
 ## Что пока делают в EDT или конфигураторе
 
-- СКД, конструктор запросов, полный паритет редакторов — см. дорожную карту [edt-parity-roadmap.md](./edt-parity-roadmap.md).
+- СКД, конструктор запросов и полный паритет редакторов ведутся в [GitHub Issues](https://github.com/lekot/VScodePluginFor1CDev/issues).
