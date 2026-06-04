@@ -89,8 +89,6 @@ CDT 41 предоставляет **60** VS Code commands для програм�
 
 ### Команды (CDT 41)
 
-Практический чеклист «день без EDT»: [docs/analytics/user-workflow-without-edt.md](docs/analytics/user-workflow-without-edt.md).
-
 | Команда | Описание |
 |--------|----------|
 | CDT 41: Открыть дерево метаданных | Открыть панель дерева метаданных |
