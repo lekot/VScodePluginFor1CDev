@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **60** команд для программного управления метаданными, привязками, раскаткой, отладкой, формами enterprise, СКД и XDTO-пакетами 1С:Предприятие. Команды вызываются через `vscode.commands.executeCommand` или через HTTP bridge.
+Расширение CDT 41 для VS Code предоставляет **60** runtime-команд Agent API для программного управления метаданными, привязками, раскаткой, отладкой, формами enterprise, СКД и XDTO-пакетами 1С:Предприятие. Команды вызываются через HTTP bridge или через `vscode.commands.executeCommand`.
 
 ## HTTP Bridge
 

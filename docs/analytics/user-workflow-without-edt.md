@@ -45,8 +45,8 @@
 ## Сообщить о проблеме
 
 1. **Output → CDT 41:** при необходимости приложите фрагмент лога (как в шаблоне issue).
-2. **CDT 41: Copy diagnostics summary** (палитра команд): вставьте текст в issue — там версия расширения, VS Code, папки workspace и найденные корни конфигурации (Designer/EDT). Удобно для багрепортов и поддержки. Расшифровка каждой строки: [diagnostics-summary-field-dictionary.md](./diagnostics-summary-field-dictionary.md).
+2. **CDT 41: Copy diagnostics summary** (палитра команд): вставьте текст в issue — там версия расширения, VS Code, папки workspace и найденные корни конфигурации (Designer/EDT). Удобно для багрепортов и поддержки. Расшифровка каждой строки: [diagnostics-summary-field-dictionary.md](../features/diagnostics/diagnostics-summary-field-dictionary.md).
 
 ## Что пока делают в EDT или конфигураторе
 
-- СКД, конструктор запросов, полный паритет редакторов — см. [cdt-vs-edt-functional-gap.md](./cdt-vs-edt-functional-gap.md) и целевые уровни [edt-killer-target.md](./edt-killer-target.md).
+- СКД, конструктор запросов, полный паритет редакторов — см. дорожную карту [edt-parity-roadmap.md](./edt-parity-roadmap.md).
