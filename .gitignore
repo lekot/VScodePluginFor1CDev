@@ -22,7 +22,6 @@ docs/*
 # Публичная документация. Остальной docs/ — локальные планы, отчёты и черновики.
 !docs/analytics/
 docs/analytics/*
-!docs/analytics/user-workflow-without-edt.md
 !docs/features/
 docs/features/*
 !docs/features/agent-api/
