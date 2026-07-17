@@ -152,6 +152,39 @@ suite('ConfigCompareProvider', () => {
     assert.match(error.message, /busy|выполняется/i);
   });
 
+  test('recovers busy state after rejected preview creation and accepts a retry', async () => {
+    const panel = makePanel();
+    const workspace = makeWorkspace({ rejectPreviewOnce: true });
+    const request = {
+      type: 'createPreview' as const,
+      nodeIds: ['bsl:routine:Catalog.Products.Object:run'],
+    };
+
+    bindConfigurationCompareWebview(panel as any, workspace, 'Compare');
+
+    await panel.send(request);
+
+    const errorIndex = panel.posts.findIndex((message) => message.type === 'mergeError');
+    assert.ok(errorIndex >= 0);
+    const recoveredState = panel.posts[errorIndex + 1];
+    assert.ok(recoveredState?.type === 'state');
+    assert.strictEqual(recoveredState.busy, false);
+
+    await panel.send(request);
+
+    assert.deepStrictEqual(workspace.calls, [
+      'createPreview:bsl:routine:Catalog.Products.Object:run',
+      'createPreview:bsl:routine:Catalog.Products.Object:run',
+    ]);
+    assert.strictEqual(
+      panel.posts.filter((message) => message.type === 'previewReady').length,
+      1
+    );
+    const finalState = panel.posts[panel.posts.length - 1];
+    assert.ok(finalState?.type === 'state');
+    assert.strictEqual(finalState.busy, false);
+  });
+
   test('ignores invalid and forged messages without executing workspace actions', async () => {
     const panel = makePanel();
     const workspace = makeWorkspace();
@@ -263,10 +296,16 @@ function makePanel() {
   return panel;
 }
 
-function makeWorkspace(options: { failExecutionWithBackup?: boolean; destructivePreview?: boolean; deferPreview?: boolean } = {}) {
+function makeWorkspace(options: {
+  failExecutionWithBackup?: boolean;
+  destructivePreview?: boolean;
+  deferPreview?: boolean;
+  rejectPreviewOnce?: boolean;
+} = {}) {
   const calls: string[] = [];
   const preview = makePreview();
   let releasePreview: (() => void) | undefined;
+  let previewAttempts = 0;
   return {
     calls,
     payload: makePayload(options.destructivePreview),
@@ -282,6 +321,10 @@ function makeWorkspace(options: { failExecutionWithBackup?: boolean; destructive
     },
     createPreviewForNodeIds: async (nodeIds: readonly string[]): Promise<WorkspacePreviewResult> => {
       calls.push(`createPreview:${nodeIds.join(',')}`);
+      previewAttempts += 1;
+      if (options.rejectPreviewOnce && previewAttempts === 1) {
+        throw new Error('preview failed');
+      }
       if (options.deferPreview) {
         await new Promise<void>((resolve) => {
           releasePreview = resolve;

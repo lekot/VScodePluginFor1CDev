@@ -114,6 +114,45 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
+  test('full strategy keeps same-uuid renamed metadata as a conflict without object copy candidates', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+
+    try {
+      await writeCatalog(leftRoot, 'OldName', 'catalog-shared');
+      await writeCatalog(rightRoot, 'NewName', 'catalog-shared');
+
+      const result = await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        createdAt: new Date('2026-05-30T10:00:00.000Z'),
+      });
+      const strategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+
+      const conflict = requireSingleNode(
+        result.workspace.payload.root,
+        (node) =>
+          node.kind === 'metadataConflict' &&
+          node.conflict?.kind === 'sameUuidDifferentName'
+      );
+      const objectCopyCandidates = collectNodes(
+        result.workspace.payload.root,
+        (node) =>
+          node.kind === 'metadataObject' &&
+          (node.status === 'leftOnly' || node.status === 'rightOnly') &&
+          node.mergeable === true
+      );
+
+      assert.strictEqual(conflict.mergeable, false);
+      assert.deepStrictEqual(objectCopyCandidates, []);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test('workspace previews and executes right-only BSL routine insert from built compare', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
@@ -618,7 +657,7 @@ suite('ConfigurationCompareService', () => {
     }
   });
 
-  test('same-name different-uuid metadata conflict still exposes descriptor property merge', async () => {
+  test('full strategy keeps same-name different-uuid conflict and descriptor property merge', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');
     const rightRoot = path.join(tempRoot, 'right');
@@ -633,16 +672,36 @@ suite('ConfigurationCompareService', () => {
         backupRootPath: path.join(tempRoot, 'backups'),
         createdAt: new Date('2026-05-30T10:00:00.000Z'),
       });
-
-      const identityConflict = requireSingleNode(
+      const defaultConflict = requireSingleNode(
         result.projection.root,
         (node) =>
           node.kind === 'metadataConflict' &&
           node.label === 'Catalog.Products' &&
           node.conflict?.kind === 'sameNameDifferentUuid'
       );
-      const synonym = requireNodeByLabel(
+      const defaultSynonym = requireNodeByLabel(
         result.projection.root,
+        'Synonym',
+        'Old goods',
+        'New goods'
+      );
+
+      assert.strictEqual(defaultConflict.mergeable, false);
+      assert.strictEqual(defaultSynonym.mergeable, true);
+      assert.ok(result.workspace.listMergeableNodeIds().includes(defaultSynonym.id));
+
+      const strategy = await result.workspace.setStrategy('full');
+      assert.strictEqual(strategy.ok, true, JSON.stringify(strategy));
+
+      const identityConflict = requireSingleNode(
+        result.workspace.payload.root,
+        (node) =>
+          node.kind === 'metadataConflict' &&
+          node.label === 'Catalog.Products' &&
+          node.conflict?.kind === 'sameNameDifferentUuid'
+      );
+      const synonym = requireNodeByLabel(
+        result.workspace.payload.root,
         'Synonym',
         'Old goods',
         'New goods'
