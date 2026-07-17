@@ -107,4 +107,3 @@ function readPackageJson(): any {
 function repositoryRoot(): string {
   return path.resolve(__dirname, '../../..');
 }
-
