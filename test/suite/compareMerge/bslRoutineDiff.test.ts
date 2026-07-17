@@ -205,7 +205,7 @@ suite('BslRoutineDiff', () => {
     );
   });
 
-  test('indexes supported Catalog and Document object and manager modules', async () => {
+  test('indexes supported object and manager modules including CalculationRegister manager', async () => {
     const root = tempRoot();
     const cases = [
       [
@@ -218,6 +218,10 @@ suite('BslRoutineDiff', () => {
       ],
       [path.join(root, 'Documents', 'Order', 'Ext', 'ObjectModule.bsl'), 'Document.Order.Object'],
       [path.join(root, 'Documents', 'Order', 'Ext', 'ManagerModule.bsl'), 'Document.Order.Manager'],
+      [
+        path.join(root, 'CalculationRegisters', 'Payroll', 'Ext', 'ManagerModule.bsl'),
+        'CalculationRegister.Payroll.Manager',
+      ],
     ];
 
     for (const [filePath, moduleId] of cases) {
@@ -454,6 +458,29 @@ suite('BslRoutineDiff', () => {
       sourceId: 'left-source',
       side: 'left',
       filePath: path.join(root, 'Constants', 'ExchangeRate', 'Ext', 'ValueManagerModule.bsl'),
+      configRoots: [root],
+      source: '',
+    });
+
+    assert.deepStrictEqual(result.modules, []);
+    assert.deepStrictEqual(
+      result.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.blocking]),
+      [['BSL_MODULE_UNSUPPORTED_KIND', true]]
+    );
+  });
+
+  test('keeps CalculationRegister RecordSetModule outside procedural diff', async () => {
+    const root = tempRoot();
+    const result = await indexBslModuleFile({
+      sourceId: 'left-source',
+      side: 'left',
+      filePath: path.join(
+        root,
+        'CalculationRegisters',
+        'Payroll',
+        'Ext',
+        'RecordSetModule.bsl'
+      ),
       configRoots: [root],
       source: '',
     });

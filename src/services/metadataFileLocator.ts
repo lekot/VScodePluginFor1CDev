@@ -61,7 +61,6 @@ const FLAT_XML_TYPE_FOLDERS = new Set([
   'Interfaces',
   'CommandGroups',
   'FunctionalOptionsParameters',
-  'CalculationRegisters',
   'ExternalDataSources',
   'Sequences',
   'FilterCriteria',
@@ -191,6 +190,18 @@ export function locateMetadataFile(
   if (objectType === 'CommonForms') {
     if (rest.length === 1 && rest[0].toLowerCase().endsWith('.xml')) {
       return { ...base, objectName: stripXmlExt(rest[0]) };
+    }
+    if (
+      rest.length === 3 &&
+      rest[1] === 'Ext' &&
+      rest[2] === 'Form.xml'
+    ) {
+      const formName = rest[0];
+      return {
+        ...base,
+        objectName: formName,
+        subPath: { kind: 'form', name: formName, subFile: 'container' },
+      };
     }
     if (
       rest.length === 4 &&

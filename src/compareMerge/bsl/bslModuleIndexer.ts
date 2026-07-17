@@ -191,14 +191,14 @@ function createIdentity(
 
   switch (subPath.kind) {
     case 'objectModule':
-      if (!isObjectOrManagerSupported(ownerType)) {
+      if (!isObjectModuleSupported(ownerType)) {
         return undefined;
       }
       return moduleIdentity(base, `${ownerType}.${location.objectName}.Object`, {
         moduleKind: 'Object',
       });
     case 'managerModule':
-      if (!isObjectOrManagerSupported(ownerType)) {
+      if (!isManagerModuleSupported(ownerType)) {
         return undefined;
       }
       return moduleIdentity(base, `${ownerType}.${location.objectName}.Manager`, {
@@ -323,8 +323,16 @@ function createDiagnostic(
   };
 }
 
-function isObjectOrManagerSupported(metadataType: string): boolean {
+function isObjectModuleSupported(metadataType: string): boolean {
   return metadataType === 'Catalog' || metadataType === 'Document';
+}
+
+function isManagerModuleSupported(metadataType: string): boolean {
+  return (
+    metadataType === 'Catalog' ||
+    metadataType === 'Document' ||
+    metadataType === 'CalculationRegister'
+  );
 }
 
 function metadataTypeFromFolder(folderName: string): string {
