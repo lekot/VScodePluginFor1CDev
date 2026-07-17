@@ -89,7 +89,6 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     const configs = await FormatDetector.findAllConfigurationRoots(workspacePaths);
     const packages = await FormatDetector.findAllConfigurationPackageFiles(workspacePaths);
     if (configs.length === 0 && packages.length === 0) {
-      vscode.window.showWarningMessage(MESSAGES.NO_CONFIGURATION);
       state.treeDataProvider.setRootNodes([], undefined);
       return;
     }

@@ -4,7 +4,6 @@
 export const MESSAGES = {
   // Workspace messages
   NO_WORKSPACE: 'Откройте папку с конфигурацией 1С',
-  NO_CONFIGURATION: 'Конфигурация 1С не найдена в рабочей области',
 
   // Empty states (req.10)
   EMPTY_STATE_NO_SELECTION_TITLE: 'Ничего не выбрано.',
