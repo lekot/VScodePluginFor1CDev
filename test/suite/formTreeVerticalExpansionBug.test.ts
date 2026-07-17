@@ -23,7 +23,7 @@ suite('Form Tree Vertical Expansion Bug Condition Exploration', () => {
    * Helper function to extract CSS rules from HTML
    */
   function extractCSSRules(html: string): Map<string, Map<string, string>> {
-    const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
+    const styleMatch = html.match(/<style\b[^>]*>([\s\S]*?)<\/style>/i);
     if (!styleMatch) {
       return new Map();
     }

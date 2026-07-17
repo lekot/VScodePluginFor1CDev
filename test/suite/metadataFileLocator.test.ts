@@ -56,6 +56,28 @@ suite('metadataFileLocator', () => {
     assert.deepStrictEqual(result.subPath, { kind: 'recordSetModule' });
   });
 
+  test('CalculationRegister ManagerModule BSL', () => {
+    const result = locateMetadataFile(
+      p(root, 'CalculationRegisters/Payroll/Ext/ManagerModule.bsl'),
+      roots
+    );
+    assert.ok(result);
+    assert.strictEqual(result.objectType, 'CalculationRegisters');
+    assert.strictEqual(result.objectName, 'Payroll');
+    assert.deepStrictEqual(result.subPath, { kind: 'managerModule' });
+  });
+
+  test('CalculationRegister RecordSetModule BSL reveal descriptor', () => {
+    const result = locateMetadataFile(
+      p(root, 'CalculationRegisters/Payroll/Ext/RecordSetModule.bsl'),
+      roots
+    );
+    assert.ok(result);
+    assert.strictEqual(result.objectType, 'CalculationRegisters');
+    assert.strictEqual(result.objectName, 'Payroll');
+    assert.deepStrictEqual(result.subPath, { kind: 'recordSetModule' });
+  });
+
   // -------------------------------------------------------------------------
   // 2d. ValueManagerModule
   // -------------------------------------------------------------------------
@@ -142,6 +164,21 @@ suite('metadataFileLocator', () => {
       kind: 'form',
       name: 'CustomerPicker',
       subFile: 'module',
+    });
+  });
+
+  test('common form container (CommonForms/Y/Ext/Form.xml)', () => {
+    const result = locateMetadataFile(
+      p(root, 'CommonForms/CustomerPicker/Ext/Form.xml'),
+      roots
+    );
+    assert.ok(result);
+    assert.strictEqual(result.objectType, 'CommonForms');
+    assert.strictEqual(result.objectName, 'CustomerPicker');
+    assert.deepStrictEqual(result.subPath, {
+      kind: 'form',
+      name: 'CustomerPicker',
+      subFile: 'container',
     });
   });
 

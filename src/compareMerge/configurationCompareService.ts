@@ -184,13 +184,11 @@ async function indexMetadataForStrategy(input: {
       sourceId: LEFT_SOURCE_ID,
       side: 'left',
       folderPath: input.leftRootPath,
-      readUuid: false,
     }),
     indexMetadataFolder({
       sourceId: RIGHT_SOURCE_ID,
       side: 'right',
       folderPath: input.rightRootPath,
-      readUuid: false,
     }),
   ]);
 }

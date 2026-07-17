@@ -84,49 +84,59 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     async () => openIbcmdReport('import')
   );
 
-  const getTreeReadyForTestCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.getTreeReadyForTest',
-    (): boolean => !!(state.treeDataProvider?.getRootNode() ?? null)
-  );
+  const testCommands: vscode.Disposable[] = [];
+  if (deps.extensionContext.extensionMode === vscode.ExtensionMode.Test) {
+    const getTreeReadyForTestCommand = vscode.commands.registerCommand(
+      '1c-metadata-tree.getTreeReadyForTest',
+      (): boolean => !!(state.treeDataProvider?.getRootNode() ?? null)
+    );
 
-  const getSelectionNameForTestCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.getSelectionNameForTest',
-    (): string | null => state.treeView?.selection?.[0]?.name ?? null
-  );
+    const getSelectionNameForTestCommand = vscode.commands.registerCommand(
+      '1c-metadata-tree.getSelectionNameForTest',
+      (): string | null => state.treeView?.selection?.[0]?.name ?? null
+    );
 
-  const getPropertiesOpenStateForTestCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.getPropertiesOpenStateForTest',
-    (): boolean => state.propertiesProvider?.isOpen() ?? false
-  );
+    const getPropertiesOpenStateForTestCommand = vscode.commands.registerCommand(
+      '1c-metadata-tree.getPropertiesOpenStateForTest',
+      (): boolean => state.propertiesProvider?.isOpen() ?? false
+    );
 
-  /**
-   * Test-harness command — same pattern as getSelectionNameForTest.
-   * Diagnoses why revealActiveFileInTree may fail for a given file path.
-   * Returns a snapshot of: configRoots, located metadata descriptor, and node lookup result.
-   */
-  const diagnoseRevealForTestCommand = vscode.commands.registerCommand(
-    '1c-metadata-tree.diagnoseRevealForTest',
-    async (filePath: string): Promise<{
-      configRoots: string[];
-      loc: ReturnType<typeof locateMetadataFile>;
-      nodeId: string | null;
-      nodeName: string | null;
-      nodeType: string | null;
-    }> => {
-      const configRoots = state.treeDataProvider?.getConfigRootPaths() ?? [];
-      const loc = configRoots.length > 0 ? locateMetadataFile(filePath, configRoots) : null;
-      const node = loc && state.treeDataProvider
-        ? await state.treeDataProvider.findNodeByLocation(loc)
-        : null;
-      return {
-        configRoots,
-        loc,
-        nodeId: node?.id ?? null,
-        nodeName: node?.name ?? null,
-        nodeType: node?.type != null ? String(node.type) : null,
-      };
-    }
-  );
+    /**
+     * Test-harness command — same pattern as getSelectionNameForTest.
+     * Diagnoses why revealActiveFileInTree may fail for a given file path.
+     * Returns a snapshot of: configRoots, located metadata descriptor, and node lookup result.
+     */
+    const diagnoseRevealForTestCommand = vscode.commands.registerCommand(
+      '1c-metadata-tree.diagnoseRevealForTest',
+      async (filePath: string): Promise<{
+        configRoots: string[];
+        loc: ReturnType<typeof locateMetadataFile>;
+        nodeId: string | null;
+        nodeName: string | null;
+        nodeType: string | null;
+      }> => {
+        const configRoots = state.treeDataProvider?.getConfigRootPaths() ?? [];
+        const loc = configRoots.length > 0 ? locateMetadataFile(filePath, configRoots) : null;
+        const node = loc && state.treeDataProvider
+          ? await state.treeDataProvider.findNodeByLocation(loc)
+          : null;
+        return {
+          configRoots,
+          loc,
+          nodeId: node?.id ?? null,
+          nodeName: node?.name ?? null,
+          nodeType: node?.type != null ? String(node.type) : null,
+        };
+      }
+    );
+
+    testCommands.push(
+      getTreeReadyForTestCommand,
+      getSelectionNameForTestCommand,
+      getPropertiesOpenStateForTestCommand,
+      diagnoseRevealForTestCommand
+    );
+  }
 
   const refreshCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.refresh',
@@ -140,10 +150,7 @@ export function registerUtilityCommandsLeading(deps: RegisterUtilityCommandsDeps
     openPanelCommand,
     openIbcmdCheckReportCommand,
     openIbcmdImportReportCommand,
-    getTreeReadyForTestCommand,
-    getSelectionNameForTestCommand,
-    getPropertiesOpenStateForTestCommand,
-    diagnoseRevealForTestCommand,
+    ...testCommands,
     refreshCommand,
   ];
 }

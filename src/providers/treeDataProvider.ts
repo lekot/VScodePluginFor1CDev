@@ -1504,6 +1504,15 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         return this.findModuleNode(objectNode, 'ValueManagerModule.bsl');
 
       case 'form': {
+        if (objectNode.type === MetadataType.CommonForm) {
+          if (subPath.name !== objectNode.name) {
+            return null;
+          }
+          if (subPath.subFile === 'xml' || subPath.subFile === 'container') {
+            return objectNode;
+          }
+          return this.findModuleNode(objectNode, 'Module.bsl');
+        }
         // R6 placeholder id is 'Forms'; name may be localised by ensureR6PlaceholdersForInstanceNode.
         const formsFolder = await this.findChildById(objectNode, 'Forms');
         if (!formsFolder) {

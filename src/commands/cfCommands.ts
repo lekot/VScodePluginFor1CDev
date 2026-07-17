@@ -1,4 +1,4 @@
-﻿import * as fs from 'fs';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -23,6 +23,7 @@ export interface CfCommandsService {
 export interface RegisterCfCommandsArgs {
   state: ExtensionState;
   service?: CfCommandsService;
+  copyDirectory?: (srcDir: string, destDir: string) => Promise<void>;
 }
 
 const DEFAULT_SERVICE: CfCommandsService = {
@@ -140,7 +141,11 @@ async function showOperationResult(result: CfConfigurationOperationResult): Prom
   void vscode.window.showErrorMessage(result.userMessage);
 }
 
-export function registerCfCommands({ state, service = DEFAULT_SERVICE }: RegisterCfCommandsArgs): vscode.Disposable[] {
+export function registerCfCommands({
+  state,
+  service = DEFAULT_SERVICE,
+  copyDirectory = copyDirectoryContents,
+}: RegisterCfCommandsArgs): vscode.Disposable[] {
   return [
     vscode.commands.registerCommand('1c-metadata-tree.cf.decompose', async (node?: TreeNode) => {
       const selected = getSelectedNode(state, node);
@@ -166,7 +171,7 @@ export function registerCfCommands({ state, service = DEFAULT_SERVICE }: Registe
         async (_progress, token) => {
           const stagingRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-decompose-'));
           const stagingOutDir = path.join(stagingRoot, 'xml');
-          let copiedToFinal = false;
+          let preserveStaging = false;
           try {
             const result = await service.decomposeCfToXmlDirectory({
               cfPath,
@@ -180,16 +185,24 @@ export function registerCfCommands({ state, service = DEFAULT_SERVICE }: Registe
             if (!(await prepareOutputDirectory(outDir))) {
               return;
             }
-            await copyDirectoryContents(stagingOutDir, outDir);
-            copiedToFinal = true;
+            try {
+              await copyDirectory(stagingOutDir, outDir);
+            } catch (error) {
+              preserveStaging = true;
+              const message = error instanceof Error ? error.message : String(error);
+              void vscode.window.showErrorMessage(
+                `Не удалось скопировать результат разбора в выбранный каталог. Staging оставлен здесь: ${stagingOutDir}. ${message}`,
+              );
+              return;
+            }
             await showOperationResult(result);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             void vscode.window.showErrorMessage(
-              `Не удалось скопировать результат разбора в выбранный каталог. Staging оставлен здесь: ${stagingOutDir}. ${message}`,
+              `Не удалось разобрать CF/CFE в XML. ${message}`,
             );
           } finally {
-            if (copiedToFinal) {
+            if (!preserveStaging) {
               await fs.promises.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
             }
           }
