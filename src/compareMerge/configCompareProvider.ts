@@ -124,12 +124,14 @@ export function bindConfigurationCompareWebview(
       await handleWebviewMessage(panel.webview, workspace, title, state, message);
     } catch (error) {
       Logger.error('Configuration compare webview message failed', error);
-      await postMessage(panel.webview, {
-        type: 'mergeError',
-        message: 'Действие сравнения конфигураций не выполнено.',
-        diagnostics: [],
-        locked: workspace.payload.locked,
-      });
+      state.busy = false;
+      await postError(
+        panel.webview,
+        'Действие сравнения конфигураций не выполнено.',
+        [],
+        workspace.payload.locked
+      );
+      await postState(panel.webview, workspace, title, state);
     }
   });
 

@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import {
   resolveModuleId,
@@ -47,6 +49,45 @@ suite('moduleIdResolver', () => {
     assert.ok(result, 'result should not be undefined');
     assert.strictEqual(result.moduleId.objectId, 'c39f6b2f-c005-4039-9d58-fe4565807e54');
     assert.strictEqual(result.moduleId.propertyId, 'd1b64a2c-8078-4982-8190-8f81aefda192');
+  });
+
+  test('CalculationRegister ManagerModule resolves forward and reverse from a temporary fixture', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'module-id-calculation-register-'));
+    const objectId = '55555555-5555-4555-8555-555555555555';
+    const modulePath = path.join(
+      root,
+      'CalculationRegisters',
+      'Payroll',
+      'Ext',
+      'ManagerModule.bsl'
+    );
+
+    try {
+      await fs.mkdir(path.dirname(modulePath), { recursive: true });
+      await fs.writeFile(
+        path.join(root, 'CalculationRegisters', 'Payroll.xml'),
+        `<MetaDataObject><CalculationRegister uuid="${objectId}" /></MetaDataObject>`,
+        'utf-8'
+      );
+      await fs.writeFile(modulePath, '', 'utf-8');
+      await fs.writeFile(
+        path.join(root, 'ConfigDumpInfo.xml'),
+        `<ConfigDumpInfo><ConfigVersions><Metadata name="CalculationRegister.Payroll" id="${objectId}"/><Metadata name="CalculationRegister.Payroll.ManagerModule" id="${objectId}.0"/></ConfigVersions></ConfigDumpInfo>`,
+        'utf-8'
+      );
+
+      const result = await resolveModuleId(modulePath, root);
+
+      assert.ok(result, 'result should not be undefined');
+      assert.strictEqual(result.moduleId.objectId, objectId);
+      assert.strictEqual(result.moduleId.propertyId, 'd1b64a2c-8078-4982-8190-8f81aefda192');
+
+      const reversePath = await resolveBslPathFromRdbgModule(result.moduleId, root);
+      assert.strictEqual(reversePath, modulePath);
+    } finally {
+      clearDumpMetadataCache();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   // ---------------------------------------------------------------------------

@@ -85,6 +85,17 @@ function buildFakeTree(): { provider: MetadataTreeDataProvider; configRoot: Tree
     commonModuleNode,
   ]);
 
+  const commonFormExt = extNode('CommonForms.CustomerPicker.', ['Module.bsl']);
+  const commonFormNode = node(
+    'CommonForms.CustomerPicker',
+    'CustomerPicker',
+    MetadataType.CommonForm,
+    [commonFormExt]
+  );
+  const commonFormsFolder = node('CommonForms', 'CommonForms', MetadataType.CommonForm, [
+    commonFormNode,
+  ]);
+
   // Catalog Товары
   const catalogExt = extNode('', ['ObjectModule.bsl', 'ManagerModule.bsl']);
   catalogExt.id = 'Ext';
@@ -132,7 +143,7 @@ function buildFakeTree(): { provider: MetadataTreeDataProvider; configRoot: Tree
     'Configuration',
     'Configuration',
     MetadataType.Configuration,
-    [commonModulesFolder, catalogsFolder, rolesFolder, subsystemsFolder],
+    [commonModulesFolder, commonFormsFolder, catalogsFolder, rolesFolder, subsystemsFolder],
     path.join(CONFIG_ROOT, 'Configuration.xml')
   );
 
@@ -221,6 +232,48 @@ suite('MetadataTreeDataProvider.findNodeByLocation (issue #88)', () => {
     const result = await provider.findNodeByLocation(loc);
     assert.ok(result, 'Expected a node but got null');
     assert.strictEqual(result!.name, 'Module.bsl');
+  });
+
+  test('CommonForm container reveals the CommonForm node itself', async () => {
+    const loc: MetadataLocation = {
+      configRoot: CONFIG_ROOT,
+      objectType: 'CommonForms',
+      objectName: 'CustomerPicker',
+      subPath: { kind: 'form', name: 'CustomerPicker', subFile: 'container' },
+    };
+
+    const result = await provider.findNodeByLocation(loc);
+
+    assert.ok(result, 'Expected a node but got null');
+    assert.strictEqual(result.name, 'CustomerPicker');
+    assert.strictEqual(result.type, MetadataType.CommonForm);
+  });
+
+  test('CommonForm module reveals Module.bsl directly inside the CommonForm', async () => {
+    const loc: MetadataLocation = {
+      configRoot: CONFIG_ROOT,
+      objectType: 'CommonForms',
+      objectName: 'CustomerPicker',
+      subPath: { kind: 'form', name: 'CustomerPicker', subFile: 'module' },
+    };
+
+    const result = await provider.findNodeByLocation(loc);
+
+    assert.ok(result, 'Expected a node but got null');
+    assert.strictEqual(result.name, 'Module.bsl');
+  });
+
+  test('CommonForm rejects a form subPath for another object name', async () => {
+    const loc: MetadataLocation = {
+      configRoot: CONFIG_ROOT,
+      objectType: 'CommonForms',
+      objectName: 'CustomerPicker',
+      subPath: { kind: 'form', name: 'AnotherForm', subFile: 'container' },
+    };
+
+    const result = await provider.findNodeByLocation(loc);
+
+    assert.strictEqual(result, null);
   });
 
   // Case 6: Role found

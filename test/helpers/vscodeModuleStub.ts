@@ -267,6 +267,10 @@ export function fireWorkspaceFoldersChanged(): void {
 }
 
 const windowStub = {
+  activeColorTheme: { kind: ColorThemeKind.Dark },
+  onDidChangeActiveColorTheme: (_listener: (theme: { kind: number }) => void) => ({
+    dispose: () => undefined,
+  }),
   createWebviewPanel: (): never => {
     throw new Error('vscode.window.createWebviewPanel: override in test');
   },
