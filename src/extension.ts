@@ -25,12 +25,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerExtensionWorkspace(context, extensionState, lifecycle);
     registerDebugAdapter(context);
 
-    if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-      lifecycle.loadMetadataTree().catch((error) => {
-        Logger.error('Error during auto-load', error);
-      });
-    }
-
     Logger.info('Extension activation completed');
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

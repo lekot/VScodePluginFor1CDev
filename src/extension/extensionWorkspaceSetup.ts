@@ -25,6 +25,7 @@ import { MetadataTreeLifecycle } from './metadataTreeLifecycle';
 import { SubsystemCommandInterfaceProvider } from '../subsystemCommandInterfaceEditor';
 import { XdtoPackageEditorProvider } from '../xdtoPackageEditor';
 import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
+import { registerLazyWorkspaceOrchestrator } from './lazyWorkspaceOrchestrator';
 
 /** Empty-catalog hint (WOW design UC-01 / plan §1C). */
 async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
@@ -220,17 +221,27 @@ export function registerExtensionWorkspace(
   const commandDisposables = registerAllCommands({ context, state, lifecycle });
   context.subscriptions.push(...commandDisposables);
 
-  const infobaseTreeForGitRefresh = state.infobaseTreeProvider;
-  registerGitPhase4HeadChangeHandlers(context, {
-    onReloadMetadataTree: () => lifecycle.loadMetadataTree(),
-    onRefreshInfobaseManager: infobaseTreeForGitRefresh
-      ? () => {
-          infobaseTreeForGitRefresh.refresh();
-          void rebuildBindingDecorationsForTree(state);
-          void syncInfobaseTreeViewMessage(state);
-        }
-      : undefined,
-  });
-
-  vscode.commands.executeCommand('setContext', '1c-metadata-tree:enabled', true);
+  if (state.treeView) {
+    const infobaseTreeForGitRefresh = state.infobaseTreeProvider;
+    context.subscriptions.push(
+      registerLazyWorkspaceOrchestrator({
+        metadataView: state.treeView,
+        infobaseView: state.infobaseTreeView ?? undefined,
+        loadMetadataTree: () => lifecycle.loadMetadataTree(),
+        registerGitHeadChangeHandlers: () => {
+          registerGitPhase4HeadChangeHandlers(context, {
+            onReloadMetadataTree: () => lifecycle.loadMetadataTree(),
+            onRefreshInfobaseManager: infobaseTreeForGitRefresh
+              ? () => {
+                  infobaseTreeForGitRefresh.refresh();
+                  void rebuildBindingDecorationsForTree(state);
+                  void syncInfobaseTreeViewMessage(state);
+                }
+              : undefined,
+          });
+        },
+        onAutoLoadError: (error) => Logger.error('Error during auto-load', error),
+      })
+    );
+  }
 }
