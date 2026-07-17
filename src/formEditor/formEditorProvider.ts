@@ -56,7 +56,7 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     document: FormEditorDocument,
     webviewPanel: vscode.WebviewPanel
   ): Promise<void> {
-    webviewPanel.webview.options = { enableScripts: true };
+    webviewPanel.webview.options = { enableScripts: true, localResourceRoots: [] };
     webviewPanel.webview.html = getWebviewHtml(
       webviewPanel.webview,
       vscode.window.activeColorTheme.kind

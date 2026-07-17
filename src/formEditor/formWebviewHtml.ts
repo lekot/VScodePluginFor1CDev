@@ -4,6 +4,29 @@
  */
 
 import * as vscode from 'vscode';
+import { randomBytes } from 'crypto';
+
+export function escapeWebviewText(value: unknown): string {
+  if (value == null) {
+    return '';
+  }
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function escapeWebviewAttribute(value: unknown): string {
+  if (value == null) {
+    return '';
+  }
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function hostThemeFromColorKind(kind: vscode.ColorThemeKind): 'light' | 'dark' {
   return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
@@ -768,6 +791,7 @@ function buildWebviewCss(): string {
     .command-interface-section { margin-bottom: var(--fe-spacing-md); }
     .command-interface-section-title { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin: 0 0 var(--fe-spacing-xs) 0; text-transform: uppercase; letter-spacing: 0.02em; }
     .command-interface-list { list-style: none; margin: 0; padding: 0; }
+    .command-interface-summary { margin: 0 0 var(--fe-spacing-sm) 0; }
     .command-interface-list li {
       padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
       border-radius: var(--fe-radius-sm);
@@ -942,7 +966,8 @@ function buildWebviewCss(): string {
     }
     #add-wizard-cancel:hover {
       background: var(--vscode-button-secondaryHoverBackground);
-    }`;
+    }
+    .is-hidden { display: none; }`;
 }
 
 /** Returns the static HTML body layout for the form editor webview. */
@@ -993,15 +1018,15 @@ function buildWebviewLayout(): string {
         <button type="button" role="tab" data-left-tab="command-interface" aria-selected="false">Командный интерфейс</button>
       </div>
       <div id="left-tab-elements" role="tabpanel">
-        <div id="tree-selection-count" class="props-selection-header" style="display:none;"></div>
+        <div id="tree-selection-count" class="props-selection-header is-hidden"></div>
         <div id="tree-root" role="tree" aria-label="Элементы формы"></div>
-        <div id="tree-empty" class="empty-state" style="display:none;">
+        <div id="tree-empty" class="empty-state is-hidden">
           <h4 id="tree-empty-title"></h4>
           <p id="tree-empty-hint"></p>
         </div>
-        <div id="tree-error" class="error" style="display:none;"></div>
+        <div id="tree-error" class="error is-hidden"></div>
       </div>
-      <div id="left-command-interface" role="tabpanel" style="display:none;">
+      <div id="left-command-interface" class="is-hidden" role="tabpanel">
         <div id="command-interface-content"></div>
       </div>
     </div>
@@ -1019,7 +1044,7 @@ function buildWebviewLayout(): string {
               <tbody id="attributes-tbody"></tbody>
             </table>
           </div>
-          <div id="attributes-tree-wrap" class="fe-requisite-tree-wrap" style="display:none;">
+          <div id="attributes-tree-wrap" class="fe-requisite-tree-wrap is-hidden">
             <div id="attributes-tree-root" role="tree"></div>
           </div>
           <div class="fe-toolbar-buttons">
@@ -1028,7 +1053,7 @@ function buildWebviewLayout(): string {
             <button type="button" id="btn-delete-attribute" title="Удалить выбранный" disabled>Удалить</button>
           </div>
         </div>
-        <div id="right-tab-commands" class="right-tab-panel" role="tabpanel" style="display:none;">
+        <div id="right-tab-commands" class="right-tab-panel is-hidden" role="tabpanel">
           <div class="fe-table-wrap">
             <table class="fe-table" id="commands-table">
               <thead><tr><th>Команда</th><th>Подпись</th></tr></thead>
@@ -1040,7 +1065,7 @@ function buildWebviewLayout(): string {
             <button type="button" id="btn-delete-command" title="Удалить выбранную" disabled>Удалить</button>
           </div>
         </div>
-        <div id="right-tab-parameters" class="right-tab-panel" role="tabpanel" style="display:none;">
+        <div id="right-tab-parameters" class="right-tab-panel is-hidden" role="tabpanel">
           <p class="placeholder">Параметры формы будут доступны после поддержки секции в Form.xml</p>
         </div>
       </div>
@@ -1048,10 +1073,10 @@ function buildWebviewLayout(): string {
       <h3>Свойства</h3>
       <div class="zone-props-scroll">
         <div id="props-header" class="props-selection-header"></div>
-        <div id="props-content" style="display:none;"></div>
+        <div id="props-content" class="is-hidden"></div>
         <div id="props-placeholder" class="placeholder">Выберите элемент</div>
       </div>
-      <div id="props-actions" class="props-actions-sticky" style="display:none;">
+      <div id="props-actions" class="props-actions-sticky is-hidden">
         <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
         <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
         <span id="save-status"></span>
@@ -1075,6 +1100,8 @@ function buildWebviewLayout(): string {
 /** Returns the static client-side JavaScript for the form editor webview. */
 function buildWebviewJs(): string {
   return `    const vscode = acquireVsCodeApi();
+    ${escapeWebviewText.toString()}
+    ${escapeWebviewAttribute.toString()}
     const THEME_MODE_KEY = 'form-editor-theme-mode';
     function applyThemeMode(mode) {
       var m = mode || 'auto';
@@ -1161,11 +1188,6 @@ function buildWebviewJs(): string {
     let formXmlPath = '';
     let modulePath = '';
 
-    function esc(s) {
-      if (s == null) return '';
-      var t = String(s);
-      return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
     var CONTAINER_TAGS = new Set(['UsualGroup','Pages','Page','Table','AutoCommandBar','CommandBar','Form','Group','CollapsibleGroup']);
     var FORM_ROOT_ID = '__form_root__';
     var expandedIds = new Set();
@@ -2749,15 +2771,15 @@ function buildWebviewJs(): string {
       content.style.display = 'block';
       actions.style.display = 'block';
       var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
-      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="attr-prop-name" value="' + esc(attr.name) + '"></div></div>';
-      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="attr-prop-id" value="' + esc(attr.id) + '"></div></div></div>';
+      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="attr-prop-name" value="' + escapeWebviewAttribute(attr.name) + '"></div></div>';
+      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="attr-prop-id" value="' + escapeWebviewAttribute(attr.id) + '"></div></div></div>';
       if (attr.properties && Object.keys(attr.properties).some(function(k) { return k !== ':@' && !k.startsWith('@'); })) {
         html += '<div class="props-block"><p class="props-block-title">Свойства</p>';
         for (var k in attr.properties) {
           if (k === ':@' || k.startsWith('@')) continue;
           var v = attr.properties[k];
           var val = (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (typeof v === 'string' ? v : String(v));
-          html += '<div class="prop-row"><label>' + esc(k) + '</label> <div class="prop-input-wrap"><input data-key="' + esc(k) + '" data-attr-id="' + esc(attr.name || attr.id) + '" value="' + esc(val || '') + '"></div></div>';
+          html += '<div class="prop-row"><label>' + escapeWebviewText(k) + '</label> <div class="prop-input-wrap"><input data-key="' + escapeWebviewAttribute(k) + '" data-attr-id="' + escapeWebviewAttribute(attr.name || attr.id) + '" value="' + escapeWebviewAttribute(val || '') + '"></div></div>';
         }
         html += '</div>';
       }
@@ -2782,15 +2804,15 @@ function buildWebviewJs(): string {
       content.style.display = 'block';
       actions.style.display = 'block';
       var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
-      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="cmd-prop-name" value="' + esc(cmd.name) + '"></div></div>';
-      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="cmd-prop-id" value="' + esc(cmd.id) + '"></div></div></div>';
+      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="cmd-prop-name" value="' + escapeWebviewAttribute(cmd.name) + '"></div></div>';
+      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="cmd-prop-id" value="' + escapeWebviewAttribute(cmd.id) + '"></div></div></div>';
       if (cmd.properties && Object.keys(cmd.properties).some(function(k) { return k !== ':@' && !k.startsWith('@'); })) {
         html += '<div class="props-block"><p class="props-block-title">Свойства</p>';
         for (var k in cmd.properties) {
           if (k === ':@' || k.startsWith('@')) continue;
           var v = cmd.properties[k];
           var val = (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (typeof v === 'string' ? v : String(v));
-          html += '<div class="prop-row"><label>' + esc(k) + '</label> <div class="prop-input-wrap"><input data-key="' + esc(k) + '" value="' + esc(val || '') + '"></div></div>';
+          html += '<div class="prop-row"><label>' + escapeWebviewText(k) + '</label> <div class="prop-input-wrap"><input data-key="' + escapeWebviewAttribute(k) + '" value="' + escapeWebviewAttribute(val || '') + '"></div></div>';
         }
         html += '</div>';
       }
@@ -2821,16 +2843,16 @@ function buildWebviewJs(): string {
       placeholder.style.display = 'none';
       actions.style.display = 'block';
       var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
-      html += '<div class="prop-row"><label>Тип</label> <span class="fe-badge">' + esc(el.tag || '') + '</span></div>';
-      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="prop-name" value="' + esc(el.name) + '"></div></div>';
-      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="prop-id" value="' + esc(el.id) + '"></div></div></div>';
+      html += '<div class="prop-row"><label>Тип</label> <span class="fe-badge">' + escapeWebviewText(el.tag || '') + '</span></div>';
+      html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="prop-name" value="' + escapeWebviewAttribute(el.name) + '"></div></div>';
+      html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="prop-id" value="' + escapeWebviewAttribute(el.id) + '"></div></div></div>';
       if (el.properties && typeof el.properties === 'object' && Object.keys(el.properties).some(function(k) { return k !== ':@' && !k.startsWith('@'); })) {
         html += '<div class="props-block"><p class="props-block-title">Свойства</p>';
         for (var k in el.properties) {
           if (k === ':@' || k.startsWith('@')) continue;
           var v = el.properties[k];
           var val = (typeof v === 'object' && v !== null) ? extractDisplayValue(v) : (typeof v === 'string' ? v : String(v));
-          html += '<div class="prop-row"><label>' + esc(k) + '</label> <div class="prop-input-wrap"><input data-key="' + esc(k) + '" value="' + esc(val || '') + '"></div></div>';
+          html += '<div class="prop-row"><label>' + escapeWebviewText(k) + '</label> <div class="prop-input-wrap"><input data-key="' + escapeWebviewAttribute(k) + '" value="' + escapeWebviewAttribute(val || '') + '"></div></div>';
         }
         html += '</div>';
       }
@@ -2881,7 +2903,7 @@ function buildWebviewJs(): string {
       var tags = elements.map(function(el) { return el.tag || ''; });
       var sameTag = tags.every(function(t) { return t === tags[0]; });
       var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
-      html += '<div class="prop-row"><label>Тип</label> <span class="fe-badge">' + (sameTag ? esc(tags[0]) : 'Разные') + '</span></div>';
+      html += '<div class="prop-row"><label>Тип</label> <span class="fe-badge">' + (sameTag ? escapeWebviewText(tags[0]) : 'Разные') + '</span></div>';
       html += '<div class="prop-row"><label>Имя</label> <div class="prop-input-wrap"><input id="prop-name" readonly placeholder="Разные" value=""></div></div>';
       html += '<div class="prop-row"><label>ID</label> <div class="prop-input-wrap"><input id="prop-id" readonly placeholder="Разные" value=""></div></div></div>';
       if (commonPropKeys.length) {
@@ -2891,7 +2913,7 @@ function buildWebviewJs(): string {
           var same = vals.every(function(v) { return v === vals[0]; });
           var val = same ? (vals[0] || '') : '';
           var placeholderAttr = same ? '' : ' placeholder="Разные значения"';
-          html += '<div class="prop-row"><label>' + esc(k) + '</label> <div class="prop-input-wrap"><input data-key="' + esc(k) + '" value="' + esc(val) + '"' + placeholderAttr + '></div></div>';
+          html += '<div class="prop-row"><label>' + escapeWebviewText(k) + '</label> <div class="prop-input-wrap"><input data-key="' + escapeWebviewAttribute(k) + '" value="' + escapeWebviewAttribute(val) + '"' + placeholderAttr + '></div></div>';
         });
         html += '</div>';
       }
@@ -2902,7 +2924,7 @@ function buildWebviewJs(): string {
           var same = vals.every(function(v) { return v === vals[0]; });
           var val = same ? (vals[0] || '') : '';
           var placeholderAttr = same ? '' : ' placeholder="Разные значения"';
-          html += '<div class="prop-row"><label>' + esc(evName) + '</label> <div class="prop-input-wrap"><input class="event-method-input" data-event="' + esc(evName) + '" value="' + esc(val) + '"' + placeholderAttr + ' placeholder="Имя процедуры"></div> <button type="button" class="btn-goto-proc" data-proc="">Перейти</button></div>';
+          html += '<div class="prop-row"><label>' + escapeWebviewText(evName) + '</label> <div class="prop-input-wrap"><input class="event-method-input" data-event="' + escapeWebviewAttribute(evName) + '" value="' + escapeWebviewAttribute(val) + '"' + placeholderAttr + ' placeholder="Имя процедуры"></div> <button type="button" class="btn-goto-proc" data-proc="">Перейти</button></div>';
         });
         html += '</div>';
       }
@@ -3073,7 +3095,7 @@ function buildWebviewJs(): string {
         model.commands.forEach(function(cmd) {
           var title = extractDisplayValue(cmd.properties && cmd.properties['Title']);
           var label = (cmd.name || '') + (title ? ' — ' + title : '');
-          html += '<li>' + esc(label || cmd.name || '') + '</li>';
+          html += '<li>' + escapeWebviewText(label || cmd.name || '') + '</li>';
         });
         html += '</ul>';
       } else {
@@ -3085,7 +3107,7 @@ function buildWebviewJs(): string {
       if (!barName) {
         html += '<p class="command-interface-empty">Командная панель не задана</p>';
       } else {
-        html += '<p class="command-interface-list" style="list-style:none; padding:0; margin:0 0 var(--fe-spacing-sm) 0;">Командная панель: ' + esc(barName) + '</p>';
+        html += '<p class="command-interface-summary">Командная панель: ' + escapeWebviewText(barName) + '</p>';
         var barNode = findElement(model, barName);
         if (!barNode) {
           html += '<p class="command-interface-empty">Узел командной панели не найден</p>';
@@ -3094,7 +3116,7 @@ function buildWebviewJs(): string {
           barNode.childItems.forEach(function(child) {
             var cmdName = child.properties && (child.properties['CommandName'] != null) ? extractDisplayValue(child.properties['CommandName']) : '';
             var label = (cmdName && cmdName.trim()) ? cmdName : (child.name || child.tag || '');
-            html += '<li>' + esc(label) + '</li>';
+            html += '<li>' + escapeWebviewText(label) + '</li>';
           });
           html += '</ul>';
         } else {
@@ -3167,7 +3189,7 @@ function buildWebviewJs(): string {
             renderAttributesTable(formModel.attributes, false);
           } else {
             if (tableWrap) tableWrap.style.display = 'none';
-            if (treeWrap) treeWrap.style.display = '';
+            if (treeWrap) treeWrap.style.display = 'block';
             selectedRequisiteFullPath = null;
             requisiteExpandedPaths = new Set();
             var requisiteNodes = buildRequisiteTree(formModel);
@@ -3200,7 +3222,7 @@ function buildWebviewJs(): string {
 /**
  * Returns the complete HTML string for the form editor webview,
  * including all CSS and client-side JavaScript.
- * CSP: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'
+ * CSP: default-src 'none'; scripts and styles are authorized by a per-render nonce.
  *
  * @param hostColorThemeKind VS Code UI theme so `data-theme-mode=auto` can set `color-scheme` and
  * native `<select>` options to match the host (avoids white-on-white in dark VS Code).
@@ -3211,20 +3233,21 @@ export function getWebviewHtml(
 ): string {
   void webview;
   const hostTheme = hostThemeFromColorKind(hostColorThemeKind);
+  const nonce = randomBytes(24).toString('base64url');
   return `<!DOCTYPE html>
 <html lang="ru" data-vscode-theme="${hostTheme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';">
   <title>Редактор формы 1С</title>
-  <style>
+  <style nonce="${nonce}">
 ${buildWebviewCss()}
   </style>
 </head>
 <body>
 ${buildWebviewLayout()}
-  <script>
+  <script nonce="${nonce}">
 ${buildWebviewJs()}
   </script>
 </body>
