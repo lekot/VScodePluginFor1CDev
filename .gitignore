@@ -2,6 +2,7 @@
 smoke-avansovyotchet-console.log
 node_modules/
 dist/
+build/
 out/
 src/**/*.js
 src/**/*.js.map
