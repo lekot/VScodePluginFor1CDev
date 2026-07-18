@@ -3,6 +3,7 @@
 .roo/**
 .agents/**
 .vscode-test/**
+.ruff_cache/**
 .cursor/**
 .dev/**
 .git/**
