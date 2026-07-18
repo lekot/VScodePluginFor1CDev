@@ -22,6 +22,7 @@ export function registerLazyWorkspaceOrchestrator(
 ): { dispose(): void } {
   let metadataLoadStarted = false;
   let gitHandlersRegistered = false;
+  let disposed = false;
 
   const ensureGitHandlers = (): void => {
     if (gitHandlersRegistered) {
@@ -38,7 +39,17 @@ export function registerLazyWorkspaceOrchestrator(
     metadataLoadStarted = true;
     void Promise.resolve()
       .then(options.loadMetadataTree)
-      .catch(options.onAutoLoadError);
+      .catch((error) => {
+        metadataLoadStarted = false;
+        if (disposed) {
+          return;
+        }
+        try {
+          options.onAutoLoadError(error);
+        } catch {
+          // Error reporting must not create an unhandled rejection.
+        }
+      });
   };
 
   const onMetadataVisibility = (visible: boolean): void => {
@@ -73,6 +84,7 @@ export function registerLazyWorkspaceOrchestrator(
 
   return {
     dispose: () => {
+      disposed = true;
       subscriptions.forEach((subscription) => subscription.dispose());
     },
   };

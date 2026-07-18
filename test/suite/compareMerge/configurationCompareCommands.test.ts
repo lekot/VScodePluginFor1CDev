@@ -80,6 +80,33 @@ suite('ConfigurationCompareCommands', () => {
     assert.deepStrictEqual(shownWorkspaces, [{ id: 'workspace' }]);
   });
 
+  test('passes progress cancellation token to compare builder', async () => {
+    const token = { isCancellationRequested: false };
+    let receivedCancellation: unknown;
+
+    await executeConfigurationCompareCommand({
+      context: { globalStorageUri: { fsPath: path.join('C:', 'extension-storage') } } as any,
+      state: {
+        treeDataProvider: {
+          getConfigPathForNode: () => null,
+          getConfigPath: () => path.join('C:', 'configs', 'left'),
+        },
+      } as any,
+      pickRightRoot: async () => path.join('C:', 'configs', 'right'),
+      withCompareProgress: async (_title, task) => task(token as any),
+      buildCompare: async (input) => {
+        receivedCancellation = input.cancellation;
+        return {
+          projection: { root: { children: [] }, stats: { total: 0, different: 0, mergeable: 0 } },
+          workspace: { id: 'workspace' },
+        } as any;
+      },
+      showCompare: () => undefined as any,
+    });
+
+    assert.strictEqual(receivedCancellation, token);
+  });
+
   test('creates backup root under global storage merge-backups directory', () => {
     const root = createConfigurationCompareBackupRootPath(
       { globalStorageUri: { fsPath: path.join('C:', 'extension-storage') } } as any,

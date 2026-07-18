@@ -196,6 +196,37 @@ suite('ConfigurationCompareWorkspace', () => {
     assert.deepStrictEqual(workspace.listMergeableNodeIds(), []);
   });
 
+  test('refresh disposes the replaced session and workspace close disposes the current session once', async () => {
+    const initialSession = makeSession();
+    const refreshedSession = makeSession();
+    let initialDisposals = 0;
+    let refreshedDisposals = 0;
+    const disposeInitial = initialSession.dispose.bind(initialSession);
+    const disposeRefreshed = refreshedSession.dispose.bind(refreshedSession);
+    initialSession.dispose = () => { initialDisposals += 1; disposeInitial(); };
+    refreshedSession.dispose = () => { refreshedDisposals += 1; disposeRefreshed(); };
+    const workspace = new ConfigurationCompareWorkspace({
+      session: initialSession,
+      projection: makeProjection(),
+      leftRootPath: path.join('repo', 'left'),
+      rightRootPath: path.join('repo', 'right'),
+      candidateFactories: makeCandidateFactories({}),
+      backupRootPath: path.join('repo', 'backups'),
+      refreshWorkspace: async () => ({
+        session: refreshedSession,
+        projection: makeProjection(),
+        candidateFactories: makeCandidateFactories({}),
+      }),
+    });
+
+    await workspace.refresh();
+    workspace.dispose();
+    workspace.dispose();
+
+    assert.strictEqual(initialDisposals, 1);
+    assert.strictEqual(refreshedDisposals, 1);
+  });
+
   test('successful execute reports and locks refresh failure diagnostics', async () => {
     const workspace = makeWorkspace({
       refreshWorkspace: async () => {

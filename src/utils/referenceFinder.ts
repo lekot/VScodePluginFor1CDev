@@ -102,18 +102,69 @@ export async function replaceReferencesInProject(
   if (!refKind) {
     return [];
   }
-  const oldPattern = `${refKind}.${oldName}`;
-  const newPattern = `${refKind}.${newName}`;
-  const results: { filePath: string; replaceCount: number }[] = [];
-  await replaceInDir(configPath, oldPattern, newPattern, results, 0);
-  return results;
+  return replaceIdentityTokensInProject(
+    configPath,
+    new Map([[`${refKind}.${oldName}`, `${refKind}.${newName}`]])
+  );
 }
 
-async function replaceInDir(
+export interface PlannedReferenceWrite {
+  filePath: string;
+  originalContent: string;
+  updatedContent: string;
+  replaceCount: number;
+}
+
+/** Builds reference rewrites without touching disk so callers can include them in one WAL plan. */
+export async function planIdentityTokenReplacements(
+  configPath: string,
+  replacements: ReadonlyMap<string, string>
+): Promise<PlannedReferenceWrite[]> {
+  if (replacements.size === 0) {
+    return [];
+  }
+  const plans: PlannedReferenceWrite[] = [];
+  await collectReplacementPlans(configPath, replacements, plans, 0);
+  return plans;
+}
+
+/**
+ * Replace exact metadata identity tokens across XML as one rollback-capable batch.
+ * Callers supply only platform identity tokens, never bare object names.
+ */
+export async function replaceIdentityTokensInProject(
+  configPath: string,
+  replacements: ReadonlyMap<string, string>
+): Promise<{ filePath: string; replaceCount: number }[]> {
+  if (replacements.size === 0) {
+    return [];
+  }
+  const plans = await planIdentityTokenReplacements(configPath, replacements);
+
+  const written: PlannedReferenceWrite[] = [];
+  try {
+    for (const plan of plans) {
+      await fs.promises.writeFile(plan.filePath, plan.updatedContent, 'utf-8');
+      written.push(plan);
+    }
+  } catch (error) {
+    for (const plan of written.reverse()) {
+      try {
+        await fs.promises.writeFile(plan.filePath, plan.originalContent, 'utf-8');
+      } catch (rollbackError) {
+        Logger.error(`referenceFinder: rollback failed for ${plan.filePath}`, rollbackError);
+      }
+    }
+    throw error;
+  }
+
+  return plans.map(({ filePath, replaceCount }) => ({ filePath, replaceCount }));
+}
+
+async function collectReplacementPlans(
   dir: string,
-  oldPattern: string,
-  newPattern: string,
-  results: { filePath: string; replaceCount: number }[],
+  replacements: ReadonlyMap<string, string>,
+  plans: PlannedReferenceWrite[],
   depth: number
 ): Promise<void> {
   if (depth > MAX_SCAN_DEPTH) {
@@ -129,31 +180,40 @@ async function replaceInDir(
   for (const e of entries) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
-      await replaceInDir(full, oldPattern, newPattern, results, depth + 1);
+      await collectReplacementPlans(full, replacements, plans, depth + 1);
     } else if (e.isFile() && e.name.endsWith('.xml')) {
-      const count = await replaceInFile(full, oldPattern, newPattern);
-      if (count > 0) {
-        results.push({ filePath: full, replaceCount: count });
+      const plan = await buildReplacementPlan(full, replacements);
+      if (plan) {
+        plans.push(plan);
       }
     }
   }
 }
 
-async function replaceInFile(
+async function buildReplacementPlan(
   filePath: string,
-  oldPattern: string,
-  newPattern: string
-): Promise<number> {
+  replacements: ReadonlyMap<string, string>
+): Promise<PlannedReferenceWrite | undefined> {
   let content: string;
   try {
     content = await fs.promises.readFile(filePath, 'utf-8');
   } catch {
-    return 0;
+    return undefined;
   }
-  const re = new RegExp(escapeRegex(oldPattern) + '(?=[<"\'.\\s]|$)', 'g');
-  const matches = content.match(re);
-  if (!matches) {return 0;}
-  const newContent = content.replace(re, newPattern);
-  await fs.promises.writeFile(filePath, newContent, 'utf-8');
-  return matches.length;
+  let updatedContent = content;
+  let replaceCount = 0;
+  const ordered = [...replacements.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [oldPattern, newPattern] of ordered) {
+    const re = new RegExp(
+      `(?<![A-Za-z0-9_])${escapeRegex(oldPattern)}(?=[<"'.\\s]|$)`,
+      'g'
+    );
+    const matches = updatedContent.match(re);
+    if (!matches) { continue; }
+    replaceCount += matches.length;
+    updatedContent = updatedContent.replace(re, newPattern);
+  }
+  return replaceCount > 0
+    ? { filePath, originalContent: content, updatedContent, replaceCount }
+    : undefined;
 }

@@ -167,6 +167,27 @@ suite('AgentBridge — HTTP server', () => {
     // 4. GET /health
     // -------------------------------------------------------------------------
 
+    test('stop() queued during start() leaves no live server or discovery file', async () => {
+        const raceWorkspace = path.join(tmpDir, 'start-stop-race');
+        const racingBridge = new AgentBridge({
+            commandPattern: TEST_PATTERN,
+            workspaceFolder: raceWorkspace,
+        });
+
+        const startPromise = racingBridge.start();
+        const stopPromise = racingBridge.stop();
+        await Promise.all([startPromise, stopPromise]);
+
+        assert.strictEqual(
+            fs.existsSync(path.join(raceWorkspace, '.vscode', 'cdt-agent-bridge.json')),
+            false,
+        );
+        assert.strictEqual(
+            (racingBridge as unknown as { _server?: http.Server })._server,
+            undefined,
+        );
+    });
+
     test('GET /health → 200 с ok: true и pid', async () => {
         const res = await httpRequest({ port, method: 'GET', path: '/health' });
         assert.strictEqual(res.status, 200);

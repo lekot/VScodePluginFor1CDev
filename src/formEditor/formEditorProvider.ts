@@ -4,34 +4,106 @@
  * Requirements: 1.6, 2.1, 2.2, 2.3, 2.4
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import type { FormModel } from './formModel';
 import {
   createSerializedMessageHandler,
-  isFormDocumentDirty,
   type FormSelectionPayload,
   type MessageHandlerContext,
+  type FormMessage,
   type FormSelectionEntityType,
   applyExternalPropertyChange,
+  reloadFormAndSend,
+  commitPendingModuleTransaction,
+  rollbackPendingModuleTransaction,
+  rollbackPendingModuleFileTransaction,
+  readValidatedPendingModuleContent,
+  type PendingFormModuleTransaction,
   handleCreateEventHandler as handleCreateEventHandlerMsg,
 } from './formMessageHandler';
 import { FormCommandEngine } from './formCommandEngine';
 import { findElementById } from './formTreeOperations';
 import { getWebviewHtml } from './formWebviewHtml';
-import { openModuleInEditor } from './formFileIo';
+import { getFormEditorTitle, loadFormModel, openModuleInEditor, saveFormModel } from './formFileIo';
 import { Logger } from '../utils/logger';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 export { moveNodeInModel } from './formTreeOperations'; // backward compat
 
-/** Minimal custom document for form editor. */
-class FormEditorDocument implements vscode.CustomDocument {
-  constructor(public readonly uri: vscode.Uri) {}
-  dispose(): void {}
+/** Custom document whose lifetime is owned by VS Code, not by a webview panel. */
+export class FormEditorDocument implements vscode.CustomDocument {
+  private disposed = false;
+
+  constructor(
+    public readonly uri: vscode.Uri,
+    private readonly onDispose: (document: FormEditorDocument) => void
+  ) {}
+
+  dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.onDispose(this);
+  }
 }
 
-export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<FormEditorDocument> {
+interface FormEditorBackupPayload {
+  version: 1;
+  model: FormModel;
+  pendingModuleTransaction?: PendingFormModuleTransaction;
+}
+
+async function restorePendingModuleTransaction(
+  transaction: PendingFormModuleTransaction
+): Promise<void> {
+  await rollbackPendingModuleFileTransaction(transaction);
+}
+
+interface FileSnapshot {
+  existed: boolean;
+  content?: Buffer;
+}
+
+async function captureFileSnapshot(filePath: string): Promise<FileSnapshot> {
+  const content = await fs.promises.readFile(filePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  });
+  return { existed: content !== undefined, content };
+}
+
+async function restoreFileSnapshot(filePath: string, snapshot: FileSnapshot): Promise<void> {
+  if (!snapshot.existed) {
+    await fs.promises.rm(filePath, { force: true });
+    return;
+  }
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.promises.writeFile(filePath, snapshot.content!);
+}
+
+function getDestinationModulePath(
+  sourceFormPath: string,
+  destinationFormPath: string,
+  sourceModulePath: string
+): string {
+  const moduleRelativeToForm = path.relative(path.dirname(sourceFormPath), sourceModulePath);
+  return path.join(path.dirname(destinationFormPath), moduleRelativeToForm);
+}
+
+export class FormEditorProvider implements vscode.CustomEditorProvider<FormEditorDocument> {
+  private readonly changeEmitter = new vscode.EventEmitter<
+    vscode.CustomDocumentContentChangeEvent<FormEditorDocument>
+  >();
+  readonly onDidChangeCustomDocument = this.changeEmitter.event;
   private documentModel = new Map<string, FormModel>();
   private commandEngines = new Map<string, FormCommandEngine>();
   private dirtyDocuments = new Set<string>();
+  private pendingModuleTransactions = new Map<string, PendingFormModuleTransaction>();
+  private messageExecutors = new Map<string, (message: FormMessage) => Promise<void>>();
   private contextByDocument = new Map<string, MessageHandlerContext>();
   private activeSelectionDocumentUri: string | null = null;
   private activeDocumentUri: vscode.Uri | null = null;
@@ -48,8 +120,28 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     private readonly onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void
   ) {}
 
-  openCustomDocument(uri: vscode.Uri): FormEditorDocument {
-    return new FormEditorDocument(uri);
+  async openCustomDocument(
+    uri: vscode.Uri,
+    openContext?: vscode.CustomDocumentOpenContext
+  ): Promise<FormEditorDocument> {
+    const document = new FormEditorDocument(uri, (disposedDocument) => {
+      this.releaseDocument(disposedDocument.uri);
+    });
+    if (openContext?.backupId) {
+      const payload = JSON.parse(
+        await fs.promises.readFile(openContext.backupId, 'utf8')
+      ) as FormEditorBackupPayload;
+      if (payload.version !== 1 || !payload.model) {
+        throw new Error(`Unsupported Form Editor backup: ${openContext.backupId}`);
+      }
+      const key = uri.toString();
+      this.documentModel.set(key, payload.model);
+      this.dirtyDocuments.add(key);
+      if (payload.pendingModuleTransaction) {
+        this.pendingModuleTransactions.set(key, payload.pendingModuleTransaction);
+      }
+    }
+    return document;
   }
 
   async resolveCustomEditor(
@@ -64,12 +156,26 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     const themeSubscription = vscode.window.onDidChangeActiveColorTheme((e) => {
       webviewPanel.webview.postMessage({ type: 'hostColorTheme', kind: e.kind });
     });
+    const docKey = document.uri.toString();
     const ctx: MessageHandlerContext = {
       document,
       webviewPanel,
       documentModel: this.documentModel,
       commandEngines: this.commandEngines,
       dirtyDocuments: this.dirtyDocuments,
+      onDidChangeDocument: () => {
+        this.changeEmitter.fire({ document });
+      },
+      requestSave: async (model) => {
+        if (model) {
+          this.documentModel.set(docKey, model);
+        }
+        await vscode.commands.executeCommand('workbench.action.files.save');
+      },
+      requestRevert: async () => {
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+      },
+      pendingModuleTransactions: this.pendingModuleTransactions,
       onFormSelectionChanged: (payload) => {
         if (payload) {
           this.activeSelectionDocumentUri = payload.docUri;
@@ -84,7 +190,6 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
         this.onFormSelectionChanged?.(payload);
       },
     };
-    const docKey = document.uri.toString();
     this.contextByDocument.set(docKey, ctx);
     if (webviewPanel.active) {
       this.activeDocumentUri = document.uri;
@@ -97,20 +202,20 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       }
     });
     const onMessage = createSerializedMessageHandler(ctx);
+    this.messageExecutors.set(docKey, onMessage);
     webviewPanel.webview.onDidReceiveMessage(onMessage);
     webviewPanel.onDidDispose(() => {
       themeSubscription.dispose();
-      void this.handlePanelDispose(document.uri);
+      this.handlePanelDispose(document.uri, ctx);
     });
   }
 
-  private async handlePanelDispose(documentUri: vscode.Uri): Promise<void> {
+  private handlePanelDispose(documentUri: vscode.Uri, ctx: MessageHandlerContext): void {
     const key = documentUri.toString();
-    const ctx = this.contextByDocument.get(key);
-    const dirty = ctx ? isFormDocumentDirty(ctx) : this.dirtyDocuments.has(key);
-    this.contextByDocument.delete(key);
-    this.commandEngines.delete(key);
-    this.dirtyDocuments.delete(key);
+    if (this.contextByDocument.get(key) === ctx) {
+      this.contextByDocument.delete(key);
+      this.messageExecutors.delete(key);
+    }
     this.latestSelectionByDocument.delete(key);
     if (this.activeSelectionDocumentUri === key) {
       this.activeSelectionDocumentUri = null;
@@ -118,20 +223,198 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     if (this.activeDocumentUri?.toString() === key) {
       this.activeDocumentUri = null;
     }
-    if (!dirty) {
-      return;
+  }
+
+  private releaseDocument(documentUri: vscode.Uri): void {
+    const key = documentUri.toString();
+    this.contextByDocument.delete(key);
+    this.documentModel.delete(key);
+    this.commandEngines.delete(key);
+    this.dirtyDocuments.delete(key);
+    this.pendingModuleTransactions.delete(key);
+    this.messageExecutors.delete(key);
+    this.latestSelectionByDocument.delete(key);
+    if (this.activeSelectionDocumentUri === key) {
+      this.activeSelectionDocumentUri = null;
     }
-    const closeLabel = 'Закрыть без сохранения';
-    const returnLabel = 'Вернуться к форме';
-    const choice = await vscode.window.showWarningMessage(
-      'Чувак, ты не сохранился. Закрыть форму без сохранения?',
-      { modal: true },
-      closeLabel,
-      returnLabel
-    );
-    if (choice === returnLabel) {
-      await vscode.commands.executeCommand('vscode.openWith', documentUri, '1c-form-editor', { preview: false });
+    if (this.activeDocumentUri?.toString() === key) {
+      this.activeDocumentUri = null;
     }
+  }
+
+  async saveCustomDocument(
+    document: FormEditorDocument,
+    cancellation: vscode.CancellationToken
+  ): Promise<void> {
+    if (cancellation.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+    const key = document.uri.toString();
+    const model = this.documentModel.get(key);
+    if (!model) {
+      throw new Error('Нет данных формы для сохранения.');
+    }
+    await runConfigurationMutation(document.uri.fsPath, 'ui.form.save', async () => {
+      try {
+        await saveFormModel(document.uri.fsPath, model);
+      } catch (error) {
+        const ctx = this.contextByDocument.get(key);
+        if (ctx) {
+          try {
+            await rollbackPendingModuleTransaction(ctx);
+          } catch (rollbackError) {
+            throw combinedError(error, rollbackError, 'Form save and BSL handler rollback both failed.');
+          }
+        }
+        throw error;
+      }
+    });
+    const ctx = this.contextByDocument.get(key);
+    if (ctx) {
+      commitPendingModuleTransaction(ctx);
+    } else {
+      this.pendingModuleTransactions.delete(key);
+    }
+    this.commandEngines.get(key)?.markSaved();
+    this.dirtyDocuments.delete(key);
+    if (ctx) {
+      ctx.webviewPanel.title = getFormEditorTitle(document.uri.fsPath);
+      await ctx.webviewPanel.webview.postMessage({ type: 'saved' });
+    }
+  }
+
+  async saveCustomDocumentAs(
+    document: FormEditorDocument,
+    destination: vscode.Uri,
+    cancellation: vscode.CancellationToken
+  ): Promise<void> {
+    if (cancellation.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+    const key = document.uri.toString();
+    const model = this.documentModel.get(key);
+    if (!model) {
+      throw new Error('Нет данных формы для сохранения.');
+    }
+    const transaction = this.pendingModuleTransactions.get(key);
+    const destinationModulePath = transaction
+      ? getDestinationModulePath(document.uri.fsPath, destination.fsPath, transaction.modulePath)
+      : undefined;
+    const pendingModuleContent = transaction
+      ? await readValidatedPendingModuleContent(transaction)
+      : undefined;
+    const formSnapshot = await captureFileSnapshot(destination.fsPath);
+    const moduleSnapshot = destinationModulePath
+      && path.normalize(destinationModulePath) !== path.normalize(transaction!.modulePath)
+      ? await captureFileSnapshot(destinationModulePath)
+      : undefined;
+    await runConfigurationMutation(document.uri.fsPath, 'ui.form.saveAs', async () => {
+      try {
+        await fs.promises.mkdir(path.dirname(destination.fsPath), { recursive: true });
+        await saveFormModel(destination.fsPath, model);
+        if (transaction && destinationModulePath && pendingModuleContent !== undefined) {
+          if (path.normalize(destinationModulePath) === path.normalize(transaction.modulePath)) {
+            this.pendingModuleTransactions.delete(key);
+          } else {
+            await fs.promises.mkdir(path.dirname(destinationModulePath), { recursive: true });
+            await fs.promises.writeFile(destinationModulePath, pendingModuleContent, 'utf8');
+            await rollbackPendingModuleFileTransaction(transaction);
+            this.pendingModuleTransactions.delete(key);
+          }
+        }
+      } catch (error) {
+        const rollbackErrors: unknown[] = [];
+        await restoreFileSnapshot(destination.fsPath, formSnapshot).catch((rollbackError) => {
+          rollbackErrors.push(rollbackError);
+        });
+        if (destinationModulePath && moduleSnapshot) {
+          await restoreFileSnapshot(destinationModulePath, moduleSnapshot).catch((rollbackError) => {
+            rollbackErrors.push(rollbackError);
+          });
+        }
+        if (rollbackErrors.length > 0) {
+          throw combinedError(error, rollbackErrors.map(String).join('; '), 'Save As and rollback both failed.');
+        }
+        throw error;
+      }
+    });
+    this.commandEngines.get(key)?.markSaved();
+    this.dirtyDocuments.delete(key);
+    const ctx = this.contextByDocument.get(key);
+    if (ctx) {
+      await ctx.webviewPanel.webview.postMessage({ type: 'saved' });
+    }
+  }
+
+  async revertCustomDocument(
+    document: FormEditorDocument,
+    cancellation: vscode.CancellationToken
+  ): Promise<void> {
+    if (cancellation.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+    const key = document.uri.toString();
+    await runConfigurationMutation(document.uri.fsPath, 'ui.form.revert', async () => {
+      const ctx = this.contextByDocument.get(key);
+      if (ctx) {
+        await rollbackPendingModuleTransaction(ctx);
+        await reloadFormAndSend(ctx);
+        return;
+      }
+      const transaction = this.pendingModuleTransactions.get(key);
+      if (transaction) {
+        await restorePendingModuleTransaction(transaction);
+        this.pendingModuleTransactions.delete(key);
+      }
+      const result = await loadFormModel(document.uri.fsPath);
+      if ('error' in result) {
+        throw new Error(result.error);
+      }
+      this.documentModel.set(key, result.model);
+      this.commandEngines.delete(key);
+      this.dirtyDocuments.delete(key);
+    });
+  }
+
+  async backupCustomDocument(
+    document: FormEditorDocument,
+    context: vscode.CustomDocumentBackupContext,
+    cancellation: vscode.CancellationToken
+  ): Promise<vscode.CustomDocumentBackup> {
+    if (cancellation.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+    const model = this.documentModel.get(document.uri.toString());
+    if (!model) {
+      throw new Error('Нет данных формы для резервного копирования.');
+    }
+    const backupPath = context.destination.fsPath;
+    await fs.promises.mkdir(path.dirname(backupPath), { recursive: true });
+    const payload: FormEditorBackupPayload = {
+      version: 1,
+      model,
+      pendingModuleTransaction: this.pendingModuleTransactions.get(document.uri.toString()),
+    };
+    await fs.promises.writeFile(backupPath, JSON.stringify(payload), 'utf8');
+    return {
+      id: backupPath,
+      delete: () => {
+        void fs.promises.rm(backupPath, { force: true });
+      },
+    };
+  }
+
+  dispose(): void {
+    this.changeEmitter.dispose();
+    this.contextByDocument.clear();
+    this.documentModel.clear();
+    this.commandEngines.clear();
+    this.dirtyDocuments.clear();
+    this.pendingModuleTransactions.clear();
+    this.messageExecutors.clear();
+    this.latestSelectionByDocument.clear();
+    this.activeSelectionDocumentUri = null;
+    this.activeDocumentUri = null;
   }
 
   public getActiveDocumentUri(): vscode.Uri | null {
@@ -165,7 +448,11 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
       tag: payload.elementTag,
       eventName: payload.eventName,
     };
-    handleCreateEventHandlerMsg(ctx, msg).then(() => {
+    const executor = this.messageExecutors.get(payload.docUri);
+    const operation = executor
+      ? executor({ type: 'createEventHandler', ...msg })
+      : handleCreateEventHandlerMsg(ctx, msg);
+    operation.then(() => {
       // Re-emit selection so Properties panel refreshes with updated events
       const model = this.documentModel.get(payload.docUri);
       if (!model) { return; }
@@ -219,4 +506,10 @@ export class FormEditorProvider implements vscode.CustomReadonlyEditorProvider<F
     }
     applyExternalPropertyChange(ctx, payload);
   }
+}
+
+function combinedError(primary: unknown, rollback: unknown, message: string): Error {
+  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
+  const rollbackMessage = rollback instanceof Error ? rollback.message : String(rollback);
+  return new Error(`${message} Save: ${primaryMessage}. Rollback: ${rollbackMessage}`);
 }

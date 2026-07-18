@@ -25,7 +25,7 @@ const OK: IbcmdStreamingRawOutcome = {
 
 function makeDeps(tempRoot: string, calls: string[][]): CfConfigurationServiceDeps {
   return {
-    resolveExecutablePath: () => ({ kind: 'resolved', path: 'ibcmd' }),
+    resolveExecutablePath: async () => ({ kind: 'resolved', path: 'ibcmd' }),
     getTimeoutMs: () => 1000,
     getConsoleOutputEncoding: () => 'auto',
     createTempRoot: async () => tempRoot,

@@ -73,6 +73,81 @@ function searchInChildObjects(
  * while preserving structure and formatting
  */
 export class XMLWriter {
+  /** Pure root-property transform used when a multi-file mutation is planned before effects. */
+  static buildUpdatedPropertiesXml(xmlContent: string, properties: Record<string, unknown>): string {
+    let parsed: unknown;
+    try {
+      parsed = xmlParser.parse(xmlContent);
+    } catch (error) {
+      throw new XmlParseError(`Invalid XML structure. ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return buildXmlString(updatePropertiesInStructure(parsed, properties));
+  }
+
+  /** Lists sibling names in the root ChildObjects scope or in one tabular section. */
+  static async listNestedElementNames(
+    filePath: string,
+    elementType: 'Attribute' | 'TabularSection',
+    scopedTabularSectionName?: string,
+  ): Promise<string[]> {
+    const { parsed } = await this.readUtf8AndParse(filePath);
+    const result: string[] = [];
+    const matches = (key: string, type: string) => key === type || key.endsWith(`:${type}`);
+    const extractName = (value: unknown): string => {
+      if (!value || typeof value !== 'object') { return ''; }
+      const array = Array.isArray(value) ? value : [value];
+      for (const item of array) {
+        if (!item || typeof item !== 'object') { continue; }
+        const record = item as Record<string, unknown>;
+        const properties = record.Properties;
+        if (properties !== undefined) {
+          const propertyArray = Array.isArray(properties) ? properties : [properties];
+          for (const property of propertyArray) {
+            if (!property || typeof property !== 'object') { continue; }
+            const nameValue = (property as Record<string, unknown>).Name;
+            const values = Array.isArray(nameValue) ? nameValue : [nameValue];
+            for (const candidate of values) {
+              if (typeof candidate === 'string') { return candidate; }
+              if (candidate && typeof candidate === 'object' && '#text' in candidate) {
+                return String((candidate as Record<string, unknown>)['#text']);
+              }
+            }
+          }
+        }
+      }
+      return '';
+    };
+    const visit = (value: unknown, tabularScope?: string): void => {
+      if (!value || typeof value !== 'object') { return; }
+      if (Array.isArray(value)) {
+        value.forEach((entry) => visit(entry, tabularScope));
+        return;
+      }
+      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        if (matches(key, 'TabularSection')) {
+          const sectionName = extractName(child);
+          if (elementType === 'TabularSection' && !tabularScope && sectionName) {
+            result.push(sectionName);
+          }
+          visit(child, sectionName || tabularScope);
+        } else if (matches(key, 'Attribute')) {
+          const attributeName = extractName(child);
+          const inRequestedScope = scopedTabularSectionName
+            ? tabularScope === scopedTabularSectionName
+            : tabularScope === undefined;
+          if (elementType === 'Attribute' && inRequestedScope && attributeName) {
+            result.push(attributeName);
+          }
+          visit(child, tabularScope);
+        } else if (key !== ':@') {
+          visit(child, tabularScope);
+        }
+      }
+    };
+    visit(parsed);
+    return result;
+  }
+
   /**
    * Read properties from XML file
    * @param filePath Path to XML file
@@ -271,10 +346,15 @@ export class XMLWriter {
   static async removeNestedElement(
     filePath: string,
     elementType: string,
-    elementName: string
+    elementName: string,
+    required = false
   ): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
-    const updated = removeNestedElementInStructure(parsed, elementType, elementName);
+    const state = { changed: false };
+    const updated = removeNestedElementInStructure(parsed, elementType, elementName, state);
+    if (required && !state.changed) {
+      throw new Error(`${elementType} '${elementName}' was not found in ${filePath}`);
+    }
     await this.saveParsedWithBackup(
       filePath,
       xmlContent,
@@ -494,10 +574,61 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     return extractProperties(element);
   }
 
+  /** Read the native content of a <Type> property without UI display formatting. */
+  static async readTypeProperty(
+    filePath: string,
+    nestedElementType?: string,
+    nestedElementName?: string,
+    scopedTabularSectionName?: string
+  ): Promise<unknown> {
+    const { parsed } = await this.readUtf8AndParse(filePath);
+    const target = nestedElementType && nestedElementName
+      ? this.findNestedElement(parsed, nestedElementType, nestedElementName, scopedTabularSectionName)
+      : parsed;
+    if (!target) {
+      throw new XmlReadError(
+        `Nested element ${nestedElementType} '${nestedElementName}' not found in ${filePath}`
+      );
+    }
+
+    const findType = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object') { return undefined; }
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const found = findType(item);
+          if (found !== undefined) { return found; }
+        }
+        return undefined;
+      }
+
+      const objectValue = value as Record<string, unknown>;
+      const properties = objectValue.Properties;
+      if (properties && typeof properties === 'object') {
+        const propertiesValues = Array.isArray(properties) ? properties : [properties];
+        for (const propertiesValue of propertiesValues) {
+          if (propertiesValue && typeof propertiesValue === 'object') {
+            const record = propertiesValue as Record<string, unknown>;
+            if ('Type' in record) { return record.Type; }
+          }
+        }
+      }
+
+      for (const [key, child] of Object.entries(objectValue)) {
+        if (key === ':@') { continue; }
+        const found = findType(child);
+        if (found !== undefined) { return found; }
+      }
+      return undefined;
+    };
+
+    return findType(target);
+  }
+
   private static findNestedElement(
     parsed: unknown,
     elementType: string,
-    elementName: string
+    elementName: string,
+    scopedTabularSectionName?: string
   ): unknown {
     if (!parsed || typeof parsed !== 'object') {
       return undefined;
@@ -523,11 +654,11 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
       return '';
     };
 
-    const searchInValue = (value: unknown): unknown => {
+    const searchInValue = (value: unknown, targetType: string, targetName: string): unknown => {
       if (!value || typeof value !== 'object') {return undefined;}
       if (Array.isArray(value)) {
         for (const item of value) {
-          const found = searchInValue(item);
+          const found = searchInValue(item, targetType, targetName);
           if (found !== undefined) {return found;}
         }
         return undefined;
@@ -535,17 +666,23 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
       const obj = value as Record<string, unknown>;
       for (const [key, val] of Object.entries(obj)) {
         if (matchesKey(key, 'ChildObjects')) {
-          const found = searchInChildObjects(val, elementType, elementName, matchesKey, extractName);
+          const found = searchInChildObjects(val, targetType, targetName, matchesKey, extractName);
           if (found !== undefined) {return found;}
         } else if (key !== ':@') {
-          const found = searchInValue(val);
+          const found = searchInValue(val, targetType, targetName);
           if (found !== undefined) {return found;}
         }
       }
       return undefined;
     };
 
-    return searchInValue(parsed);
+    const searchRoot = scopedTabularSectionName
+      ? searchInValue(parsed, 'TabularSection', scopedTabularSectionName)
+      : parsed;
+    if (!searchRoot) {
+      return undefined;
+    }
+    return searchInValue(searchRoot, elementType, elementName);
   }
 
   static async writeNestedElementProperties(

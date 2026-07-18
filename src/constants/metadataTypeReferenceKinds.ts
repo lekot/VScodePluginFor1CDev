@@ -1,70 +1,17 @@
 import { MetadataType } from '../models/treeNode';
+import { METADATA_TYPE_DESCRIPTORS } from './metadataTypeDescriptors';
 
 /**
  * Mapping of MetadataType to reference kind strings used in XML.
  * Examples: CatalogRef, DocumentRef, EnumRef, etc.
  */
-export const METADATA_TYPE_TO_REFERENCE_KIND: Record<MetadataType, string | undefined> = {
-  [MetadataType.Catalog]: 'CatalogRef',
-  [MetadataType.Document]: 'DocumentRef',
-  [MetadataType.Enum]: 'EnumRef',
-  [MetadataType.ChartOfCharacteristicTypes]: 'ChartOfCharacteristicTypesRef',
-  [MetadataType.ChartOfAccounts]: 'ChartOfAccountsRef',
-  [MetadataType.ChartOfCalculationTypes]: 'ChartOfCalculationTypesRef',
-  [MetadataType.Configuration]: undefined,
-  [MetadataType.ConfigurationPackage]: undefined,
-  [MetadataType.Report]: undefined,
-  [MetadataType.DataProcessor]: undefined,
-  [MetadataType.InformationRegister]: undefined,
-  [MetadataType.AccumulationRegister]: undefined,
-  [MetadataType.AccountingRegister]: undefined,
-  [MetadataType.CalculationRegister]: undefined,
-  [MetadataType.BusinessProcess]: undefined,
-  [MetadataType.Task]: undefined,
-  [MetadataType.ExternalDataSource]: undefined,
-  [MetadataType.Constant]: undefined,
-  [MetadataType.SessionParameter]: undefined,
-  [MetadataType.FilterCriterion]: undefined,
-  [MetadataType.ScheduledJob]: undefined,
-  [MetadataType.FunctionalOption]: undefined,
-  [MetadataType.FunctionalOptionsParameter]: undefined,
-  [MetadataType.SettingsStorage]: undefined,
-  [MetadataType.EventSubscription]: undefined,
-  [MetadataType.CommonModule]: undefined,
-  [MetadataType.CommandGroup]: undefined,
-  [MetadataType.Command]: undefined,
-  [MetadataType.Role]: undefined,
-  [MetadataType.Interface]: undefined,
-  [MetadataType.Style]: undefined,
-  [MetadataType.WebService]: undefined,
-  [MetadataType.HTTPService]: undefined,
-  [MetadataType.IntegrationService]: undefined,
-  [MetadataType.Subsystem]: undefined,
-  [MetadataType.ExchangePlan]: undefined,
-  [MetadataType.DocumentJournal]: undefined,
-  [MetadataType.DefinedType]: undefined,
-  [MetadataType.CommonAttribute]: undefined,
-  [MetadataType.CommonCommand]: undefined,
-  [MetadataType.CommonForm]: undefined,
-  [MetadataType.CommonPicture]: undefined,
-  [MetadataType.CommonTemplate]: undefined,
-  [MetadataType.DocumentNumerator]: undefined,
-  [MetadataType.Language]: undefined,
-  [MetadataType.WSReference]: undefined,
-  [MetadataType.XDTOPackage]: undefined,
-  [MetadataType.StyleItem]: undefined,
-  [MetadataType.Attribute]: undefined,
-  [MetadataType.TabularSection]: undefined,
-  [MetadataType.Form]: undefined,
-  [MetadataType.Template]: undefined,
-  [MetadataType.CommandSubElement]: undefined,
-  [MetadataType.Recurrence]: undefined,
-  [MetadataType.Method]: undefined,
-  [MetadataType.Parameter]: undefined,
-  [MetadataType.EnumValue]: undefined,
-  [MetadataType.Dimension]: undefined,
-  [MetadataType.Resource]: undefined,
-  [MetadataType.Extension]: undefined,
-  [MetadataType.PredefinedItem]: undefined,
-  [MetadataType.Unknown]: undefined,
-};
+const referenceKinds = Object.fromEntries(
+  Object.values(MetadataType).map((type) => [type, undefined])
+) as Record<MetadataType, string | undefined>;
+
+for (const descriptor of METADATA_TYPE_DESCRIPTORS) {
+  referenceKinds[descriptor.type] = descriptor.referenceKind;
+}
+
+export const METADATA_TYPE_TO_REFERENCE_KIND: Readonly<Record<MetadataType, string | undefined>> =
+  Object.freeze(referenceKinds);

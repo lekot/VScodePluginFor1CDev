@@ -20,7 +20,7 @@ import type {
   XdtoPackageSelector,
 } from './agentXdtoTypes';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
-import { addRootObjectToConfiguration } from '../services/configurationXmlUpdater';
+import { buildRootObjectConfigurationContent } from '../services/configurationXmlUpdater';
 import type { XdtoPackageModel } from '../types/xdtoPackage';
 import { XMLWriter } from '../utils/XMLWriter';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
@@ -34,6 +34,15 @@ import {
   buildXdtoPackageCompareTree,
   parseXdtoComparableSource,
 } from '../xdtoPackageCompare/xdtoPackageCompareModel';
+import { validateElementName } from '../utils/elementNameValidator';
+import { assertPathWithinRoot } from '../services/configurationSession/pathBoundary';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import {
+  MutationPlanExecutor,
+  type MutationExpectation,
+  type MutationPlan,
+} from '../services/configurationSession/mutationPlan';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 const METADATA_XML_OPTIONS = {
   ignoreAttributes: false,
@@ -70,6 +79,7 @@ export class XdtoAgentOperations {
   async getPackage(params: XdtoGetPackageParams): Promise<AgentResult<XdtoGetPackageResult>> {
     try {
       const resolved = this.resolvePackage(params);
+      await this.assertPackageContained(resolved);
       const source = this.ensurePackageSource(resolved);
       const model = parseXdtoPackage(source);
       return {
@@ -88,19 +98,18 @@ export class XdtoAgentOperations {
 
   async exportXsd(params: XdtoExportXsdParams): Promise<AgentResult<XdtoExportXsdResult>> {
     try {
+      if (params.outputPath !== undefined) {
+        return await new MutationPlanExecutor(this.configRoot).execute(await this.planExportXsd(params));
+      }
       const resolved = this.resolvePackage(params);
+      await this.assertPackageContained(resolved);
       const source = this.ensurePackageSource(resolved);
       const xsd = convert1cPackageToXsd(source);
-      if (params.outputPath) {
-        fs.mkdirSync(path.dirname(params.outputPath), { recursive: true });
-        fs.writeFileSync(params.outputPath, xsd, 'utf8');
-      }
       return {
         success: true,
         data: {
           schemaPath: resolved.schemaPath,
-          ...(params.outputPath ? { outputPath: params.outputPath } : {}),
-          ...(params.includeSource || !params.outputPath ? { xsd } : {}),
+          xsd,
         },
       };
     } catch (err) {
@@ -108,56 +117,147 @@ export class XdtoAgentOperations {
     }
   }
 
+  async planExportXsd(
+    params: XdtoExportXsdParams,
+  ): Promise<MutationPlan<AgentResult<XdtoExportXsdResult>>> {
+    if (params.outputPath === undefined || !params.outputPath.trim()) {
+      throw new Error('outputPath is required for an XDTO export mutation');
+    }
+    const resolved = this.resolvePackage(params);
+    await this.assertPackageContained(resolved);
+    const outputPath = this.resolveInputPath(params.outputPath.trim());
+    if (path.extname(outputPath).toLocaleLowerCase() !== '.xsd') {
+      throw new Error('XDTO export outputPath must have the .xsd extension.');
+    }
+    await assertPathWithinRoot(this.configRoot, outputPath);
+    const expected = await expectationForPath(outputPath);
+    if (expected.state === 'directory') {
+      throw new Error(`XDTO export target is a directory: ${outputPath}`);
+    }
+    const xsd = convert1cPackageToXsd(this.ensurePackageSource(resolved));
+    return {
+      kind: 'agent.xdto.exportXsd',
+      steps: [
+        { type: 'ensureDirectory', targetPath: path.dirname(outputPath) },
+        { type: 'writeFile', targetPath: outputPath, content: xsd, encoding: 'utf8', expected },
+      ],
+      result: {
+        success: true,
+        data: {
+          schemaPath: resolved.schemaPath,
+          outputPath,
+          ...(params.includeSource ? { xsd } : {}),
+        },
+      },
+    };
+  }
+
   async importXsd(params: XdtoImportXsdParams): Promise<AgentResult<XdtoImportXsdResult>> {
     try {
-      const resolved = this.resolvePackage(params);
-      const { source } = this.readExclusiveExternalSource(params);
-      const fallbackNamespace = parseXdtoPackage(source).targetNamespace ?? '';
-      const packageSource = convertXsdTo1cPackage(source, fallbackNamespace);
-      const model = this.parseValidPackageSource(packageSource);
-      fs.mkdirSync(path.dirname(resolved.schemaPath), { recursive: true });
-      fs.writeFileSync(resolved.schemaPath, packageSource, 'utf8');
-      return { success: true, data: { schemaPath: resolved.schemaPath, model } };
+      const plan = await this.planImportXsd(params);
+      return await new MutationPlanExecutor(this.configRoot).execute(plan);
     } catch (err) {
       return failure(err);
     }
   }
 
+  async planImportXsd(
+    params: XdtoImportXsdParams,
+  ): Promise<MutationPlan<AgentResult<XdtoImportXsdResult>>> {
+    const resolved = this.resolvePackage(params);
+    await this.assertPackageContained(resolved);
+    const { source } = this.readExclusiveExternalSource(params);
+    const fallbackNamespace = parseXdtoPackage(source).targetNamespace ?? '';
+    const packageSource = convertXsdTo1cPackage(source, fallbackNamespace);
+    const model = this.parseValidPackageSource(packageSource);
+    const expected = await expectationForPath(resolved.schemaPath);
+    return {
+      kind: 'agent.xdto.importXsd',
+      steps: [
+        { type: 'ensureDirectory', targetPath: path.dirname(resolved.schemaPath) },
+        {
+          type: 'writeFile', targetPath: resolved.schemaPath, content: packageSource,
+          encoding: 'utf8', expected,
+        },
+      ],
+      result: { success: true, data: { schemaPath: resolved.schemaPath, model } },
+    };
+  }
+
   async createFromXsd(params: XdtoCreateFromXsdParams): Promise<AgentResult<XdtoCreateFromXsdResult>> {
     try {
-      const packageName = sanitizePackageName(params.packageName);
-      if (!packageName) {
-        throw new Error('packageName is required');
-      }
-
-      const { source } = this.readExclusiveExternalSource(params);
-      const namespace = parseXdtoPackage(source).targetNamespace ?? '';
-      const metadataPath = path.join(this.packagesDir(), `${packageName}.xml`);
-      const schemaPath = resolveXdtoPackageSchemaPath(metadataPath, packageName);
-      if (fs.existsSync(metadataPath) || fs.existsSync(schemaPath)) {
-        throw new Error(`XDTO package already exists: ${packageName}`);
-      }
-
-      const packageSource = convertXsdTo1cPackage(source, namespace);
-      const model = this.parseValidPackageSource(packageSource);
-      fs.mkdirSync(this.packagesDir(), { recursive: true });
-      fs.writeFileSync(metadataPath, buildXdtoPackageMetadataXml(packageName, namespace), 'utf8');
-      fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-      fs.writeFileSync(schemaPath, packageSource, 'utf8');
-      await addRootObjectToConfiguration(this.configRoot, 'XDTOPackage', packageName);
-
-      return {
-        success: true,
-        data: { name: packageName, metadataPath, schemaPath, targetNamespace: model.targetNamespace, model },
-      };
+      const plan = await this.planCreateFromXsd(params);
+      return await new MutationPlanExecutor(this.configRoot).execute(plan);
     } catch (err) {
       return failure(err);
     }
+  }
+
+  async planCreateFromXsd(
+    params: XdtoCreateFromXsdParams,
+  ): Promise<MutationPlan<AgentResult<XdtoCreateFromXsdResult>>> {
+    const packageName = params.packageName.trim();
+    const siblingNames = fs.existsSync(this.packagesDir())
+      ? fs.readdirSync(this.packagesDir(), { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.xml'))
+        .map((entry) => path.basename(entry.name, path.extname(entry.name)))
+      : [];
+    const validation = validateElementName(packageName, siblingNames);
+    if (validation) {
+      throw new Error(validation);
+    }
+
+    const { source } = this.readExclusiveExternalSource(params);
+    const namespace = parseXdtoPackage(source).targetNamespace ?? '';
+    const metadataPath = path.join(this.packagesDir(), `${packageName}.xml`);
+    const schemaPath = resolveXdtoPackageSchemaPath(metadataPath, packageName);
+    await Promise.all([
+      assertPathWithinRoot(this.configRoot, metadataPath),
+      assertPathWithinRoot(this.configRoot, schemaPath),
+    ]);
+    const metadataExpected = await expectationForPath(metadataPath);
+    const schemaExpected = await expectationForPath(schemaPath);
+    if (metadataExpected.state !== 'missing' || schemaExpected.state !== 'missing') {
+      throw new Error(`XDTO package already exists: ${packageName}`);
+    }
+
+    const packageSource = convertXsdTo1cPackage(source, namespace);
+    const model = this.parseValidPackageSource(packageSource);
+    const configurationPath = path.join(this.configRoot, CONFIGURATION_XML);
+    const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
+    return {
+      kind: 'agent.xdto.createFromXsd',
+      steps: [
+        { type: 'ensureDirectory', targetPath: this.packagesDir() },
+        {
+          type: 'writeFile', targetPath: metadataPath,
+          content: buildXdtoPackageMetadataXml(packageName, namespace),
+          encoding: 'utf8', expected: metadataExpected,
+        },
+        { type: 'ensureDirectory', targetPath: path.dirname(schemaPath) },
+        {
+          type: 'writeFile', targetPath: schemaPath, content: packageSource,
+          encoding: 'utf8', expected: schemaExpected,
+        },
+        {
+          type: 'writeFile', targetPath: configurationPath,
+          content: buildRootObjectConfigurationContent(configurationContent, {
+            type: 'add', rootTag: 'XDTOPackage', objectName: packageName,
+          }),
+          encoding: 'utf8', expected: { state: 'file', hash: hashContent(configurationContent) },
+        },
+      ],
+      result: {
+        success: true,
+        data: { name: packageName, metadataPath, schemaPath, targetNamespace: model.targetNamespace, model },
+      },
+    };
   }
 
   async compare(params: XdtoCompareParams): Promise<AgentResult<XdtoCompareResult>> {
     try {
       const resolved = this.resolvePackage(params);
+      await this.assertPackageContained(resolved);
       const left = this.readPackageModel(resolved);
       const rightSource = this.readOptionalExternalSource(params);
       const right = parseXdtoComparableSource(
@@ -182,29 +282,47 @@ export class XdtoAgentOperations {
 
   async merge(params: XdtoMergeParams): Promise<AgentResult<XdtoMergeResult>> {
     try {
-      if (!Array.isArray(params.selectedIds)) {
-        throw new Error('selectedIds is required');
-      }
-
-      const resolved = this.resolvePackage(params);
-      const left = this.readPackageModel(resolved);
-      const rightSource = this.readOptionalExternalSource(params);
-      const right = parseXdtoComparableSource(
-        rightSource.fileName,
-        rightSource.source,
-        left.targetNamespace ?? '',
-      );
-      const beforeTree = buildXdtoPackageCompareTree(left, right, params.joinStrategy);
-      const model = applyXdtoPackageMerge(left, right, params.selectedIds);
-      const validation = serializeAndValidateXdtoModelForSave(model);
-      if (!validation.ok) {
-        throw new Error(validation.message);
-      }
-      fs.writeFileSync(resolved.schemaPath, validation.source, 'utf8');
-      return { success: true, data: { stats: beforeTree.stats, schemaPath: resolved.schemaPath, model: validation.model } };
+      const plan = await this.planMerge(params);
+      return await new MutationPlanExecutor(this.configRoot).execute(plan);
     } catch (err) {
       return failure(err);
     }
+  }
+
+  async planMerge(params: XdtoMergeParams): Promise<MutationPlan<AgentResult<XdtoMergeResult>>> {
+    if (!Array.isArray(params.selectedIds)) {
+      throw new Error('selectedIds is required');
+    }
+    const resolved = this.resolvePackage(params);
+    await this.assertPackageContained(resolved);
+    const left = this.readPackageModel(resolved);
+    const rightSource = this.readOptionalExternalSource(params);
+    const right = parseXdtoComparableSource(
+      rightSource.fileName,
+      rightSource.source,
+      left.targetNamespace ?? '',
+    );
+    const beforeTree = buildXdtoPackageCompareTree(left, right, params.joinStrategy);
+    const model = applyXdtoPackageMerge(left, right, params.selectedIds);
+    const validation = serializeAndValidateXdtoModelForSave(model);
+    if (!validation.ok) {
+      throw new Error(validation.message);
+    }
+    const expected = await expectationForPath(resolved.schemaPath);
+    if (expected.state !== 'file') {
+      throw new Error(`XDTO schema file not found: ${resolved.schemaPath}`);
+    }
+    return {
+      kind: 'agent.xdto.merge',
+      steps: [{
+        type: 'writeFile', targetPath: resolved.schemaPath, content: validation.source,
+        encoding: 'utf8', expected,
+      }],
+      result: {
+        success: true,
+        data: { stats: beforeTree.stats, schemaPath: resolved.schemaPath, model: validation.model },
+      },
+    };
   }
 
   private packagesDir(): string {
@@ -214,6 +332,10 @@ export class XdtoAgentOperations {
   private resolvePackage(selector: XdtoPackageSelector): XdtoPackageInfo {
     if (!selector.packageName && !selector.metadataPath) {
       throw new Error('packageName or metadataPath is required');
+    }
+    if (selector.packageName) {
+      const validation = validateElementName(selector.packageName, []);
+      if (validation) { throw new Error(validation); }
     }
     const metadataPath = selector.metadataPath
       ? this.resolveInputPath(selector.metadataPath)
@@ -242,10 +364,7 @@ export class XdtoAgentOperations {
       return fs.readFileSync(info.schemaPath, 'utf8');
     }
 
-    const source = buildXdtoPackageSkeleton(readXdtoMetadataNamespace(info.metadataPath));
-    fs.mkdirSync(path.dirname(info.schemaPath), { recursive: true });
-    fs.writeFileSync(info.schemaPath, source, 'utf8');
-    return source;
+    return buildXdtoPackageSkeleton(readXdtoMetadataNamespace(info.metadataPath));
   }
 
   private parseValidPackageSource(source: string): XdtoPackageModel {
@@ -280,6 +399,13 @@ export class XdtoAgentOperations {
   private resolveInputPath(inputPath: string): string {
     return path.isAbsolute(inputPath) ? inputPath : path.join(this.configRoot, inputPath);
   }
+
+  private async assertPackageContained(info: XdtoPackageInfo): Promise<void> {
+    await Promise.all([
+      assertPathWithinRoot(this.configRoot, info.metadataPath),
+      assertPathWithinRoot(this.configRoot, info.schemaPath),
+    ]);
+  }
 }
 
 function buildXdtoPackageMetadataXml(packageName: string, namespace: string): string {
@@ -294,10 +420,6 @@ function buildXdtoPackageMetadataXml(packageName: string, namespace: string): st
     rules,
   );
   return normalizeMetaDataObjectRoot(content);
-}
-
-function sanitizePackageName(raw: string): string {
-  return raw.trim().replace(/[\\/:*?"<>|]/g, '_');
 }
 
 function readXdtoMetadataNamespace(metadataPath: string): string {
@@ -377,4 +499,25 @@ function localXmlName(name: string): string {
 
 function failure<T>(err: unknown): AgentResult<T> {
   return { success: false, error: err instanceof Error ? err.message : String(err) };
+}
+
+async function expectationForPath(targetPath: string): Promise<MutationExpectation> {
+  try {
+    const stat = await fs.promises.lstat(targetPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Symbolic-link XDTO target is forbidden: ${targetPath}`);
+    }
+    if (stat.isDirectory()) {
+      return { state: 'directory' };
+    }
+    if (stat.isFile()) {
+      return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
+    }
+    throw new Error(`Unsupported XDTO filesystem target: ${targetPath}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { state: 'missing' };
+    }
+    throw error;
+  }
 }

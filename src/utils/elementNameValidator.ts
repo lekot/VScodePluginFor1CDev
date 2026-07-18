@@ -24,6 +24,9 @@ const RESERVED_KEYWORDS = new Set([
   'И', 'Или', 'Не', 'Истина', 'Ложь', 'Неопределено',
   'Новый', 'Выполнить', 'Вычислить', 'Экспорт', 'Перем', 'Знач',
 ]);
+const RESERVED_KEYWORDS_LOWER = new Set(
+  [...RESERVED_KEYWORDS].map((keyword) => keyword.toLocaleLowerCase()),
+);
 
 export function validateElementName(
   name: string,
@@ -52,7 +55,7 @@ export function validateElementName(
   }
   
   // Check for reserved keywords (case-insensitive)
-  if (RESERVED_KEYWORDS.has(trimmed) || RESERVED_KEYWORDS.has(trimmed.toLowerCase())) {
+  if (RESERVED_KEYWORDS_LOWER.has(trimmed.toLocaleLowerCase())) {
     return `«${trimmed}» является зарезервированным словом и не может использоваться как имя.`;
   }
   

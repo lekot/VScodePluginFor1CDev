@@ -32,6 +32,9 @@ const ROOT_TAG_DEFAULTS: Record<string, DefaultProperties> = {
   BusinessProcess: {},
   Task: {},
   ExternalDataSource: {},
+  Sequence: {
+    MoveBoundaryOnPosting: 'DontMove',
+  },
   Constant: {},
   SessionParameter: {},
   FilterCriterion: {},

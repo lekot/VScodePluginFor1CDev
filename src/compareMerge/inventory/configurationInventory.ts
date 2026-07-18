@@ -9,6 +9,10 @@ import {
   type ArtifactMergeMode,
   type ArtifactUnit,
 } from './configurationArtifacts';
+import {
+  type CompareCancellationToken,
+  throwIfCompareCancelled,
+} from '../compareCancellation';
 
 export { type ArtifactKind, type ArtifactMergeMode, type ArtifactUnit };
 
@@ -35,6 +39,8 @@ interface ObjectCandidate extends MetadataObjectUnit {
 export interface BuildConfigurationInventoryOptions {
   identities?: readonly MetadataIdentity[];
   includeDescriptorPaths?: ReadonlySet<string>;
+  cancellation?: CompareCancellationToken;
+  artifactConcurrency?: number;
 }
 
 interface ArtifactOwnerIndex {
@@ -48,11 +54,13 @@ export async function buildConfigurationInventory(
   rootPath: string,
   options: BuildConfigurationInventoryOptions = {}
 ): Promise<ConfigurationInventory> {
+  throwIfCompareCancelled(options.cancellation);
   const normalizedRootPath = path.normalize(rootPath);
   const metadataIdentities = options.identities ?? await indexMetadataFolder({
     sourceId: 'configuration-inventory',
     side: 'left',
     folderPath: normalizedRootPath,
+    cancellation: options.cancellation,
   });
   const includeDescriptorPaths = options.includeDescriptorPaths
     ? new Set([...options.includeDescriptorPaths].map(normalizeKey))
@@ -80,8 +88,8 @@ export async function buildConfigurationInventory(
     : allObjects;
 
   const files = includeDescriptorPaths
-    ? await collectFilesForObjects(objects)
-    : await collectFiles(normalizedRootPath);
+    ? await collectFilesForObjects(objects, options.cancellation)
+    : await collectFiles(normalizedRootPath, options.cancellation);
   const artifactsByObjectId = new Map<string, ArtifactUnit[]>();
   const ownerIndex = buildArtifactOwnerIndex(normalizedRootPath, allObjects);
   const objectsByDescriptorPath = new Map<string, MetadataObjectUnit>();
@@ -101,14 +109,17 @@ export async function buildConfigurationInventory(
     ownedFiles.push({ filePath, owner });
   }
 
-  const artifacts = await mapLimit(ownedFiles, 64, ({ filePath, owner }) =>
-    createArtifactUnit({
+  const artifacts = await mapLimit(ownedFiles, options.artifactConcurrency ?? 16, async ({ filePath, owner }) => {
+    throwIfCompareCancelled(options.cancellation);
+    const artifact = await createArtifactUnit({
       rootPath: normalizedRootPath,
       ownerObjectId: owner.objectId,
       filePath,
       descriptorPath: owner.descriptorPath,
-    })
-  );
+    });
+    throwIfCompareCancelled(options.cancellation);
+    return artifact;
+  });
   for (const artifact of artifacts) {
     if (artifact.ownerObjectId) {
       artifactsByObjectId.get(artifact.ownerObjectId)?.push(artifact);
@@ -127,14 +138,19 @@ export async function buildConfigurationInventory(
   };
 }
 
-async function collectFiles(folderPath: string): Promise<string[]> {
+async function collectFiles(
+  folderPath: string,
+  cancellation?: CompareCancellationToken,
+): Promise<string[]> {
+  throwIfCompareCancelled(cancellation);
   const entries = await fs.readdir(folderPath, { withFileTypes: true });
+  throwIfCompareCancelled(cancellation);
   const files: string[] = [];
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     const entryPath = path.join(folderPath, entry.name);
     if (entry.isDirectory()) {
-      files.push(...(await collectFiles(entryPath)));
+      files.push(...(await collectFiles(entryPath, cancellation)));
       continue;
     }
 
@@ -146,12 +162,16 @@ async function collectFiles(folderPath: string): Promise<string[]> {
   return files.sort((left, right) => left.localeCompare(right));
 }
 
-async function collectFilesForObjects(objects: readonly ObjectCandidate[]): Promise<string[]> {
+async function collectFilesForObjects(
+  objects: readonly ObjectCandidate[],
+  cancellation?: CompareCancellationToken,
+): Promise<string[]> {
   const files = new Set<string>();
   for (const object of objects) {
+    throwIfCompareCancelled(cancellation);
     files.add(path.normalize(object.descriptorPath));
     try {
-      for (const filePath of await collectFiles(object.containerPath)) {
+      for (const filePath of await collectFiles(object.containerPath, cancellation)) {
         files.add(path.normalize(filePath));
       }
     } catch (error) {

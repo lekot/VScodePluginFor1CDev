@@ -27,6 +27,7 @@ export function getIconForType(type: MetadataType): vscode.ThemeIcon {
     [MetadataType.BusinessProcess]: 'git-branch',
     [MetadataType.Task]: 'checklist',
     [MetadataType.ExternalDataSource]: 'cloud',
+    [MetadataType.Sequence]: 'list-ordered',
     [MetadataType.Constant]: 'symbol-constant',
     [MetadataType.SessionParameter]: 'symbol-parameter',
     [MetadataType.FilterCriterion]: 'filter',

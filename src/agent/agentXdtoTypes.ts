@@ -1,8 +1,9 @@
 import type { CompareTreeNode, CompareTreeStats } from '../compareMerge/compareTreeTypes';
 import type { XdtoCompareJoinStrategy } from '../xdtoPackageCompare/xdtoPackageCompareModel';
 import type { XdtoPackageModel } from '../types/xdtoPackage';
+import type { ConfigurationScopedParams } from './types';
 
-export interface XdtoPackageSelector {
+export interface XdtoPackageSelector extends ConfigurationScopedParams {
   packageName?: string;
   metadataPath?: string;
 }
@@ -48,7 +49,7 @@ export interface XdtoImportXsdResult {
   model: XdtoPackageModel;
 }
 
-export interface XdtoCreateFromXsdParams {
+export interface XdtoCreateFromXsdParams extends ConfigurationScopedParams {
   packageName: string;
   inputPath?: string;
   source?: string;

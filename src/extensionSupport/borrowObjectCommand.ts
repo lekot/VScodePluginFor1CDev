@@ -8,6 +8,7 @@ import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { Logger } from '../utils/logger';
 import { getExtensionRootNodes } from './extensionTypes';
+import { getMetadataTypeDescriptorByType } from '../constants/metadataTypeDescriptors';
 
 /** XML namespaces for MetaDataObject root element */
 const METADATA_OBJECT_NS = [
@@ -109,54 +110,10 @@ function resolveTypeFolderPath(extensionRootDir: string, typeFolderNode: TreeNod
   if (typeFolderNode?.filePath) {
     return typeFolderNode.filePath;
   }
-  // Fallback: derive the plural folder name from the type enum value
-  const pluralMap: Partial<Record<MetadataType, string>> = {
-    [MetadataType.Catalog]: 'Catalogs',
-    [MetadataType.Document]: 'Documents',
-    [MetadataType.Enum]: 'Enums',
-    [MetadataType.Report]: 'Reports',
-    [MetadataType.DataProcessor]: 'DataProcessors',
-    [MetadataType.InformationRegister]: 'InformationRegisters',
-    [MetadataType.AccumulationRegister]: 'AccumulationRegisters',
-    [MetadataType.CommonModule]: 'CommonModules',
-    [MetadataType.Role]: 'Roles',
-    [MetadataType.Subsystem]: 'Subsystems',
-    [MetadataType.CommonForm]: 'CommonForms',
-    [MetadataType.CommonTemplate]: 'CommonTemplates',
-    [MetadataType.CommonPicture]: 'CommonPictures',
-    [MetadataType.CommonCommand]: 'CommonCommands',
-    [MetadataType.ExchangePlan]: 'ExchangePlans',
-    [MetadataType.Constant]: 'Constants',
-    [MetadataType.ChartOfCharacteristicTypes]: 'ChartsOfCharacteristicTypes',
-    [MetadataType.ChartOfAccounts]: 'ChartsOfAccounts',
-    [MetadataType.AccountingRegister]: 'AccountingRegisters',
-    [MetadataType.ChartOfCalculationTypes]: 'ChartsOfCalculationTypes',
-    [MetadataType.CalculationRegister]: 'CalculationRegisters',
-    [MetadataType.BusinessProcess]: 'BusinessProcesses',
-    [MetadataType.Task]: 'Tasks',
-    [MetadataType.DocumentJournal]: 'DocumentJournals',
-    [MetadataType.FilterCriterion]: 'FilterCriteria',
-    [MetadataType.SettingsStorage]: 'SettingsStorages',
-    [MetadataType.FunctionalOption]: 'FunctionalOptions',
-    [MetadataType.ScheduledJob]: 'ScheduledJobs',
-    [MetadataType.ExternalDataSource]: 'ExternalDataSources',
-    [MetadataType.SessionParameter]: 'SessionParameters',
-    [MetadataType.FunctionalOptionsParameter]: 'FunctionalOptionsParameters',
-    [MetadataType.EventSubscription]: 'EventSubscriptions',
-    [MetadataType.CommandGroup]: 'CommandGroups',
-    [MetadataType.Interface]: 'Interfaces',
-    [MetadataType.WebService]: 'WebServices',
-    [MetadataType.HTTPService]: 'HTTPServices',
-    [MetadataType.IntegrationService]: 'IntegrationServices',
-    [MetadataType.DefinedType]: 'DefinedTypes',
-    [MetadataType.CommonAttribute]: 'CommonAttributes',
-    [MetadataType.DocumentNumerator]: 'DocumentNumerators',
-    [MetadataType.Language]: 'Languages',
-    [MetadataType.XDTOPackage]: 'XDTOPackages',
-    [MetadataType.WSReference]: 'WSReferences',
-  };
+  // Fallback: use the cross-format descriptor instead of reimplementing pluralisation.
   const typeName = String(type);
-  const folderName = pluralMap[type] ?? (typeName.endsWith('s') ? `${typeName}es` : `${typeName}s`);
+  const folderName = getMetadataTypeDescriptorByType(type)?.designerFolder
+    ?? (typeName.endsWith('s') ? `${typeName}es` : `${typeName}s`);
   return path.join(extensionRootDir, folderName);
 }
 

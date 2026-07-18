@@ -824,6 +824,7 @@ suite('ExtensionState infobase wiring', () => {
     const ctx = {
       globalState: memento,
       secrets,
+      globalStoragePath: 'C:/tmp/1cviewer-test-storage',
       subscriptions: [] as vscode.Disposable[],
     } as unknown as vscode.ExtensionContext;
 
@@ -845,7 +846,7 @@ suite('ExtensionState infobase wiring', () => {
     assert.deepStrictEqual(stored.folders, []);
     assert.strictEqual(stored.entries.length, 1);
 
-    state.dispose();
+    await state.dispose();
     assert.strictEqual(state.infobaseStorage, null);
   });
 });

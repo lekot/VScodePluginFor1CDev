@@ -8,6 +8,117 @@ import { buildConfigurationCompare } from '../../../src/compareMerge/configurati
 import type { CompareTreeNode } from '../../../src/compareMerge/compareTreeTypes';
 
 suite('ConfigurationCompareService', () => {
+  test('cancellation before compare stops before filesystem work', async () => {
+    await assert.rejects(
+      buildConfigurationCompare({
+        leftRootPath: path.join(os.tmpdir(), 'missing-left'),
+        rightRootPath: path.join(os.tmpdir(), 'missing-right'),
+        backupRootPath: path.join(os.tmpdir(), 'missing-backup'),
+        cancellation: { isCancellationRequested: true },
+      }),
+      (error: unknown) =>
+        (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
+    );
+  });
+
+  test('bounds BSL reads by configured concurrency', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-bounded-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    let activeReads = 0;
+    let peakReads = 0;
+    let bslReads = 0;
+
+    try {
+      for (let index = 0; index < 6; index += 1) {
+        const name = `Item${index}`;
+        await writeCatalog(leftRoot, name, `catalog-${index}`);
+        await writeCatalog(rightRoot, name, `catalog-${index}`);
+        await writeFile(
+          path.join(leftRoot, 'Catalogs', name, 'Ext', 'ObjectModule.bsl'),
+          `Procedure Run${index}()\nEndProcedure`
+        );
+        await writeFile(
+          path.join(rightRoot, 'Catalogs', name, 'Ext', 'ObjectModule.bsl'),
+          `Procedure Run${index}()\nEndProcedure`
+        );
+      }
+
+      await buildConfigurationCompare({
+        leftRootPath: leftRoot,
+        rightRootPath: rightRoot,
+        backupRootPath: path.join(tempRoot, 'backups'),
+        limits: { bslReadConcurrency: 2 },
+        io: {
+          readTextFile: async (filePath) => {
+            activeReads += 1;
+            bslReads += path.extname(filePath).toLowerCase() === '.bsl' ? 1 : 0;
+            peakReads = Math.max(peakReads, activeReads);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            try {
+              return await fs.readFile(filePath, 'utf-8');
+            } finally {
+              activeReads -= 1;
+            }
+          },
+        },
+      });
+
+      assert.strictEqual(bslReads, 12);
+      assert.ok(peakReads <= 2, `Expected no more than 2 concurrent reads, got ${peakReads}`);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('cancellation during bounded BSL reads aborts compare', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-cancel-'));
+    const leftRoot = path.join(tempRoot, 'left');
+    const rightRoot = path.join(tempRoot, 'right');
+    const cancellation = { isCancellationRequested: false };
+
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        const name = `Item${index}`;
+        await writeCatalog(leftRoot, name, `catalog-${index}`);
+        await writeCatalog(rightRoot, name, `catalog-${index}`);
+        await writeFile(
+          path.join(leftRoot, 'Catalogs', name, 'Ext', 'ObjectModule.bsl'),
+          `Procedure Run${index}()\nEndProcedure`
+        );
+        await writeFile(
+          path.join(rightRoot, 'Catalogs', name, 'Ext', 'ObjectModule.bsl'),
+          `Procedure Run${index}()\nEndProcedure`
+        );
+      }
+
+      let completedReads = 0;
+      await assert.rejects(
+        buildConfigurationCompare({
+          leftRootPath: leftRoot,
+          rightRootPath: rightRoot,
+          backupRootPath: path.join(tempRoot, 'backups'),
+          cancellation,
+          limits: { bslReadConcurrency: 2 },
+          io: {
+            readTextFile: async (filePath) => {
+              const content = await fs.readFile(filePath, 'utf-8');
+              completedReads += 1;
+              if (completedReads === 1) {
+                cancellation.isCancellationRequested = true;
+              }
+              return content;
+            },
+          },
+        }),
+        (error: unknown) =>
+          (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   test('default right strategy indexes only matching left descriptors for small incoming config', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'configuration-compare-'));
     const leftRoot = path.join(tempRoot, 'left');

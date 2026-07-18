@@ -97,7 +97,7 @@ suite('Smoke: deployBinding real ibcmd (opt-in)', () => {
 
     resetIbcmdServiceSingletonForTests();
     const ibcmd = getIbcmdService();
-    if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+    if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
       this.skip();
     }
 

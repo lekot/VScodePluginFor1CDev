@@ -31,6 +31,8 @@ import type {
     SetPropertiesParams,
     GetTypeParams,
     SetTypeParams,
+    AgentResult,
+    ConfigurationScopedParams,
 } from './types';
 import type {
     DebugStartParams,
@@ -83,38 +85,160 @@ import type {
     XdtoImportXsdParams,
     XdtoMergeParams,
 } from './agentXdtoTypes';
+import { WorkspaceRegistry, WorkspaceRegistryError } from '../services/configurationSession/WorkspaceRegistry';
+import type { ConfigurationIdentity } from '../services/configurationSession/types';
+import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import { resolveAgentConfiguration } from './agentConfigurationResolver';
+import { AgentPathError } from './agentPathResolver';
 
 /**
  * Регистрирует Agent API команды.
  *
  * @param context - ExtensionContext для подписок.
  * @param getTreeDataProvider - Геттер провайдера дерева (может быть null до инициализации).
- * @param getConfigRoot - Асинхронный геттер пути к корню конфигурации.
+ * @param getConfigurationRegistry - Асинхронный геттер registry конфигураций.
  * @param debugRegistry - Реестр отладочных сессий.
  * @param getDebugDeps - Опциональный геттер зависимостей для debug.startFromBinding.
  */
 export function registerAgentCommands(
     context: vscode.ExtensionContext,
     getTreeDataProvider: () => MetadataTreeDataProvider | null,
-    getConfigRoot: () => Promise<string | null>,
+    getConfigurationRegistry: () => Promise<WorkspaceRegistry | null>,
     debugRegistry: DebugSessionRegistry,
     getDebugDeps?: () => AgentDebugOperationsDeps | undefined,
     getDeployDeps?: () => AgentDeployOperationsDeps | undefined,
 ): void {
+    const resolveSession = async (
+        params: ConfigurationScopedParams = {},
+        capability: keyof ConfigurationIdentity['capabilities'] = 'read',
+    ) => {
+        const registry = await getConfigurationRegistry();
+        if (!registry) {
+            throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', 'Корень конфигурации не найден.');
+        }
+        if (
+            !params.configurationId
+            && 'configPath' in params
+            && typeof params.configPath === 'string'
+            && params.configPath.trim()
+        ) {
+            const session = await registry.resolveResource(params.configPath);
+            if (!session.identity.capabilities[capability]) {
+                throw new WorkspaceRegistryError(
+                    'CONFIGURATION_CAPABILITY_UNSUPPORTED',
+                    `Конфигурация ${session.identity.configurationId} не поддерживает ${capability}.`,
+                );
+            }
+            return session;
+        }
+        return resolveAgentConfiguration(registry, params, capability);
+    };
+
+    const runForConfiguration = async <T>(
+        params: ConfigurationScopedParams,
+        capability: keyof ConfigurationIdentity['capabilities'],
+        mutationKind: string | undefined,
+        operation: (configRoot: string) => Promise<AgentResult<T>>,
+    ): Promise<AgentResult<T>> => {
+        try {
+            const session = await resolveSession(params, capability);
+            if (!mutationKind) {
+                const result = await operation(session.identity.rootPath);
+                return {
+                    ...result,
+                    configurationId: session.identity.configurationId,
+                    snapshotVersion: session.snapshotVersion,
+                };
+            }
+            const outcome = await session.enqueue({
+                kind: mutationKind,
+                execute: () => operation(session.identity.rootPath),
+                commitWhen: (result) => result.success,
+            });
+            if (outcome.status === 'committed' || (outcome.status === 'failed' && outcome.value)) {
+                const value = outcome.value!;
+                return {
+                    ...value,
+                    configurationId: outcome.configurationId,
+                    operationId: outcome.operationId,
+                    snapshotVersion: outcome.snapshotVersion,
+                };
+            }
+            const failureError = outcome.status === 'failed' || outcome.status === 'conflict'
+                ? outcome.error?.message ?? 'Операция конфигурации не выполнена.'
+                : 'Операция отменена.';
+            return {
+                success: false,
+                code: outcome.status === 'conflict' ? outcome.code : outcome.status.toUpperCase(),
+                error: failureError,
+                configurationId: outcome.configurationId,
+                operationId: outcome.operationId,
+                snapshotVersion: outcome.snapshotVersion,
+            };
+        } catch (error) {
+            return {
+                success: false,
+                code: error instanceof WorkspaceRegistryError ? error.code : 'CONFIGURATION_OPERATION_FAILED',
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
+    };
+
+    const runPlanForConfiguration = async <T>(
+        params: ConfigurationScopedParams,
+        buildPlan: (configRoot: string) => Promise<MutationPlan<AgentResult<T>>>,
+    ): Promise<AgentResult<T>> => {
+        try {
+            const session = await resolveSession(params, 'write');
+            const plan = await buildPlan(session.identity.rootPath);
+            const outcome = await session.enqueuePlan(plan);
+            if (outcome.status === 'committed') {
+                return {
+                    ...outcome.value,
+                    configurationId: outcome.configurationId,
+                    operationId: outcome.operationId,
+                    snapshotVersion: outcome.snapshotVersion,
+                };
+            }
+            return {
+                success: false,
+                code: outcome.status === 'conflict' ? outcome.code : outcome.status.toUpperCase(),
+                error: outcome.status === 'failed' || outcome.status === 'conflict'
+                    ? outcome.error?.message ?? 'Configuration mutation failed.'
+                    : 'Configuration mutation was cancelled.',
+                configurationId: outcome.configurationId,
+                operationId: outcome.operationId,
+                snapshotVersion: outcome.snapshotVersion,
+            };
+        } catch (error) {
+            return {
+                success: false,
+                code: error instanceof WorkspaceRegistryError || error instanceof AgentPathError
+                    ? error.code
+                    : 'CONFIGURATION_OPERATION_FAILED',
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
+    };
+
+    const listConfigurationsCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.listConfigurations',
+        async () => {
+            const registry = await getConfigurationRegistry();
+            return registry
+                ? { success: true, data: { configurations: registry.list() } }
+                : { success: true, data: { configurations: [] } };
+        },
+    );
+
     // ─── 1c-metadata-tree.agent.createObject ─────────────────────────────────
 
     const createObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.createObject',
         async (params: CreateObjectParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.createObject(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
+            const result = await runPlanForConfiguration(params, (configRoot) =>
+                new AgentOperations(configRoot).planCreateObject(params));
+            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
@@ -124,12 +248,8 @@ export function registerAgentCommands(
     const getYamlCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getYaml',
         async (params: GetYamlParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            return await ops.getYaml(params);
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new AgentOperations(configRoot).getYaml(params));
         }
     );
 
@@ -138,12 +258,8 @@ export function registerAgentCommands(
     const listObjectsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.listObjects',
         async (params: ListObjectsParams = {}) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            return await ops.listObjects(params);
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new AgentOperations(configRoot).listObjects(params));
         }
     );
 
@@ -152,12 +268,8 @@ export function registerAgentCommands(
     const getPropertiesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getProperties',
         async (params: GetPropertiesParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            return await ops.getProperties(params);
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new AgentOperations(configRoot).getProperties(params));
         }
     );
 
@@ -166,16 +278,11 @@ export function registerAgentCommands(
     const addAttributeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.addAttribute',
         async (params: AddAttributeParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.addAttribute(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
-            return result;
+            return runForConfiguration(params, 'write', 'agent.addAttribute', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).addAttribute(params);
+                if (result.success) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -184,16 +291,11 @@ export function registerAgentCommands(
     const addTabularSectionCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.addTabularSection',
         async (params: AddTabularSectionParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.addTabularSection(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
-            return result;
+            return runForConfiguration(params, 'write', 'agent.addTabularSection', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).addTabularSection(params);
+                if (result.success) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -202,16 +304,11 @@ export function registerAgentCommands(
     const addTabularSectionColumnCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.addTabularSectionColumn',
         async (params: AddTabularSectionColumnParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.addTabularSectionColumn(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
-            return result;
+            return runForConfiguration(params, 'write', 'agent.addTabularSectionColumn', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).addTabularSectionColumn(params);
+                if (result.success) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -220,16 +317,11 @@ export function registerAgentCommands(
     const deleteAttributeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deleteAttribute',
         async (params: DeleteAttributeParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.deleteAttribute(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
-            return result;
+            return runForConfiguration(params, 'write', 'agent.deleteAttribute', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).deleteAttribute(params);
+                if (result.success) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -238,16 +330,11 @@ export function registerAgentCommands(
     const deleteTabularSectionCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deleteTabularSection',
         async (params: DeleteTabularSectionParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.deleteTabularSection(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
-            return result;
+            return runForConfiguration(params, 'write', 'agent.deleteTabularSection', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).deleteTabularSection(params);
+                if (result.success) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -256,15 +343,9 @@ export function registerAgentCommands(
     const deleteObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deleteObject',
         async (params: DeleteObjectParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.deleteObject(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
+            const result = await runPlanForConfiguration(params, (configRoot) =>
+                new AgentOperations(configRoot).planDeleteObject(params));
+            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
@@ -274,15 +355,9 @@ export function registerAgentCommands(
     const renameObjectCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.renameObject',
         async (params: RenameObjectParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.renameObject(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
+            const result = await runPlanForConfiguration(params, (configRoot) =>
+                new AgentOperations(configRoot).planRenameObject(params));
+            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
@@ -292,16 +367,11 @@ export function registerAgentCommands(
     const setPropertiesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setProperties',
         async (params: SetPropertiesParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.setProperties(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
-            return result;
+            return runForConfiguration(params, 'write', 'agent.setProperties', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).setProperties(params);
+                if (result.success) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
@@ -490,8 +560,8 @@ export function registerAgentCommands(
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
-            const ops = new AgentDeployOperations(deps);
-            return await ops.deploy(params);
+            return runForConfiguration(params, 'process', 'agent.deploy', (configRoot) =>
+                new AgentDeployOperations(deps).deploy({ ...params, configPath: configRoot }));
         }
     );
 
@@ -504,8 +574,8 @@ export function registerAgentCommands(
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
-            const ops = new AgentDeployOperations(deps);
-            return await ops.deploySelectedObjects(params);
+            return runForConfiguration(params, 'process', 'agent.deploySelectedObjects', (configRoot) =>
+                new AgentDeployOperations(deps).deploySelectedObjects({ ...params, configPath: configRoot }));
         }
     );
 
@@ -518,8 +588,8 @@ export function registerAgentCommands(
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
-            const ops = new AgentDeployOperations(deps);
-            return await ops.deployChangedFiles(params);
+            return runForConfiguration(params, 'process', 'agent.deployChangedFiles', (configRoot) =>
+                new AgentDeployOperations(deps).deployChangedFiles({ ...params, configPath: configRoot }));
         }
     );
 
@@ -532,8 +602,8 @@ export function registerAgentCommands(
             if (!deps) {
                 return { success: false, error: 'Выгрузка недоступна: хранилище или привязки не инициализированы.' };
             }
-            const ops = new AgentDeployOperations(deps);
-            return await ops.pullSelectedObjects(params);
+            return runForConfiguration(params, 'process', 'agent.pullSelectedObjects', (configRoot) =>
+                new AgentDeployOperations(deps).pullSelectedObjects({ ...params, configPath: configRoot }));
         }
     );
 
@@ -546,8 +616,8 @@ export function registerAgentCommands(
             if (!deps) {
                 return { success: false, error: 'Статус недоступен: хранилище или привязки не инициализированы.' };
             }
-            const ops = new AgentDeployOperations(deps);
-            return await ops.exportStatus(params);
+            return runForConfiguration(params, 'process', undefined, (configRoot) =>
+                new AgentDeployOperations(deps).exportStatus({ ...params, configPath: configRoot }));
         }
     );
 
@@ -556,12 +626,8 @@ export function registerAgentCommands(
     const getTypeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getType',
         async (params: GetTypeParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            return await ops.getType(params);
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new AgentOperations(configRoot).getType(params));
         }
     );
 
@@ -570,128 +636,84 @@ export function registerAgentCommands(
     const setTypeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setType',
         async (params: SetTypeParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new AgentOperations(configRoot);
-            const result = await ops.setType(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
-            return result;
+            return runForConfiguration(params, 'write', 'agent.setType', async (configRoot) => {
+                const result = await new AgentOperations(configRoot).setType(params);
+                if (result.success) { getTreeDataProvider()?.refresh(); }
+                return result;
+            });
         }
     );
 
     const getSubsystemCommandInterfaceCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getSubsystemCommandInterface',
-        async (params: { subsystemPath: string }) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new CommandInterfaceOperations(configRoot);
-            return await ops.getCommandInterface(params.subsystemPath);
+        async (params: ConfigurationScopedParams & { subsystemPath: string }) => {
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new CommandInterfaceOperations(configRoot).getCommandInterface(params.subsystemPath));
         }
     );
 
     const setSubsystemCommandVisibilityCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setSubsystemCommandVisibility',
-        async (params: { subsystemPath: string; commandName: string; common: CommandVisibility | null }) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new CommandInterfaceOperations(configRoot);
-            return await ops.setCommandVisibility(params.subsystemPath, params.commandName, params.common);
+        async (params: ConfigurationScopedParams & { subsystemPath: string; commandName: string; common: CommandVisibility | null }) => {
+            return runForConfiguration(params, 'write', 'agent.setSubsystemCommandVisibility', (configRoot) =>
+                new CommandInterfaceOperations(configRoot)
+                    .setCommandVisibility(params.subsystemPath, params.commandName, params.common));
         }
     );
 
     const setSubsystemCommandOrderCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setSubsystemCommandOrder',
-        async (params: { subsystemPath: string; entries: CommandOrderEntry[] }) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new CommandInterfaceOperations(configRoot);
-            return await ops.setCommandOrder(params.subsystemPath, params.entries);
+        async (params: ConfigurationScopedParams & { subsystemPath: string; entries: CommandOrderEntry[] }) => {
+            return runForConfiguration(params, 'write', 'agent.setSubsystemCommandOrder', (configRoot) =>
+                new CommandInterfaceOperations(configRoot).setCommandOrder(params.subsystemPath, params.entries));
         }
     );
 
     const setSubsystemSubsystemsOrderCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setSubsystemSubsystemsOrder',
-        async (params: { subsystemPath: string; order: string[] }) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new CommandInterfaceOperations(configRoot);
-            return await ops.setSubsystemsOrder(params.subsystemPath, params.order);
+        async (params: ConfigurationScopedParams & { subsystemPath: string; order: string[] }) => {
+            return runForConfiguration(params, 'write', 'agent.setSubsystemsOrder', (configRoot) =>
+                new CommandInterfaceOperations(configRoot).setSubsystemsOrder(params.subsystemPath, params.order));
         }
     );
 
     const listPredefinedCharacteristicsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.listPredefinedCharacteristics',
         async (params: CotPathParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            try {
-                const data = await listPredefinedCharacteristics(configRoot, params.path);
-                return { success: true, data };
-            } catch (err) {
-                return { success: false, error: err instanceof Error ? err.message : String(err) };
-            }
+            return runForConfiguration(params, 'read', undefined, async (configRoot) => ({
+                success: true,
+                data: await listPredefinedCharacteristics(configRoot, params.path),
+            }));
         }
     );
 
     const getPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getPredefinedCharacteristicType',
         async (params: PredefinedCotPathParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            try {
-                const data = await getPredefinedCharacteristicType(configRoot, params.path, params.predefinedName);
-                return { success: true, data };
-            } catch (err) {
-                return { success: false, error: err instanceof Error ? err.message : String(err) };
-            }
+            return runForConfiguration(params, 'read', undefined, async (configRoot) => ({
+                success: true,
+                data: await getPredefinedCharacteristicType(configRoot, params.path, params.predefinedName),
+            }));
         }
     );
 
     const setPredefinedCharacteristicTypeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.setPredefinedCharacteristicType',
         async (params: SetPredefinedCotTypeParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            try {
+            return runForConfiguration(params, 'write', 'agent.setPredefinedCharacteristicType', async (configRoot) => {
                 await setPredefinedCharacteristicType(configRoot, params.path, params.predefinedName, params.types);
                 return { success: true };
-            } catch (err) {
-                return { success: false, error: err instanceof Error ? err.message : String(err) };
-            }
+            });
         }
     );
 
     const getCharacteristicValueRegistersCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getCharacteristicValueRegisters',
         async (params: CotPathParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            try {
-                const data = await getCharacteristicValueRegisters(configRoot, params.path);
-                return { success: true, data };
-            } catch (err) {
-                return { success: false, error: err instanceof Error ? err.message : String(err) };
-            }
+            return runForConfiguration(params, 'read', undefined, async (configRoot) => ({
+                success: true,
+                data: await getCharacteristicValueRegisters(configRoot, params.path),
+            }));
         }
     );
 
@@ -807,52 +829,38 @@ export function registerAgentCommands(
 
     const listXdtoPackagesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.listPackages',
-        async () => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new XdtoAgentOperations(configRoot);
-            return await ops.listPackages();
+        async (params: ConfigurationScopedParams = {}) => {
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new XdtoAgentOperations(configRoot).listPackages());
         }
     );
 
     const getXdtoPackageCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.getPackage',
         async (params: XdtoGetPackageParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new XdtoAgentOperations(configRoot);
-            return await ops.getPackage(params);
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new XdtoAgentOperations(configRoot).getPackage(params));
         }
     );
 
     const exportXdtoXsdCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.exportXsd',
         async (params: XdtoExportXsdParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
+            if (params.outputPath !== undefined) {
+                return runPlanForConfiguration(params, (configRoot) =>
+                    new XdtoAgentOperations(configRoot).planExportXsd(params));
             }
-            const ops = new XdtoAgentOperations(configRoot);
-            return await ops.exportXsd(params);
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new XdtoAgentOperations(configRoot).exportXsd(params));
         }
     );
 
     const importXdtoXsdCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.importXsd',
         async (params: XdtoImportXsdParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new XdtoAgentOperations(configRoot);
-            const result = await ops.importXsd(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
+            const result = await runPlanForConfiguration(params, (configRoot) =>
+                new XdtoAgentOperations(configRoot).planImportXsd(params));
+            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
@@ -860,15 +868,9 @@ export function registerAgentCommands(
     const createXdtoFromXsdCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.createFromXsd',
         async (params: XdtoCreateFromXsdParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new XdtoAgentOperations(configRoot);
-            const result = await ops.createFromXsd(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
+            const result = await runPlanForConfiguration(params, (configRoot) =>
+                new XdtoAgentOperations(configRoot).planCreateFromXsd(params));
+            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
@@ -876,32 +878,23 @@ export function registerAgentCommands(
     const compareXdtoPackageCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.compare',
         async (params: XdtoCompareParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new XdtoAgentOperations(configRoot);
-            return await ops.compare(params);
+            return runForConfiguration(params, 'read', undefined, (configRoot) =>
+                new XdtoAgentOperations(configRoot).compare(params));
         }
     );
 
     const mergeXdtoPackageCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.xdto.merge',
         async (params: XdtoMergeParams) => {
-            const configRoot = await getConfigRoot();
-            if (!configRoot) {
-                return { success: false, error: 'Корень конфигурации не найден.' };
-            }
-            const ops = new XdtoAgentOperations(configRoot);
-            const result = await ops.merge(params);
-            if (result.success) {
-                getTreeDataProvider()?.refresh();
-            }
+            const result = await runPlanForConfiguration(params, (configRoot) =>
+                new XdtoAgentOperations(configRoot).planMerge(params));
+            if (result.success) { getTreeDataProvider()?.refresh(); }
             return result;
         }
     );
 
     context.subscriptions.push(
+        listConfigurationsCommand,
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,

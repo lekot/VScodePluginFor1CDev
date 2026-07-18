@@ -12,10 +12,10 @@ import { Logger } from '../utils/logger';
  *
  * @returns инстанс AgentBridge (start ещё в процессе) или undefined если workspaceFolder не задан.
  */
-export function activateAgentBridge(
+export async function activateAgentBridge(
   context: vscode.ExtensionContext,
   workspaceFolder?: string,
-): AgentBridge | undefined {
+): Promise<AgentBridge | undefined> {
   Logger.info('AgentBridge activation invoked', { workspaceFolder: workspaceFolder ?? '<undefined>' });
   if (!workspaceFolder) {
     Logger.warn('AgentBridge: workspaceFolder absent — bridge will NOT start');
@@ -31,13 +31,16 @@ export function activateAgentBridge(
     extensionPath: context.extensionPath,
   });
 
-  bridge.start().then(({ port }) => {
+  try {
+    const { port } = await bridge.start();
     Logger.info('AgentBridge started', { port, workspaceFolder });
-  }).catch((err: unknown) => {
+  } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     Logger.error('AgentBridge failed to start', { error: msg });
     void vscode.window.showWarningMessage(`CDT Agent Bridge не запустился: ${msg}`);
-  });
+    await bridge.stop();
+    return undefined;
+  }
 
   context.subscriptions.push({
     dispose: () => { void bridge.stop(); },

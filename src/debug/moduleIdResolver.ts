@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { RdbgModuleId } from './rdbg/rdbgTypes';
+import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
 
 export interface ModuleIdResolveResult {
   moduleId: RdbgModuleId;
@@ -29,34 +30,11 @@ export interface ResolverConfigRoot {
 // ---------------------------------------------------------------------------
 // Type folders that contain top-level metadata objects
 // ---------------------------------------------------------------------------
-export const TOP_LEVEL_TYPE_FOLDERS = new Set([
-  'Catalogs',
-  'Documents',
-  'DataProcessors',
-  'Reports',
-  'InformationRegisters',
-  'AccumulationRegisters',
-  'AccountingRegisters',
-  'CalculationRegisters',
-  'ChartsOfAccounts',
-  'ChartsOfCharacteristicTypes',
-  'ChartsOfCalculationTypes',
-  'Tasks',
-  'BusinessProcesses',
-  'Enums',
-  'ExchangePlans',
-  'DocumentJournals',
-  'Sequences',
-  'ScheduledJobs',
-  'FilterCriteria',
-  'SettingsStorages',
-  'FunctionalOptions',
-  'Constants',
-  'HTTPServices',
-  'WebServices',
-  'IntegrationServices',
-  'CommonModules',
-]);
+export const TOP_LEVEL_TYPE_FOLDERS: ReadonlySet<string> = new Set(
+  METADATA_TYPE_DESCRIPTORS
+    .filter((item) => item.moduleCapabilities.includes('debug-path'))
+    .map((item) => item.designerFolder)
+);
 
 // ---------------------------------------------------------------------------
 // Module type → propertyId (platform-constant UUID)
@@ -92,35 +70,16 @@ const PROPERTY_ID_TO_KIND: Record<string, ModuleKind> = Object.fromEntries(
 /**
  * ConfigDumpInfo `Metadata/@name` type prefix → hierarchical dump folder (same as TOP_LEVEL_TYPE_FOLDERS).
  */
-const DUMP_TYPE_TO_FOLDER: Record<string, string> = {
-  Catalog: 'Catalogs',
-  Document: 'Documents',
-  DataProcessor: 'DataProcessors',
-  Report: 'Reports',
-  InformationRegister: 'InformationRegisters',
-  AccumulationRegister: 'AccumulationRegisters',
-  AccountingRegister: 'AccountingRegisters',
-  CalculationRegister: 'CalculationRegisters',
-  ChartOfAccounts: 'ChartsOfAccounts',
-  ChartOfCharacteristicTypes: 'ChartsOfCharacteristicTypes',
-  ChartOfCalculationTypes: 'ChartsOfCalculationTypes',
-  Task: 'Tasks',
-  BusinessProcess: 'BusinessProcesses',
-  Enum: 'Enums',
-  ExchangePlan: 'ExchangePlans',
-  DocumentJournal: 'DocumentJournals',
-  Sequence: 'Sequences',
-  ScheduledJob: 'ScheduledJobs',
-  FilterCriterion: 'FilterCriteria',
-  FilterCriteria: 'FilterCriteria',
-  SettingsStorage: 'SettingsStorages',
-  FunctionalOption: 'FunctionalOptions',
-  Constant: 'Constants',
-  HTTPService: 'HTTPServices',
-  WebService: 'WebServices',
-  IntegrationService: 'IntegrationServices',
-  CommonModule: 'CommonModules',
-};
+const DUMP_TYPE_TO_FOLDER: Record<string, string> = {};
+for (const item of METADATA_TYPE_DESCRIPTORS) {
+  if (!item.moduleCapabilities.includes('debug-path')) {
+    continue;
+  }
+  DUMP_TYPE_TO_FOLDER[item.designerRootTag] = item.designerFolder;
+  for (const alias of item.designerRootTagAliases ?? []) {
+    DUMP_TYPE_TO_FOLDER[alias] = item.designerFolder;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Parsed BSL path descriptor

@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import {
   BindingDialogPanel,
   getBindingDialogHtml,
+  isBindingDialogWebviewMessage,
   registerBindingDialogCommands,
   runOpenBindingDialog,
 } from '../../src/bindings/bindingDialog';
@@ -23,6 +24,18 @@ const mockWebview = { cspSource: 'vscode-webview-test-csp' } as vscode.Webview;
 
 /** UUID без записи в каталоге — для строки «(нет в каталоге)» в HTML. */
 const IB_ORPHAN = '10000000-0000-4000-8000-00000000ab00';
+
+function createInfobase(id = randomUUID(), name = `IB-${id.slice(0, 8)}`): InfobaseEntry {
+  return {
+    id,
+    name,
+    type: 'file',
+    filePath: `C:/${id}`,
+    ibcmdConfigYamlPath: `C:/${id}/config.yml`,
+    hasStoredPassword: false,
+    createdAt: new Date().toISOString(),
+  };
+}
 
 /** Минимальная реализация для `BindingManager` (как в bindingManager.test). */
 function createMemoryFs(): vscode.FileSystem {
@@ -217,7 +230,12 @@ suite('bindingDialog getBindingDialogHtml', () => {
       massDeployment: true,
     });
 
-    assert.ok(html.includes("script-src 'unsafe-inline'"));
+    const nonce = html.match(/<script nonce="([^"]+)">/)?.[1];
+    assert.ok(nonce);
+    assert.ok(html.includes(`script-src 'nonce-${nonce}'`));
+    assert.ok(html.includes(`style-src 'nonce-${nonce}'`));
+    assert.ok(html.includes(`<style nonce="${nonce}">`));
+    assert.ok(!html.includes('unsafe-inline'));
     assert.ok(html.includes('vscode-webview-test-csp'));
     assert.ok(html.includes('Привязка информационных баз'));
     assert.ok(html.includes('Добавить из списка'));
@@ -231,16 +249,61 @@ suite('bindingDialog getBindingDialogHtml', () => {
     assert.ok(html.includes('.mass-wrap.on'));
   });
 
-  test('escapes closing script sequence inside embedded JSON state', () => {
+  test('escapes hostile closing-script variants and Unicode separators inside embedded JSON state', () => {
+    const hostile = 'evil</script ><script>one()</script></ScRiPt\t><script>two()</script>\u2028\u2029';
     const html = getBindingDialogHtml(mockWebview, {
-      workspaceFolder: 'evil</script><script>',
+      workspaceFolder: hostile,
       configRelativePath: 'Configuration.xml',
       rows: [],
       massDeployment: false,
     });
 
-    assert.ok(!html.includes('evil</script><script>'));
-    assert.ok(html.includes('evil<\\/script><script>'));
+    assert.ok(!html.includes(hostile));
+    assert.doesNotMatch(html, /<\/script\s[^>]*>/i);
+    assert.doesNotMatch(html, /\u2028|\u2029/u);
+    assert.ok(html.includes('evil\\u003c/script'));
+    assert.ok(html.includes('\\u2028'));
+    assert.ok(html.includes('\\u2029'));
+  });
+
+  test('validates each webview command as a discriminated payload shape', () => {
+    assert.strictEqual(isBindingDialogWebviewMessage({ type: 'ready' }), true);
+    assert.strictEqual(isBindingDialogWebviewMessage({ type: 'cancel' }), true);
+    assert.strictEqual(isBindingDialogWebviewMessage({ type: 'addCreate' }), true);
+    assert.strictEqual(isBindingDialogWebviewMessage({ type: 'addExisting' }), true);
+    assert.strictEqual(isBindingDialogWebviewMessage({
+      type: 'save',
+      infobaseIds: ['one'],
+      massDeployment: true,
+    }), true);
+    assert.strictEqual(isBindingDialogWebviewMessage({
+      type: 'addFromList',
+      excludeIds: ['one'],
+      massDeployment: false,
+    }), true);
+    assert.strictEqual(isBindingDialogWebviewMessage({
+      type: 'save',
+      infobaseIds: ['one', 'one'],
+      massDeployment: true,
+    }), true, 'duplicates are normalized by the host');
+
+    const invalidMessages: unknown[] = [
+      { type: 'ready', extra: true },
+      { type: 'cancel', infobaseIds: [] },
+      { type: 'save', infobaseIds: ['one'], massDeployment: true, extra: true },
+      { type: 'addFromList', excludeIds: ['one'], massDeployment: false, extra: true },
+      { type: 'save', infobaseIds: [''], massDeployment: true },
+      { type: 'save', infobaseIds: [' padded '], massDeployment: true },
+      { type: 'save', infobaseIds: ['x'.repeat(129)], massDeployment: true },
+      {
+        type: 'save',
+        infobaseIds: Array.from({ length: INFOBASE_STORAGE_MAX_ENTRIES + 1 }, (_, i) => `id-${i}`),
+        massDeployment: true,
+      },
+    ];
+    for (const message of invalidMessages) {
+      assert.strictEqual(isBindingDialogWebviewMessage(message), false, JSON.stringify(message));
+    }
   });
 
   test('includes deploy hint class names for single-base warning path', () => {
@@ -418,6 +481,10 @@ suite('BindingDialogPanel', () => {
   });
 
   test('save upserts binding from webview payload', async () => {
+    const first = createInfobase();
+    const second = createInfobase();
+    await storage.upsert(first);
+    await storage.upsert(second);
     const { panel, simulateWebviewMessage } = createFakeBindingPanel();
     patchPanelFactory(panel as unknown as vscode.WebviewPanel);
 
@@ -426,14 +493,14 @@ suite('BindingDialogPanel', () => {
 
     await simulateWebviewMessage({
       type: 'save',
-      infobaseIds: ['u1', 'u2'],
+      infobaseIds: [first.id, first.id, second.id],
       massDeployment: true,
     });
     await flushExtensionMessageHandling();
 
     const got = await bindingManager.get(folder.name, 'cfg/Configuration.xml');
     assert.ok(got);
-    assert.deepStrictEqual(got!.infobaseIds, ['u1', 'u2']);
+    assert.deepStrictEqual(got!.infobaseIds, [first.id, second.id]);
     assert.strictEqual(got!.massDeployment, true);
     dlg.dispose();
   });
@@ -467,6 +534,8 @@ suite('BindingDialogPanel', () => {
   });
 
   test('save shows error when upsert throws', async () => {
+    const infobase = createInfobase();
+    await storage.upsert(infobase);
     const { panel, simulateWebviewMessage } = createFakeBindingPanel();
     patchPanelFactory(panel as unknown as vscode.WebviewPanel);
 
@@ -480,13 +549,31 @@ suite('BindingDialogPanel', () => {
 
     await simulateWebviewMessage({
       type: 'save',
-      infobaseIds: ['x'],
+      infobaseIds: [infobase.id],
       massDeployment: false,
     });
     await flushExtensionMessageHandling();
 
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('write denied')));
     bindingManager.upsert = origUpsert;
+    dlg.dispose();
+  });
+
+  test('save rejects infobases outside the current catalog', async () => {
+    const { panel, simulateWebviewMessage } = createFakeBindingPanel();
+    patchPanelFactory(panel as unknown as vscode.WebviewPanel);
+
+    const dlg = new BindingDialogPanel(context, state);
+    await dlg.show(folder.name, 'unknown-id.xml');
+    await simulateWebviewMessage({
+      type: 'save',
+      infobaseIds: [randomUUID()],
+      massDeployment: false,
+    });
+    await flushExtensionMessageHandling();
+
+    assert.strictEqual(await bindingManager.get(folder.name, 'unknown-id.xml'), undefined);
+    assert.ok(vscodeTestState.errorLog.some((m) => m.includes('вне каталога')));
     dlg.dispose();
   });
 

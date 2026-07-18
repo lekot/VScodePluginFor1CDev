@@ -277,7 +277,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   ibcmdExtensionName?: string;
 }): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
-  const pathResult = ibcmd.resolveExecutablePath();
+  const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
     return {
       status: 'error',
@@ -424,7 +424,7 @@ async function runInfobaseConfigOperation(params: {
   };
 }): Promise<void> {
   const ibcmd = getIbcmdService();
-  const pathResult = ibcmd.resolveExecutablePath();
+  const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
     return;
@@ -675,7 +675,7 @@ export async function runInfobaseConfigIncrementalImport(
   params: IncrementalImportParams,
 ): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
-  const pathResult = ibcmd.resolveExecutablePath();
+  const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
     return {
       status: 'error',
@@ -842,7 +842,7 @@ export async function runInfobaseConfigExportObjects(
   params: ExportObjectsParams,
 ): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
-  const pathResult = ibcmd.resolveExecutablePath();
+  const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
     return {
       status: 'error',
@@ -972,7 +972,7 @@ export async function runInfobaseConfigExportStatus(
   params: ExportStatusParams,
 ): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
-  const pathResult = ibcmd.resolveExecutablePath();
+  const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
     return {
       status: 'error',

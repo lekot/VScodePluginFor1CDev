@@ -337,13 +337,13 @@ describe('TypeEditorProvider', () => {
       assert.ok(result.some((e: string) => e.includes('Number fraction digits must be between 0 and')));
     });
 
-    it('should allow reference with empty object name (group-only selection)', () => {
+    it('should reject reference with empty object name', () => {
       const definition: TypeDefinition = {
         category: 'reference',
         types: [{ kind: 'reference', referenceType: { referenceKind: 'CatalogRef', objectName: '' } }],
       };
       const result = provider['validateTypeDefinition'](definition);
-      assert.strictEqual(result.length, 0);
+      assert.ok(result.some((e: string) => e.includes('Reference type must have')));
     });
 
     it('should return no errors for valid reference type', () => {

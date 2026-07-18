@@ -12,12 +12,16 @@ import {
 } from '../compareMerge/configurationCompareService';
 import { getSelectedNode } from '../helpers/commandHelpers';
 import { Logger } from '../utils/logger';
+import { isConfigurationCompareCancelled } from '../compareMerge/compareCancellation';
 
 export interface RegisterConfigurationCompareCommandsDeps {
   context: vscode.ExtensionContext;
   state: ExtensionState;
   pickRightRoot?: () => Promise<string | undefined>;
-  withCompareProgress?: (title: string, task: () => Promise<void>) => Promise<void>;
+  withCompareProgress?: (
+    title: string,
+    task: (token?: vscode.CancellationToken) => Promise<void>
+  ) => Promise<void>;
   buildCompare?: (input: ConfigurationCompareInput) => Promise<ConfigurationCompareResult>;
   showCompare?: (
     context: vscode.ExtensionContext,
@@ -70,7 +74,7 @@ export async function executeConfigurationCompareCommand(
 
   try {
     const progressTitle = 'Сравнение конфигураций';
-    await withConfigurationCompareProgress(deps, progressTitle, async () => {
+    await withConfigurationCompareProgress(deps, progressTitle, async (token) => {
       const result = await (deps.buildCompare ?? buildConfigurationCompare)({
         leftRootPath,
         rightRootPath,
@@ -79,6 +83,7 @@ export async function executeConfigurationCompareCommand(
           leftRootPath,
           rightRootPath
         ),
+        cancellation: token,
       });
       (deps.showCompare ?? showConfigurationCompare)(
         deps.context,
@@ -87,6 +92,9 @@ export async function executeConfigurationCompareCommand(
       );
     });
   } catch (error) {
+    if (isConfigurationCompareCancelled(error)) {
+      return;
+    }
     Logger.error('Failed to compare configuration folders', error);
     void vscode.window.showErrorMessage(
       `Не удалось сравнить конфигурации: ${error instanceof Error ? error.message : String(error)}`
@@ -126,7 +134,7 @@ async function pickConfigurationCompareRightRoot(
 async function withConfigurationCompareProgress(
   deps: RegisterConfigurationCompareCommandsDeps,
   title: string,
-  task: () => Promise<void>
+  task: (token?: vscode.CancellationToken) => Promise<void>
 ): Promise<void> {
   if (deps.withCompareProgress) {
     await deps.withCompareProgress(title, task);
@@ -137,8 +145,8 @@ async function withConfigurationCompareProgress(
     {
       location: vscode.ProgressLocation.Notification,
       title,
-      cancellable: false,
+      cancellable: true,
     },
-    task
+    (_progress, token) => task(token)
   );
 }

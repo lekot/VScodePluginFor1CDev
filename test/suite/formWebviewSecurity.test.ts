@@ -64,7 +64,7 @@ suite('Form editor webview security', () => {
 
   test('provider disables all local resource roots', async () => {
     const provider = new FormEditorProvider();
-    const document = provider.openCustomDocument(
+    const document = await provider.openCustomDocument(
       vscode.Uri.parse('file:///tmp/form/Ext/Form.xml')
     );
     const webview = {

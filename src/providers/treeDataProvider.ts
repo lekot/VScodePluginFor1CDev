@@ -53,6 +53,13 @@ const TYPE_CONTENTS_WARMUP_PRIORITY = new Map<string, number>([
   ['CommonPictures', 9],
 ]);
 const TYPE_CONTENTS_WARMUP_RESUME_AFTER_FOREGROUND_MS = 1000;
+const TYPE_CONTENTS_WARMUP_DEFAULT_BUDGET_MS = 100;
+
+export interface TypeContentsWarmupOptions {
+  delayMs?: number;
+  budgetMs?: number;
+  rootIds?: readonly string[];
+}
 
 /**
  * Tree Data Provider for VS Code Tree View
@@ -547,6 +554,33 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     return this.rootNodes;
   }
 
+  /** Atomically replaces one loaded configuration root and preserves every other root/context. */
+  replaceConfigurationRoot(
+    configPath: string,
+    node: TreeNode,
+    loadContext: { configPath: string; format: ConfigFormat },
+  ): boolean {
+    const normalizedConfigPath = normalizeConfigIdentity(configPath);
+    const index = this.rootNodes.findIndex((root) => {
+      const contextPath = this.cache.getLoadContext(root.id)?.configPath;
+      const rootPath = contextPath ?? (root.filePath ? path.dirname(root.filePath) : undefined);
+      return root.type === MetadataType.Configuration
+        && normalizeConfigIdentity(rootPath) === normalizedConfigPath;
+    });
+    if (index < 0) {
+      return false;
+    }
+
+    const previousRoot = this.rootNodes[index]!;
+    const contexts = this.cache.getLoadContexts();
+    contexts.delete(previousRoot.id);
+    contexts.set(node.id, loadContext);
+    const roots = [...this.rootNodes];
+    roots[index] = node;
+    this.setRootNodes(roots, contexts);
+    return true;
+  }
+
   /**
    * Eagerly load children for all lazy type-folder nodes under a configuration root.
    * Used by composition editor to see all objects before lazy expand.
@@ -571,19 +605,29 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     }
   }
 
-  startTypeContentsCacheWarmup(delayMs = 1000): void {
+  startTypeContentsCacheWarmup(options: number | TypeContentsWarmupOptions = 1000): void {
+    const normalizedOptions: TypeContentsWarmupOptions = typeof options === 'number'
+      ? { delayMs: options }
+      : options;
     this.clearScheduledTypeContentsCacheWarmup();
     const generation = ++this.typeContentsWarmupGeneration;
-    const roots = [...this.rootNodes];
+    const selectedRootIds = normalizedOptions.rootIds
+      ? new Set(normalizedOptions.rootIds)
+      : undefined;
+    const roots = this.rootNodes.filter((root) => !selectedRootIds || selectedRootIds.has(root.id));
     if (roots.length === 0) {
       return;
     }
     this.typeContentsWarmupTimer = setTimeout(() => {
       this.typeContentsWarmupTimer = null;
-      void this.warmUpTypeContentsCache(roots, generation).catch((error) => {
+      void this.warmUpTypeContentsCache(
+        roots,
+        generation,
+        normalizedOptions.budgetMs ?? TYPE_CONTENTS_WARMUP_DEFAULT_BUDGET_MS,
+      ).catch((error) => {
         Logger.warn('Type contents cache warmup failed', error);
       });
-    }, delayMs);
+    }, normalizedOptions.delayMs ?? 1000);
   }
 
   private clearScheduledTypeContentsCacheWarmup(): void {
@@ -623,9 +667,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     });
   }
 
-  private async warmUpTypeContentsCache(roots: TreeNode[], generation: number): Promise<void> {
+  private async warmUpTypeContentsCache(
+    roots: TreeNode[],
+    generation: number,
+    budgetMs: number,
+  ): Promise<void> {
+    const deadline = Date.now() + Math.max(0, budgetMs);
     for (const root of roots) {
-      if (generation !== this.typeContentsWarmupGeneration) {
+      if (generation !== this.typeContentsWarmupGeneration || Date.now() >= deadline) {
         return;
       }
       const ctx = this.cache.getLoadContext(root.id);
@@ -633,14 +682,21 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         continue;
       }
       for (const typeFolder of this.collectWarmupTypeFolders(root)) {
-        if (generation !== this.typeContentsWarmupGeneration) {
+        if (generation !== this.typeContentsWarmupGeneration || Date.now() >= deadline) {
           return;
         }
         if (typeFolder.children && typeFolder.children.length > 0) {
           continue;
         }
         const startedAt = Date.now();
-        await this.populateTypeFolderIndex(typeFolder, ctx);
+        await this.populateTypeFolderIndex(
+          typeFolder,
+          ctx,
+          () => generation === this.typeContentsWarmupGeneration,
+        );
+        if (generation !== this.typeContentsWarmupGeneration) {
+          return;
+        }
         const durationMs = Date.now() - startedAt;
         if (durationMs >= 1000) {
           Logger.info('Type contents cache warmup item completed', { typeName: typeFolder.id, durationMs });
@@ -652,13 +708,17 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 
   private async populateTypeFolderIndex(
     typeFolder: TreeNode,
-    ctx: { configPath: string; format: ConfigFormat }
+    ctx: { configPath: string; format: ConfigFormat },
+    canPublish: () => boolean = () => true,
   ): Promise<TreeNode[]> {
     if (typeFolder.children && typeFolder.children.length > 0) {
       return typeFolder.children;
     }
 
     const children = await MetadataParser.parseTypeIndex(ctx.configPath, typeFolder.id, { format: ctx.format });
+    if (!canPublish()) {
+      return typeFolder.children ?? [];
+    }
     for (const c of children) {
       c.parent = typeFolder;
       this.cache.buildCache(c);
@@ -667,6 +727,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     typeFolder.children = children;
     this.clearTypeEditorReferenceableCache();
     return children;
+  }
+
+  dispose(): void {
+    this.cancelTypeContentsCacheWarmup();
+    this._onDidChangeTreeData.dispose();
   }
 
   /**
@@ -1618,4 +1683,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const extra = b.filter((n) => !seen.has(n));
     return extra.length === 0 ? a : [...a, ...extra];
   }
+}
+
+function normalizeConfigIdentity(configPath: string | undefined): string {
+  return path.normalize(configPath ?? '').replace(/\\/g, '/').toLocaleLowerCase();
 }

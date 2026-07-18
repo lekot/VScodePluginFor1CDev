@@ -93,11 +93,17 @@ suite('MetadataWatcherService', () => {
     const configRoot = path.join(os.tmpdir(), '1cviewer-watcher-burst');
     const originalCreate = vscode.workspace.createFileSystemWatcher;
     const fakeWatcher = new FakeWatcher();
-    (vscode.workspace as any).createFileSystemWatcher = () => fakeWatcher;
+    let watchedPattern: vscode.GlobPattern | undefined;
+    (vscode.workspace as any).createFileSystemWatcher = (pattern: vscode.GlobPattern) => {
+      watchedPattern = pattern;
+      return fakeWatcher;
+    };
 
     try {
       let reloads = 0;
       let changedPath = '';
+      let changedBatch: readonly string[] = [];
+      let mutationBatch: { changedFiles: number; changedPaths: readonly string[] } | undefined;
       service.start(configRoot, {
         onTreeReload: () => {
           reloads += 1;
@@ -105,20 +111,46 @@ suite('MetadataWatcherService', () => {
         onFileChanged: (p) => {
           changedPath = p;
         },
+        onFilesChanged: (paths) => {
+          changedBatch = paths;
+        },
+        onFsMutationBatch: (meta) => {
+          mutationBatch = meta;
+        },
       });
 
+      assert.strictEqual(
+        (watchedPattern as vscode.RelativePattern).pattern,
+        '**/*.{xml,mdo,bsl,form,mxl}'
+      );
+
       fakeWatcher.emitChange(vscode.Uri.file(path.join(configRoot, 'Catalogs', 'A.xml')));
-      fakeWatcher.emitCreate(vscode.Uri.file(path.join(configRoot, 'Catalogs', 'B.xml')));
-      fakeWatcher.emitDelete(vscode.Uri.file(path.join(configRoot, 'Catalogs', 'C.xml')));
+      fakeWatcher.emitCreate(vscode.Uri.file(path.join(configRoot, 'Catalogs', 'B.mdo')));
+      fakeWatcher.emitChange(vscode.Uri.file(path.join(configRoot, 'Catalogs', 'C.bsl')));
+      fakeWatcher.emitCreate(vscode.Uri.file(path.join(configRoot, 'Forms', 'D.form')));
+      fakeWatcher.emitDelete(vscode.Uri.file(path.join(configRoot, 'Templates', 'E.mxl')));
 
       await sleep(650);
 
       assert.strictEqual(reloads, 1, 'Burst events should produce one tree reload');
       assert.strictEqual(
         normalizePathForCompare(changedPath),
-        normalizePathForCompare(path.join(configRoot, 'Catalogs', 'C.xml')),
-        'onFileChanged should receive last changed path from burst'
+        normalizePathForCompare(path.join(configRoot, 'Templates', 'E.mxl')),
+        'deprecated onFileChanged callback must receive the last path after the full batch'
       );
+      assert.deepStrictEqual(
+        changedBatch.map(normalizePathForCompare),
+        [
+          path.join(configRoot, 'Catalogs', 'A.xml'),
+          path.join(configRoot, 'Catalogs', 'B.mdo'),
+          path.join(configRoot, 'Catalogs', 'C.bsl'),
+          path.join(configRoot, 'Forms', 'D.form'),
+          path.join(configRoot, 'Templates', 'E.mxl'),
+        ].map(normalizePathForCompare),
+        'onFilesChanged must preserve every distinct path in the debounce batch'
+      );
+      assert.strictEqual(mutationBatch?.changedFiles, 5);
+      assert.deepStrictEqual(mutationBatch?.changedPaths, changedBatch);
     } finally {
       (vscode.workspace as any).createFileSystemWatcher = originalCreate;
     }

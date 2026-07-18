@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLParser } from 'fast-xml-parser';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import {
   createElement,
@@ -9,7 +10,9 @@ import {
   deleteElement,
   renameElement,
   isRootObjectCreateInTypeFolder,
+  planRenameRootElement,
 } from '../../src/services/elementOperations';
+import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import {
   createTempDir,
@@ -24,6 +27,7 @@ import {
 } from '../helpers/testHelpers';
 import { ensureR6PlaceholdersForInstanceNode, NormalizeContext } from '../../src/utils/treeNormalization';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { addRootObjectToConfiguration } from '../../src/services/configurationXmlUpdater';
 
 suite('elementOperations', () => {
   let tmpDir: string;
@@ -356,7 +360,6 @@ suite('elementOperations', () => {
     await fs.promises.writeFile(catalogPath, ownerXml, 'utf-8');
 
     const formMetaPath = path.join(formsPath, 'ListFormRef.xml');
-    const formDir = path.join(formsPath, 'ListFormRef');
     const formNode: TreeNode = {
       id: 'Forms.ListFormRef',
       name: 'ListFormRef',
@@ -372,11 +375,70 @@ suite('elementOperations', () => {
   });
 
   test('duplicateElement creates copy of catalog', async () => {
+    const childUuid = '22222222-2222-4222-8222-222222222222';
+    const externalUuid = '99999999-9999-4999-8999-999999999999';
+    await fs.promises.writeFile(catalogPath, `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <InternalInfo><xr:GeneratedType name="CatalogObject.ExistingCatalog" category="Object"><xr:TypeId>33333333-3333-4333-8333-333333333333</xr:TypeId><xr:ValueId>44444444-4444-4444-8444-444444444444</xr:ValueId></xr:GeneratedType></InternalInfo>
+    <Properties><Name>ExistingCatalog</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>ExistingCatalog</v8:content></v8:item></Synonym><InputByString><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></InputByString></Properties>
+    <ChildObjects><Attribute uuid="${childUuid}"><Properties><Name>Code</Name></Properties></Attribute></ChildObjects>
+  </Catalog>
+</MetaDataObject>`, 'utf-8');
+    const sourceDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(path.join(sourceDir, 'Identity.xml'),
+      `<Root uuid="55555555-5555-4555-8555-555555555555"><OwnRef>${childUuid}</OwnRef><ExternalRef>${externalUuid}</ExternalRef><xr:GeneratedType name="CatalogObject.ExistingCatalog"/></Root>`,
+      'utf-8');
     await duplicateElement(catalogNode, 'CopyCatalog');
     const filePath = path.join(tmpDir, 'Catalogs', 'CopyCatalog.xml');
     assert.ok(fileExists(filePath));
     const content = await readFileContent(filePath);
     assert.ok(content.includes('<Name>CopyCatalog</Name>'));
+
+    const domParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+    const sourceDom = domParser.parse(await readFileContent(catalogNode.filePath!));
+    const copyDom = domParser.parse(content);
+    const sourceUuid = sourceDom.MetaDataObject.Catalog['@_uuid'];
+    const copyUuid = copyDom.MetaDataObject.Catalog['@_uuid'];
+    assert.match(copyUuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.notStrictEqual(copyUuid, sourceUuid, 'duplicate must receive a fresh root UUID');
+    const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+    const sourceIdentityFile = await readFileContent(path.join(sourceDir, 'Identity.xml'));
+    const sourceIdentities = new Set([
+      ...((await readFileContent(catalogNode.filePath!)).match(uuidPattern) ?? []),
+      ...(sourceIdentityFile.match(uuidPattern) ?? []),
+    ]);
+    const copiedIdentityFile = await readFileContent(path.join(tmpDir, 'Catalogs', 'CopyCatalog', 'Identity.xml'));
+    const copyIdentities = new Set([...(content.match(uuidPattern) ?? []), ...(copiedIdentityFile.match(uuidPattern) ?? [])]);
+    for (const identity of sourceIdentities) {
+      if (identity !== externalUuid) {
+        assert.ok(!copyIdentities.has(identity), `identity ${identity} must be remapped`);
+      }
+    }
+    assert.ok(content.includes('CatalogObject.CopyCatalog'));
+    assert.ok(content.includes('Catalog.CopyCatalog.StandardAttribute.Description'));
+    assert.ok(copiedIdentityFile.includes('CatalogObject.CopyCatalog'));
+    assert.ok(copiedIdentityFile.includes(externalUuid), 'external UUID references must stay unchanged');
+    const copiedChildUuid = copyDom.MetaDataObject.Catalog.ChildObjects.Attribute['@_uuid'];
+    assert.ok(copiedIdentityFile.includes(copiedChildUuid), 'references to remapped own UUID must remain consistent');
+
+    const configDom = domParser.parse(await readFileContent(path.join(tmpDir, 'Configuration.xml')));
+    const catalogEntries = configDom.MetaDataObject.Configuration.ChildObjects.Catalog;
+    assert.deepStrictEqual(
+      Array.isArray(catalogEntries) ? catalogEntries : [catalogEntries],
+      ['ExistingCatalog', 'CopyCatalog'],
+      'duplicate must be registered in Configuration.xml/ChildObjects'
+    );
+  });
+
+  test('duplicateElement preflights target directory without leaving a descriptor', async () => {
+    const targetDir = path.join(tmpDir, 'Catalogs', 'CopyCatalog');
+    await fs.promises.mkdir(targetDir, { recursive: true });
+    await assert.rejects(() => duplicateElement(catalogNode, 'CopyCatalog'), /Каталог объекта уже существует/);
+    assert.ok(!fs.existsSync(path.join(tmpDir, 'Catalogs', 'CopyCatalog.xml')));
+    const configuration = await readFileContent(path.join(tmpDir, 'Configuration.xml'));
+    assert.ok(!configuration.includes('<Catalog>CopyCatalog</Catalog>'));
   });
 
   test('duplicateElement throws when no parent', async () => {
@@ -403,6 +465,12 @@ suite('elementOperations', () => {
   });
 
   test('renameElement renames catalog file and folder', async () => {
+    const configXmlPath = path.join(tmpDir, 'Configuration.xml');
+    const configWithNeighbors = (await readFileContent(configXmlPath)).replace(
+      '<Catalog>ExistingCatalog</Catalog>',
+      '<Language>Русский</Language>\n      <Catalog>ExistingCatalog</Catalog>\n      <Document>Заказ</Document>'
+    );
+    await fs.promises.writeFile(configXmlPath, configWithNeighbors, 'utf-8');
     const elementDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
     await fs.promises.mkdir(elementDir, { recursive: true });
     await renameElement(catalogNode, 'RenamedCatalog', tmpDir);
@@ -411,6 +479,89 @@ suite('elementOperations', () => {
     assert.ok(fs.existsSync(newPath));
     assert.ok(fs.existsSync(newDir));
     assert.ok(!fs.existsSync(catalogNode.filePath!));
+
+    const configurationXml = await readFileContent(configXmlPath);
+    const domParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+    const configDom = domParser.parse(configurationXml);
+    const childObjects = configDom.MetaDataObject.Configuration.ChildObjects;
+    assert.strictEqual(childObjects.Catalog, 'RenamedCatalog');
+    assert.ok(!configurationXml.includes('<Catalog>ExistingCatalog</Catalog>'));
+    assert.ok(
+      configurationXml.indexOf('<Language>Русский</Language>')
+        < configurationXml.indexOf('<Catalog>RenamedCatalog</Catalog>')
+      && configurationXml.indexOf('<Catalog>RenamedCatalog</Catalog>')
+        < configurationXml.indexOf('<Document>Заказ</Document>'),
+      'rename must preserve the ChildObjects entry type and position'
+    );
+  });
+
+  test('renameElement updates own identity tokens and preserves UUIDs', async () => {
+    const rootUuid = '11111111-1111-4111-8111-111111111111';
+    const typeId = '33333333-3333-4333-8333-333333333333';
+    await fs.promises.writeFile(catalogPath, `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable">
+  <Catalog uuid="${rootUuid}"><InternalInfo><xr:GeneratedType name="CatalogObject.ExistingCatalog" category="Object"><xr:TypeId>${typeId}</xr:TypeId><xr:ValueId>44444444-4444-4444-8444-444444444444</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogRef.ExistingCatalog" category="Ref"><xr:TypeId>55555555-5555-4555-8555-555555555555</xr:TypeId><xr:ValueId>66666666-6666-4666-8666-666666666666</xr:ValueId></xr:GeneratedType></InternalInfo><Properties><Name>ExistingCatalog</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>ExistingCatalog</v8:content></v8:item></Synonym><InputByString><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></InputByString></Properties><ChildObjects/></Catalog>
+</MetaDataObject>`, 'utf-8');
+    const sourceDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(path.join(sourceDir, 'Identity.xml'),
+      '<Root><xr:GeneratedType name="CatalogObject.ExistingCatalog"/><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></Root>',
+      'utf-8');
+    const referencesDir = path.join(tmpDir, 'Documents');
+    await fs.promises.mkdir(referencesDir, { recursive: true });
+    const referencesPath = path.join(referencesDir, 'Refs.xml');
+    await fs.promises.writeFile(referencesPath,
+      '<Refs><Type>CatalogObject.ExistingCatalog</Type><Ref>CatalogRef.ExistingCatalog</Ref><Field>Catalog.ExistingCatalog.StandardAttribute.Code</Field></Refs>',
+      'utf-8');
+
+    await renameElement(catalogNode, 'RenamedCatalog', tmpDir);
+
+    const renamed = await readFileContent(path.join(tmpDir, 'Catalogs', 'RenamedCatalog.xml'));
+    const nested = await readFileContent(path.join(tmpDir, 'Catalogs', 'RenamedCatalog', 'Identity.xml'));
+    const references = await readFileContent(referencesPath);
+    assert.ok(renamed.includes(`uuid="${rootUuid}"`));
+    assert.ok(renamed.includes(typeId), 'rename must preserve generated type IDs');
+    for (const value of [renamed, nested, references]) {
+      assert.ok(!value.includes('CatalogObject.ExistingCatalog'));
+      assert.ok(!value.includes('Catalog.ExistingCatalog.'));
+    }
+    assert.ok(references.includes('CatalogRef.RenamedCatalog'));
+  });
+
+  test('root rename plan transforms nested Ext XML before moving the object directory', async () => {
+    const extDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Ext');
+    const nestedPath = path.join(extDir, 'Identity.xml');
+    await fs.promises.mkdir(extDir, { recursive: true });
+    await fs.promises.writeFile(
+      nestedPath,
+      '<Root><xr:GeneratedType name="CatalogObject.ExistingCatalog"/></Root>',
+      'utf8',
+    );
+
+    const plan = await planRenameRootElement(catalogNode, 'RenamedCatalog', tmpDir);
+    await new MutationPlanExecutor(tmpDir).execute(plan);
+
+    const renamedNestedPath = path.join(tmpDir, 'Catalogs', 'RenamedCatalog', 'Ext', 'Identity.xml');
+    assert.strictEqual(fs.existsSync(nestedPath), false);
+    assert.ok(fs.existsSync(renamedNestedPath));
+    assert.ok((await fs.promises.readFile(renamedNestedPath, 'utf8')).includes('CatalogObject.RenamedCatalog'));
+    assert.ok((await fs.promises.readFile(path.join(tmpDir, 'Configuration.xml'), 'utf8')).includes(
+      '<Catalog>RenamedCatalog</Catalog>',
+    ));
+    assert.strictEqual(fs.existsSync(path.join(tmpDir, '.cdt-journal')), false);
+  });
+
+  test('renameElement preflights missing Configuration.xml registration', async () => {
+    const configurationPath = path.join(tmpDir, 'Configuration.xml');
+    const configuration = (await readFileContent(configurationPath))
+      .replace('<Catalog>ExistingCatalog</Catalog>', '');
+    await fs.promises.writeFile(configurationPath, configuration, 'utf-8');
+    await assert.rejects(
+      () => renameElement(catalogNode, 'RenamedCatalog', tmpDir),
+      /is not registered/
+    );
+    assert.ok(fs.existsSync(catalogPath));
+    assert.ok(!fs.existsSync(path.join(tmpDir, 'Catalogs', 'RenamedCatalog.xml')));
   });
 
   test('renameElement to same name does nothing', async () => {
@@ -1074,6 +1225,7 @@ suite('elementOperations', () => {
     let content = await fs.promises.readFile(path.join(cmRoot, 'SrcMod.xml'), 'utf-8');
     content = content.replace(/<Name>NestedModule<\/Name>/g, '<Name>SrcMod</Name>');
     await fs.promises.writeFile(path.join(cmRoot, 'SrcMod.xml'), content, 'utf-8');
+    await addRootObjectToConfiguration(tmpDir, 'CommonModule', 'SrcMod');
     const cmType: TreeNode = {
       id: 'CommonModules',
       name: 'CommonModules',
@@ -1553,6 +1705,278 @@ suite('elementOperations', () => {
       const xml = await readFileContent(predefinedPath);
       assert.ok(xml.includes('CatalogPredefinedItems'), 'xsi type expected');
       assert.ok(xml.includes('<Name>Test1</Name>'), 'Item name expected');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  for (const scenario of [
+    {
+      label: 'EnumValue', ownerType: MetadataType.Enum, ownerTag: 'Enum',
+      ownerFolder: 'Enums', containerId: 'EnumValues', childType: MetadataType.EnumValue,
+    },
+    {
+      label: 'Dimension', ownerType: MetadataType.InformationRegister, ownerTag: 'InformationRegister',
+      ownerFolder: 'InformationRegisters', containerId: 'Dimensions', childType: MetadataType.Dimension,
+    },
+    {
+      label: 'Resource', ownerType: MetadataType.AccumulationRegister, ownerTag: 'AccumulationRegister',
+      ownerFolder: 'AccumulationRegisters', containerId: 'Resources', childType: MetadataType.Resource,
+    },
+  ] as const) {
+    test(`deleteElement removes only the named ${scenario.label} from owner XML`, async () => {
+      const dir = await createTempDir(`1cviewer-delete-${scenario.label.toLowerCase()}-`);
+      try {
+        const ownerDir = path.join(dir, scenario.ownerFolder);
+        await fs.promises.mkdir(ownerDir, { recursive: true });
+        const ownerPath = path.join(ownerDir, 'Owner.xml');
+        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner');
+        const owner: TreeNode = {
+          id: `${scenario.ownerFolder}.Owner`, name: 'Owner', type: scenario.ownerType,
+          filePath: ownerPath, properties: {}, children: [],
+        };
+        const container: TreeNode = {
+          id: scenario.containerId, name: scenario.containerId, type: scenario.childType,
+          parent: owner, parentFilePath: ownerPath, properties: {}, children: [],
+        };
+        owner.children = [container];
+
+        await createElement(container, 'KeepMe');
+        await createElement(container, 'DeleteMe');
+        await deleteElement(
+          {
+            id: `${owner.id}.${scenario.containerId}.DeleteMe`,
+            name: 'DeleteMe', type: scenario.childType, parent: container,
+            parentFilePath: ownerPath, properties: {},
+          },
+          { trustedRootPath: dir }
+        );
+
+        const xml = await readFileContent(ownerPath);
+        assert.ok(xml.includes('<Name>KeepMe</Name>'), 'sibling must be preserved');
+        assert.ok(!xml.includes('<Name>DeleteMe</Name>'), 'target must be removed');
+      } finally {
+        await cleanupTempDir(dir);
+      }
+    });
+  }
+
+  for (const scenario of [
+    { ownerType: MetadataType.Enum, ownerTag: 'Enum', containerId: 'EnumValues', childType: MetadataType.EnumValue },
+    { ownerType: MetadataType.InformationRegister, ownerTag: 'InformationRegister', containerId: 'Dimensions', childType: MetadataType.Dimension },
+    { ownerType: MetadataType.AccumulationRegister, ownerTag: 'AccumulationRegister', containerId: 'Resources', childType: MetadataType.Resource },
+  ] as const) {
+    test(`deleteElement rejects external ${String(scenario.childType)} owner against trusted root`, async () => {
+      const dir = await createTempDir('1cviewer-delete-r6-external-');
+      try {
+        const trustedRoot = path.join(dir, 'trusted');
+        const externalRoot = path.join(dir, 'external');
+        await fs.promises.mkdir(trustedRoot, { recursive: true });
+        await fs.promises.mkdir(externalRoot, { recursive: true });
+        const ownerPath = path.join(externalRoot, 'Owner.xml');
+        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner');
+        const owner: TreeNode = {
+          id: 'External.Owner', name: 'Owner', type: scenario.ownerType,
+          filePath: ownerPath, properties: {}, children: [],
+        };
+        const container: TreeNode = {
+          id: scenario.containerId, name: scenario.containerId, type: scenario.childType,
+          parent: owner, parentFilePath: ownerPath, properties: {}, children: [],
+        };
+        owner.children = [container];
+        await createElement(container, 'DeleteMe');
+        const before = await readFileContent(ownerPath);
+
+        await assert.rejects(() => deleteElement({
+          id: `External.Owner.${scenario.containerId}.DeleteMe`, name: 'DeleteMe',
+          type: scenario.childType, parent: container, parentFilePath: ownerPath, properties: {},
+        }, { trustedRootPath: trustedRoot }), (error: unknown) =>
+          !!error && typeof error === 'object'
+          && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT');
+        assert.strictEqual(await readFileContent(ownerPath), before);
+      } finally {
+        await cleanupTempDir(dir);
+      }
+    });
+  }
+
+  test('deleteElement removes one PredefinedItem and preserves siblings and namespaces', async () => {
+    const dir = await createTempDir('1cviewer-delete-predefined-');
+    try {
+      const catalogsDir = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(catalogsDir, { recursive: true });
+      const ownerPath = path.join(catalogsDir, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner');
+      const predefinedPath = path.join(catalogsDir, 'Owner', 'Ext', 'Predefined.xml');
+      const owner: TreeNode = {
+        id: 'Catalogs.Owner', name: 'Owner', type: MetadataType.Catalog,
+        filePath: ownerPath, properties: {}, children: [],
+      };
+      const container: TreeNode = {
+        id: 'PredefinedData', name: 'PredefinedData', type: MetadataType.PredefinedItem,
+        filePath: predefinedPath, parent: owner, properties: {}, children: [],
+      };
+      owner.children = [container];
+      await createElement(container, 'KeepMe');
+      await createElement(container, 'DeleteMe');
+
+      await deleteElement(
+        {
+          id: 'Catalogs.Owner.PredefinedData.DeleteMe', name: 'DeleteMe',
+          type: MetadataType.PredefinedItem, parent: container,
+          parentFilePath: predefinedPath, properties: {},
+        },
+        { trustedRootPath: dir }
+      );
+
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('<Name>KeepMe</Name>'), 'sibling must be preserved');
+      assert.ok(!xml.includes('<Name>DeleteMe</Name>'), 'target must be removed');
+      assert.ok(xml.includes('xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'));
+      assert.ok(xml.includes('xsi:type="CatalogPredefinedItems"'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('deleteElement rejects a consistent external Predefined owner against trusted root', async () => {
+    const dir = await createTempDir('1cviewer-delete-predefined-outside-');
+    try {
+      const trustedRoot = path.join(dir, 'trusted');
+      const externalRoot = path.join(dir, 'external');
+      const catalogsDir = path.join(externalRoot, 'Catalogs');
+      await fs.promises.mkdir(trustedRoot, { recursive: true });
+      await fs.promises.mkdir(catalogsDir, { recursive: true });
+      const ownerPath = path.join(catalogsDir, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner');
+      const externalPath = path.join(catalogsDir, 'Owner', 'Ext', 'Predefined.xml');
+      const externalXml = `<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems">
+  <Item id="00000000-0000-0000-0000-000000000001"><Name>DeleteMe</Name></Item>
+</PredefinedData>
+`;
+      await fs.promises.mkdir(path.dirname(externalPath), { recursive: true });
+      await fs.promises.writeFile(externalPath, externalXml, 'utf-8');
+      const owner: TreeNode = {
+        id: 'Catalogs.Owner', name: 'Owner', type: MetadataType.Catalog,
+        filePath: ownerPath, properties: {}, children: [],
+      };
+      const container: TreeNode = {
+        id: 'PredefinedData', name: 'PredefinedData', type: MetadataType.PredefinedItem,
+        filePath: externalPath, parent: owner, properties: {}, children: [],
+      };
+      owner.children = [container];
+
+      await assert.rejects(() => deleteElement({
+        id: 'Catalogs.Owner.PredefinedData.DeleteMe', name: 'DeleteMe',
+        type: MetadataType.PredefinedItem, parent: container,
+        parentFilePath: externalPath, properties: {},
+      }, { trustedRootPath: trustedRoot }), (error: unknown) =>
+        !!error && typeof error === 'object'
+        && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT');
+      assert.strictEqual(await readFileContent(externalPath), externalXml);
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('deleteElement rejects a missing R6 target without rewriting owner XML', async () => {
+    const dir = await createTempDir('1cviewer-delete-r6-missing-');
+    try {
+      const enumPath = path.join(dir, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'Owner');
+      const owner: TreeNode = {
+        id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
+        filePath: enumPath, properties: {}, children: [],
+      };
+      const container: TreeNode = {
+        id: 'EnumValues', name: 'EnumValues', type: MetadataType.EnumValue,
+        parent: owner, parentFilePath: enumPath, properties: {}, children: [],
+      };
+      owner.children = [container];
+      const before = await readFileContent(enumPath);
+
+      await assert.rejects(() => deleteElement({
+        id: 'Enums.Owner.EnumValues.Missing', name: 'Missing',
+        type: MetadataType.EnumValue, parent: container,
+        parentFilePath: enumPath, properties: {},
+      }, { trustedRootPath: dir }), /was not found/);
+      assert.strictEqual(await readFileContent(enumPath), before);
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('deleteElement requires trusted root for R6 before touching owner path', async () => {
+    const missingOwnerPath = path.join(tmpDir, 'missing', 'Owner.xml');
+    const owner: TreeNode = {
+      id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
+      filePath: missingOwnerPath, properties: {}, children: [],
+    };
+    const container: TreeNode = {
+      id: 'EnumValues', name: 'EnumValues', type: MetadataType.EnumValue,
+      parent: owner, parentFilePath: missingOwnerPath, properties: {}, children: [],
+    };
+    owner.children = [container];
+    await assert.rejects(() => deleteElement({
+      id: 'Enums.Owner.EnumValues.DeleteMe', name: 'DeleteMe',
+      type: MetadataType.EnumValue, parent: container,
+      parentFilePath: missingOwnerPath, properties: {},
+    }), /доверенный корень конфигурации/);
+  });
+
+  test('deleteElement rejects R6 owner reached through symlink or junction escape', async function () {
+    const dir = await createTempDir('1cviewer-delete-r6-link-');
+    try {
+      const trustedRoot = path.join(dir, 'trusted');
+      const externalEnums = path.join(dir, 'external-enums');
+      const linkedEnums = path.join(trustedRoot, 'Enums');
+      await fs.promises.mkdir(trustedRoot, { recursive: true });
+      await fs.promises.mkdir(externalEnums, { recursive: true });
+      const externalOwnerPath = path.join(externalEnums, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(externalOwnerPath, 'Enum', 'Owner');
+      const externalOwner: TreeNode = {
+        id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
+        filePath: externalOwnerPath, properties: {}, children: [],
+      };
+      const externalContainer: TreeNode = {
+        id: 'EnumValues', name: 'EnumValues', type: MetadataType.EnumValue,
+        parent: externalOwner, parentFilePath: externalOwnerPath, properties: {}, children: [],
+      };
+      externalOwner.children = [externalContainer];
+      await createElement(externalContainer, 'DeleteMe');
+      const before = await readFileContent(externalOwnerPath);
+      try {
+        await fs.promises.symlink(
+          externalEnums,
+          linkedEnums,
+          process.platform === 'win32' ? 'junction' : 'dir'
+        );
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+          this.skip();
+          return;
+        }
+        throw error;
+      }
+      const linkedOwnerPath = path.join(linkedEnums, 'Owner.xml');
+      const linkedOwner: TreeNode = {
+        ...externalOwner, filePath: linkedOwnerPath, children: [],
+      };
+      const linkedContainer: TreeNode = {
+        ...externalContainer, parent: linkedOwner, parentFilePath: linkedOwnerPath, children: [],
+      };
+      linkedOwner.children = [linkedContainer];
+
+      await assert.rejects(() => deleteElement({
+        id: 'Enums.Owner.EnumValues.DeleteMe', name: 'DeleteMe',
+        type: MetadataType.EnumValue, parent: linkedContainer,
+        parentFilePath: linkedOwnerPath, properties: {},
+      }, { trustedRootPath: trustedRoot }), (error: unknown) =>
+        !!error && typeof error === 'object'
+        && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT');
+      assert.strictEqual(await readFileContent(externalOwnerPath), before);
     } finally {
       await cleanupTempDir(dir);
     }

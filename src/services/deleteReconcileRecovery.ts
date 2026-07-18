@@ -1,3 +1,5 @@
+import { ReloadFailure, toReloadFailure } from '../types/reloadContracts';
+
 export const DELETE_RECONCILE_ATTEMPTS = 20;
 export const DELETE_RECONCILE_POLL_MS = 150;
 export const DELETE_RECONCILE_TIMEOUT_MS = DELETE_RECONCILE_ATTEMPTS * DELETE_RECONCILE_POLL_MS;
@@ -18,6 +20,8 @@ export interface DeleteReconcileRecoveryResult {
   converged: boolean | null;
   shouldNotifyUser: boolean;
   message?: string;
+  refreshFailure?: ReloadFailure;
+  verificationFailure?: ReloadFailure;
 }
 
 export async function recoverDeleteUiStateAfterReconcileIssue(
@@ -25,12 +29,20 @@ export async function recoverDeleteUiStateAfterReconcileIssue(
 ): Promise<DeleteReconcileRecoveryResult> {
   let refreshSucceeded = false;
   let converged: boolean | null = null;
+  let refreshFailure: ReloadFailure | undefined;
+  let verificationFailure: ReloadFailure | undefined;
   try {
     await args.forceRefresh();
     refreshSucceeded = true;
-    converged = await args.verifyDeletionConverged();
-  } catch {
-    refreshSucceeded = false;
+  } catch (error) {
+    refreshFailure = toReloadFailure(error);
+  }
+  if (refreshSucceeded) {
+    try {
+      converged = await args.verifyDeletionConverged();
+    } catch (error) {
+      verificationFailure = toReloadFailure(error);
+    }
   }
 
   const incident = buildDeleteReconcileIncidentMessage({
@@ -47,6 +59,8 @@ export async function recoverDeleteUiStateAfterReconcileIssue(
     converged,
     shouldNotifyUser: incident !== null,
     message: incident ?? undefined,
+    refreshFailure,
+    verificationFailure,
   };
 }
 

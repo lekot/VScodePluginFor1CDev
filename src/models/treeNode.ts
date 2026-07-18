@@ -153,6 +153,7 @@ export enum MetadataType {
   BusinessProcess = 'BusinessProcess',
   Task = 'Task',
   ExternalDataSource = 'ExternalDataSource',
+  Sequence = 'Sequence',
   Constant = 'Constant',
   SessionParameter = 'SessionParameter',
   FilterCriterion = 'FilterCriterion',

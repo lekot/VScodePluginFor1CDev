@@ -16,7 +16,7 @@ import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { detectChangedConfigFiles, type IncrementalChangeDetectorDeps } from '../services/ibcmd/incrementalChangeDetector';
 import { serializeInfobaseConfigIbcmdOp, runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
-import type { AgentResult } from './types';
+import type { AgentResult, ConfigurationScopedParams } from './types';
 
 export interface AgentDeployOperationsDeps {
     bindingManager: BindingManager;
@@ -24,7 +24,7 @@ export interface AgentDeployOperationsDeps {
     getConfigPath: () => string | null;
 }
 
-export interface DeployParams {
+export interface DeployParams extends ConfigurationScopedParams {
     /** Путь к каталогу конфигурации. Если не задан — берётся из дерева метаданных. */
     configPath?: string;
 }
@@ -42,17 +42,17 @@ export interface DeployResultData {
     }>;
 }
 
-export interface DeploySelectedObjectsParams {
+export interface DeploySelectedObjectsParams extends ConfigurationScopedParams {
     configPath?: string;
     /** Относительные пути файлов (от корня конфигурации, forward slashes). */
     files: string[];
 }
 
-export interface DeployChangedFilesParams {
+export interface DeployChangedFilesParams extends ConfigurationScopedParams {
     configPath?: string;
 }
 
-export interface PullSelectedObjectsParams {
+export interface PullSelectedObjectsParams extends ConfigurationScopedParams {
     configPath?: string;
     /** ID объектов в формате 'Type.Name', например 'Catalog.Справочник55'. */
     objectIds: string[];
@@ -60,7 +60,7 @@ export interface PullSelectedObjectsParams {
     infobaseName?: string;
 }
 
-export interface ExportStatusAgentParams {
+export interface ExportStatusAgentParams extends ConfigurationScopedParams {
     configPath?: string;
 }
 

@@ -10,6 +10,9 @@ import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { resolveXdtoPackageSchemaPath } from './xdtoPackagePaths';
 import { ensureXdtoPackageSourceFile } from './xdtoPackageFiles';
 import { serializeXdtoPackageModel } from './xdtoPackageSerializer';
+import { runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import type { MutationExpectation } from '../services/configurationSession/mutationPlan';
 
 type XdtoWebviewMessage =
   | { type: 'save'; source: string }
@@ -101,7 +104,7 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
     try {
       source = ensureXdtoPackageSourceFile(node, schemaPath);
     } catch (err) {
-      Logger.error('Failed to read or create XDTO package file', err);
+      Logger.error('Failed to read XDTO package file', err);
       void vscodeApi.window.showErrorMessage(MESSAGES.XDTO_PACKAGE_READ_FAILED);
       return;
     }
@@ -191,7 +194,24 @@ export class XdtoPackageEditorProvider implements vscode.Disposable {
         });
         return;
       }
-      fs.writeFileSync(this.currentSchemaPath, result.source, 'utf8');
+      const schemaPath = this.currentSchemaPath;
+      const expected: MutationExpectation = fs.existsSync(schemaPath)
+        ? { state: 'file', hash: hashContent(fs.readFileSync(schemaPath)) }
+        : { state: 'missing' };
+      await runConfigurationPlan(schemaPath, {
+        kind: 'ui.xdto.editorSave',
+        steps: [
+          { type: 'ensureDirectory', targetPath: path.dirname(schemaPath) },
+          {
+            type: 'writeFile',
+            targetPath: schemaPath,
+            content: result.source,
+            encoding: 'utf8',
+            expected,
+          },
+        ],
+        result: undefined,
+      });
       this.postMessage({ type: 'saveSuccess', model: result.model, source: result.source });
     } catch (err) {
       Logger.error('Failed to save XDTO package file', err);

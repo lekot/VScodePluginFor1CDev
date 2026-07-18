@@ -53,10 +53,21 @@ import {
   type CompareTreeProjection,
   type BslRoutineDiffProjectionInput,
 } from './projection/compareTreeProjection';
+import {
+  type CompareCancellationToken,
+  throwIfCompareCancelled,
+} from './compareCancellation';
 
 const LEFT_SOURCE_ID = 'left-source';
 const RIGHT_SOURCE_ID = 'right-source';
 const TARGETED_METADATA_INDEX_THRESHOLD = 2000;
+const DEFAULT_COMPARE_LIMITS: Required<ConfigurationCompareLimits> = {
+  metadataReadConcurrency: 16,
+  directoryReadConcurrency: 8,
+  inventoryReadConcurrency: 16,
+  bslReadConcurrency: 8,
+  adapterReadConcurrency: 8,
+};
 const METADATA_TYPE_FOLDERS: Record<string, string> = {
   AccumulationRegister: 'AccumulationRegisters',
   AccountingRegister: 'AccountingRegisters',
@@ -116,6 +127,21 @@ export interface ConfigurationCompareInput {
   rightRootPath: string;
   backupRootPath: string;
   createdAt?: Date;
+  cancellation?: CompareCancellationToken;
+  limits?: ConfigurationCompareLimits;
+  io?: ConfigurationCompareIo;
+}
+
+export interface ConfigurationCompareIo {
+  readTextFile?: (filePath: string) => Promise<string>;
+}
+
+export interface ConfigurationCompareLimits {
+  metadataReadConcurrency?: number;
+  directoryReadConcurrency?: number;
+  inventoryReadConcurrency?: number;
+  bslReadConcurrency?: number;
+  adapterReadConcurrency?: number;
 }
 
 export interface ConfigurationCompareResult {
@@ -127,14 +153,17 @@ export interface ConfigurationCompareResult {
 export async function buildConfigurationCompare(
   input: ConfigurationCompareInput
 ): Promise<ConfigurationCompareResult> {
+  throwIfCompareCancelled(input.cancellation);
   const state = await buildConfigurationCompareState(input);
+  throwIfCompareCancelled(input.cancellation);
+  const refreshInput: ConfigurationCompareInput = { ...input, cancellation: undefined };
   const workspace = new ConfigurationCompareWorkspace({
     ...state,
     leftRootPath: path.normalize(input.leftRootPath),
     rightRootPath: path.normalize(input.rightRootPath),
     createdAt: input.createdAt,
     backupRootPath: input.backupRootPath,
-    refreshWorkspace: (strategy) => buildConfigurationCompareState(input, strategy),
+    refreshWorkspace: (strategy) => buildConfigurationCompareState(refreshInput, strategy),
   });
 
   return {
@@ -148,18 +177,26 @@ async function indexMetadataForStrategy(input: {
   strategy: CompareJoinStrategy;
   leftRootPath: string;
   rightRootPath: string;
+  cancellation?: CompareCancellationToken;
+  limits: Required<ConfigurationCompareLimits>;
 }): Promise<readonly [MetadataIdentity[], MetadataIdentity[]]> {
+  throwIfCompareCancelled(input.cancellation);
   if (input.strategy === 'right') {
     const rightMetadata = await indexMetadataFolder({
       sourceId: RIGHT_SOURCE_ID,
       side: 'right',
       folderPath: input.rightRootPath,
+      cancellation: input.cancellation,
+      concurrency: input.limits.metadataReadConcurrency,
+      directoryConcurrency: input.limits.directoryReadConcurrency,
     });
     const leftMetadata = await indexCounterpartMetadata({
       rootPath: input.leftRootPath,
       sourceId: LEFT_SOURCE_ID,
       side: 'left',
       counterparts: rightMetadata,
+      cancellation: input.cancellation,
+      limits: input.limits,
     });
     return [leftMetadata, rightMetadata] as const;
   }
@@ -169,12 +206,17 @@ async function indexMetadataForStrategy(input: {
       sourceId: LEFT_SOURCE_ID,
       side: 'left',
       folderPath: input.leftRootPath,
+      cancellation: input.cancellation,
+      concurrency: input.limits.metadataReadConcurrency,
+      directoryConcurrency: input.limits.directoryReadConcurrency,
     });
     const rightMetadata = await indexCounterpartMetadata({
       rootPath: input.rightRootPath,
       sourceId: RIGHT_SOURCE_ID,
       side: 'right',
       counterparts: leftMetadata,
+      cancellation: input.cancellation,
+      limits: input.limits,
     });
     return [leftMetadata, rightMetadata] as const;
   }
@@ -184,11 +226,17 @@ async function indexMetadataForStrategy(input: {
       sourceId: LEFT_SOURCE_ID,
       side: 'left',
       folderPath: input.leftRootPath,
+      cancellation: input.cancellation,
+      concurrency: input.limits.metadataReadConcurrency,
+      directoryConcurrency: input.limits.directoryReadConcurrency,
     }),
     indexMetadataFolder({
       sourceId: RIGHT_SOURCE_ID,
       side: 'right',
       folderPath: input.rightRootPath,
+      cancellation: input.cancellation,
+      concurrency: input.limits.metadataReadConcurrency,
+      directoryConcurrency: input.limits.directoryReadConcurrency,
     }),
   ]);
 }
@@ -198,12 +246,18 @@ async function indexCounterpartMetadata(input: {
   sourceId: string;
   side: CompareSide;
   counterparts: readonly MetadataIdentity[];
+  cancellation?: CompareCancellationToken;
+  limits: Required<ConfigurationCompareLimits>;
 }): Promise<MetadataIdentity[]> {
+  throwIfCompareCancelled(input.cancellation);
   if (input.counterparts.length > TARGETED_METADATA_INDEX_THRESHOLD) {
     return indexMetadataFolder({
       sourceId: input.sourceId,
       side: input.side,
       folderPath: input.rootPath,
+      cancellation: input.cancellation,
+      concurrency: input.limits.metadataReadConcurrency,
+      directoryConcurrency: input.limits.directoryReadConcurrency,
     });
   }
 
@@ -211,6 +265,7 @@ async function indexCounterpartMetadata(input: {
   const seen = new Set<string>();
   const topLevelTypeCache = new Map<string, Promise<ReadonlyMap<string, string>>>();
   for (const counterpart of input.counterparts) {
+    throwIfCompareCancelled(input.cancellation);
     let matchedByPath = false;
     for (const filePath of descriptorPathCandidates(input.rootPath, counterpart.qualifiedName)) {
       const key = path.normalize(filePath).toLowerCase();
@@ -225,6 +280,7 @@ async function indexCounterpartMetadata(input: {
           filePath,
           metadataType: counterpart.metadataType,
           qualifiedName: counterpart.qualifiedName,
+          cancellation: input.cancellation,
         })
       );
       matchedByPath = true;
@@ -237,6 +293,8 @@ async function indexCounterpartMetadata(input: {
         side: input.side,
         counterpart,
         cache: topLevelTypeCache,
+        cancellation: input.cancellation,
+        concurrency: input.limits.metadataReadConcurrency,
       });
       if (uuidMatch && !seen.has(path.normalize(uuidMatch.filePath).toLowerCase())) {
         seen.add(path.normalize(uuidMatch.filePath).toLowerCase());
@@ -254,6 +312,8 @@ async function findTopLevelMetadataByUuid(input: {
   side: CompareSide;
   counterpart: MetadataIdentity;
   cache: Map<string, Promise<ReadonlyMap<string, string>>>;
+  cancellation?: CompareCancellationToken;
+  concurrency: number;
 }): Promise<MetadataIdentity | undefined> {
   const uuid = input.counterpart.uuid;
   if (!uuid) {
@@ -266,7 +326,7 @@ async function findTopLevelMetadataByUuid(input: {
   const cacheKey = path.normalize(folderPath).toLowerCase();
   let uuidIndex = input.cache.get(cacheKey);
   if (!uuidIndex) {
-    uuidIndex = collectDirectDescriptorUuidIndex(folderPath);
+    uuidIndex = collectDirectDescriptorUuidIndex(folderPath, input.cancellation, input.concurrency);
     input.cache.set(cacheKey, uuidIndex);
   }
 
@@ -280,6 +340,7 @@ async function findTopLevelMetadataByUuid(input: {
     side: input.side,
     filePath,
     metadataType: input.counterpart.metadataType,
+    cancellation: input.cancellation,
   });
 }
 
@@ -329,14 +390,20 @@ function descriptorSiblingFolder(rootPath: string, qualifiedName: string): strin
   return targetFolder ? path.join(rootPath, ...folders, targetFolder) : undefined;
 }
 
-async function collectDirectDescriptorCandidates(folderPath: string): Promise<string[]> {
+async function collectDirectDescriptorCandidates(
+  folderPath: string,
+  cancellation?: CompareCancellationToken,
+): Promise<string[]> {
+  throwIfCompareCancelled(cancellation);
   if (!(await directoryExists(folderPath))) {
     return [];
   }
 
   const entries = await fs.readdir(folderPath, { withFileTypes: true });
+  throwIfCompareCancelled(cancellation);
   const candidates: string[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    throwIfCompareCancelled(cancellation);
     const entryPath = path.join(folderPath, entry.name);
     if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.xml') {
       candidates.push(entryPath);
@@ -354,13 +421,18 @@ async function collectDirectDescriptorCandidates(folderPath: string): Promise<st
 }
 
 async function collectDirectDescriptorUuidIndex(
-  folderPath: string
+  folderPath: string,
+  cancellation: CompareCancellationToken | undefined,
+  concurrency: number,
 ): Promise<ReadonlyMap<string, string>> {
-  const candidates = await collectDirectDescriptorCandidates(folderPath);
-  const entries = await mapLimit(candidates, 64, async (filePath) => {
+  throwIfCompareCancelled(cancellation);
+  const candidates = await collectDirectDescriptorCandidates(folderPath, cancellation);
+  const entries = await mapLimit(candidates, concurrency, async (filePath) => {
+    throwIfCompareCancelled(cancellation);
     const uuid = await readMetadataUuidPrefix(filePath);
+    throwIfCompareCancelled(cancellation);
     return uuid ? { uuid, filePath } : undefined;
-  });
+  }, cancellation);
   const byUuid = new Map<string, string>();
   for (const entry of entries) {
     if (entry && !byUuid.has(entry.uuid)) {
@@ -417,7 +489,8 @@ async function directoryExists(folderPath: string): Promise<boolean> {
 async function mapLimit<T, R>(
   items: readonly T[],
   concurrency: number,
-  worker: (item: T) => Promise<R>
+  worker: (item: T) => Promise<R>,
+  cancellation?: CompareCancellationToken,
 ): Promise<R[]> {
   const limit = Math.max(1, Math.min(concurrency, items.length || 1));
   const results = new Array<R>(items.length);
@@ -425,6 +498,7 @@ async function mapLimit<T, R>(
 
   async function run(): Promise<void> {
     while (nextIndex < items.length) {
+      throwIfCompareCancelled(cancellation);
       const index = nextIndex;
       nextIndex += 1;
       results[index] = await worker(items[index]);
@@ -465,118 +539,148 @@ async function buildConfigurationCompareState(
       },
     ],
   });
+  const limits = { ...DEFAULT_COMPARE_LIMITS, ...input.limits };
+  let leftSources: Map<string, string> | undefined;
+  let rightSources: Map<string, string> | undefined;
+  try {
+    throwIfCompareCancelled(input.cancellation);
+    const [leftMetadata, rightMetadata] = await indexMetadataForStrategy({
+      strategy,
+      leftRootPath,
+      rightRootPath,
+      cancellation: input.cancellation,
+      limits,
+    });
+    const metadata = matchMetadataIdentities({ left: leftMetadata, right: rightMetadata });
+    const descriptorScope = descriptorScopeForStrategy(metadata, strategy);
+    const [leftInventory, rightInventory] = await Promise.all([
+      buildConfigurationInventory(leftRootPath, {
+        identities: leftMetadata,
+        includeDescriptorPaths: descriptorScope.left,
+        cancellation: input.cancellation,
+        artifactConcurrency: limits.inventoryReadConcurrency,
+      }),
+      buildConfigurationInventory(rightRootPath, {
+        identities: rightMetadata,
+        includeDescriptorPaths: descriptorScope.right,
+        cancellation: input.cancellation,
+        artifactConcurrency: limits.inventoryReadConcurrency,
+      }),
+    ]);
+    throwIfCompareCancelled(input.cancellation);
 
-  const [leftMetadata, rightMetadata] = await indexMetadataForStrategy({
-    strategy,
-    leftRootPath,
-    rightRootPath,
-  });
-  const metadata = matchMetadataIdentities({
-    left: leftMetadata,
-    right: rightMetadata,
-  });
-  const descriptorScope = descriptorScopeForStrategy(metadata, strategy);
-  const [leftInventory, rightInventory] = await Promise.all([
-    buildConfigurationInventory(leftRootPath, {
-      identities: leftMetadata,
-      includeDescriptorPaths: descriptorScope.left,
-    }),
-    buildConfigurationInventory(rightRootPath, {
-      identities: rightMetadata,
-      includeDescriptorPaths: descriptorScope.right,
-    }),
-  ]);
-  const [leftBslFiles, rightBslFiles] = await Promise.all([
-    collectBslFileSourcesFromInventory(leftInventory),
-    collectBslFileSourcesFromInventory(rightInventory),
-  ]);
-  const [leftBsl, rightBsl] = await Promise.all([
-    buildBslModuleIndex(
-      leftBslFiles.map((filePath) => ({
-        sourceId: LEFT_SOURCE_ID,
-        side: 'left' as const,
-        filePath: filePath.filePath,
-        configRoots: [leftRootPath],
-        source: filePath.source,
-      }))
-    ),
-    buildBslModuleIndex(
-      rightBslFiles.map((filePath) => ({
-        sourceId: RIGHT_SOURCE_ID,
-        side: 'right' as const,
-        filePath: filePath.filePath,
-        configRoots: [rightRootPath],
-        source: filePath.source,
-      }))
-    ),
-  ]);
+    const leftCollection = await collectBslFileSourcesFromInventory(
+      leftInventory,
+      input.cancellation,
+      limits.bslReadConcurrency,
+      input.io?.readTextFile,
+    );
+    const rightCollection = await collectBslFileSourcesFromInventory(
+      rightInventory,
+      input.cancellation,
+      limits.bslReadConcurrency,
+      input.io?.readTextFile,
+    );
+    leftSources = leftCollection.sources;
+    rightSources = rightCollection.sources;
+    const [leftBsl, rightBsl] = await Promise.all([
+      buildBslModuleIndex(
+        [...leftSources].map(([filePath, source]) => ({
+          sourceId: LEFT_SOURCE_ID,
+          side: 'left' as const,
+          filePath,
+          configRoots: [leftRootPath],
+          source,
+        })),
+        input.cancellation,
+      ),
+      buildBslModuleIndex(
+        [...rightSources].map(([filePath, source]) => ({
+          sourceId: RIGHT_SOURCE_ID,
+          side: 'right' as const,
+          filePath,
+          configRoots: [rightRootPath],
+          source,
+        })),
+        input.cancellation,
+      ),
+    ]);
+    throwIfCompareCancelled(input.cancellation);
 
-  const leftSnapshotId = `configuration-compare-${createdAt.getTime()}-left`;
-  const rightSnapshotId = `configuration-compare-${createdAt.getTime()}-right`;
-  session.registerSnapshot({
-    snapshotId: leftSnapshotId,
-    sourceId: LEFT_SOURCE_ID,
-    snapshotRoot: pathToFileURL(leftRootPath).toString(),
-    origin: pathToFileURL(leftRootPath).toString(),
-    createdAt: createdAt.toISOString(),
-    retentionUntil: createdAt.toISOString(),
-    sourceRevision: `files:${hashFileSources(leftBslFiles)}`,
-    readOnly: false,
-    cleanupPolicy: 'manual',
-    contentHash: hashFileSources(leftBslFiles),
-  });
-  session.registerSnapshot({
-    snapshotId: rightSnapshotId,
-    sourceId: RIGHT_SOURCE_ID,
-    snapshotRoot: pathToFileURL(rightRootPath).toString(),
-    origin: pathToFileURL(rightRootPath).toString(),
-    createdAt: createdAt.toISOString(),
-    retentionUntil: createdAt.toISOString(),
-    sourceRevision: `files:${hashFileSources(rightBslFiles)}`,
-    readOnly: true,
-    cleanupPolicy: 'manual',
-    contentHash: hashFileSources(rightBslFiles),
-  });
+    const leftSnapshotId = `configuration-compare-${createdAt.getTime()}-left`;
+    const rightSnapshotId = `configuration-compare-${createdAt.getTime()}-right`;
+    session.registerSnapshot({
+      snapshotId: leftSnapshotId,
+      sourceId: LEFT_SOURCE_ID,
+      snapshotRoot: pathToFileURL(leftRootPath).toString(),
+      origin: pathToFileURL(leftRootPath).toString(),
+      createdAt: createdAt.toISOString(),
+      retentionUntil: createdAt.toISOString(),
+      sourceRevision: `files:${leftCollection.contentHash}`,
+      readOnly: false,
+      cleanupPolicy: 'manual',
+      contentHash: leftCollection.contentHash,
+    });
+    session.registerSnapshot({
+      snapshotId: rightSnapshotId,
+      sourceId: RIGHT_SOURCE_ID,
+      snapshotRoot: pathToFileURL(rightRootPath).toString(),
+      origin: pathToFileURL(rightRootPath).toString(),
+      createdAt: createdAt.toISOString(),
+      retentionUntil: createdAt.toISOString(),
+      sourceRevision: `files:${rightCollection.contentHash}`,
+      readOnly: true,
+      cleanupPolicy: 'manual',
+      contentHash: rightCollection.contentHash,
+    });
 
-  const bsl = buildBslProjectionInputs({
-    leftModules: leftBsl.modules,
-    rightModules: rightBsl.modules,
-    leftSources: sourceMap(leftBslFiles),
-    rightSources: sourceMap(rightBslFiles),
-    session,
-    rightSnapshotId,
-  });
-  const adapterResults = await buildAdapterCompareResults({
-    strategy,
-    leftInventory,
-    rightInventory,
-    metadata,
-    session,
-  });
-  const candidateFactories = new Map<string, ExecutableCandidateFactory>(bsl.candidateFactories);
-  for (const result of adapterResults) {
-    result.candidateFactories.forEach((factory, nodeId) => candidateFactories.set(nodeId, factory));
+    const bsl = buildBslProjectionInputs({
+      leftModules: leftBsl.modules,
+      rightModules: rightBsl.modules,
+      leftSources,
+      rightSources,
+      session,
+      rightSnapshotId,
+    });
+    // Candidate factories retain only sources for matched/mergeable modules.
+    // Release the full workspace maps before XML adapter processing.
+    leftSources.clear();
+    rightSources.clear();
+    leftSources = undefined;
+    rightSources = undefined;
+
+    const adapterResults = await buildAdapterCompareResults({
+      strategy,
+      leftInventory,
+      rightInventory,
+      metadata,
+      session,
+      cancellation: input.cancellation,
+      concurrency: limits.adapterReadConcurrency,
+      readTextFile: input.io?.readTextFile,
+    });
+    const candidateFactories = new Map<string, ExecutableCandidateFactory>(bsl.candidateFactories);
+    for (const result of adapterResults) {
+      result.candidateFactories.forEach((factory, nodeId) => candidateFactories.set(nodeId, factory));
+    }
+    throwIfCompareCancelled(input.cancellation);
+    const projection = buildCompareTreeProjection({
+      metadata,
+      bsl: [
+        ...bsl.items,
+        { diagnostics: leftBsl.diagnostics.filter((item) => !bsl.matchedDiagnostics.has(item)) },
+        { diagnostics: rightBsl.diagnostics.filter((item) => !bsl.matchedDiagnostics.has(item)) },
+      ],
+      adapterResults,
+      messages: session.state.messages,
+    });
+    return { session, projection, candidateFactories };
+  } catch (error) {
+    leftSources?.clear();
+    rightSources?.clear();
+    session.dispose();
+    throw error;
   }
-  const projection = buildCompareTreeProjection({
-    metadata,
-    bsl: [
-      ...bsl.items,
-      {
-        diagnostics: leftBsl.diagnostics.filter(
-          (diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)
-        ),
-      },
-      {
-        diagnostics: rightBsl.diagnostics.filter(
-          (diagnostic) => !bsl.matchedDiagnostics.has(diagnostic)
-        ),
-      },
-    ],
-    adapterResults,
-    messages: session.state.messages,
-  });
-
-  return { session, projection, candidateFactories };
 }
 
 async function buildAdapterCompareResults(input: {
@@ -585,10 +689,15 @@ async function buildAdapterCompareResults(input: {
   rightInventory: ConfigurationInventory;
   metadata: ReturnType<typeof matchMetadataIdentities>;
   session: CompareSession;
+  cancellation?: CompareCancellationToken;
+  concurrency: number;
+  readTextFile?: (filePath: string) => Promise<string>;
 }): Promise<AdapterCompareResult[]> {
+  throwIfCompareCancelled(input.cancellation);
   const matches = buildMetadataObjectMatches(input);
 
-  const results = await mapLimit(matches, 64, async (match) => {
+  const results = await mapLimit(matches, input.concurrency, async (match) => {
+    throwIfCompareCancelled(input.cancellation);
     const matchResults: AdapterCompareResult[] = [
       await fileObjectAdapter.compare({
         strategy: input.strategy,
@@ -605,6 +714,7 @@ async function buildAdapterCompareResults(input: {
     }
 
     for (const artifactKind of ['metadataXml', 'formXml', 'predefinedXml'] as const) {
+      throwIfCompareCancelled(input.cancellation);
       const artifactPair = findArtifactPair(
         input.leftInventory,
         input.rightInventory,
@@ -618,7 +728,7 @@ async function buildAdapterCompareResults(input: {
       matchResults.push(await compareXmlArtifact(input, match, artifactPair, artifactKind));
     }
     return matchResults;
-  });
+  }, input.cancellation);
 
   return results
     .flat()
@@ -686,11 +796,20 @@ async function compareXmlArtifact(
     leftInventory: ConfigurationInventory;
     rightInventory: ConfigurationInventory;
     session: CompareSession;
+    cancellation?: CompareCancellationToken;
+    readTextFile?: (filePath: string) => Promise<string>;
   },
   match: MetadataObjectMatch,
   artifactPair: { left: ArtifactUnit; right: ArtifactUnit },
   artifactKind: 'metadataXml' | 'formXml' | 'predefinedXml'
 ): Promise<AdapterCompareResult> {
+  throwIfCompareCancelled(input.cancellation);
+  const readTextFile = input.readTextFile ?? ((filePath: string) => fs.readFile(filePath, 'utf-8'));
+  const [leftSnapshot, rightSnapshot] = await Promise.all([
+    readTextFile(artifactPair.left.filePath),
+    readTextFile(artifactPair.right.filePath),
+  ]);
+  throwIfCompareCancelled(input.cancellation);
   const adapterInput: AdapterCompareInput = {
     strategy: input.strategy,
     leftInventory: input.leftInventory,
@@ -698,8 +817,8 @@ async function compareXmlArtifact(
     match,
     session: input.session,
     snapshots: {
-      left: await fs.readFile(artifactPair.left.filePath, 'utf-8'),
-      right: await fs.readFile(artifactPair.right.filePath, 'utf-8'),
+      left: leftSnapshot,
+      right: rightSnapshot,
     },
   };
 
@@ -769,25 +888,32 @@ function descriptorScopeForStrategy(
   };
 }
 
-interface BslFileSource {
-  filePath: string;
-  source: string;
+interface BslSourceCollection {
+  sources: Map<string, string>;
+  contentHash: string;
 }
 
 async function collectBslFileSourcesFromInventory(
-  inventory: ConfigurationInventory
-): Promise<BslFileSource[]> {
+  inventory: ConfigurationInventory,
+  cancellation: CompareCancellationToken | undefined,
+  concurrency: number,
+  readTextFile: ((filePath: string) => Promise<string>) | undefined,
+): Promise<BslSourceCollection> {
+  throwIfCompareCancelled(cancellation);
   const bslArtifacts = [...inventory.artifactsByObjectId.values()]
     .flat()
     .filter((artifact) => artifact.kind === 'bslModule')
     .sort((left, right) => left.filePath.localeCompare(right.filePath));
+  const reader = readTextFile ?? ((filePath: string) => fs.readFile(filePath, 'utf-8'));
 
-  return Promise.all(
-    bslArtifacts.map(async (artifact) => ({
-      filePath: artifact.filePath,
-      source: await fs.readFile(artifact.filePath, 'utf-8'),
-    }))
-  );
+  const entries = await mapLimit(bslArtifacts, concurrency, async (artifact) => {
+    throwIfCompareCancelled(cancellation);
+    const source = await reader(artifact.filePath);
+    throwIfCompareCancelled(cancellation);
+    return [artifact.filePath, source] as const;
+  }, cancellation);
+  const sources = new Map(entries);
+  return { sources, contentHash: hashFileSources(sources) };
 }
 
 function buildBslProjectionInputs(input: {
@@ -1369,16 +1495,13 @@ function isExecutableRoutineDiff(
   return routine.status === 'changed' && Boolean(routine.left && routine.right);
 }
 
-function sourceMap(files: readonly BslFileSource[]): Map<string, string> {
-  return new Map(files.map((file) => [file.filePath, file.source]));
-}
-
-function hashFileSources(files: readonly BslFileSource[]): string {
+function hashFileSources(files: ReadonlyMap<string, string>): string {
   const hash = createHash('sha256');
-  for (const file of files) {
-    hash.update(path.normalize(file.filePath).replace(/\\/g, '/'));
+  const entries = [...files].sort(([left], [right]) => left.localeCompare(right));
+  for (const [filePath, source] of entries) {
+    hash.update(path.normalize(filePath).replace(/\\/g, '/'));
     hash.update('\0');
-    hash.update(hashText(file.source));
+    hash.update(hashText(source));
     hash.update('\0');
   }
 

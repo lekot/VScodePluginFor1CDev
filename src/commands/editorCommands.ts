@@ -16,7 +16,7 @@ import { appendIbcmdOutputLine, showIbcmdInfobaseOutputChannel } from '../infoba
 import { startDebugging } from '../debug/debugLauncher';
 import { listPredefinedCharacteristics } from '../agent/predefinedCharacteristicOperations';
 import { MESSAGES } from '../constants/messages';
-import { addRootObjectToConfiguration } from '../services/configurationXmlUpdater';
+import { buildRootObjectConfigurationContent } from '../services/configurationXmlUpdater';
 import { XMLWriter } from '../utils/XMLWriter';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
 import { metadataConverter, rulesRegistry } from '../rules';
@@ -24,6 +24,11 @@ import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
 import { convert1cPackageToXsd, convertXsdTo1cPackage } from '../xdtoPackageEditor/xdtoXsdConverter';
 import { resolveXdtoPackageSchemaPath } from '../xdtoPackageEditor/xdtoPackagePaths';
 import { showXdtoPackageCompare } from '../xdtoPackageCompare/xdtoPackageCompareProvider';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import { runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import type { MutationExpectation, MutationPlan } from '../services/configurationSession/mutationPlan';
+import { CONFIGURATION_XML } from '../constants/fileNames';
+import { validateElementName } from '../utils/elementNameValidator';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
@@ -293,7 +298,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
       }
 
       const ibcmd = getIbcmdService();
-      if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+      if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
         await showIbcmdNotFoundDialog();
         return;
       }
@@ -616,8 +621,17 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         const namespace = String(props.Namespace ?? props.namespace ?? getXsdNamespace(xsdSource));
         const packageSource = convertXsdTo1cPackage(xsdSource, namespace);
         const schemaPath = resolveXdtoPackageSchemaPath(target.filePath, target.name);
-        fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-        fs.writeFileSync(schemaPath, packageSource, 'utf8');
+        const expected: MutationExpectation = fs.existsSync(schemaPath)
+          ? { state: 'file', hash: hashContent(fs.readFileSync(schemaPath)) }
+          : { state: 'missing' };
+        await runConfigurationPlan(target.filePath, {
+          kind: 'ui.xdto.importSchema',
+          steps: [
+            { type: 'ensureDirectory', targetPath: path.dirname(schemaPath) },
+            { type: 'writeFile', targetPath: schemaPath, content: packageSource, encoding: 'utf8', expected },
+          ],
+          result: undefined,
+        });
         vscode.window.showInformationMessage(`XSD импортирована в XDTO-пакет: ${target.name}`);
       } catch (err) {
         Logger.error('Failed to import XSD into XDTO package', err);
@@ -639,20 +653,26 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
         const xsdSource = fs.readFileSync(picked.fsPath, 'utf8');
         const namespace = getXsdNamespace(xsdSource);
         const suggestedName = sanitizePackageName(path.basename(picked.fsPath, path.extname(picked.fsPath)));
-        const packageName = sanitizePackageName(await vscode.window.showInputBox({
-          prompt: 'Имя нового XDTO-пакета',
-          value: suggestedName,
-          validateInput: (value) => sanitizePackageName(value) ? undefined : 'Введите имя XDTO-пакета.',
-        }) ?? '');
-        if (!packageName) {
-          return;
-        }
-
         const packagesDir = getXdtoPackagesDir(state, node);
         if (!packagesDir) {
           vscode.window.showErrorMessage('CDT 41: не удалось определить папку XDTOPackages.');
           return;
         }
+        const siblingNames = fs.existsSync(packagesDir)
+          ? fs.readdirSync(packagesDir, { withFileTypes: true })
+            .filter((entry) => entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.xml'))
+            .map((entry) => path.basename(entry.name, path.extname(entry.name)))
+          : [];
+        const inputName = await vscode.window.showInputBox({
+          prompt: 'Имя нового XDTO-пакета',
+          value: validateElementName(suggestedName, siblingNames) ? 'NewPackage' : suggestedName,
+          validateInput: (value) => validateElementName(value.trim(), siblingNames) ?? undefined,
+        });
+        if (inputName === undefined) {
+          return;
+        }
+        const packageName = inputName.trim();
+
         const configRootPath = path.dirname(packagesDir);
         const metadataPath = path.join(packagesDir, `${packageName}.xml`);
         const schemaPath = resolveXdtoPackageSchemaPath(metadataPath, packageName);
@@ -661,11 +681,34 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
           return;
         }
 
-        fs.mkdirSync(packagesDir, { recursive: true });
-        fs.writeFileSync(metadataPath, buildXdtoPackageMetadataXml(packageName, namespace), 'utf8');
-        fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-        fs.writeFileSync(schemaPath, convertXsdTo1cPackage(xsdSource, namespace), 'utf8');
-        await addRootObjectToConfiguration(configRootPath, 'XDTOPackage', packageName);
+        const configurationPath = path.join(configRootPath, CONFIGURATION_XML);
+        const configurationContent = fs.readFileSync(configurationPath, 'utf8');
+        const plan: MutationPlan<void> = {
+          kind: 'ui.xdto.createFromXsd',
+          steps: [
+            { type: 'ensureDirectory', targetPath: packagesDir },
+            {
+              type: 'writeFile', targetPath: metadataPath,
+              content: buildXdtoPackageMetadataXml(packageName, namespace),
+              encoding: 'utf8', expected: { state: 'missing' },
+            },
+            { type: 'ensureDirectory', targetPath: path.dirname(schemaPath) },
+            {
+              type: 'writeFile', targetPath: schemaPath,
+              content: convertXsdTo1cPackage(xsdSource, namespace),
+              encoding: 'utf8', expected: { state: 'missing' },
+            },
+            {
+              type: 'writeFile', targetPath: configurationPath,
+              content: buildRootObjectConfigurationContent(configurationContent, {
+                type: 'add', rootTag: 'XDTOPackage', objectName: packageName,
+              }),
+              encoding: 'utf8', expected: { state: 'file', hash: hashContent(configurationContent) },
+            },
+          ],
+          result: undefined,
+        };
+        await runConfigurationPlan(configRootPath, plan);
         vscode.window.showInformationMessage(`Создан XDTO-пакет из XSD: ${packageName}`);
       } catch (err) {
         Logger.error('Failed to import XSD as new XDTO package', err);

@@ -16,6 +16,8 @@ import { BindingManager } from '../bindings/bindingManager';
 import { InfobaseManager } from '../infobases/infobaseManager';
 import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { resetIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
+import { FormsContext } from '../services/forms/FormsContext';
+import type { AgentBridge } from '../agent/agentBridge';
 
 /**
  * Holds extension-wide mutable references (providers, tree view, reload coordinator).
@@ -45,6 +47,7 @@ export class ExtensionState {
   private _infobaseTreeProvider: InfobaseTreeDataProvider | null = null;
   private _infobaseTreeView: vscode.TreeView<InfobaseTreeNode> | null = null;
   private _refreshBindingTreeDecorations: (() => Promise<void>) | null = null;
+  private _agentBridge: AgentBridge | null = null;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -72,6 +75,7 @@ export class ExtensionState {
   get infobaseTreeView(): vscode.TreeView<InfobaseTreeNode> | null { return this._infobaseTreeView; }
   /** Обновление бейджей/tooltip привязок на узле Configuration (§2C); выставляется в extensionWorkspaceSetup. */
   get refreshBindingTreeDecorations(): (() => Promise<void>) | null { return this._refreshBindingTreeDecorations; }
+  get agentBridge(): AgentBridge | null { return this._agentBridge; }
 
   // ── Setters ───────────────────────────────────────────────────────────────
 
@@ -97,23 +101,29 @@ export class ExtensionState {
   set infobaseStorage(v: InfobaseStorageService | null) { this._infobaseStorage = v; }
   set bindingManager(v: BindingManager | null) { this._bindingManager = v; }
   set infobaseManager(v: InfobaseManager | null) { this._infobaseManager = v; }
+  set agentBridge(v: AgentBridge | null) { this._agentBridge = v; }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   init(context: vscode.ExtensionContext): void {
     this._extensionContext = context;
+    FormsContext.get().configureStoragePath(context.globalStoragePath);
     this._infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
     this._bindingManager = new BindingManager();
     this._infobaseManager = new InfobaseManager(this._infobaseStorage, this._bindingManager);
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     for (const w of this._metadataWatchers) {
       w.dispose();
     }
     this._metadataWatchers = [];
+    this._treeDataProvider?.dispose();
+    this._treeDataProvider = null;
     this._reloadCoordinator?.dispose();
     this._reloadCoordinator = null;
+    await this._agentBridge?.stop();
+    this._agentBridge = null;
     this._subsystemCompositionEditorProvider?.dispose();
     this._subsystemCompositionEditorProvider = null;
     this._exchangePlanCompositionEditorProvider?.dispose();
@@ -128,6 +138,8 @@ export class ExtensionState {
     this._subsystemCommandInterfaceProvider = null;
     this._xdtoPackageEditorProvider?.dispose();
     this._xdtoPackageEditorProvider = null;
+    this._formEditorProvider?.dispose();
+    this._formEditorProvider = null;
     this._infobaseTreeProvider = null;
     this._infobaseTreeView = null;
     this._refreshBindingTreeDecorations = null;
@@ -136,5 +148,6 @@ export class ExtensionState {
     this._bindingManager = null;
     this._infobaseManager = null;
     resetIbcmdService();
+    await FormsContext.get().dispose();
   }
 }

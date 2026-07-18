@@ -4,10 +4,13 @@
  * delegates to formModelCommands and formFileIo.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { Logger } from '../utils/logger';
 import { MESSAGES } from '../constants/messages';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 import type { FormModel, FormChildItem } from './formModel';
 import { isFormParseFileMissing } from './formModel';
 import {
@@ -69,7 +72,48 @@ export interface MessageHandlerContext {
   documentModel: Map<string, FormModel>;
   commandEngines?: Map<string, FormCommandEngine>;
   dirtyDocuments?: Set<string>;
+  /** Notifies the editable custom-document provider about an in-memory edit. */
+  onDidChangeDocument?: () => void;
+  /** Routes the webview save button through VS Code custom-document save semantics. */
+  requestSave?: (model?: FormModel) => Promise<void>;
+  /** Routes the webview cancel button through VS Code custom-document revert semantics. */
+  requestRevert?: () => Promise<void>;
+  /** Side effects in Module.bsl that are committed together with the form document. */
+  pendingModuleTransactions?: Map<string, PendingFormModuleTransaction>;
   onFormSelectionChanged?: (payload: FormSelectionPayload | undefined) => void;
+}
+
+export type PendingEventBinding =
+  | { kind: 'form'; eventName: string; methodName: string }
+  | {
+      kind: 'element';
+      elementId: string;
+      eventName: string;
+      hadPreviousValue: boolean;
+      previousValue?: string;
+    };
+
+export interface PendingFormModuleTransaction {
+  modulePath: string;
+  moduleExisted: boolean;
+  originalContent: string;
+  generatedRegions: Array<{
+    start: number;
+    content: string;
+  }>;
+  expectedContentHash: string;
+  bindings: PendingEventBinding[];
+}
+
+export class PendingModuleRollbackConflictError extends Error {
+  readonly code = 'FORM_MODULE_ROLLBACK_CONFLICT';
+
+  constructor(modulePath: string) {
+    super(
+      `Module.bsl changed after event-handler generation; generated procedures were preserved: ${modulePath}`
+    );
+    this.name = 'PendingModuleRollbackConflictError';
+  }
 }
 
 export interface ExternalPropertyChangePayload {
@@ -254,6 +298,7 @@ function setDirtyState(ctx: MessageHandlerContext, dirty: boolean): void {
   }
   if (dirty) {
     ctx.dirtyDocuments.add(key);
+    ctx.onDidChangeDocument?.();
   } else {
     ctx.dirtyDocuments.delete(key);
   }
@@ -283,13 +328,13 @@ function sendFormData(
 }
 
 /** Reload form from disk and send to webview (used by load and cancel). */
-async function reloadFormAndSend(ctx: MessageHandlerContext): Promise<void> {
+export async function reloadFormAndSend(ctx: MessageHandlerContext): Promise<void> {
   const formXmlPath = ctx.document.uri.fsPath;
   const result = await loadFormModel(formXmlPath);
   if ('error' in result) {
     postError(ctx.webviewPanel, result.error);
     Logger.error('Form editor load error', result.error);
-    return;
+    throw new Error(result.error);
   }
   const fileMissing = isFormParseFileMissing(result as never) || result.fileMissing;
   ctx.documentModel.set(ctx.document.uri.toString(), result.model);
@@ -312,10 +357,116 @@ async function reloadFormAndSend(ctx: MessageHandlerContext): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function handleLoad(ctx: MessageHandlerContext): Promise<void> {
+  const existing = ctx.documentModel.get(getDocumentKey(ctx));
+  if (existing) {
+    sendFormData(ctx, existing);
+    updateTitleWithDirty(ctx, isDocumentDirty(ctx));
+    return;
+  }
   await reloadFormAndSend(ctx);
 }
 
+export function commitPendingModuleTransaction(ctx: MessageHandlerContext): void {
+  ctx.pendingModuleTransactions?.delete(getDocumentKey(ctx));
+}
+
+function hashModuleContent(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+export async function readValidatedPendingModuleContent(
+  transaction: PendingFormModuleTransaction
+): Promise<string> {
+  const content = await fs.promises.readFile(transaction.modulePath, 'utf8').catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') {
+        throw new PendingModuleRollbackConflictError(transaction.modulePath);
+      }
+      throw error;
+    }
+  );
+  if (hashModuleContent(content) !== transaction.expectedContentHash) {
+    throw new PendingModuleRollbackConflictError(transaction.modulePath);
+  }
+  for (const region of transaction.generatedRegions) {
+    if (content.slice(region.start, region.start + region.content.length) !== region.content) {
+      throw new PendingModuleRollbackConflictError(transaction.modulePath);
+    }
+  }
+  return content;
+}
+
+export async function rollbackPendingModuleFileTransaction(
+  transaction: PendingFormModuleTransaction
+): Promise<void> {
+  let content = await readValidatedPendingModuleContent(transaction);
+  for (let index = transaction.generatedRegions.length - 1; index >= 0; index--) {
+    const region = transaction.generatedRegions[index];
+    content = content.slice(0, region.start) + content.slice(region.start + region.content.length);
+  }
+  if (transaction.moduleExisted) {
+    await fs.promises.writeFile(transaction.modulePath, content, 'utf8');
+  } else if (content.length === 0) {
+    await fs.promises.rm(transaction.modulePath, { force: true });
+  } else {
+    throw new PendingModuleRollbackConflictError(transaction.modulePath);
+  }
+}
+
+export async function rollbackPendingModuleTransaction(ctx: MessageHandlerContext): Promise<void> {
+  const key = getDocumentKey(ctx);
+  const transaction = ctx.pendingModuleTransactions?.get(key);
+  if (!transaction) {
+    return;
+  }
+
+  await rollbackPendingModuleFileTransaction(transaction);
+
+  const model = ctx.documentModel.get(key);
+  if (model) {
+    for (let index = transaction.bindings.length - 1; index >= 0; index--) {
+      const binding = transaction.bindings[index];
+      if (binding.kind === 'form') {
+        let eventIndex = -1;
+        for (let candidate = model.formEvents.length - 1; candidate >= 0; candidate--) {
+          const event = model.formEvents[candidate];
+          if (event.name === binding.eventName && event.method === binding.methodName) {
+            eventIndex = candidate;
+            break;
+          }
+        }
+        if (eventIndex >= 0) {
+          model.formEvents.splice(eventIndex, 1);
+        }
+        continue;
+      }
+      const element = findElementById(model.childItemsRoot, binding.elementId);
+      if (!element) {
+        continue;
+      }
+      if (binding.hadPreviousValue) {
+        if (!element.events) {
+          element.events = {};
+        }
+        element.events[binding.eventName] = binding.previousValue ?? '';
+      } else if (element.events) {
+        delete element.events[binding.eventName];
+        if (Object.keys(element.events).length === 0) {
+          element.events = undefined;
+        }
+      }
+    }
+    sendFormData(ctx, model);
+  }
+  ctx.pendingModuleTransactions?.delete(key);
+}
+
 async function handleCancel(ctx: MessageHandlerContext): Promise<void> {
+  if (ctx.requestRevert) {
+    await ctx.requestRevert();
+    return;
+  }
+  await rollbackPendingModuleTransaction(ctx);
   await reloadFormAndSend(ctx);
 }
 
@@ -330,16 +481,27 @@ async function handleSave(
     postError(ctx.webviewPanel, 'Нет данных для сохранения.');
     return;
   }
+  if (ctx.requestSave) {
+    await ctx.requestSave(model);
+    return;
+  }
   try {
     await saveFormModel(formXmlPath, model);
+    commitPendingModuleTransaction(ctx);
     ctx.documentModel.set(key, model);
     ctx.commandEngines?.get(key)?.markSaved();
     setDirtyState(ctx, false);
     ctx.webviewPanel.webview.postMessage({ type: 'saved' });
     vscode.window.showInformationMessage(MESSAGES.SAVE_SUCCESS);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    Logger.error('Form editor save failed', err);
+    let failure: unknown = err;
+    try {
+      await rollbackPendingModuleTransaction(ctx);
+    } catch (rollbackError) {
+      failure = combinedError(err, rollbackError, 'Form save and BSL handler rollback both failed.');
+    }
+    const message = failure instanceof Error ? failure.message : String(failure);
+    Logger.error('Form editor save failed', failure);
     postError(ctx.webviewPanel, message);
     vscode.window.showErrorMessage(message);
   }
@@ -904,6 +1066,7 @@ export async function handleCreateEventHandler(
 
   try {
     const modulePath = getFormPaths(ctx.document.uri.fsPath).modulePath;
+    await runConfigurationMutation(modulePath, 'ui.form.createEventHandler', async () => {
     const procedures = await parseBslModuleProcedures(modulePath);
 
     let resolvedName = handlerName;
@@ -930,12 +1093,58 @@ export async function handleCreateEventHandler(
       }
     }
 
-    await createHandlerInModule(modulePath, resolvedName, eventName, isFormLevel);
+    const transaction = await getOrCreateModuleTransaction(ctx, modulePath);
+    const contentBeforeWrite = await fs.promises.readFile(modulePath, 'utf8').catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') {
+          return undefined;
+        }
+        throw error;
+      }
+    );
+    const normalizedContentBefore = contentBeforeWrite ?? '';
+    if (
+      transaction.generatedRegions.length > 0
+      && hashModuleContent(normalizedContentBefore) !== transaction.expectedContentHash
+    ) {
+      throw new PendingModuleRollbackConflictError(modulePath);
+    }
+    try {
+      await createHandlerInModule(modulePath, resolvedName, eventName, isFormLevel);
+    } catch (error) {
+      if (contentBeforeWrite === undefined) {
+        await fs.promises.rm(modulePath, { force: true });
+      } else {
+        await fs.promises.writeFile(modulePath, contentBeforeWrite, 'utf8');
+      }
+      if (transaction.bindings.length === 0) {
+        ctx.pendingModuleTransactions?.delete(getDocumentKey(ctx));
+      }
+      throw error;
+    }
+    const contentAfterWrite = await fs.promises.readFile(modulePath, 'utf8');
+    if (!contentAfterWrite.startsWith(normalizedContentBefore)) {
+      throw new PendingModuleRollbackConflictError(modulePath);
+    }
+    transaction.generatedRegions.push({
+      start: normalizedContentBefore.length,
+      content: contentAfterWrite.slice(normalizedContentBefore.length),
+    });
+    transaction.expectedContentHash = hashModuleContent(contentAfterWrite);
 
     if (isFormLevel) {
       applyAddFormEvent(model, eventName, resolvedName);
+      transaction.bindings.push({ kind: 'form', eventName, methodName: resolvedName });
     } else {
       if (targetEl) {
+        const previousValue = targetEl.events?.[eventName];
+        transaction.bindings.push({
+          kind: 'element',
+          elementId,
+          eventName,
+          hadPreviousValue: previousValue !== undefined,
+          previousValue,
+        });
         if (!targetEl.events) {
           targetEl.events = {};
         }
@@ -946,6 +1155,7 @@ export async function handleCreateEventHandler(
     setDirtyState(ctx, true);
     sendFormData(ctx, model);
     await openModuleInEditor(ctx.document.uri.fsPath, resolvedName);
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     Logger.error('handleCreateEventHandler failed', err);
@@ -953,6 +1163,40 @@ export async function handleCreateEventHandler(
   }
 }
 
+async function getOrCreateModuleTransaction(
+  ctx: MessageHandlerContext,
+  modulePath: string
+): Promise<PendingFormModuleTransaction> {
+  if (!ctx.pendingModuleTransactions) {
+    ctx.pendingModuleTransactions = new Map<string, PendingFormModuleTransaction>();
+  }
+  const key = getDocumentKey(ctx);
+  const existing = ctx.pendingModuleTransactions.get(key);
+  if (existing) {
+    if (path.normalize(existing.modulePath) !== path.normalize(modulePath)) {
+      throw new Error('Form document cannot own mutations in multiple BSL modules.');
+    }
+    return existing;
+  }
+  const originalContent = await fs.promises.readFile(modulePath, 'utf8').catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') {
+        return undefined;
+      }
+      throw error;
+    }
+  );
+  const transaction: PendingFormModuleTransaction = {
+    modulePath,
+    moduleExisted: originalContent !== undefined,
+    originalContent: originalContent ?? '',
+    generatedRegions: [],
+    expectedContentHash: hashModuleContent(originalContent ?? ''),
+    bindings: [],
+  };
+  ctx.pendingModuleTransactions.set(key, transaction);
+  return transaction;
+}
 function findElementById(items: FormChildItem[], targetId: string): FormChildItem | undefined {
   for (const item of items) {
     const id = item.id ?? item.name;
@@ -965,4 +1209,10 @@ function findElementById(items: FormChildItem[], targetId: string): FormChildIte
     }
   }
   return undefined;
+}
+
+function combinedError(primary: unknown, rollback: unknown, message: string): Error {
+  const primaryMessage = primary instanceof Error ? primary.message : String(primary);
+  const rollbackMessage = rollback instanceof Error ? rollback.message : String(rollback);
+  return new Error(`${message} Save: ${primaryMessage}. Rollback: ${rollbackMessage}`);
 }

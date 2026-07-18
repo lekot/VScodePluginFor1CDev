@@ -139,6 +139,12 @@ function getSpecsForRootTag(rootTag: string): GeneratedTypeSpec[] {
         { namePrefix: 'CalculationRegisterRecordKey', category: 'RecordKey' },
         { namePrefix: 'CalculationRegisterRecalcs', category: 'Recalcs' },
       ];
+    case 'Sequence':
+      return [
+        { namePrefix: 'SequenceRecord', category: 'Record' },
+        { namePrefix: 'SequenceManager', category: 'Manager' },
+        { namePrefix: 'SequenceRecordSet', category: 'RecordSet' },
+      ];
     case 'ChartOfAccounts':
       return [
         { namePrefix: 'ChartOfAccountsObject', category: 'Object' },

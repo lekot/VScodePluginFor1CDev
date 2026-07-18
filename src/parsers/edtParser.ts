@@ -15,7 +15,7 @@ import {
   flattenAttributeProperties,
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
-import { CONFIGURATION_XML } from '../constants/fileNames';
+import { getMetadataTypeDescriptorByFolder } from '../constants/metadataTypeDescriptors';
 import {
   extractExtensionProperties,
   extractObjectBelonging,
@@ -51,7 +51,7 @@ export class EdtParser {
         type: MetadataType.Configuration,
         properties: {},
         children: [],
-        filePath: path.join(configPath, CONFIGURATION_XML),
+        filePath: path.join(srcPath, 'Configuration', 'Configuration.mdo'),
       };
 
       // Try to read extension properties from Configuration.mdo (EDT format)
@@ -121,7 +121,7 @@ export class EdtParser {
       type: MetadataType.Configuration,
       properties: {},
       children: [],
-      filePath: path.join(configPath, CONFIGURATION_XML),
+      filePath: path.join(srcPath, 'Configuration', 'Configuration.mdo'),
     };
 
     // Try to read extension properties from Configuration.mdo (EDT format)
@@ -962,55 +962,7 @@ export class EdtParser {
    * @returns MDO file name (e.g., 'Catalog.mdo')
    */
   private static getMdoFileName(typeName: string): string {
-    const typeMap: Record<string, string> = {
-      Catalogs: 'Catalog.mdo',
-      Documents: 'Document.mdo',
-      Enums: 'Enum.mdo',
-      Reports: 'Report.mdo',
-      DataProcessors: 'DataProcessor.mdo',
-      ChartsOfCharacteristicTypes: 'ChartOfCharacteristicTypes.mdo',
-      ChartsOfAccounts: 'ChartOfAccounts.mdo',
-      ChartsOfCalculationTypes: 'ChartOfCalculationTypes.mdo',
-      InformationRegisters: 'InformationRegister.mdo',
-      AccumulationRegisters: 'AccumulationRegister.mdo',
-      AccountingRegisters: 'AccountingRegister.mdo',
-      CalculationRegisters: 'CalculationRegister.mdo',
-      BusinessProcesses: 'BusinessProcess.mdo',
-      Tasks: 'Task.mdo',
-      ExternalDataSources: 'ExternalDataSource.mdo',
-      Constants: 'Constant.mdo',
-      SessionParameters: 'SessionParameter.mdo',
-      FilterCriteria: 'FilterCriterion.mdo',
-      ScheduledJobs: 'ScheduledJob.mdo',
-      FunctionalOptions: 'FunctionalOption.mdo',
-      FunctionalOptionsParameters: 'FunctionalOptionsParameter.mdo',
-      SettingsStorages: 'SettingsStorage.mdo',
-      EventSubscriptions: 'EventSubscription.mdo',
-      CommonModules: 'CommonModule.mdo',
-      CommandGroups: 'CommandGroup.mdo',
-      Roles: 'Role.mdo',
-      Interfaces: 'Interface.mdo',
-      Styles: 'Style.mdo',
-      WebServices: 'WebService.mdo',
-      HTTPServices: 'HTTPService.mdo',
-      IntegrationServices: 'IntegrationService.mdo',
-      Subsystems: 'Subsystem.mdo',
-      ExchangePlans: 'ExchangePlan.mdo',
-      DocumentJournals: 'DocumentJournal.mdo',
-      DefinedTypes: 'DefinedType.mdo',
-      CommonAttributes: 'CommonAttribute.mdo',
-      CommonCommands: 'CommonCommand.mdo',
-      CommonForms: 'CommonForm.mdo',
-      CommonPictures: 'CommonPicture.mdo',
-      CommonTemplates: 'CommonTemplate.mdo',
-      DocumentNumerators: 'DocumentNumerator.mdo',
-      Languages: 'Language.mdo',
-      WSReferences: 'WSReference.mdo',
-      XDTOPackages: 'XDTOPackage.mdo',
-      StyleItems: 'StyleItem.mdo',
-    };
-
-    return typeMap[typeName] || 'Object.mdo';
+    return getMetadataTypeDescriptorByFolder(typeName)?.edtFileName ?? 'Object.mdo';
   }
 
   /**
@@ -1075,44 +1027,11 @@ export class EdtParser {
    */
   static async isEdtFormat(configPath: string): Promise<boolean> {
     try {
-      // EDT format has src directory with .mdo files
-      const srcPath = path.join(configPath, 'src');
-      try {
-        await fs.promises.access(srcPath);
-      } catch {
-        return false;
-      }
-
-      // Check if there are metadata type directories with .mdo files
-      const metadataTypes = ['Catalogs', 'Documents', 'Enums', 'Reports', 'DataProcessors'];
-
-      for (const type of metadataTypes) {
-        const typePath = path.join(srcPath, type);
-        try {
-          await fs.promises.access(typePath);
-          const items = await fs.promises.readdir(typePath);
-          
-          for (const item of items) {
-            const itemPath = path.join(typePath, item);
-            try {
-              const stat = await fs.promises.stat(itemPath);
-              if (stat.isDirectory()) {
-                // Check for .mdo file
-                const mdoFiles = (await fs.promises.readdir(itemPath)).filter(f => f.endsWith('.mdo'));
-                if (mdoFiles.length > 0) {
-                  return true;
-                }
-              }
-            } catch {
-              // Skip items that can't be accessed
-            }
-          }
-        } catch {
-          // Type directory doesn't exist, continue
-        }
-      }
-
-      return false;
+      // A canonical configuration descriptor is the project identity. Merely
+      // finding an arbitrary .mdo under src is not enough to override Designer.
+      const configMdoPath = path.join(configPath, 'src', 'Configuration', 'Configuration.mdo');
+      const stat = await fs.promises.stat(configMdoPath);
+      return stat.isFile();
     } catch (error) {
       Logger.debug('EDT format detection failed', error);
       return false;

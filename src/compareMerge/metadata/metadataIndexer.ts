@@ -4,6 +4,10 @@ import * as path from 'path';
 import type { CompareSide, MetadataIdentity, MetadataNameSource } from '../domain/compareContracts';
 import { getValueByLocalName, localName } from '../../parsers/xmlNavHelpers';
 import { XmlParser } from '../../parsers/xmlParser';
+import {
+  type CompareCancellationToken,
+  throwIfCompareCancelled,
+} from '../compareCancellation';
 
 export interface MetadataIndexFileInput {
   sourceId: string;
@@ -12,6 +16,7 @@ export interface MetadataIndexFileInput {
   metadataType?: string;
   qualifiedName?: string;
   readUuid?: boolean;
+  cancellation?: CompareCancellationToken;
 }
 
 export interface MetadataIndexFolderInput {
@@ -21,12 +26,16 @@ export interface MetadataIndexFolderInput {
   metadataType?: string;
   concurrency?: number;
   readUuid?: boolean;
+  cancellation?: CompareCancellationToken;
+  directoryConcurrency?: number;
 }
 
 export async function indexMetadataFile(input: MetadataIndexFileInput): Promise<MetadataIdentity> {
+  throwIfCompareCancelled(input.cancellation);
   if (input.metadataType && input.qualifiedName) {
     const uuid =
       input.readUuid === false ? undefined : await readMetadataUuidPrefix(input.filePath);
+    throwIfCompareCancelled(input.cancellation);
     return {
       sourceId: input.sourceId,
       side: input.side,
@@ -43,6 +52,7 @@ export async function indexMetadataFile(input: MetadataIndexFileInput): Promise<
   }
 
   const parsed = await XmlParser.parseFileAsync(input.filePath);
+  throwIfCompareCancelled(input.cancellation);
   const root = getRootElement(parsed);
   const metadataType =
     input.metadataType ??
@@ -93,8 +103,14 @@ function readMetadataUuidFast(content: string): string | undefined {
 export async function indexMetadataFolder(
   input: MetadataIndexFolderInput
 ): Promise<MetadataIdentity[]> {
-  const xmlFiles = await collectMetadataXmlFiles(input.folderPath);
-  const indexed = await mapLimit(xmlFiles, input.concurrency ?? 32, async (filePath) => {
+  throwIfCompareCancelled(input.cancellation);
+  const xmlFiles = await collectMetadataXmlFiles(
+    input.folderPath,
+    input.cancellation,
+    input.directoryConcurrency ?? 8,
+  );
+  const indexed = await mapLimit(xmlFiles, input.concurrency ?? 16, async (filePath) => {
+    throwIfCompareCancelled(input.cancellation);
     const pathContext = inferMetadataPathContext(input.folderPath, filePath, input.metadataType);
     if (!pathContext) {
       if (!(await isStandaloneMetadataFile(filePath))) {
@@ -109,6 +125,7 @@ export async function indexMetadataFolder(
       metadataType: pathContext?.metadataType,
       qualifiedName: pathContext?.qualifiedName,
       readUuid: input.readUuid,
+      cancellation: input.cancellation,
     });
   });
 
@@ -120,17 +137,23 @@ interface MetadataPathContext {
   qualifiedName?: string;
 }
 
-async function collectMetadataXmlFiles(folderPath: string): Promise<string[]> {
+async function collectMetadataXmlFiles(
+  folderPath: string,
+  cancellation: CompareCancellationToken | undefined,
+  concurrency: number,
+): Promise<string[]> {
   const xmlFiles: string[] = [];
   const directories = [folderPath];
   let nextDirectoryIndex = 0;
 
   async function collect(): Promise<void> {
     while (nextDirectoryIndex < directories.length) {
+      throwIfCompareCancelled(cancellation);
       const directoryIndex = nextDirectoryIndex;
       nextDirectoryIndex += 1;
       const currentFolderPath = directories[directoryIndex];
       const entries = await fs.readdir(currentFolderPath, { withFileTypes: true });
+      throwIfCompareCancelled(cancellation);
 
       for (const entry of entries) {
         const entryPath = path.join(currentFolderPath, entry.name);
@@ -148,7 +171,8 @@ async function collectMetadataXmlFiles(folderPath: string): Promise<string[]> {
     }
   }
 
-  await Promise.all(Array.from({ length: 64 }, collect));
+  const limit = Math.max(1, Math.min(Math.floor(concurrency), 32));
+  await Promise.all(Array.from({ length: limit }, collect));
   return xmlFiles.sort((left, right) => left.localeCompare(right));
 }
 

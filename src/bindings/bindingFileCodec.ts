@@ -1,5 +1,6 @@
 import type { ConfigurationBinding, InfobaseBindingsFileRoot } from './models/configurationBinding';
 import { Logger } from '../utils/logger';
+import { normalizeConfigRelativePath } from './bindingPathUtils';
 
 const DEFAULT_ROOT: InfobaseBindingsFileRoot = { schemaVersion: 1, bindings: [] };
 
@@ -40,9 +41,16 @@ export function parseBindingsFileJson(text: string): InfobaseBindingsFileRoot {
       if (!workspaceFolder || !configRelativePath) {
         continue;
       }
+      let safeConfigRelativePath: string;
+      try {
+        safeConfigRelativePath = normalizeConfigRelativePath(configRelativePath);
+      } catch {
+        Logger.warn(`bindingStorage: unsafe configRelativePath ignored: ${configRelativePath}`);
+        continue;
+      }
       bindings.push({
         workspaceFolder,
-        configRelativePath,
+        configRelativePath: safeConfigRelativePath,
         infobaseIds,
         massDeployment,
         ibcmdExtensionName,

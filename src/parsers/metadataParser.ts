@@ -32,6 +32,7 @@ const R6_OBJECT_TYPES = new Set<MetadataType>([
   MetadataType.AccumulationRegister,
   MetadataType.AccountingRegister,
   MetadataType.CalculationRegister,
+  MetadataType.Sequence,
   MetadataType.ChartOfAccounts,
   MetadataType.FilterCriterion,
   MetadataType.DocumentJournal,

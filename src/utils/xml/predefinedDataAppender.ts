@@ -296,3 +296,67 @@ export async function appendPredefinedDesignerItem(
   const updated = buildXmlString(parsed);
   await writeUtf8FileWithBackup(filePath, xmlContent, updated);
 }
+
+function predefinedItemName(item: unknown): string {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return '';
+  }
+  const value = (item as Record<string, unknown>).Name;
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0];
+    if (typeof first === 'string') {
+      return first;
+    }
+    if (first && typeof first === 'object' && '#text' in first) {
+      return String((first as Record<string, unknown>)['#text']);
+    }
+  }
+  if (value && typeof value === 'object' && '#text' in value) {
+    return String((value as Record<string, unknown>)['#text']);
+  }
+  return '';
+}
+
+/** Remove exactly one named root item from an existing Designer Ext/Predefined.xml. */
+export async function removePredefinedDesignerItem(filePath: string, name: string): Promise<void> {
+  let xmlContent: string;
+  try {
+    xmlContent = await fs.promises.readFile(filePath, 'utf-8');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Не удалось прочитать Predefined.xml: ${message}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = xmlParser.parse(xmlContent);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Не удалось разобрать Predefined.xml: ${message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Некорректное содержимое Predefined.xml.');
+  }
+  const root = findPredefinedDataRoot(parsed as Record<string, unknown>);
+  if (!root) {
+    throw new Error('В Predefined.xml не найден корень PredefinedData.');
+  }
+
+  const rawItems = root.Item;
+  const items = Array.isArray(rawItems) ? [...rawItems] : rawItems == null ? [] : [rawItems];
+  const targetIndex = items.findIndex((item) => predefinedItemName(item) === name);
+  if (targetIndex < 0) {
+    throw new Error(`Предопределённый элемент '${name}' не найден.`);
+  }
+  items.splice(targetIndex, 1);
+  if (items.length === 0) {
+    delete root.Item;
+  } else {
+    root.Item = items;
+  }
+
+  await writeUtf8FileWithBackup(filePath, xmlContent, buildXmlString(parsed));
+}

@@ -8,6 +8,9 @@ import { getNodeNamespace, ensureXdtoPackageSourceFile } from '../xdtoPackageEdi
 import { resolveXdtoPackageSchemaPath } from '../xdtoPackageEditor/xdtoPackagePaths';
 import { serializeAndValidateXdtoModelForSave } from '../xdtoPackageEditor/xdtoPackageEditorProvider';
 import type { XdtoPackageModel } from '../types/xdtoPackage';
+import { runConfigurationPlan } from '../services/configurationSession/configurationMutationGateway';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import type { MutationExpectation } from '../services/configurationSession/mutationPlan';
 import {
   applyXdtoPackageMerge,
   buildXdtoPackageCompareTree,
@@ -130,7 +133,23 @@ async function handleMerge(
       void session.panel.webview.postMessage({ type: 'mergeError', message: result.message });
       return;
     }
-    fs.writeFileSync(session.schemaPath, result.source, 'utf8');
+    const expected: MutationExpectation = fs.existsSync(session.schemaPath)
+      ? { state: 'file', hash: hashContent(fs.readFileSync(session.schemaPath)) }
+      : { state: 'missing' };
+    await runConfigurationPlan(session.schemaPath, {
+      kind: 'ui.xdto.compareMerge',
+      steps: [
+        { type: 'ensureDirectory', targetPath: path.dirname(session.schemaPath) },
+        {
+          type: 'writeFile',
+          targetPath: session.schemaPath,
+          content: result.source,
+          encoding: 'utf8',
+          expected,
+        },
+      ],
+      result: undefined,
+    });
     session.leftModel = result.model;
     void session.panel.webview.postMessage({ type: 'mergeSuccess', payload: buildPayload(session) });
   } catch (err) {

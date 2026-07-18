@@ -6,6 +6,7 @@ import {
   ReloadRunContext,
   ReloadScheduleOptions,
   ReloadState,
+  toReloadFailure,
 } from '../types/reloadContracts';
 
 interface ReloadCoordinatorConfig {
@@ -127,6 +128,7 @@ export class ReloadCoordinatorService {
       slot.state.executedCount += 1;
       slot.state.lastRunSucceeded = true;
       slot.state.lastError = undefined;
+      slot.state.lastFailure = undefined;
       if (operationId) {
         slot.operationResults.set(operationId, {
           operationId,
@@ -139,13 +141,16 @@ export class ReloadCoordinatorService {
     } catch (error) {
       slot.state.executedCount += 1;
       slot.state.lastRunSucceeded = false;
-      slot.state.lastError = error instanceof Error ? error.message : String(error);
+      const failure = toReloadFailure(error);
+      slot.state.lastError = failure.message;
+      slot.state.lastFailure = failure;
       if (operationId) {
         slot.operationResults.set(operationId, {
           operationId,
           reason,
           succeeded: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: failure.message,
+          failure,
           completedAt: Date.now(),
         });
         this.trimOperationResults(slot);

@@ -1,10 +1,19 @@
+import { validateWorkspaceRelativePath } from '../services/configurationSession/pathBoundary';
+
 /**
  * Нормализация относительного пути к Configuration.xml для стабильного ключа привязки.
  */
 export function normalizeConfigRelativePath(relativePath: string): string {
-  const trimmed = relativePath.trim().replace(/\\/g, '/');
-  const noDot = trimmed.replace(/^\.\/+/, '');
-  return noDot.replace(/\/+/g, '/');
+  return validateWorkspaceRelativePath(relativePath);
+}
+
+export function isSafeConfigRelativePath(relativePath: string): boolean {
+  try {
+    validateWorkspaceRelativePath(relativePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

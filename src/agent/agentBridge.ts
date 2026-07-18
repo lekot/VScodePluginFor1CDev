@@ -48,6 +48,7 @@ export class AgentBridge {
     private _bridgeFilePath?: string;
     private _extensionVersion?: string;
     private _extensionPath?: string;
+    private _lifecycleTail: Promise<void> = Promise.resolve();
 
     constructor(opts: AgentBridgeOptions) {
         this._commandPattern = opts.commandPattern;
@@ -61,6 +62,17 @@ export class AgentBridge {
      * В P7b-1: только биндинг + endpoint stubs.
      */
     async start(): Promise<AgentBridgeStartResult> {
+        return this.enqueueLifecycle(async () => {
+            try {
+                return await this.startInternal();
+            } catch (error) {
+                await this.stopInternal();
+                throw error;
+            }
+        });
+    }
+
+    private async startInternal(): Promise<AgentBridgeStartResult> {
         if (this._server !== undefined) {
             throw new Error('AgentBridge already started');
         }
@@ -81,6 +93,7 @@ export class AgentBridge {
             const vscodeDir = path.join(this._workspaceFolder, '.vscode');
             await fs.promises.mkdir(vscodeDir, { recursive: true });
             const bridgeFile = path.join(vscodeDir, 'cdt-agent-bridge.json');
+            this._bridgeFilePath = bridgeFile;
             const helperScriptPath = this._extensionPath
                 ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'call.sh')
                 : undefined;
@@ -100,7 +113,6 @@ export class AgentBridge {
                 ...(discoverScriptPath ? { discoverScriptPath } : {}),
             };
             await fs.promises.writeFile(bridgeFile, JSON.stringify(content, null, 2), 'utf8');
-            this._bridgeFilePath = bridgeFile;
         }
 
         return { port: this._port, token: this._token };
@@ -110,7 +122,12 @@ export class AgentBridge {
      * Останавливает HTTP сервер. Идемпотентен.
      */
     async stop(): Promise<void> {
+        return this.enqueueLifecycle(() => this.stopInternal());
+    }
+
+    private async stopInternal(): Promise<void> {
         if (this._server === undefined) {
+            await this.removeBridgeFile();
             return;
         }
         await new Promise<void>((resolve) => {
@@ -131,6 +148,25 @@ export class AgentBridge {
                 }
             }
             this._bridgeFilePath = undefined;
+        }
+    }
+
+    private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+        const result = this._lifecycleTail.then(operation, operation);
+        this._lifecycleTail = result.then(() => undefined, () => undefined);
+        return result;
+    }
+
+    private async removeBridgeFile(): Promise<void> {
+        const bridgeFilePath = this._bridgeFilePath;
+        this._bridgeFilePath = undefined;
+        if (!bridgeFilePath) { return; }
+        try {
+            await fs.promises.unlink(bridgeFilePath);
+        } catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+                console.error('[AgentBridge] failed to remove bridge file:', err);
+            }
         }
     }
 

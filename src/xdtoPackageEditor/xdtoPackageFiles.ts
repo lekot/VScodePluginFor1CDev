@@ -1,5 +1,4 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import type { TreeNode } from '../models/treeNode';
 
 export function stripUtf8Bom(source: string): string {
@@ -27,10 +26,9 @@ export function ensureXdtoPackageSourceFile(node: TreeNode, schemaPath: string):
   if (fs.existsSync(schemaPath)) {
     return fs.readFileSync(schemaPath, 'utf8');
   }
-  const xml = buildXdtoPackageSkeleton(getNodeNamespace(node));
-  fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
-  fs.writeFileSync(schemaPath, xml, 'utf8');
-  return xml;
+  // Opening an editor is read-only. The skeleton becomes durable only through
+  // the configuration mutation plan used by the first explicit save.
+  return buildXdtoPackageSkeleton(getNodeNamespace(node));
 }
 
 function escapeXml(text: string): string {

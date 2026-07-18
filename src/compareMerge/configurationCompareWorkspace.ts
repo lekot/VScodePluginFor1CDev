@@ -510,9 +510,22 @@ export class ConfigurationCompareWorkspace {
 
     try {
       const refreshed = await this.refreshWorkspace(this.strategy);
+      if (this.disposed) {
+        refreshed.session.dispose();
+        return {
+          ok: false,
+          payload: this.payload,
+          locked: true,
+          diagnostics: [
+            diagnostic('CONFIG_COMPARE_WORKSPACE_DISPOSED', 'Workspace СЃСЂР°РІРЅРµРЅРёСЏ Р·Р°РєСЂС‹С‚.'),
+          ],
+        };
+      }
+      const previousSession = this.session;
       this.session = refreshed.session;
       this.projection = refreshed.projection;
       this.candidateFactories = new Map(refreshed.candidateFactories);
+      previousSession.dispose();
       this.locked = false;
       return {
         ok: true,
@@ -537,9 +550,13 @@ export class ConfigurationCompareWorkspace {
   }
 
   dispose(): void {
+    if (this.disposed) {
+      return;
+    }
     this.disposed = true;
     this.locked = true;
     this.invalidateVolatileState();
+    this.session.dispose();
   }
 
   private buildPreflight(preview: MergePreview): PreflightResult {

@@ -31,6 +31,15 @@ export class CompareSession {
     return new CompareSession(input);
   }
 
+  dispose(): void {
+    this.#previewStore.clear();
+    // Keep lightweight source descriptors available for diagnostics and callers
+    // that retain the public build result after the workspace refreshes.
+    this.sessionState.snapshots.splice(0);
+    this.sessionState.messages.splice(0);
+    this.sessionState.previews.splice(0);
+  }
+
   get state(): CompareSessionState {
     this.sessionState.previews = this.#previewStore.listPreviews(this.sessionState.sessionId);
     return cloneSessionState(this.sessionState);

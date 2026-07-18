@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { ReloadCoordinatorService } from '../../src/services/reloadCoordinatorService';
 import { ReloadRunContext } from '../../src/types/reloadContracts';
+import { MetadataReloadError } from '../../src/extension/metadataTreeLifecycle';
 
 const sleep = async (ms: number): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -113,6 +114,37 @@ suite('ReloadCoordinatorService', () => {
     assert.strictEqual(state.pending, false);
     assert.strictEqual(state.lastRunSucceeded, false);
     assert.strictEqual(state.lastError, 'reload failed');
+    assert.deepStrictEqual(state.lastFailure, {
+      code: 'UNKNOWN_RELOAD_FAILURE',
+      message: 'reload failed',
+    });
+    coordinator.dispose();
+  });
+
+  test('preserves typed reload failure in config state and operation result', async () => {
+    const coordinator = new ReloadCoordinatorService(async () => {
+      throw new MetadataReloadError(
+        'CONFIGURATION_PARSE_FAILED',
+        'configuration parse failed',
+        'C:/cfg-a',
+      );
+    }, { defaultDebounceMs: 0, mutationWindowTtlMs: 120 });
+
+    coordinator.scheduleReload('C:/cfg-a', 'delete-command', {
+      operationId: 'op-typed',
+      debounceMs: 0,
+    });
+    await sleep(30);
+
+    const expectedFailure = {
+      code: 'CONFIGURATION_PARSE_FAILED',
+      message: 'configuration parse failed',
+    };
+    assert.deepStrictEqual(coordinator.getState('C:/cfg-a').lastFailure, expectedFailure);
+    assert.deepStrictEqual(
+      coordinator.getOperationResult('C:/cfg-a', 'op-typed')?.failure,
+      expectedFailure,
+    );
     coordinator.dispose();
   });
 

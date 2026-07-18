@@ -3,6 +3,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLParser } from 'fast-xml-parser';
 import { AgentOperations } from '../../../src/agent/agentOperations';
 import { createTempDir, cleanupTempDir } from '../../helpers/testHelpers';
 
@@ -300,8 +301,6 @@ suite('AgentOperations: getType', () => {
     });
 
     test('returns types for DefinedType after setType round-trip', async () => {
-        // readProperties transforms native XML Type nodes into a formatted string,
-        // so getType only works correctly after setType serialises the type as an XML string.
         await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: ['cfg:CatalogRef.Товары', 'cfg:CatalogRef.Услуги'] });
         const result = await ops.getType({ path: 'DefinedType.ТипНоменклатуры' });
         assert.ok(result.success, `Expected success, got error: ${result.error}`);
@@ -348,7 +347,25 @@ suite('AgentOperations: setType', () => {
         const result = await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: ['xs:string'] });
         assert.ok(result.success, `Expected success, got error: ${result.error}`);
         const content = fs.readFileSync(path.join(tmpDir, 'DefinedTypes', 'ТипНоменклатуры.xml'), 'utf-8');
-        assert.ok(content.includes('xs:string') || content.includes('xsd:string') || content.includes('String'), 'file should contain the new type');
+        const domParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+        const dom = domParser.parse(content);
+        const typeNode = dom.MetaDataObject.DefinedType.Properties.Type;
+        assert.strictEqual(typeNode['v8:Type'], 'xs:string');
+        assert.strictEqual(typeNode.Type, undefined, 'native Type must not contain a nested wrapper');
+        assert.ok(!content.includes('&lt;Type'), 'Type markup must not be stored as escaped text');
+    });
+
+    test('stores multiple types as native v8:Type children', async () => {
+        const expected = ['cfg:DocumentRef.Заказ', 'xs:boolean'];
+        const result = await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: expected });
+        assert.ok(result.success, `Expected success, got error: ${result.error}`);
+
+        const content = fs.readFileSync(path.join(tmpDir, 'DefinedTypes', 'ТипНоменклатуры.xml'), 'utf-8');
+        const domParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+        const dom = domParser.parse(content);
+        const typeNode = dom.MetaDataObject.DefinedType.Properties.Type;
+        assert.deepStrictEqual(typeNode['v8:Type'], expected);
+        assert.ok(!content.includes('&lt;Type'));
     });
 
     test('round-trip: setType then getType returns same types', async () => {
@@ -360,5 +377,50 @@ suite('AgentOperations: setType', () => {
         assert.ok(getResult.success, `getType after setType failed: ${getResult.error}`);
         assert.ok(getResult.data!.types.includes('cfg:DocumentRef.Заказ'), 'types should include cfg:DocumentRef.Заказ');
         assert.ok(getResult.data!.types.includes('xs:boolean'), 'types should include xs:boolean');
+    });
+
+    test('preserves Date/DateTime/Time semantics in native Designer shape', async () => {
+        for (const [apiType, fraction] of [
+            ['xs:date', 'Date'],
+            ['xs:dateTime', 'DateTime'],
+            ['xs:time', 'Time'],
+        ] as const) {
+            const setResult = await ops.setType({ path: 'DefinedType.ТипНоменклатуры', types: [apiType] });
+            assert.ok(setResult.success, setResult.error);
+            const content = fs.readFileSync(path.join(tmpDir, 'DefinedTypes', 'ТипНоменклатуры.xml'), 'utf-8');
+            const dom = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(content);
+            const typeNode = dom.MetaDataObject.DefinedType.Properties.Type;
+            assert.strictEqual(typeNode['v8:Type'], 'xs:dateTime');
+            assert.strictEqual(typeNode['v8:DateQualifiers']['v8:DateFractions'], fraction);
+            const getResult = await ops.getType({ path: 'DefinedType.ТипНоменклатуры' });
+            assert.ok(getResult.success, getResult.error);
+            assert.deepStrictEqual(getResult.data!.types, [apiType]);
+        }
+    });
+
+    test('scopes getType/setType to the named tabular section', async () => {
+        const catalogsDir = path.join(tmpDir, 'Catalogs');
+        fs.mkdirSync(catalogsDir, { recursive: true });
+        fs.writeFileSync(path.join(catalogsDir, 'Товары.xml'), `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Товары</Name></Properties><ChildObjects>
+    <TabularSection uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Первая</Name></Properties><ChildObjects><Attribute uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Значение</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects></TabularSection>
+    <TabularSection uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>Вторая</Name></Properties><ChildObjects><Attribute uuid="55555555-5555-4555-8555-555555555555"><Properties><Name>Значение</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute></ChildObjects></TabularSection>
+  </ChildObjects></Catalog>
+</MetaDataObject>`, 'utf-8');
+
+        const targetPath = 'Catalog.Товары.TabularSection.Вторая.Attribute.Значение';
+        const setResult = await ops.setType({ path: targetPath, types: ['xs:boolean'] });
+        assert.ok(setResult.success, setResult.error);
+        const getResult = await ops.getType({ path: targetPath });
+        assert.ok(getResult.success, getResult.error);
+        assert.deepStrictEqual(getResult.data!.types, ['xs:boolean']);
+
+        const dom = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(
+            fs.readFileSync(path.join(catalogsDir, 'Товары.xml'), 'utf-8')
+        );
+        const sections = dom.MetaDataObject.Catalog.ChildObjects.TabularSection;
+        assert.strictEqual(sections[0].ChildObjects.Attribute.Properties.Type['v8:Type'], 'xs:string');
+        assert.strictEqual(sections[1].ChildObjects.Attribute.Properties.Type['v8:Type'], 'xs:boolean');
     });
 });

@@ -8,6 +8,7 @@ import * as path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import * as vscode from 'vscode';
 import { getFreePort } from '../../debug/debuggeeLauncher';
+import { isChildProcessTerminated, terminateChildProcess } from './processLifecycle';
 
 const IBSRV_POLL_INTERVAL_MS = 500;
 const IBSRV_DEFAULT_READY_TIMEOUT_MS = 30_000;
@@ -22,6 +23,11 @@ export interface IbsrvStartOptions {
     httpPort?: number;
     /** Таймаут readiness в мс (default 30000). */
     readyTimeoutMs?: number;
+    /**
+     * Transfers process ownership immediately after spawn, before readiness can fail.
+     * The owner must retain the handle and data directory until process exit is proven.
+     */
+    onSpawned?: (resource: IbsrvStartResult) => void;
 }
 
 export interface IbsrvStartResult {
@@ -68,11 +74,17 @@ export async function startIbsrv(
 
     outputChannel.appendLine(`[FormsIbsrv] Запуск: ${ibsrvExe} ${args.join(' ')}`);
 
-    const proc = spawn(ibsrvExe, args, {
-        detached: false,
-        stdio: 'pipe',
-        windowsHide: true,
-    });
+    let proc: ChildProcess;
+    try {
+        proc = spawn(ibsrvExe, args, {
+            detached: process.platform !== 'win32',
+            stdio: 'pipe',
+            windowsHide: true,
+        });
+    } catch (err) {
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
+        throw err;
+    }
 
     proc.stdout?.on('data', (chunk: Buffer | string) => {
         const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
@@ -93,12 +105,14 @@ export async function startIbsrv(
     });
 
     const url = `http://localhost:${port}/`;
+    opts.onSpawned?.({ url, port, proc, dataDir });
 
     // Ждём готовности ibsrv
     const ready = await _waitForIbsrv(url, proc, readyTimeoutMs, outputChannel);
     if (!ready) {
         // Убиваем процесс если он ещё жив
         await stopIbsrv(proc);
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
         throw new Error(
             `ibsrv не стал готов за ${readyTimeoutMs}мс (port ${port}). ` +
             `Проверьте путь к базе: ${opts.dbPath}`,
@@ -113,35 +127,10 @@ export async function startIbsrv(
  * Грациозная остановка ibsrv: SIGTERM → SIGKILL через IBSRV_KILL_WAIT_MS.
  */
 export async function stopIbsrv(proc: ChildProcess): Promise<void> {
-    if (!proc || proc.killed || proc.exitCode !== null) {
+    if (!proc || isChildProcessTerminated(proc)) {
         return;
     }
-
-    try {
-        proc.kill('SIGTERM');
-    } catch {
-        // игнорируем ошибки
-    }
-
-    // На Windows SIGTERM может не работать — через небольшой промежуток SIGKILL
-    await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-            try {
-                if (!proc.killed && proc.exitCode === null) {
-                    proc.kill('SIGKILL');
-                }
-            } catch {
-                // игнорируем
-            }
-            resolve();
-        }, IBSRV_KILL_WAIT_MS);
-
-        // Если процесс сам завершился до таймаута — досрочно резолвим
-        proc.once('close', () => {
-            clearTimeout(timer);
-            resolve();
-        });
-    });
+    await terminateChildProcess(proc, 'ibsrv', IBSRV_KILL_WAIT_MS, IBSRV_KILL_WAIT_MS);
 }
 
 // ─── private ─────────────────────────────────────────────────────────────────
@@ -156,7 +145,7 @@ async function _waitForIbsrv(
 
     while (Date.now() < deadline) {
         // Если процесс уже завершился — нет смысла ждать
-        if (proc.exitCode !== null || proc.killed) {
+        if (isChildProcessTerminated(proc)) {
             outputChannel.appendLine('[FormsIbsrv] Процесс завершился до готовности.');
             return false;
         }

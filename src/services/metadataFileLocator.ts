@@ -4,7 +4,7 @@
  */
 
 import * as path from 'path';
-import { TOP_LEVEL_TYPE_FOLDERS } from '../debug/moduleIdResolver';
+import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -41,36 +41,23 @@ export interface MetadataLocation {
  * (or with special handling like Roles having Ext/Rights.xml).
  * These are NOT in TOP_LEVEL_TYPE_FOLDERS (which covers only hierarchical objects + CommonModules).
  */
-const FLAT_XML_TYPE_FOLDERS = new Set([
-  'Roles',
-  'XDTOPackages',
-  'StyleItems',
-  'CommonPictures',
-  'CommonAttributes',
-  'CommonForms',
-  'CommonCommands',
-  'CommonTemplates',
-  'Languages',
-  'SessionParameters',
-  'EventSubscriptions',
-  // Additional types from MetadataTypeMapper that are parsed as flat XML
-  'DefinedTypes',
-  'DocumentNumerators',
-  'WSReferences',
-  'Styles',
-  'Interfaces',
-  'CommandGroups',
-  'FunctionalOptionsParameters',
-  'ExternalDataSources',
-  'Sequences',
-  'FilterCriteria',
-]);
+const TOP_LEVEL_TYPE_FOLDERS: ReadonlySet<string> = new Set(
+  METADATA_TYPE_DESCRIPTORS
+    .filter((item) => item.moduleCapabilities.includes('debug-path'))
+    .map((item) => item.designerFolder)
+);
+
+const FLAT_XML_TYPE_FOLDERS: ReadonlySet<string> = new Set(
+  METADATA_TYPE_DESCRIPTORS
+    .filter((item) =>
+      !item.moduleCapabilities.includes('debug-path') && item.designerFolder !== 'Subsystems'
+    )
+    .map((item) => item.designerFolder)
+);
 
 // All supported object types — hierarchical (from moduleIdResolver) + flat XML + Subsystems (dedicated branch)
 const ALL_SUPPORTED_TYPES: ReadonlySet<string> = new Set([
-  ...TOP_LEVEL_TYPE_FOLDERS,
-  ...FLAT_XML_TYPE_FOLDERS,
-  'Subsystems',
+  ...METADATA_TYPE_DESCRIPTORS.map((item) => item.designerFolder),
 ]);
 
 // ---------------------------------------------------------------------------

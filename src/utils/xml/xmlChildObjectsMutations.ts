@@ -390,12 +390,13 @@ function removeNestedElementInRootStructure(
   parsed: unknown,
   containerName: string,
   elementType: string,
-  elementName: string
+  elementName: string,
+  state?: { changed: boolean }
 ): unknown {
   if (!parsed || typeof parsed !== 'object') {return parsed;}
 
   if (Array.isArray(parsed)) {
-    return parsed.map(item => removeNestedElementInRootStructure(item, containerName, elementType, elementName));
+    return parsed.map(item => removeNestedElementInRootStructure(item, containerName, elementType, elementName, state));
   }
 
   const obj = parsed as Record<string, unknown>;
@@ -418,6 +419,7 @@ function removeNestedElementInRootStructure(
                   const name = extractNameFromElementArray(inner);
                   if (name === elementName) {
                     childObjects.splice(i, 1);
+                    if (state) { state.changed = true; }
                     result[typeName as string] = { ...elemObj, ChildObjects: childObjects };
                     return result; // Return early after removal
                   }
@@ -430,14 +432,17 @@ function removeNestedElementInRootStructure(
             if (elementType in childObj) {
               const inner = childObj[elementType];
               const items = Array.isArray(inner) ? inner : inner != null ? [inner] : [];
-              const filtered = items.filter((item) => extractNameFromNestedElement(item) !== elementName);
-              if (filtered.length !== items.length) {
+              const targetIndex = items.findIndex((item) => extractNameFromNestedElement(item) === elementName);
+              if (targetIndex >= 0) {
+                const filtered = [...items];
+                filtered.splice(targetIndex, 1);
                 const nextChildObj = { ...childObj };
                 if (filtered.length === 0) {
                   delete nextChildObj[elementType];
                 } else {
                   nextChildObj[elementType] = filtered;
                 }
+                if (state) { state.changed = true; }
                 result[typeName as string] = { ...elemObj, ChildObjects: nextChildObj };
                 return result;
               }
@@ -452,7 +457,7 @@ function removeNestedElementInRootStructure(
   // Recurse
   for (const [key, value] of Object.entries(obj)) {
     if (value && typeof value === 'object') {
-      result[key] = removeNestedElementInRootStructure(value, containerName, elementType, elementName);
+      result[key] = removeNestedElementInRootStructure(value, containerName, elementType, elementName, state);
     }
   }
 
@@ -505,7 +510,8 @@ export function addNestedElementInStructure(
 export function removeNestedElementInStructure(
   parsed: unknown,
   elementType: string,
-  elementName: string
+  elementName: string,
+  state?: { changed: boolean }
 ): unknown {
   const usesRootMetadataChildObjects =
     elementType === 'Attribute' ||
@@ -515,7 +521,7 @@ export function removeNestedElementInStructure(
     elementType === 'Resource';
   const containerName = usesRootMetadataChildObjects ? 'ChildObjects' : elementType + 's';
   if (usesRootMetadataChildObjects) {
-    return removeNestedElementInRootStructure(parsed, containerName, elementType, elementName);
+    return removeNestedElementInRootStructure(parsed, containerName, elementType, elementName, state);
   }
   return mutateChildObjectsArray(parsed, containerName, elementType, (arr) => {
     for (let i = arr.length - 1; i >= 0; i--) {
@@ -526,6 +532,7 @@ export function removeNestedElementInStructure(
           const name = extractNameFromElementArray(inner);
           if (name === elementName) {
             arr.splice(i, 1);
+            if (state) { state.changed = true; }
             return;
           }
         }

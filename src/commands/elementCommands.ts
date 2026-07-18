@@ -1,11 +1,24 @@
 import * as vscode from 'vscode';
-import { createElement, createForm, deleteElement, duplicateElement, findReferencesToElement, renameElement } from '../services/elementOperations';
+import {
+  createElement,
+  createForm,
+  deleteElement,
+  duplicateElement,
+  findReferencesToElement,
+  isRootObjectCreateInTypeFolder,
+  planDuplicateRootElement,
+  planRenameRootElement,
+  renameElement,
+  TOP_LEVEL_TYPES,
+} from '../services/elementOperations';
 import { validateElementName } from '../utils/elementNameValidator';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { ExtensionState } from '../state/extensionState';
 import { getSelectedNode, requireDesignerFormat } from '../helpers/commandHelpers';
 import { optimisticAppendCreatedNode } from '../helpers/optimisticNodeBuilder';
 import { Logger } from '../utils/logger';
+import { AgentOperations } from '../agent/agentOperations';
+import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 
 type RegisterElementCommandsDeps = {
   state: ExtensionState;
@@ -17,10 +30,23 @@ type RegisterElementCommandsDeps = {
     deletedNodeId: string,
     elementName: string
   ) => void;
+  runConfigurationMutation?: <T>(
+    configPath: string,
+    kind: string,
+    operation: () => Promise<T>,
+  ) => Promise<T>;
+  runConfigurationPlan?: <T>(configPath: string, plan: MutationPlan<T>) => Promise<T>;
 };
 
 export function registerElementCommands(deps: RegisterElementCommandsDeps): vscode.Disposable[] {
-  const { state, loadMetadataTree, invalidateCacheAndReload, scheduleDeleteReconcile } = deps;
+  const {
+    state,
+    loadMetadataTree,
+    invalidateCacheAndReload,
+    scheduleDeleteReconcile,
+    runConfigurationMutation = async (_configPath, _kind, operation) => operation(),
+    runConfigurationPlan = async (_configPath, plan) => plan.result,
+  } = deps;
 
   const createElementCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.createElement',
@@ -47,7 +73,15 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       if (name === undefined || name.trim() === '') {return;}
       try {
         const trimmedName = name.trim();
-        await createElement(target, trimmedName);
+        if (isRootObjectCreateInTypeFolder(target)) {
+          const plan = await new AgentOperations(configPath).planCreateObject({
+            type: String(target.type),
+            name: trimmedName,
+          });
+          await runConfigurationPlan(configPath, plan);
+        } else {
+          await runConfigurationMutation(configPath, 'ui.createElement', () => createElement(target, trimmedName));
+        }
         if (target.id === 'Forms') {
           vscode.window.showInformationMessage(`Создана форма: ${trimmedName}`);
         } else {
@@ -89,7 +123,11 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       });
       if (name === undefined || name.trim() === '') {return;}
       try {
-        await createForm(target, name.trim());
+        await runConfigurationMutation(
+          designerCtx.configPath,
+          'ui.createForm',
+          () => createForm(target, name.trim()),
+        );
         vscode.window.showInformationMessage(`Создана форма: ${name.trim()}`);
         await loadMetadataTree();
       } catch (err) {
@@ -121,7 +159,15 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       });
       if (newName === undefined || newName.trim() === '') {return;}
       try {
-        await duplicateElement(target, newName.trim());
+        if (TOP_LEVEL_TYPES.has(target.type)) {
+          await runConfigurationPlan(configPath, await planDuplicateRootElement(target, newName.trim()));
+        } else {
+          await runConfigurationMutation(
+            configPath,
+            'ui.duplicateElement',
+            () => duplicateElement(target, newName.trim()),
+          );
+        }
         vscode.window.showInformationMessage(`Дублирован элемент: ${newName.trim()}`);
         await invalidateCacheAndReload(configPath);
       } catch (err) {
@@ -167,7 +213,16 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       if (choice !== 'Удалить') {return;}
       try {
         const operationId = `delete-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        await deleteElement(target);
+        if (TOP_LEVEL_TYPES.has(target.type)) {
+          const plan = await new AgentOperations(configPath).planDeleteObject({
+            path: `${String(target.type)}.${target.name}`,
+          });
+          await runConfigurationPlan(configPath, plan);
+        } else {
+          await runConfigurationMutation(configPath, 'ui.deleteElement', () =>
+            deleteElement(target, { trustedRootPath: configPath })
+          );
+        }
         try {
           state.treeDataProvider?.applyOptimisticDelete(target, operationId);
         } catch (optimisticError) {
@@ -209,7 +264,18 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
       });
       if (newName === undefined || newName.trim() === '' || newName.trim() === target.name) {return;}
       try {
-        await renameElement(target, newName.trim(), configPath);
+        if (TOP_LEVEL_TYPES.has(target.type)) {
+          await runConfigurationPlan(
+            configPath,
+            await planRenameRootElement(target, newName.trim(), configPath),
+          );
+        } else {
+          await runConfigurationMutation(
+            configPath,
+            'ui.renameElement',
+            () => renameElement(target, newName.trim(), configPath),
+          );
+        }
         vscode.window.showInformationMessage(`Переименован в: ${newName.trim()}`);
         await invalidateCacheAndReload(configPath);
       } catch (err) {

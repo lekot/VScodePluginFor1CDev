@@ -22,11 +22,15 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SESSION_FILE = resolve(__dirname, '..', '.browser-session.json');
+const SESSION_FILE = process.env.CDT_FORMS_SESSION_FILE
+  ? resolve(process.env.CDT_FORMS_SESSION_FILE)
+  : resolve(__dirname, '..', '.browser-session.json');
 
 const [,, cmd, ...rawArgs] = process.argv;
 const flags = { noRecord: rawArgs.includes('--no-record') };
 const args = rawArgs.filter(a => !a.startsWith('--'));
+let httpServer;
+let shutdownPromise;
 
 switch (cmd) {
   case 'start':  await cmdStart(args[0]); break;
@@ -50,7 +54,7 @@ async function cmdStart(url) {
   const state = await browser.connect(url);
 
   // Start HTTP server for exec/shot/stop
-  const httpServer = http.createServer(handleRequest);
+  httpServer = http.createServer(handleRequest);
   httpServer.listen(0, '127.0.0.1', () => {
     const port = httpServer.address().port;
     const session = {
@@ -63,11 +67,11 @@ async function cmdStart(url) {
     out({ ok: true, message: 'Browser ready', port, ...state });
   });
 
-  process.on('SIGINT', async () => {
-    await browser.disconnect();
-    cleanup();
-    process.exit(0);
-  });
+  const onSignal = () => {
+    void shutdownBrowserServer().finally(() => process.exit(0));
+  };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
 }
 
 async function handleRequest(req, res) {
@@ -84,9 +88,7 @@ async function handleRequest(req, res) {
       res.end(png);
 
     } else if (req.method === 'POST' && req.url === '/stop') {
-      json(res, { ok: true, message: 'Stopping' });
-      await browser.disconnect();
-      cleanup();
+      await shutdownBrowserServer(res);
       process.exit(0);
 
     } else if (req.method === 'GET' && req.url === '/status') {
@@ -99,6 +101,41 @@ async function handleRequest(req, res) {
   } catch (e) {
     json(res, { ok: false, error: e.message }, 500);
   }
+}
+
+function shutdownBrowserServer(response) {
+  if (!shutdownPromise) {
+    shutdownPromise = (async () => {
+      let disconnectError;
+      try {
+        await browser.disconnect();
+      } catch (error) {
+        disconnectError = error;
+      }
+      cleanup();
+      if (response && !response.writableEnded) {
+        response.shouldKeepAlive = false;
+        response.setHeader('Connection', 'close');
+        if (disconnectError) {
+          json(response, { ok: false, error: disconnectError.message }, 500);
+        } else {
+          json(response, { ok: true, message: 'Stopped' });
+        }
+      }
+      await closeHttpServer();
+      if (disconnectError && !response) {
+        throw disconnectError;
+      }
+    })();
+  }
+  return shutdownPromise;
+}
+
+function closeHttpServer() {
+  if (!httpServer?.listening) return Promise.resolve();
+  return new Promise((resolveClose, rejectClose) => {
+    httpServer.close(error => error ? rejectClose(error) : resolveClose());
+  });
 }
 
 async function executeScript(code, { noRecord } = {}) {

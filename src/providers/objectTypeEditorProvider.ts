@@ -3,10 +3,8 @@ import { ObjectTypeDefinition, ObjectableGroup, ObjectTypeInfo, ObjectKind, OBJE
 import { ObjectTypeParser } from '../parsers/objectTypeParser';
 import { OBJECT_KIND_ORDER } from '../constants/metadataTypeObjectKinds';
 import { Logger } from '../utils/logger';
-
-function escapeJsonForScript(json: string): string {
-  return json.replace(/<\/script>/gi, '<\\/script>');
-}
+import { escapeJsonForScript } from '../utils/escapeJsonForScript';
+import { randomBytes } from 'crypto';
 
 
 const OBJECT_KIND_LABELS: Record<ObjectKind, string> = {
@@ -45,17 +43,59 @@ type WebviewMessage =
   | { type: 'save'; selectedIds: string[] }
   | { type: 'cancel' };
 
-function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
-  if (!msg || typeof msg !== 'object') { return false; }
-  const m = msg as { type?: unknown };
-  if (typeof m.type !== 'string') { return false; }
-  return ['save', 'cancel'].includes(m.type);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+const QUALIFIED_OBJECT_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u;
+
+function isValidObjectName(value: string): boolean {
+  return value === value.trim()
+    && QUALIFIED_OBJECT_NAME_RE.test(value)
+    && value.split('.').every((segment) => segment.length <= 80);
+}
+
+function isSelectedId(value: unknown): value is string {
+  if (typeof value !== 'string') { return false; }
+  const colonIndex = value.indexOf(':');
+  if (colonIndex < 0) { return false; }
+  const kind = value.slice(0, colonIndex) as ObjectKind;
+  const objectName = value.slice(colonIndex + 1);
+  if (!Object.prototype.hasOwnProperty.call(OBJECT_KIND_LABELS, kind)) { return false; }
+  return OBJECT_KINDS_WITHOUT_NAME.has(kind) ? objectName === '' : isValidObjectName(objectName);
+}
+
+export function isObjectTypeEditorWebviewMessage(
+  msg: unknown,
+  allowedSelectionIds: ReadonlySet<string>,
+): msg is WebviewMessage {
+  if (!isRecord(msg)) { return false; }
+  if (msg['type'] === 'cancel') {
+    return hasOnlyKeys(msg, ['type']);
+  }
+  if (msg['type'] !== 'save'
+    || !hasOnlyKeys(msg, ['type', 'selectedIds'])
+    || !Array.isArray(msg['selectedIds'])
+    || msg['selectedIds'].length === 0
+    || msg['selectedIds'].length > allowedSelectionIds.size
+    || !msg['selectedIds'].every(isSelectedId)) {
+    return false;
+  }
+  const selectedIds = msg['selectedIds'];
+  return new Set(selectedIds).size === selectedIds.length
+    && selectedIds.every((id) => allowedSelectionIds.has(id));
 }
 
 export class ObjectTypeEditorProvider {
   private panel: vscode.WebviewPanel | undefined;
   private resolvePromise: ((value: ObjectTypeDefinition | null) => void) | undefined;
   private disposables: vscode.Disposable[] = [];
+  private allowedSelectionIds = new Set<string>();
 
   constructor(private context: vscode.ExtensionContext) {
     Logger.info('ObjectTypeEditorProvider initialized');
@@ -98,7 +138,7 @@ export class ObjectTypeEditorProvider {
 
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
     panel.webview.onDidReceiveMessage(async (message: unknown) => {
-      if (!isValidWebviewMessage(message)) {
+      if (!isObjectTypeEditorWebviewMessage(message, this.allowedSelectionIds)) {
         Logger.warn('Received invalid message from webview', message);
         return;
       }
@@ -161,19 +201,24 @@ export class ObjectTypeEditorProvider {
   }
 
   private getWebviewContent(currentDef: ObjectTypeDefinition, objectableGroups: ObjectableGroup[]): string {
+    const nonce = randomBytes(24).toString('base64url');
     const treeData = this.buildTreeData(currentDef, objectableGroups);
     const initialSelectedIds = this.getInitialSelectedIds(currentDef);
     const treeDataJson = escapeJsonForScript(JSON.stringify(treeData));
     const initialSelectedJson = escapeJsonForScript(JSON.stringify(initialSelectedIds));
     const hasSelection = currentDef.types.length > 0;
+    this.allowedSelectionIds = new Set(
+      treeData.flatMap((group) => group.children.map((child) => child.id)),
+    );
 
     return `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="UTF-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';">
         <title>Редактирование Source</title>
-        <style>
+        <style nonce="${nonce}">
           * { box-sizing: border-box; }
           body {
             font-family: var(--vscode-font-family);
@@ -267,7 +312,7 @@ export class ObjectTypeEditorProvider {
             <button type="button" id="save-btn" ${hasSelection ? '' : 'disabled'} title="Сохранить" aria-label="Сохранить">Сохранить</button>
           </div>
         </div>
-        <script>
+        <script nonce="${nonce}">
           const vscode = acquireVsCodeApi();
           const treeData = ${treeDataJson};
           let selectedIds = new Set(${initialSelectedJson});
@@ -347,7 +392,7 @@ export class ObjectTypeEditorProvider {
       Logger.warn('Object type editor save ignored: missing resolvePromise');
       return;
     }
-    const types: ObjectTypeInfo[] = selectedIds
+    const types: ObjectTypeInfo[] = [...new Set(selectedIds)]
       .map((id) => {
         const colonIdx = id.indexOf(':');
         if (colonIdx === -1) { return null; }
@@ -385,6 +430,7 @@ export class ObjectTypeEditorProvider {
     Logger.info('Disposing ObjectTypeEditorProvider');
     if (this.resolvePromise) { this.resolvePromise(null); this.resolvePromise = undefined; }
     if (this.panel) { this.panel.dispose(); this.panel = undefined; }
+    this.allowedSelectionIds.clear();
     while (this.disposables.length) { const d = this.disposables.pop(); if (d) { d.dispose(); } }
   }
 }

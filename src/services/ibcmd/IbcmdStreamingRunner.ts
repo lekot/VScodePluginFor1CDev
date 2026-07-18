@@ -1,12 +1,17 @@
 import { spawn, type ChildProcess } from 'child_process';
 import type { IbcmdConsoleOutputEncoding } from './ibcmdConsoleEncodingTypes';
 import { createIbcmdStreamChunkDecoders } from './consoleStreamDecoder';
-import { envForIbcmdExplicitConfigSpawn, ibcmdArgvImpliesExplicitOfflineConnection } from './ibcmdSpawnEnv';
+import {
+  envForIbcmdExplicitConfigSpawn,
+  ibcmdArgvImpliesExplicitOfflineConnection,
+} from './ibcmdSpawnEnv';
+import {
+  terminateProcessTree,
+  type ProcessTreeTerminationOutcome,
+} from './processTreeTermination';
 
-/** Default ring buffer for captured stdout+stderr (design §6). */
 export const IBCMD_STREAM_RING_BUFFER_MAX_BYTES = 384 * 1024;
 
-/** Minimal disposable contract — compatible with vscode.Disposable but without the vscode import. */
 export interface IDisposable {
   dispose(): void;
 }
@@ -21,178 +26,204 @@ export interface IbcmdStreamingRunnerOptions {
   args: string[];
   timeoutMs: number;
   cancellation: IbcmdStreamCancellation;
-  /**
-   * Raw byte decoding for stdout/stderr. Align with `1cMetadataTree.ibcmd.consoleOutputEncoding`.
-   * Default `auto`: UTF-8 stream decoder (piped ibcmd). Use `oem866` if output is OEM-only.
-   */
   consoleOutputEncoding?: IbcmdConsoleOutputEncoding;
-  /** Invoked for each decoded chunk (Unicode text for the Output Channel). */
   onStreamChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void;
   ringBufferMaxBytes?: number;
-  /** Injected for tests (default: `child_process.spawn`). */
   spawnImpl?: typeof spawn;
-  /** If set, abort the process when this pattern matches accumulated output (e.g. interactive credential prompt). */
   abortPattern?: RegExp;
+  terminationGraceMs?: number;
+  terminateProcessTreeImpl?: (
+    child: ChildProcess,
+    graceMs: number
+  ) => Promise<ProcessTreeTerminationOutcome>;
 }
 
 export interface IbcmdStreamingRawOutcome {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
-  /** Last N bytes of interleaved capture (stdout then stderr chunks in arrival order). */
   combinedLog: string;
   logTruncated: boolean;
   cancelled: boolean;
   timedOut: boolean;
-  /** Set when spawn fails (e.g. ENOENT). */
   spawnErrorCode?: string;
   spawnErrorMessage?: string;
-  /** True when process was killed because {@link IbcmdStreamingRunnerOptions.abortPattern} matched output. */
   abortPatternMatched?: boolean;
+  termination?: ProcessTreeTerminationOutcome;
 }
 
-class RingBufferText {
-  private buf = '';
+export class RingBufferText {
+  private chunks: Buffer[] = [];
+  private headIndex = 0;
+  private headOffset = 0;
+  private byteLength = 0;
   private truncated = false;
 
   constructor(private readonly maxBytes: number) {}
 
-  append(s: string): void {
-    if (!s) {
+  append(text: string): void {
+    if (!text) {
       return;
     }
-    this.buf += s;
-    if (this.buf.length > this.maxBytes) {
-      this.truncated = true;
-      this.buf = this.buf.slice(this.buf.length - this.maxBytes);
+    const chunk = Buffer.from(text, 'utf-8');
+    if (chunk.length === 0) {
+      return;
     }
+    this.chunks.push(chunk);
+    this.byteLength += chunk.length;
+    this.trimToLimit();
   }
 
   get state(): { text: string; truncated: boolean } {
-    return { text: this.buf, truncated: this.truncated };
+    const retained: Buffer[] = [];
+    for (let index = this.headIndex; index < this.chunks.length; index += 1) {
+      const chunk = this.chunks[index];
+      retained.push(index === this.headIndex && this.headOffset > 0 ? chunk.subarray(this.headOffset) : chunk);
+    }
+    return {
+      text: Buffer.concat(retained, this.byteLength).toString('utf-8'),
+      truncated: this.truncated,
+    };
+  }
+
+  /** Total backing-buffer storage retained by the ring. */
+  get retainedStorageBytes(): number {
+    return this.chunks.reduce((total, chunk) => total + chunk.length, 0);
+  }
+
+  private trimToLimit(): void {
+    const limit = Math.max(0, this.maxBytes);
+    let bytesToDrop = this.byteLength - limit;
+    if (bytesToDrop <= 0) {
+      return;
+    }
+    this.truncated = true;
+    while (bytesToDrop > 0 && this.headIndex < this.chunks.length) {
+      const available = this.chunks[this.headIndex].length - this.headOffset;
+      if (bytesToDrop < available) {
+        this.headOffset += bytesToDrop;
+        this.byteLength -= bytesToDrop;
+        bytesToDrop = 0;
+        break;
+      }
+      bytesToDrop -= available;
+      this.byteLength -= available;
+      this.headIndex += 1;
+      this.headOffset = 0;
+    }
+    this.alignHeadToUtf8Boundary();
+    if (this.headIndex > 0) {
+      this.chunks = this.chunks.slice(this.headIndex);
+      this.headIndex = 0;
+    }
+    if (this.headOffset > 0 && this.chunks.length > 0) {
+      this.chunks[0] = Buffer.from(this.chunks[0].subarray(this.headOffset));
+      this.headOffset = 0;
+    }
+  }
+
+  private alignHeadToUtf8Boundary(): void {
+    while (this.headIndex < this.chunks.length) {
+      const chunk = this.chunks[this.headIndex];
+      while (
+        this.headOffset < chunk.length &&
+        (chunk[this.headOffset] & 0xc0) === 0x80
+      ) {
+        this.headOffset += 1;
+        this.byteLength -= 1;
+      }
+      if (this.headOffset < chunk.length) {
+        return;
+      }
+      this.headIndex += 1;
+      this.headOffset = 0;
+    }
   }
 }
 
-/** Long-running ibcmd: `spawn` + streaming stdout/stderr (does not use `runIbcmdExecutable`). */
+type TerminationReason = 'cancelled' | 'timedOut' | 'abortPattern';
+
 export async function runIbcmdStreaming(
-  options: IbcmdStreamingRunnerOptions,
+  options: IbcmdStreamingRunnerOptions
 ): Promise<IbcmdStreamingRawOutcome> {
-  const maxBytes = options.ringBufferMaxBytes ?? IBCMD_STREAM_RING_BUFFER_MAX_BYTES;
-  const ring = new RingBufferText(maxBytes);
-  const spawnFn = options.spawnImpl ?? spawn;
-
-  let child: ChildProcess | undefined;
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  let cancelDisp: IDisposable | undefined;
-
-  const cleanupTimers = (): void => {
-    if (timeoutId !== undefined) {
-      clearTimeout(timeoutId);
-      timeoutId = undefined;
-    }
-  };
-
-  const killTree = (proc: ChildProcess | undefined): void => {
-    if (!proc || proc.killed) {
-      return;
-    }
-    try {
-      proc.kill('SIGTERM');
-    } catch {
-      /* ignore */
-    }
-    if (process.platform === 'win32') {
-      setTimeout(() => {
-        try {
-          if (!proc.killed && proc.exitCode === null) {
-            proc.kill('SIGKILL');
-          }
-        } catch {
-          /* ignore */
-        }
-      }, 1500).unref?.();
-    }
-  };
-
-  return await new Promise<IbcmdStreamingRawOutcome>((resolve) => {
-    let settled = false;
-    const finish = (outcome: IbcmdStreamingRawOutcome): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      cleanupTimers();
-      cancelDisp?.dispose();
-      const { text, truncated } = ring.state;
-      resolve({ ...outcome, combinedLog: text, logTruncated: outcome.logTruncated || truncated });
+  const ring = new RingBufferText(
+    options.ringBufferMaxBytes ?? IBCMD_STREAM_RING_BUFFER_MAX_BYTES
+  );
+  if (options.cancellation.isCancellationRequested) {
+    return {
+      exitCode: null,
+      signal: null,
+      combinedLog: '',
+      logTruncated: false,
+      cancelled: true,
+      timedOut: false,
     };
+  }
 
-    try {
-      child = spawnFn(options.executablePath, options.args, {
-        ...(ibcmdArgvImpliesExplicitOfflineConnection(options.args)
-          ? { env: envForIbcmdExplicitConfigSpawn() }
-          : {}),
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (err) {
-      const e = err as { code?: string; message?: string };
-      finish({
-        exitCode: null,
-        signal: null,
-        combinedLog: '',
-        logTruncated: false,
-        cancelled: false,
-        timedOut: false,
-        spawnErrorCode: typeof e.code === 'string' ? e.code : 'SPAWN_ERROR',
-        spawnErrorMessage: e.message ?? String(err),
-      });
-      return;
-    }
+  const spawnFn = options.spawnImpl ?? spawn;
+  let child: ChildProcess;
+  try {
+    child = spawnFn(options.executablePath, options.args, {
+      ...(ibcmdArgvImpliesExplicitOfflineConnection(options.args)
+        ? { env: envForIbcmdExplicitConfigSpawn() }
+        : {}),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(process.platform === 'win32' ? {} : { detached: true }),
+    });
+  } catch (error) {
+    const spawnError = error as NodeJS.ErrnoException;
+    return {
+      exitCode: null,
+      signal: null,
+      combinedLog: '',
+      logTruncated: false,
+      cancelled: false,
+      timedOut: false,
+      spawnErrorCode: spawnError.code ?? 'SPAWN_ERROR',
+      spawnErrorMessage: spawnError.message,
+    };
+  }
 
-    if (!child) {
-      finish({
-        exitCode: null,
-        signal: null,
-        combinedLog: '',
-        logTruncated: false,
-        cancelled: false,
-        timedOut: false,
-        spawnErrorCode: 'NO_CHILD',
-        spawnErrorMessage: 'spawn returned no child process',
-      });
-      return;
-    }
+  if (!child) {
+    return {
+      exitCode: null,
+      signal: null,
+      combinedLog: '',
+      logTruncated: false,
+      cancelled: false,
+      timedOut: false,
+      spawnErrorCode: 'NO_CHILD',
+      spawnErrorMessage: 'spawn returned no child process',
+    };
+  }
 
-    const enc = options.consoleOutputEncoding ?? 'auto';
-    const dec = createIbcmdStreamChunkDecoders(enc);
+  return new Promise<IbcmdStreamingRawOutcome>((resolve) => {
+    let settled = false;
+    let streamsFlushed = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let cancelDisposable: IDisposable | undefined;
+    let terminationReason: TerminationReason | undefined;
+    let closeExitCode: number | null = null;
+    let closeSignal: NodeJS.Signals | null = null;
+    const encoding = options.consoleOutputEncoding ?? 'auto';
+    const decoders = createIbcmdStreamChunkDecoders(encoding);
 
-    const appendDecoded = (stream: 'stdout' | 'stderr', chunk: Buffer | string): void => {
-      const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
-      const text = stream === 'stdout' ? dec.decodeStdout(buf) : dec.decodeStderr(buf);
-      if (!text) {
-        return;
+    const cleanup = (): void => {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+        timeoutId = undefined;
       }
-      ring.append(text);
-      if (options.abortPattern && !settled && options.abortPattern.test(ring.state.text)) {
-        killTree(child);
-        flushDecodedStreams();
-        finish({
-          exitCode: null,
-          signal: 'SIGTERM',
-          combinedLog: '',
-          logTruncated: false,
-          cancelled: false,
-          timedOut: false,
-          abortPatternMatched: true,
-        });
-        return;
-      }
-      options.onStreamChunk?.(text, stream);
+      cancelDisposable?.dispose();
+      cancelDisposable = undefined;
     };
 
     const flushDecodedStreams = (): void => {
-      const tailOut = dec.flushStdout();
-      const tailErr = dec.flushStderr();
+      if (streamsFlushed) {
+        return;
+      }
+      streamsFlushed = true;
+      const tailOut = decoders.flushStdout();
+      const tailErr = decoders.flushStderr();
       if (tailOut) {
         ring.append(tailOut);
         options.onStreamChunk?.(tailOut, 'stdout');
@@ -203,73 +234,116 @@ export async function runIbcmdStreaming(
       }
     };
 
+    const finish = (
+      outcome: Omit<IbcmdStreamingRawOutcome, 'combinedLog' | 'logTruncated'>
+    ): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      const state = ring.state;
+      resolve({ ...outcome, combinedLog: state.text, logTruncated: state.truncated });
+    };
+
+    const requestTermination = (reason: TerminationReason): void => {
+      if (settled || terminationReason) {
+        return;
+      }
+      terminationReason = reason;
+      cleanup();
+      const graceMs = Math.max(0, options.terminationGraceMs ?? 1500);
+      const terminate =
+        options.terminateProcessTreeImpl ??
+        ((target: ChildProcess, targetGraceMs: number) =>
+          terminateProcessTree(target, { graceMs: targetGraceMs }));
+      void terminate(child, graceMs)
+        .catch((error): ProcessTreeTerminationOutcome => ({
+          terminated: false,
+          hardKillUsed: false,
+          survivingPids: child.pid ? [child.pid] : [],
+          errors: [error instanceof Error ? error.message : String(error)],
+        }))
+        .then((termination) => {
+          flushDecodedStreams();
+          const cleanupFailed = !termination.terminated;
+          finish({
+            exitCode: closeExitCode ?? child.exitCode,
+            signal: closeSignal ?? 'SIGTERM',
+            cancelled: reason === 'cancelled',
+            timedOut: reason === 'timedOut',
+            ...(reason === 'abortPattern' ? { abortPatternMatched: true } : {}),
+            ...(cleanupFailed
+              ? {
+                  spawnErrorCode: 'PROCESS_TREE_TERMINATION_FAILED',
+                  spawnErrorMessage: termination.errors.join('; ') || 'Process tree survived termination',
+                }
+              : {}),
+            termination,
+          });
+        });
+    };
+
+    const appendDecoded = (stream: 'stdout' | 'stderr', chunk: Buffer | string): void => {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf-8') : chunk;
+      const text =
+        stream === 'stdout'
+          ? decoders.decodeStdout(bytes)
+          : decoders.decodeStderr(bytes);
+      if (!text) {
+        return;
+      }
+      ring.append(text);
+      if (options.abortPattern && !settled && !terminationReason) {
+        options.abortPattern.lastIndex = 0;
+        if (options.abortPattern.test(ring.state.text)) {
+          requestTermination('abortPattern');
+          return;
+        }
+      }
+      options.onStreamChunk?.(text, stream);
+    };
+
     child.stdout?.on('data', (chunk) => appendDecoded('stdout', chunk));
     child.stderr?.on('data', (chunk) => appendDecoded('stderr', chunk));
 
-    child.on('error', (err) => {
+    child.on('error', (error) => {
+      if (terminationReason) {
+        return;
+      }
       flushDecodedStreams();
-      const e = err as NodeJS.ErrnoException;
+      const spawnError = error as NodeJS.ErrnoException;
       finish({
         exitCode: null,
         signal: null,
-        combinedLog: '',
-        logTruncated: false,
         cancelled: false,
         timedOut: false,
-        spawnErrorCode: e.code,
-        spawnErrorMessage: e.message,
+        spawnErrorCode: spawnError.code,
+        spawnErrorMessage: spawnError.message,
       });
-    });
-
-    timeoutId = setTimeout(() => {
-      killTree(child);
-      flushDecodedStreams();
-      const { text, truncated } = ring.state;
-      finish({
-        exitCode: null,
-        signal: 'SIGTERM',
-        combinedLog: text,
-        logTruncated: truncated,
-        cancelled: false,
-        timedOut: true,
-      });
-    }, options.timeoutMs);
-
-    if (options.cancellation.isCancellationRequested) {
-      killTree(child);
-      cleanupTimers();
-      cancelDisp?.dispose();
-      flushDecodedStreams();
-      const { text, truncated } = ring.state;
-      finish({
-        exitCode: null,
-        signal: 'SIGTERM',
-        combinedLog: text,
-        logTruncated: truncated,
-        cancelled: true,
-        timedOut: false,
-      });
-      return;
-    }
-
-    cancelDisp = options.cancellation.onCancellationRequested(() => {
-      killTree(child);
     });
 
     child.on('close', (code, signal) => {
-      cleanupTimers();
-      cancelDisp?.dispose();
+      closeExitCode = code;
+      closeSignal = (signal as NodeJS.Signals | null) ?? null;
+      if (terminationReason) {
+        return;
+      }
       flushDecodedStreams();
-      const { text, truncated } = ring.state;
-      const cancelled = options.cancellation.isCancellationRequested && code !== 0;
       finish({
         exitCode: code,
-        signal: (signal as NodeJS.Signals | null) ?? null,
-        combinedLog: text,
-        logTruncated: truncated,
-        cancelled,
+        signal: closeSignal,
+        cancelled: false,
         timedOut: false,
       });
     });
+
+    timeoutId = setTimeout(() => requestTermination('timedOut'), options.timeoutMs);
+    cancelDisposable = options.cancellation.onCancellationRequested(() =>
+      requestTermination('cancelled')
+    );
+    if (options.cancellation.isCancellationRequested) {
+      requestTermination('cancelled');
+    }
   });
 }

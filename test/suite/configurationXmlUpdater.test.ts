@@ -76,6 +76,19 @@ suite('configurationXmlUpdater', () => {
     assert.ok(xml.includes('<Language>Русский</Language>'), 'Existing entries should remain');
   });
 
+  test('serializes concurrent read-modify-write updates without losing either entry', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), MINIMAL_CONFIG_XML, 'utf-8');
+
+    await Promise.all([
+      addRootObjectToConfiguration(tmpDir, 'Catalog', 'ПараллельныйА'),
+      addRootObjectToConfiguration(tmpDir, 'Catalog', 'ПараллельныйБ'),
+    ]);
+
+    const xml = readConfigXml(tmpDir);
+    assert.ok(xml.includes('<Catalog>ПараллельныйА</Catalog>'));
+    assert.ok(xml.includes('<Catalog>ПараллельныйБ</Catalog>'));
+  });
+
   test('creates ChildObjects section when missing', async () => {
     fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), CONFIG_NO_CHILDOBJECTS, 'utf-8');
 
