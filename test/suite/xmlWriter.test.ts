@@ -545,7 +545,7 @@ suite('XMLWriter', () => {
     test('returns a string matching UUID v4 format', () => {
       const uuid = XMLWriter.generateSimpleUuid();
       assert.strictEqual(typeof uuid, 'string');
-      assert.match(uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      assert.match(uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     });
 
     test('returns unique values on each call', () => {

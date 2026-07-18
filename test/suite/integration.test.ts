@@ -266,7 +266,8 @@ suite('Integration', () => {
       assert.ok(catalogsA && catalogsA.children && catalogsA.children.length > 0, 'Catalogs in root A are required');
       assert.ok(catalogsB && catalogsB.children && catalogsB.children.length > 0, 'Catalogs in root B are required');
 
-      const catalogInA = catalogsA!.children![0];
+      const catalogInA = catalogsA!.children!.find((catalog) => catalog.name === 'TestCatalog1');
+      assert.ok(catalogInA, 'Registered TestCatalog1 fixture is required for rename integrity checks');
       const oldNameA = catalogInA.name;
       const renamedA = `${oldNameA}_Renamed_${Date.now()}`;
       await renameElement(catalogInA, renamedA, cfgA);

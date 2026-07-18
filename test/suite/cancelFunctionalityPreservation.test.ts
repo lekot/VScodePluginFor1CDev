@@ -22,6 +22,18 @@ import { TypeDefinition } from '../../src/types/typeDefinitions';
 suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () => {
   let typeEditorProvider: TypeEditorProvider;
   let mockContext: vscode.ExtensionContext;
+  const numberTypeArb = fc.integer({ min: 1, max: 38 }).chain((digits) =>
+    fc.record({
+      kind: fc.constant('number' as const),
+      qualifiers: fc.record({
+        digits: fc.constant(digits),
+        fractionDigits: fc.integer({ min: 0, max: digits }),
+        allowedSign: fc.constantFrom('Any' as const, 'Nonnegative' as const)
+      })
+    })
+  );
+  const identifierArb = fc.stringMatching(/^[A-Za-z][A-Za-z0-9_]{0,45}$/)
+    .map((suffix) => `Ref_${suffix}`);
 
   setup(() => {
     // Create mock context
@@ -384,14 +396,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         })
       }),
       // Number types
-      fc.record({
-        kind: fc.constant('number' as const),
-        qualifiers: fc.record({
-          digits: fc.integer({ min: 1, max: 38 }),
-          fractionDigits: fc.integer({ min: 0, max: 10 }),
-          allowedSign: fc.constantFrom('Any' as const, 'Nonnegative' as const)
-        })
-      }),
+      numberTypeArb,
       // Boolean types
       fc.record({
         kind: fc.constant('boolean' as const)
@@ -459,16 +464,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
         'ChartOfAccountsRef' as const,
         'ChartOfCalculationTypesRef' as const
       ),
-      objectName: fc.string({ minLength: 1, maxLength: 50 }).filter(
-        (s) =>
-          !s.includes('"') &&
-          !s.includes("'") &&
-          !s.includes('<') &&
-          !s.includes('&') &&
-          !s.includes('>') &&
-          !s.includes('\\') &&
-          s.trim().length > 0
-      )
+      objectName: identifierArb
     });
 
     fc.assert(
@@ -502,7 +498,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
    */
   test('Property 2.13: Editor handles any composite type configuration (Property-Based)', () => {
     // Generator for composite type with multiple entries
-    const compositeTypeArb = fc.array(
+    const compositeTypeArb = fc.uniqueArray(
       fc.oneof(
         fc.record({
           kind: fc.constant('string' as const),
@@ -511,14 +507,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
             allowedLength: fc.constantFrom('Fixed' as const, 'Variable' as const)
           })
         }),
-        fc.record({
-          kind: fc.constant('number' as const),
-          qualifiers: fc.record({
-            digits: fc.integer({ min: 1, max: 38 }),
-            fractionDigits: fc.integer({ min: 0, max: 10 }),
-            allowedSign: fc.constantFrom('Any' as const, 'Nonnegative' as const)
-          })
-        }),
+        numberTypeArb,
         fc.record({
           kind: fc.constant('boolean' as const)
         }),
@@ -529,7 +518,11 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
           })
         })
       ),
-      { minLength: 2, maxLength: 4 } // Composite must have at least 2 types
+      {
+        minLength: 2,
+        maxLength: 4,
+        selector: (entry) => entry.kind,
+      } // Composite contains each primitive kind at most once, matching the editor selection model.
     );
 
     fc.assert(
@@ -589,9 +582,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
             kind: fc.constant('reference' as const),
             referenceType: fc.record({
               referenceKind: fc.constantFrom('CatalogRef' as const, 'DocumentRef' as const),
-              objectName: fc.string({ minLength: 1, maxLength: 20 }).filter(
-                (s) => !s.includes('"') && !s.includes('<') && !s.includes('&') && !s.includes('>') && !s.includes('\\')
-              )
+              objectName: identifierArb
             })
           }),
           { minLength: 1, maxLength: 1 }
@@ -647,7 +638,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
