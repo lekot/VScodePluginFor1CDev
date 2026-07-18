@@ -18,6 +18,7 @@ FormatSamples/structure_samples/
 FormatSamples/structure_backup/
 FormatSamples/extensions_samples/                                        
 FormatSamples/ut_demo_ForFormat/
+/FormatSamples/empty_c.cf
 BUGS/
 docs/*
 # Публичная документация. Остальной docs/ — локальные планы, отчёты и черновики.
