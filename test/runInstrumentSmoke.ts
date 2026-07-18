@@ -9,6 +9,7 @@ import * as path from 'path';
 import './helpers/vscodeStubRegister';
 import { copyEmptyConfFixtureToTemp } from './helpers/matrixTreeWalker';
 import { runContainerMatrix } from './matrix/containerMatrixRunner';
+import { evaluateInstrumentMatrixOutcome } from './matrix/instrumentMatrixOutcome';
 
 async function main(): Promise<void> {
   let workDir = process.env.MATRIX_WORK_DIR?.trim();
@@ -62,10 +63,15 @@ async function main(): Promise<void> {
         process.exit(1);
       }
     }
-    if (report.stepSummary.failed > 0) {
-      console.warn(
-        '[instrument-smoke:matrix] stepSummary has failures (see report JSON) — exit 0; fix product or fixture, or use MATRIX_SLICE_LIMIT / MATRIX_FULL.'
+    const outcome = evaluateInstrumentMatrixOutcome(
+      report,
+      process.env.INSTRUMENT_IBCMD_NONFATAL === '1'
+    );
+    if (outcome.reason === 'matrix-steps') {
+      console.error(
+        '[instrument-smoke:matrix] stepSummary has failures (see report JSON) — failing acceptance.'
       );
+      process.exit(1);
     }
   } finally {
     if (ownsTemp && workDir) {

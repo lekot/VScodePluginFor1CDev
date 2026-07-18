@@ -11,10 +11,14 @@ containment, а также lifecycle watcher'ов и процессов. Свя�
 PendingOps + lazy Overlay`) остаётся будущим направлением и принятием этого ADR не объявляется
 реализованным.
 
-**Проверка:** `npm run verify` завершён с кодом 0; VS Code smoke — 10 passed и 1 pending
-opt-in deploy; локальная matrix на полной временной копии `FormatSamples/empty_conf` — 15 passed,
-0 failed, 0 skipped. Реальная ibcmd/import-проверка платформой не выполнялась, потому что её
-opt-in окружение не было настроено.
+**Проверка:** `npm run verify` завершён с кодом 0; финальная core-приёмка — 3 023 passed,
+36 pending; VS Code smoke — 10 passed и 1 pending opt-in deploy; полная matrix — 336 passed,
+0 failed, 0 skipped. `scripts/instrument-smoke` через `ibcmd.setup.example.bat`, ibcmd import и
+ibcmd config check выполнены успешно с кодом 0.
+
+**Follow-up приёмки:** Полная matrix выявила и позволила закрыть асимметрию R6 delete и fail-open
+runner; concurrency stress выявил и закрыл race допуска в FIFO lock. Эти исправления входят в
+принятую реализацию consistency boundary.
 
 ---
 

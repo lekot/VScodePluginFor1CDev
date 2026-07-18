@@ -354,24 +354,46 @@ export class MutationPlanExecutor {
   }
 }
 
+const planMutationAdmissionTails = new Map<string, Promise<void>>();
 const planMutationTails = new Map<string, Promise<void>>();
 
 async function acquirePlanMutationLock(rootPath: string): Promise<() => void> {
   const absolute = path.resolve(rootPath);
-  const resolved = await fs.promises.realpath(absolute).catch(() => absolute);
-  const key = process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved;
-  const previous = planMutationTails.get(key) ?? Promise.resolve();
+  const admissionKey = normalizeLockKey(absolute);
+  const releaseAdmission = await acquireQueuedLock(planMutationAdmissionTails, admissionKey);
+  try {
+    const resolved = await fs.promises.realpath(absolute).catch(() => absolute);
+    const releaseMutation = await acquireQueuedLock(planMutationTails, normalizeLockKey(resolved));
+    return () => {
+      releaseMutation();
+      releaseAdmission();
+    };
+  } catch (error) {
+    releaseAdmission();
+    throw error;
+  }
+}
+
+async function acquireQueuedLock(
+  tails: Map<string, Promise<void>>,
+  key: string,
+): Promise<() => void> {
+  const previous = tails.get(key) ?? Promise.resolve();
   let releaseGate!: () => void;
   const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
   const tail = previous.then(() => gate, () => gate);
-  planMutationTails.set(key, tail);
+  tails.set(key, tail);
   await previous.catch(() => undefined);
   return () => {
     releaseGate();
-    if (planMutationTails.get(key) === tail) {
-      planMutationTails.delete(key);
+    if (tails.get(key) === tail) {
+      tails.delete(key);
     }
   };
+}
+
+function normalizeLockKey(targetPath: string): string {
+  return process.platform === 'win32' ? targetPath.toLocaleLowerCase() : targetPath;
 }
 
 export function utf8WriteStep(

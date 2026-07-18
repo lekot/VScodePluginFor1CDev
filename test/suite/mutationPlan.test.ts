@@ -54,29 +54,69 @@ suite('MutationPlanExecutor', () => {
     const target = path.join(tempDir, 'Configuration.xml');
     await fs.promises.writeFile(target, 'original', 'utf8');
     const expected = { state: 'file' as const, hash: hashContent('original') };
-    const first = new MutationPlanExecutor(tempDir).execute({
-      kind: 'test.concurrent.first',
-      steps: [{
-        type: 'writeFile', targetPath: target, content: 'first', encoding: 'utf8', expected,
-      }],
-      result: 'first',
-    });
-    const second = new MutationPlanExecutor(tempDir).execute({
-      kind: 'test.concurrent.second',
-      steps: [{
-        type: 'writeFile', targetPath: target, content: 'second', encoding: 'utf8', expected,
-      }],
-      result: 'second',
+    const originalRealpathDescriptor = Object.getOwnPropertyDescriptor(fs.promises, 'realpath');
+    if (!originalRealpathDescriptor || typeof originalRealpathDescriptor.value !== 'function') {
+      throw new Error('fs.promises.realpath must be a configurable data property for this test.');
+    }
+    const originalRealpath = originalRealpathDescriptor.value as typeof fs.promises.realpath;
+    let rootRealpathCalls = 0;
+    let markFirstRealpathEntered!: () => void;
+    let releaseFirstRealpath!: () => void;
+    const firstRealpathEntered = new Promise<void>((resolve) => { markFirstRealpathEntered = resolve; });
+    const firstRealpathGate = new Promise<void>((resolve) => { releaseFirstRealpath = resolve; });
+    const interceptedRealpath = async (requestedPath: fs.PathLike): Promise<string> => {
+      if (path.resolve(String(requestedPath)) === path.resolve(tempDir)) {
+        rootRealpathCalls++;
+        if (rootRealpathCalls === 1) {
+          markFirstRealpathEntered();
+          await firstRealpathGate;
+        }
+      }
+      return originalRealpath(requestedPath);
+    };
+    Object.defineProperty(fs.promises, 'realpath', {
+      ...originalRealpathDescriptor,
+      value: interceptedRealpath,
     });
 
-    const outcomes = await Promise.allSettled([first, second]);
-    assert.strictEqual(outcomes[0].status, 'fulfilled');
-    assert.strictEqual(outcomes[1].status, 'rejected');
-    const rejection = outcomes[1] as PromiseRejectedResult;
-    assert.ok(rejection.reason instanceof MutationPlanError);
-    assert.strictEqual((rejection.reason as MutationPlanError).code, 'PLAN_CONFLICT');
-    assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'first');
-    assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+    let first: Promise<string> | undefined;
+    let second: Promise<string> | undefined;
+    try {
+      first = new MutationPlanExecutor(tempDir).execute({
+        kind: 'test.concurrent.first',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'first', encoding: 'utf8', expected,
+        }],
+        result: 'first',
+      });
+      await firstRealpathEntered;
+      second = new MutationPlanExecutor(tempDir).execute({
+        kind: 'test.concurrent.second',
+        steps: [{
+          type: 'writeFile', targetPath: target, content: 'second', encoding: 'utf8', expected,
+        }],
+        result: 'second',
+      });
+
+      assert.strictEqual(rootRealpathCalls, 1, 'The second writer must queue before canonicalization.');
+      releaseFirstRealpath();
+      const outcomes = await Promise.allSettled([first, second]);
+      assert.strictEqual(outcomes[0].status, 'fulfilled');
+      assert.strictEqual(outcomes[1].status, 'rejected');
+      const rejection = outcomes[1] as PromiseRejectedResult;
+      assert.ok(rejection.reason instanceof MutationPlanError);
+      assert.strictEqual((rejection.reason as MutationPlanError).code, 'PLAN_CONFLICT');
+      assert.strictEqual(await fs.promises.readFile(target, 'utf8'), 'first');
+      assert.strictEqual(fs.existsSync(path.join(tempDir, '.cdt-journal')), false);
+    } finally {
+      releaseFirstRealpath();
+      Object.defineProperty(fs.promises, 'realpath', originalRealpathDescriptor);
+      await Promise.allSettled([first, second].filter((value): value is Promise<string> => value !== undefined));
+    }
+    assert.deepStrictEqual(
+      Object.getOwnPropertyDescriptor(fs.promises, 'realpath'),
+      originalRealpathDescriptor,
+    );
   });
 
   test('recovers an interrupted journal before accepting another mutation', async () => {

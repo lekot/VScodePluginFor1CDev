@@ -4,10 +4,13 @@
 закрыты после зелёного Quality Gate. Группы коммитов ниже сохраняются как логическая декомпозиция
 плана и не задают обязательную форму итоговой git-истории.
 
-**Итоговый Quality Gate:** `npm run verify` — exit 0; VS Code smoke — 10 passed, 1 pending
-(opt-in deploy); matrix на полной временной копии `FormatSamples/empty_conf` — 15 passed,
-0 failed, 0 skipped. Реальная ibcmd/import-проверка не запускалась: требуемое opt-in окружение
-не задано.
+**Итоговый Quality Gate:** `npm run verify` — exit 0; финальная core-приёмка — 3 023 passed,
+36 pending; VS Code smoke — 10 passed, 1 pending (opt-in deploy); полная matrix — 336 passed,
+0 failed, 0 skipped. `scripts/instrument-smoke` через `ibcmd.setup.example.bat`, ibcmd import и
+ibcmd config check выполнены успешно с кодом 0.
+
+**Follow-up приёмки:** Полная matrix выявила и закрыла асимметрию R6 delete и fail-open runner;
+concurrency stress выявил и закрыл race допуска в FIFO lock.
 
 Основание: `docs/code-review-findings-2026-07-18.md` и ADR
 `docs/architecture/adr-configuration-session-and-safe-mutations.md`.

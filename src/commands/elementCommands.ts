@@ -219,7 +219,9 @@ export function registerElementCommands(deps: RegisterElementCommandsDeps): vsco
           });
           await runConfigurationPlan(configPath, plan);
         } else {
-          await runConfigurationMutation(configPath, 'ui.deleteElement', () => deleteElement(target));
+          await runConfigurationMutation(configPath, 'ui.deleteElement', () =>
+            deleteElement(target, { trustedRootPath: configPath })
+          );
         }
         try {
           state.treeDataProvider?.applyOptimisticDelete(target, operationId);

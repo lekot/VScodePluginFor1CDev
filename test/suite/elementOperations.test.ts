@@ -1710,6 +1710,278 @@ suite('elementOperations', () => {
     }
   });
 
+  for (const scenario of [
+    {
+      label: 'EnumValue', ownerType: MetadataType.Enum, ownerTag: 'Enum',
+      ownerFolder: 'Enums', containerId: 'EnumValues', childType: MetadataType.EnumValue,
+    },
+    {
+      label: 'Dimension', ownerType: MetadataType.InformationRegister, ownerTag: 'InformationRegister',
+      ownerFolder: 'InformationRegisters', containerId: 'Dimensions', childType: MetadataType.Dimension,
+    },
+    {
+      label: 'Resource', ownerType: MetadataType.AccumulationRegister, ownerTag: 'AccumulationRegister',
+      ownerFolder: 'AccumulationRegisters', containerId: 'Resources', childType: MetadataType.Resource,
+    },
+  ] as const) {
+    test(`deleteElement removes only the named ${scenario.label} from owner XML`, async () => {
+      const dir = await createTempDir(`1cviewer-delete-${scenario.label.toLowerCase()}-`);
+      try {
+        const ownerDir = path.join(dir, scenario.ownerFolder);
+        await fs.promises.mkdir(ownerDir, { recursive: true });
+        const ownerPath = path.join(ownerDir, 'Owner.xml');
+        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner');
+        const owner: TreeNode = {
+          id: `${scenario.ownerFolder}.Owner`, name: 'Owner', type: scenario.ownerType,
+          filePath: ownerPath, properties: {}, children: [],
+        };
+        const container: TreeNode = {
+          id: scenario.containerId, name: scenario.containerId, type: scenario.childType,
+          parent: owner, parentFilePath: ownerPath, properties: {}, children: [],
+        };
+        owner.children = [container];
+
+        await createElement(container, 'KeepMe');
+        await createElement(container, 'DeleteMe');
+        await deleteElement(
+          {
+            id: `${owner.id}.${scenario.containerId}.DeleteMe`,
+            name: 'DeleteMe', type: scenario.childType, parent: container,
+            parentFilePath: ownerPath, properties: {},
+          },
+          { trustedRootPath: dir }
+        );
+
+        const xml = await readFileContent(ownerPath);
+        assert.ok(xml.includes('<Name>KeepMe</Name>'), 'sibling must be preserved');
+        assert.ok(!xml.includes('<Name>DeleteMe</Name>'), 'target must be removed');
+      } finally {
+        await cleanupTempDir(dir);
+      }
+    });
+  }
+
+  for (const scenario of [
+    { ownerType: MetadataType.Enum, ownerTag: 'Enum', containerId: 'EnumValues', childType: MetadataType.EnumValue },
+    { ownerType: MetadataType.InformationRegister, ownerTag: 'InformationRegister', containerId: 'Dimensions', childType: MetadataType.Dimension },
+    { ownerType: MetadataType.AccumulationRegister, ownerTag: 'AccumulationRegister', containerId: 'Resources', childType: MetadataType.Resource },
+  ] as const) {
+    test(`deleteElement rejects external ${String(scenario.childType)} owner against trusted root`, async () => {
+      const dir = await createTempDir('1cviewer-delete-r6-external-');
+      try {
+        const trustedRoot = path.join(dir, 'trusted');
+        const externalRoot = path.join(dir, 'external');
+        await fs.promises.mkdir(trustedRoot, { recursive: true });
+        await fs.promises.mkdir(externalRoot, { recursive: true });
+        const ownerPath = path.join(externalRoot, 'Owner.xml');
+        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner');
+        const owner: TreeNode = {
+          id: 'External.Owner', name: 'Owner', type: scenario.ownerType,
+          filePath: ownerPath, properties: {}, children: [],
+        };
+        const container: TreeNode = {
+          id: scenario.containerId, name: scenario.containerId, type: scenario.childType,
+          parent: owner, parentFilePath: ownerPath, properties: {}, children: [],
+        };
+        owner.children = [container];
+        await createElement(container, 'DeleteMe');
+        const before = await readFileContent(ownerPath);
+
+        await assert.rejects(() => deleteElement({
+          id: `External.Owner.${scenario.containerId}.DeleteMe`, name: 'DeleteMe',
+          type: scenario.childType, parent: container, parentFilePath: ownerPath, properties: {},
+        }, { trustedRootPath: trustedRoot }), (error: unknown) =>
+          !!error && typeof error === 'object'
+          && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT');
+        assert.strictEqual(await readFileContent(ownerPath), before);
+      } finally {
+        await cleanupTempDir(dir);
+      }
+    });
+  }
+
+  test('deleteElement removes one PredefinedItem and preserves siblings and namespaces', async () => {
+    const dir = await createTempDir('1cviewer-delete-predefined-');
+    try {
+      const catalogsDir = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(catalogsDir, { recursive: true });
+      const ownerPath = path.join(catalogsDir, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner');
+      const predefinedPath = path.join(catalogsDir, 'Owner', 'Ext', 'Predefined.xml');
+      const owner: TreeNode = {
+        id: 'Catalogs.Owner', name: 'Owner', type: MetadataType.Catalog,
+        filePath: ownerPath, properties: {}, children: [],
+      };
+      const container: TreeNode = {
+        id: 'PredefinedData', name: 'PredefinedData', type: MetadataType.PredefinedItem,
+        filePath: predefinedPath, parent: owner, properties: {}, children: [],
+      };
+      owner.children = [container];
+      await createElement(container, 'KeepMe');
+      await createElement(container, 'DeleteMe');
+
+      await deleteElement(
+        {
+          id: 'Catalogs.Owner.PredefinedData.DeleteMe', name: 'DeleteMe',
+          type: MetadataType.PredefinedItem, parent: container,
+          parentFilePath: predefinedPath, properties: {},
+        },
+        { trustedRootPath: dir }
+      );
+
+      const xml = await readFileContent(predefinedPath);
+      assert.ok(xml.includes('<Name>KeepMe</Name>'), 'sibling must be preserved');
+      assert.ok(!xml.includes('<Name>DeleteMe</Name>'), 'target must be removed');
+      assert.ok(xml.includes('xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'));
+      assert.ok(xml.includes('xsi:type="CatalogPredefinedItems"'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('deleteElement rejects a consistent external Predefined owner against trusted root', async () => {
+    const dir = await createTempDir('1cviewer-delete-predefined-outside-');
+    try {
+      const trustedRoot = path.join(dir, 'trusted');
+      const externalRoot = path.join(dir, 'external');
+      const catalogsDir = path.join(externalRoot, 'Catalogs');
+      await fs.promises.mkdir(trustedRoot, { recursive: true });
+      await fs.promises.mkdir(catalogsDir, { recursive: true });
+      const ownerPath = path.join(catalogsDir, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner');
+      const externalPath = path.join(catalogsDir, 'Owner', 'Ext', 'Predefined.xml');
+      const externalXml = `<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems">
+  <Item id="00000000-0000-0000-0000-000000000001"><Name>DeleteMe</Name></Item>
+</PredefinedData>
+`;
+      await fs.promises.mkdir(path.dirname(externalPath), { recursive: true });
+      await fs.promises.writeFile(externalPath, externalXml, 'utf-8');
+      const owner: TreeNode = {
+        id: 'Catalogs.Owner', name: 'Owner', type: MetadataType.Catalog,
+        filePath: ownerPath, properties: {}, children: [],
+      };
+      const container: TreeNode = {
+        id: 'PredefinedData', name: 'PredefinedData', type: MetadataType.PredefinedItem,
+        filePath: externalPath, parent: owner, properties: {}, children: [],
+      };
+      owner.children = [container];
+
+      await assert.rejects(() => deleteElement({
+        id: 'Catalogs.Owner.PredefinedData.DeleteMe', name: 'DeleteMe',
+        type: MetadataType.PredefinedItem, parent: container,
+        parentFilePath: externalPath, properties: {},
+      }, { trustedRootPath: trustedRoot }), (error: unknown) =>
+        !!error && typeof error === 'object'
+        && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT');
+      assert.strictEqual(await readFileContent(externalPath), externalXml);
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('deleteElement rejects a missing R6 target without rewriting owner XML', async () => {
+    const dir = await createTempDir('1cviewer-delete-r6-missing-');
+    try {
+      const enumPath = path.join(dir, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'Owner');
+      const owner: TreeNode = {
+        id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
+        filePath: enumPath, properties: {}, children: [],
+      };
+      const container: TreeNode = {
+        id: 'EnumValues', name: 'EnumValues', type: MetadataType.EnumValue,
+        parent: owner, parentFilePath: enumPath, properties: {}, children: [],
+      };
+      owner.children = [container];
+      const before = await readFileContent(enumPath);
+
+      await assert.rejects(() => deleteElement({
+        id: 'Enums.Owner.EnumValues.Missing', name: 'Missing',
+        type: MetadataType.EnumValue, parent: container,
+        parentFilePath: enumPath, properties: {},
+      }, { trustedRootPath: dir }), /was not found/);
+      assert.strictEqual(await readFileContent(enumPath), before);
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('deleteElement requires trusted root for R6 before touching owner path', async () => {
+    const missingOwnerPath = path.join(tmpDir, 'missing', 'Owner.xml');
+    const owner: TreeNode = {
+      id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
+      filePath: missingOwnerPath, properties: {}, children: [],
+    };
+    const container: TreeNode = {
+      id: 'EnumValues', name: 'EnumValues', type: MetadataType.EnumValue,
+      parent: owner, parentFilePath: missingOwnerPath, properties: {}, children: [],
+    };
+    owner.children = [container];
+    await assert.rejects(() => deleteElement({
+      id: 'Enums.Owner.EnumValues.DeleteMe', name: 'DeleteMe',
+      type: MetadataType.EnumValue, parent: container,
+      parentFilePath: missingOwnerPath, properties: {},
+    }), /доверенный корень конфигурации/);
+  });
+
+  test('deleteElement rejects R6 owner reached through symlink or junction escape', async function () {
+    const dir = await createTempDir('1cviewer-delete-r6-link-');
+    try {
+      const trustedRoot = path.join(dir, 'trusted');
+      const externalEnums = path.join(dir, 'external-enums');
+      const linkedEnums = path.join(trustedRoot, 'Enums');
+      await fs.promises.mkdir(trustedRoot, { recursive: true });
+      await fs.promises.mkdir(externalEnums, { recursive: true });
+      const externalOwnerPath = path.join(externalEnums, 'Owner.xml');
+      await XMLWriter.createMinimalElementFile(externalOwnerPath, 'Enum', 'Owner');
+      const externalOwner: TreeNode = {
+        id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
+        filePath: externalOwnerPath, properties: {}, children: [],
+      };
+      const externalContainer: TreeNode = {
+        id: 'EnumValues', name: 'EnumValues', type: MetadataType.EnumValue,
+        parent: externalOwner, parentFilePath: externalOwnerPath, properties: {}, children: [],
+      };
+      externalOwner.children = [externalContainer];
+      await createElement(externalContainer, 'DeleteMe');
+      const before = await readFileContent(externalOwnerPath);
+      try {
+        await fs.promises.symlink(
+          externalEnums,
+          linkedEnums,
+          process.platform === 'win32' ? 'junction' : 'dir'
+        );
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'EPERM' || code === 'EACCES' || code === 'ENOSYS') {
+          this.skip();
+          return;
+        }
+        throw error;
+      }
+      const linkedOwnerPath = path.join(linkedEnums, 'Owner.xml');
+      const linkedOwner: TreeNode = {
+        ...externalOwner, filePath: linkedOwnerPath, children: [],
+      };
+      const linkedContainer: TreeNode = {
+        ...externalContainer, parent: linkedOwner, parentFilePath: linkedOwnerPath, children: [],
+      };
+      linkedOwner.children = [linkedContainer];
+
+      await assert.rejects(() => deleteElement({
+        id: 'Enums.Owner.EnumValues.DeleteMe', name: 'DeleteMe',
+        type: MetadataType.EnumValue, parent: linkedContainer,
+        parentFilePath: linkedOwnerPath, properties: {},
+      }, { trustedRootPath: trustedRoot }), (error: unknown) =>
+        !!error && typeof error === 'object'
+        && (error as { code?: string }).code === 'PATH_OUTSIDE_ROOT');
+      assert.strictEqual(await readFileContent(externalOwnerPath), before);
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
   // ---------------------------------------------------------------------------
 
   test('findTabularSectionInstanceForAttributeParent returns section for columns container', async () => {

@@ -28,10 +28,17 @@ import type {
   MutationPlan,
   MutationStep,
 } from './configurationSession/mutationPlan';
+import {
+  assertNoSymlinkSegments,
+  assertPathWithinRoot,
+} from './configurationSession/pathBoundary';
 import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
-import { appendPredefinedDesignerItem } from '../utils/xml/predefinedDataAppender';
+import {
+  appendPredefinedDesignerItem,
+  removePredefinedDesignerItem,
+} from '../utils/xml/predefinedDataAppender';
 import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
@@ -1241,11 +1248,25 @@ export async function planRenameRootElement(
   return { kind: 'ui.renameRootElement', steps, result: undefined };
 }
 
+export interface DeleteElementContext {
+  /** Canonical configuration boundary required for all R6 nested mutations. */
+  trustedRootPath?: string;
+}
+
+async function resolveTrustedR6Path(trustedRootPath: string, targetPath: string): Promise<string> {
+  const { canonicalRoot, canonicalTarget } = await assertPathWithinRoot(trustedRootPath, targetPath);
+  await assertNoSymlinkSegments(canonicalRoot, canonicalTarget);
+  return canonicalTarget;
+}
+
 
 /**
  * Delete element from XML or remove file. Optionally pass precomputed references to avoid second scan.
  */
-export async function deleteElement(node: TreeNode): Promise<void> {
+export async function deleteElement(
+  node: TreeNode,
+  context: DeleteElementContext = {}
+): Promise<void> {
   if (node.type === MetadataType.Configuration) {
     throw new Error('Нельзя удалить корень конфигурации.');
   }
@@ -1254,9 +1275,84 @@ export async function deleteElement(node: TreeNode): Promise<void> {
     throw new Error('Нет родительского узла.');
   }
 
+  const isR6Delete =
+    node.type === MetadataType.EnumValue
+    || node.type === MetadataType.Dimension
+    || node.type === MetadataType.Resource
+    || node.type === MetadataType.PredefinedItem;
+  const trustedRootPath = context.trustedRootPath?.trim();
+  if (isR6Delete && !trustedRootPath) {
+    throw new Error('Для удаления R6-элемента не задан доверенный корень конфигурации.');
+  }
+
   const filePath = node.parentFilePath || node.filePath;
   if (!filePath) {
     throw new Error('Файл элемента не найден.');
+  }
+
+  const r6NestedType =
+    node.type === MetadataType.EnumValue ? 'EnumValue'
+      : node.type === MetadataType.Dimension ? 'Dimension'
+        : node.type === MetadataType.Resource ? 'Resource'
+          : undefined;
+  if (r6NestedType) {
+    const expectedContainer = r6NestedType === 'EnumValue' ? 'EnumValues' : `${r6NestedType}s`;
+    const owner = parent.id === expectedContainer ? parent.parent : undefined;
+    const ownerTypeIsValid = owner && (
+      (r6NestedType === 'EnumValue' && owner.type === MetadataType.Enum)
+      || (r6NestedType !== 'EnumValue' && REGISTER_TYPES_FOR_DIM_RES.has(owner.type))
+    );
+    if (!ownerTypeIsValid || !owner?.filePath) {
+      throw new Error('Некорректный владелец nested-элемента.');
+    }
+    if (path.resolve(filePath).toLocaleLowerCase() !== path.resolve(owner.filePath).toLocaleLowerCase()) {
+      throw new Error('Файл nested-элемента не совпадает с файлом владельца.');
+    }
+    const canonicalOwnerPath = await resolveTrustedR6Path(trustedRootPath as string, owner.filePath);
+    const canonicalTargetPath = await resolveTrustedR6Path(trustedRootPath as string, filePath);
+    if (canonicalOwnerPath.toLocaleLowerCase() !== canonicalTargetPath.toLocaleLowerCase()) {
+      throw new Error('Файл nested-элемента не совпадает с файлом владельца.');
+    }
+    await XMLWriter.removeNestedElement(canonicalTargetPath, r6NestedType, node.name, true);
+    return;
+  }
+
+  if (node.type === MetadataType.PredefinedItem) {
+    const owner = parent.id === 'PredefinedData' ? parent.parent : undefined;
+    if (!owner || !PREDEFINED_METADATA_ROOT_TYPES.has(owner.type) || !owner.filePath) {
+      throw new Error('Некорректный владелец предопределённого элемента.');
+    }
+    const predefinedPath = parent.filePath || node.parentFilePath;
+    const expectedPredefinedPath = path.join(
+      path.dirname(owner.filePath),
+      owner.name,
+      'Ext',
+      'Predefined.xml'
+    );
+    const isExpectedPath = (candidate: string | undefined): boolean =>
+      !!candidate
+      && path.resolve(candidate).toLocaleLowerCase()
+        === path.resolve(expectedPredefinedPath).toLocaleLowerCase();
+    if (
+      !isExpectedPath(predefinedPath)
+      || !isExpectedPath(parent.filePath)
+      || (node.parentFilePath !== undefined && !isExpectedPath(node.parentFilePath))
+      || !isExpectedPath(filePath)
+    ) {
+      throw new Error('Некорректный путь к Predefined.xml.');
+    }
+    const canonicalOwnerPath = await resolveTrustedR6Path(trustedRootPath as string, owner.filePath);
+    const canonicalPredefinedPath = await resolveTrustedR6Path(
+      trustedRootPath as string,
+      predefinedPath as string
+    );
+    try {
+      await fs.promises.access(canonicalOwnerPath);
+    } catch {
+      throw new Error('Файл владельца предопределённого элемента не найден.');
+    }
+    await removePredefinedDesignerItem(canonicalPredefinedPath, node.name);
+    return;
   }
 
   if (node.type === MetadataType.Attribute || node.type === MetadataType.TabularSection) {

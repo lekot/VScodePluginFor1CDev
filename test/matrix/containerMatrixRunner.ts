@@ -260,7 +260,7 @@ async function runMatrixTargetCycle(
   }
 
   try {
-    await deleteElement(victim);
+    await deleteElement(victim, { trustedRootPath: workDir });
     appendStep(steps, stepSummary, {
       targetId: target.id,
       containerId,

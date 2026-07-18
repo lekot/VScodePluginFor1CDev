@@ -643,10 +643,13 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
   test('warmup respects its wall-clock budget before starting another type folder', async () => {
     const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const originalDateNow = Date.now;
     const parseCalls: string[] = [];
+    let now = 0;
+    Date.now = () => now;
     (MetadataParser as any).parseTypeIndex = async (_configPath: string, typeName: string) => {
       parseCalls.push(typeName);
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      now = 2;
       return [{ id: `${typeName}.Item`, name: 'Item', type: MetadataType.Unknown, properties: {} }];
     };
 
@@ -668,12 +671,16 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     try {
       provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
-      provider.startTypeContentsCacheWarmup({ delayMs: 0, budgetMs: 1 });
-      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      await (provider as any).warmUpTypeContentsCache(
+        [root],
+        (provider as any).typeContentsWarmupGeneration,
+        1,
+      );
 
       assert.deepStrictEqual(parseCalls, ['Catalogs']);
     } finally {
       provider.dispose();
+      Date.now = originalDateNow;
       (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
     }
   });

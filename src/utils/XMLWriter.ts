@@ -346,10 +346,15 @@ export class XMLWriter {
   static async removeNestedElement(
     filePath: string,
     elementType: string,
-    elementName: string
+    elementName: string,
+    required = false
   ): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
-    const updated = removeNestedElementInStructure(parsed, elementType, elementName);
+    const state = { changed: false };
+    const updated = removeNestedElementInStructure(parsed, elementType, elementName, state);
+    if (required && !state.changed) {
+      throw new Error(`${elementType} '${elementName}' was not found in ${filePath}`);
+    }
     await this.saveParsedWithBackup(
       filePath,
       xmlContent,

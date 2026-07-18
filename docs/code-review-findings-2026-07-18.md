@@ -10,10 +10,13 @@ The pre-existing untracked user file FormatSamples/empty_c.cf was not read, modi
 
 Final verification:
 
-- full `npm run verify` (compile, lint, type checking, and core suite): passed, exit code 0;
+- full `npm run verify` (compile, lint, type checking, and core suite): passed, exit code 0; the final core acceptance run reported 3,023 passing and 36 pending;
 - VS Code smoke suite: 10 passing, 1 opt-in test pending;
-- local matrix on a complete temporary copy of `FormatSamples/empty_conf`: 15 passed, 0 failed, 0 skipped, exit code 0;
-- the environment-dependent ibcmd/import platform check was not executed because its opt-in environment was not configured.
+- full local matrix: 336 passed, 0 failed, 0 skipped;
+- `scripts/instrument-smoke` through `ibcmd.setup.example.bat`: passed, exit code 0;
+- ibcmd import and ibcmd configuration checks: both executed successfully, exit code 0.
+
+Follow-up acceptance closed three defects exposed only by the expanded gates: the full matrix found the R6 delete asymmetry and a fail-open runner, while concurrency stress found a FIFO lock-admission race. All three were fixed before this register was closed.
 
 The findings below preserve the original failure scenarios and evidence for traceability. The `Evidence` and `Test gap` fields describe the pre-remediation baseline; each `Resolution and coverage` field records the implemented boundary and the regression coverage that closes that gap.
 
@@ -218,7 +221,7 @@ The findings below preserve the original failure scenarios and evidence for trac
 ### AR-16 -- P2 -- ibcmd discovery blocks synchronously and cancellation does not terminate the process tree
 
 - **Status:** Fixed
-- **Resolution and coverage:** ibcmd resolution is asynchronous with positive and negative caching, while cancellation performs verified process-tree termination with graceful escalation and correct streaming UTF chunk handling. Resolver, cache, cancellation, descendant-cleanup, and stream-boundary tests pass; the real platform ibcmd/import check remains opt-in and was not run in this environment.
+- **Resolution and coverage:** ibcmd resolution is asynchronous with positive and negative caching, while cancellation performs verified process-tree termination with graceful escalation and correct streaming UTF chunk handling. Resolver, cache, cancellation, descendant-cleanup, and stream-boundary tests pass; real ibcmd import and configuration checks also executed successfully with exit code 0.
 - **Scenario and impact:** Invoke an ibcmd-backed command when ibcmd is absent or cancel a long-running operation on Windows. Path resolution can synchronously run where/which for up to eight seconds and scan installation directories on the extension-host thread. Only successful paths are cached, so missing-path resolution repeats across command call sites. Streaming cancellation sends signals to the direct child only; it does not terminate descendants/process groups, and the Windows escalation condition relies on child.killed, which becomes true after the first kill request rather than after process exit. A descendant can survive cancellation and keep locks/resources.
 - **Evidence:**
   - src/services/ibcmd/IbcmdPathResolver.ts:73-103 calls execFileSync with an 8-second timeout; 105-133 performs synchronous recursive installation-directory scanning.
