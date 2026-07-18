@@ -80,7 +80,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     assert.ok(!html.includes('id="save-btn" disabled'), 'Save button should not be disabled initially');
 
     // Check Save enablement is selection-driven in current UI.
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
 
     const scriptContent = scriptMatch![1];
@@ -118,7 +118,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
@@ -150,7 +150,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
@@ -184,7 +184,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
@@ -244,7 +244,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
         const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
         const html = getWebviewContent(typeDefinition);
 
-        const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+        const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
         if (!scriptMatch) return false;
         
         const scriptContent = scriptMatch[1];
@@ -314,7 +314,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
@@ -347,7 +347,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
@@ -379,7 +379,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
@@ -404,7 +404,7 @@ suite('Bug Condition Exploration: Save Button Remains Disabled After Changes', (
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];

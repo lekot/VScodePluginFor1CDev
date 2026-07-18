@@ -93,7 +93,7 @@ suite('Bug Condition Exploration: Cancel Button Doesn\'t Close Editor', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
@@ -125,7 +125,7 @@ suite('Bug Condition Exploration: Cancel Button Doesn\'t Close Editor', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];

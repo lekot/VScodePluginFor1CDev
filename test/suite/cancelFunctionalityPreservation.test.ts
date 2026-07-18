@@ -65,16 +65,18 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
   });
 
   function extractScript(html: string): string {
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     return scriptMatch![1];
   }
 
-  test('script extraction accepts whitespace before the closing tag bracket', () => {
-    assert.strictEqual(
-      extractScript('<script nonce="test-nonce">const marker = true;</script >'),
-      'const marker = true;',
-    );
+  test('script extraction accepts browser-tolerated closing tag variants', () => {
+    for (const closingTag of ['</script >', '</script\t\n bar>']) {
+      assert.strictEqual(
+        extractScript(`<script nonce="test-nonce">const marker = true;${closingTag}`),
+        'const marker = true;',
+      );
+    }
   });
 
   /**
@@ -645,7 +647,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
