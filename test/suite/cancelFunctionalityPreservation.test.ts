@@ -65,10 +65,17 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
   });
 
   function extractScript(html: string): string {
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     return scriptMatch![1];
   }
+
+  test('script extraction accepts whitespace before the closing tag bracket', () => {
+    assert.strictEqual(
+      extractScript('<script nonce="test-nonce">const marker = true;</script >'),
+      'const marker = true;',
+    );
+  });
 
   /**
    * Test 2.1: Editor opens and displays type configuration correctly
@@ -638,7 +645,7 @@ suite('Preservation Property Tests: Existing Editor Behavior (Non-Cancel)', () =
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];

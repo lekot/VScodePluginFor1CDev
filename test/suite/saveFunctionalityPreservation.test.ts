@@ -596,7 +596,7 @@ suite('Preservation Property Tests: Existing Save Behavior', () => {
     const getWebviewContent = (typeEditorProvider as any).getWebviewContent.bind(typeEditorProvider);
     const html = getWebviewContent(typeDefinition);
 
-    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
+    const scriptMatch = html.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
     assert.ok(scriptMatch, 'Script section should exist');
     
     const scriptContent = scriptMatch![1];
