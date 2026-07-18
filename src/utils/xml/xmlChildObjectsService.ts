@@ -28,6 +28,7 @@ import { Logger } from '../logger';
 import { xmlParser } from './xmlCore';
 import { buildXmlString } from './xmlFileIo';
 import { type WriteNestedElementOptions, type NestedAttributeScopeState } from './xmlChildObjectsConstants';
+import { isStructuredTypePropertyValue } from '../../serializers/typeSerializer';
 
 // ---------------------------------------------------------------------------
 // Internal scope-state helpers
@@ -625,6 +626,11 @@ function updateNestedElementPropertiesObject(
 
     const existing = result[key];
 
+    if (key === 'Type' && isStructuredTypePropertyValue(newVal)) {
+      result[key] = newVal.content;
+      continue;
+    }
+
     // Do not write raw objects; preserve existing structured content for non-user keys
     if (typeof newVal === 'object' && newVal !== null && !Array.isArray(newVal)) {
       // Only overwrite if we have a structured Type object parse from XML
@@ -717,6 +723,10 @@ function updateNestedElementProperties(
 
       if (shouldUpdateThisKey) {
         const newValue = properties[key];
+        if (key === 'Type' && isStructuredTypePropertyValue(newValue)) {
+          result[key] = newValue.content;
+          continue;
+        }
         const textValue = typeof newValue === 'boolean' || typeof newValue === 'number'
           ? newValue
           : String(newValue ?? '');

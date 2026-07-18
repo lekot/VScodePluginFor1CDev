@@ -2,27 +2,168 @@ import * as vscode from 'vscode';
 import { TypeDefinition, ReferenceableGroup, StringQualifiers, NumberQualifiers, DateQualifiers } from '../types/typeDefinitions';
 import { TypeParser } from '../parsers/typeParser';
 import { Logger } from '../utils/logger';
-
-/** Escapes JSON for safe embedding inside a <script> tag (prevents </script> from breaking out). */
-function escapeJsonForScript(json: string): string {
-  return json.replace(/<\/script>/gi, '<\\/script>');
-}
+import { escapeJsonForScript } from '../utils/escapeJsonForScript';
+import { randomBytes } from 'crypto';
+import { validateElementName } from '../utils/elementNameValidator';
 
 type WebviewMessage =
   | { type: 'save'; typeDefinition: TypeDefinition }
   | { type: 'cancel' }
-  | { type: 'validate'; typeDefinition: TypeDefinition; validationErrors?: string[] };
+  | { type: 'validate'; typeDefinition: TypeDefinition };
+
+const TYPE_CATEGORIES = new Set<TypeDefinition['category']>(['primitive', 'reference', 'composite']);
+const REFERENCE_KINDS = new Set([
+  'CatalogRef',
+  'DocumentRef',
+  'EnumRef',
+  'ChartOfCharacteristicTypesRef',
+  'ChartOfAccountsRef',
+  'ChartOfCalculationTypesRef',
+  'DefinedType',
+]);
+const PRIMITIVE_TYPE_ENTRY_LIMIT = 4;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isStringQualifiers(value: unknown): value is StringQualifiers {
+  return isRecord(value)
+    && hasOnlyKeys(value, ['length', 'allowedLength'])
+    && typeof value['length'] === 'number'
+    && Number.isInteger(value['length'])
+    && value['length'] >= 1
+    && value['length'] <= 1024
+    && (value['allowedLength'] === 'Fixed' || value['allowedLength'] === 'Variable');
+}
+
+function isNumberQualifiers(value: unknown): value is NumberQualifiers {
+  return isRecord(value)
+    && hasOnlyKeys(value, ['digits', 'fractionDigits', 'allowedSign'])
+    && typeof value['digits'] === 'number'
+    && Number.isInteger(value['digits'])
+    && value['digits'] >= 1
+    && value['digits'] <= 38
+    && typeof value['fractionDigits'] === 'number'
+    && Number.isInteger(value['fractionDigits'])
+    && value['fractionDigits'] >= 0
+    && value['fractionDigits'] <= value['digits']
+    && (value['allowedSign'] === 'Any' || value['allowedSign'] === 'Nonnegative');
+}
+
+function isDateQualifiers(value: unknown): value is DateQualifiers {
+  return isRecord(value)
+    && hasOnlyKeys(value, ['dateFractions'])
+    && (value['dateFractions'] === 'Date'
+      || value['dateFractions'] === 'DateTime'
+      || value['dateFractions'] === 'Time');
+}
+
+function hasOptionalQualifiers(
+  value: Record<string, unknown>,
+  validator: (qualifiers: unknown) => boolean,
+): boolean {
+  return value['qualifiers'] === undefined || validator(value['qualifiers']);
+}
+
+function isValidReferenceObjectName(value: string): boolean {
+  return value === value.trim() && validateElementName(value, []) === null;
+}
+
+function isTypeEntry(value: unknown): boolean {
+  if (!isRecord(value) || typeof value['kind'] !== 'string') { return false; }
+  switch (value['kind']) {
+    case 'string':
+      return hasOnlyKeys(value, ['kind', 'qualifiers']) && hasOptionalQualifiers(value, isStringQualifiers);
+    case 'number':
+      return hasOnlyKeys(value, ['kind', 'qualifiers']) && hasOptionalQualifiers(value, isNumberQualifiers);
+    case 'boolean':
+      return hasOnlyKeys(value, ['kind', 'qualifiers']) && value['qualifiers'] === undefined;
+    case 'date':
+      return hasOnlyKeys(value, ['kind', 'qualifiers']) && hasOptionalQualifiers(value, isDateQualifiers);
+    case 'reference': {
+      const referenceType = value['referenceType'];
+      return hasOnlyKeys(value, ['kind', 'referenceType'])
+        && isRecord(referenceType)
+        && hasOnlyKeys(referenceType, ['referenceKind', 'objectName'])
+        && typeof referenceType['referenceKind'] === 'string'
+        && REFERENCE_KINDS.has(referenceType['referenceKind'])
+        && typeof referenceType['objectName'] === 'string'
+        && isValidReferenceObjectName(referenceType['objectName']);
+    }
+    default:
+      return false;
+  }
+}
+
+function typeEntryKey(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value['kind'] !== 'string') { return undefined; }
+  if (value['kind'] !== 'reference') { return value['kind']; }
+  const referenceType = value['referenceType'];
+  if (!isRecord(referenceType)) { return undefined; }
+  return `${String(referenceType['referenceKind'])}:${String(referenceType['objectName'])}`;
+}
+
+function expectedCategory(types: unknown[]): TypeDefinition['category'] {
+  if (types.length > 1) { return 'composite'; }
+  return types.length === 1 && isRecord(types[0]) && types[0]['kind'] === 'reference'
+    ? 'reference'
+    : 'primitive';
+}
+
+function isTypeDefinition(value: unknown, maxTypeEntries: number): value is TypeDefinition {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ['category', 'types'])
+    || typeof value['category'] !== 'string'
+    || !TYPE_CATEGORIES.has(value['category'] as TypeDefinition['category'])
+    || !Array.isArray(value['types'])
+    || value['types'].length > maxTypeEntries
+    || !value['types'].every(isTypeEntry)
+    || value['category'] !== expectedCategory(value['types'])) {
+    return false;
+  }
+  const keys = value['types'].map(typeEntryKey);
+  return keys.every((key): key is string => key !== undefined)
+    && new Set(keys).size === keys.length;
+}
+
+function hasOnlyAllowedReferences(
+  typeDefinition: TypeDefinition,
+  allowedReferenceTypeKeys: ReadonlySet<string>,
+): boolean {
+  return typeDefinition.types.every((entry) => {
+    if (entry.kind !== 'reference') { return true; }
+    const key = typeEntryKey(entry);
+    return key !== undefined && allowedReferenceTypeKeys.has(key);
+  });
+}
 
 /**
  * Type guard for webview messages
  */
-function isValidWebviewMessage(msg: unknown): msg is WebviewMessage {
-  if (!msg || typeof msg !== 'object') {return false;}
-  const m = msg as { type?: unknown };
-  if (typeof m.type !== 'string') {return false;}
-  
-  const validTypes = ['save', 'cancel', 'validate'];
-  return validTypes.includes(m.type);
+export function isTypeEditorWebviewMessage(
+  msg: unknown,
+  allowedReferenceTypeKeys: ReadonlySet<string>,
+): msg is WebviewMessage {
+  if (!isRecord(msg)) { return false; }
+  if (msg['type'] === 'cancel') {
+    return hasOnlyKeys(msg, ['type']);
+  }
+  if (msg['type'] === 'save' || msg['type'] === 'validate') {
+    return hasOnlyKeys(msg, ['type', 'typeDefinition'])
+      && isTypeDefinition(
+        msg['typeDefinition'],
+        allowedReferenceTypeKeys.size + PRIMITIVE_TYPE_ENTRY_LIMIT,
+      )
+      && hasOnlyAllowedReferences(msg['typeDefinition'], allowedReferenceTypeKeys)
+      && (msg['type'] === 'validate' || msg['typeDefinition'].types.length > 0);
+  }
+  return false;
 }
 
 export class TypeEditorProvider {
@@ -30,6 +171,7 @@ export class TypeEditorProvider {
   private resolvePromise: ((value: TypeDefinition | null) => void) | undefined;
   private rejectPromise: ((reason: Error) => void) | undefined;
   private disposables: vscode.Disposable[] = [];
+  private allowedReferenceTypeKeys = new Set<string>();
 
   constructor(private context: vscode.ExtensionContext) {
     Logger.info('TypeEditorProvider initialized');
@@ -74,7 +216,7 @@ export class TypeEditorProvider {
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
     panel.webview.onDidReceiveMessage(async (message: unknown) => {
       // Runtime validation of incoming messages
-      if (!isValidWebviewMessage(message)) {
+      if (!isTypeEditorWebviewMessage(message, this.allowedReferenceTypeKeys)) {
         Logger.warn('Received invalid message from webview', message);
         return;
       }
@@ -155,7 +297,20 @@ export class TypeEditorProvider {
       'ChartOfCalculationTypesRef',
     ];
     const refGroups: { id: string; label: string; children: { id: string; label: string }[] }[] = [];
-    const groupsToIterate = referenceableObjects.length > 0 ? referenceableObjects : REFERENCE_KINDS_ORDER.map((referenceKind) => ({ referenceKind, objectNames: [] as string[] }));
+    const groupsByKind = new Map(
+      referenceableObjects.map((group) => [group.referenceKind, group] as const),
+    );
+    const kindsToIterate = referenceableObjects.length > 0
+      ? referenceableObjects.map((group) => group.referenceKind)
+      : [...REFERENCE_KINDS_ORDER];
+    for (const virtualKind of virtualRefs.keys()) {
+      if (!kindsToIterate.includes(virtualKind)) {
+        kindsToIterate.push(virtualKind);
+      }
+    }
+    const groupsToIterate = kindsToIterate.map((referenceKind) => (
+      groupsByKind.get(referenceKind) ?? { referenceKind, objectNames: [] }
+    ));
     for (const g of groupsToIterate) {
       const children = g.objectNames.map((name) => ({ id: 'ref:' + g.referenceKind + ':' + name, label: name }));
       const virtual = virtualRefs.get(g.referenceKind);
@@ -175,12 +330,20 @@ export class TypeEditorProvider {
     typeDefinition: TypeDefinition,
     referenceableObjects: ReferenceableGroup[] = []
   ): string {
+    const nonce = randomBytes(24).toString('base64url');
     const currentTypeDisplay = this.formatTypeDisplay(typeDefinition);
     const refGroupsJson = escapeJsonForScript(JSON.stringify(referenceableObjects));
     const initialComposite = typeDefinition.types.length > 1;
     const initialSelectedIds = this.getInitialSelectedNodeIds(typeDefinition, referenceableObjects);
     const initialQualifierState = this.getInitialQualifierState(typeDefinition);
     const treeData = this.buildTreeData(typeDefinition, referenceableObjects);
+    this.allowedReferenceTypeKeys = new Set(
+      treeData
+        .flatMap((group) => group.children ?? [])
+        .map((child) => child.id)
+        .filter((id) => id.startsWith('ref:'))
+        .map((id) => id.slice('ref:'.length)),
+    );
     const treeDataJson = escapeJsonForScript(JSON.stringify(treeData));
     const initialSelectedJson = escapeJsonForScript(JSON.stringify(initialSelectedIds));
     const initialQualifierStateJson = escapeJsonForScript(JSON.stringify(initialQualifierState));
@@ -190,8 +353,9 @@ export class TypeEditorProvider {
       <html>
       <head>
         <meta charset="UTF-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';">
         <title>Редактирование типа данных</title>
-        <style>
+        <style nonce="${nonce}">
           * { box-sizing: border-box; }
           body {
             font-family: var(--vscode-font-family);
@@ -250,6 +414,7 @@ export class TypeEditorProvider {
           .tree-group-label:hover { color: var(--vscode-focusBorder); }
           .tree-group-children { margin-left: 16px; }
           .tree-leaf.hidden, .tree-group.hidden { display: none !important; }
+          .hidden { display: none !important; }
           .qualifier-section {
             background-color: var(--vscode-input-background);
             border: 1px solid var(--vscode-input-border);
@@ -329,7 +494,7 @@ export class TypeEditorProvider {
             <span class="section-title">Квалификаторы</span>
             <div id="qualifier-section" class="qualifier-section">
               <div id="qualifier-empty" class="empty-state">Выберите примитивный тип в дереве</div>
-              <div id="qualifier-fields" style="display:none;">
+              <div id="qualifier-fields" class="hidden">
                 <div id="string-qualifiers" class="qualifier-group">
                   <div class="form-row">
                     <div class="form-group"><label for="string-length">Length</label><input type="number" id="string-length" min="1" max="1024"></div>
@@ -358,7 +523,7 @@ export class TypeEditorProvider {
             <button type="button" id="save-btn" ${typeDefinition.types.length === 0 ? 'disabled' : ''} title="Сохранить" aria-label="Сохранить">Сохранить</button>
           </div>
         </div>
-        <script>
+        <script nonce="${nonce}">
           const vscode = acquireVsCodeApi();
           const refGroups = ${refGroupsJson};
           const treeData = ${treeDataJson};
@@ -437,12 +602,12 @@ export class TypeEditorProvider {
               if (id.startsWith('primitive:')) { focusedKey = id.replace('primitive:', ''); break; }
             }
             if (!focusedKey) {
-              qualifierEmpty.style.display = 'block';
-              qualifierFields.style.display = 'none';
+              qualifierEmpty.classList.remove('hidden');
+              qualifierFields.classList.add('hidden');
               return;
             }
-            qualifierEmpty.style.display = 'none';
-            qualifierFields.style.display = 'block';
+            qualifierEmpty.classList.add('hidden');
+            qualifierFields.classList.remove('hidden');
             for (const k of Object.keys(qualifierGroups)) {
               const g = qualifierGroups[k];
               if (g) g.classList.toggle('active', k === focusedKey);
@@ -628,13 +793,25 @@ export class TypeEditorProvider {
       errors.push('Type definition is required');
       return errors;
     }
+
+    if (typeDefinition.category !== expectedCategory(typeDefinition.types)) {
+      errors.push('Type category does not match the selected types');
+    }
+
+    const seenTypes = new Set<string>();
     
     for (const entry of typeDefinition.types) {
+      const key = typeEntryKey(entry);
+      if (key && seenTypes.has(key)) {
+        errors.push(`Duplicate type is not allowed: ${key}`);
+      } else if (key) {
+        seenTypes.add(key);
+      }
       switch (entry.kind) {
         case 'string':
           if (entry.qualifiers) {
             const q = entry.qualifiers as StringQualifiers;
-            if (q.length !== undefined && (q.length < 1 || q.length > 1024)) {
+            if (!Number.isInteger(q.length) || q.length < 1 || q.length > 1024) {
               errors.push(`String length must be between 1 and 1024, got ${q.length}`);
             }
           }
@@ -643,17 +820,17 @@ export class TypeEditorProvider {
         case 'number':
           if (entry.qualifiers) {
             const q = entry.qualifiers as NumberQualifiers;
-            if (q.digits !== undefined && (q.digits < 1 || q.digits > 38)) {
+            if (!Number.isInteger(q.digits) || q.digits < 1 || q.digits > 38) {
               errors.push(`Number digits must be between 1 and 38, got ${q.digits}`);
             }
-            if (q.fractionDigits !== undefined && (q.fractionDigits < 0 || q.fractionDigits > (q.digits || 38))) {
-              errors.push(`Number fraction digits must be between 0 and ${q.digits || 38}, got ${q.fractionDigits}`);
+            if (!Number.isInteger(q.fractionDigits) || q.fractionDigits < 0 || q.fractionDigits > q.digits) {
+              errors.push(`Number fraction digits must be between 0 and ${q.digits}, got ${q.fractionDigits}`);
             }
           }
           break;
           
         case 'reference':
-          if (!entry.referenceType) {
+          if (!entry.referenceType || !isValidReferenceObjectName(entry.referenceType.objectName)) {
             errors.push('Reference type must have referenceKind and objectName');
           }
           break;
@@ -673,6 +850,12 @@ export class TypeEditorProvider {
       const def = message.typeDefinition;
       if (!Array.isArray(def.types) || def.types.length === 0) {
         Logger.warn('Type editor save ignored: types empty or not array');
+        return;
+      }
+      const validationErrors = this.validateTypeDefinition(def);
+      if (validationErrors.length > 0) {
+        Logger.warn('Type editor save ignored: invalid type definition', validationErrors);
+        this.panel?.webview.postMessage({ type: 'validationResult', errors: validationErrors });
         return;
       }
       const typeDefinition: TypeDefinition = {
@@ -720,6 +903,7 @@ export class TypeEditorProvider {
     if (this.rejectPromise) { this.rejectPromise(new Error('Type editor closed')); this.rejectPromise = undefined; }
     else if (this.resolvePromise) { this.resolvePromise(null); this.resolvePromise = undefined; }
     if (this.panel) { this.panel.dispose(); this.panel = undefined; }
+    this.allowedReferenceTypeKeys.clear();
     while (this.disposables.length) { const d = this.disposables.pop(); if (d) {d.dispose();} }
   }
 }

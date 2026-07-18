@@ -10,6 +10,10 @@ import {
 } from '../../services/metadataFileLocator';
 import { MetadataType } from '../../models/treeNode';
 import { MetadataTypeMapper } from '../../utils/metadataTypeMapper';
+import {
+  type CompareCancellationToken,
+  throwIfCompareCancelled,
+} from '../compareCancellation';
 
 export type SupportedBslModuleKind = 'Object' | 'Manager' | 'CommonModule' | 'Form' | 'Command';
 
@@ -74,13 +78,16 @@ export interface BslModuleSourceInput {
 }
 
 export async function buildBslModuleIndex(
-  inputs: readonly BslModuleFileInput[]
+  inputs: readonly BslModuleFileInput[],
+  cancellation?: CompareCancellationToken,
 ): Promise<BslModuleIndexResult> {
   const modules: BslModuleIndexEntry[] = [];
   const diagnostics: BslModuleDiagnostic[] = [];
 
   for (const input of inputs) {
+    throwIfCompareCancelled(cancellation);
     const result = await indexBslModuleFile(input);
+    throwIfCompareCancelled(cancellation);
     diagnostics.push(...result.diagnostics);
     modules.push(...result.modules);
   }

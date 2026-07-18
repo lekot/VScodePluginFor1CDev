@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **60** runtime-команд Agent API для программного управления метаданными, привязками, раскаткой, отладкой, формами enterprise, СКД и XDTO-пакетами 1С:Предприятие. Команды вызываются через HTTP bridge или через `vscode.commands.executeCommand`.
+Расширение CDT 41 для VS Code предоставляет **61** runtime-команду Agent API для программного управления метаданными, привязками, раскаткой, отладкой, формами enterprise, СКД и XDTO-пакетами 1С:Предприятие. Команды вызываются через HTTP bridge или через `vscode.commands.executeCommand`.
 
 ## HTTP Bridge
 
@@ -102,7 +102,19 @@ bash "$HELPER" debug.start '{"rootProject":"C:/conf","infobase":"File=...","plat
 
 ## Команды
 
-Все команды возвращают `{ success: boolean, data?: T, error?: string }`.
+Все команды возвращают единый envelope:
+
+`{ success: boolean, data?: T, error?: string, code?: string, configurationId?: string, operationId?: string, snapshotVersion?: number }`.
+
+В multi-root workspace сначала вызовите `1c-metadata-tree.agent.listConfigurations`. Команда возвращает
+`data.configurations[]` с `configurationId`, путями, форматом, capabilities и health. Передавайте выбранный
+`configurationId` во все последующие команды. Селектор можно опустить только когда открыта ровно одна
+конфигурация, поддерживающая требуемую capability. Для мутаций `operationId` идентифицирует операцию, а
+`snapshotVersion` — подтверждённую версию конфигурационной сессии.
+
+#### `1c-metadata-tree.agent.listConfigurations`
+
+Параметры не требуются. Команда не изменяет файлы и является публичной точкой discovery для multi-root workspace.
 
 ---
 
@@ -776,7 +788,7 @@ JSON-DSL → DataCompositionSchema.xml.
 
 #### `1c-metadata-tree.agent.xdto.getPackage`
 
-Прочитать текущий пакет по имени или пути к metadata XML. Если `Package.bin` отсутствует, создаёт минимальный XDTO skeleton с namespace из metadata XML.
+Прочитать текущий пакет по имени или пути к metadata XML. Если `Package.bin` отсутствует, возвращает минимальный XDTO skeleton с namespace из metadata XML в памяти; файл появится только при явном сохранении или импорте.
 
 ```json
 { "packageName": "EnterpriseData_1_20_2", "includeSource": true }
@@ -788,10 +800,10 @@ JSON-DSL → DataCompositionSchema.xml.
 
 #### `1c-metadata-tree.agent.xdto.exportXsd`
 
-Экспортировать текущий 1C XDTO package в XSD. Без `outputPath` возвращает XSD inline.
+Экспортировать текущий 1C XDTO package в XSD. Без `outputPath` возвращает XSD inline. Если `outputPath` указан, он должен вести к файлу `.xsd` внутри выбранной конфигурации; относительный путь разрешается от её корня.
 
 ```json
-{ "packageName": "EnterpriseData_1_20_2", "outputPath": "C:/tmp/EnterpriseData_1_20_2.xsd" }
+{ "packageName": "EnterpriseData_1_20_2", "outputPath": "exports/EnterpriseData_1_20_2.xsd" }
 ```
 
 Возвращает: `{ schemaPath, outputPath?, xsd? }`.
@@ -903,7 +915,7 @@ Inline-вариант: `{ "packageName": "Demo", "source": "<xs:schema .../>" }`
 ```
 1. xdto.listPackages({})
    → найти имя пакета и путь к Package.bin
-2. xdto.exportXsd({ packageName: 'EnterpriseData_1_20_2', outputPath: 'C:/tmp/EnterpriseData_1_20_2.xsd' })
+2. xdto.exportXsd({ packageName: 'EnterpriseData_1_20_2', outputPath: 'exports/EnterpriseData_1_20_2.xsd' })
    → выгрузить текущий пакет в XSD
 3. xdto.compare({ packageName: 'EnterpriseData_1_20_2', inputPath: 'C:/tmp/vendor.xsd', includeTree: true })
    → получить дерево различий до типов, свойств, атрибутов и facets

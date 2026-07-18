@@ -42,6 +42,14 @@ class FileSystemError extends Error {
   }
 }
 
+class CancellationError extends Error {
+  constructor() {
+    super('Canceled');
+    this.name = 'Canceled';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 const Uri = {
   file: (fsPath: string) => ({ fsPath, scheme: 'file' as const }),
   joinPath: (base: { fsPath: string; scheme: string }, ...pathSegments: string[]) => {
@@ -374,6 +382,15 @@ const windowStub = {
 };
 
 const workspaceStub = {
+  createFileSystemWatcher: (_pattern: unknown) => ({
+    ignoreCreateEvents: false,
+    ignoreChangeEvents: false,
+    ignoreDeleteEvents: false,
+    onDidCreate: (_listener: unknown) => ({ dispose: () => undefined }),
+    onDidChange: (_listener: unknown) => ({ dispose: () => undefined }),
+    onDidDelete: (_listener: unknown) => ({ dispose: () => undefined }),
+    dispose: () => undefined,
+  }),
   getConfiguration: (_section?: string, _scope?: unknown) => ({
     get: <T>(section: string, defaultValue?: T) => {
       if (Object.prototype.hasOwnProperty.call(vscodeTestState.workspaceConfig, section)) {
@@ -732,6 +749,13 @@ const ConfigurationTarget = {
   WorkspaceFolder: 3,
 } as const;
 
+class RelativePattern {
+  constructor(
+    public readonly base: unknown,
+    public readonly pattern: string
+  ) {}
+}
+
 /** Optional override for suites that exercise `vscode.extensions.getExtension` (e.g. git integration). */
 export const vscodeExtensionsTestState: {
   getExtensionImpl: ((_id: string) => { activate(): Promise<unknown> } | undefined) | null;
@@ -743,12 +767,14 @@ const vscodeStub = {
   TreeItemCollapsibleState,
   TreeItem,
   Uri,
+  RelativePattern,
   ColorThemeKind,
   ConfigurationTarget,
   get version(): string {
     return vscodeTestState.vscodeVersion ?? '';
   },
   FileSystemError,
+  CancellationError,
   ThemeIcon,
   EventEmitter: VSCodeEventEmitter,
   ExtensionMode,

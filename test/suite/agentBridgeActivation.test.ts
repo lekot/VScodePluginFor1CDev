@@ -44,9 +44,12 @@ suite('activateAgentBridge', () => {
   test('возвращает AgentBridge и добавляет dispose в subscriptions когда workspaceFolder задан', async () => {
     const ctx = makeContext();
 
-    const bridge = activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
+    const bridge = await activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
 
     assert.ok(bridge !== undefined, 'должен вернуть инстанс AgentBridge');
+    if (!bridge) {
+      throw new Error('AgentBridge was not activated');
+    }
     assert.strictEqual(ctx.subscriptions.length, 1, 'должен добавить один dispose в subscriptions');
 
     // Дождёмся start() — bridge асинхронный, даём время
@@ -57,10 +60,10 @@ suite('activateAgentBridge', () => {
   });
 
   // ─── Case 2: Без workspaceFolder ────────────────────────────────────────────
-  test('возвращает undefined и не трогает subscriptions если workspaceFolder отсутствует', () => {
+  test('возвращает undefined и не трогает subscriptions если workspaceFolder отсутствует', async () => {
     const ctx = makeContext();
 
-    const result = activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, undefined);
+    const result = await activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, undefined);
 
     assert.strictEqual(result, undefined, 'должен вернуть undefined');
     assert.strictEqual(ctx.subscriptions.length, 0, 'subscriptions должны остаться пустыми');
@@ -80,12 +83,9 @@ suite('activateAgentBridge', () => {
 
     let bridge: import('../../src/agent/agentBridge').AgentBridge | undefined;
     try {
-      bridge = activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
-      assert.ok(bridge !== undefined, 'должен вернуть инстанс даже при будущем reject');
-      assert.strictEqual(ctx.subscriptions.length, 1, 'dispose должен быть зарегистрирован');
-
-      // Дождёмся отклонённого промиса
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      bridge = await activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
+      assert.strictEqual(bridge, undefined, 'неудачно стартовавший bridge не должен публиковаться');
+      assert.strictEqual(ctx.subscriptions.length, 0, 'dispose не должен регистрироваться при ошибке старта');
 
       assert.ok(
         vscodeTestState.warningLog.some((m) => m.includes('test-start-failure')),
@@ -104,8 +104,11 @@ suite('activateAgentBridge', () => {
   test('dispose из subscriptions вызывает bridge.stop()', async () => {
     const ctx = makeContext();
 
-    const bridge = activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
+    const bridge = await activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
     assert.ok(bridge, 'bridge должен быть создан');
+    if (!bridge) {
+      throw new Error('AgentBridge was not activated');
+    }
 
     // Дождёмся старта
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
@@ -128,7 +131,7 @@ suite('activateAgentBridge', () => {
     assert.ok(stopCalled, 'bridge.stop() должен быть вызван при dispose');
   });
 
-  test('whitelist разрешает agent.xdto команды', () => {
+  test('whitelist разрешает agent.xdto команды', async () => {
     const originalStart = AgentBridge.prototype.start;
     AgentBridge.prototype.start = async function () {
       return { port: 1, token: 'test' };
@@ -136,8 +139,11 @@ suite('activateAgentBridge', () => {
 
     try {
       const ctx = makeContext();
-      const bridge = activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
+      const bridge = await activateAgentBridge(ctx as unknown as import('vscode').ExtensionContext, tmpDir);
       assert.ok(bridge, 'bridge должен быть создан');
+      if (!bridge) {
+        throw new Error('AgentBridge was not activated');
+      }
 
       const pattern = (bridge as unknown as { _commandPattern: RegExp })._commandPattern;
       assert.ok(pattern.test('1c-metadata-tree.agent.xdto.listPackages'));

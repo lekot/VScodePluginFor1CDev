@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import {
   recoverDeleteUiStateAfterReconcileIssue,
 } from '../../src/services/deleteReconcileRecovery';
+import { MetadataReloadError } from '../../src/extension/metadataTreeLifecycle';
 
 suite('deleteReconcileRecovery', () => {
   test('recovery never performs rollback to keep delete UX monotonic', async () => {
@@ -71,9 +72,35 @@ suite('deleteReconcileRecovery', () => {
     });
 
     assert.strictEqual(result.refreshSucceeded, false);
+    assert.strictEqual(result.refreshFailure?.code, 'UNKNOWN_RELOAD_FAILURE');
+    assert.strictEqual(result.verificationFailure, undefined);
     assert.strictEqual(result.converged, null);
     assert.strictEqual(result.shouldNotifyUser, true);
     assert.match(result.message ?? '', /Нажмите «Обновить дерево»/);
+  });
+
+  test('verification failure is typed separately from a successful refresh', async () => {
+    const result = await recoverDeleteUiStateAfterReconcileIssue({
+      elementName: 'CatalogTypedFailure',
+      reason: 'failed',
+      forceRefresh: async () => {},
+      verifyDeletionConverged: async () => {
+        throw new MetadataReloadError(
+          'CONFIGURATION_PARSE_FAILED',
+          'verification reload failed',
+          'C:/cfg',
+        );
+      },
+    });
+
+    assert.strictEqual(result.refreshSucceeded, true);
+    assert.strictEqual(result.refreshFailure, undefined);
+    assert.strictEqual(result.converged, null);
+    assert.deepStrictEqual(result.verificationFailure, {
+      code: 'CONFIGURATION_PARSE_FAILED',
+      message: 'verification reload failed',
+    });
+    assert.strictEqual(result.shouldNotifyUser, true);
   });
 
   test('when converge status is unknown after refresh, warning is preserved', async () => {

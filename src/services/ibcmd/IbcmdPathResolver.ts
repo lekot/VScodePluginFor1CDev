@@ -1,48 +1,50 @@
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 function joinForPlatform(platform: NodeJS.Platform, ...segments: string[]): string {
   return platform === 'win32' ? path.win32.join(...segments) : path.posix.join(...segments);
 }
 
-/**
- * Resolves the ibcmd executable path without importing `vscode` (testable via dependency injection).
- *
- * Priority:
- * 1. Non-empty settings path (`settingsPath`) after trim — must exist on disk.
- * 2. Non-empty `IBCMD_PATH` from env (`envIbcmdPath`) after trim — must exist on disk.
- * 3. When `autoDetect` is true: `where ibcmd` / `which ibcmd`, then typical install roots.
- */
 export type IbcmdPathResolveResult =
   | { kind: 'resolved'; path: string }
   | { kind: 'notFound'; hint: string };
 
-export type IbcmdPathResolverDeps = {
-  existsSync: (p: string) => boolean;
-  readdirSync: (p: string) => string[];
-  statSync: (p: string) => { isDirectory(): boolean };
+type Awaitable<T> = T | Promise<T>;
+
+export interface IbcmdPathResolverDeps {
+  exists: (filePath: string) => Awaitable<boolean>;
+  readdir: (folderPath: string) => Awaitable<string[]>;
+  stat: (filePath: string) => Awaitable<{ isDirectory(): boolean }>;
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
-  /** Optional override for unit tests; default uses `where` / `which`. */
-  findOnSystemPath?: () => string | null;
-};
-
-function sortVersionishDesc(names: string[]): string[] {
-  return [...names].sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+  /** Optional override for tests; default uses asynchronous `where` / `which`. */
+  findOnSystemPath?: () => Awaitable<string | null>;
 }
 
-function isDir(deps: IbcmdPathResolverDeps, p: string): boolean {
+function sortVersionishDesc(names: string[]): string[] {
+  return [...names].sort((left, right) =>
+    right.localeCompare(left, undefined, { numeric: true, sensitivity: 'base' })
+  );
+}
+
+async function isDir(deps: IbcmdPathResolverDeps, candidatePath: string): Promise<boolean> {
   try {
-    return deps.statSync(p).isDirectory();
+    return (await deps.stat(candidatePath)).isDirectory();
   } catch {
     return false;
   }
 }
 
-function safeReaddir(deps: IbcmdPathResolverDeps, p: string): string[] {
+async function safeReaddir(
+  deps: IbcmdPathResolverDeps,
+  folderPath: string
+): Promise<string[]> {
   try {
-    return deps.readdirSync(p);
+    return await deps.readdir(folderPath);
   } catch {
     return [];
   }
@@ -51,7 +53,7 @@ function safeReaddir(deps: IbcmdPathResolverDeps, p: string): string[] {
 function collectProgramRoots(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
   if (platform === 'win32') {
     const roots = [env.ProgramW6432, env.ProgramFiles, env['ProgramFiles(x86)']].filter(
-      (x): x is string => typeof x === 'string' && x.length > 0
+      (value): value is string => typeof value === 'string' && value.length > 0
     );
     return [...new Set(roots)];
   }
@@ -59,76 +61,73 @@ function collectProgramRoots(env: NodeJS.ProcessEnv, platform: NodeJS.Platform):
 }
 
 function isValidIbcmdPath(resolvedPath: string, platform: NodeJS.Platform): boolean {
-  // Must be an absolute path
-  if (!path.isAbsolute(resolvedPath)) {
-    return false;
-  }
-  // On Windows, must end with ibcmd.exe; on other platforms, must end with ibcmd
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
   const expectedExeName = platform === 'win32' ? 'ibcmd.exe' : 'ibcmd';
-  const basename = path.basename(resolvedPath).toLowerCase();
-  return basename === expectedExeName;
+  return (
+    platformPath.isAbsolute(resolvedPath) &&
+    platformPath.basename(resolvedPath).toLowerCase() === expectedExeName
+  );
 }
 
-function defaultFindOnSystemPath(deps: IbcmdPathResolverDeps): string | null {
+async function defaultFindOnSystemPath(deps: IbcmdPathResolverDeps): Promise<string | null> {
   try {
-    if (deps.platform === 'win32') {
-      const out = execFileSync('where.exe', ['ibcmd'], {
-        encoding: 'utf-8',
-        windowsHide: true,
-        timeout: 8000,
-        maxBuffer: 1024 * 1024,
-      });
-      const line = out
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .find(Boolean);
-      if (line && isValidIbcmdPath(line, deps.platform) && deps.existsSync(line)) {
-        return line;
-      }
-    } else {
-      const out = execFileSync('which', ['ibcmd'], {
-        encoding: 'utf8',
-        timeout: 8000,
-        maxBuffer: 65536,
-      });
-      const line = out.trim().split('\n')[0]?.trim();
-      if (line && isValidIbcmdPath(line, deps.platform) && deps.existsSync(line)) {
-        return line;
-      }
+    const command = deps.platform === 'win32' ? 'where.exe' : 'which';
+    const { stdout } = await execFileAsync(command, ['ibcmd'], {
+      encoding: 'utf-8',
+      windowsHide: true,
+      timeout: 8000,
+      maxBuffer: deps.platform === 'win32' ? 1024 * 1024 : 65536,
+    });
+    const line = String(stdout)
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .find(Boolean);
+    if (line && isValidIbcmdPath(line, deps.platform) && (await deps.exists(line))) {
+      return line;
     }
   } catch {
-    // PATH lookup is best-effort only
+    // PATH lookup is best-effort only.
   }
   return null;
 }
 
-function tryScan1cv8InstallRoot(
+async function tryScan1cv8InstallRoot(
   installRoot: string,
   deps: IbcmdPathResolverDeps,
   exeName: string
-): string | null {
-  if (!deps.existsSync(installRoot)) {
+): Promise<string | null> {
+  if (!(await deps.exists(installRoot))) {
     return null;
   }
-  const level1 = sortVersionishDesc(safeReaddir(deps, installRoot));
+  const level1 = sortVersionishDesc(await safeReaddir(deps, installRoot));
   for (const name1 of level1) {
-    const p1 = joinForPlatform(deps.platform, installRoot, name1);
-    if (!isDir(deps, p1)) {
+    const firstLevelPath = joinForPlatform(deps.platform, installRoot, name1);
+    if (!(await isDir(deps, firstLevelPath))) {
       continue;
     }
-    const bin1 = joinForPlatform(deps.platform, p1, 'bin', exeName);
-    if (deps.existsSync(bin1)) {
-      return bin1;
+    const firstLevelExecutable = joinForPlatform(
+      deps.platform,
+      firstLevelPath,
+      'bin',
+      exeName
+    );
+    if (await deps.exists(firstLevelExecutable)) {
+      return firstLevelExecutable;
     }
-    const level2 = sortVersionishDesc(safeReaddir(deps, p1));
+    const level2 = sortVersionishDesc(await safeReaddir(deps, firstLevelPath));
     for (const name2 of level2) {
-      const p2 = joinForPlatform(deps.platform, p1, name2);
-      if (!isDir(deps, p2)) {
+      const secondLevelPath = joinForPlatform(deps.platform, firstLevelPath, name2);
+      if (!(await isDir(deps, secondLevelPath))) {
         continue;
       }
-      const bin2 = joinForPlatform(deps.platform, p2, 'bin', exeName);
-      if (deps.existsSync(bin2)) {
-        return bin2;
+      const secondLevelExecutable = joinForPlatform(
+        deps.platform,
+        secondLevelPath,
+        'bin',
+        exeName
+      );
+      if (await deps.exists(secondLevelExecutable)) {
+        return secondLevelExecutable;
       }
     }
   }
@@ -137,47 +136,54 @@ function tryScan1cv8InstallRoot(
 
 export function createDefaultPathResolverDeps(): IbcmdPathResolverDeps {
   return {
-    existsSync: fs.existsSync.bind(fs),
-    readdirSync: fs.readdirSync.bind(fs),
-    statSync: fs.statSync.bind(fs),
+    exists: async (filePath) => {
+      try {
+        await fs.access(filePath);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    readdir: (folderPath) => fs.readdir(folderPath),
+    stat: (filePath) => fs.stat(filePath),
     env: process.env,
     platform: process.platform,
   };
 }
 
 /**
- * Pure resolution: validates candidates with `existsSync`; no caching (cache lives in IbcmdService).
+ * Resolves the executable without blocking the extension-host event loop.
+ * Priority: configured path, IBCMD_PATH, system PATH, typical 1cv8 install roots.
  */
-export function resolveIbcmdPath(input: {
+export async function resolveIbcmdPath(input: {
   settingsPath: string | undefined;
   envIbcmdPath: string | undefined;
   deps: IbcmdPathResolverDeps;
-  /** When false, skip PATH and install-dir discovery after settings + env. Default true. */
   autoDetect?: boolean;
-}): IbcmdPathResolveResult {
+}): Promise<IbcmdPathResolveResult> {
   const { settingsPath, envIbcmdPath, deps } = input;
   const autoDetect = input.autoDetect !== false;
   const exeName = deps.platform === 'win32' ? 'ibcmd.exe' : 'ibcmd';
 
-  const s1 = settingsPath?.trim();
-  if (s1) {
-    if (deps.existsSync(s1)) {
-      return { kind: 'resolved', path: s1 };
+  const configuredPath = settingsPath?.trim();
+  if (configuredPath) {
+    if (await deps.exists(configuredPath)) {
+      return { kind: 'resolved', path: configuredPath };
     }
     return {
       kind: 'notFound',
-      hint: `Configured path does not exist: ${s1}`,
+      hint: `Configured path does not exist: ${configuredPath}`,
     };
   }
 
-  const s2 = envIbcmdPath?.trim();
-  if (s2) {
-    if (deps.existsSync(s2)) {
-      return { kind: 'resolved', path: s2 };
+  const environmentPath = envIbcmdPath?.trim();
+  if (environmentPath) {
+    if (await deps.exists(environmentPath)) {
+      return { kind: 'resolved', path: environmentPath };
     }
     return {
       kind: 'notFound',
-      hint: `IBCMD_PATH is set but the file does not exist: ${s2}`,
+      hint: `IBCMD_PATH is set but the file does not exist: ${environmentPath}`,
     };
   }
 
@@ -188,13 +194,19 @@ export function resolveIbcmdPath(input: {
     };
   }
 
-  const fromPath = deps.findOnSystemPath?.() ?? defaultFindOnSystemPath(deps);
+  const fromPath = deps.findOnSystemPath
+    ? await deps.findOnSystemPath()
+    : await defaultFindOnSystemPath(deps);
   if (fromPath) {
     return { kind: 'resolved', path: fromPath };
   }
 
   for (const root of collectProgramRoots(deps.env, deps.platform)) {
-    const hit = tryScan1cv8InstallRoot(joinForPlatform(deps.platform, root, '1cv8'), deps, exeName);
+    const hit = await tryScan1cv8InstallRoot(
+      joinForPlatform(deps.platform, root, '1cv8'),
+      deps,
+      exeName
+    );
     if (hit) {
       return { kind: 'resolved', path: hit };
     }

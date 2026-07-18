@@ -6,7 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser } from 'fast-xml-parser';
 import { rulesRegistry, metadataConverter } from '../rules';
-import { addRootObjectToConfiguration, removeRootObjectFromConfiguration } from '../services/configurationXmlUpdater';
+import {
+    addRootObjectToConfiguration,
+    buildRootObjectConfigurationContent,
+    removeRootObjectFromConfiguration,
+} from '../services/configurationXmlUpdater';
 import { getDesignerTemplateXml } from '../services/designerTemplateRepository';
 import { substituteDesignerTemplate } from '../services/designerTemplateSubstitutor';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
@@ -14,11 +18,15 @@ import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNorm
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { MetadataType } from '../models/treeNode';
+import { validateElementName } from '../utils/elementNameValidator';
+import { assertPathWithinRoot } from '../services/configurationSession/pathBoundary';
+import { hashContent } from '../services/configurationSession/atomicFileStorage';
+import type { MutationExpectation, MutationPlan, MutationStep } from '../services/configurationSession/mutationPlan';
 
 /** Types whose templates include default ChildObjects (Dimension+Resource); rules engine cannot generate those yet. */
 const TEMPLATE_ONLY_TYPES = new Set(['InformationRegister', 'AccumulationRegister']);
 import { CONFIGURATION_XML } from '../constants/fileNames';
-import { resolveAgentPath } from './agentPathResolver';
+import { AgentPathError, resolveAgentPath } from './agentPathResolver';
 import { XMLWriter } from '../utils/XMLWriter';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeSerializer } from '../serializers/typeSerializer';
@@ -59,6 +67,172 @@ export class AgentOperations {
         this.configRootPath = configRootPath;
     }
 
+    /** Builds the serializable multi-file create plan without applying filesystem effects. */
+    async planCreateObject(params: CreateObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
+        const { type, name, synonym, properties } = params;
+        if (!type || typeof type !== 'string') {
+            throw new Error('Parameter type is required and must be a string.');
+        }
+        if (!name || typeof name !== 'string' || !name.trim()) {
+            throw new Error('Parameter name is required and cannot be empty.');
+        }
+        const trimmedName = name.trim();
+        const typeValidation = validateElementName(type, []);
+        if (typeValidation) { throw new Error(`Invalid type "${type}": ${typeValidation}`); }
+        const rules = !TEMPLATE_ONLY_TYPES.has(type) ? rulesRegistry.get(type) : undefined;
+        const templateXml = !rules ? await getDesignerTemplateXml(type) : null;
+        if (!rules && templateXml === null) {
+            throw new Error(`Type "${type}" is not supported.`);
+        }
+        const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(type as MetadataType) ?? `${type}s`;
+        const folderPath = path.join(this.configRootPath, folderName);
+        const validation = validateElementName(trimmedName, await listXmlSiblingNames(folderPath));
+        if (validation) { throw new Error(validation); }
+        const filePath = path.join(folderPath, `${trimmedName}.xml`);
+        const elementDir = path.join(folderPath, trimmedName);
+        const fileExpected = await expectationForPath(filePath);
+        if (fileExpected.state !== 'missing') { throw new Error(`Object already exists: ${filePath}`); }
+        const directoryExpected = await expectationForPath(elementDir);
+        if (directoryExpected.state !== 'missing') { throw new Error(`Object directory already exists: ${elementDir}`); }
+
+        const uuid = generateSimpleUuid();
+        let content: string;
+        if (rules) {
+            let ir = metadataConverter.createDefaultIR(rules, { name: trimmedName, uuid });
+            const overrides: Record<string, unknown> = {};
+            if (synonym !== undefined) { overrides['Synonym'] = synonym; }
+            if (properties) { Object.assign(overrides, properties); }
+            if (Object.keys(overrides).length > 0) { ir = metadataConverter.mergeProperties(ir, overrides); }
+            content = metadataConverter.irToXml(ir, rules);
+        } else {
+            content = substituteDesignerTemplate(templateXml!, {
+                uuid,
+                Name: trimmedName,
+                Synonym_ru: synonym ?? trimmedName,
+                uuidDim: generateSimpleUuid(),
+                uuidResource: generateSimpleUuid(),
+            });
+        }
+        content = normalizeMetaDataObjectRoot(injectInternalInfoIntoMetadataXml(content, type, trimmedName));
+        const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
+        const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
+        const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
+            type: 'add', rootTag: type, objectName: trimmedName,
+        });
+        return {
+            kind: 'agent.createObject',
+            steps: [
+                { type: 'ensureDirectory', targetPath: folderPath },
+                { type: 'writeFile', targetPath: filePath, content, encoding: 'utf8', expected: fileExpected },
+                { type: 'ensureDirectory', targetPath: elementDir },
+                {
+                    type: 'writeFile',
+                    targetPath: configurationPath,
+                    content: nextConfigurationContent,
+                    encoding: 'utf8',
+                    expected: { state: 'file', hash: hashContent(configurationContent) },
+                },
+            ],
+            result: { success: true, data: { filePath } },
+        };
+    }
+
+    /** Builds the serializable multi-file delete plan without applying filesystem effects. */
+    async planDeleteObject(params: DeleteObjectParams): Promise<MutationPlan<AgentResult>> {
+        const { rootTag, objectName, filePath } = await this.resolveContainedAgentPath(params.path);
+        const fileExpected = await expectationForPath(filePath);
+        if (fileExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
+        const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ?? `${rootTag}s`;
+        const elementDir = path.join(this.configRootPath, folderName, objectName);
+        const directoryExpected = await expectationForPath(elementDir);
+        const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
+        const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
+        const steps: MutationStep[] = [
+            { type: 'deletePath', targetPath: filePath, expected: fileExpected },
+        ];
+        if (directoryExpected.state !== 'missing') {
+            steps.push({ type: 'deletePath', targetPath: elementDir, expected: directoryExpected });
+        }
+        steps.push({
+            type: 'writeFile',
+            targetPath: configurationPath,
+            content: buildRootObjectConfigurationContent(configurationContent, {
+                type: 'remove', rootTag, objectName,
+            }),
+            encoding: 'utf8',
+            expected: { state: 'file', hash: hashContent(configurationContent) },
+        });
+        return { kind: 'agent.deleteObject', steps, result: { success: true } };
+    }
+
+    /** Builds the serializable multi-file rename plan without applying filesystem effects. */
+    async planRenameObject(params: RenameObjectParams): Promise<MutationPlan<AgentResult<{ filePath: string }>>> {
+        const segmentCount = typeof params.path === 'string' ? params.path.split('.').length : 0;
+        if (segmentCount !== 2) {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `renameObject supports only a root object path (RootTag.Name): "${String(params.path)}".`,
+            );
+        }
+        const resolved = await this.resolveContainedAgentPath(params.path);
+        if (resolved.nestedType !== undefined || resolved.tabularSection !== undefined) {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `renameObject does not support nested metadata paths: "${params.path}".`,
+            );
+        }
+        const { rootTag, objectName, filePath } = resolved;
+        const sourceExpected = await expectationForPath(filePath);
+        if (sourceExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
+        const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ?? `${rootTag}s`;
+        const folderPath = path.join(this.configRootPath, folderName);
+        const newName = params.newName?.trim();
+        const validation = validateElementName(
+            newName,
+            (await listXmlSiblingNames(folderPath)).filter(
+                (sibling) => sibling.toLocaleLowerCase() !== objectName.toLocaleLowerCase(),
+            ),
+        );
+        if (validation) { throw new Error(validation); }
+        const newFilePath = path.join(folderPath, `${newName}.xml`);
+        const targetExpected = await expectationForPath(newFilePath);
+        if (targetExpected.state !== 'missing') { throw new Error(`Object already exists: ${newFilePath}`); }
+        const oldDir = path.join(folderPath, objectName);
+        const newDir = path.join(folderPath, newName);
+        const oldDirExpected = await expectationForPath(oldDir);
+        const newDirExpected = await expectationForPath(newDir);
+        if (newDirExpected.state !== 'missing') { throw new Error(`Object directory already exists: ${newDir}`); }
+        const objectContent = await fs.promises.readFile(filePath, 'utf8');
+        const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
+        const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
+        const steps: MutationStep[] = [
+            {
+                type: 'writeFile', targetPath: filePath,
+                content: XMLWriter.buildUpdatedPropertiesXml(objectContent, { Name: newName }),
+                encoding: 'utf8', expected: sourceExpected,
+            },
+            {
+                type: 'movePath', sourcePath: filePath, targetPath: newFilePath,
+                sourceExpected: { state: 'file', hash: hashContent(XMLWriter.buildUpdatedPropertiesXml(objectContent, { Name: newName })) },
+                targetExpected,
+            },
+        ];
+        if (oldDirExpected.state !== 'missing') {
+            steps.push({
+                type: 'movePath', sourcePath: oldDir, targetPath: newDir,
+                sourceExpected: oldDirExpected, targetExpected: newDirExpected,
+            });
+        }
+        steps.push({
+            type: 'writeFile', targetPath: configurationPath,
+            content: buildRootObjectConfigurationContent(configurationContent, {
+                type: 'rename', rootTag, objectName, newName,
+            }),
+            encoding: 'utf8', expected: { state: 'file', hash: hashContent(configurationContent) },
+        });
+        return { kind: 'agent.renameObject', steps, result: { success: true, data: { filePath: newFilePath } } };
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // createObject
     // ─────────────────────────────────────────────────────────────────────────
@@ -75,6 +249,10 @@ export class AgentOperations {
                 return { success: false, error: 'Параметр name обязателен и не может быть пустым.' };
             }
             const trimmedName = name.trim();
+            const typeValidation = validateElementName(type, []);
+            if (typeValidation) {
+                return { success: false, error: `Некорректный type "${type}": ${typeValidation}` };
+            }
 
             // Проверяем наличие правил или шаблона
             const rules = !TEMPLATE_ONLY_TYPES.has(type) ? rulesRegistry.get(type) : undefined;
@@ -89,9 +267,15 @@ export class AgentOperations {
             // Определяем папку типа через маппинг, fallback = rootTag + 's'
             const typeFolderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(type as MetadataType) ?? `${type}s`;
             const typeFolderPath = path.join(this.configRootPath, typeFolderName);
+            const nameValidation = validateElementName(trimmedName, await listXmlSiblingNames(typeFolderPath));
+            if (nameValidation) {
+                return { success: false, error: nameValidation };
+            }
+            await assertPathWithinRoot(this.configRootPath, typeFolderPath);
             await fs.promises.mkdir(typeFolderPath, { recursive: true });
 
             const newFilePath = path.join(typeFolderPath, `${trimmedName}.xml`);
+            await assertPathWithinRoot(this.configRootPath, newFilePath);
 
             // Проверяем, что файл не существует
             try {
@@ -131,10 +315,12 @@ export class AgentOperations {
             content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
             content = normalizeMetaDataObjectRoot(content);
 
+            await assertPathWithinRoot(this.configRootPath, newFilePath);
             await fs.promises.writeFile(newFilePath, content, 'utf-8');
 
             // Создаём директорию объекта
             const elementDir = path.join(typeFolderPath, trimmedName);
+            await assertPathWithinRoot(this.configRootPath, elementDir);
             await fs.promises.mkdir(elementDir, { recursive: true });
 
             // Регистрируем в Configuration.xml
@@ -182,8 +368,7 @@ export class AgentOperations {
             }
 
             // Ищем XML-файл
-            const typeFolderName = `${type}s`;
-            const xmlFilePath = path.join(this.configRootPath, typeFolderName, `${name}.xml`);
+            const xmlFilePath = (await this.resolveContainedAgentPath(`${type}.${name}`)).filePath;
 
             let xmlContent: string;
             try {
@@ -210,7 +395,7 @@ export class AgentOperations {
 
     async getProperties(params: GetPropertiesParams): Promise<AgentResult<{ properties: Record<string, unknown> }>> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
 
             try {
@@ -300,7 +485,7 @@ export class AgentOperations {
 
     async deleteAttribute(params: DeleteAttributeParams): Promise<AgentResult> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
 
             try {
@@ -340,7 +525,7 @@ export class AgentOperations {
                 return { success: false, error: `Неверный path для deleteTabularSection: "${params.path}". Ожидается формат: RootTag.ObjectName.TabularSection.TSName` };
             }
 
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
 
             try {
@@ -365,7 +550,7 @@ export class AgentOperations {
 
     async deleteObject(params: DeleteObjectParams): Promise<AgentResult> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { rootTag, objectName, filePath } = resolved;
 
             const folderName =
@@ -385,6 +570,7 @@ export class AgentOperations {
 
             // Удаляем директорию объекта если есть
             const elementDir = path.join(typeFolderPath, objectName);
+            await assertPathWithinRoot(this.configRootPath, elementDir);
             await fs.promises.rm(elementDir, { recursive: true, force: true });
 
             // Снимаем регистрацию из Configuration.xml
@@ -405,7 +591,7 @@ export class AgentOperations {
 
     async renameObject(params: RenameObjectParams): Promise<AgentResult<{ filePath: string }>> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { rootTag, objectName, filePath } = resolved;
 
             try {
@@ -419,16 +605,33 @@ export class AgentOperations {
                 `${rootTag}s`;
             const typeFolderPath = path.join(this.configRootPath, folderName);
 
+            const newName = params.newName?.trim();
+            const nameValidation = validateElementName(
+                newName,
+                (await listXmlSiblingNames(typeFolderPath)).filter(
+                    (name) => name.toLocaleLowerCase() !== objectName.toLocaleLowerCase(),
+                ),
+            );
+            if (nameValidation) {
+                return { success: false, error: nameValidation };
+            }
+
+            const newFilePath = path.join(typeFolderPath, `${newName}.xml`);
+            const oldDir = path.join(typeFolderPath, objectName);
+            const newDir = path.join(typeFolderPath, newName);
+            await Promise.all([
+                assertPathWithinRoot(this.configRootPath, newFilePath),
+                assertPathWithinRoot(this.configRootPath, oldDir),
+                assertPathWithinRoot(this.configRootPath, newDir),
+            ]);
+
             // Обновляем Name в XML
-            await XMLWriter.writeProperties(filePath, { Name: params.newName });
+            await XMLWriter.writeProperties(filePath, { Name: newName });
 
             // Переименовываем XML-файл
-            const newFilePath = path.join(typeFolderPath, `${params.newName}.xml`);
             await fs.promises.rename(filePath, newFilePath);
 
             // Переименовываем директорию объекта если есть
-            const oldDir = path.join(typeFolderPath, objectName);
-            const newDir = path.join(typeFolderPath, params.newName);
             try {
                 await fs.promises.access(oldDir);
                 await fs.promises.rename(oldDir, newDir);
@@ -438,7 +641,7 @@ export class AgentOperations {
 
             // Обновляем Configuration.xml
             await removeRootObjectFromConfiguration(this.configRootPath, rootTag, objectName);
-            await addRootObjectToConfiguration(this.configRootPath, rootTag, params.newName);
+            await addRootObjectToConfiguration(this.configRootPath, rootTag, newName);
 
             return { success: true, data: { filePath: newFilePath } };
         } catch (err) {
@@ -455,7 +658,7 @@ export class AgentOperations {
 
     async addAttribute(params: AddAttributeParams): Promise<AgentResult> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath, rootTag, objectName } = resolved;
 
             try {
@@ -464,7 +667,14 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            await XMLWriter.addNestedElement(filePath, 'Attribute', params.name, {}, rootTag as MetadataType, objectName);
+            const nameValidation = validateElementName(
+                params.name,
+                await XMLWriter.listNestedElementNames(filePath, 'Attribute'),
+            );
+            if (nameValidation) {
+                return { success: false, error: nameValidation };
+            }
+            await XMLWriter.addNestedElement(filePath, 'Attribute', params.name.trim(), {}, rootTag as MetadataType, objectName);
             return { success: true };
         } catch (err) {
             return {
@@ -480,7 +690,7 @@ export class AgentOperations {
 
     async addTabularSection(params: AddTabularSectionParams): Promise<AgentResult> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath, rootTag, objectName } = resolved;
 
             try {
@@ -489,7 +699,14 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            await XMLWriter.addNestedElement(filePath, 'TabularSection', params.name, {}, rootTag as MetadataType, objectName);
+            const nameValidation = validateElementName(
+                params.name,
+                await XMLWriter.listNestedElementNames(filePath, 'TabularSection'),
+            );
+            if (nameValidation) {
+                return { success: false, error: nameValidation };
+            }
+            await XMLWriter.addNestedElement(filePath, 'TabularSection', params.name.trim(), {}, rootTag as MetadataType, objectName);
             return { success: true };
         } catch (err) {
             return {
@@ -512,7 +729,7 @@ export class AgentOperations {
                     error: `Некорректный путь для addTabularSectionColumn: "${params.path}". Ожидается 4 сегмента вида RootTag.ObjectName.TabularSection.TSName.`,
                 };
             }
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath, rootTag, objectName, nestedName } = resolved;
 
             try {
@@ -521,7 +738,14 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            await XMLWriter.addAttributeToTabularSection(filePath, nestedName!, params.name, rootTag as MetadataType, objectName);
+            const nameValidation = validateElementName(
+                params.name,
+                await XMLWriter.listNestedElementNames(filePath, 'Attribute', nestedName),
+            );
+            if (nameValidation) {
+                return { success: false, error: nameValidation };
+            }
+            await XMLWriter.addAttributeToTabularSection(filePath, nestedName!, params.name.trim(), rootTag as MetadataType, objectName);
             return { success: true };
         } catch (err) {
             return {
@@ -537,7 +761,7 @@ export class AgentOperations {
 
     async setProperties(params: SetPropertiesParams): Promise<AgentResult> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
 
             try {
@@ -588,7 +812,7 @@ export class AgentOperations {
 
     async getType(params: GetTypeParams): Promise<AgentResult<GetTypeResult>> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
 
             try {
@@ -597,14 +821,12 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            let properties: Record<string, unknown>;
-            if (resolved.nestedType && resolved.nestedName) {
-                properties = await XMLWriter.readNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName);
-            } else {
-                properties = await XMLWriter.readProperties(filePath);
-            }
-
-            const typeVal = properties['Type'];
+            const typeVal = await XMLWriter.readTypeProperty(
+                filePath,
+                resolved.nestedType,
+                resolved.nestedName,
+                resolved.tabularSection
+            );
 
             // Пустой тип
             if (typeVal === undefined || typeVal === null || typeVal === '') {
@@ -640,7 +862,7 @@ export class AgentOperations {
                         const dateFractions = (entry.qualifiers as { dateFractions?: string } | undefined)?.dateFractions;
                         if (dateFractions === 'DateTime') { return 'xs:dateTime'; }
                         if (dateFractions === 'Time') { return 'xs:time'; }
-                        return 'xs:dateTime';
+                        return 'xs:date';
                     }
                     case 'reference':
                         return `cfg:${entry.referenceType!.referenceKind}.${entry.referenceType!.objectName}`;
@@ -664,7 +886,7 @@ export class AgentOperations {
 
     async setType(params: SetTypeParams): Promise<AgentResult> {
         try {
-            const resolved = resolveAgentPath(this.configRootPath, params.path);
+            const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
 
             try {
@@ -679,7 +901,12 @@ export class AgentOperations {
                 if (typeStr === 'xs:decimal') { return { kind: 'number' as const }; }
                 if (typeStr === 'xs:boolean') { return { kind: 'boolean' as const }; }
                 if (typeStr === 'xs:date' || typeStr === 'xs:dateTime' || typeStr === 'xs:time') {
-                    return { kind: 'date' as const };
+                    const dateFractions = typeStr === 'xs:date'
+                        ? 'Date' as const
+                        : typeStr === 'xs:time'
+                            ? 'Time' as const
+                            : 'DateTime' as const;
+                    return { kind: 'date' as const, qualifiers: { dateFractions } };
                 }
                 if (typeStr.startsWith('cfg:')) {
                     const withoutPrefix = typeStr.slice(4); // убираем 'cfg:'
@@ -710,12 +937,21 @@ export class AgentOperations {
             }
 
             const definition = { category, types: typeEntries };
-            const xml = TypeSerializer.serialize(definition);
+            const typeProperty = TypeSerializer.serializePropertyValue(definition);
 
             if (resolved.nestedType && resolved.nestedName) {
-                await XMLWriter.writeNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName, { Type: xml });
+                await XMLWriter.writeNestedElementProperties(
+                    filePath,
+                    resolved.nestedType,
+                    resolved.nestedName,
+                    { Type: typeProperty },
+                    undefined,
+                    resolved.tabularSection
+                        ? { scopedTabularSectionName: resolved.tabularSection }
+                        : undefined
+                );
             } else {
-                await XMLWriter.writeProperties(filePath, { Type: xml });
+                await XMLWriter.writeProperties(filePath, { Type: typeProperty });
             }
 
             return { success: true };
@@ -725,6 +961,12 @@ export class AgentOperations {
                 error: err instanceof Error ? err.message : String(err),
             };
         }
+    }
+
+    private async resolveContainedAgentPath(agentPath: string): Promise<ReturnType<typeof resolveAgentPath>> {
+        const resolved = resolveAgentPath(this.configRootPath, agentPath);
+        await assertPathWithinRoot(this.configRootPath, resolved.filePath);
+        return resolved;
     }
 }
 
@@ -746,4 +988,39 @@ function extractChildObjects(parsed: unknown): Record<string, unknown> | null {
         return null;
     }
     return childObjects as Record<string, unknown>;
+}
+
+async function listXmlSiblingNames(typeFolderPath: string): Promise<string[]> {
+    try {
+        const entries = await fs.promises.readdir(typeFolderPath, { withFileTypes: true });
+        return entries
+            .filter((entry) => entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.xml'))
+            .map((entry) => path.basename(entry.name, path.extname(entry.name)));
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            return [];
+        }
+        throw error;
+    }
+}
+
+async function expectationForPath(targetPath: string): Promise<MutationExpectation> {
+    try {
+        const stat = await fs.promises.lstat(targetPath);
+        if (stat.isSymbolicLink()) {
+            throw new Error(`Symbolic-link metadata path is forbidden: ${targetPath}`);
+        }
+        if (stat.isDirectory()) {
+            return { state: 'directory' };
+        }
+        if (stat.isFile()) {
+            return { state: 'file', hash: hashContent(await fs.promises.readFile(targetPath)) };
+        }
+        throw new Error(`Unsupported metadata filesystem entry: ${targetPath}`);
+    } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+            return { state: 'missing' };
+        }
+        throw error;
+    }
 }

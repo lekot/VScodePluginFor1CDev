@@ -78,6 +78,16 @@ suite('metadataFileLocator', () => {
     assert.deepStrictEqual(result.subPath, { kind: 'recordSetModule' });
   });
 
+  test('Sequence XML and modules are located as a hierarchical metadata object', () => {
+    const xml = locateMetadataFile(p(root, 'Sequences/PostingOrder.xml'), roots);
+    const manager = locateMetadataFile(p(root, 'Sequences/PostingOrder/Ext/ManagerModule.bsl'), roots);
+    const recordSet = locateMetadataFile(p(root, 'Sequences/PostingOrder/Ext/RecordSetModule.bsl'), roots);
+
+    assert.strictEqual(xml?.objectName, 'PostingOrder');
+    assert.deepStrictEqual(manager?.subPath, { kind: 'managerModule' });
+    assert.deepStrictEqual(recordSet?.subPath, { kind: 'recordSetModule' });
+  });
+
   // -------------------------------------------------------------------------
   // 2d. ValueManagerModule
   // -------------------------------------------------------------------------

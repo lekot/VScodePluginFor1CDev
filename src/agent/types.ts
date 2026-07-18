@@ -5,9 +5,18 @@ export interface AgentResult<T = void> {
     success: boolean;
     data?: T;
     error?: string;
+    code?: string;
+    configurationId?: string;
+    operationId?: string;
+    snapshotVersion?: number;
 }
 
-export interface CreateObjectParams {
+export interface ConfigurationScopedParams {
+    /** Exact configuration selector. Optional only for a single compatible configuration. */
+    configurationId?: string;
+}
+
+export interface CreateObjectParams extends ConfigurationScopedParams {
     /** Тип объекта: 'Catalog', 'Document', 'Enum', 'CommonModule', 'Subsystem' */
     type: string;
     name: string;
@@ -15,12 +24,12 @@ export interface CreateObjectParams {
     properties?: Record<string, unknown>;
 }
 
-export interface GetYamlParams {
+export interface GetYamlParams extends ConfigurationScopedParams {
     /** Путь вида 'Catalog.Товары' */
     path: string;
 }
 
-export interface ListObjectsParams {
+export interface ListObjectsParams extends ConfigurationScopedParams {
     /** Если не задан — все типы */
     type?: string;
 }
@@ -46,62 +55,62 @@ export interface ResolvedAgentPath {
     tabularSection?: string;
 }
 
-export interface AddAttributeParams {
+export interface AddAttributeParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     name: string;
 }
 
-export interface AddTabularSectionParams {
+export interface AddTabularSectionParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     name: string;
 }
 
-export interface AddTabularSectionColumnParams {
+export interface AddTabularSectionColumnParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары.TabularSection.Состав' */
     path: string;
     name: string;
 }
 
-export interface DeleteAttributeParams {
+export interface DeleteAttributeParams extends ConfigurationScopedParams {
     /** Agent path to attribute, e.g. 'Catalog.Товары.Attribute.Цена' */
     path: string;
 }
 
-export interface DeleteTabularSectionParams {
+export interface DeleteTabularSectionParams extends ConfigurationScopedParams {
     /** Agent path to tabular section, e.g. 'Catalog.Товары.TabularSection.Состав' */
     path: string;
 }
 
-export interface DeleteObjectParams {
+export interface DeleteObjectParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
 }
 
-export interface RenameObjectParams {
+export interface RenameObjectParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     newName: string;
 }
 
-export interface GetPropertiesParams {
+export interface GetPropertiesParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
 }
 
-export interface SetPropertiesParams {
+export interface SetPropertiesParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'Catalog.Товары' */
     path: string;
     properties: Record<string, unknown>;
 }
 
-export interface GetTypeParams {
+export interface GetTypeParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'DefinedType.ТипНоменклатуры' or 'Catalog.Товары.Attribute.Цена' */
     path: string;
 }
 
-export interface SetTypeParams {
+export interface SetTypeParams extends ConfigurationScopedParams {
     /** Agent path, e.g. 'DefinedType.ТипНоменклатуры' or 'Catalog.Товары.Attribute.Цена' */
     path: string;
     /** Array of type strings, e.g. ['xs:string', 'cfg:CatalogRef.Товары'] */
@@ -115,18 +124,18 @@ export interface GetTypeResult {
     rawXml: string;
 }
 
-export interface CotPathParams {
+export interface CotPathParams extends ConfigurationScopedParams {
     /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
     path: string;
 }
 
-export interface PredefinedCotPathParams {
+export interface PredefinedCotPathParams extends ConfigurationScopedParams {
     /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
     path: string;
     predefinedName: string;
 }
 
-export interface SetPredefinedCotTypeParams {
+export interface SetPredefinedCotTypeParams extends ConfigurationScopedParams {
     /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
     path: string;
     predefinedName: string;

@@ -39,6 +39,10 @@ export class TreeCacheService {
     return this.loadContextByRootId.get(nodeId);
   }
 
+  getLoadContexts(): Map<string, { configPath: string; format: ConfigFormat }> {
+    return new Map(this.loadContextByRootId);
+  }
+
   get size(): number {
     return this.nodeCache.size;
   }

@@ -36,6 +36,7 @@ import {
     integrationServiceRules,
     roleRules,
     scheduledJobRules,
+    sequenceRules,
     sessionParameterRules,
     settingsStorageRules,
     subsystemRules,
@@ -86,6 +87,7 @@ rulesRegistry.register(informationRegisterRules);
 rulesRegistry.register(integrationServiceRules);
 rulesRegistry.register(roleRules);
 rulesRegistry.register(scheduledJobRules);
+rulesRegistry.register(sequenceRules);
 rulesRegistry.register(sessionParameterRules);
 rulesRegistry.register(settingsStorageRules);
 rulesRegistry.register(subsystemRules);

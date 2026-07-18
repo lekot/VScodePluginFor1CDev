@@ -342,6 +342,7 @@ export class TreeFilterService {
       [MetadataType.BusinessProcess]: 'Бизнес-процесс',
       [MetadataType.Task]: 'Задача',
       [MetadataType.ExternalDataSource]: 'Внешний источник',
+      [MetadataType.Sequence]: 'Последовательность',
       [MetadataType.Constant]: 'Константа',
       [MetadataType.SessionParameter]: 'Параметр сеанса',
       [MetadataType.FilterCriterion]: 'Критерий отбора',

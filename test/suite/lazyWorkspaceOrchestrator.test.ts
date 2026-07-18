@@ -74,14 +74,18 @@ suite('lazy workspace orchestrator', () => {
     assert.deepStrictEqual(infobaseCalls.counts(), { load: 0, git: 1, errors: 0 });
   });
 
-  test('reports a rejected automatic metadata load once', async () => {
+  test('reports a rejected automatic metadata load and retries on next visibility', async () => {
     const metadata = new FakeView(false);
     let errors = 0;
+    let loads = 0;
 
     registerLazyWorkspaceOrchestrator({
       metadataView: metadata,
       loadMetadataTree: async () => {
-        throw new Error('load failed');
+        loads += 1;
+        if (loads === 1) {
+          throw new Error('load failed');
+        }
       },
       registerGitHeadChangeHandlers: () => undefined,
       onAutoLoadError: () => {
@@ -90,11 +94,21 @@ suite('lazy workspace orchestrator', () => {
     });
     metadata.setVisible(true);
     await flushPromises();
+
+    assert.strictEqual(errors, 1);
+    assert.strictEqual(loads, 1);
+
     metadata.setVisible(false);
     metadata.setVisible(true);
     await flushPromises();
 
     assert.strictEqual(errors, 1);
+    assert.strictEqual(loads, 2);
+
+    metadata.setVisible(false);
+    metadata.setVisible(true);
+    await flushPromises();
+    assert.strictEqual(loads, 2, 'a successful retry must latch completion');
   });
 });
 
@@ -144,6 +158,5 @@ function createCalls(): {
 }
 
 async function flushPromises(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }

@@ -36,7 +36,7 @@ function notFoundResult(hint: string): IbcmdConfigCheckResult {
  */
 export async function runIbcmdConfigCheckGate(): Promise<IbcmdConfigCheckResult> {
   const ibcmdService = getIbcmdService();
-  const pathResult = ibcmdService.resolveExecutablePath();
+  const pathResult = await ibcmdService.resolveExecutablePathAsync();
   if (pathResult.kind === 'notFound') {
     return notFoundResult(pathResult.hint);
   }

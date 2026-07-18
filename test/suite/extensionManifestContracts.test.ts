@@ -19,6 +19,7 @@ suite('extension manifest contracts', () => {
     const expectedActivationEvents = [
       'workspaceContains:**/Configuration.xml',
       'workspaceContains:**/ConfigDumpInfo.xml',
+      'workspaceContains:**/src/Configuration/Configuration.mdo',
       'workspaceContains:**/*.cf',
       'workspaceContains:**/*.cfe',
       'onDebugResolve:bsl',
@@ -29,6 +30,12 @@ suite('extension manifest contracts', () => {
       [...expectedActivationEvents].sort()
     );
     assert.ok(!pkg.activationEvents.includes('onStartupFinished'));
+    assert.ok(!pkg.activationEvents.includes('workspaceContains:**/.project'));
+  });
+
+  test('declares virtual workspaces unsupported because metadata access is filesystem based', () => {
+    const pkg = readPackageJson();
+    assert.strictEqual(pkg.capabilities?.virtualWorkspaces?.supported, false);
   });
 
   test('Explorer views are collapsed without a self-hiding context condition', () => {
@@ -56,6 +63,23 @@ suite('extension manifest contracts', () => {
       assert.ok(!contributed.has(commandId), `${commandId} must not be contributed`);
       assert.ok(!palette.has(commandId), `${commandId} must not be in commandPalette`);
     }
+  });
+
+  test('contributes every registered public Agent API command', () => {
+    const root = repositoryRoot();
+    const source = fs.readFileSync(path.join(root, 'src', 'agent', 'agentCommands.ts'), 'utf8');
+    const registered = new Set(
+      [...source.matchAll(/['"](1c-metadata-tree\.agent\.[A-Za-z0-9_.-]+)['"]/g)]
+        .map((match) => match[1]),
+    );
+    const contributed = new Set<string>(
+      readPackageJson().contributes.commands
+        .map((entry: { command: string }) => entry.command)
+        .filter((command: string) => command.startsWith('1c-metadata-tree.agent.')),
+    );
+
+    assert.strictEqual(registered.size, 61, 'Update the documented Agent API count intentionally.');
+    assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
   });
 
   test('registers test-only commands only in ExtensionMode.Test', () => {

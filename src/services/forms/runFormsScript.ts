@@ -5,13 +5,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { terminateChildProcess } from './processLifecycle';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const RING_BUFFER_MAX_BYTES = 256 * 1024;
+const TIMEOUT_TERM_WAIT_MS = 1_000;
+const TIMEOUT_KILL_WAIT_MS = 1_000;
 
 export interface RunFormsOptions {
     /** Корень расширения (extensionContext.extensionPath). */
     extensionPath: string;
+    /** Per-extension-host session descriptor outside the extension installation. */
+    sessionFilePath: string;
     /** Команда run.mjs: start | exec | stop | shot | status | run. */
     command: string;
     /** Дополнительные аргументы после команды. */
@@ -35,6 +40,8 @@ export interface RunFormsResult {
     exitCode: number;
     /** Заполняется только если detachOnReady сработал — процесс ещё жив. */
     detachedProc?: import('child_process').ChildProcess;
+    /** Timed-out child that survived TERM→KILL. The caller must retain ownership and retry cleanup. */
+    unclosedProc?: import('child_process').ChildProcess;
 }
 
 /**
@@ -51,39 +58,46 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const nodeModulesPath = path.join(opts.extensionPath, 'node_modules');
+    await fs.promises.mkdir(path.dirname(opts.sessionFilePath), { recursive: true });
 
     return new Promise<RunFormsResult>((resolve, reject) => {
-        let outBuf = '';
-        let errBuf = '';
+        let outBuf: Buffer = Buffer.alloc(0);
+        let errBuf: Buffer = Buffer.alloc(0);
         let outTruncated = false;
         let errTruncated = false;
         let settled = false;
+        let timedOut = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
         const appendRing = (
-            s: string,
-            buf: string,
+            chunk: Buffer | string,
+            buf: Buffer,
             truncated: boolean,
-        ): [string, boolean] => {
-            buf += s;
-            if (buf.length > RING_BUFFER_MAX_BYTES) {
-                truncated = true;
-                buf = buf.slice(buf.length - RING_BUFFER_MAX_BYTES);
+        ): [Buffer, boolean] => {
+            const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+            const combined = Buffer.concat([buf, bytes]);
+            if (combined.length <= RING_BUFFER_MAX_BYTES) {
+                return [combined, truncated];
             }
-            return [buf, truncated];
+            let start = combined.length - RING_BUFFER_MAX_BYTES;
+            while (start < combined.length && (combined[start] & 0xc0) === 0x80) {
+                start += 1;
+            }
+            return [Buffer.from(combined.subarray(start)), true];
         };
 
         const finish = (code: number) => {
-            if (settled) { return; }
+            if (settled || timedOut) { return; }
             settled = true;
             if (timeoutHandle !== undefined) {
                 clearTimeout(timeoutHandle);
                 timeoutHandle = undefined;
             }
-            resolve({ output: outBuf, stderr: errBuf, exitCode: code });
+            resolve({ output: outBuf.toString('utf8'), stderr: errBuf.toString('utf8'), exitCode: code });
         };
 
         const proc = spawn(process.execPath, [scriptPath, opts.command, ...opts.args], {
+            detached: process.platform !== 'win32',
             windowsHide: true,
             stdio: ['pipe', 'pipe', 'pipe'],
             env: {
@@ -91,34 +105,36 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
                 // Позволяет ESM run.mjs / browser.mjs использовать playwright
                 // из node_modules расширения без отдельного npm install в web-test
                 NODE_PATH: nodeModulesPath,
+                CDT_FORMS_SESSION_FILE: opts.sessionFilePath,
             },
         });
 
         proc.stdout?.on('data', (chunk: Buffer | string) => {
-            const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-            [outBuf, outTruncated] = appendRing(text, outBuf, outTruncated);
-            if (!settled && opts.detachOnReady && opts.detachOnReady(outBuf)) {
+            [outBuf, outTruncated] = appendRing(chunk, outBuf, outTruncated);
+            if (!settled && opts.detachOnReady && opts.detachOnReady(outBuf.toString('utf8'))) {
                 settled = true;
                 if (timeoutHandle !== undefined) {
                     clearTimeout(timeoutHandle);
                     timeoutHandle = undefined;
                 }
-                // Отцепляем процесс — он продолжит работать как HTTP-сервер.
-                // stdout/stderr больше не читаем (иначе backpressure → SIGPIPE).
-                proc.stdout?.removeAllListeners('data');
-                proc.stderr?.removeAllListeners('data');
+                // Keep draining bounded buffers. Removing listeners can fill the
+                // child pipes and block the long-lived HTTP server.
                 proc.unref();
-                resolve({ output: outBuf, stderr: errBuf, exitCode: 0, detachedProc: proc });
+                resolve({
+                    output: outBuf.toString('utf8'),
+                    stderr: errBuf.toString('utf8'),
+                    exitCode: 0,
+                    detachedProc: proc,
+                });
             }
         });
 
         proc.stderr?.on('data', (chunk: Buffer | string) => {
-            const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-            [errBuf, errTruncated] = appendRing(text, errBuf, errTruncated);
+            [errBuf, errTruncated] = appendRing(chunk, errBuf, errTruncated);
         });
 
         proc.on('error', (err) => {
-            if (!settled) {
+            if (!settled && !timedOut) {
                 settled = true;
                 if (timeoutHandle !== undefined) { clearTimeout(timeoutHandle); }
                 reject(err);
@@ -131,9 +147,33 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
 
         timeoutHandle = setTimeout(() => {
             if (!settled) {
-                settled = true;
-                try { proc.kill('SIGTERM'); } catch { /* ignore */ }
-                resolve({ output: outBuf, stderr: errBuf + '\n[timeout]', exitCode: 124 });
+                timedOut = true;
+                timeoutHandle = undefined;
+                void terminateChildProcess(
+                    proc,
+                    'forms runner',
+                    TIMEOUT_TERM_WAIT_MS,
+                    TIMEOUT_KILL_WAIT_MS,
+                ).then(
+                    () => {
+                        settled = true;
+                        resolve({
+                            output: outBuf.toString('utf8'),
+                            stderr: `${errBuf.toString('utf8')}\n[timeout]`,
+                            exitCode: 124,
+                        });
+                    },
+                    () => {
+                        settled = true;
+                        proc.unref();
+                        resolve({
+                            output: outBuf.toString('utf8'),
+                            stderr: `${errBuf.toString('utf8')}\n[timeout: process did not exit]`,
+                            exitCode: 124,
+                            unclosedProc: proc,
+                        });
+                    },
+                );
             }
         }, timeoutMs);
 

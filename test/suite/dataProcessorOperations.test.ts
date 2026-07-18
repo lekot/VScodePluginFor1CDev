@@ -226,6 +226,12 @@ suite('DataProcessor Operations', () => {
     // Create original DataProcessor
     const originalPath = path.join(tmpDir, 'DataProcessors', 'СтараяОбработка.xml');
     await XMLWriter.createMinimalElementFile(originalPath, 'DataProcessor', 'СтараяОбработка');
+    const configurationPath = path.join(tmpDir, 'Configuration.xml');
+    const registeredConfiguration = (await fs.promises.readFile(configurationPath, 'utf-8')).replace(
+      '<ChildObjects>',
+      '<ChildObjects><DataProcessor>СтараяОбработка</DataProcessor>'
+    );
+    await fs.promises.writeFile(configurationPath, registeredConfiguration, 'utf-8');
     
     const originalDir = path.join(tmpDir, 'DataProcessors', 'СтараяОбработка');
     const newDir = path.join(tmpDir, 'DataProcessors', 'ПереименованнаяОбработка');

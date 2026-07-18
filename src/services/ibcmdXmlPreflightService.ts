@@ -40,7 +40,7 @@ export async function runIbcmdXmlImportPreflight(params: {
 }): Promise<IbcmdXmlPreflightResult> {
   const startedAt = Date.now();
   const ibcmd = getIbcmdService();
-  const pathResult = ibcmd.resolveExecutablePath();
+  const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
     return {
       ok: false,

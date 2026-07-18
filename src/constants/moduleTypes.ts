@@ -82,6 +82,10 @@ export const STANDARD_MODULES: Partial<Record<MetadataType, StandardModule[]>> =
     { fileName: 'RecordSetModule.bsl', label: 'Модуль набора записей' },
     { fileName: 'ManagerModule.bsl', label: 'Модуль менеджера' },
   ],
+  [MetadataType.Sequence]: [
+    { fileName: 'RecordSetModule.bsl', label: 'Модуль набора записей' },
+    { fileName: 'ManagerModule.bsl', label: 'Модуль менеджера' },
+  ],
 
   // Единственный модуль (Module.bsl для CommonModule)
   [MetadataType.CommonModule]: [{ fileName: 'Module.bsl', label: 'Модуль' }],

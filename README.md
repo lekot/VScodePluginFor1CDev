@@ -21,7 +21,7 @@ VS Code расширение для визуализации и редактир
 
 ### Agent API (для AI-агентов)
 
-CDT 41 предоставляет **60** runtime-команд Agent API для программного управления метаданными, отладкой, формами, СКД и XDTO-пакетами 1С. Команды доступны через HTTP bridge и через `vscode.commands.executeCommand`; AI-агент (Claude Code, Copilot, MCP-клиент) может:
+CDT 41 предоставляет **61** runtime-команду Agent API для программного управления метаданными, отладкой, формами, СКД и XDTO-пакетами 1С. Команды доступны через HTTP bridge и через `vscode.commands.executeCommand`; AI-агент (Claude Code, Copilot, MCP-клиент) может:
 - **CRUD метаданных** (12 команд) — создавать объекты, добавлять реквизиты/ТЧ/колонки, читать/писать свойства, переименовывать и удалять
 - **Отладка** (15 команд) — запускать отладочную сессию (thinClient / webServer), ставить breakpoints, читать переменные, шагать по коду, фильтровать исключения
 - **Привязки** (2 команды) — resolveBinding (фикстура→база), listBindings (все привязки с базами)
@@ -38,12 +38,12 @@ CDT 41 предоставляет **60** runtime-команд Agent API для �
 #### Как подружить своего агента с API — скопируй ему этот промпт
 
 ```
-В этом workspace расширение VS Code «CDT 41» (1c-metadata-tree-vscode) поднимает HTTP-bridge с 60 командами для работы с метаданными, отладкой, формами (через Playwright), СКД и XDTO-пакетами 1С. Прочитай файл .vscode/cdt-agent-bridge.json — там:
+В этом workspace расширение VS Code «CDT 41» (1c-metadata-tree-vscode) поднимает HTTP-bridge с 61 командой для работы с метаданными, отладкой, формами (через Playwright), СКД и XDTO-пакетами 1С. Прочитай файл .vscode/cdt-agent-bridge.json — там:
 
 - helperScriptPath — абсолютный путь к bash-обёртке; вызов: bash "$HELPER" <команда> '<JSON-args>'
   где HELPER=$(node -p "JSON.parse(require('fs').readFileSync('./.vscode/cdt-agent-bridge.json','utf8')).helperScriptPath")
 - discoverScriptPath — скрипт для health-check bridge
-- docs — URL полного API reference (60 команд с примерами)
+- docs — URL полного API reference (61 команда с примерами)
 - quickstart — краткая инструкция по сырому HTTP-вызову
 - port / token — для прямого POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>
 

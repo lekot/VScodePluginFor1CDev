@@ -2,6 +2,7 @@ import { Logger } from '../logger';
 import { TypeParser } from '../../parsers/typeParser';
 import { TypeFormatter } from '../typeFormatter';
 import { xmlParser } from './xmlCore';
+import { isStructuredTypePropertyValue } from '../../serializers/typeSerializer';
 
 /**
  * Convert string boolean values to actual boolean primitives.
@@ -292,6 +293,10 @@ function updatePropertiesObject(
 ): Record<string, unknown> {
   const result = { ...propertiesObj };
   for (const [key, newVal] of Object.entries(newProperties)) {
+    if (key === 'Type' && isStructuredTypePropertyValue(newVal)) {
+      result[key] = newVal.content;
+      continue;
+    }
     // XML fragment string for Source property (EventSubscription.Source containing v8:Type elements).
     // Detected by matching the property key as the root tag of the fragment.
     // Explicitly exclude 'Type' (handled by type editor via TypeSerializer — passed through as a string).
@@ -354,6 +359,11 @@ function updatePropertiesArray(
 
       if (key in properties) {
         const newValue = properties[key];
+
+        if (key === 'Type' && isStructuredTypePropertyValue(newValue)) {
+          result[key] = newValue.content;
+          continue;
+        }
 
         // XML fragment string for Source-like properties — only when fragment root tag matches property key.
         // Exclude 'Type' which is handled separately by the type editor flow.

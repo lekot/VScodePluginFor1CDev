@@ -1,6 +1,7 @@
 /**
- * Escape a JSON string for safe injection into an HTML `<script>` tag.
- * Prevents `</script>` injection and HTML entity issues.
+ * Escape serialized JSON for safe injection into an HTML `<script>` data state.
+ * Escaping both angle brackets prevents every HTML parser closing-tag variant
+ * (case, whitespace, and attributes), not only the exact `</script>` spelling.
  */
 export function escapeJsonForScript(json: string): string {
   return json

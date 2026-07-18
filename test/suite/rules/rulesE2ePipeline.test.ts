@@ -246,6 +246,7 @@ suite('E2E Round-trip: xmlToIr restores IR from generated XML', () => {
         { rootTag: 'Enum', checkProps: ['name', 'choiceHistoryOnInput', 'quickChoice', 'choiceMode'] },
         { rootTag: 'Catalog', checkProps: ['name', 'autonumbering', 'codeLength', 'descriptionLength'] },
         { rootTag: 'Document', checkProps: ['name', 'autonumbering', 'checkUnique', 'numberLength'] },
+        { rootTag: 'Sequence', checkProps: ['name', 'moveBoundaryOnPosting'] },
     ];
 
     for (const { rootTag, checkProps } of roundTripCases) {

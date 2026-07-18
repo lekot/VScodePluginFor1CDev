@@ -3,6 +3,7 @@
  */
 
 import * as vscode from 'vscode';
+import { randomBytes } from 'crypto';
 import type { ConfigurationBinding } from './models/configurationBinding';
 import {
   detectIbcmdExtensionNameFromConfigRelativePath,
@@ -11,6 +12,7 @@ import {
 import type { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { Logger } from '../utils/logger';
+import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import {
   openBindingDialogForConfigurationFromTree,
   runDeployForConfigurationFromTree,
@@ -19,12 +21,10 @@ import {
   runConfigExportStatusFromTree,
   runPullSelectedObjectsFromTree,
 } from './bindingCommands';
+import { INFOBASE_STORAGE_MAX_ENTRIES } from '../infobases/constants';
 
 const VIEW_TYPE = '1c-binding-dialog';
-
-function escapeJsonForScript(json: string): string {
-  return json.replace(/<\/script>/gi, '<\\/script>');
-}
+const MAX_INFOBASE_ID_LENGTH = 128;
 
 function defaultBinding(
   workspaceFolder: string,
@@ -58,22 +58,41 @@ type WebviewToExtensionMessage =
   | { type: 'addCreate' }
   | { type: 'addExisting' };
 
-function isWebviewMessage(msg: unknown): msg is WebviewToExtensionMessage {
-  if (!msg || typeof msg !== 'object') {
-    return false;
-  }
-  const t = (msg as { type?: unknown }).type;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isBoundedInfobaseIdArray(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length <= INFOBASE_STORAGE_MAX_ENTRIES
+    && value.every((id) => typeof id === 'string'
+      && id.length > 0
+      && id.length <= MAX_INFOBASE_ID_LENGTH
+      && id === id.trim());
+}
+
+export function isBindingDialogWebviewMessage(msg: unknown): msg is WebviewToExtensionMessage {
+  if (!isRecord(msg)) { return false; }
+  const t = msg['type'];
   if (t === 'ready' || t === 'cancel' || t === 'addCreate' || t === 'addExisting') {
-    return true;
+    return hasOnlyKeys(msg, ['type']);
   }
   if (t === 'addFromList') {
-    const m = msg as { excludeIds?: unknown; massDeployment?: unknown };
-    const ex = m.excludeIds;
-    return Array.isArray(ex) && ex.every((x) => typeof x === 'string') && typeof m.massDeployment === 'boolean';
+    const ex = msg['excludeIds'];
+    return hasOnlyKeys(msg, ['type', 'excludeIds', 'massDeployment'])
+      && isBoundedInfobaseIdArray(ex)
+      && typeof msg['massDeployment'] === 'boolean';
   }
   if (t === 'save') {
-    const m = msg as { infobaseIds?: unknown; massDeployment?: unknown };
-    return Array.isArray(m.infobaseIds) && m.infobaseIds.every((x) => typeof x === 'string') && typeof m.massDeployment === 'boolean';
+    const ids = msg['infobaseIds'];
+    return hasOnlyKeys(msg, ['type', 'infobaseIds', 'massDeployment'])
+      && isBoundedInfobaseIdArray(ids)
+      && typeof msg['massDeployment'] === 'boolean';
   }
   return false;
 }
@@ -103,11 +122,12 @@ export function getBindingDialogHtml(
     ibcmdExtensionName?: string;
   },
 ): string {
+  const nonce = randomBytes(24).toString('base64url');
   const initialJson = escapeJsonForScript(JSON.stringify(initial));
   const csp = [
     "default-src 'none'",
-    "script-src 'unsafe-inline'",
-    "style-src 'unsafe-inline'",
+    `script-src 'nonce-${nonce}'`,
+    `style-src 'nonce-${nonce}'`,
     `font-src ${webview.cspSource}`,
   ].join('; ');
   return `<!DOCTYPE html>
@@ -117,7 +137,7 @@ export function getBindingDialogHtml(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="${csp}">
   <title>Привязка баз</title>
-  <style>
+  <style nonce="${nonce}">
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -273,7 +293,7 @@ export function getBindingDialogHtml(
     <button type="button" id="btnCancel">Закрыть</button>
     <button type="button" class="primary" id="btnSave">Сохранить</button>
   </div>
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     let state = ${initialJson};
     let massPrev = state.massDeployment;
@@ -580,7 +600,7 @@ export class BindingDialogPanel {
   }
 
   private async onMessage(msg: unknown): Promise<void> {
-    if (!isWebviewMessage(msg)) {
+    if (!isBindingDialogWebviewMessage(msg)) {
       Logger.warn('bindingDialog: invalid message', msg);
       return;
     }
@@ -596,10 +616,17 @@ export class BindingDialogPanel {
         this.panel.dispose();
         return;
       case 'save': {
+        const catalogIds = new Set((await deps.storage.load()).map((entry) => entry.id));
+        const infobaseIds = [...new Set(msg.infobaseIds)];
+        if (infobaseIds.some((id) => !catalogIds.has(id))) {
+          Logger.warn('bindingDialog: save contains an infobase outside the catalog');
+          void vscode.window.showErrorMessage('Не удалось сохранить привязку: список содержит базу вне каталога.');
+          return;
+        }
         const next: ConfigurationBinding = {
           workspaceFolder: this.workspaceFolderName,
           configRelativePath: this.configRelativePath,
-          infobaseIds: msg.infobaseIds,
+          infobaseIds,
           massDeployment: msg.massDeployment,
           ibcmdExtensionName: this.ibcmdExtensionName.trim() || undefined,
         };
@@ -615,7 +642,8 @@ export class BindingDialogPanel {
       }
       case 'addFromList': {
         const entries = await deps.storage.load();
-        const exclude = new Set(msg.excludeIds);
+        const excludeIds = [...new Set(msg.excludeIds)];
+        const exclude = new Set(excludeIds);
         const choices = entries.filter((e) => !exclude.has(e.id));
         if (choices.length === 0) {
           void vscode.window.showInformationMessage('Все базы из каталога уже в списке или каталог пуст.');
@@ -630,7 +658,7 @@ export class BindingDialogPanel {
           return;
         }
         const labelMap = buildLabelMap(entries.map((e) => ({ id: e.id, name: e.name })));
-        const merged = [...msg.excludeIds];
+        const merged = [...excludeIds];
         if (!merged.includes(picked.id)) {
           merged.push(picked.id);
         }

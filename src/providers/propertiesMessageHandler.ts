@@ -12,6 +12,7 @@ import type { ObjectTypeEditorProvider } from './objectTypeEditorProvider';
 import { validateProperties } from './propertiesValidation';
 import type { WebviewMessage, ExtensionMessage } from './propertiesWebviewTypes';
 import { CONTENT_EDITOR_COMMANDS } from './propertiesWebviewContent';
+import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 
 /**
  * Context passed to all message handlers — replaces class `this`.
@@ -616,17 +617,19 @@ export async function saveProperties(
             ? findTabularSectionInstanceForAttributeParent(node.parent)?.name
             : undefined;
 
-        await xmlWriter.writeNestedElementProperties(
-          targetFilePath,
-          node.type,
-          node.name,
-          properties,
-          changedKeys,
-          scopedTabularSectionName ? { scopedTabularSectionName } : undefined
-        );
+        await runConfigurationMutation(targetFilePath, 'ui.properties.saveNested', () =>
+          xmlWriter.writeNestedElementProperties(
+            targetFilePath,
+            node.type,
+            node.name,
+            properties,
+            changedKeys,
+            scopedTabularSectionName ? { scopedTabularSectionName } : undefined
+          ));
       } else {
         // For root elements, use standard write method
-        await xmlWriter.writeProperties(targetFilePath, properties);
+        await runConfigurationMutation(targetFilePath, 'ui.properties.save', () =>
+          xmlWriter.writeProperties(targetFilePath, properties));
       }
     } catch (writeError) {
       ctx.setIsSaving(false);

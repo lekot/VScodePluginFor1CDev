@@ -5,6 +5,7 @@ import { PassThrough } from 'stream';
 import iconv from 'iconv-lite';
 import {
   IBCMD_STREAM_RING_BUFFER_MAX_BYTES,
+  RingBufferText,
   runIbcmdStreaming,
   type IbcmdStreamCancellation,
 } from '../../src/services/ibcmd/IbcmdStreamingRunner';
@@ -188,6 +189,135 @@ suite('IbcmdStreamingRunner', () => {
     const out = await p;
     assert.strictEqual(out.logTruncated, true);
     assert.ok(out.combinedLog.length <= 12);
+  });
+
+  test('ring physically releases discarded backing buffers', () => {
+    const ring = new RingBufferText(32);
+    ring.append('x'.repeat(1024 * 1024));
+    assert.ok(ring.retainedStorageBytes <= 32);
+
+    for (let index = 0; index < 100; index += 1) {
+      ring.append(`chunk-${index}-${'y'.repeat(64)}`);
+      assert.ok(ring.retainedStorageBytes <= 32);
+    }
+    assert.ok(Buffer.byteLength(ring.state.text, 'utf8') <= 32);
+  });
+
+  test('ring buffer enforces UTF-8 byte limit without retaining a broken code point', async () => {
+    const ctrl = createControllableSpawn();
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 10_000,
+      cancellation: staticCancellation(false),
+      ringBufferMaxBytes: 5,
+      spawnImpl: ctrl.spawnImpl,
+    });
+    ctrl.pushStdout('🙂🙂');
+    ctrl.close(0, null);
+    const out = await p;
+
+    assert.strictEqual(out.logTruncated, true);
+    assert.ok(Buffer.byteLength(out.combinedLog, 'utf-8') <= 5);
+    assert.strictEqual(out.combinedLog, '🙂');
+  });
+
+  test('cancellation waits for verified process-tree termination outcome', async () => {
+    const ctrl = createControllableSpawn();
+    const cancellation = cancellable();
+    let releaseTermination!: () => void;
+    const termination = new Promise<void>((resolve) => {
+      releaseTermination = resolve;
+    });
+    let completed = false;
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: [],
+      timeoutMs: 10_000,
+      cancellation,
+      spawnImpl: ctrl.spawnImpl,
+      terminateProcessTreeImpl: async () => {
+        await termination;
+        return { terminated: true, hardKillUsed: true, survivingPids: [], errors: [] };
+      },
+    }).then((outcome) => {
+      completed = true;
+      return outcome;
+    });
+
+    cancellation.cancel();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.strictEqual(completed, false);
+    releaseTermination();
+    const out = await p;
+
+    assert.strictEqual(out.cancelled, true);
+    assert.strictEqual(out.termination?.terminated, true);
+    assert.strictEqual(out.termination?.hardKillUsed, true);
+  });
+
+  test('cancellation terminates a real child and grandchild process', async function () {
+    this.timeout(20_000);
+    const cancellation = cancellable();
+    const childScript = [
+      "const { spawn } = require('child_process');",
+      "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });",
+      "process.stdout.write(JSON.stringify({ parent: process.pid, grandchild: grandchild.pid }) + '\\n');",
+      'setInterval(() => {}, 1000);',
+    ].join(' ');
+    let captured = '';
+    let reportedPids: { parent: number; grandchild: number } | undefined;
+    let resolveReported!: (pids: { parent: number; grandchild: number }) => void;
+    const reported = new Promise<{ parent: number; grandchild: number }>((resolve) => {
+      resolveReported = resolve;
+    });
+
+    const running = runIbcmdStreaming({
+      executablePath: process.execPath,
+      args: ['-e', childScript],
+      timeoutMs: 15_000,
+      terminationGraceMs: 500,
+      cancellation,
+      onStreamChunk: (chunk, stream) => {
+        if (stream !== 'stdout' || reportedPids) {
+          return;
+        }
+        captured += chunk;
+        const line = captured.split(/\r?\n/).find(Boolean);
+        if (line) {
+          reportedPids = JSON.parse(line) as { parent: number; grandchild: number };
+          resolveReported(reportedPids);
+        }
+      },
+    });
+
+    try {
+      const pids = await Promise.race([
+        reported,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error('Child process did not report PIDs')), 5000)
+        ),
+      ]);
+      cancellation.cancel();
+      const out = await running;
+
+      assert.strictEqual(out.cancelled, true);
+      assert.strictEqual(out.termination?.terminated, true, JSON.stringify(out.termination));
+      assert.strictEqual(isPidAlive(pids.parent), false);
+      assert.strictEqual(isPidAlive(pids.grandchild), false);
+    } finally {
+      if (reportedPids) {
+        for (const pid of [reportedPids.grandchild, reportedPids.parent]) {
+          if (isPidAlive(pid)) {
+            try {
+              process.kill(pid, 'SIGKILL');
+            } catch {
+              // Best-effort test cleanup.
+            }
+          }
+        }
+      }
+    }
   });
 
   test('consoleOutputEncoding utf8 merges split multibyte UTF-8 on close flush', async () => {
@@ -419,3 +549,12 @@ suite('IbcmdStreamingRunner', () => {
     }
   });
 });
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}

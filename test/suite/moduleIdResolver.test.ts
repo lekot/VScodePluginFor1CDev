@@ -90,6 +90,37 @@ suite('moduleIdResolver', () => {
     }
   });
 
+  test('Sequence ManagerModule resolves forward and reverse from descriptor-derived maps', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'module-id-sequence-'));
+    const objectId = '66666666-6666-4666-8666-666666666666';
+    const modulePath = path.join(root, 'Sequences', 'PostingOrder', 'Ext', 'ManagerModule.bsl');
+
+    try {
+      await fs.mkdir(path.dirname(modulePath), { recursive: true });
+      await fs.writeFile(
+        path.join(root, 'Sequences', 'PostingOrder.xml'),
+        `<MetaDataObject><Sequence uuid="${objectId}" /></MetaDataObject>`,
+        'utf-8'
+      );
+      await fs.writeFile(modulePath, '', 'utf-8');
+      await fs.writeFile(
+        path.join(root, 'ConfigDumpInfo.xml'),
+        `<ConfigDumpInfo><ConfigVersions><Metadata name="Sequence.PostingOrder" id="${objectId}"/><Metadata name="Sequence.PostingOrder.ManagerModule" id="${objectId}.0"/></ConfigVersions></ConfigDumpInfo>`,
+        'utf-8'
+      );
+
+      const result = await resolveModuleId(modulePath, root);
+      assert.ok(result);
+      assert.strictEqual(result.moduleId.objectId, objectId);
+
+      const reversePath = await resolveBslPathFromRdbgModule(result.moduleId, root);
+      assert.strictEqual(reversePath, modulePath);
+    } finally {
+      clearDumpMetadataCache();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   // ---------------------------------------------------------------------------
   // Unknown / unrecognised path → undefined
   // ---------------------------------------------------------------------------

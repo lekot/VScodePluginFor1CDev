@@ -32,6 +32,7 @@ export { informationRegisterRules } from './informationRegisterRules';
 export { integrationServiceRules } from './integrationServiceRules';
 export { roleRules } from './roleRules';
 export { scheduledJobRules } from './scheduledJobRules';
+export { sequenceRules } from './sequenceRules';
 export { sessionParameterRules } from './sessionParameterRules';
 export { settingsStorageRules } from './settingsStorageRules';
 export { subsystemRules } from './subsystemRules';

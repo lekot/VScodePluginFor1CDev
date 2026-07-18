@@ -203,6 +203,21 @@ suite('BindingManager', () => {
     );
   });
 
+  test('upsert rejects absolute and parent-traversal config paths', async () => {
+    const manager = makeManager(createMemoryFs());
+    for (const configRelativePath of ['../Configuration.xml', 'C:\\outside\\Configuration.xml', '/outside/Configuration.xml']) {
+      await assert.rejects(
+        () => manager.upsert({
+          workspaceFolder: 'root',
+          configRelativePath,
+          infobaseIds: [],
+          massDeployment: false,
+        }),
+        /путь|path|родитель|Абсолют/i,
+      );
+    }
+  });
+
   test('delete returns false when binding is missing', async () => {
     const m = makeManager(createMemoryFs());
     assert.strictEqual(await m.delete(folder.name, 'missing.xml'), false);

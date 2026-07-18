@@ -5,6 +5,8 @@ import * as path from 'path';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 import {
   configurationTreeReadonlyGlob,
+  createConfigurationSnapshot,
+  DeploySnapshotCancelledError,
   DeployService,
   listDeployTargetLabels,
   readDeployMode,
@@ -71,6 +73,132 @@ function rmDirQuiet(dir: string): void {
     /* ignore */
   }
 }
+
+function deploySnapshotTempDirs(): Set<string> {
+  return new Set(
+    fs.readdirSync(os.tmpdir())
+      .filter((name) => name.startsWith('1cv-deploy-snap-'))
+      .map((name) => path.join(os.tmpdir(), name)),
+  );
+}
+
+suite('deployService async snapshot', () => {
+  test('cancellation before snapshot has no temporary filesystem effect', async () => {
+    const before = deploySnapshotTempDirs();
+    await assert.rejects(
+      createConfigurationSnapshot(fixtureSmallRoot(), { isCancellationRequested: true }),
+      DeploySnapshotCancelledError,
+    );
+    assert.deepStrictEqual(deploySnapshotTempDirs(), before);
+  });
+
+  test('cancellation during bounded copy removes partial snapshot', async () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-source-'));
+    const before = deploySnapshotTempDirs();
+    let cancelled = false;
+    let copies = 0;
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        fs.writeFileSync(path.join(source, `${index}.txt`), `file-${index}`, 'utf8');
+      }
+      await assert.rejects(
+        createConfigurationSnapshot(
+          source,
+          { get isCancellationRequested() { return cancelled; } },
+          {
+            concurrency: 1,
+            copyFile: async (from, to) => {
+              copies += 1;
+              await fs.promises.copyFile(from, to);
+              cancelled = true;
+            },
+          },
+        ),
+        DeploySnapshotCancelledError,
+      );
+      assert.strictEqual(copies, 1);
+      assert.deepStrictEqual(deploySnapshotTempDirs(), before);
+    } finally {
+      rmDirQuiet(source);
+    }
+  });
+
+  test('cancellation drains concurrent copies before removing the partial snapshot', async () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-source-'));
+    const before = deploySnapshotTempDirs();
+    let cancelled = false;
+    let releaseSlowCopy: (() => void) | undefined;
+    const slowCopy = new Promise<void>((resolve) => { releaseSlowCopy = resolve; });
+    let settled = false;
+    try {
+      fs.writeFileSync(path.join(source, 'cancel.txt'), 'cancel', 'utf8');
+      fs.writeFileSync(path.join(source, 'slow.txt'), 'slow', 'utf8');
+      const snapshot = createConfigurationSnapshot(
+        source,
+        { get isCancellationRequested() { return cancelled; } },
+        {
+          concurrency: 2,
+          copyFile: async (from, to) => {
+            if (path.basename(from) === 'slow.txt') {
+              await slowCopy;
+            }
+            await fs.promises.copyFile(from, to);
+            if (path.basename(from) === 'cancel.txt') {
+              cancelled = true;
+            }
+          },
+        },
+      );
+      void snapshot.then(() => { settled = true; }, () => { settled = true; });
+
+      while (!cancelled) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.strictEqual(settled, false, 'snapshot must wait for the in-flight copy to settle');
+
+      releaseSlowCopy?.();
+      await assert.rejects(snapshot, DeploySnapshotCancelledError);
+      assert.deepStrictEqual(deploySnapshotTempDirs(), before);
+    } finally {
+      releaseSlowCopy?.();
+      rmDirQuiet(source);
+    }
+  });
+
+  test('file copy concurrency is bounded by the configured limit', async () => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-source-'));
+    let snapshot: string | undefined;
+    let active = 0;
+    let peak = 0;
+    try {
+      for (let index = 0; index < 8; index += 1) {
+        fs.writeFileSync(path.join(source, `${index}.txt`), `file-${index}`, 'utf8');
+      }
+      snapshot = await createConfigurationSnapshot(
+        source,
+        { isCancellationRequested: false },
+        {
+          concurrency: 2,
+          copyFile: async (from, to) => {
+            active += 1;
+            peak = Math.max(peak, active);
+            await new Promise<void>((resolve) => setTimeout(resolve, 5));
+            await fs.promises.copyFile(from, to);
+            active -= 1;
+          },
+        },
+      );
+      assert.ok(peak <= 2, `expected peak <= 2, got ${peak}`);
+      assert.strictEqual(fs.readdirSync(snapshot).filter((name) => name.endsWith('.txt')).length, 8);
+    } finally {
+      if (snapshot) {
+        rmDirQuiet(path.dirname(snapshot));
+      }
+      rmDirQuiet(source);
+    }
+  });
+});
 
 suite('deployService readDeployMode', () => {
   setup(() => {
@@ -244,6 +372,36 @@ suite('deployService resolveConfigurationXmlDirectory', () => {
       }
     } finally {
       rmDirQuiet(root);
+    }
+  });
+
+  test('rejects absolute and parent-traversal binding paths', () => {
+    const root = fixtureSmallRoot();
+    const absolute = resolveConfigurationXmlDirectory(root, path.resolve(root, 'Configuration.xml'));
+    const traversal = resolveConfigurationXmlDirectory(root, '../Configuration.xml');
+    assert.strictEqual(absolute.ok, false);
+    assert.strictEqual(traversal.ok, false);
+  });
+
+  test('rejects Configuration.xml reached through a junction outside workspace', function () {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-boundary-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-outside-'));
+    fs.writeFileSync(path.join(outside, 'Configuration.xml'), '<outside/>', 'utf8');
+    const link = path.join(root, 'linked');
+    try {
+      fs.symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      rmDirQuiet(root);
+      rmDirQuiet(outside);
+      this.skip();
+      return;
+    }
+    try {
+      const result = resolveConfigurationXmlDirectory(root, 'linked/Configuration.xml');
+      assert.strictEqual(result.ok, false);
+    } finally {
+      rmDirQuiet(root);
+      rmDirQuiet(outside);
     }
   });
 });

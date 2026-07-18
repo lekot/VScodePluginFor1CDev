@@ -50,12 +50,15 @@ suite('treeNormalization Test Suite', () => {
 
     const catalogs = normalized.children!.find((c) => c.id === 'Catalogs');
     const documents = normalized.children!.find((c) => c.id === 'Documents');
+    const sequences = normalized.children!.find((c) => c.id === 'Sequences');
 
     assert.ok(catalogs, 'Catalogs placeholder must exist');
     assert.ok(documents, 'Documents placeholder must exist');
+    assert.ok(sequences, 'Sequences placeholder must exist');
 
     assert.strictEqual(catalogs!.type, MetadataType.Catalog);
     assert.strictEqual(documents!.type, MetadataType.Document);
+    assert.strictEqual(sequences!.type, MetadataType.Sequence);
     assert.deepStrictEqual(catalogs!.children, []);
     assert.deepStrictEqual(documents!.children, []);
     assert.strictEqual((catalogs!.properties as any).type, 'Catalogs');
@@ -111,6 +114,7 @@ suite('treeNormalization Test Suite', () => {
       'ExchangePlans',
       'DocumentJournals',
       'DocumentNumerators',
+      'Sequences',
       'Enums',
       'Reports',
       'DataProcessors',
@@ -780,6 +784,25 @@ suite('treeNormalization Test Suite', () => {
     assert.strictEqual(predefNode!.parent, catalogNode);
   });
 
+  test('Sequence instances expose only the platform Dimension child collection', () => {
+    const sequenceNode: TreeNode = {
+      id: 'Sequences.PostingOrder',
+      name: 'PostingOrder',
+      type: MetadataType.Sequence,
+      properties: {},
+      children: [],
+      filePath: path.join('C:', 'cfg', 'Sequences', 'PostingOrder.xml'),
+    };
+
+    ensureR6PlaceholdersForInstanceNode(sequenceNode, {
+      configPath: path.join('C:', 'cfg'),
+      format: ConfigFormat.Designer,
+    });
+
+    assert.deepStrictEqual(sequenceNode.children?.map((child) => child.id), ['Dimensions']);
+    assert.strictEqual(sequenceNode.children?.[0].type, MetadataType.Dimension);
+  });
+
   test('ensureTabularSectionColumnsPlaceholder reparents flat column attributes under one container', () => {
     const tabFolder: TreeNode = {
       id: 'TabularSections',
@@ -818,4 +841,3 @@ suite('treeNormalization Test Suite', () => {
     assert.strictEqual(section.children!.length, 1);
   });
 });
-

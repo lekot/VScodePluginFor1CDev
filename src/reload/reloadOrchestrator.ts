@@ -104,6 +104,8 @@ export async function recoverDeleteUiState(
     refreshAttempted: recovery.refreshAttempted,
     refreshSucceeded: recovery.refreshSucceeded,
     converged: recovery.converged,
+    refreshFailure: recovery.refreshFailure,
+    verificationFailure: recovery.verificationFailure,
     shouldNotifyUser: recovery.shouldNotifyUser,
   };
   if (recovery.shouldNotifyUser) {
@@ -145,6 +147,7 @@ export function scheduleDeleteReconcile(
             elementName,
             reason: result.reason,
             error: result.error,
+            failure: result.failure,
           });
           await recoverDeleteUiState(deps, configPath, elementName, deletedNodeId, 'failed');
           return;

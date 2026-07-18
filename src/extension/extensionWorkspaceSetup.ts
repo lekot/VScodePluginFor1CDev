@@ -26,6 +26,7 @@ import { SubsystemCommandInterfaceProvider } from '../subsystemCommandInterfaceE
 import { XdtoPackageEditorProvider } from '../xdtoPackageEditor';
 import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
 import { registerLazyWorkspaceOrchestrator } from './lazyWorkspaceOrchestrator';
+import { registerMetadataWorkspaceFolderLifecycle } from './metadataWorkspaceFolders';
 
 /** Empty-catalog hint (WOW design UC-01 / plan §1C). */
 async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
@@ -192,8 +193,7 @@ function registerReloadCoordinator(
 ): void {
   state.reloadCoordinator = new ReloadCoordinatorService(async ({ configPath, reason, operationId }) => {
     Logger.info('reload.run.started', { configPath, reason, operationId });
-    await lifecycle.invalidateTreeCacheOnly(configPath);
-    await lifecycle.loadMetadataTree();
+    await lifecycle.invalidateCacheAndReload(configPath);
     Logger.info('reload.run.completed', { configPath, reason, operationId, success: true });
   });
   context.subscriptions.push({
@@ -208,17 +208,29 @@ function registerReloadCoordinator(
  * Orchestrates workspace registration: tree view, providers, reload coordinator,
  * editor providers, infobase features, commands, git handlers.
  */
-export function registerExtensionWorkspace(
+export async function registerExtensionWorkspace(
   context: vscode.ExtensionContext,
   state: ExtensionState,
   lifecycle: MetadataTreeLifecycle
-): void {
-  registerMetadataTreeProviders(context, state, lifecycle);
-  registerReloadCoordinator(context, state, lifecycle);
+): Promise<void> {
+  context.subscriptions.push({ dispose: lifecycle.dispose });
+  const workspaceFolderLifecycle = registerMetadataWorkspaceFolderLifecycle(lifecycle);
+  context.subscriptions.push(workspaceFolderLifecycle);
+  const trackedLifecycle: MetadataTreeLifecycle = {
+    invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
+    invalidateCacheAndReload: lifecycle.invalidateCacheAndReload,
+    reloadConfiguration: lifecycle.reloadConfiguration,
+    loadMetadataTree: () => workspaceFolderLifecycle.loadMetadataTree(),
+    reloadOrchestratorHandlers: lifecycle.reloadOrchestratorHandlers,
+    dispose: lifecycle.dispose,
+  };
+
+  registerMetadataTreeProviders(context, state, trackedLifecycle);
+  registerReloadCoordinator(context, state, trackedLifecycle);
   registerEditorProviders(context, state);
   registerInfobaseFeatures(context, state);
 
-  const commandDisposables = registerAllCommands({ context, state, lifecycle });
+  const commandDisposables = await registerAllCommands({ context, state, lifecycle: trackedLifecycle });
   context.subscriptions.push(...commandDisposables);
 
   if (state.treeView) {
@@ -227,10 +239,10 @@ export function registerExtensionWorkspace(
       registerLazyWorkspaceOrchestrator({
         metadataView: state.treeView,
         infobaseView: state.infobaseTreeView ?? undefined,
-        loadMetadataTree: () => lifecycle.loadMetadataTree(),
+        loadMetadataTree: () => trackedLifecycle.loadMetadataTree(),
         registerGitHeadChangeHandlers: () => {
           registerGitPhase4HeadChangeHandlers(context, {
-            onReloadMetadataTree: () => lifecycle.loadMetadataTree(),
+            onReloadMetadataTree: () => trackedLifecycle.loadMetadataTree(),
             onRefreshInfobaseManager: infobaseTreeForGitRefresh
               ? () => {
                   infobaseTreeForGitRefresh.refresh();

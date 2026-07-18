@@ -28,6 +28,32 @@ const NESTED_CONFIGURATION_CONTAINERS = [
   ['src', 'Extensions'],
 ] as const;
 
+export type DiscoveryStatus = 'authoritative' | 'partial' | 'error';
+
+export interface DiscoveryIssue {
+  readonly path: string;
+  readonly error: unknown;
+}
+
+export interface DiscoveryResult<T> {
+  readonly status: DiscoveryStatus;
+  readonly items: readonly T[];
+  readonly issues: readonly DiscoveryIssue[];
+}
+
+export class ConfigurationDiscoveryError extends Error {
+  constructor(
+    readonly discoveryKind: 'configuration-roots' | 'configuration-packages',
+    readonly result: DiscoveryResult<unknown>
+  ) {
+    super(
+      `Configuration ${discoveryKind} discovery is ${result.status}: `
+      + result.issues.map((issue) => issue.path).join(', ')
+    );
+    this.name = 'ConfigurationDiscoveryError';
+  }
+}
+
 /**
  * Detector for 1C configuration format
  */
@@ -49,16 +75,15 @@ export class FormatDetector {
         return ConfigFormat.Unknown;
       }
 
-      // Check for Designer format first (has 1cv8.cf or 1cv8.cfe)
-      if (await DesignerParser.isDesignerFormat(configPath)) {
-        Logger.info('Detected Designer format');
-        return ConfigFormat.Designer;
-      }
-
-      // Check for EDT format (has Configuration.xml)
+      // Prefer concrete EDT layout when a hybrid workspace also has Designer markers.
       if (await EdtParser.isEdtFormat(configPath)) {
         Logger.info('Detected EDT format');
         return ConfigFormat.EDT;
+      }
+
+      if (await DesignerParser.isDesignerFormat(configPath)) {
+        Logger.info('Detected Designer format');
+        return ConfigFormat.Designer;
       }
 
       Logger.warn('Unknown configuration format');
@@ -69,19 +94,28 @@ export class FormatDetector {
     }
   }
 
-  /**
-   * Check if the given directory path is an XML configuration root.
-   */
-  private static async isConfigurationRoot(dirPath: string): Promise<boolean> {
-    const entries = await this.readDirectoryEntries(dirPath);
-    return entries ? this.hasConfigurationRootMarkers(entries) : false;
+  /** Check if the directory is a Designer XML root or a real EDT project root. */
+  private static async isConfigurationRoot(
+    dirPath: string,
+    issues?: DiscoveryIssue[]
+  ): Promise<boolean> {
+    const entries = await this.readDirectoryEntries(dirPath, issues);
+    return entries ? this.isConfigurationRootFromEntries(dirPath, entries, issues) : false;
   }
 
-  private static async readDirectoryEntries(dirPath: string): Promise<fs.Dirent[] | null> {
+  private static async readDirectoryEntries(
+    dirPath: string,
+    issues?: DiscoveryIssue[],
+    missingIsIssue = true
+  ): Promise<fs.Dirent[] | null> {
     try {
       return await fs.promises.readdir(dirPath, { withFileTypes: true });
     } catch (error) {
       Logger.debug(`Error reading directory ${dirPath}`, error);
+      const errorCode = (error as NodeJS.ErrnoException).code;
+      if (missingIsIssue || errorCode !== 'ENOENT') {
+        issues?.push({ path: dirPath, error });
+      }
       return null;
     }
   }
@@ -89,6 +123,29 @@ export class FormatDetector {
   private static hasConfigurationRootMarkers(entries: readonly fs.Dirent[]): boolean {
     const names = new Set(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
     return [...XML_CONFIG_ROOT_MARKERS].some((marker) => names.has(marker));
+  }
+
+  private static async isConfigurationRootFromEntries(
+    dirPath: string,
+    entries: readonly fs.Dirent[],
+    issues?: DiscoveryIssue[]
+  ): Promise<boolean> {
+    if (this.hasConfigurationRootMarkers(entries)) {
+      return true;
+    }
+    if (!entries.some((entry) => entry.isDirectory() && entry.name === 'src')) {
+      return false;
+    }
+    const descriptorPath = path.join(dirPath, 'src', 'Configuration', 'Configuration.mdo');
+    try {
+      return (await fs.promises.stat(descriptorPath)).isFile();
+    } catch (error) {
+      const errorCode = (error as NodeJS.ErrnoException).code;
+      if (errorCode !== 'ENOENT' && errorCode !== 'ENOTDIR') {
+        issues?.push({ path: descriptorPath, error });
+      }
+      return false;
+    }
   }
 
   private static isConfigurationPackageFile(entry: fs.Dirent): boolean {
@@ -103,17 +160,20 @@ export class FormatDetector {
       .map((entry) => path.join(dirPath, entry.name));
   }
 
-  private static async findNestedKnownConfigurationRoots(configRootPath: string): Promise<string[]> {
+  private static async findNestedKnownConfigurationRoots(
+    configRootPath: string,
+    issues?: DiscoveryIssue[]
+  ): Promise<string[]> {
     const found: string[] = [];
     for (const containerSegments of NESTED_CONFIGURATION_CONTAINERS) {
       const containerPath = path.join(configRootPath, ...containerSegments);
-      const entries = await this.readDirectoryEntries(containerPath);
+      const entries = await this.readDirectoryEntries(containerPath, issues, false);
       if (!entries) {
         continue;
       }
       for (const childPath of this.getCandidateChildDirectories(containerPath, entries)) {
-        const childEntries = await this.readDirectoryEntries(childPath);
-        if (childEntries && this.hasConfigurationRootMarkers(childEntries)) {
+        const childEntries = await this.readDirectoryEntries(childPath, issues);
+        if (childEntries && await this.isConfigurationRootFromEntries(childPath, childEntries, issues)) {
           found.push(childPath);
         }
       }
@@ -145,22 +205,23 @@ export class FormatDetector {
    * @param workspacePaths Array of workspace folder paths
    * @returns Pairs of config root path and the workspace folder it was found under
    */
-  static async findAllConfigurationRoots(
+  static async discoverAllConfigurationRoots(
     workspacePaths: string[]
-  ): Promise<Array<{ configPath: string; workspaceFolderPath: string }>> {
+  ): Promise<DiscoveryResult<{ configPath: string; workspaceFolderPath: string }>> {
     const seen = new Set<string>();
     const result: Array<{ configPath: string; workspaceFolderPath: string }> = [];
+    const issues: DiscoveryIssue[] = [];
     const normalize = (p: string) => path.normalize(p);
 
     for (const workspacePath of workspacePaths) {
       try {
-        if (await this.isConfigurationRoot(workspacePath)) {
+        if (await this.isConfigurationRoot(workspacePath, issues)) {
           const n = normalize(workspacePath);
           if (!seen.has(n)) {
             seen.add(n);
             result.push({ configPath: workspacePath, workspaceFolderPath: workspacePath });
           }
-          const nested = await this.findNestedKnownConfigurationRoots(workspacePath);
+          const nested = await this.findNestedKnownConfigurationRoots(workspacePath, issues);
           for (const configPath of nested) {
             const n = normalize(configPath);
             if (!seen.has(n)) {
@@ -170,7 +231,7 @@ export class FormatDetector {
           }
           continue;
         }
-        const inSubdirs = await this.searchAllConfigurationsRecursive(workspacePath, 0, 5);
+        const inSubdirs = await this.searchAllConfigurationsRecursive(workspacePath, 0, 5, undefined, issues);
         for (const configPath of inSubdirs) {
           const n = normalize(configPath);
           if (!seen.has(n)) {
@@ -180,9 +241,20 @@ export class FormatDetector {
         }
       } catch (error) {
         Logger.debug(`Error scanning workspace folder ${workspacePath}`, error);
+        issues.push({ path: workspacePath, error });
       }
     }
-    return result;
+    return this.createDiscoveryResult(result, issues);
+  }
+
+  static async findAllConfigurationRoots(
+    workspacePaths: string[]
+  ): Promise<Array<{ configPath: string; workspaceFolderPath: string }>> {
+    const discovery = await this.discoverAllConfigurationRoots(workspacePaths);
+    if (discovery.status !== 'authoritative') {
+      throw new ConfigurationDiscoveryError('configuration-roots', discovery);
+    }
+    return [...discovery.items];
   }
 
   /**
@@ -190,16 +262,17 @@ export class FormatDetector {
    * @param workspacePaths Array of workspace folder paths
    * @returns Pairs of package file path and the workspace folder it was found under
    */
-  static async findAllConfigurationPackageFiles(
+  static async discoverAllConfigurationPackageFiles(
     workspacePaths: string[]
-  ): Promise<Array<{ filePath: string; workspaceFolderPath: string }>> {
+  ): Promise<DiscoveryResult<{ filePath: string; workspaceFolderPath: string }>> {
     const seen = new Set<string>();
     const result: Array<{ filePath: string; workspaceFolderPath: string }> = [];
+    const issues: DiscoveryIssue[] = [];
     const normalize = (p: string) => path.normalize(p);
 
     for (const workspacePath of workspacePaths) {
       try {
-        const files = await this.searchConfigurationPackagesRecursive(workspacePath, 0, 5);
+        const files = await this.searchConfigurationPackagesRecursive(workspacePath, 0, 5, undefined, issues);
         for (const filePath of files) {
           const n = normalize(filePath);
           if (!seen.has(n)) {
@@ -209,9 +282,30 @@ export class FormatDetector {
         }
       } catch (error) {
         Logger.debug(`Error scanning workspace folder for packages ${workspacePath}`, error);
+        issues.push({ path: workspacePath, error });
       }
     }
-    return result;
+    return this.createDiscoveryResult(result, issues);
+  }
+
+  static async findAllConfigurationPackageFiles(
+    workspacePaths: string[]
+  ): Promise<Array<{ filePath: string; workspaceFolderPath: string }>> {
+    const discovery = await this.discoverAllConfigurationPackageFiles(workspacePaths);
+    if (discovery.status !== 'authoritative') {
+      throw new ConfigurationDiscoveryError('configuration-packages', discovery);
+    }
+    return [...discovery.items];
+  }
+
+  private static createDiscoveryResult<T>(
+    items: readonly T[],
+    issues: readonly DiscoveryIssue[]
+  ): DiscoveryResult<T> {
+    const status: DiscoveryStatus = issues.length === 0
+      ? 'authoritative'
+      : items.length === 0 ? 'error' : 'partial';
+    return { status, items, issues };
   }
 
   /**
@@ -221,25 +315,26 @@ export class FormatDetector {
     dirPath: string,
     currentDepth: number,
     maxDepth: number,
-    knownEntries?: fs.Dirent[]
+    knownEntries?: fs.Dirent[],
+    issues?: DiscoveryIssue[]
   ): Promise<string[]> {
     if (currentDepth >= maxDepth) {return [];}
     const found: string[] = [];
-    const entries = knownEntries ?? await this.readDirectoryEntries(dirPath);
+    const entries = knownEntries ?? await this.readDirectoryEntries(dirPath, issues);
     if (!entries) {
       return found;
     }
 
     const nonRootChildren: Array<{ itemPath: string; entries: fs.Dirent[] }> = [];
     for (const itemPath of this.getCandidateChildDirectories(dirPath, entries)) {
-      const childEntries = await this.readDirectoryEntries(itemPath);
+      const childEntries = await this.readDirectoryEntries(itemPath, issues);
       if (!childEntries) {
         continue;
       }
-      if (this.hasConfigurationRootMarkers(childEntries)) {
+      if (await this.isConfigurationRootFromEntries(itemPath, childEntries, issues)) {
         found.push(itemPath);
         Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
-        found.push(...await this.findNestedKnownConfigurationRoots(itemPath));
+        found.push(...await this.findNestedKnownConfigurationRoots(itemPath, issues));
         continue;
       }
       nonRootChildren.push({ itemPath, entries: childEntries });
@@ -250,7 +345,8 @@ export class FormatDetector {
         child.itemPath,
         currentDepth + 1,
         maxDepth,
-        child.entries
+        child.entries,
+        issues
       );
       found.push(...sub);
     }
@@ -264,16 +360,17 @@ export class FormatDetector {
     dirPath: string,
     currentDepth: number,
     maxDepth: number,
-    knownEntries?: fs.Dirent[]
+    knownEntries?: fs.Dirent[],
+    issues?: DiscoveryIssue[]
   ): Promise<string[]> {
     if (currentDepth > maxDepth) {return [];}
     const found: string[] = [];
-    const entries = knownEntries ?? await this.readDirectoryEntries(dirPath);
+    const entries = knownEntries ?? await this.readDirectoryEntries(dirPath, issues);
     if (!entries) {
       return found;
     }
 
-    if (this.hasConfigurationRootMarkers(entries)) {
+    if (await this.isConfigurationRootFromEntries(dirPath, entries, issues)) {
       return found;
     }
 
@@ -288,15 +385,16 @@ export class FormatDetector {
     }
 
     for (const itemPath of this.getCandidateChildDirectories(dirPath, entries)) {
-      const childEntries = await this.readDirectoryEntries(itemPath);
-      if (!childEntries || this.hasConfigurationRootMarkers(childEntries)) {
+      const childEntries = await this.readDirectoryEntries(itemPath, issues);
+      if (!childEntries || await this.isConfigurationRootFromEntries(itemPath, childEntries, issues)) {
         continue;
       }
       const sub = await this.searchConfigurationPackagesRecursive(
         itemPath,
         currentDepth + 1,
         maxDepth,
-        childEntries
+        childEntries,
+        issues
       );
       found.push(...sub);
     }
@@ -331,7 +429,7 @@ export class FormatDetector {
       if (!childEntries) {
         continue;
       }
-      if (this.hasConfigurationRootMarkers(childEntries)) {
+      if (await this.isConfigurationRootFromEntries(itemPath, childEntries)) {
         Logger.info(`Found configuration at depth ${currentDepth + 1}: ${itemPath}`);
         return itemPath;
       }
@@ -371,17 +469,7 @@ export class FormatDetector {
         return false;
       }
 
-      // Check for required files or directories
-      const configXmlPath = path.join(configPath, CONFIGURATION_XML);
-      const configDumpPath = path.join(configPath, CONFIG_DUMP_INFO_XML);
-
-      // Check all paths in parallel
-      const checks = await Promise.allSettled([
-        fs.promises.access(configXmlPath),
-        fs.promises.access(configDumpPath),
-      ]);
-
-      return checks.some(result => result.status === 'fulfilled');
+      return await this.isConfigurationRoot(configPath);
     } catch (error) {
       Logger.debug('Error validating configuration path', error);
       return false;

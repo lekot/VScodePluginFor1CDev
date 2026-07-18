@@ -22,7 +22,7 @@ import type { IbcmdConsoleOutputEncoding } from './ibcmd/ibcmdConsoleEncodingTyp
 const requireFromHere = createRequire(__filename);
 
 export interface CfConfigurationServiceDeps {
-  resolveExecutablePath: () => IbcmdPathResolveResult;
+  resolveExecutablePath: () => Promise<IbcmdPathResolveResult>;
   getTimeoutMs: () => number;
   getConsoleOutputEncoding: () => IbcmdConsoleOutputEncoding;
   createTempRoot: () => Promise<string>;
@@ -58,7 +58,7 @@ function defaultDeps(): CfConfigurationServiceDeps {
   ) as typeof import('./metadataTreeSettings');
   const ibcmd = getIbcmdService();
   return {
-    resolveExecutablePath: () => ibcmd.resolveExecutablePath(),
+    resolveExecutablePath: () => ibcmd.resolveExecutablePathAsync(),
     getTimeoutMs: () => ibcmd.getTimeoutMs(),
     getConsoleOutputEncoding: () => getIbcmdConsoleOutputEncodingSetting(),
     createTempRoot: async () => fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-cf-')),
@@ -213,7 +213,7 @@ export async function decomposeCfToXmlDirectory(
   }
   await fs.promises.mkdir(params.outDir, { recursive: true });
 
-  const resolved = deps.resolveExecutablePath();
+  const resolved = await deps.resolveExecutablePath();
   if (resolved.kind !== 'resolved') {
     return ibcmdNotFoundResult(resolved);
   }
@@ -258,7 +258,7 @@ export async function buildCfFromXmlConfiguration(
   }
   await fs.promises.mkdir(path.dirname(params.outFile), { recursive: true });
 
-  const resolved = deps.resolveExecutablePath();
+  const resolved = await deps.resolveExecutablePath();
   if (resolved.kind !== 'resolved') {
     return ibcmdNotFoundResult(resolved);
   }

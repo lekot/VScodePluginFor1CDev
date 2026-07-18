@@ -2,7 +2,13 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { FormatDetector, ConfigFormat } from '../../src/parsers/formatDetector';
+import {
+  ConfigurationDiscoveryError,
+  FormatDetector,
+  ConfigFormat,
+} from '../../src/parsers/formatDetector';
+import { EdtParser } from '../../src/parsers/edtParser';
+import { MetadataType } from '../../src/models/treeNode';
 
 suite('FormatDetector', () => {
   test('should detect Designer format', async () => {
@@ -71,6 +77,52 @@ suite('FormatDetector', () => {
   test('findAllConfigurationRoots returns empty for empty input', async () => {
     const result = await FormatDetector.findAllConfigurationRoots([]);
     assert.deepStrictEqual(result, []);
+  });
+
+  test('typed root discovery reports partial/error and legacy API never returns false empty on I/O failure', async () => {
+    const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-fd-partial-'));
+    const configPath = path.join(workspacePath, 'config');
+    const missingPath = path.join(workspacePath, 'removed-workspace');
+
+    try {
+      await fs.promises.mkdir(configPath, { recursive: true });
+      await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+
+      const partial = await FormatDetector.discoverAllConfigurationRoots([workspacePath, missingPath]);
+      assert.strictEqual(partial.status, 'partial');
+      assert.ok(partial.items.some((item) => path.normalize(item.configPath) === path.normalize(configPath)));
+      assert.ok(partial.issues.some((issue) => path.normalize(issue.path) === path.normalize(missingPath)));
+
+      const failed = await FormatDetector.discoverAllConfigurationRoots([missingPath]);
+      assert.strictEqual(failed.status, 'error');
+      assert.deepStrictEqual(failed.items, []);
+      await assert.rejects(
+        FormatDetector.findAllConfigurationRoots([missingPath]),
+        ConfigurationDiscoveryError
+      );
+    } finally {
+      await fs.promises.rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  test('typed package discovery reports partial results instead of authoritatively dropping them', async () => {
+    const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-package-partial-'));
+    const packagePath = path.join(workspacePath, 'release.cf');
+    const missingPath = path.join(workspacePath, 'removed-workspace');
+
+    try {
+      await fs.promises.writeFile(packagePath, Buffer.from([0xff, 0xff, 0xff, 0x7f]));
+
+      const result = await FormatDetector.discoverAllConfigurationPackageFiles([workspacePath, missingPath]);
+      assert.strictEqual(result.status, 'partial');
+      assert.ok(result.items.some((item) => path.normalize(item.filePath) === path.normalize(packagePath)));
+      await assert.rejects(
+        FormatDetector.findAllConfigurationPackageFiles([workspacePath, missingPath]),
+        ConfigurationDiscoveryError
+      );
+    } finally {
+      await fs.promises.rm(workspacePath, { recursive: true, force: true });
+    }
   });
 
   test('matrix small fixture (XML-only export) is detected as Designer', async () => {
@@ -143,5 +195,89 @@ suite('FormatDetector', () => {
       !packagePaths.includes(path.normalize(path.join(configRoot, '1Cv8.cf'))),
       'package discovery must not recurse into discovered XML configuration roots'
     );
+  });
+
+  test('pure EDT project with a Sequence .mdo is detected, discovered and validated', async () => {
+    const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-pure-edt-'));
+    const configPath = path.join(workspacePath, 'edt-project');
+    const configurationDir = path.join(configPath, 'src', 'Configuration');
+    const sequenceDir = path.join(configPath, 'src', 'Sequences', 'PostingOrder');
+
+    try {
+      await fs.promises.mkdir(configurationDir, { recursive: true });
+      await fs.promises.mkdir(sequenceDir, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(configurationDir, 'Configuration.mdo'),
+        '<Configuration/>',
+        'utf-8'
+      );
+      await fs.promises.writeFile(path.join(sequenceDir, 'Sequence.mdo'), '<Sequence/>', 'utf-8');
+
+      assert.strictEqual(await FormatDetector.detect(configPath), ConfigFormat.EDT);
+      assert.strictEqual(await FormatDetector.isValidConfigurationPath(configPath), true);
+
+      const roots = await FormatDetector.findAllConfigurationRoots([workspacePath]);
+      assert.ok(
+        roots.some((item) => path.normalize(item.configPath) === path.normalize(configPath)),
+        'pure EDT project must be discovered without Configuration.xml'
+      );
+
+      const tree = await EdtParser.parseStructureOnly(configPath);
+      assert.strictEqual(
+        path.normalize(tree.filePath ?? ''),
+        path.normalize(path.join(configPath, 'src', 'Configuration', 'Configuration.mdo')),
+        'EDT root must not point to a synthetic Designer Configuration.xml'
+      );
+      assert.strictEqual(tree.children?.find((item) => item.id === 'Sequences')?.type, MetadataType.Sequence);
+    } finally {
+      await fs.promises.rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  test('EDT layout wins over Designer markers in a hybrid directory', async () => {
+    const configPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-hybrid-edt-'));
+    const configurationDir = path.join(configPath, 'src', 'Configuration');
+
+    try {
+      await fs.promises.mkdir(configurationDir, { recursive: true });
+      await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+      await fs.promises.writeFile(path.join(configurationDir, 'Configuration.mdo'), '<Configuration/>', 'utf-8');
+
+      assert.strictEqual(await FormatDetector.detect(configPath), ConfigFormat.EDT);
+    } finally {
+      await fs.promises.rm(configPath, { recursive: true, force: true });
+    }
+  });
+
+  test('Designer marker wins over an unrelated mdo under src', async () => {
+    const configPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-designer-mdo-'));
+    const unrelatedDir = path.join(configPath, 'src', 'Generated');
+
+    try {
+      await fs.promises.mkdir(unrelatedDir, { recursive: true });
+      await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration/>', 'utf-8');
+      await fs.promises.writeFile(path.join(unrelatedDir, 'Unrelated.mdo'), '<Generated/>', 'utf-8');
+
+      assert.strictEqual(await FormatDetector.detect(configPath), ConfigFormat.Designer);
+    } finally {
+      await fs.promises.rm(configPath, { recursive: true, force: true });
+    }
+  });
+
+  test('arbitrary mdo files do not identify or discover an EDT project', async () => {
+    const workspacePath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-false-edt-'));
+    const configPath = path.join(workspacePath, 'not-an-edt-project');
+    const unrelatedDir = path.join(configPath, 'src', 'Generated');
+
+    try {
+      await fs.promises.mkdir(unrelatedDir, { recursive: true });
+      await fs.promises.writeFile(path.join(unrelatedDir, 'Unrelated.mdo'), '<Generated/>', 'utf-8');
+
+      assert.strictEqual(await FormatDetector.detect(configPath), ConfigFormat.Unknown);
+      assert.strictEqual(await FormatDetector.isValidConfigurationPath(configPath), false);
+      assert.deepStrictEqual(await FormatDetector.findAllConfigurationRoots([workspacePath]), []);
+    } finally {
+      await fs.promises.rm(workspacePath, { recursive: true, force: true });
+    }
   });
 });

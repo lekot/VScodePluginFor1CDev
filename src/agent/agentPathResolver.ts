@@ -4,7 +4,19 @@
 import * as path from 'path';
 import { MetadataType } from '../models/treeNode';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
+import { validateElementName } from '../utils/elementNameValidator';
+import { isPathInside } from '../services/configurationSession/pathBoundary';
 import type { ResolvedAgentPath } from './types';
+
+export type AgentPathErrorCode = 'INVALID_AGENT_PATH';
+
+/** Typed Agent API contract error for syntactically valid commands with an unsupported metadata path. */
+export class AgentPathError extends Error {
+    constructor(readonly code: AgentPathErrorCode, message: string) {
+        super(message);
+        this.name = 'AgentPathError';
+    }
+}
 
 /**
  * Resolve an agent path (dot-separated) to a ResolvedAgentPath.
@@ -27,12 +39,25 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
 
     const rootTag = segments[0];
     const objectName = segments[1];
+    validatePathIdentifier(rootTag, 'тип объекта');
+    validatePathIdentifier(objectName, 'имя объекта');
+    if (segments.length >= 4) {
+        validatePathIdentifier(segments[2], 'тип вложенного элемента');
+        validatePathIdentifier(segments[3], 'имя вложенного элемента');
+    }
+    if (segments.length === 6) {
+        validatePathIdentifier(segments[4], 'тип вложенного элемента');
+        validatePathIdentifier(segments[5], 'имя вложенного элемента');
+    }
 
     const folderName =
         MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
         `${rootTag}s`;
 
     const filePath = path.join(configRoot, folderName, `${objectName}.xml`);
+    if (!isPathInside(configRoot, filePath)) {
+        throw new Error(`Agent path выходит за границы конфигурации: "${agentPath}".`);
+    }
 
     if (segments.length === 2) {
         return { rootTag, objectName, filePath };
@@ -57,4 +82,11 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
         nestedType: segments[4],
         nestedName: segments[5],
     };
+}
+
+function validatePathIdentifier(value: string, role: string): void {
+    const error = validateElementName(value, []);
+    if (error) {
+        throw new Error(`Некорректный ${role} "${value}": ${error}`);
+    }
 }

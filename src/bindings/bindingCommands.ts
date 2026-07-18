@@ -177,7 +177,7 @@ export async function runDeployForConfigurationFromTree(
 
   const preview = listDeployTargetLabels(binding, catalog);
   const ibcmd = getIbcmdService();
-  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
     return;
   }
@@ -354,7 +354,7 @@ export async function runDeploySelectedObjectsFromTree(
   }
 
   const ibcmd = getIbcmdService();
-  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
     return;
   }
@@ -447,7 +447,7 @@ export async function runPullSelectedObjectsFromTree(
   }
 
   const ibcmd = getIbcmdService();
-  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
     return;
   }
@@ -587,7 +587,7 @@ export async function runDeployChangedFilesFromTree(
   }
 
   const ibcmd = getIbcmdService();
-  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
     return;
   }
@@ -672,7 +672,7 @@ export async function runConfigExportStatusFromTree(
   }
 
   const ibcmd = getIbcmdService();
-  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
     return;
   }

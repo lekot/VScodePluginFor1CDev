@@ -6,11 +6,49 @@ import {
   DateQualifiers,
   ReferenceTypeInfo,
 } from '../types/typeDefinitions';
+import { xmlParser } from '../utils/xml/xmlCore';
+
+const STRUCTURED_TYPE_PROPERTY_VALUE = '1cviewer.structuredTypePropertyValue' as const;
+
+export interface StructuredTypePropertyValue {
+  readonly kind: typeof STRUCTURED_TYPE_PROPERTY_VALUE;
+  readonly content: Record<string, unknown>;
+}
+
+export function isStructuredTypePropertyValue(value: unknown): value is StructuredTypePropertyValue {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Partial<StructuredTypePropertyValue>;
+  return candidate.kind === STRUCTURED_TYPE_PROPERTY_VALUE
+    && !!candidate.content
+    && typeof candidate.content === 'object'
+    && !Array.isArray(candidate.content);
+}
 
 /**
  * Serializer for TypeDefinition to XML structure
  */
 export class TypeSerializer {
+  /** Build native Designer <Type> property content for XML writers. */
+  static serializePropertyValue(definition: TypeDefinition): StructuredTypePropertyValue {
+    const xml = this.serialize(definition);
+    if (!xml) {
+      return { kind: STRUCTURED_TYPE_PROPERTY_VALUE, content: {} };
+    }
+
+    const parsed = xmlParser.parse(xml) as Record<string, unknown>;
+    const content = parsed.Type;
+    if (!content || typeof content !== 'object' || Array.isArray(content)) {
+      throw new Error('Failed to serialize native Type property content.');
+    }
+
+    return {
+      kind: STRUCTURED_TYPE_PROPERTY_VALUE,
+      content: content as Record<string, unknown>,
+    };
+  }
+
   /**
    * Serialize TypeDefinition to XML structure
    * @param definition Type definition to serialize
@@ -101,7 +139,9 @@ export class TypeSerializer {
    * @returns XML string
    */
   private static serializeDateType(qualifiers: DateQualifiers | undefined, indent: string): string {
-    let xml = `${indent}<v8:Type>xs:date</v8:Type>`;
+    // Designer stores every 1C Date variant as xs:dateTime. The actual
+    // Date/DateTime/Time semantics live in v8:DateQualifiers.
+    let xml = `${indent}<v8:Type>xs:dateTime</v8:Type>`;
     
     if (qualifiers) {
       xml += `\n${indent}<v8:DateQualifiers>`;

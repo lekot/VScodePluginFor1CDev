@@ -3,6 +3,10 @@ import type { ComparePreview, PreviewGuard, PreviewStoreCreateInput } from './co
 export class PreviewStore {
   private readonly previews = new Map<string, ComparePreview>();
 
+  clear(): void {
+    this.previews.clear();
+  }
+
   createPreview(input: PreviewStoreCreateInput): ComparePreview {
     if (this.previews.has(input.previewId)) {
       throw new Error(`Preview already exists: ${input.previewId}`);

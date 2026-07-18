@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { XMLParser } from 'fast-xml-parser';
 import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import {
   createElement,
@@ -9,7 +10,9 @@ import {
   deleteElement,
   renameElement,
   isRootObjectCreateInTypeFolder,
+  planRenameRootElement,
 } from '../../src/services/elementOperations';
+import { MutationPlanExecutor } from '../../src/services/configurationSession/mutationPlan';
 import { XMLWriter } from '../../src/utils/XMLWriter';
 import {
   createTempDir,
@@ -24,6 +27,7 @@ import {
 } from '../helpers/testHelpers';
 import { ensureR6PlaceholdersForInstanceNode, NormalizeContext } from '../../src/utils/treeNormalization';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { addRootObjectToConfiguration } from '../../src/services/configurationXmlUpdater';
 
 suite('elementOperations', () => {
   let tmpDir: string;
@@ -356,7 +360,6 @@ suite('elementOperations', () => {
     await fs.promises.writeFile(catalogPath, ownerXml, 'utf-8');
 
     const formMetaPath = path.join(formsPath, 'ListFormRef.xml');
-    const formDir = path.join(formsPath, 'ListFormRef');
     const formNode: TreeNode = {
       id: 'Forms.ListFormRef',
       name: 'ListFormRef',
@@ -372,11 +375,70 @@ suite('elementOperations', () => {
   });
 
   test('duplicateElement creates copy of catalog', async () => {
+    const childUuid = '22222222-2222-4222-8222-222222222222';
+    const externalUuid = '99999999-9999-4999-8999-999999999999';
+    await fs.promises.writeFile(catalogPath, `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <InternalInfo><xr:GeneratedType name="CatalogObject.ExistingCatalog" category="Object"><xr:TypeId>33333333-3333-4333-8333-333333333333</xr:TypeId><xr:ValueId>44444444-4444-4444-8444-444444444444</xr:ValueId></xr:GeneratedType></InternalInfo>
+    <Properties><Name>ExistingCatalog</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>ExistingCatalog</v8:content></v8:item></Synonym><InputByString><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></InputByString></Properties>
+    <ChildObjects><Attribute uuid="${childUuid}"><Properties><Name>Code</Name></Properties></Attribute></ChildObjects>
+  </Catalog>
+</MetaDataObject>`, 'utf-8');
+    const sourceDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(path.join(sourceDir, 'Identity.xml'),
+      `<Root uuid="55555555-5555-4555-8555-555555555555"><OwnRef>${childUuid}</OwnRef><ExternalRef>${externalUuid}</ExternalRef><xr:GeneratedType name="CatalogObject.ExistingCatalog"/></Root>`,
+      'utf-8');
     await duplicateElement(catalogNode, 'CopyCatalog');
     const filePath = path.join(tmpDir, 'Catalogs', 'CopyCatalog.xml');
     assert.ok(fileExists(filePath));
     const content = await readFileContent(filePath);
     assert.ok(content.includes('<Name>CopyCatalog</Name>'));
+
+    const domParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+    const sourceDom = domParser.parse(await readFileContent(catalogNode.filePath!));
+    const copyDom = domParser.parse(content);
+    const sourceUuid = sourceDom.MetaDataObject.Catalog['@_uuid'];
+    const copyUuid = copyDom.MetaDataObject.Catalog['@_uuid'];
+    assert.match(copyUuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.notStrictEqual(copyUuid, sourceUuid, 'duplicate must receive a fresh root UUID');
+    const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+    const sourceIdentityFile = await readFileContent(path.join(sourceDir, 'Identity.xml'));
+    const sourceIdentities = new Set([
+      ...((await readFileContent(catalogNode.filePath!)).match(uuidPattern) ?? []),
+      ...(sourceIdentityFile.match(uuidPattern) ?? []),
+    ]);
+    const copiedIdentityFile = await readFileContent(path.join(tmpDir, 'Catalogs', 'CopyCatalog', 'Identity.xml'));
+    const copyIdentities = new Set([...(content.match(uuidPattern) ?? []), ...(copiedIdentityFile.match(uuidPattern) ?? [])]);
+    for (const identity of sourceIdentities) {
+      if (identity !== externalUuid) {
+        assert.ok(!copyIdentities.has(identity), `identity ${identity} must be remapped`);
+      }
+    }
+    assert.ok(content.includes('CatalogObject.CopyCatalog'));
+    assert.ok(content.includes('Catalog.CopyCatalog.StandardAttribute.Description'));
+    assert.ok(copiedIdentityFile.includes('CatalogObject.CopyCatalog'));
+    assert.ok(copiedIdentityFile.includes(externalUuid), 'external UUID references must stay unchanged');
+    const copiedChildUuid = copyDom.MetaDataObject.Catalog.ChildObjects.Attribute['@_uuid'];
+    assert.ok(copiedIdentityFile.includes(copiedChildUuid), 'references to remapped own UUID must remain consistent');
+
+    const configDom = domParser.parse(await readFileContent(path.join(tmpDir, 'Configuration.xml')));
+    const catalogEntries = configDom.MetaDataObject.Configuration.ChildObjects.Catalog;
+    assert.deepStrictEqual(
+      Array.isArray(catalogEntries) ? catalogEntries : [catalogEntries],
+      ['ExistingCatalog', 'CopyCatalog'],
+      'duplicate must be registered in Configuration.xml/ChildObjects'
+    );
+  });
+
+  test('duplicateElement preflights target directory without leaving a descriptor', async () => {
+    const targetDir = path.join(tmpDir, 'Catalogs', 'CopyCatalog');
+    await fs.promises.mkdir(targetDir, { recursive: true });
+    await assert.rejects(() => duplicateElement(catalogNode, 'CopyCatalog'), /Каталог объекта уже существует/);
+    assert.ok(!fs.existsSync(path.join(tmpDir, 'Catalogs', 'CopyCatalog.xml')));
+    const configuration = await readFileContent(path.join(tmpDir, 'Configuration.xml'));
+    assert.ok(!configuration.includes('<Catalog>CopyCatalog</Catalog>'));
   });
 
   test('duplicateElement throws when no parent', async () => {
@@ -403,6 +465,12 @@ suite('elementOperations', () => {
   });
 
   test('renameElement renames catalog file and folder', async () => {
+    const configXmlPath = path.join(tmpDir, 'Configuration.xml');
+    const configWithNeighbors = (await readFileContent(configXmlPath)).replace(
+      '<Catalog>ExistingCatalog</Catalog>',
+      '<Language>Русский</Language>\n      <Catalog>ExistingCatalog</Catalog>\n      <Document>Заказ</Document>'
+    );
+    await fs.promises.writeFile(configXmlPath, configWithNeighbors, 'utf-8');
     const elementDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
     await fs.promises.mkdir(elementDir, { recursive: true });
     await renameElement(catalogNode, 'RenamedCatalog', tmpDir);
@@ -411,6 +479,89 @@ suite('elementOperations', () => {
     assert.ok(fs.existsSync(newPath));
     assert.ok(fs.existsSync(newDir));
     assert.ok(!fs.existsSync(catalogNode.filePath!));
+
+    const configurationXml = await readFileContent(configXmlPath);
+    const domParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
+    const configDom = domParser.parse(configurationXml);
+    const childObjects = configDom.MetaDataObject.Configuration.ChildObjects;
+    assert.strictEqual(childObjects.Catalog, 'RenamedCatalog');
+    assert.ok(!configurationXml.includes('<Catalog>ExistingCatalog</Catalog>'));
+    assert.ok(
+      configurationXml.indexOf('<Language>Русский</Language>')
+        < configurationXml.indexOf('<Catalog>RenamedCatalog</Catalog>')
+      && configurationXml.indexOf('<Catalog>RenamedCatalog</Catalog>')
+        < configurationXml.indexOf('<Document>Заказ</Document>'),
+      'rename must preserve the ChildObjects entry type and position'
+    );
+  });
+
+  test('renameElement updates own identity tokens and preserves UUIDs', async () => {
+    const rootUuid = '11111111-1111-4111-8111-111111111111';
+    const typeId = '33333333-3333-4333-8333-333333333333';
+    await fs.promises.writeFile(catalogPath, `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable">
+  <Catalog uuid="${rootUuid}"><InternalInfo><xr:GeneratedType name="CatalogObject.ExistingCatalog" category="Object"><xr:TypeId>${typeId}</xr:TypeId><xr:ValueId>44444444-4444-4444-8444-444444444444</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogRef.ExistingCatalog" category="Ref"><xr:TypeId>55555555-5555-4555-8555-555555555555</xr:TypeId><xr:ValueId>66666666-6666-4666-8666-666666666666</xr:ValueId></xr:GeneratedType></InternalInfo><Properties><Name>ExistingCatalog</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>ExistingCatalog</v8:content></v8:item></Synonym><InputByString><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></InputByString></Properties><ChildObjects/></Catalog>
+</MetaDataObject>`, 'utf-8');
+    const sourceDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
+    await fs.promises.mkdir(sourceDir, { recursive: true });
+    await fs.promises.writeFile(path.join(sourceDir, 'Identity.xml'),
+      '<Root><xr:GeneratedType name="CatalogObject.ExistingCatalog"/><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></Root>',
+      'utf-8');
+    const referencesDir = path.join(tmpDir, 'Documents');
+    await fs.promises.mkdir(referencesDir, { recursive: true });
+    const referencesPath = path.join(referencesDir, 'Refs.xml');
+    await fs.promises.writeFile(referencesPath,
+      '<Refs><Type>CatalogObject.ExistingCatalog</Type><Ref>CatalogRef.ExistingCatalog</Ref><Field>Catalog.ExistingCatalog.StandardAttribute.Code</Field></Refs>',
+      'utf-8');
+
+    await renameElement(catalogNode, 'RenamedCatalog', tmpDir);
+
+    const renamed = await readFileContent(path.join(tmpDir, 'Catalogs', 'RenamedCatalog.xml'));
+    const nested = await readFileContent(path.join(tmpDir, 'Catalogs', 'RenamedCatalog', 'Identity.xml'));
+    const references = await readFileContent(referencesPath);
+    assert.ok(renamed.includes(`uuid="${rootUuid}"`));
+    assert.ok(renamed.includes(typeId), 'rename must preserve generated type IDs');
+    for (const value of [renamed, nested, references]) {
+      assert.ok(!value.includes('CatalogObject.ExistingCatalog'));
+      assert.ok(!value.includes('Catalog.ExistingCatalog.'));
+    }
+    assert.ok(references.includes('CatalogRef.RenamedCatalog'));
+  });
+
+  test('root rename plan transforms nested Ext XML before moving the object directory', async () => {
+    const extDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Ext');
+    const nestedPath = path.join(extDir, 'Identity.xml');
+    await fs.promises.mkdir(extDir, { recursive: true });
+    await fs.promises.writeFile(
+      nestedPath,
+      '<Root><xr:GeneratedType name="CatalogObject.ExistingCatalog"/></Root>',
+      'utf8',
+    );
+
+    const plan = await planRenameRootElement(catalogNode, 'RenamedCatalog', tmpDir);
+    await new MutationPlanExecutor(tmpDir).execute(plan);
+
+    const renamedNestedPath = path.join(tmpDir, 'Catalogs', 'RenamedCatalog', 'Ext', 'Identity.xml');
+    assert.strictEqual(fs.existsSync(nestedPath), false);
+    assert.ok(fs.existsSync(renamedNestedPath));
+    assert.ok((await fs.promises.readFile(renamedNestedPath, 'utf8')).includes('CatalogObject.RenamedCatalog'));
+    assert.ok((await fs.promises.readFile(path.join(tmpDir, 'Configuration.xml'), 'utf8')).includes(
+      '<Catalog>RenamedCatalog</Catalog>',
+    ));
+    assert.strictEqual(fs.existsSync(path.join(tmpDir, '.cdt-journal')), false);
+  });
+
+  test('renameElement preflights missing Configuration.xml registration', async () => {
+    const configurationPath = path.join(tmpDir, 'Configuration.xml');
+    const configuration = (await readFileContent(configurationPath))
+      .replace('<Catalog>ExistingCatalog</Catalog>', '');
+    await fs.promises.writeFile(configurationPath, configuration, 'utf-8');
+    await assert.rejects(
+      () => renameElement(catalogNode, 'RenamedCatalog', tmpDir),
+      /is not registered/
+    );
+    assert.ok(fs.existsSync(catalogPath));
+    assert.ok(!fs.existsSync(path.join(tmpDir, 'Catalogs', 'RenamedCatalog.xml')));
   });
 
   test('renameElement to same name does nothing', async () => {
@@ -1074,6 +1225,7 @@ suite('elementOperations', () => {
     let content = await fs.promises.readFile(path.join(cmRoot, 'SrcMod.xml'), 'utf-8');
     content = content.replace(/<Name>NestedModule<\/Name>/g, '<Name>SrcMod</Name>');
     await fs.promises.writeFile(path.join(cmRoot, 'SrcMod.xml'), content, 'utf-8');
+    await addRootObjectToConfiguration(tmpDir, 'CommonModule', 'SrcMod');
     const cmType: TreeNode = {
       id: 'CommonModules',
       name: 'CommonModules',

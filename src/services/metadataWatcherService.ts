@@ -6,12 +6,19 @@ const DEBOUNCE_MS = 500; // Increased from 400ms for better batching during git 
 
 export interface MetadataWatcherCallbacks {
   onTreeReload: () => void;
-  onFsMutationBatch?: (meta: { configPath: string; changedFiles: number; lastPath?: string }) => void;
+  onFsMutationBatch?: (meta: {
+    configPath: string;
+    changedFiles: number;
+    changedPaths: readonly string[];
+    lastPath?: string;
+  }) => void;
+  onFilesChanged?: (changedFilePaths: readonly string[]) => void;
+  /** @deprecated Prefer onFilesChanged for lossless batches. */
   onFileChanged?: (changedFilePath: string) => void;
 }
 
 /**
- * Watches XML files in configuration root and triggers tree reload (with debounce)
+ * Watches parser-relevant Designer and EDT artifacts in a configuration root and triggers tree reload (with debounce)
  * and optional properties panel refresh when the current node's file changes.
  * 
  * Debouncing prevents excessive reloads during batch operations (e.g., git checkout).
@@ -25,7 +32,7 @@ export class MetadataWatcherService implements vscode.Disposable {
   private configRoot: string | undefined;
 
   /**
-   * Start watching XML files under configRoot (pattern: all .xml in subdirs).
+   * Start watching XML, MDO, BSL, form, and tabular-document artifacts under configRoot.
    * Callbacks are invoked after debounce period to batch multiple changes.
    */
   start(configRoot: string, callbacks: MetadataWatcherCallbacks): void {
@@ -33,14 +40,17 @@ export class MetadataWatcherService implements vscode.Disposable {
     this.callbacks = callbacks;
     this.configRoot = path.normalize(configRoot);
 
-    const pattern = new vscode.RelativePattern(vscode.Uri.file(configRoot), '**/*.xml');
+    const pattern = new vscode.RelativePattern(
+      vscode.Uri.file(configRoot),
+      '**/*.{xml,mdo,bsl,form,mxl}'
+    );
     this.watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
     const scheduleReload = (uri: vscode.Uri) => {
       const fsPath = path.normalize(uri.fsPath);
       this.lastChangedPath = fsPath;
       this.changedPaths.add(fsPath);
-      Logger.debug('XML change detected (debouncing)', { path: fsPath, totalChanges: this.changedPaths.size });
+      Logger.debug('Metadata change detected (debouncing)', { path: fsPath, totalChanges: this.changedPaths.size });
 
       if (this.debounceTimer) {
         clearTimeout(this.debounceTimer);
@@ -59,7 +69,8 @@ export class MetadataWatcherService implements vscode.Disposable {
     this.debounceTimer = undefined;
     const callbacks = this.callbacks;
     const lastPath = this.lastChangedPath;
-    const changeCount = this.changedPaths.size;
+    const changedPaths = [...this.changedPaths];
+    const changeCount = changedPaths.length;
     const configPath = this.configRoot;
     
     this.lastChangedPath = undefined;
@@ -72,11 +83,14 @@ export class MetadataWatcherService implements vscode.Disposable {
     try {
       Logger.info('Reloading tree after file changes', { changedFiles: changeCount });
       if (configPath && callbacks.onFsMutationBatch) {
-        callbacks.onFsMutationBatch({ configPath, changedFiles: changeCount, lastPath });
+        callbacks.onFsMutationBatch({ configPath, changedFiles: changeCount, changedPaths, lastPath });
       }
       callbacks.onTreeReload();
-      if (lastPath && callbacks.onFileChanged) {
-        callbacks.onFileChanged(lastPath);
+      callbacks.onFilesChanged?.(changedPaths);
+      if (callbacks.onFileChanged) {
+        for (const changedPath of changedPaths) {
+          callbacks.onFileChanged(changedPath);
+        }
       }
     } catch (error) {
       Logger.error('Error in MetadataWatcherService flush', error);

@@ -9,6 +9,33 @@ import { registerDebugAdapter } from './debug';
 import { MetadataParser } from './parsers/metadataParser';
 
 const extensionState = new ExtensionState();
+let activeMetadataLifecycle: ReturnType<typeof createMetadataTreeLifecycle> | undefined;
+
+/**
+ * Rolls back registrations and state created before activation failed.
+ * The operation consumes context subscriptions, so repeating it is safe for them;
+ * ExtensionState.dispose is expected to remain idempotent as well.
+ */
+export async function rollbackPartialActivation(
+  context: Pick<vscode.ExtensionContext, 'subscriptions'>,
+  state: Pick<ExtensionState, 'dispose'> = extensionState
+): Promise<readonly unknown[]> {
+  const errors: unknown[] = [];
+  const subscriptions = context.subscriptions.splice(0).reverse();
+  for (const subscription of subscriptions) {
+    try {
+      subscription.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    await state.dispose();
+  } catch (error) {
+    errors.push(error);
+  }
+  return errors;
+}
 
 /**
  * Activate the extension
@@ -22,7 +49,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     Logger.info(MESSAGES.EXTENSION_ACTIVATED);
 
     const lifecycle = createMetadataTreeLifecycle(extensionState);
-    registerExtensionWorkspace(context, extensionState, lifecycle);
+    activeMetadataLifecycle = lifecycle;
+    await registerExtensionWorkspace(context, extensionState, lifecycle);
     registerDebugAdapter(context);
 
     Logger.info('Extension activation completed');
@@ -30,20 +58,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const errorMessage = error instanceof Error ? error.message : String(error);
     Logger.error('Critical error during extension activation', error);
 
-    vscode.window
+    const rollbackErrors = await rollbackPartialActivation(context);
+    activeMetadataLifecycle = undefined;
+    for (const rollbackError of rollbackErrors) {
+      Logger.error('Failed to roll back partial extension activation', rollbackError);
+    }
+
+    void vscode.window
       .showErrorMessage(`CDT 41: Failed to activate extension. ${errorMessage}`, 'Show Logs')
       .then((selection) => {
         if (selection === 'Show Logs') {
           Logger.show();
         }
       });
+    throw error;
   }
 }
 
 /**
  * Deactivate the extension
  */
-export function deactivate(): void {
-  extensionState.dispose();
-  Logger.info(MESSAGES.EXTENSION_DEACTIVATED);
+export async function deactivate(): Promise<void> {
+  try {
+    activeMetadataLifecycle?.dispose();
+    activeMetadataLifecycle = undefined;
+    await extensionState.dispose();
+  } finally {
+    Logger.info(MESSAGES.EXTENSION_DEACTIVATED);
+  }
 }

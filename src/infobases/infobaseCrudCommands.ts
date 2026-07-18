@@ -121,7 +121,7 @@ async function createNewFileInfobaseWithIbcmd(
   assertNoConflictingInfobaseTarget(entry, existing);
 
   const ibcmd = getIbcmdService();
-  if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
     await showIbcmdNotFoundDialog();
     return;
   }

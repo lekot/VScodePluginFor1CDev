@@ -1,65 +1,22 @@
 import { MetadataType } from '../models/treeNode';
+import {
+  getMetadataTypeDescriptorByFolder,
+  getMetadataTypeDescriptorByType,
+  METADATA_TYPE_DESCRIPTORS,
+} from '../constants/metadataTypeDescriptors';
 
 /**
  * Utility class for mapping metadata type strings to MetadataType enum
  * Centralizes the type mapping logic used by both Designer and EDT parsers
  */
 export class MetadataTypeMapper {
-  private static readonly TYPE_MAP: Record<string, MetadataType> = {
-    Catalogs: MetadataType.Catalog,
-    Documents: MetadataType.Document,
-    Enums: MetadataType.Enum,
-    Reports: MetadataType.Report,
-    DataProcessors: MetadataType.DataProcessor,
-    ChartsOfCharacteristicTypes: MetadataType.ChartOfCharacteristicTypes,
-    ChartsOfAccounts: MetadataType.ChartOfAccounts,
-    ChartsOfCalculationTypes: MetadataType.ChartOfCalculationTypes,
-    InformationRegisters: MetadataType.InformationRegister,
-    AccumulationRegisters: MetadataType.AccumulationRegister,
-    AccountingRegisters: MetadataType.AccountingRegister,
-    CalculationRegisters: MetadataType.CalculationRegister,
-    BusinessProcesses: MetadataType.BusinessProcess,
-    Tasks: MetadataType.Task,
-    ExternalDataSources: MetadataType.ExternalDataSource,
-    Constants: MetadataType.Constant,
-    SessionParameters: MetadataType.SessionParameter,
-    FilterCriteria: MetadataType.FilterCriterion,
-    ScheduledJobs: MetadataType.ScheduledJob,
-    FunctionalOptions: MetadataType.FunctionalOption,
-    FunctionalOptionsParameters: MetadataType.FunctionalOptionsParameter,
-    SettingsStorages: MetadataType.SettingsStorage,
-    EventSubscriptions: MetadataType.EventSubscription,
-    CommonModules: MetadataType.CommonModule,
-    CommandGroups: MetadataType.CommandGroup,
-    Roles: MetadataType.Role,
-    Interfaces: MetadataType.Interface,
-    Styles: MetadataType.Style,
-    WebServices: MetadataType.WebService,
-    HTTPServices: MetadataType.HTTPService,
-    IntegrationServices: MetadataType.IntegrationService,
-    Subsystems: MetadataType.Subsystem,
-    ExchangePlans: MetadataType.ExchangePlan,
-    DocumentJournals: MetadataType.DocumentJournal,
-    DefinedTypes: MetadataType.DefinedType,
-    CommonAttributes: MetadataType.CommonAttribute,
-    CommonCommands: MetadataType.CommonCommand,
-    CommonForms: MetadataType.CommonForm,
-    CommonPictures: MetadataType.CommonPicture,
-    CommonTemplates: MetadataType.CommonTemplate,
-    DocumentNumerators: MetadataType.DocumentNumerator,
-    Languages: MetadataType.Language,
-    WSReferences: MetadataType.WSReference,
-    XDTOPackages: MetadataType.XDTOPackage,
-    StyleItems: MetadataType.StyleItem,
-  };
-
   /**
    * Map string type to MetadataType enum
    * @param typeString Type string from directory name
    * @returns MetadataType enum value
    */
   static map(typeString: string): MetadataType {
-    return this.TYPE_MAP[typeString] || MetadataType.Unknown;
+    return getMetadataTypeDescriptorByFolder(typeString)?.type ?? MetadataType.Unknown;
   }
 
   /**
@@ -67,7 +24,7 @@ export class MetadataTypeMapper {
    * @returns Array of metadata type names
    */
   static getMetadataTypes(): string[] {
-    return Object.keys(this.TYPE_MAP);
+    return METADATA_TYPE_DESCRIPTORS.map((item) => item.designerFolder);
   }
 
   /**
@@ -76,7 +33,7 @@ export class MetadataTypeMapper {
    * @returns true if valid
    */
   static isValidType(typeString: string): boolean {
-    return typeString in this.TYPE_MAP;
+    return getMetadataTypeDescriptorByFolder(typeString) !== undefined;
   }
 
   /**
@@ -84,11 +41,6 @@ export class MetadataTypeMapper {
    * Reverse of {@link map}: each folder name maps to one `MetadataType`; values are unique in the internal map.
    */
   static getDesignerFolderIdForMetadataType(type: MetadataType): string | undefined {
-    for (const [folderId, metaType] of Object.entries(this.TYPE_MAP)) {
-      if (metaType === type) {
-        return folderId;
-      }
-    }
-    return undefined;
+    return getMetadataTypeDescriptorByType(type)?.designerFolder;
   }
 }

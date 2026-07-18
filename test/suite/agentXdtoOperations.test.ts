@@ -44,7 +44,23 @@ suite('XdtoAgentOperations', () => {
     assert.ok(result.data?.source?.includes('targetNamespace="urn:left"'));
   });
 
-  test('getPackage creates skeleton Package.bin when metadata exists without schema file', async () => {
+  test('rejects invalid package names and metadata paths outside the configuration root', async () => {
+    const invalidName = await ops.getPackage({ packageName: '../BasePackage' });
+    assert.strictEqual(invalidName.success, false);
+
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-xdto-outside-'));
+    try {
+      const outsideMetadata = path.join(outsideRoot, 'Outside.xml');
+      fs.writeFileSync(outsideMetadata, metadataXml('Outside'), 'utf8');
+      const outsidePath = await ops.getPackage({ metadataPath: outsideMetadata });
+      assert.strictEqual(outsidePath.success, false);
+      assert.match(outsidePath.error ?? '', /outside|root|предел/i);
+    } finally {
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('getPackage returns an in-memory skeleton without mutating the configuration', async () => {
     const packageName = 'SkeletonOnly';
     writeXdtoPackageMetadataOnly(tmpRoot, packageName, 'urn:skeleton');
 
@@ -52,7 +68,7 @@ suite('XdtoAgentOperations', () => {
 
     const schemaPath = path.join(tmpRoot, 'XDTOPackages', packageName, 'Ext', 'Package.bin');
     assert.strictEqual(result.success, true, result.error);
-    assert.ok(fs.existsSync(schemaPath), 'Package.bin should be created');
+    assert.strictEqual(fs.existsSync(schemaPath), false, 'read operation must not create Package.bin');
     assert.ok(result.data?.source?.includes('<package'));
     assert.ok(result.data?.source?.includes('targetNamespace="urn:skeleton"'));
     assert.strictEqual(result.data?.model.targetNamespace, 'urn:skeleton');
@@ -73,6 +89,24 @@ suite('XdtoAgentOperations', () => {
     assert.ok(fs.readFileSync(outputPath, 'utf8').includes('<xs:schema'));
   });
 
+  test('exportXsd rejects paths outside the configuration and configuration descriptors', async () => {
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-xdto-export-outside-'));
+    try {
+      const outsidePath = path.join(outsideRoot, 'base.xsd');
+      const outside = await ops.exportXsd({ packageName: 'BasePackage', outputPath: outsidePath });
+      assert.strictEqual(outside.success, false);
+      assert.strictEqual(fs.existsSync(outsidePath), false);
+
+      const configurationPath = path.join(tmpRoot, 'Configuration.xml');
+      const before = fs.readFileSync(configurationPath, 'utf8');
+      const descriptor = await ops.exportXsd({ packageName: 'BasePackage', outputPath: configurationPath });
+      assert.strictEqual(descriptor.success, false);
+      assert.strictEqual(fs.readFileSync(configurationPath, 'utf8'), before);
+    } finally {
+      fs.rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
   test('importXsd requires exactly one source and updates current Package.bin', async () => {
     const invalidMissing = await ops.importXsd({ packageName: 'BasePackage' });
     assert.strictEqual(invalidMissing.success, false);
@@ -90,15 +124,22 @@ suite('XdtoAgentOperations', () => {
     assert.ok(source.includes('type="xs:int"'));
   });
 
-  test('createFromXsd sanitizes name, creates metadata/schema and registers Configuration.xml', async () => {
+  test('createFromXsd rejects invalid 1C names instead of silently changing identity', async () => {
     const result = await ops.createFromXsd({ packageName: 'Bad:Name', source: RIGHT_XSD });
 
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(fs.existsSync(path.join(tmpRoot, 'XDTOPackages', 'Bad_Name.xml')), false);
+  });
+
+  test('createFromXsd creates metadata/schema and registers Configuration.xml', async () => {
+    const result = await ops.createFromXsd({ packageName: 'ValidName', source: RIGHT_XSD });
+
     assert.strictEqual(result.success, true, result.error);
-    assert.strictEqual(result.data?.name, 'Bad_Name');
+    assert.strictEqual(result.data?.name, 'ValidName');
     assert.strictEqual(result.data?.model.targetNamespace, 'urn:right');
-    assert.ok(fs.existsSync(path.join(tmpRoot, 'XDTOPackages', 'Bad_Name.xml')));
-    assert.ok(fs.existsSync(path.join(tmpRoot, 'XDTOPackages', 'Bad_Name', 'Ext', 'Package.bin')));
-    assert.ok(fs.readFileSync(path.join(tmpRoot, 'Configuration.xml'), 'utf8').includes('Bad_Name'));
+    assert.ok(fs.existsSync(path.join(tmpRoot, 'XDTOPackages', 'ValidName.xml')));
+    assert.ok(fs.existsSync(path.join(tmpRoot, 'XDTOPackages', 'ValidName', 'Ext', 'Package.bin')));
+    assert.ok(fs.readFileSync(path.join(tmpRoot, 'Configuration.xml'), 'utf8').includes('ValidName'));
   });
 
   test('compare returns stats and merge applies selected ids to Package.bin', async () => {

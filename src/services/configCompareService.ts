@@ -37,7 +37,7 @@ async function exportInfobaseConfigToDir(params: {
   token: vscode.CancellationToken;
 }): Promise<{ ok: boolean; message: string }> {
   const ibcmd = getIbcmdService();
-  const pathResult = ibcmd.resolveExecutablePath();
+  const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
     return {
       ok: false,
@@ -119,7 +119,7 @@ export async function runCompareInfobaseConfigurations(params: {
 
   await serializeInfobaseConfigIbcmdOp(async () => {
     const ibcmd = getIbcmdService();
-    if (ibcmd.resolveExecutablePath().kind !== 'resolved') {
+    if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
       await showIbcmdNotFoundDialog();
       return;
     }

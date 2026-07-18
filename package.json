@@ -12,12 +12,18 @@
   "engines": {
     "vscode": "^1.80.0"
   },
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
   "categories": [
     "Other"
   ],
   "activationEvents": [
     "workspaceContains:**/Configuration.xml",
     "workspaceContains:**/ConfigDumpInfo.xml",
+    "workspaceContains:**/src/Configuration/Configuration.mdo",
     "workspaceContains:**/*.cf",
     "workspaceContains:**/*.cfe",
     "onDebugResolve:bsl"
@@ -495,6 +501,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.agent.listConfigurations",
+        "title": "Agent: Список открытых конфигураций",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.createObject",
         "title": "Agent: Создать объект метаданных",
         "category": "CDT 41 Agent"
@@ -583,7 +594,49 @@
         "command": "1c-metadata-tree.agent.exportStatus",
         "title": "Agent: Статус конфигурации",
         "category": "CDT 41"
-      }
+      },
+      { "command": "1c-metadata-tree.agent.deploy", "title": "Agent: Выполнить раскатку", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.listBindings", "title": "Agent: Список привязок", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.resolveBinding", "title": "Agent: Разрешить привязку", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.getSubsystemCommandInterface", "title": "Agent: Получить командный интерфейс подсистемы", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.setSubsystemCommandVisibility", "title": "Agent: Изменить видимость команды подсистемы", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.setSubsystemCommandOrder", "title": "Agent: Изменить порядок команд подсистемы", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.setSubsystemSubsystemsOrder", "title": "Agent: Изменить порядок вложенных подсистем", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.getPredefinedCharacteristicType", "title": "Agent: Получить тип предопределённой характеристики", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.setPredefinedCharacteristicType", "title": "Agent: Установить тип предопределённой характеристики", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.listPredefinedCharacteristics", "title": "Agent: Список предопределённых характеристик", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.getCharacteristicValueRegisters", "title": "Agent: Получить регистры значений характеристик", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.start", "title": "Agent: Запустить отладку", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.startFromBinding", "title": "Agent: Запустить отладку из привязки", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.stop", "title": "Agent: Остановить отладку", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.setBreakpoint", "title": "Agent: Установить точку останова", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.clearBreakpoints", "title": "Agent: Очистить точки останова", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.continue", "title": "Agent: Продолжить выполнение", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.stepOver", "title": "Agent: Шаг с обходом", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.stepIn", "title": "Agent: Шаг с заходом", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.stepOut", "title": "Agent: Шаг с выходом", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.waitForStop", "title": "Agent: Ожидать остановку отладчика", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.getStackTrace", "title": "Agent: Получить стек вызовов", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.getScopes", "title": "Agent: Получить области переменных", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.getVariables", "title": "Agent: Получить переменные", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.evaluate", "title": "Agent: Вычислить выражение", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.debug.setExceptionFilter", "title": "Agent: Настроить остановку по исключениям", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.forms.start", "title": "Agent: Запустить клиент форм", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.forms.stop", "title": "Agent: Остановить клиент форм", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.forms.status", "title": "Agent: Статус клиента форм", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.forms.exec", "title": "Agent: Выполнить сценарий форм", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.forms.shot", "title": "Agent: Снимок формы", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.skd.info", "title": "Agent: Информация о СКД", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.skd.validate", "title": "Agent: Проверить СКД", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.skd.edit", "title": "Agent: Изменить СКД", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.skd.compile", "title": "Agent: Скомпилировать СКД", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.xdto.listPackages", "title": "Agent: Список XDTO-пакетов", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.xdto.getPackage", "title": "Agent: Получить XDTO-пакет", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.xdto.exportXsd", "title": "Agent: Экспортировать XDTO в XSD", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.xdto.importXsd", "title": "Agent: Импортировать XSD в XDTO", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.xdto.createFromXsd", "title": "Agent: Создать XDTO из XSD", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.xdto.compare", "title": "Agent: Сравнить XDTO-пакет", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.xdto.merge", "title": "Agent: Объединить XDTO-пакет", "category": "CDT 41 Agent" }
     ],
     "customEditors": [
       {
