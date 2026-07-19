@@ -1,72 +1,28 @@
 import * as vscode from 'vscode';
-import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { AgentResult } from '../types';
+import { METADATA_TOOLS } from './catalog/metadataTools';
+import { DEBUG_TOOLS } from './catalog/debugTools';
+import { BINDINGS_DEPLOY_TOOLS } from './catalog/bindingsDeployTools';
+import { ADVANCED_METADATA_TOOLS } from './catalog/advancedMetadataTools';
+import { FORMS_TOOLS } from './catalog/formsTools';
+import { SKD_TOOLS } from './catalog/skdTools';
+import { XDTO_TOOLS } from './catalog/xdtoTools';
+import type { McpToolDefinition } from './catalog/types';
 
-const configurationId = z.string().min(1).optional();
+export type { McpToolDefinition } from './catalog/types';
 
-const emptyInput = z.strictObject({});
-const listObjectsInput = z.strictObject({
-  configurationId,
-  type: z.string().min(1).optional(),
-  query: z.string().optional(),
-});
-const pathInput = z.strictObject({
-  configurationId,
-  path: z.string().min(1),
-});
-const exportStatusInput = z.strictObject({
-  configurationId,
-  configPath: z.string().min(1).optional(),
-});
-
-export interface McpToolDefinition {
-  readonly name: string;
-  readonly description: string;
-  readonly command: string;
-  readonly inputSchema: z.ZodType<Record<string, unknown>>;
-}
-
-/** The single public registry for the first MCP vertical. */
+/** The single public registry for the complete Agent API MCP surface. */
 export const MCP_TOOL_CATALOG: readonly McpToolDefinition[] = [
-  {
-    name: 'cdt_list_configurations',
-    description: 'List metadata configurations available in the current VS Code workspace.',
-    command: '1c-metadata-tree.agent.listConfigurations',
-    inputSchema: emptyInput,
-  },
-  {
-    name: 'cdt_list_objects',
-    description: 'List metadata objects, optionally filtered by exact type and name substring.',
-    command: '1c-metadata-tree.agent.listObjects',
-    inputSchema: listObjectsInput,
-  },
-  {
-    name: 'cdt_get_yaml',
-    description: 'Read the YAML representation of a metadata object by Agent API path.',
-    command: '1c-metadata-tree.agent.getYaml',
-    inputSchema: pathInput,
-  },
-  {
-    name: 'cdt_get_properties',
-    description: 'Read metadata object properties by Agent API path.',
-    command: '1c-metadata-tree.agent.getProperties',
-    inputSchema: pathInput,
-  },
-  {
-    name: 'cdt_list_bindings',
-    description: 'List configured metadata-to-infobase bindings using the redacted Agent API DTO.',
-    command: '1c-metadata-tree.agent.listBindings',
-    inputSchema: emptyInput,
-  },
-  {
-    name: 'cdt_export_status',
-    description: 'Read ibcmd export status for a configuration. This may start a local ibcmd process.',
-    command: '1c-metadata-tree.agent.exportStatus',
-    inputSchema: exportStatusInput,
-  },
-] as const;
+  ...METADATA_TOOLS,
+  ...DEBUG_TOOLS,
+  ...BINDINGS_DEPLOY_TOOLS,
+  ...ADVANCED_METADATA_TOOLS,
+  ...FORMS_TOOLS,
+  ...SKD_TOOLS,
+  ...XDTO_TOOLS,
+];
 
 export type AgentCommandExecutor = (
   command: string,
@@ -110,7 +66,7 @@ export function registerMcpTools(
       {
         description: tool.description,
         inputSchema: tool.inputSchema,
-        annotations: { readOnlyHint: true },
+        annotations: tool.annotations,
       },
       async (args, extra): Promise<CallToolResult> => {
         if (extra.signal.aborted) {

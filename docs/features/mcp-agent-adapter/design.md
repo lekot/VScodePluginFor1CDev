@@ -1,55 +1,81 @@
-# MCP Agent Adapter — дизайн и ADR
+# MCP Agent Adapter — дизайн и ADR полного каталога
 
 ## Контекст
 
-Agent API уже является прикладной границей: команды выбирают конфигурацию, проверяют capabilities, используют `ConfigurationSession`, редактируют/читают через общие services и сериализуют ошибки в `AgentResult`. Новый MCP слой не должен стать вторым API с собственной предметной логикой.
+Agent API — прикладная граница: 61 команда в `registerAgentCommands` выбирает конфигурацию, проверяет capabilities, использует `ConfigurationSession`, вызывает общие services и возвращает `AgentResult`. MCP не становится вторым прикладным API и не вызывает operations/services напрямую.
+
+Четыре UI-команды `borrowToExtension`, `navigateToMainObject`, `showRelatedObjects`, `showInterceptors` не зарегистрированы `registerAgentCommands`, не имеют `AgentResult`-контракта и не входят в MCP catalog.
 
 ## Варианты
 
 ### 1. Отдельный MCP HTTP server
 
-Минимально затрагивает Agent Bridge, но создаёт второй port/token/discovery/lifecycle и вторую реализацию защиты. Отклонён из-за эксплуатационного и security-дублирования.
+Создаёт второй port/token/discovery/lifecycle и дублирует security. Отклонён.
 
-### 2. `/mcp` в Agent Bridge, отдельный session router — выбран
+### 2. Один `/mcp` route и один монолитный каталог
 
-Один loopback listener, token и discovery. `AgentBridge` отвечает за HTTP/security/lifecycle, а изолированный MCP-компонент — за protocol sessions, tool catalog и mapping `AgentResult → CallToolResult`. Tools вызывают зарегистрированные Agent-команды.
+Сохраняет единый listener и thin dispatch, но 61 schema в одном файле создаёт высокую связность и неудобный review. Подход использован первой вертикалью, но не масштабируется на полный API.
 
-Цена: транспорт остаётся связан с VS Code command registry; cancellation нельзя провести внутрь текущих command signatures. Для первой read-only вертикали это приемлемо и минимизирует риск семантического расхождения.
+### 3. `/mcp` в Agent Bridge и доменные catalog modules — выбран
 
-### 3. Общий `LoopbackHttpHost` с подключаемыми routes
-
-Чище разделяет transport host, legacy bridge и MCP, но требует преждевременного рефакторинга проверенного bridge. Отложен до появления третьего route или второго потребителя security host.
-
-## Решение
-
-Принят вариант 2. Официальный production SDK v1 требует Node 18, поэтому совместимость меняется с VS Code `^1.80.0` на `^1.82.0`; собственная реализация протокола и pre-alpha SDK v2 не принимаются. Фабрика MCP сначала устанавливает WebCrypto, затем лениво загружает SDK, чтобы CommonJS evaluation не обратился к отсутствующему `globalThis.crypto` раньше bootstrap.
+Agent Bridge владеет HTTP/security/lifecycle. Stateful session router владеет MCP protocol. Доменные modules владеют только metadata tools: name, description, Agent command id, strict Zod schema и annotations. `toolCatalog.ts` агрегирует modules в единый экспортированный `MCP_TOOL_CATALOG`, регистрирует tools и использует общий `AgentResult → CallToolResult` mapper.
 
 ## Контейнеры и поток
 
 ```mermaid
 flowchart LR
-    C["MCP client"] -->|"Bearer + Streamable HTTP"| B["AgentBridge listener"]
+    C["Authenticated local MCP client"] -->|"Bearer + Streamable HTTP"| B["AgentBridge /mcp"]
     L["Legacy client"] -->|"POST /command"| B
-    B --> S["Security gate"]
-    S --> R["MCP session router"]
-    R --> T["Tool catalog"]
-    T --> V["VS Code command registry"]
-    V --> A["Agent API / services"]
-    A --> F["Workspace metadata, bindings, ibcmd"]
+    B --> G["Loopback / Host / Origin gate"]
+    G --> R["Stateful MCP session router"]
+    R --> K["MCP_TOOL_CATALOG"]
+    K --> D["Domain catalog modules"]
+    K --> V["vscode.commands.executeCommand"]
+    V --> A["61 Agent commands"]
+    A --> Q["ConfigurationSession / services / processes"]
 ```
 
-HTTP transport errors (auth, host/origin, method, session) не смешиваются с tool errors. Tool catalog — единственный реестр имён, описаний, Zod input shapes и Agent command ids. Общий mapper сохраняет `AgentResult`; отдельные tools не переписывают результаты.
+HTTP errors не смешиваются с tool errors. Domain modules не исполняют команды и не преобразуют результаты. Единственный executor и mapper остаются в агрегаторе.
 
-## Sessions и lifecycle
+## Каталог и контракты
 
-Новый `initialize` без session header создаёт пару `McpServer + StreamableHTTPServerTransport`. После инициализации UUID session регистрируется в map. Последующие `POST/GET/DELETE` маршрутизируются по `MCP-Session-Id`; неизвестная session получает protocol-compatible отказ. Event store/resumability и MCP Tasks не входят.
+Доменные modules размещаются под `src/agent/mcpAdapter/catalog/`: common schemas/types, metadata, debug, bindings/deploy, type/subsystem/characteristics, forms, SKD и XDTO. Порядок агрегации фиксирован для стабильного `tools/list`; имена tool и command id уникальны.
 
-Bridge не принимает новые запросы после начала stop. Затем закрывает MCP servers/transports (включая SSE), активные sockets, HTTP server и только после этого свой discovery-файл. Discovery пишется temp+rename и содержит ownership marker, чтобы старое окно не удалило запись нового.
+Каждый definition содержит:
 
-## Security boundaries
+- стабильное `cdt_*` имя;
+- ровно один `1c-metadata-tree.agent.*` command id;
+- описание реального эффекта;
+- strict Zod input schema с cross-field refinements;
+- полный статический набор `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`.
 
-Bind на loopback дополняется проверкой peer address, Host и Origin до чтения/dispatch. Bearer обязателен на всех MCP methods и сравнивается как секрет; URL не содержит token. `listBindings` использует существующий redacted DTO. Ответы исключают stack trace; абсолютные пути остаются только там, где они уже являются частью авторизованного AgentResult и нужны для паритета.
+Annotations консервативны и отражают худший допустимый режим. Поэтому условно пишущие `xdto.exportXsd`, `skd.info`, `skd.validate` не read-only. Произвольный JavaScript `forms.exec` и BSL `debug.evaluate` destructive/open-world. Open-world выставляется для debug/forms/deploy/status и всех SKD tools: они взаимодействуют с процессами, debuggee, браузером, информационными базами либо локальными произвольными input/output paths.
 
-## Эволюция
+## Инвариант покрытия
 
-Mutation tools позже используют те же Agent-команды, поэтому сохранят очередь `ConfigurationSession`. Если понадобится полноценная cancellation/progress или transport-independent testing, Agent-команды можно перевести на общий typed application facade без изменения MCP tool contracts.
+Source of truth для состава Agent API — фактическое выполнение `registerAgentCommands`. Contract test вызывает функцию на общем VS Code stub, читает runtime-capture `vscodeTestState.registeredCommandIds` и сравнивает множество с `MCP_TOOL_CATALOG.map(command)`. Regex или разбор исходного текста не используются: они не доказывают, что команда действительно зарегистрирована.
+
+Тест требует:
+
+- точного равенства множеств и текущего размера 61;
+- отсутствия duplicate tool names и command ids;
+- отсутствия четырёх UI-команд вне Agent API;
+- соответствия каждого definition зафиксированным schema/annotation contracts.
+
+Новая регистрация Agent command без MCP definition и удаление/переименование команды без синхронного изменения каталога становятся явным test failure.
+
+## Очереди и cancellation
+
+Thin executor не меняется: mutating tools вызывают соответствующую VS Code Agent-команду, поэтому сохраняют существующие `enqueue`/`enqueuePlan`, `operationId` и `snapshotVersion`. Debug/forms/SKD сохраняют текущую direct semantics; MCP не добавляет параллельную очередь.
+
+Cancellation проверяется до и после dispatch. После dispatch принудительная отмена невозможна без изменения Agent signatures: выполняющаяся команда завершается, её результат отбрасывается, клиент получает `REQUEST_CANCELLED`.
+
+## Security и trust boundary
+
+Один loopback listener, Bearer, peer/Host/Origin validation и 16 MiB body limit остаются без изменений. Аутентифицированный локальный MCP-клиент имеет ту же authority, что legacy bridge client; annotations не являются authorization policy.
+
+Расширение каталога включает команды с произвольным кодом и внешними эффектами, поэтому descriptions/annotations должны раскрывать эффект. Перед их публикацией `AgentDebugOperations.debugStart` и `debugStartFromBinding` перестают логировать `infobase`, connection string и полный launch config; operational log содержит только redacted безопасные признаки. Их собственный unsuccessful `AgentResult.error` также становится generic и не сериализует launch config/infobase. Общий error mapper по-прежнему не возвращает exception text/stack.
+
+## Sessions, discovery и lifecycle
+
+Протокол, discovery v2 и shutdown остаются прежними: initialize создаёт `McpServer + StreamableHTTPServerTransport`, последующие requests маршрутизируются по `MCP-Session-Id`, stop сначала закрывает sessions/SSE, затем sockets/listener и remove-if-owned discovery. Расширение tool catalog не меняет transport contract.

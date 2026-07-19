@@ -17,6 +17,11 @@ import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import type { BindingManager } from '../../src/bindings/bindingManager';
 import type { InfobaseStorageService } from '../../src/infobases/infobaseStorageService';
 
+const debugLauncherModule = require('../../src/debug/debugLauncher') as {
+    startDebuggingFromConfigPath: typeof import('../../src/debug/debugLauncher').startDebuggingFromConfigPath;
+};
+const originalStartDebuggingFromConfigPath = debugLauncherModule.startDebuggingFromConfigPath;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -70,9 +75,29 @@ suite('AgentDebugOperations — debugStartFromBinding', () => {
     });
 
     teardown(() => {
+        debugLauncherModule.startDebuggingFromConfigPath = originalStartDebuggingFromConfigPath;
         debugStartConfig.timeoutMs = 5000;
         resetDebugTestState();
         resetVscodeTestState();
+    });
+
+    test('startDebuggingFromConfigPath exception is normalized without exposing secrets', async () => {
+        const folder = makeWorkspaceFolder('/c/project', 'myws');
+        vscodeTestState.mockWorkspaceFolders = [folder];
+        const secret = 'File=/private/customer-db;Usr=admin;Pwd=top-secret';
+        debugLauncherModule.startDebuggingFromConfigPath = async () => {
+            throw new Error(`launch failed for ${secret}`);
+        };
+
+        ops = new AgentDebugOperations(makeRegistry(), makeDeps());
+        const result = await ops.debugStartFromBinding({ configPath: '/c/project/cf/Configuration.xml' });
+        const serialized = JSON.stringify(result);
+
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.error, 'Failed to start debug session from binding');
+        assert.ok(!serialized.includes(secret));
+        assert.ok(!serialized.includes('top-secret'));
+        assert.ok(!serialized.includes('customer-db'));
     });
 
     // ── Кейс 1: deps не переданы ──────────────────────────────────────────────
@@ -114,7 +139,7 @@ suite('AgentDebugOperations — debugStartFromBinding', () => {
 
     // ── Кейс 4: startDebuggingFromConfigPath бросает (нет binding) ───────────
 
-    test('startDebuggingFromConfigPath бросает (нет binding) — ошибка с message', async () => {
+    test('startDebuggingFromConfigPath бросает (нет binding) — ошибка нормализована', async () => {
         const folder = makeWorkspaceFolder('/c/project', 'myws');
         vscodeTestState.mockWorkspaceFolders = [folder];
 
@@ -122,12 +147,7 @@ suite('AgentDebugOperations — debugStartFromBinding', () => {
         ops = new AgentDebugOperations(makeRegistry(), makeDeps());
         const result = await ops.debugStartFromBinding({ configPath: '/c/project/cf/Configuration.xml' });
         assert.strictEqual(result.success, false);
-        assert.ok(result.error, 'Должна быть ошибка');
-        // Сообщение должно содержать что-то про привязку
-        assert.ok(
-            result.error.includes('привязка') || result.error.includes('не найдена'),
-            `Ожидалась ошибка про привязку, получено: ${result.error}`,
-        );
+        assert.strictEqual(result.error, 'Failed to start debug session from binding');
     });
 
     // ── Кейс 5: startDebugging вернула false ─────────────────────────────────

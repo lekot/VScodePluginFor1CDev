@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { MCP_TOOL_CATALOG } from '../../../src/agent/mcpAdapter/toolCatalog';
 
 const EXTENSION_ID = '1c-dev.1c-metadata-tree-vscode';
 
@@ -64,14 +65,11 @@ suite('Smoke: production MCP Agent Bridge', () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      assert.deepStrictEqual(listed.tools.map((tool) => tool.name), [
-        'cdt_list_configurations',
-        'cdt_list_objects',
-        'cdt_get_yaml',
-        'cdt_get_properties',
-        'cdt_list_bindings',
-        'cdt_export_status',
-      ]);
+      assert.strictEqual(listed.tools.length, 61);
+      assert.deepStrictEqual(
+        listed.tools.map((tool) => tool.name),
+        MCP_TOOL_CATALOG.map((tool) => tool.name),
+      );
 
       const direct = await vscode.commands.executeCommand(
         '1c-metadata-tree.agent.listConfigurations',

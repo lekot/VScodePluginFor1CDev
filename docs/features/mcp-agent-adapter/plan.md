@@ -1,50 +1,58 @@
-# MCP Agent Adapter — план реализации
+# MCP Agent Adapter — план полного каталога
 
-## Коммит 1: стандартный MCP transport и read-only vertical
+## Коммит 1: полный MCP catalog Agent API
 
-### Файлы зависимостей и упаковки
+### Документация контрактов
 
-- `package.json`, `package-lock.json`: поднять минимальный VS Code до `^1.82.0`; добавить production-зависимости official MCP SDK v1 и Zod v4; убедиться, что production bundle попадает в VSIX.
-- `.vscodeignore`: проверить, что выбранный каталог production-кода не исключён из пакета; менять только при необходимости.
+- `docs/features/mcp-agent-adapter/spec.md`: заменить границу первой вертикали на полный mapping 61/61, exact schemas/refinements, статические annotations, trust boundary и критерии покрытия.
+- `docs/features/mcp-agent-adapter/design.md`: зафиксировать доменное разбиение каталога, thin dispatch и coverage invariant.
+- `docs/features/mcp-agent-adapter/plan.md`: оставить один финальный вариант реализации.
 
-Контракты: runtime Node 18+, CommonJS/ES2020; bootstrap устанавливает WebCrypto до ленивой загрузки MCP SDK; статический import SDK в загружаемом при activation графе запрещён.
+Контракт: только команды из `registerAgentCommands`; четыре перечисленные UI-команды расширения вне scope.
 
-### Agent API
+### Доменные catalog modules
 
-- `src/agent/types.ts`, `src/agent/agentOperations.ts` и связанные регистрации: добавить общий optional `query` к `listObjects` и реализовать trim + регистронезависимый substring по имени после существующего type filter.
+- `src/agent/mcpAdapter/catalog/types.ts`: общий immutable контракт tool definition.
+- `src/agent/mcpAdapter/catalog/schemas.ts`: переиспользуемые strict schemas и refinements без business logic; shapes следуют исходным TypeScript DTO и существующей runtime-валидации, без искусственного сужения строк/чисел.
+- `src/agent/mcpAdapter/catalog/metadataTools.ts`: configurations и metadata CRUD.
+- `src/agent/mcpAdapter/catalog/debugTools.ts`: полный debug API.
+- `src/agent/mcpAdapter/catalog/bindingDeployTools.ts`: bindings, deploy, pull и export status.
+- `src/agent/mcpAdapter/catalog/configurationTools.ts`: types, subsystem command interface и predefined characteristics.
+- `src/agent/mcpAdapter/catalog/formsTools.ts`: forms lifecycle, arbitrary script и screenshot.
+- `src/agent/mcpAdapter/catalog/skdTools.ts`: compile/info/edit/validate.
+- `src/agent/mcpAdapter/catalog/xdtoTools.ts`: list/get/export/import/create/compare/merge.
+- `src/agent/mcpAdapter/toolCatalog.ts`: агрегировать modules в единый `MCP_TOOL_CATALOG`; сохранить единые executor, registration loop, result/error/cancellation mapping.
 
-Контракт: пустой query не фильтрует; `type` остаётся точным и регистрозависимым; форма `AgentResult` не меняется.
+Контракты: 61 уникальный tool и 61 уникальный command id; names/mapping/schemas/annotations строго из `spec.md`; неизвестные поля запрещены; cross-field constraints сохраняют parity (`forms.start` разрешает оба источника с приоритетом `dbPath`); nested DTO являются strict objects; каждый tool вызывает ровно одну Agent-команду.
 
-### MCP adapter
+### Security logging
 
-- Новые файлы под `src/agent/` (не в исключённом корневом `mcp/`): создать tool catalog, единый result/error mapper и stateful Streamable HTTP session router.
-- Каждый из шести tools связать с ровно одной существующей Agent-командой; схемы запретят неизвестные поля.
+- `src/agent/agentDebugOperations.ts`: заменить логирование launch config в `debugStart` и `debugStartFromBinding` на redacted operational metadata; заменить failure, включающий launch config/infobase, на generic error.
 
-Контракты: имена и inputs из `spec.md`; Agent error envelope сохраняется; command exception получает `AGENT_COMMAND_FAILED`; отмена до dispatch не запускает команду, а отмена во время исполнения отбрасывает её результат после завершения и возвращает `REQUEST_CANCELLED` с `isError: true`.
+Контракт: ни лог, ни unsuccessful `AgentResult.error` не содержат `infobase`, connection strings, credentials или полный launch config; success DTO не меняется.
 
-### Bridge, activation и discovery
+### Contract и coverage tests
 
-- `src/agent/agentBridge.ts`, `src/agent/agentBridgeActivation.ts` и точка регистрации: подключить `/mcp` к существующему listener; добавить общий security gate, session shutdown, WebCrypto bootstrap и dependency injection для тестов.
-- Расширить discovery schema без удаления старых полей; сделать atomic write и remove-if-owned cleanup.
+- `test/suite/mcpToolCatalog.test.ts`: проверить полный mapping, strict schemas, cross-field refinements, annotations, duplicate guards и отсутствие dispatch при invalid input.
+- `test/suite/mcpAgentCoverage.test.ts`: вызвать `registerAgentCommands` на общем VS Code stub, получить runtime-capture `vscodeTestState.registeredCommandIds` и сравнить с command ids единого каталога; зафиксировать 61/61 и exclusion четырёх UI-команд. Source regex запрещён как доказательство покрытия.
+- `test/suite/agentDebugOperations.lifecycle.test.ts`, `test/suite/agentDebugOperations.startFromBinding.test.ts`: проверить отсутствие чувствительных debug launch fields и в capture логов, и в failure `AgentResult.error`.
+- `test/suite/coreSuites.ts`: включить новые MCP suites и существующий `suite/agentXdtoOperations.test.js`; `test/suite/index.ts` менять только если suite требует VS Code runner.
 
-Контракты: loopback-only, Bearer для `GET/POST/DELETE /mcp`, строгие Host/Origin, 16 MiB; stop закрывает MCP до listener и остаётся идемпотентным.
+Контракты: drift Agent API ↔ MCP catalog всегда ломает тест; mutations dispatch-ятся через Agent command executor; `AgentResult`, `AGENT_COMMAND_FAILED` и `REQUEST_CANCELLED` сохраняют существующую семантику.
 
-### Документация клиента
+### Integration и документация клиента
 
-- README/документация Agent API: описать discovery, Bearer header, шесть tools, ограничение cancellation `exportStatus` и сохранение legacy bridge.
+- `test/suite/smoke/mcpAgentBridge.smoke.test.ts`: обновить expected tool count и проверить representative read, mutation, process и open-world definitions через официальный SDK client без выполнения опасных внешних действий.
+- README и Agent API documentation: заменить перечень первой вертикали ссылкой/таблицей полного каталога, описать dangerous/open-world tools и неизменную local authenticated trust boundary.
 
-Контракт: token не помещается в URL или логи; клиент читает актуальный discovery после activation.
-
-### Тесты
-
-- Новые contract tests: точный tool catalog/schema, query parity, result/error mapping, отсутствие dispatch при invalid input.
-- Расширить bridge/security/lifecycle tests: auth, Host, Origin, loopback, methods, sessions, ownership-safe discovery, start/stop races и открытый SSE.
-- Добавить integration smoke официальным SDK client: initialize, list, call, terminate session; зарегистрировать suites в core runner и VS Code smoke, где требуется реальная command registry.
-
-Контракты приёмки: все восемь критериев `spec.md`; legacy Agent Bridge regression tests остаются зелёными.
+Контракт: transport, Bearer, discovery v2, legacy `/command`, sessions и lifecycle не меняются.
 
 ### Quality Gate
 
-- Выполнить typecheck/compile, полный core unit suite, smoke suite и проверку VSIX contents.
-- Провести независимый code review без правок; исправления проходят повторный review и Quality Gate.
-- После зелёного gate создать один локальный коммит, не push.
+- Typecheck и compile.
+- Полный core unit suite.
+- Явная проверка, что `agentXdtoOperations.test.js` входит в `coreSuiteFiles` и реально выполняется core runner.
+- VS Code smoke suite с official MCP client.
+- Проверка VSIX contents.
+- Независимый code review без правок; замечания проходят повторный review.
+- После зелёного gate создать один локальный коммит, push не выполнять.

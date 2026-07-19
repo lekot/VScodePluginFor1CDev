@@ -10,6 +10,7 @@ import {
   createMcpSessionRouter,
   McpSessionRouter,
 } from '../../src/agent/mcpAdapter/sessionRouter';
+import { MCP_TOOL_CATALOG } from '../../src/agent/mcpAdapter/toolCatalog';
 
 interface HttpResponse {
   readonly status: number;
@@ -209,14 +210,11 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
     await client.connect(transport);
     assert.ok(transport.sessionId, 'initialize must establish a stateful MCP session');
     const listed = await client.listTools();
-    assert.deepStrictEqual(listed.tools.map((tool) => tool.name), [
-      'cdt_list_configurations',
-      'cdt_list_objects',
-      'cdt_get_yaml',
-      'cdt_get_properties',
-      'cdt_list_bindings',
-      'cdt_export_status',
-    ]);
+    assert.strictEqual(listed.tools.length, 61);
+    assert.deepStrictEqual(
+      listed.tools.map((tool) => tool.name),
+      MCP_TOOL_CATALOG.map((tool) => tool.name),
+    );
 
     const called = await client.callTool({ name: 'cdt_list_configurations', arguments: {} });
     assert.deepStrictEqual(called.structuredContent, {
@@ -242,7 +240,7 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
     assert.match(afterDelete.body, /Session not found/);
   });
 
-  test('official SDK validation rejects unknown input without Agent dispatch', async () => {
+  test('official SDK validation rejects an invalid 1C identifier without Agent dispatch', async () => {
     let dispatchCount = 0;
     bridge = new AgentBridge({
       commandPattern: /^test\./,
@@ -262,8 +260,8 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
     await client.connect(transport);
 
     const result = await client.callTool({
-      name: 'cdt_list_configurations',
-      arguments: { unknown: true },
+      name: 'cdt_create_object',
+      arguments: { type: 'Catalog', name: '1InvalidName' },
     });
     assert.strictEqual(result.isError, true);
     assert.strictEqual(dispatchCount, 0);

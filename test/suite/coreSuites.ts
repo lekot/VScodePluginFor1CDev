@@ -196,6 +196,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentDebugOperations.startFromBinding.test.js',
   'suite/agentBridge.test.js',
   'suite/mcpAdapter.test.js',
+  'suite/mcpAgentCoverage.test.js',
   'suite/mcpBridgeTransport.test.js',
   'suite/mcpSessionRouterRace.test.js',
   'suite/agentBridgeActivation.test.js',
@@ -217,6 +218,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentFormsOperations.test.js',
   'suite/formsLifecycle.test.js',
   'suite/agentSkdOperations.test.js',
+  'suite/agentXdtoOperations.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

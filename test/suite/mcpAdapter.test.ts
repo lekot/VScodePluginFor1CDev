@@ -17,7 +17,12 @@ interface RegisteredTool {
   readonly name: string;
   readonly config: {
     readonly inputSchema: { safeParse(value: unknown): { success: boolean } };
-    readonly annotations?: { readonly readOnlyHint?: boolean };
+    readonly annotations?: {
+      readonly readOnlyHint?: boolean;
+      readonly destructiveHint?: boolean;
+      readonly idempotentHint?: boolean;
+      readonly openWorldHint?: boolean;
+    };
   };
   readonly handler: ToolHandler;
 }
@@ -44,50 +49,16 @@ function signal(aborted = false): AbortSignal {
 }
 
 suite('MCP adapter: tool contract', () => {
-  test('publishes exactly the six specified tools in stable order', () => {
-    assert.deepStrictEqual(
-      MCP_TOOL_CATALOG.map(({ name, command }) => ({ name, command })),
-      [
-        { name: 'cdt_list_configurations', command: '1c-metadata-tree.agent.listConfigurations' },
-        { name: 'cdt_list_objects', command: '1c-metadata-tree.agent.listObjects' },
-        { name: 'cdt_get_yaml', command: '1c-metadata-tree.agent.getYaml' },
-        { name: 'cdt_get_properties', command: '1c-metadata-tree.agent.getProperties' },
-        { name: 'cdt_list_bindings', command: '1c-metadata-tree.agent.listBindings' },
-        { name: 'cdt_export_status', command: '1c-metadata-tree.agent.exportStatus' },
-      ],
-    );
-  });
-
-  test('input schemas accept only the documented fields and reject additional properties', () => {
-    const byName = new Map(MCP_TOOL_CATALOG.map((tool) => [tool.name, tool.inputSchema]));
-    const accepts = (name: string, value: unknown): boolean => byName.get(name)!.safeParse(value).success;
-
-    assert.strictEqual(accepts('cdt_list_configurations', {}), true);
-    assert.strictEqual(accepts('cdt_list_configurations', { extra: true }), false);
-    assert.strictEqual(accepts('cdt_list_bindings', {}), true);
-    assert.strictEqual(accepts('cdt_list_bindings', { configurationId: 'x' }), false);
-
-    assert.strictEqual(accepts('cdt_list_objects', {}), true);
-    assert.strictEqual(accepts('cdt_list_objects', { configurationId: 'a', type: 'Catalog', query: 'goods' }), true);
-    assert.strictEqual(accepts('cdt_list_objects', { query: '', extra: 1 }), false);
-    assert.strictEqual(accepts('cdt_list_objects', { type: '' }), false);
-
-    for (const name of ['cdt_get_yaml', 'cdt_get_properties']) {
-      assert.strictEqual(accepts(name, { path: 'Catalog.Goods' }), true, name);
-      assert.strictEqual(accepts(name, {}), false, name);
-      assert.strictEqual(accepts(name, { path: '', configurationId: 'a' }), false, name);
-      assert.strictEqual(accepts(name, { path: 'Catalog.Goods', unknown: true }), false, name);
-    }
-
-    assert.strictEqual(accepts('cdt_export_status', {}), true);
-    assert.strictEqual(accepts('cdt_export_status', { configurationId: 'a', configPath: 'C:\\cfg' }), true);
-    assert.strictEqual(accepts('cdt_export_status', { configPath: '', extra: true }), false);
-  });
-
-  test('all registered tools are marked read-only', () => {
+  test('registerMcpTools preserves every catalog schema and annotation object', () => {
     const tools = captureRegisteredTools(async () => ({ success: true }));
-    assert.strictEqual(tools.length, 6);
-    assert.ok(tools.every((tool) => tool.config.annotations?.readOnlyHint === true));
+    assert.strictEqual(tools.length, 61);
+    assert.deepStrictEqual(
+      tools.map(({ name, config }) => ({ name, annotations: config.annotations })),
+      MCP_TOOL_CATALOG.map(({ name, annotations }) => ({ name, annotations })),
+    );
+    for (const [index, registered] of tools.entries()) {
+      assert.strictEqual(registered.config.inputSchema, MCP_TOOL_CATALOG[index].inputSchema);
+    }
   });
 });
 
@@ -107,20 +78,27 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     assert.deepStrictEqual(mapped.structuredContent, source);
   });
 
-  test('valid invocation dispatches exactly one matching Agent command', async () => {
+  test('representative read, mutation, debug, forms, SKD and XDTO tools dispatch generically', async () => {
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const tools = captureRegisteredTools(async (command, args) => {
       calls.push({ command, args });
       return { success: true, data: { ok: true } };
     });
-    const target = tools.find((tool) => tool.name === 'cdt_list_objects')!;
-    const result = await target.handler({ type: 'Catalog', query: 'good' }, { signal: signal() });
+    const cases: ReadonlyArray<readonly [string, Record<string, unknown>, string]> = [
+      ['cdt_list_objects', { type: 'Catalog', query: 'good' }, '1c-metadata-tree.agent.listObjects'],
+      ['cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],
+      ['cdt_debug_stop', { sessionId: 's1' }, '1c-metadata-tree.agent.debug.stop'],
+      ['cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],
+      ['cdt_skd_validate', { templatePath: 'template.xml' }, '1c-metadata-tree.agent.skd.validate'],
+      ['cdt_xdto_compare', { packageName: 'p', source: '<x/>' }, '1c-metadata-tree.agent.xdto.compare'],
+    ];
+    for (const [name, args] of cases) {
+      const target = tools.find((candidate) => candidate.name === name)!;
+      const result = await target.handler(args, { signal: signal() });
+      assert.strictEqual(result.isError, undefined, name);
+    }
 
-    assert.deepStrictEqual(calls, [{
-      command: '1c-metadata-tree.agent.listObjects',
-      args: { type: 'Catalog', query: 'good' },
-    }]);
-    assert.strictEqual(result.isError, undefined);
+    assert.deepStrictEqual(calls, cases.map(([, args, command]) => ({ command, args })));
   });
 
   test('normalizes command exceptions without leaking a stack', async () => {
