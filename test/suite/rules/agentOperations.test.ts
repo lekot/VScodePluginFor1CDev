@@ -209,6 +209,42 @@ suite('AgentOperations: listObjects', () => {
         assert.ok(enumNames.includes('ФильтрПеречисление'), 'should contain the Enum');
     });
 
+    test('query is trimmed and matches object names case-insensitively', async () => {
+        await ops.createObject({ type: 'Catalog', name: 'CustomerOrders' });
+        await ops.createObject({ type: 'Catalog', name: 'Warehouses' });
+
+        const result = await ops.listObjects({ query: '  TOMERord  ' });
+
+        assert.ok(result.success, result.error);
+        assert.deepStrictEqual(result.data!.objects.map((object) => object.name), ['CustomerOrders']);
+    });
+
+    test('query filters by name only and an empty trimmed query does not filter', async () => {
+        await ops.createObject({ type: 'Catalog', name: 'Products' });
+        await ops.createObject({ type: 'Document', name: 'CatalogInName' });
+
+        const byTypeText = await ops.listObjects({ query: 'Document' });
+        assert.ok(byTypeText.success, byTypeText.error);
+        assert.deepStrictEqual(byTypeText.data!.objects, [], 'metadata type must not participate in query matching');
+
+        const all = await ops.listObjects({ query: '   ' });
+        assert.ok(all.success, all.error);
+        assert.strictEqual(all.data!.objects.length, 2);
+    });
+
+    test('type remains exact and case-sensitive when combined with query', async () => {
+        await ops.createObject({ type: 'Catalog', name: 'SharedNameCatalog' });
+        await ops.createObject({ type: 'Document', name: 'SharedNameDocument' });
+
+        const exact = await ops.listObjects({ type: 'Catalog', query: 'sharedname' });
+        assert.ok(exact.success, exact.error);
+        assert.deepStrictEqual(exact.data!.objects.map((object) => object.type), ['Catalog']);
+
+        const wrongCase = await ops.listObjects({ type: 'catalog', query: 'sharedname' });
+        assert.ok(wrongCase.success, wrongCase.error);
+        assert.deepStrictEqual(wrongCase.data!.objects, []);
+    });
+
     test('ObjectInfo has type, name, filePath', async () => {
         await ops.createObject({ type: 'Catalog', name: 'ФилдТест' });
         const result = await ops.listObjects({ type: 'Catalog' });

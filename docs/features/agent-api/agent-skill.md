@@ -13,6 +13,8 @@
 Формат:
 ```json
 {
+  "schemaVersion": 2,
+  "instanceId": "7ef1b2b7-...",
   "port": 63088,
   "token": "baf0b38e...hex64...",
   "pid": 42144,
@@ -21,12 +23,38 @@
   "extensionVersion": "0.46.8",
   "docs": "https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md",
   "quickstart": "POST http://127.0.0.1:<port>/command ...",
+  "mcp": {
+    "url": "http://127.0.0.1:63088/mcp",
+    "transport": "streamable-http",
+    "authorization": "bearer"
+  },
   "helperScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/call.sh",
   "discoverScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/discover.sh"
 }
 ```
 
 Поля `helperScriptPath` / `discoverScriptPath` указывают на bash-скрипты, поставляемые вместе с расширением (см. ниже «Вызов через helper-скрипт»).
+
+`schemaVersion: 2` добавляет стандартный MCP endpoint, не удаляя ни одного legacy-поля. Discovery записывается атомарно; клиент должен перечитывать его после каждой активации расширения, потому что порт и token меняются. Token передаётся только в заголовке и не должен добавляться к URL или попадать в логи.
+
+### Standard MCP (Streamable HTTP)
+
+Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
+
+Первая read-only вертикаль содержит ровно шесть tools:
+
+| Tool | Назначение | Input |
+|---|---|---|
+| `cdt_list_configurations` | Список конфигураций workspace | `{}` |
+| `cdt_list_objects` | Список/поиск объектов | `{ configurationId?, type?, query? }` |
+| `cdt_get_yaml` | YAML объекта | `{ configurationId?, path }` |
+| `cdt_get_properties` | Свойства объекта | `{ configurationId?, path }` |
+| `cdt_list_bindings` | Привязки без секретов | `{}` |
+| `cdt_export_status` | Статус выгрузки через ibcmd | `{ configurationId?, configPath? }` |
+
+Каждый tool вызывает ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копию в text content. Неизвестные input-поля запрещены. `cdt_export_status` может запустить локальный процесс ibcmd; отмена MCP-запроса не останавливает уже запущенный процесс, а лишь отбрасывает его результат после завершения.
+
+Legacy `POST /command`, helper-скрипты и все Agent-команды продолжают работать по прежнему контракту.
 
 ### Протокол
 

@@ -10,7 +10,7 @@
     "url": "https://github.com/lekot/VScodePluginFor1CDev"
   },
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.82.0"
   },
   "capabilities": {
     "virtualWorkspaces": {
@@ -1464,11 +1464,13 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/debugadapter": "^1.68.0",
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
     "js-yaml": "^4.1.1",
-    "playwright": "^1.50.0"
+    "playwright": "^1.50.0",
+    "zod": "^4.4.3"
   },
   "c8": {
     "include": [

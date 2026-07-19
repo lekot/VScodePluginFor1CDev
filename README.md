@@ -33,7 +33,7 @@ CDT 41 предоставляет **61** runtime-команду Agent API для
 - **СКД** (4 команды, **новое**) — agent.skd.{compile, info, edit, validate}: PowerShell-скрипты внутри расширения, JSON DSL → Template.xml, 26 операций редактирования
 - **XDTO-пакеты** (7 команд, **новое**) — agent.xdto.{listPackages, getPackage, exportXsd, importXsd, createFromXsd, compare, merge}: чтение Package.bin, экспорт/импорт XSD, создание пакетов из XSD, сравнение и объединение XDTO/XSD/XML/BIN
 
-Агент находит bridge через файл `.vscode/cdt-agent-bridge.json` (port, token, docs-ссылка, quickstart). Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`. Подробнее: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md)
+Агент находит bridge через файл `.vscode/cdt-agent-bridge.json` (port, token, docs-ссылка, quickstart). Там же находится стандартный Streamable HTTP MCP endpoint (`mcp.url`), защищённый тем же Bearer token. Первая MCP-вертикаль предоставляет шесть read-only tools: `cdt_list_configurations`, `cdt_list_objects`, `cdt_get_yaml`, `cdt_get_properties`, `cdt_list_bindings`, `cdt_export_status`. Legacy `/command` остаётся доступен без изменений. Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`. Подробнее: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md)
 
 #### Как подружить своего агента с API — скопируй ему этот промпт
 

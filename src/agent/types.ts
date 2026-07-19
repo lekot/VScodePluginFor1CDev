@@ -32,6 +32,8 @@ export interface GetYamlParams extends ConfigurationScopedParams {
 export interface ListObjectsParams extends ConfigurationScopedParams {
     /** Если не задан — все типы */
     type?: string;
+    /** Case-insensitive substring search by object name. */
+    query?: string;
 }
 
 export interface ObjectInfo {
