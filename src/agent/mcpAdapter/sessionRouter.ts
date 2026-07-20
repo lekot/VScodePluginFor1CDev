@@ -71,7 +71,6 @@ export async function createMcpSessionRouter(
   const createSession = async (): Promise<McpSession> => {
     let initializedSessionId: string | undefined;
     const server = new McpServer({ name: 'cdt-41', version: options.version });
-    let session: McpSession;
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
@@ -91,7 +90,7 @@ export async function createMcpSessionRouter(
         await closeSession(session);
       },
     });
-    session = { server, transport };
+    const session: McpSession = { server, transport };
     transport.onclose = () => {
       const sessionId = transport.sessionId ?? initializedSessionId;
       if (sessionId && sessions.get(sessionId) === session) {
