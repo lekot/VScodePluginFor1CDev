@@ -451,6 +451,7 @@ export class AgentOperations {
             }
 
             const filterType = params.type;
+            const normalizedQuery = params.query?.trim().toLocaleLowerCase();
             const objects: ObjectInfo[] = [];
 
             for (const [tagName, names] of Object.entries(childObjects)) {
@@ -463,6 +464,9 @@ export class AgentOperations {
                         ? nameEntry
                         : (nameEntry as Record<string, unknown>)['#text'] as string ?? String(nameEntry);
                     if (!objectName) {continue;}
+                    if (normalizedQuery && !objectName.toLocaleLowerCase().includes(normalizedQuery)) {
+                        continue;
+                    }
 
                     const typeFolderName = `${tagName}s`;
                     const filePath = path.join(this.configRootPath, typeFolderName, `${objectName}.xml`);

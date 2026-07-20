@@ -7,7 +7,12 @@ import * as http from 'http';
 import * as net from 'net';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'crypto';
+import {
+    createMcpSessionRouter,
+    McpSessionRouter,
+    McpSessionRouterOptions,
+} from './mcpAdapter/sessionRouter';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,6 +33,8 @@ export interface AgentBridgeOptions {
     extensionVersion?: string;
     /** Путь установки расширения — используется для резолвинга helperScriptPath в bridge.json. */
     extensionPath?: string;
+    /** Factory seam for transport tests; production uses the official MCP SDK router. */
+    mcpRouterFactory?: (options: McpSessionRouterOptions) => Promise<McpSessionRouter>;
 }
 
 export interface AgentBridgeStartResult {
@@ -48,6 +55,11 @@ export class AgentBridge {
     private _bridgeFilePath?: string;
     private _extensionVersion?: string;
     private _extensionPath?: string;
+    private _instanceId: string | undefined;
+    private _mcpRouter: McpSessionRouter | undefined;
+    private _mcpRouterFactory: (options: McpSessionRouterOptions) => Promise<McpSessionRouter>;
+    private _connections = new Set<net.Socket>();
+    private _stopping = false;
     private _lifecycleTail: Promise<void> = Promise.resolve();
 
     constructor(opts: AgentBridgeOptions) {
@@ -55,6 +67,7 @@ export class AgentBridge {
         this._workspaceFolder = opts.workspaceFolder;
         this._extensionVersion = opts.extensionVersion;
         this._extensionPath = opts.extensionPath;
+        this._mcpRouterFactory = opts.mcpRouterFactory ?? createMcpSessionRouter;
     }
 
     /**
@@ -78,8 +91,26 @@ export class AgentBridge {
         }
 
         this._token = randomBytes(32).toString('hex');
+        this._instanceId = randomUUID();
+        this._stopping = false;
+        this._mcpRouter = await this._mcpRouterFactory({
+            version: this._extensionVersion ?? 'unknown',
+        });
 
-        const server = http.createServer((req, res) => this._handleRequest(req, res));
+        const server = http.createServer((req, res) => {
+            void this._handleRequest(req, res).catch((error: unknown) => {
+                console.error('[AgentBridge] request failed:', error);
+                if (!res.headersSent) {
+                    this._sendJson(res, 500, { error: 'internal server error' });
+                } else if (!res.writableEnded) {
+                    res.end();
+                }
+            });
+        });
+        server.on('connection', (socket) => {
+            this._connections.add(socket);
+            socket.once('close', () => this._connections.delete(socket));
+        });
 
         await new Promise<void>((resolve, reject) => {
             server.listen(0, '127.0.0.1', resolve);
@@ -101,6 +132,8 @@ export class AgentBridge {
                 ? path.join(this._extensionPath, 'resources', 'agent-bridge', 'discover.sh')
                 : undefined;
             const content = {
+                schemaVersion: 2,
+                instanceId: this._instanceId,
                 port: this._port,
                 token: this._token,
                 pid: process.pid,
@@ -108,11 +141,16 @@ export class AgentBridge {
                 createdAt: new Date().toISOString(),
                 extensionVersion: this._extensionVersion ?? 'unknown',
                 docs: 'https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md',
+                mcp: {
+                    url: `http://127.0.0.1:${this._port}/mcp`,
+                    transport: 'streamable-http',
+                    authorization: 'bearer',
+                },
                 quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd|\\.xdto)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start с debuggeeType=\'webServer\' или dbPath → потом playwright на webServerUrl. XDTO: agent.xdto.listPackages/getPackage/exportXsd/importXsd/createFromXsd/compare/merge. Отладка BSL — agent.debug.start (debuggeeType=\'webServer\' чтобы агент мог управлять формой; thinClient — нативное окно Windows, недоступно без ui-test).',
                 ...(helperScriptPath ? { helperScriptPath } : {}),
                 ...(discoverScriptPath ? { discoverScriptPath } : {}),
             };
-            await fs.promises.writeFile(bridgeFile, JSON.stringify(content, null, 2), 'utf8');
+            await this.writeDiscoveryFileAtomic(bridgeFile, content);
         }
 
         return { port: this._port, token: this._token };
@@ -126,29 +164,32 @@ export class AgentBridge {
     }
 
     private async stopInternal(): Promise<void> {
-        if (this._server === undefined) {
+        this._stopping = true;
+        const server = this._server;
+        const router = this._mcpRouter;
+        this._mcpRouter = undefined;
+
+        if (router) {
+            await router.close();
+        }
+
+        if (server === undefined) {
             await this.removeBridgeFile();
+            this.clearRuntimeState();
             return;
         }
+
+        server.closeAllConnections();
+        for (const socket of this._connections) {
+            socket.destroy();
+        }
+        this._connections.clear();
         await new Promise<void>((resolve) => {
-            this._server!.close(() => resolve());
+            server.close(() => resolve());
         });
         this._server = undefined;
-        this._token = undefined;
-        this._port = undefined;
-
-        if (this._bridgeFilePath) {
-            try {
-                await fs.promises.unlink(this._bridgeFilePath);
-            } catch (err: unknown) {
-                // Игнорируем ENOENT — файл уже удалён
-                if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-                    // Логируем но не пробрасываем
-                    console.error('[AgentBridge] failed to remove bridge file:', err);
-                }
-            }
-            this._bridgeFilePath = undefined;
-        }
+        await this.removeBridgeFile();
+        this.clearRuntimeState();
     }
 
     private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
@@ -162,6 +203,11 @@ export class AgentBridge {
         this._bridgeFilePath = undefined;
         if (!bridgeFilePath) { return; }
         try {
+            const raw = await fs.promises.readFile(bridgeFilePath, 'utf8');
+            const current = JSON.parse(raw) as { instanceId?: unknown; token?: unknown };
+            if (current.instanceId !== this._instanceId || current.token !== this._token) {
+                return;
+            }
             await fs.promises.unlink(bridgeFilePath);
         } catch (err: unknown) {
             if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
@@ -174,35 +220,85 @@ export class AgentBridge {
     // Private — request routing
     // -------------------------------------------------------------------------
 
-    private _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const url = req.url ?? '/';
+    private async _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+        if (this._stopping) {
+            this._sendJson(res, 503, { error: 'server stopping' });
+            return;
+        }
+
+        const rawUrl = req.url ?? '/';
+        const queryIndex = rawUrl.indexOf('?');
+        const pathname = queryIndex >= 0 ? rawUrl.slice(0, queryIndex) : rawUrl;
         const method = req.method ?? 'GET';
 
-        if (url === '/health' && method === 'GET') {
+        if (pathname === '/health' && method === 'GET') {
             this._sendJson(res, 200, { ok: true, pid: process.pid });
             return;
         }
 
-        if (url === '/command' && method === 'POST') {
-            // async handler — swallow floating promise intentionally
-            void this._handleCommand(req, res);
+        if (pathname === '/command' && method === 'POST') {
+            await this._handleCommand(req, res);
             return;
         }
 
-        if (url === '/command') {
+        if (pathname === '/command') {
             // Any non-POST on /command
             this._sendJson(res, 405, { error: 'method not allowed' });
+            return;
+        }
+
+        if (pathname === '/mcp') {
+            await this._handleMcp(req, res, queryIndex >= 0);
             return;
         }
 
         this._sendJson(res, 404, { error: 'not found' });
     }
 
+    private async _handleMcp(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        hasQuery: boolean,
+    ): Promise<void> {
+        const method = req.method ?? 'GET';
+        if (method !== 'GET' && method !== 'POST' && method !== 'DELETE') {
+            this._sendJson(res, 405, { error: 'method not allowed' });
+            return;
+        }
+        if (hasQuery || !this.isLoopbackPeer(req) || !this.hasAllowedHostAndOrigin(req)) {
+            this._sendJson(res, 403, { error: 'forbidden' });
+            return;
+        }
+        if (!this.hasValidBearer(req)) {
+            this._sendJson(res, 401, { error: 'unauthorized' });
+            return;
+        }
+
+        let parsedBody: unknown;
+        if (method === 'POST') {
+            try {
+                const rawBody = await this._readBody(req);
+                parsedBody = JSON.parse(rawBody);
+            } catch (error) {
+                const tooLarge = error instanceof Error && error.message === 'body too large';
+                this._sendJson(res, tooLarge ? 413 : 400, {
+                    error: tooLarge ? 'payload too large' : 'invalid json',
+                });
+                return;
+            }
+        }
+
+        const router = this._mcpRouter;
+        if (!router) {
+            this._sendJson(res, 503, { error: 'MCP unavailable' });
+            return;
+        }
+        await router.handleRequest(req, res, parsedBody);
+    }
+
     private async _handleCommand(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         // Check Authorization header
-        const authHeader = req.headers['authorization'] ?? '';
-        const expectedAuth = `Bearer ${this._token ?? ''}`;
-        if (!authHeader || authHeader !== expectedAuth) {
+        if (!this.hasValidBearer(req)) {
             this._sendJson(res, 401, { error: 'unauthorized' });
             return;
         }
@@ -263,6 +359,74 @@ export class AgentBridge {
     // -------------------------------------------------------------------------
     // Private — helpers
     // -------------------------------------------------------------------------
+
+    private hasValidBearer(req: http.IncomingMessage): boolean {
+        const authorization = req.headers.authorization;
+        if (Array.isArray(authorization) || typeof authorization !== 'string' || !this._token) {
+            return false;
+        }
+        const actual = Buffer.from(authorization, 'utf8');
+        const expected = Buffer.from(`Bearer ${this._token}`, 'utf8');
+        return actual.length === expected.length && timingSafeEqual(actual, expected);
+    }
+
+    private isLoopbackPeer(req: http.IncomingMessage): boolean {
+        const address = req.socket.remoteAddress ?? '';
+        return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+    }
+
+    private hasAllowedHostAndOrigin(req: http.IncomingMessage): boolean {
+        if (!this._port) {
+            return false;
+        }
+        const suffix = `:${this._port}`;
+        const allowed = new Set([
+            `127.0.0.1${suffix}`,
+            `localhost${suffix}`,
+            `[::1]${suffix}`,
+        ]);
+        const host = req.headers.host?.toLowerCase();
+        if (!host || !allowed.has(host)) {
+            return false;
+        }
+        const origin = req.headers.origin;
+        if (origin === undefined) {
+            return true;
+        }
+        if (Array.isArray(origin)) {
+            return false;
+        }
+        try {
+            const parsed = new URL(origin);
+            return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+                && allowed.has(parsed.host.toLowerCase());
+        } catch {
+            return false;
+        }
+    }
+
+    private async writeDiscoveryFileAtomic(filePath: string, content: unknown): Promise<void> {
+        const temporaryPath = `${filePath}.${this._instanceId ?? randomUUID()}.tmp`;
+        try {
+            await fs.promises.writeFile(temporaryPath, JSON.stringify(content, null, 2), 'utf8');
+            await fs.promises.rename(temporaryPath, filePath);
+        } finally {
+            try {
+                await fs.promises.unlink(temporaryPath);
+            } catch (error: unknown) {
+                if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+                    console.error('[AgentBridge] failed to remove temporary discovery file:', error);
+                }
+            }
+        }
+    }
+
+    private clearRuntimeState(): void {
+        this._token = undefined;
+        this._port = undefined;
+        this._instanceId = undefined;
+        this._stopping = false;
+    }
 
     private _readBody(req: http.IncomingMessage): Promise<string> {
         return new Promise((resolve, reject) => {

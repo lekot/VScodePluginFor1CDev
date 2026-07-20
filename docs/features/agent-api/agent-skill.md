@@ -13,6 +13,8 @@
 Формат:
 ```json
 {
+  "schemaVersion": 2,
+  "instanceId": "7ef1b2b7-...",
   "port": 63088,
   "token": "baf0b38e...hex64...",
   "pid": 42144,
@@ -21,12 +23,53 @@
   "extensionVersion": "0.46.8",
   "docs": "https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md",
   "quickstart": "POST http://127.0.0.1:<port>/command ...",
+  "mcp": {
+    "url": "http://127.0.0.1:63088/mcp",
+    "transport": "streamable-http",
+    "authorization": "bearer"
+  },
   "helperScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/call.sh",
   "discoverScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/discover.sh"
 }
 ```
 
 Поля `helperScriptPath` / `discoverScriptPath` указывают на bash-скрипты, поставляемые вместе с расширением (см. ниже «Вызов через helper-скрипт»).
+
+`schemaVersion: 2` добавляет стандартный MCP endpoint, не удаляя ни одного legacy-поля. Discovery записывается атомарно; клиент должен перечитывать его после каждой активации расширения, потому что порт и token меняются. Token передаётся только в заголовке и не должен добавляться к URL или попадать в логи.
+
+### Standard MCP (Streamable HTTP)
+
+Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
+
+MCP публикует полный Agent API: **61 tool для 61 runtime-команды**.
+
+| Домен | MCP tools |
+|---|---|
+| Configuration/CRUD (13) | `cdt_list_configurations`, `cdt_create_object`, `cdt_get_yaml`, `cdt_list_objects`, `cdt_get_properties`, `cdt_add_attribute`, `cdt_add_tabular_section`, `cdt_add_tabular_section_column`, `cdt_delete_attribute`, `cdt_delete_tabular_section`, `cdt_delete_object`, `cdt_rename_object`, `cdt_set_properties` |
+| Debug (15) | `cdt_debug_start`, `cdt_debug_stop`, `cdt_debug_set_breakpoint`, `cdt_debug_clear_breakpoints`, `cdt_debug_set_exception_filter`, `cdt_debug_wait_for_stop`, `cdt_debug_get_stack_trace`, `cdt_debug_get_scopes`, `cdt_debug_get_variables`, `cdt_debug_evaluate`, `cdt_debug_continue`, `cdt_debug_step_over`, `cdt_debug_step_in`, `cdt_debug_step_out`, `cdt_debug_start_from_binding` |
+| Bindings/deploy (7) | `cdt_resolve_binding`, `cdt_list_bindings`, `cdt_deploy`, `cdt_deploy_selected_objects`, `cdt_deploy_changed_files`, `cdt_pull_selected_objects`, `cdt_export_status` |
+| Types/subsystems/characteristics (10) | `cdt_get_type`, `cdt_set_type`, `cdt_get_subsystem_command_interface`, `cdt_set_subsystem_command_visibility`, `cdt_set_subsystem_command_order`, `cdt_set_subsystem_subsystems_order`, `cdt_list_predefined_characteristics`, `cdt_get_predefined_characteristic_type`, `cdt_set_predefined_characteristic_type`, `cdt_get_characteristic_value_registers` |
+| Forms (5) | `cdt_forms_start`, `cdt_forms_exec`, `cdt_forms_stop`, `cdt_forms_shot`, `cdt_forms_status` |
+| SKD (4) | `cdt_skd_compile`, `cdt_skd_info`, `cdt_skd_edit`, `cdt_skd_validate` |
+| XDTO (7) | `cdt_xdto_list_packages`, `cdt_xdto_get_package`, `cdt_xdto_export_xsd`, `cdt_xdto_import_xsd`, `cdt_xdto_create_from_xsd`, `cdt_xdto_compare`, `cdt_xdto_merge` |
+
+Имена и inputs соответствуют описанным ниже Agent-командам: например, `cdt_debug_get_variables` вызывает `1c-metadata-tree.agent.debug.getVariables`, а `cdt_xdto_export_xsd` — `1c-metadata-tree.agent.xdto.exportXsd`. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+
+Каждый tool вызывает ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копию в text content. Input objects строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
+
+### Доверие и опасные операции
+
+Bearer даёт аутентифицированному локальному MCP-клиенту ту же authority, что legacy `/command`, то есть доступ ко всему Agent API. В частности:
+
+- `cdt_forms_exec` исполняет произвольный JavaScript в browser session;
+- `cdt_debug_evaluate` исполняет BSL-выражение, которое может иметь side effects;
+- deploy/pull меняют информационные базы или workspace;
+- debug/forms/SKD запускают и останавливают дочерние процессы; SKD принимает локальные input/output paths;
+- XDTO export с `outputPath`, import/create/merge и metadata tools изменяют файлы конфигурации.
+
+Подключайте только доверенный локальный MCP-клиент и не передавайте token в URL или логи. MCP annotations описывают риск, но не являются дополнительной авторизацией. Отмена запроса до dispatch не запускает Agent-команду; отмена после dispatch не прерывает уже запущенный процесс или мутацию, а только отбрасывает итоговый результат.
+
+Legacy `POST /command`, helper-скрипты и все Agent-команды продолжают работать по прежнему контракту.
 
 ### Протокол
 

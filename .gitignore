@@ -42,6 +42,11 @@ AGENTS.md
 .cursor/
 mcp/
 mcp-*
+!docs/features/mcp-agent-adapter/
+docs/features/mcp-agent-adapter/*
+!docs/features/mcp-agent-adapter/spec.md
+!docs/features/mcp-agent-adapter/design.md
+!docs/features/mcp-agent-adapter/plan.md
 shcntx_help.db
 .roo/
 

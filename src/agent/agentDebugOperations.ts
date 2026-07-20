@@ -149,18 +149,25 @@ export class AgentDebugOperations {
         // Запустить отладку
         Logger.info('AgentDebug.debugStart pre-call', {
             folderName: folder.name,
-            folderFsPath: folder.uri.fsPath,
-            launchConfig,
+            debuggeeType: params.debuggeeType ?? 'thinClient',
+            extensionCount: params.extensions?.length ?? 0,
+            hasDatabasePath: Boolean(resolvedDatabasePath),
         });
-        const started = await vscode.debug.startDebugging(folder, launchConfig);
+        let started: boolean;
+        try {
+            started = await vscode.debug.startDebugging(folder, launchConfig);
+        } catch {
+            clearTimeout(timeoutHandle);
+            disposable.dispose();
+            return { success: false, error: 'Failed to start debug session' };
+        }
         Logger.info('AgentDebug.debugStart post-call', { started });
         if (!started) {
             clearTimeout(timeoutHandle);
             disposable.dispose();
             return {
                 success: false,
-                error: `vscode.debug.startDebugging вернул false. folder: ${folder.uri.toString()}, ` +
-                    `config: ${JSON.stringify(launchConfig)}`,
+                error: 'Failed to start debug session',
             };
         }
 
@@ -701,11 +708,11 @@ export class AgentDebugOperations {
                 ...(webServerHttpPort !== undefined ? { webServerHttpPort } : {}),
                 ...(debugServerPort !== undefined ? { debugServerPort } : {}),
             });
-        } catch (err) {
+        } catch {
             // 6. Ошибка из startDebuggingFromConfigPath
             clearTimeout(timeoutHandle);
             disposable.dispose();
-            return { success: false, error: err instanceof Error ? err.message : String(err) };
+            return { success: false, error: 'Failed to start debug session from binding' };
         }
 
         // 7. startDebugging вернул false

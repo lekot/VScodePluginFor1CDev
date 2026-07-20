@@ -14,6 +14,7 @@ import {
 } from '../helpers/vscodeModuleStub';
 import { AgentDebugOperations, debugStartConfig } from '../../src/agent/agentDebugOperations';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
+import { Logger } from '../../src/utils/logger';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +49,7 @@ suite('AgentDebugOperations — debugStart', () => {
 
     teardown(() => {
         debugStartConfig.timeoutMs = 5000;
+        Logger.clearBuffer();
         resetDebugTestState();
         resetVscodeTestState();
     });
@@ -129,7 +131,31 @@ suite('AgentDebugOperations — debugStart', () => {
             platformPath: '/c/1c/bin',
         });
         assert.strictEqual(result.success, false);
-        assert.ok(result.error?.includes('startDebugging вернул false'), `error: ${result.error}`);
+        assert.strictEqual(result.error, 'Failed to start debug session');
+    });
+
+    test('failure result and logs do not expose launch configuration secrets', async () => {
+        const secretInfobase = 'File=C:/private/customer-db;Usr=admin;Pwd=top-secret';
+        const secretRoot = 'C:/private/customer-project';
+        const secretPlatform = 'C:/private/platform/bin';
+        vscodeTestState.mockWorkspaceFolders = [makeWorkspaceFolder('C:/private')];
+        debugTestState.startDebuggingResult = false;
+        Logger.clearBuffer();
+
+        const result = await ops.debugStart({
+            rootProject: secretRoot,
+            infobase: secretInfobase,
+            platformPath: secretPlatform,
+            extensions: ['C:/private/extensions/secret'],
+        });
+        const observable = `${JSON.stringify(result)}\n${Logger.getBufferedContent()}`;
+
+        assert.strictEqual(result.error, 'Failed to start debug session');
+        for (const secret of [secretInfobase, secretRoot, secretPlatform, 'top-secret', 'customer-db']) {
+            assert.ok(!observable.includes(secret), `secret escaped: ${secret}`);
+        }
+        assert.ok(!Logger.getBufferedContent().includes('launchConfig'));
+        assert.ok(!Logger.getBufferedContent().includes('infobase'));
     });
 
     test('таймаут ожидания сессии — ошибка timeout', async () => {
