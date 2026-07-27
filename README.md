@@ -21,11 +21,12 @@ VS Code расширение для визуализации и редактир
 
 ### Agent API (для AI-агентов)
 
-CDT 41 предоставляет **61** runtime-команду Agent API для программного управления метаданными, отладкой, формами, СКД и XDTO-пакетами 1С. Команды доступны через HTTP bridge и через `vscode.commands.executeCommand`; AI-агент (Claude Code, Copilot, MCP-клиент) может:
+CDT 41 предоставляет **67** runtime-команд Agent API для программного управления метаданными, поддержкой конфигурации, отладкой, формами, СКД и XDTO-пакетами 1С. Основной способ подключения — встроенный Streamable HTTP MCP endpoint; команды также доступны через `vscode.commands.executeCommand`, а legacy HTTP bridge сохранён только для совместимости. AI-агент (Claude Code, Copilot, MCP-клиент) может:
 - **CRUD метаданных** (12 команд) — создавать объекты, добавлять реквизиты/ТЧ/колонки, читать/писать свойства, переименовывать и удалять
 - **Отладка** (15 команд) — запускать отладочную сессию (thinClient / webServer), ставить breakpoints, читать переменные, шагать по коду, фильтровать исключения
 - **Привязки** (2 команды) — resolveBinding (фикстура→база), listBindings (все привязки с базами)
 - **Раскатка и выгрузка** (5 команд) — deploy конфигурации, раскатка выбранных файлов / изменённых по git, выгрузка объектов из ИБ, статус конфигурации — через ibcmd
+- **Поддержка конфигурации** (6 команд) — читать блокировки `ParentConfigurations.bin`, менять режим объекта с CAS, включать объектные правила, синхронизировать и проверять связанные ИБ, читать последний target-by-target результат
 - **Типы** (2 команды) — getType / setType для реквизитов и колонок ТЧ
 - **Интерфейс команд подсистем** (4 команды) — getSubsystemCommandInterface, setSubsystemCommandVisibility, setSubsystemCommandOrder, setSubsystemSubsystemsOrder
 - **Предопределённые характеристики** (4 команды) — listPredefinedCharacteristics, getPredefinedCharacteristicType, setPredefinedCharacteristicType, getCharacteristicValueRegisters
@@ -33,24 +34,33 @@ CDT 41 предоставляет **61** runtime-команду Agent API для
 - **СКД** (4 команды, **новое**) — agent.skd.{compile, info, edit, validate}: PowerShell-скрипты внутри расширения, JSON DSL → Template.xml, 26 операций редактирования
 - **XDTO-пакеты** (7 команд, **новое**) — agent.xdto.{listPackages, getPackage, exportXsd, importXsd, createFromXsd, compare, merge}: чтение Package.bin, экспорт/импорт XSD, создание пакетов из XSD, сравнение и объединение XDTO/XSD/XML/BIN
 
-Агент находит bridge через файл `.vscode/cdt-agent-bridge.json` (port, token, docs-ссылка, quickstart). Там же находится стандартный Streamable HTTP MCP endpoint (`mcp.url`), защищённый тем же Bearer token. MCP публикует полный каталог **61/61**: metadata CRUD, bindings/deploy, types/subsystems, debug, forms, SKD и XDTO. Каждый `cdt_*` tool является строгой тонкой обёрткой над одноимённой Agent-командой; legacy `/command` остаётся доступен без изменений. Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`.
+MCP-клиент находит endpoint через discovery-файл `.vscode/cdt-agent-bridge.json`: URL находится в `mcp.url`, Bearer token — в верхнеуровневом поле `token`. MCP публикует полный каталог **67/67**: metadata CRUD, support, bindings/deploy, types/subsystems, debug, forms, SKD и XDTO. Каждый `cdt_*` tool является строгой тонкой обёрткой над одноимённой Agent-командой; legacy `/command` остаётся доступен без изменений. Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`.
 
 Bearer разрешает локальному MCP-клиенту весь Agent API, включая мутации и запуск процессов. `cdt_forms_exec` исполняет произвольный JavaScript, `cdt_debug_evaluate` — BSL-выражение, deploy/debug/forms/SKD взаимодействуют с внешними процессами или информационными базами. Подключайте только доверенный локальный MCP-клиент; отмена MCP-запроса не прерывает уже запущенную Agent-команду. Полный каталог и inputs: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md).
 
-#### Как подружить своего агента с API — скопируй ему этот промпт
+#### Как подключить своего агента через MCP
 
+Расширение создаёт discovery-файл `.vscode/cdt-agent-bridge.json`. Возьмите из него `mcp.url` и верхнеуровневый `token`, затем настройте доверенный MCP-клиент: транспорт **Streamable HTTP**, URL из `mcp.url`, заголовок `Authorization: Bearer <token>`.
+
+Схематичный пример — точный формат настройки зависит от MCP-клиента:
+
+```json
+{
+  "servers": {
+    "cdt41": {
+      "transport": "streamable-http",
+      "url": "<значение mcp.url>",
+      "headers": {
+        "Authorization": "Bearer <верхнеуровневый token>"
+      }
+    }
+  }
+}
 ```
-В этом workspace расширение VS Code «CDT 41» (1c-metadata-tree-vscode) поднимает HTTP-bridge с 61 командой для работы с метаданными, отладкой, формами (через Playwright), СКД и XDTO-пакетами 1С. Прочитай файл .vscode/cdt-agent-bridge.json — там:
 
-- helperScriptPath — абсолютный путь к bash-обёртке; вызов: bash "$HELPER" <команда> '<JSON-args>'
-  где HELPER=$(node -p "JSON.parse(require('fs').readFileSync('./.vscode/cdt-agent-bridge.json','utf8')).helperScriptPath")
-- discoverScriptPath — скрипт для health-check bridge
-- docs — URL полного API reference (61 команда с примерами)
-- quickstart — краткая инструкция по сырому HTTP-вызову
-- port / token — для прямого POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>
+Порт и token меняются при перезапуске расширения. После перезапуска перечитайте discovery-файл и переподключите MCP-клиент с актуальными значениями. Если файла нет, расширение ещё не активировано.
 
-Используй этот API для задач 1С (CRUD метаданных, отладка BSL с точками останова, автоматизация enterprise-форм, CRUD СКД, импорт/экспорт и merge XDTO-пакетов) вместо ручной правки XML или шагов в Конфигураторе. Если файла .vscode/cdt-agent-bridge.json нет — расширение не активировано, открой в workspace любой XML-файл метаданных 1С.
-```
+Legacy endpoint `/command` остаётся доступен для совместимости, но MCP-клиентам рекомендуется стандартное подключение через `mcp.url`.
 
 Чего нет: конструктора запроса (есть внешние в режиме предприятия), просмотра СКД, правки макетов и много чего еще нет. Включайся в разработку - будет
 <img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />

@@ -18,6 +18,10 @@ import { InfobaseStorageService } from '../infobases/infobaseStorageService';
 import { resetIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { FormsContext } from '../services/forms/FormsContext';
 import type { AgentBridge } from '../agent/agentBridge';
+import type { SupportServiceComposition } from '../support/supportServiceComposition';
+import type { SupportStateCache } from '../support/supportStateCache';
+import type { SupportStateWatcher } from '../support/supportStateWatcher';
+import type { SupportRootRegistrationLifecycle } from '../support/supportRootRegistrationLifecycle';
 
 /**
  * Holds extension-wide mutable references (providers, tree view, reload coordinator).
@@ -48,6 +52,10 @@ export class ExtensionState {
   private _infobaseTreeView: vscode.TreeView<InfobaseTreeNode> | null = null;
   private _refreshBindingTreeDecorations: (() => Promise<void>) | null = null;
   private _agentBridge: AgentBridge | null = null;
+  private _supportComposition: SupportServiceComposition | null = null;
+  private _supportStateCache: SupportStateCache | null = null;
+  private _supportStateWatcher: SupportStateWatcher | null = null;
+  private _supportRootRegistrationLifecycle: SupportRootRegistrationLifecycle | null = null;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -76,6 +84,12 @@ export class ExtensionState {
   /** Обновление бейджей/tooltip привязок на узле Configuration (§2C); выставляется в extensionWorkspaceSetup. */
   get refreshBindingTreeDecorations(): (() => Promise<void>) | null { return this._refreshBindingTreeDecorations; }
   get agentBridge(): AgentBridge | null { return this._agentBridge; }
+  get supportComposition(): SupportServiceComposition | null { return this._supportComposition; }
+  get supportStateCache(): SupportStateCache | null { return this._supportStateCache; }
+  get supportStateWatcher(): SupportStateWatcher | null { return this._supportStateWatcher; }
+  get supportRootRegistrationLifecycle(): SupportRootRegistrationLifecycle | null {
+    return this._supportRootRegistrationLifecycle;
+  }
 
   // ── Setters ───────────────────────────────────────────────────────────────
 
@@ -102,6 +116,12 @@ export class ExtensionState {
   set bindingManager(v: BindingManager | null) { this._bindingManager = v; }
   set infobaseManager(v: InfobaseManager | null) { this._infobaseManager = v; }
   set agentBridge(v: AgentBridge | null) { this._agentBridge = v; }
+  set supportComposition(v: SupportServiceComposition | null) { this._supportComposition = v; }
+  set supportStateCache(v: SupportStateCache | null) { this._supportStateCache = v; }
+  set supportStateWatcher(v: SupportStateWatcher | null) { this._supportStateWatcher = v; }
+  set supportRootRegistrationLifecycle(v: SupportRootRegistrationLifecycle | null) {
+    this._supportRootRegistrationLifecycle = v;
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -118,6 +138,17 @@ export class ExtensionState {
       w.dispose();
     }
     this._metadataWatchers = [];
+    this._treeDataProvider?.setSupportRootRegistrationCallback(undefined);
+    this._treeDataProvider?.setSupportStateCache(undefined);
+    const supportCompositionDisposal = this._supportComposition?.dispose();
+    this._supportComposition = null;
+    await this._supportRootRegistrationLifecycle?.dispose();
+    this._supportRootRegistrationLifecycle = null;
+    this._supportStateWatcher?.dispose();
+    this._supportStateWatcher = null;
+    this._supportStateCache?.clear();
+    this._supportStateCache = null;
+    await supportCompositionDisposal;
     this._treeDataProvider?.dispose();
     this._treeDataProvider = null;
     this._reloadCoordinator?.dispose();

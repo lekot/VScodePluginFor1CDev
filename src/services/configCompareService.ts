@@ -12,9 +12,9 @@ import type { InfobaseStorageService } from '../infobases/infobaseStorageService
 import { prepareIbcmdConfigYaml } from '../infobases/ibcmdConfigPathResolver';
 import {
   appendIbcmdOutputLine,
-  serializeInfobaseConfigIbcmdOp,
   showIbcmdInfobaseOutputChannel,
 } from '../infobases/infobaseConfigCommands';
+import { runCompositeInfobaseConfigurationOperation } from '../infobases/infobaseConfigurationOperationQueue';
 import { buildInfobaseConfigExportArgs, ibcmdOfflineConnectionFromPrepared, type IbcmdConfigCliCredentials } from './ibcmd/ibcmdInfobaseConfigArgs';
 import { getIbcmdService } from './ibcmd/ibcmdServiceSingleton';
 import { runIbcmdStreaming, type IbcmdStreamCancellation } from './ibcmd/IbcmdStreamingRunner';
@@ -30,12 +30,25 @@ function vscodeCancellation(token: vscode.CancellationToken): IbcmdStreamCancell
   };
 }
 
-async function exportInfobaseConfigToDir(params: {
+interface InfobaseConfigExportResult {
+  readonly ok: boolean;
+  readonly message: string;
+}
+
+type PreparedInfobaseConfigExport =
+  | InfobaseConfigExportResult
+  | {
+      readonly ok: true;
+      readonly execute: () => Promise<InfobaseConfigExportResult>;
+      readonly dispose: () => Promise<void>;
+    };
+
+async function prepareInfobaseConfigExport(params: {
   storage: InfobaseStorageService;
   entry: InfobaseEntry;
   outDir: string;
   token: vscode.CancellationToken;
-}): Promise<{ ok: boolean; message: string }> {
+}): Promise<PreparedInfobaseConfigExport> {
   const ibcmd = getIbcmdService();
   const pathResult = await ibcmd.resolveExecutablePathAsync();
   if (pathResult.kind !== 'resolved') {
@@ -71,27 +84,34 @@ async function exportInfobaseConfigToDir(params: {
       path.resolve(params.outDir),
       { credentials },
     );
-    const outcome = await runIbcmdStreaming({
-      executablePath: pathResult.path,
-      args,
-      timeoutMs: ibcmd.getTimeoutMs(),
-      cancellation: vscodeCancellation(params.token),
-      consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: () => {
-        /* вывод уже в общем канале при необходимости */
-      },
-      abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
-    });
-    if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
-      ibcmd.invalidatePathCache();
-    }
-    const interpreted = interpretIbcmdInfobaseOutcome('export', outcome);
     return {
-      ok: interpreted.status === 'success',
-      message: interpreted.userMessage,
+      ok: true,
+      execute: async (): Promise<InfobaseConfigExportResult> => {
+        const outcome = await runIbcmdStreaming({
+          executablePath: pathResult.path,
+          args,
+          timeoutMs: ibcmd.getTimeoutMs(),
+          cancellation: vscodeCancellation(params.token),
+          consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+          onStreamChunk: () => {
+            /* вывод уже в общем канале при необходимости */
+          },
+          abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
+        });
+        if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
+          ibcmd.invalidatePathCache();
+        }
+        const interpreted = interpretIbcmdInfobaseOutcome('export', outcome);
+        return {
+          ok: interpreted.status === 'success',
+          message: interpreted.userMessage,
+        };
+      },
+      dispose: prep.dispose,
     };
-  } finally {
+  } catch (error) {
     await prep.dispose();
+    throw error;
   }
 }
 
@@ -117,74 +137,109 @@ export async function runCompareInfobaseConfigurations(params: {
     return;
   }
 
-  await serializeInfobaseConfigIbcmdOp(async () => {
-    const ibcmd = getIbcmdService();
-    if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
-      await showIbcmdNotFoundDialog();
-      return;
-    }
+  const ibcmd = getIbcmdService();
+  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
+    await showIbcmdNotFoundDialog();
+    return;
+  }
 
-    const base = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-ib-compare-'));
-    const dirA = path.join(base, 'a');
-    const dirB = path.join(base, 'b');
-    fs.mkdirSync(dirA, { recursive: true });
-    fs.mkdirSync(dirB, { recursive: true });
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-ib-compare-'));
+  const dirA = path.join(base, 'a');
+  const dirB = path.join(base, 'b');
+  fs.mkdirSync(dirA, { recursive: true });
+  fs.mkdirSync(dirB, { recursive: true });
 
-    const scheduleCleanup = (): void => {
-      setTimeout(() => {
-        try {
-          fs.rmSync(base, { recursive: true, force: true });
-        } catch {
-          /* diff или ОС могут удерживать файлы */
-        }
-      }, 180_000);
-    };
+  const scheduleCleanup = (): void => {
+    setTimeout(() => {
+      try {
+        fs.rmSync(base, { recursive: true, force: true });
+      } catch {
+        /* diff или ОС могут удерживать файлы */
+      }
+    }, 180_000);
+  };
 
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `Сравнение конфигураций: ${entryA.name} ↔ ${entryB.name}`,
-        cancellable: true,
-      },
-      async (_p, token) => {
-        appendIbcmdOutputLine(`[compare] временные каталоги: A=${dirA} B=${dirB}`);
-        const r1 = await exportInfobaseConfigToDir({ storage, entry: entryA, outDir: dirA, token });
-        if (!r1.ok) {
-          void vscode.window.showErrorMessage(`Выгрузка «${entryA.name}»: ${r1.message}`);
-          showIbcmdInfobaseOutputChannel();
-          scheduleCleanup();
-          return;
-        }
-        const r2 = await exportInfobaseConfigToDir({ storage, entry: entryB, outDir: dirB, token });
-        if (!r2.ok) {
-          void vscode.window.showErrorMessage(`Выгрузка «${entryB.name}»: ${r2.message}`);
-          showIbcmdInfobaseOutputChannel();
-          scheduleCleanup();
-          return;
-        }
-
-        const xmlA = path.join(dirA, CONFIGURATION_XML);
-        const xmlB = path.join(dirB, CONFIGURATION_XML);
-        if (!fs.existsSync(xmlA) || !fs.existsSync(xmlB)) {
-          void vscode.window.showWarningMessage(
-            'После выгрузки не найден Configuration.xml в одном из каталогов. Пути записаны в канал «Infobase (ibcmd)».',
-          );
-          appendIbcmdOutputLine(`[compare] Configuration.xml A exists=${fs.existsSync(xmlA)} B exists=${fs.existsSync(xmlB)}`);
-          showIbcmdInfobaseOutputChannel();
-          scheduleCleanup();
-          return;
-        }
-
-        const left = vscode.Uri.file(xmlA);
-        const right = vscode.Uri.file(xmlB);
-        const title = `${entryA.name} ↔ ${entryB.name} (Configuration.xml)`;
-        await vscode.commands.executeCommand('vscode.diff', left, right, title);
-        void vscode.window.showInformationMessage(
-          'Открыто сравнение Configuration.xml. Временные каталоги будут удалены через несколько минут.',
-        );
-        appendIbcmdOutputLine(`[compare] открыт diff: ${xmlA} vs ${xmlB}`);
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Сравнение конфигураций: ${entryA.name} ↔ ${entryB.name}`,
+      cancellable: true,
+    },
+    async (_p, token) => {
+      appendIbcmdOutputLine(`[compare] временные каталоги: A=${dirA} B=${dirB}`);
+      const preparedA = await prepareInfobaseConfigExport({
+        storage,
+        entry: entryA,
+        outDir: dirA,
+        token,
+      });
+      if (!('execute' in preparedA)) {
+        void vscode.window.showErrorMessage(`Выгрузка «${entryA.name}»: ${preparedA.message}`);
+        showIbcmdInfobaseOutputChannel();
         scheduleCleanup();
-      },
-    );
-  });
+        return;
+      }
+      const preparedB = await prepareInfobaseConfigExport({
+        storage,
+        entry: entryB,
+        outDir: dirB,
+        token,
+      });
+      if (!('execute' in preparedB)) {
+        await preparedA.dispose();
+        void vscode.window.showErrorMessage(`Выгрузка «${entryB.name}»: ${preparedB.message}`);
+        showIbcmdInfobaseOutputChannel();
+        scheduleCleanup();
+        return;
+      }
+
+      let r1: InfobaseConfigExportResult | undefined;
+      let r2: InfobaseConfigExportResult | undefined;
+      try {
+        await runCompositeInfobaseConfigurationOperation([entryA, entryB], async () => {
+          r1 = await preparedA.execute();
+          if (r1.ok) {
+            r2 = await preparedB.execute();
+          }
+        });
+      } finally {
+        await Promise.all([preparedA.dispose(), preparedB.dispose()]);
+      }
+
+      if (!r1 || !r1.ok) {
+        void vscode.window.showErrorMessage(`Выгрузка «${entryA.name}»: ${r1?.message ?? 'не выполнена'}`);
+        showIbcmdInfobaseOutputChannel();
+        scheduleCleanup();
+        return;
+      }
+      if (!r2 || !r2.ok) {
+        void vscode.window.showErrorMessage(`Выгрузка «${entryB.name}»: ${r2?.message ?? 'не выполнена'}`);
+        showIbcmdInfobaseOutputChannel();
+        scheduleCleanup();
+        return;
+      }
+
+      const xmlA = path.join(dirA, CONFIGURATION_XML);
+      const xmlB = path.join(dirB, CONFIGURATION_XML);
+      if (!fs.existsSync(xmlA) || !fs.existsSync(xmlB)) {
+        void vscode.window.showWarningMessage(
+          'После выгрузки не найден Configuration.xml в одном из каталогов. Пути записаны в канал «Infobase (ibcmd)».',
+        );
+        appendIbcmdOutputLine(`[compare] Configuration.xml A exists=${fs.existsSync(xmlA)} B exists=${fs.existsSync(xmlB)}`);
+        showIbcmdInfobaseOutputChannel();
+        scheduleCleanup();
+        return;
+      }
+
+      const left = vscode.Uri.file(xmlA);
+      const right = vscode.Uri.file(xmlB);
+      const title = `${entryA.name} ↔ ${entryB.name} (Configuration.xml)`;
+      await vscode.commands.executeCommand('vscode.diff', left, right, title);
+      void vscode.window.showInformationMessage(
+        'Открыто сравнение Configuration.xml. Временные каталоги будут удалены через несколько минут.',
+      );
+      appendIbcmdOutputLine(`[compare] открыт diff: ${xmlA} vs ${xmlB}`);
+      scheduleCleanup();
+    },
+  );
 }

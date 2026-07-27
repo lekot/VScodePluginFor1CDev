@@ -44,6 +44,10 @@ import {
   probeIncrementalSupport,
 } from '../services/ibcmd/ibcmdVersionSupport';
 import { emptyDirectoryContents } from './ibcmdExportTargetDir';
+import {
+  runInfobaseConfigurationOperation,
+  sharedInfobaseConfigurationOperationQueue,
+} from './infobaseConfigurationOperationQueue';
 
 const OUTPUT_CHANNEL_NAME = 'CDT 41: Infobase (ibcmd)';
 const OUTPUT_DEBOUNCE_MS = 75;
@@ -51,19 +55,19 @@ const TRUNCATION_WARNING =
   '[ibcmd] Вывод усечён из‑за лимита буфера (см. IbcmdStreamingRunner). Полный журнал недоступен в канале.';
 
 let outputChannel: vscode.OutputChannel | undefined;
-let debounceTimer: ReturnType<typeof setTimeout> | undefined;
-let pendingOutput = '';
+
+interface IbcmdOperationOutputBuffer {
+  debounceTimer?: ReturnType<typeof setTimeout>;
+  pendingOutput: string;
+}
+
+function createOperationOutputBuffer(): IbcmdOperationOutputBuffer {
+  return { pendingOutput: '' };
+}
 
 /** Serializes ibcmd config ops (design §8 NFR). */
-let configOpChain: Promise<unknown> = Promise.resolve();
-
 export function serializeInfobaseConfigIbcmdOp<T>(fn: () => Promise<T>): Promise<T> {
-  const run = configOpChain.then(() => fn());
-  configOpChain = run.then(
-    () => {},
-    () => {},
-  );
-  return run;
+  return sharedInfobaseConfigurationOperationQueue.runExclusive('legacy:ibcmd-config', fn);
 }
 
 function getOutputChannel(): vscode.OutputChannel {
@@ -83,33 +87,33 @@ export function appendIbcmdOutputLine(line: string): void {
   getOutputChannel().appendLine(line);
 }
 
-function appendOutputDebounced(chunk: string): void {
+function appendOutputDebounced(buffer: IbcmdOperationOutputBuffer, chunk: string): void {
   if (!chunk) {
     return;
   }
-  pendingOutput += chunk;
-  if (debounceTimer !== undefined) {
+  buffer.pendingOutput += chunk;
+  if (buffer.debounceTimer !== undefined) {
     return;
   }
-  debounceTimer = setTimeout(() => {
-    debounceTimer = undefined;
+  buffer.debounceTimer = setTimeout(() => {
+    buffer.debounceTimer = undefined;
     const ch = getOutputChannel();
-    if (pendingOutput) {
-      ch.append(pendingOutput);
-      pendingOutput = '';
+    if (buffer.pendingOutput) {
+      ch.append(buffer.pendingOutput);
+      buffer.pendingOutput = '';
     }
   }, OUTPUT_DEBOUNCE_MS);
 }
 
-function flushOutputChannel(): void {
-  if (debounceTimer !== undefined) {
-    clearTimeout(debounceTimer);
-    debounceTimer = undefined;
+function flushOutputChannel(buffer: IbcmdOperationOutputBuffer): void {
+  if (buffer.debounceTimer !== undefined) {
+    clearTimeout(buffer.debounceTimer);
+    buffer.debounceTimer = undefined;
   }
   const ch = getOutputChannel();
-  if (pendingOutput) {
-    ch.append(pendingOutput);
-    pendingOutput = '';
+  if (buffer.pendingOutput) {
+    ch.append(buffer.pendingOutput);
+    buffer.pendingOutput = '';
   }
 }
 
@@ -309,6 +313,7 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   }
 
   const ch = getOutputChannel();
+  const outputBuffer = createOperationOutputBuffer();
   const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
   ch.appendLine(`[import${ctx}] ${params.entry.name} (${new Date().toISOString()})\n`);
   await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
@@ -351,17 +356,18 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   }
 
   try {
+    return await runInfobaseConfigurationOperation(params.entry, async () => {
     const outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,
       args: importArgs,
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
 
     if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
@@ -389,11 +395,11 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
 
     if (applyOutcome.spawnErrorCode === 'ENOENT' || applyOutcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
@@ -404,8 +410,9 @@ export async function runInfobaseConfigImportFromDirectory(params: {
     }
 
     return interpretIbcmdInfobaseOutcome('apply', applyOutcome);
+    });
   } finally {
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
     await prep.dispose();
   }
 }
@@ -447,6 +454,7 @@ async function runInfobaseConfigOperation(params: {
   }
 
   const ch = getOutputChannel();
+  const outputBuffer = createOperationOutputBuffer();
   const header = `[${params.op}] ${params.entry.name} (${new Date().toISOString()})\n`;
   ch.appendLine(header);
   await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
@@ -468,18 +476,18 @@ async function runInfobaseConfigOperation(params: {
         title: params.progressTitle,
         cancellable: true,
       },
-      async (_progress, token) => {
+      async (_progress, token) => runInfobaseConfigurationOperation(params.entry, async () => {
         const outcome = await runIbcmdStreaming({
           executablePath: pathResult.path,
           args: params.buildArgsFromPrep(prep, credentials),
           timeoutMs: ibcmd.getTimeoutMs(),
           cancellation: vscodeCancellation(token),
           consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-          onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+          onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
           abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
         });
 
-        flushOutputChannel();
+        flushOutputChannel(outputBuffer);
 
         if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
           ibcmd.invalidatePathCache();
@@ -499,11 +507,11 @@ async function runInfobaseConfigOperation(params: {
             timeoutMs: ibcmd.getTimeoutMs(),
             cancellation: vscodeCancellation(token),
             consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-            onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+            onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
             abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
           });
 
-          flushOutputChannel();
+          flushOutputChannel(outputBuffer);
 
           if (postOutcome.spawnErrorCode === 'ENOENT' || postOutcome.spawnErrorCode === 'ENOTDIR') {
             ibcmd.invalidatePathCache();
@@ -533,10 +541,10 @@ async function runInfobaseConfigOperation(params: {
             }
           });
         }
-      },
+      }),
     );
   } finally {
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
     await prep.dispose();
   }
 }
@@ -564,7 +572,7 @@ export async function runInfobaseConfigImport(
     return;
   }
 
-  await serializeInfobaseConfigIbcmdOp(async () => {
+  {
     const source = await pickImportSourcePath();
     if (!source) {
       return;
@@ -591,7 +599,7 @@ export async function runInfobaseConfigImport(
           buildInfobaseConfigApplyArgs(ibcmdOfflineConnectionFromPrepared(p), { credentials: creds }),
       },
     });
-  });
+  }
 }
 
 export async function runInfobaseConfigExport(
@@ -609,7 +617,7 @@ export async function runInfobaseConfigExport(
     return;
   }
 
-  await serializeInfobaseConfigIbcmdOp(async () => {
+  {
     const outDir = await pickExportOutDirectory();
     if (!outDir) {
       return;
@@ -626,7 +634,7 @@ export async function runInfobaseConfigExport(
       buildArgsFromPrep: (p, creds) =>
         buildInfobaseConfigExportArgs(ibcmdOfflineConnectionFromPrepared(p), absOut, { credentials: creds }),
     });
-  });
+  }
 }
 
 export async function runInfobaseConfigCheck(
@@ -644,7 +652,7 @@ export async function runInfobaseConfigCheck(
     return;
   }
 
-  await serializeInfobaseConfigIbcmdOp(async () => {
+  {
     await runInfobaseConfigOperation({
       op: 'check',
       entry,
@@ -652,7 +660,7 @@ export async function runInfobaseConfigCheck(
       progressTitle: `Проверка конфигурации: ${entry.name}`,
       buildArgsFromPrep: (p, creds) => buildInfobaseConfigCheckArgs(ibcmdOfflineConnectionFromPrepared(p), { credentials: creds }),
     });
-  });
+  }
 }
 
 export interface IncrementalImportParams {
@@ -719,6 +727,7 @@ export async function runInfobaseConfigIncrementalImport(
   }
 
   const ch = getOutputChannel();
+  const outputBuffer = createOperationOutputBuffer();
   const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
   ch.appendLine(`[import files${ctx}] ${params.entry.name} (${new Date().toISOString()})\n`);
   await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
@@ -745,17 +754,18 @@ export async function runInfobaseConfigIncrementalImport(
   );
 
   try {
+    return await runInfobaseConfigurationOperation(params.entry, async () => {
     const outcome = await runIbcmdStreaming({
       executablePath: pathResult.path,
       args: importFilesArgs,
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
 
     if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
@@ -782,11 +792,11 @@ export async function runInfobaseConfigIncrementalImport(
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
 
     if (applyOutcome.spawnErrorCode === 'ENOENT' || applyOutcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
@@ -797,8 +807,9 @@ export async function runInfobaseConfigIncrementalImport(
     }
 
     return interpretIbcmdInfobaseOutcome('apply', applyOutcome);
+    });
   } finally {
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
     await prep.dispose();
   }
 }
@@ -886,6 +897,7 @@ export async function runInfobaseConfigExportObjects(
   }
 
   const ch = getOutputChannel();
+  const outputBuffer = createOperationOutputBuffer();
   const ctx = params.logContext?.trim() ? ` ${params.logContext.trim()}` : '';
   ch.appendLine(`[export objects${ctx}] ${params.entry.name} (${new Date().toISOString()})\n`);
   await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
@@ -916,17 +928,17 @@ export async function runInfobaseConfigExportObjects(
   );
 
   try {
-    const outcome = await runIbcmdStreaming({
+    const outcome = await runInfobaseConfigurationOperation(params.entry, () => runIbcmdStreaming({
       executablePath: pathResult.path,
       args: exportObjectsArgs,
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
-    });
+    }));
 
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
 
     if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
@@ -946,7 +958,7 @@ export async function runInfobaseConfigExportObjects(
 
     return result;
   } finally {
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
     await prep.dispose();
     // Clean up temp directory.
     try {
@@ -1016,6 +1028,7 @@ export async function runInfobaseConfigExportStatus(
   }
 
   const ch = getOutputChannel();
+  const outputBuffer = createOperationOutputBuffer();
   ch.appendLine(`[export status] ${params.entry.name} (${new Date().toISOString()})\n`);
   await appendIbcmdResolvedConfigChannelLines(ch, prep, params.entry);
 
@@ -1040,17 +1053,17 @@ export async function runInfobaseConfigExportStatus(
   );
 
   try {
-    const outcome = await runIbcmdStreaming({
+    const outcome = await runInfobaseConfigurationOperation(params.entry, () => runIbcmdStreaming({
       executablePath: pathResult.path,
       args: exportStatusArgs,
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(chunk),
+      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
-    });
+    }));
 
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
 
     if (outcome.spawnErrorCode === 'ENOENT' || outcome.spawnErrorCode === 'ENOTDIR') {
       ibcmd.invalidatePathCache();
@@ -1062,7 +1075,7 @@ export async function runInfobaseConfigExportStatus(
 
     return interpretIbcmdInfobaseOutcome('export', outcome);
   } finally {
-    flushOutputChannel();
+    flushOutputChannel(outputBuffer);
     await prep.dispose();
   }
 }

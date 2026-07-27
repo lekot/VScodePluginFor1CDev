@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import type { ConfigurationBinding } from './models/configurationBinding';
-import { readBindingsForFolder, writeBindingsForFolder } from './bindingStorage';
+import {
+  readBindingsForFolder,
+  readBindingsForFolderDiagnostic,
+  writeBindingsForFolder,
+} from './bindingStorage';
 import { bindingKey, normalizeConfigRelativePath } from './bindingPathUtils';
 
 /** Для тестов и альтернативных окружений (по умолию — workspace VS Code). */
@@ -8,6 +12,11 @@ export interface BindingManagerDeps {
   readonly fileSystem?: vscode.FileSystem;
   readonly getWorkspaceFolders?: () => readonly vscode.WorkspaceFolder[] | undefined;
 }
+
+export type BindingLookupDiagnostic =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'valid'; readonly binding: ConfigurationBinding }
+  | { readonly kind: 'invalid'; readonly diagnostics: readonly string[] };
 
 function validateBindingInput(b: ConfigurationBinding): void {
   const wf = b.workspaceFolder?.trim() ?? '';
@@ -92,6 +101,51 @@ export class BindingManager {
         normalizeConfigRelativePath(b.configRelativePath) === norm &&
         (b.ibcmdExtensionName ?? '').trim() === ext,
     );
+  }
+
+  /** Fail-closed lookup for operations that must not mutate when a configured binding is corrupt. */
+  async getDiagnostic(
+    workspaceFolderName: string,
+    configRelativePath: string,
+    ibcmdExtensionName?: string,
+  ): Promise<BindingLookupDiagnostic> {
+    const folder = this.resolveFolder(workspaceFolderName);
+    if (!folder) {
+      return {
+        kind: 'invalid',
+        diagnostics: [`Папка workspace не найдена: ${workspaceFolderName}.`],
+      };
+    }
+    const norm = normalizeConfigRelativePath(configRelativePath);
+    const ext = (ibcmdExtensionName ?? '').trim();
+    const read = await readBindingsForFolderDiagnostic(this.fsApi, folder);
+    if (read.kind === 'absent') {
+      return { kind: 'absent' };
+    }
+    if (read.kind === 'invalid') {
+      return { kind: 'invalid', diagnostics: read.diagnostics };
+    }
+    const matchingConfiguration = read.bindings.filter(
+      (candidate) =>
+        normalizeConfigRelativePath(candidate.configRelativePath) === norm
+        && (candidate.ibcmdExtensionName ?? '').trim() === ext,
+    );
+    const conflictingWorkspaceFolders = matchingConfiguration
+      .filter((candidate) => candidate.workspaceFolder !== workspaceFolderName)
+      .map((candidate) => candidate.workspaceFolder);
+    if (conflictingWorkspaceFolders.length > 0) {
+      return {
+        kind: 'invalid',
+        diagnostics: [
+          `Привязка ${norm}${ext ? ` (расширение ${ext})` : ''} в workspace «${workspaceFolderName}» `
+          + `содержит конфликтующее имя workspace: ${conflictingWorkspaceFolders.join(', ')}.`,
+        ],
+      };
+    }
+    const binding = matchingConfiguration.find(
+      (candidate) => candidate.workspaceFolder === workspaceFolderName,
+    );
+    return binding ? { kind: 'valid', binding } : { kind: 'absent' };
   }
 
   /**

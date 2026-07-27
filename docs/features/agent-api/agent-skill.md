@@ -1,10 +1,14 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **61** runtime-команду Agent API для программного управления метаданными, привязками, раскаткой, отладкой, формами enterprise, СКД и XDTO-пакетами 1С:Предприятие. Команды вызываются через HTTP bridge или через `vscode.commands.executeCommand`.
+Расширение CDT 41 для VS Code предоставляет **67** runtime-команд Agent API для программного
+управления метаданными, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
+СКД и XDTO-пакетами 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
+прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
 
-## HTTP Bridge
+## MCP (Streamable HTTP) и discovery
 
-Расширение поднимает HTTP-сервер на рандомном порту при активации. Координаты записываются в файл:
+Расширение поднимает локальный MCP endpoint на случайном порту при активации. Координаты записываются
+в discovery-файл:
 
 ```
 <workspaceFolder>/.vscode/cdt-agent-bridge.json
@@ -33,21 +37,23 @@
 }
 ```
 
-Поля `helperScriptPath` / `discoverScriptPath` указывают на bash-скрипты, поставляемые вместе с расширением (см. ниже «Вызов через helper-скрипт»).
+Поля `helperScriptPath` / `discoverScriptPath` относятся к legacy `/command` и сохранены для
+совместимости.
 
 `schemaVersion: 2` добавляет стандартный MCP endpoint, не удаляя ни одного legacy-поля. Discovery записывается атомарно; клиент должен перечитывать его после каждой активации расширения, потому что порт и token меняются. Token передаётся только в заголовке и не должен добавляться к URL или попадать в логи.
 
-### Standard MCP (Streamable HTTP)
+### Подключение MCP
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-MCP публикует полный Agent API: **61 tool для 61 runtime-команды**.
+MCP публикует полный Agent API: **67 tools для 67 runtime-команд**.
 
 | Домен | MCP tools |
 |---|---|
 | Configuration/CRUD (13) | `cdt_list_configurations`, `cdt_create_object`, `cdt_get_yaml`, `cdt_list_objects`, `cdt_get_properties`, `cdt_add_attribute`, `cdt_add_tabular_section`, `cdt_add_tabular_section_column`, `cdt_delete_attribute`, `cdt_delete_tabular_section`, `cdt_delete_object`, `cdt_rename_object`, `cdt_set_properties` |
 | Debug (15) | `cdt_debug_start`, `cdt_debug_stop`, `cdt_debug_set_breakpoint`, `cdt_debug_clear_breakpoints`, `cdt_debug_set_exception_filter`, `cdt_debug_wait_for_stop`, `cdt_debug_get_stack_trace`, `cdt_debug_get_scopes`, `cdt_debug_get_variables`, `cdt_debug_evaluate`, `cdt_debug_continue`, `cdt_debug_step_over`, `cdt_debug_step_in`, `cdt_debug_step_out`, `cdt_debug_start_from_binding` |
 | Bindings/deploy (7) | `cdt_resolve_binding`, `cdt_list_bindings`, `cdt_deploy`, `cdt_deploy_selected_objects`, `cdt_deploy_changed_files`, `cdt_pull_selected_objects`, `cdt_export_status` |
+| Support (6) | `cdt_support_get_status`, `cdt_support_set_object_mode`, `cdt_support_enable_object_rules`, `cdt_support_sync`, `cdt_support_verify`, `cdt_support_get_last_run` |
 | Types/subsystems/characteristics (10) | `cdt_get_type`, `cdt_set_type`, `cdt_get_subsystem_command_interface`, `cdt_set_subsystem_command_visibility`, `cdt_set_subsystem_command_order`, `cdt_set_subsystem_subsystems_order`, `cdt_list_predefined_characteristics`, `cdt_get_predefined_characteristic_type`, `cdt_set_predefined_characteristic_type`, `cdt_get_characteristic_value_registers` |
 | Forms (5) | `cdt_forms_start`, `cdt_forms_exec`, `cdt_forms_stop`, `cdt_forms_shot`, `cdt_forms_status` |
 | SKD (4) | `cdt_skd_compile`, `cdt_skd_info`, `cdt_skd_edit`, `cdt_skd_validate` |
@@ -64,6 +70,8 @@ Bearer даёт аутентифицированному локальному MC
 - `cdt_forms_exec` исполняет произвольный JavaScript в browser session;
 - `cdt_debug_evaluate` исполняет BSL-выражение, которое может иметь side effects;
 - deploy/pull меняют информационные базы или workspace;
+- support set/enable/sync меняют master-файл и могут запускать Configurator для связанных ИБ;
+- support verify не пишет данные, но запускает внешние Configurator dump-процессы;
 - debug/forms/SKD запускают и останавливают дочерние процессы; SKD принимает локальные input/output paths;
 - XDTO export с `outputPath`, import/create/merge и metadata tools изменяют файлы конфигурации.
 
@@ -71,7 +79,7 @@ Bearer даёт аутентифицированному локальному MC
 
 Legacy `POST /command`, helper-скрипты и все Agent-команды продолжают работать по прежнему контракту.
 
-### Протокол
+### Legacy `/command`
 
 - **Health check:** `GET /health` → `{ "ok": true, "pid": ... }`
 - **Команда:** `POST /command` с JSON-телом `{ "name": "...", "args": { ... } }`
@@ -103,14 +111,14 @@ const req = http.request({
 req.end(data);
 ```
 
-### Whitelist команд
+#### Whitelist команд
 
 Через bridge доступны только команды, соответствующие паттерну:
 ```
 /^1c-metadata-tree\.agent(\.debug|\.forms|\.skd|\.xdto)?\.[a-zA-Z]+$/
 ```
 
-### Вызов через helper-скрипт
+#### Вызов через helper-скрипт
 
 Расширение поставляет два bash-скрипта в `resources/agent-bridge/`, которые раскатываются вместе с VSIX и доступны любому агенту через абсолютный путь из `bridge.json`:
 
@@ -126,7 +134,8 @@ bash "$HELPER" listObjects '{"type":"Catalog"}'
 bash "$HELPER" debug.start '{"rootProject":"C:/conf","infobase":"File=...","platformPath":"C:/Program Files/1cv8/.../bin","debuggeeType":"webServer","databasePath":"C:/bases/my"}'
 ```
 
-Этот путь предпочтительнее, чем ручной `curl`: скрипт сам подставляет токен, правильно пропускает кириллицу через UTF-8 и шейпит тело запроса.
+Helper-скрипт удобнее ручного legacy `curl`, но новые интеграции должны подключаться к стандартному
+MCP endpoint через `mcp.url`.
 
 ---
 
@@ -445,6 +454,171 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 Возвращает: `{ message: string }` — текстовый отчёт.
 
 Требует наличия `ConfigDumpInfo.xml` в каталоге конфигурации (создаётся при полной выгрузке).
+
+---
+
+### Поддержка конфигурации (6 команд)
+
+Все support-команды требуют точный `configurationId` из `listConfigurations`. Источник истины —
+`Ext/ParentConfigurations.bin`; Agent API вызывает тот же application facade, что UI и deploy.
+Ни одна команда не предоставляет force-write или обход expected generation.
+
+Support outcome целиком возвращается в `AgentResult.data`. `success: true` означает только
+`available` для чтения или полностью `synchronized` для mutation/sync/verify.
+`committedWithReplicationIssue`, `incomplete`, любой rejected outcome и recovery uncertainty
+возвращаются с `success: false`, но их полный discriminated outcome остаётся в `data`.
+
+В JSON поле `MasterSupportSnapshot.objectModes` представлено объектом с UUID-ключами:
+
+```json
+{
+  "objectModes": {
+    "8b74b9d6-9d93-4c63-9014-6f42889a20cc": {
+      "objectId": "8b74b9d6-9d93-4c63-9014-6f42889a20cc",
+      "locked": true,
+      "effectiveMode": "notEditable",
+      "sources": []
+    }
+  }
+}
+```
+
+#### `1c-metadata-tree.agent.supportGetStatus`
+
+Читает актуальный master, metadata universe и последний завершённый sync/verify run. `objectIds`
+необязателен и ограничивает `objectModes` заданными UUID.
+
+```json
+{
+  "configurationId": "cfg-...",
+  "objectIds": ["8b74b9d6-9d93-4c63-9014-6f42889a20cc"]
+}
+```
+
+Outcome:
+
+- `available` — содержит `master`, `metadataUniverse` и optional `lastRun`;
+- `operationRejected` — чтение или журнал недоступны; `retryable: true`.
+
+`master.kind` равен `ready`, `unmanaged` или `unknown`. Для `unknown` запись, sync и deploy
+закрыты fail-closed до восстановления master-файла.
+
+#### `1c-metadata-tree.agent.supportSetObjectMode`
+
+Меняет режим одного UUID при включённых объектных правилах:
+
+```json
+{
+  "configurationId": "cfg-...",
+  "objectId": "8b74b9d6-9d93-4c63-9014-6f42889a20cc",
+  "targetMode": "editableWithSupport",
+  "expectedGenerationId": "<master.generationId>"
+}
+```
+
+`targetMode`: `notEditable | editableWithSupport | removedFromSupport`. Generation берётся из
+свежего `supportGetStatus`. При `SUPPORT_STALE_GENERATION` автоматического повтора нет: агент читает
+новый status и заново принимает решение.
+
+#### `1c-metadata-tree.agent.supportEnableObjectRules`
+
+Явно переводит сертифицированный global lock в объектные правила, оставляя все объекты, кроме
+указанной цели, эффективно заблокированными:
+
+```json
+{
+  "configurationId": "cfg-...",
+  "targetObjectId": "8b74b9d6-9d93-4c63-9014-6f42889a20cc",
+  "targetMode": "editableWithSupport",
+  "expectedGenerationId": "<master.generationId>",
+  "expectedMetadataUniverseGenerationId": "<metadataUniverse.metadataUniverseGenerationId>"
+}
+```
+
+`targetMode`: `editableWithSupport | removedFromSupport`. Операция одновременно проверяет CAS
+master generation и полного metadata universe. `SUPPORT_METADATA_UNIVERSE_STALE`,
+`SUPPORT_OBJECT_UNIVERSE_INCOMPLETE` и неизвестная capability означают отказ без записи.
+
+Mutation outcomes для `supportSetObjectMode` и `supportEnableObjectRules`:
+
+- `synchronized` — local mutation и весь требуемый fan-out завершены;
+- `committedWithReplicationIssue` — master уже committed, но репликация incomplete/inDoubt;
+- `masterRejected` — unmanaged/unknown/recovery master;
+- `preflightRejected` — invalid binding либо неподдерживаемая цель, до local commit;
+- `mutationRejected` — CAS/capability/effective-diff отказ без записи;
+- `operationRejected` — безопасно нормализованный внутренний отказ.
+
+`committedWithReplicationIssue.retryOperation` всегда `sync`: local commit не откатывается из-за
+ошибки отдельной ИБ и не маскируется как полный успех.
+
+#### Target selection
+
+`supportSync` и `supportVerify` принимают один из трёх strict selectors:
+
+```json
+{ "kind": "all" }
+```
+
+```json
+{
+  "kind": "retryable",
+  "include": ["failed", "inDoubt", "targetDrift"]
+}
+```
+
+```json
+{
+  "kind": "ids",
+  "targetIds": ["file:C:/bases/main"]
+}
+```
+
+Retryable preset использует точные причины `failed | inDoubt | targetDrift`; permanent failure не
+становится retryable. `inDoubt` сначала проходит reconcile, blind repeat apply запрещён.
+
+#### `1c-metadata-tree.agent.supportSync`
+
+Применяет текущую неизменяемую master generation к выбранным связанным ИБ:
+
+```json
+{
+  "configurationId": "cfg-...",
+  "targets": { "kind": "all" },
+  "verification": "fast"
+}
+```
+
+`verification`: optional `fast | strict`, по умолчанию `fast`. Outcome:
+`synchronized | incomplete | masterRejected | preflightRejected | operationRejected`.
+`incomplete` содержит сохранённый target-by-target run, если он успел сформироваться.
+
+#### `1c-metadata-tree.agent.supportVerify`
+
+Read-only строгая проверка через Configurator dump; информационные базы и master не изменяются:
+
+```json
+{
+  "configurationId": "cfg-...",
+  "targets": { "kind": "ids", "targetIds": ["file:C:/bases/main"] }
+}
+```
+
+Outcome имеет те же верхнеуровневые статусы, что `supportSync`. `inDoubt`, `stale`, `failed`,
+`skipped` и `obsolete` остаются явными terminal states и не преобразуются в success.
+
+#### `1c-metadata-tree.agent.supportGetLastRun`
+
+Читает последний завершённый sync/verify run:
+
+```json
+{
+  "configurationId": "cfg-..."
+}
+```
+
+`available.run` может отсутствовать. Если run есть, он содержит `desiredGenerationId`, operation,
+scope, terminal state и результаты каждой canonical target. Active run после crash сначала
+восстанавливается журналом; неподтверждённый apply остаётся `inDoubt`.
 
 ---
 

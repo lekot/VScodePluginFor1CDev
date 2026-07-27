@@ -37,6 +37,11 @@ import {
 import { getObjectableObjectsForEditor, cloneObjectableGroups } from './objectTypeLoader';
 import type { ObjectableGroup } from '../types/objectTypeDefinitions';
 import type { MetadataLocation } from '../services/metadataFileLocator';
+import type { CachedSupportStatus } from '../support/supportStateCache';
+import {
+  resolveSupportTreeDecoration,
+  type SupportTreeDecoration,
+} from '../support/supportTreeDecorations';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
@@ -61,6 +66,19 @@ export interface TypeContentsWarmupOptions {
   rootIds?: readonly string[];
 }
 
+export interface SupportStateCacheReader {
+  get(configRoot: string, generationId?: string): CachedSupportStatus | undefined;
+}
+
+export type SupportDecorationResolver = (
+  node: TreeNode,
+  cached: CachedSupportStatus | undefined
+) => SupportTreeDecoration | undefined;
+
+export type SupportRootRegistrationCallback = (
+  configRoots: readonly string[]
+) => void;
+
 /**
  * Tree Data Provider for VS Code Tree View
  */
@@ -84,6 +102,9 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private messageUpdater: ((message: string | undefined) => void) | null = null;
   /** Ключ {@link bindingKey}(workspaceFolder, configRelativePath) → сводка для узла Configuration. */
   private configurationBindingDecorations = new Map<string, ConfigurationBindingDecoration>();
+  private supportStateCache: SupportStateCacheReader | undefined;
+  private supportDecorationResolver: SupportDecorationResolver = resolveSupportTreeDecoration;
+  private supportRootRegistrationCallback: SupportRootRegistrationCallback | undefined;
 
   constructor() {
     Logger.info('MetadataTreeDataProvider initialized');
@@ -98,6 +119,23 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   setConfigurationBindingDecorations(map: ReadonlyMap<string, ConfigurationBindingDecoration>): void {
     this.configurationBindingDecorations = new Map(map);
+  }
+
+  setSupportStateCache(cache: SupportStateCacheReader | undefined): void {
+    this.supportStateCache = cache;
+    this.refresh();
+  }
+
+  setSupportDecorationResolver(resolver: SupportDecorationResolver | undefined): void {
+    this.supportDecorationResolver = resolver ?? resolveSupportTreeDecoration;
+    this.refresh();
+  }
+
+  setSupportRootRegistrationCallback(
+    callback: SupportRootRegistrationCallback | undefined
+  ): void {
+    this.supportRootRegistrationCallback = callback;
+    this.notifySupportRootsChanged();
   }
 
   private lookupConfigurationBindingDecorationForRoot(root: TreeNode): ConfigurationBindingDecoration | undefined {
@@ -166,6 +204,70 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   /** WOW Phase 4 #64 — папка выгрузки расширения с отдельным Configuration.xml. */
+  private lookupSupportDecoration(element: TreeNode): SupportTreeDecoration | undefined {
+    if (!this.supportStateCache) {
+      return undefined;
+    }
+    let root = element.type === MetadataType.Configuration
+      ? element
+      : this.cache.getConfigurationRoot(element);
+    if (!root) {
+      let current = element.parent;
+      while (current) {
+        if (current.type === MetadataType.Configuration) {
+          root = current;
+          break;
+        }
+        current = current.parent;
+      }
+    }
+    const configRoot = root ? this.getConfigRootPath(root) : null;
+    if (!configRoot) {
+      return undefined;
+    }
+    try {
+      return this.supportDecorationResolver(
+        element,
+        this.supportStateCache.get(configRoot)
+      );
+    } catch (error) {
+      Logger.warn('Failed to resolve support tree decoration', {
+        nodeId: element.id,
+        configRoot,
+        error,
+      });
+      return undefined;
+    }
+  }
+
+  private notifySupportRootsChanged(): void {
+    if (!this.supportRootRegistrationCallback) {
+      return;
+    }
+    try {
+      this.supportRootRegistrationCallback(Object.freeze(this.getConfigRootPaths()));
+    } catch (error) {
+      Logger.warn('Failed to register support configuration roots', error);
+    }
+  }
+
+  private getConfigRootPath(root: TreeNode): string | null {
+    if (root.type !== MetadataType.Configuration) {
+      return null;
+    }
+    const configured = this.cache.getLoadContext(root.id)?.configPath?.trim();
+    if (configured) {
+      return path.resolve(configured);
+    }
+    const filePath = root.filePath?.trim();
+    if (!filePath) {
+      return null;
+    }
+    return path.basename(filePath).toLocaleLowerCase() === CONFIGURATION_XML.toLocaleLowerCase()
+      ? path.resolve(path.dirname(filePath))
+      : path.resolve(filePath);
+  }
+
   private isExtensionInfobaseBindingRoot(element: TreeNode): boolean {
     if (element.type !== MetadataType.Extension) {
       return false;
@@ -509,6 +611,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size });
     this.filter.filterAncestorOrVisibleIds = null;
+    this.notifySupportRootsChanged();
     this.refresh();
     if (this.messageUpdater && !this.filter.hasActiveFilter()) {
       this.messageUpdater(undefined);
@@ -530,6 +633,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     this.clearTypeEditorReferenceableCache();
     Logger.info('Tree cache size', { nodeCount: this.cache.size, roots: nodes.length });
     this.filter.filterAncestorOrVisibleIds = null;
+    this.notifySupportRootsChanged();
     this.refresh();
     if (this.messageUpdater) {
       if (this.rootNodes.length === 0) {
@@ -748,9 +852,53 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    * Used by revealActiveFileInTree command to locate a file across all configurations.
    */
   getConfigRootPaths(): string[] {
-    return this.rootNodes
-      .map((root) => this.cache.getLoadContext(root.id)?.configPath ?? root.filePath ?? null)
-      .filter((p): p is string => p != null);
+    const roots = this.rootNodes
+      .filter((root) => root.type === MetadataType.Configuration)
+      .map((root) => this.getConfigRootPath(root))
+      .filter((root): root is string => root !== null);
+    const seen = new Set<string>();
+    return roots.filter((root) => {
+      const key = normalizeConfigIdentity(root);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /**
+   * Canonical support root used by the registration/cache wiring for a concrete tree node.
+   * Unlike the legacy config-path helper, this honors the parser load context in multi-root
+   * and symlinked workspaces.
+   */
+  getSupportConfigRootForNode(node: TreeNode): string | null {
+    let root = node.type === MetadataType.Configuration
+      ? node
+      : this.cache.getConfigurationRoot(node);
+    if (!root) {
+      let current = node.parent;
+      while (current) {
+        if (current.type === MetadataType.Configuration) {
+          root = current;
+          break;
+        }
+        current = current.parent;
+      }
+    }
+    return root ? this.getConfigRootPath(root) : null;
+  }
+
+  /** Refreshes only the loaded root affected by a support-file watcher event. */
+  refreshSupportForRoot(configRoot: string): void {
+    const identity = normalizeConfigIdentity(configRoot);
+    const root = this.rootNodes.find(
+      (candidate) =>
+        normalizeConfigIdentity(this.getConfigRootPath(candidate) ?? undefined) === identity
+    );
+    if (root) {
+      this.refresh(root);
+    }
   }
 
   /**
@@ -905,6 +1053,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const bindingDeco = this.lookupConfigurationBindingDecoration(element);
     const isExtBindingRoot = this.isExtensionInfobaseBindingRoot(element);
     const q = this.filter.rawSearchQuery.trim();
+    const supportDecoration = this.lookupSupportDecoration(element);
 
     return buildTreeItem(element, {
       hasChildren,
@@ -914,6 +1063,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       isRegex: this.filter.isRegex,
       nodeMatchesSearch: !!(q && this.filter.nodeMatchesSearch(element, q)),
       configDirPath: element.type === MetadataType.Configuration ? this.getConfigPathForNode(element) : null,
+      ...(supportDecoration === undefined ? {} : { supportDecoration }),
     });
   }
 
@@ -1059,6 +1209,11 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   findNodeById(id: string): TreeNode | null {
     return this.cache.findById(id);
+  }
+
+  /** Exact reference membership check for command arguments supplied by the tree view. */
+  isLoadedNode(node: TreeNode): boolean {
+    return this.cache.contains(node);
   }
 
   /**
@@ -1686,5 +1841,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
 }
 
 function normalizeConfigIdentity(configPath: string | undefined): string {
-  return path.normalize(configPath ?? '').replace(/\\/g, '/').toLocaleLowerCase();
+  const value = configPath?.trim();
+  if (!value) {
+    return '';
+  }
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved;
 }

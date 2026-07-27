@@ -33,6 +33,12 @@ import type {
     SetTypeParams,
     AgentResult,
     ConfigurationScopedParams,
+    AgentSupportGetStatusParams,
+    AgentSupportSetObjectModeParams,
+    AgentSupportEnableObjectRulesParams,
+    AgentSupportSyncParams,
+    AgentSupportVerifyParams,
+    AgentSupportGetLastRunParams,
 } from './types';
 import type {
     DebugStartParams,
@@ -90,6 +96,11 @@ import type { ConfigurationIdentity } from '../services/configurationSession/typ
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
 import { resolveAgentConfiguration } from './agentConfigurationResolver';
 import { AgentPathError } from './agentPathResolver';
+import {
+    AGENT_SUPPORT_COMMAND_IDS,
+    AgentSupportOperations,
+    type AgentSupportOperationsDeps,
+} from './agentSupportOperations';
 
 /**
  * Регистрирует Agent API команды.
@@ -99,6 +110,8 @@ import { AgentPathError } from './agentPathResolver';
  * @param getConfigurationRegistry - Асинхронный геттер registry конфигураций.
  * @param debugRegistry - Реестр отладочных сессий.
  * @param getDebugDeps - Опциональный геттер зависимостей для debug.startFromBinding.
+ * @param getDeployDeps - Опциональный геттер зависимостей deploy/pull.
+ * @param getSupportDeps - Опциональный геттер общего support application facade.
  */
 export function registerAgentCommands(
     context: vscode.ExtensionContext,
@@ -107,6 +120,7 @@ export function registerAgentCommands(
     debugRegistry: DebugSessionRegistry,
     getDebugDeps?: () => AgentDebugOperationsDeps | undefined,
     getDeployDeps?: () => AgentDeployOperationsDeps | undefined,
+    getSupportDeps?: () => AgentSupportOperationsDeps | undefined,
 ): void {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
@@ -893,6 +907,58 @@ export function registerAgentCommands(
         }
     );
 
+    const supportUnavailable = (): AgentResult => ({
+        success: false,
+        code: 'SUPPORT_OPERATION_FAILED',
+        error: 'Операции поддержки недоступны: application facade не инициализирован.',
+    });
+    const supportOperations = (): AgentSupportOperations | undefined => {
+        const deps = getSupportDeps?.();
+        return deps ? new AgentSupportOperations(deps) : undefined;
+    };
+
+    const supportGetStatusCommand = vscode.commands.registerCommand(
+        AGENT_SUPPORT_COMMAND_IDS.getStatus,
+        async (params: AgentSupportGetStatusParams) => {
+            return supportOperations()?.supportGetStatus(params) ?? supportUnavailable();
+        }
+    );
+
+    const supportSetObjectModeCommand = vscode.commands.registerCommand(
+        AGENT_SUPPORT_COMMAND_IDS.setObjectMode,
+        async (params: AgentSupportSetObjectModeParams) => {
+            return supportOperations()?.supportSetObjectMode(params) ?? supportUnavailable();
+        }
+    );
+
+    const supportEnableObjectRulesCommand = vscode.commands.registerCommand(
+        AGENT_SUPPORT_COMMAND_IDS.enableObjectRules,
+        async (params: AgentSupportEnableObjectRulesParams) => {
+            return supportOperations()?.supportEnableObjectRules(params) ?? supportUnavailable();
+        }
+    );
+
+    const supportSyncCommand = vscode.commands.registerCommand(
+        AGENT_SUPPORT_COMMAND_IDS.sync,
+        async (params: AgentSupportSyncParams) => {
+            return supportOperations()?.supportSync(params) ?? supportUnavailable();
+        }
+    );
+
+    const supportVerifyCommand = vscode.commands.registerCommand(
+        AGENT_SUPPORT_COMMAND_IDS.verify,
+        async (params: AgentSupportVerifyParams) => {
+            return supportOperations()?.supportVerify(params) ?? supportUnavailable();
+        }
+    );
+
+    const supportGetLastRunCommand = vscode.commands.registerCommand(
+        AGENT_SUPPORT_COMMAND_IDS.getLastRun,
+        async (params: AgentSupportGetLastRunParams) => {
+            return supportOperations()?.supportGetLastRun(params) ?? supportUnavailable();
+        }
+    );
+
     context.subscriptions.push(
         listConfigurationsCommand,
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
@@ -922,5 +988,8 @@ export function registerAgentCommands(
         listXdtoPackagesCommand, getXdtoPackageCommand, exportXdtoXsdCommand,
         importXdtoXsdCommand, createXdtoFromXsdCommand,
         compareXdtoPackageCommand, mergeXdtoPackageCommand,
+        supportGetStatusCommand, supportSetObjectModeCommand,
+        supportEnableObjectRulesCommand, supportSyncCommand,
+        supportVerifyCommand, supportGetLastRunCommand,
     );
 }

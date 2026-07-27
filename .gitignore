@@ -50,7 +50,9 @@ docs/features/mcp-agent-adapter/*
 shcntx_help.db
 .roo/
 
-# Локальная настройка ibcmd (копия ibcmd.setup.example.bat с путями к платформе и ИБ)
+# Kimi (локально; в PR не включаем)
+.kimi/
+KIMI.md (копия ibcmd.setup.example.bat с путями к платформе и ИБ)
 ibcmd-local.bat
 /instrument-full-local.bat
 ibcmd-local.sh

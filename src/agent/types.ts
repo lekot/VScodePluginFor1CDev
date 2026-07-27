@@ -16,6 +16,47 @@ export interface ConfigurationScopedParams {
     configurationId?: string;
 }
 
+/** Exact configuration selector for support operations. */
+export interface AgentSupportConfigurationParams {
+    configurationId: string;
+}
+
+export interface AgentSupportGetStatusParams extends AgentSupportConfigurationParams {
+    objectIds?: string[];
+}
+
+export interface AgentSupportSetObjectModeParams extends AgentSupportConfigurationParams {
+    objectId: string;
+    targetMode: 'notEditable' | 'editableWithSupport' | 'removedFromSupport';
+    expectedGenerationId: string;
+}
+
+export interface AgentSupportEnableObjectRulesParams extends AgentSupportConfigurationParams {
+    targetObjectId: string;
+    targetMode: 'editableWithSupport' | 'removedFromSupport';
+    expectedGenerationId: string;
+    expectedMetadataUniverseGenerationId: string;
+}
+
+export type AgentSupportTargetSelection =
+    | { kind: 'all' }
+    | {
+        kind: 'retryable';
+        include: Array<'failed' | 'inDoubt' | 'targetDrift'>;
+    }
+    | { kind: 'ids'; targetIds: string[] };
+
+export interface AgentSupportSyncParams extends AgentSupportConfigurationParams {
+    targets: AgentSupportTargetSelection;
+    verification?: 'fast' | 'strict';
+}
+
+export interface AgentSupportVerifyParams extends AgentSupportConfigurationParams {
+    targets: AgentSupportTargetSelection;
+}
+
+export type AgentSupportGetLastRunParams = AgentSupportConfigurationParams;
+
 export interface CreateObjectParams extends ConfigurationScopedParams {
     /** Тип объекта: 'Catalog', 'Document', 'Enum', 'CommonModule', 'Subsystem' */
     type: string;

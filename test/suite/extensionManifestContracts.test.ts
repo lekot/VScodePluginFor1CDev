@@ -78,7 +78,7 @@ suite('extension manifest contracts', () => {
         .filter((command: string) => command.startsWith('1c-metadata-tree.agent.')),
     );
 
-    assert.strictEqual(registered.size, 61, 'Update the documented Agent API count intentionally.');
+    assert.strictEqual(registered.size, 67, 'Update the documented Agent API count intentionally.');
     assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
   });
 

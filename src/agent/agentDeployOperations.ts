@@ -10,18 +10,25 @@ import {
     DeployService,
     resolveConfigurationXmlDirectory,
     resolveDeployTargetsForBinding,
+    type DeploySupportContext,
+    type DeployRunSummary,
 } from '../bindings/deployService';
 import type { ConfigurationBinding } from '../bindings/models/configurationBinding';
 import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { detectChangedConfigFiles, type IncrementalChangeDetectorDeps } from '../services/ibcmd/incrementalChangeDetector';
-import { serializeInfobaseConfigIbcmdOp, runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
+import { runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
 import type { AgentResult, ConfigurationScopedParams } from './types';
 
 export interface AgentDeployOperationsDeps {
     bindingManager: BindingManager;
     infobaseStorage: InfobaseStorageService;
     getConfigPath: () => string | null;
+    /**
+     * Composition-root seam. Must resolve the exact registered configuration
+     * identity and expose only the public support facade.
+     */
+    resolveSupportContext?: (configRoot: string) => Promise<DeploySupportContext | undefined>;
 }
 
 export interface DeployParams extends ConfigurationScopedParams {
@@ -34,11 +41,14 @@ export interface DeployResultData {
         success: number;
         error: number;
         skipped: number;
+        hasPartial: boolean;
     };
     results: Array<{
         infobase: string;
         status: string;
         message: string;
+        errorCode?: string;
+        skippedFiles?: readonly string[];
     }>;
 }
 
@@ -175,7 +185,8 @@ export class AgentDeployOperations {
             if (!ctx.success) {
                 return { success: false, error: ctx.error };
             }
-            const { binding, catalog, workspaceFolderRoot } = ctx.data!;
+            const { binding, catalog, workspaceFolderRoot, configRoot } = ctx.data!;
+            const support = await this.deps.resolveSupportContext?.(configRoot);
 
             const cts = new vscode.CancellationTokenSource();
             const noopProgress = { report: () => {} };
@@ -188,25 +199,28 @@ export class AgentDeployOperations {
                     catalog,
                     progress: noopProgress,
                     token: cts.token,
+                    support,
                 });
 
                 return {
-                    success: summary.errorCount === 0 && !summary.cancelledMidChain,
+                    success: isDeploySummarySuccess(summary),
+                    code: summary.results.find((result) => result.errorCode)?.errorCode,
                     data: {
                         summary: {
                             success: summary.successCount,
                             error: summary.errorCount,
                             skipped: summary.skippedCount,
+                            hasPartial: summary.hasPartial,
                         },
                         results: summary.results.map((r) => ({
                             infobase: r.name || r.infobaseId,
                             status: r.status,
                             message: r.message,
+                            errorCode: r.errorCode,
+                            skippedFiles: r.skippedFiles,
                         })),
                     },
-                    error: summary.errorCount > 0
-                        ? `Раскатка завершена с ошибками: ${summary.errorCount}`
-                        : undefined,
+                    error: deploySummaryError(summary),
                 };
             } finally {
                 cts.dispose();
@@ -226,7 +240,8 @@ export class AgentDeployOperations {
             if (!ctx.success) {
                 return { success: false, error: ctx.error };
             }
-            const { binding, catalog, workspaceFolderRoot } = ctx.data!;
+            const { binding, catalog, workspaceFolderRoot, configRoot } = ctx.data!;
+            const support = await this.deps.resolveSupportContext?.(configRoot);
 
             if (!params.files || params.files.length === 0) {
                 return { success: false, error: 'Список файлов не задан.' };
@@ -244,25 +259,28 @@ export class AgentDeployOperations {
                     relativeFiles: params.files,
                     progress: noopProgress,
                     token: cts.token,
+                    support,
                 });
 
                 return {
-                    success: summary.errorCount === 0 && !summary.cancelledMidChain,
+                    success: isDeploySummarySuccess(summary),
+                    code: summary.results.find((result) => result.errorCode)?.errorCode,
                     data: {
                         summary: {
                             success: summary.successCount,
                             error: summary.errorCount,
                             skipped: summary.skippedCount,
+                            hasPartial: summary.hasPartial,
                         },
                         results: summary.results.map((r) => ({
                             infobase: r.name || r.infobaseId,
                             status: r.status,
                             message: r.message,
+                            errorCode: r.errorCode,
+                            skippedFiles: r.skippedFiles,
                         })),
                     },
-                    error: summary.errorCount > 0
-                        ? `Раскатка завершена с ошибками: ${summary.errorCount}`
-                        : undefined,
+                    error: deploySummaryError(summary),
                 };
             } finally {
                 cts.dispose();
@@ -283,6 +301,7 @@ export class AgentDeployOperations {
                 return { success: false, error: ctx.error };
             }
             const { configRoot, binding, catalog, workspaceFolderRoot } = ctx.data!;
+            const support = await this.deps.resolveSupportContext?.(configRoot);
 
             // Build git repository dependency using the VS Code git extension API
             const gitExt = vscode.extensions.getExtension('vscode.git');
@@ -308,7 +327,10 @@ export class AgentDeployOperations {
             if (detected.relativePaths.length === 0) {
                 return {
                     success: true,
-                    data: { summary: { success: 0, error: 0, skipped: 0 }, results: [] },
+                    data: {
+                        summary: { success: 0, error: 0, skipped: 0, hasPartial: false },
+                        results: [],
+                    },
                     error: 'Нет изменённых файлов.',
                 };
             }
@@ -325,25 +347,28 @@ export class AgentDeployOperations {
                     relativeFiles: detected.relativePaths,
                     progress: noopProgress,
                     token: cts.token,
+                    support,
                 });
 
                 return {
-                    success: summary.errorCount === 0 && !summary.cancelledMidChain,
+                    success: isDeploySummarySuccess(summary),
+                    code: summary.results.find((result) => result.errorCode)?.errorCode,
                     data: {
                         summary: {
                             success: summary.successCount,
                             error: summary.errorCount,
                             skipped: summary.skippedCount,
+                            hasPartial: summary.hasPartial,
                         },
                         results: summary.results.map((r) => ({
                             infobase: r.name || r.infobaseId,
                             status: r.status,
                             message: r.message,
+                            errorCode: r.errorCode,
+                            skippedFiles: r.skippedFiles,
                         })),
                     },
-                    error: summary.errorCount > 0
-                        ? `Раскатка завершена с ошибками: ${summary.errorCount}`
-                        : undefined,
+                    error: deploySummaryError(summary),
                 };
             } finally {
                 cts.dispose();
@@ -411,12 +436,13 @@ export class AgentDeployOperations {
                 });
 
                 return {
-                    success: summary.errorCount === 0 && !summary.cancelledMidChain,
+                    success: isDeploySummarySuccess(summary),
                     data: {
                         summary: {
                             success: summary.successCount,
                             error: summary.errorCount,
                             skipped: summary.skippedCount,
+                            hasPartial: summary.hasPartial,
                         },
                         results: summary.results.map((r) => ({
                             infobase: r.name || r.infobaseId,
@@ -460,14 +486,12 @@ export class AgentDeployOperations {
 
             const cts = new vscode.CancellationTokenSource();
             try {
-                const result = await serializeInfobaseConfigIbcmdOp(() =>
-                    runInfobaseConfigExportStatus({
+                const result = await runInfobaseConfigExportStatus({
                         entry,
                         configDumpInfoPath,
                         storage: this.deps.infobaseStorage,
                         token: cts.token,
-                    }),
-                );
+                    });
 
                 return {
                     success: result.status === 'success',
@@ -481,4 +505,23 @@ export class AgentDeployOperations {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
     }
+}
+
+function isDeploySummarySuccess(summary: DeployRunSummary): boolean {
+    return summary.errorCount === 0
+        && !summary.cancelledMidChain
+        && !summary.hasPartial;
+}
+
+function deploySummaryError(summary: DeployRunSummary): string | undefined {
+    if (summary.errorCount > 0) {
+        return `Раскатка завершена с ошибками: ${summary.errorCount}`;
+    }
+    if (summary.cancelledMidChain) {
+        return 'Раскатка отменена до завершения всех целей.';
+    }
+    if (summary.hasPartial) {
+        return 'Раскатка выполнена частично: часть запрошенных файлов пропущена.';
+    }
+    return undefined;
 }

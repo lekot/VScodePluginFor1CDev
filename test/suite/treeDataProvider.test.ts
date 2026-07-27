@@ -7,6 +7,16 @@ import { TreeNode, MetadataType } from '../../src/models/treeNode';
 import { MetadataParser } from '../../src/parsers/metadataParser';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { isTabularSectionColumnsContainer } from '../../src/utils/treeNormalization';
+import {
+  createMetadataUniverseIdentityIndex,
+  type CachedSupportStatus,
+} from '../../src/support/supportStateCache';
+import { resolveSupportTreeDecoration } from '../../src/support/supportTreeDecorations';
+import type { ConfigurationId } from '../../src/services/configurationSession/types';
+import type {
+  MetadataUniverseEntry,
+  ObjectSupportState,
+} from '../../src/support/supportTypes';
 
 suite('MetadataTreeDataProvider Test Suite', () => {
   let provider: MetadataTreeDataProvider;
@@ -49,6 +59,171 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
   test('Provider should be initialized', () => {
     assert.ok(provider);
+  });
+
+  test('support configuration overlay preserves exact root context and original icon', () => {
+    const configPath = path.resolve('support-config');
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+      filePath: path.join(configPath, 'Configuration.xml'),
+    };
+    provider.setRootNode(rootNode, { configPath, format: ConfigFormat.Designer });
+    provider.setSupportStateCache({
+      get: () => ({} as CachedSupportStatus),
+    });
+    provider.setSupportDecorationResolver(() => ({
+      kind: 'configuration',
+      mode: 'locked',
+      tooltip: 'locked configuration',
+      contextTokens: ['supportManaged', 'supportConfiguration.locked'],
+    }));
+
+    const item = provider.getTreeItem(rootNode);
+
+    assert.strictEqual(item.contextValue, 'Configuration');
+    assert.ok(item.iconPath instanceof vscode.ThemeIcon);
+    assert.notStrictEqual((item.iconPath as vscode.ThemeIcon).id, 'lock');
+    assert.ok(!String(item.description).includes('🔒'));
+    assert.ok(String(item.tooltip).includes('locked configuration'));
+  });
+
+  test('support object overlay appends safe context and overrides final icon with lock', () => {
+    const configPath = path.resolve('support-object-config');
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+      filePath: path.join(configPath, 'Configuration.xml'),
+    };
+    const objectNode: TreeNode = {
+      id: 'Catalog.Products',
+      name: 'Products',
+      type: MetadataType.Catalog,
+      parent: rootNode,
+      properties: {},
+    };
+    rootNode.children = [objectNode];
+    provider.setRootNode(rootNode, { configPath, format: ConfigFormat.Designer });
+    provider.setSupportStateCache({
+      get: () => ({} as CachedSupportStatus),
+    });
+    provider.setSupportDecorationResolver((node) => node === objectNode
+      ? {
+          kind: 'object',
+          objectId: 'object-id',
+          locked: true,
+          effectiveMode: 'notEditable',
+          iconIntent: 'lock',
+          tooltip: 'locked object',
+          contextTokens: ['supportObject', 'supportObject.locked'],
+        }
+      : undefined);
+
+    const item = provider.getTreeItem(objectNode);
+
+    assert.ok(item.contextValue?.split(/\s+/).includes(MetadataType.Catalog));
+    assert.ok(item.contextValue?.split(/\s+/).includes('supportObject.locked'));
+    assert.ok(item.iconPath instanceof vscode.ThemeIcon);
+    assert.strictEqual((item.iconPath as vscode.ThemeIcon).id, 'lock');
+    assert.ok(String(item.description).includes('🔒'));
+  });
+
+  test('support decoration uses exact immutable identity index membership', () => {
+    const configPath = path.resolve('support-identity-config');
+    const objectUuid = '11111111-1111-1111-1111-111111111111';
+    const entry: MetadataUniverseEntry = {
+      relativeMetadataPath: 'Catalogs/Products.xml',
+      objectUuid,
+      supportSubjectUuid: objectUuid,
+    };
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(configPath, 'Configuration.xml'),
+    };
+    const objectNode: TreeNode = {
+      id: 'Catalog.Products',
+      name: 'Products',
+      type: MetadataType.Catalog,
+      parent: rootNode,
+      properties: { uuid: objectUuid },
+      filePath: path.join(configPath, 'Catalogs', 'Products.xml'),
+    };
+    const objectState: ObjectSupportState = {
+      objectId: objectUuid,
+      locked: true,
+      effectiveMode: 'notEditable',
+      sources: [],
+    };
+    const cached = {
+      status: 'available',
+      configRoot: configPath,
+      configurationId: 'config-id' as ConfigurationId,
+      generationId: 'generation-id',
+      metadataUniverse: {
+        configRoot: configPath,
+        metadataUniverseGenerationId: 'universe-id',
+        entries: [entry],
+      },
+      metadataUniverseIdentityIndex: createMetadataUniverseIdentityIndex([entry]),
+      master: {
+        kind: 'ready',
+        snapshot: {
+          configurationId: 'config-id' as ConfigurationId,
+          generationId: 'generation-id',
+          semanticDigest: 'digest',
+          filePath: path.join(configPath, 'Ext', 'ParentConfigurations.bin'),
+          formatRevision: '6',
+          globalEditability: 'enabled',
+          configurationMode: 'mixed',
+          objectModes: new Map([[objectUuid, objectState]]),
+          supplierConfigurations: [],
+        },
+      },
+    } satisfies CachedSupportStatus;
+
+    const decoration = resolveSupportTreeDecoration(objectNode, cached);
+
+    assert.strictEqual(decoration?.kind, 'object');
+    assert.strictEqual(cached.metadataUniverseIdentityIndex.has(entry), true);
+    assert.strictEqual(cached.metadataUniverseIdentityIndex.has({
+      ...entry,
+      relativeMetadataPath: 'Catalogs/Other.xml',
+    }), false);
+  });
+
+  test('support root identity uses resolved path and platform-compatible case rules', () => {
+    const relativeConfigPath = path.join('.', 'SupportCase', 'Config');
+    const rootNode: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+    provider.setRootNode(rootNode, {
+      configPath: relativeConfigPath,
+      format: ConfigFormat.Designer,
+    });
+
+    const [actual] = provider.getConfigRootPaths();
+    const resolved = path.resolve(relativeConfigPath);
+    const expected = process.platform === 'win32'
+      ? resolved.toLocaleLowerCase()
+      : resolved;
+
+    assert.strictEqual(
+      process.platform === 'win32' ? actual.toLocaleLowerCase() : actual,
+      expected
+    );
   });
 
   test('getChildren should return empty array when no root node', async () => {
