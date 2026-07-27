@@ -210,7 +210,7 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
     await client.connect(transport);
     assert.ok(transport.sessionId, 'initialize must establish a stateful MCP session');
     const listed = await client.listTools();
-    assert.strictEqual(listed.tools.length, 67);
+    assert.strictEqual(listed.tools.length, 69);
     assert.deepStrictEqual(
       listed.tools.map((tool) => tool.name),
       MCP_TOOL_CATALOG.map((tool) => tool.name),

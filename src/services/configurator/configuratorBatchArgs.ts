@@ -11,7 +11,7 @@ export interface ConfiguratorCredentials {
 }
 
 export interface ConfiguratorBatchArguments {
-  operation: 'partialApply' | 'minimalDump';
+  operation: 'partialApply' | 'minimalDump' | 'dumpExternal' | 'loadExternal';
   executionArgs: readonly string[];
   /** Safe for logs and journals: the password value is replaced, not merely quoted. */
   diagnosticArgs: readonly string[];
@@ -33,6 +33,18 @@ export interface ConfiguratorPartialApplyArgsOptions extends ConfiguratorBatchBa
 export interface ConfiguratorMinimalDumpArgsOptions extends ConfiguratorBatchBaseOptions {
   dumpDirectory: string;
   listFilePath: string;
+}
+
+export interface ConfiguratorDumpExternalArgsOptions extends ConfiguratorBatchBaseOptions {
+  dumpDirectory: string;
+  externalFilePath: string;
+  format?: 'Hierarchical' | 'Plain';
+}
+
+export interface ConfiguratorLoadExternalArgsOptions extends ConfiguratorBatchBaseOptions {
+  externalFilePath: string;
+  sourceDirectory: string;
+  format?: 'Hierarchical' | 'Plain';
 }
 
 export function buildConfiguratorPartialApplyArgs(
@@ -87,6 +99,52 @@ export function buildConfiguratorMinimalDumpArgs(
   ];
   assertSafeBatchArguments(executionArgs);
   return freezeBatchArguments('minimalDump', executionArgs, diagnosticArgs, common.outputFilePath);
+}
+
+export function buildConfiguratorDumpExternalArgs(
+  options: ConfiguratorDumpExternalArgsOptions
+): ConfiguratorBatchArguments {
+  const common = buildCommonArgs(options);
+  const format = options.format ?? 'Hierarchical';
+  const dumpDir = requireValue(options.dumpDirectory, 'dumpDirectory');
+  const externalFile = requireValue(options.externalFilePath, 'externalFilePath');
+  
+  const extraArgs = [
+    '/DumpExternalDataProcessorOrReportToFiles',
+    dumpDir,
+    externalFile,
+  ];
+  if (format === 'Hierarchical') {
+    extraArgs.push('-Format', 'Hierarchical');
+  }
+
+  const executionArgs = [...common.executionArgs, ...extraArgs];
+  const diagnosticArgs = [...common.diagnosticArgs, ...extraArgs];
+  assertSafeBatchArguments(executionArgs);
+  return freezeBatchArguments('dumpExternal', executionArgs, diagnosticArgs, common.outputFilePath);
+}
+
+export function buildConfiguratorLoadExternalArgs(
+  options: ConfiguratorLoadExternalArgsOptions
+): ConfiguratorBatchArguments {
+  const common = buildCommonArgs(options);
+  const format = options.format ?? 'Hierarchical';
+  const externalFile = requireValue(options.externalFilePath, 'externalFilePath');
+  const sourceDir = requireValue(options.sourceDirectory, 'sourceDirectory');
+
+  const extraArgs = [
+    '/LoadExternalDataProcessorOrReportFromFiles',
+    externalFile,
+    sourceDir,
+  ];
+  if (format === 'Hierarchical') {
+    extraArgs.push('-Format', 'Hierarchical');
+  }
+
+  const executionArgs = [...common.executionArgs, ...extraArgs];
+  const diagnosticArgs = [...common.diagnosticArgs, ...extraArgs];
+  assertSafeBatchArguments(executionArgs);
+  return freezeBatchArguments('loadExternal', executionArgs, diagnosticArgs, common.outputFilePath);
 }
 
 /** Formats only the already-redacted diagnostic argv. */

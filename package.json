@@ -749,6 +749,24 @@
         {
           "command": "1c-metadata-tree.support.showLastRun",
           "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.dumpExternalProcessor",
+          "title": "Разгрузить внешнюю обработку/отчёт (EPF/ERF)",
+          "category": "CDT 41"
+        },
+        {
+          "command": "1c-metadata-tree.buildExternalProcessor",
+          "title": "Собрать внешнюю обработку/отчёт (EPF/ERF)",
+          "category": "CDT 41"
+        },
+        {
+          "command": "1c-metadata-tree.agent.dumpExternalProcessor",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.agent.buildExternalProcessor",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -801,6 +819,18 @@
           "command": "1c-metadata-tree.infobases.newFolder",
           "when": "view == 1c-infobase-manager",
           "group": "navigation@6"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "1c-metadata-tree.dumpExternalProcessor",
+          "when": "resourceExtname == .epf || resourceExtname == .erf",
+          "group": "1c_tools@1"
+        },
+        {
+          "command": "1c-metadata-tree.buildExternalProcessor",
+          "when": "explorerResourceIsFolder",
+          "group": "1c_tools@2"
         }
       ],
       "editor/title": [

@@ -959,6 +959,22 @@ export function registerAgentCommands(
         }
     );
 
+    const dumpExternalProcessorCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.dumpExternalProcessor',
+        async (params: { srcPath: string; outDir?: string; format?: 'Hierarchical' | 'Plain' }) => {
+            const { agentDumpExternalProcessor } = await import('./agentExternalProcessorOperations');
+            return agentDumpExternalProcessor(params);
+        }
+    );
+
+    const buildExternalProcessorCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.buildExternalProcessor',
+        async (params: { srcDir: string; dstPath?: string; format?: 'Hierarchical' | 'Plain' }) => {
+            const { agentBuildExternalProcessor } = await import('./agentExternalProcessorOperations');
+            return agentBuildExternalProcessor(params);
+        }
+    );
+
     context.subscriptions.push(
         listConfigurationsCommand,
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
@@ -991,5 +1007,6 @@ export function registerAgentCommands(
         supportGetStatusCommand, supportSetObjectModeCommand,
         supportEnableObjectRulesCommand, supportSyncCommand,
         supportVerifyCommand, supportGetLastRunCommand,
+        dumpExternalProcessorCommand, buildExternalProcessorCommand,
     );
 }

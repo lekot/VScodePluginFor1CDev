@@ -95,6 +95,9 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_support_sync', 'supportSync', 'writeOpen'),
   tool('cdt_support_verify', 'supportVerify', 'readOpen'),
   tool('cdt_support_get_last_run', 'supportGetLastRun', 'readClosed'),
+
+  tool('cdt_dump_external_processor', 'dumpExternalProcessor', 'readOpen'),
+  tool('cdt_build_external_processor', 'buildExternalProcessor', 'writeOpen'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
@@ -193,6 +196,8 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
     targets: { kind: 'all' },
   },
   cdt_support_get_last_run: { configurationId: 'cfg' },
+  cdt_dump_external_processor: { srcPath: 'C:/test/file.epf' },
+  cdt_build_external_processor: { srcDir: 'C:/test/file_src' },
 };
 
 interface InvalidRefinementCase {
@@ -331,8 +336,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 67);
-    assert.strictEqual(new Set(registered).size, 67);
+    assert.strictEqual(registered.length, 69);
+    assert.strictEqual(new Set(registered).size, 69);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',

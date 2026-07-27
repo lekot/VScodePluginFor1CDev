@@ -147,3 +147,15 @@ export function hasExternalSource(value: { inputPath?: string; source?: string }
 export function hasExactlyOneExternalSource(value: { inputPath?: string; source?: string }): boolean {
   return Number(Boolean(value.inputPath)) + Number(value.source !== undefined) === 1;
 }
+
+export const agentDumpExternalProcessorSchema = z.object({
+  srcPath: z.string().min(1, 'srcPath is required'),
+  outDir: z.string().optional(),
+  format: z.enum(['Hierarchical', 'Plain']).optional(),
+});
+
+export const agentBuildExternalProcessorSchema = z.object({
+  srcDir: z.string().min(1, 'srcDir is required'),
+  dstPath: z.string().optional(),
+  format: z.enum(['Hierarchical', 'Plain']).optional(),
+});
