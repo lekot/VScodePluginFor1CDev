@@ -214,6 +214,7 @@ function createFacade(
   };
   return {
     getStatus: (request) => invoke('getStatus', request),
+    getMasterStatus: (request) => invoke('getMasterStatus', request),
     setObjectMode: (request) => invoke('setObjectMode', request),
     enableObjectRules: (request) => invoke('enableObjectRules', request),
     sync: (request) => invoke('sync', request),

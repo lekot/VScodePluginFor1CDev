@@ -4,7 +4,10 @@ import {
   ParentConfigurationsCodec,
   type SupportTokenPatch,
 } from '../../src/support/parentConfigurationsCodec';
-import { SupportMutationError } from '../../src/support/supportTypes';
+import {
+  SupportMutationError,
+  type MetadataUniverseSnapshot,
+} from '../../src/support/supportTypes';
 import {
   SUPPORT_TEST_CONFIGURATION_ID,
   SUPPORT_UUIDS,
@@ -137,6 +140,208 @@ suite('ParentConfigurationsCodec', () => {
       assert.strictEqual(global.state.snapshot.objectModes.get(SUPPORT_UUIDS.objectA)?.locked, true);
       assert.strictEqual(supplier.state.snapshot.objectModes.get(SUPPORT_UUIDS.objectA)?.locked, true);
     }
+  });
+
+  test('zero-object snapshots derive configuration mode from the global flag', () => {
+    const editable = parseReadyDocument(buildParentConfigurations({
+      globalFlag: '0',
+      suppliers: [syntheticSupplier({ objects: [] })],
+    }));
+    const locked = parseReadyDocument(buildParentConfigurations({
+      globalFlag: '1',
+      suppliers: [syntheticSupplier({ objects: [] })],
+    }));
+
+    assert.strictEqual(editable.state.kind, 'ready');
+    assert.strictEqual(locked.state.kind, 'ready');
+    if (editable.state.kind === 'ready' && locked.state.kind === 'ready') {
+      assert.strictEqual(editable.state.snapshot.objectModes.size, 0);
+      assert.strictEqual(editable.state.snapshot.configurationMode, 'editable');
+      assert.strictEqual(locked.state.snapshot.objectModes.size, 0);
+      assert.strictEqual(locked.state.snapshot.configurationMode, 'locked');
+    }
+  });
+
+  test('builds a 10k+ rule snapshot within a linear predicate-operation bound', function () {
+    this.timeout(20_000);
+    const ruleCount = 10_001;
+    const objects = Array.from({ length: ruleCount }, (_, index) => ({
+      mode: '2' as const,
+      localUuid: syntheticUuid(1, index),
+      vendorUuid: syntheticUuid(2, index),
+    }));
+    const bytes = buildParentConfigurations({
+      suppliers: [syntheticSupplier({ objects })],
+    });
+
+    const measured = countArrayPredicateCallbacks(() => parseReadyDocument(bytes));
+
+    assert.strictEqual(measured.result.state.kind, 'ready');
+    if (measured.result.state.kind === 'ready') {
+      assert.strictEqual(measured.result.state.snapshot.objectModes.size, ruleCount);
+    }
+    assert.ok(
+      measured.callbackCount <= ruleCount * 4 + 100,
+      `Expected linear predicate work, observed ${measured.callbackCount} callbacks for ${ruleCount} rules`,
+    );
+  });
+
+  test('enables object rules with exact global/supplier/object patches and keeps every non-target locked', () => {
+    const configRoot = pathForSyntheticRoot();
+    const beforeBytes = buildParentConfigurations({
+      globalFlag: '1',
+      suppliers: [
+        syntheticSupplier({
+          blockFlag: '1',
+          objects: [
+            {
+              mode: '0',
+              localUuid: SUPPORT_UUIDS.objectA,
+              vendorUuid: SUPPORT_UUIDS.vendorA,
+            },
+            {
+              mode: '2',
+              localUuid: SUPPORT_UUIDS.objectB,
+              vendorUuid: SUPPORT_UUIDS.vendorB,
+            },
+          ],
+        }),
+        syntheticSupplier({
+          supplierId: SUPPORT_UUIDS.supplierB,
+          parentId: SUPPORT_UUIDS.parentB,
+          blockFlag: '1',
+          objects: [
+            {
+              mode: '2',
+              localUuid: SUPPORT_UUIDS.objectA,
+              vendorUuid: SUPPORT_UUIDS.vendorC,
+            },
+            {
+              mode: '1',
+              localUuid: SUPPORT_UUIDS.objectB,
+              vendorUuid: SUPPORT_UUIDS.vendorA,
+            },
+          ],
+        }),
+      ],
+    });
+    const document = parseReadyDocument(beforeBytes, configRoot);
+    assert.strictEqual(document.state.kind, 'ready');
+    if (document.state.kind !== 'ready') {
+      return;
+    }
+    const universe = metadataUniverse(configRoot, SUPPORT_UUIDS.objectA, SUPPORT_UUIDS.objectB);
+
+    const plan = ParentConfigurationsCodec.planEnableObjectRules(document, {
+      configurationId: SUPPORT_TEST_CONFIGURATION_ID,
+      targetObjectId: SUPPORT_UUIDS.objectA.toUpperCase(),
+      targetMode: 'editableWithSupport',
+      expectedGenerationId: document.state.snapshot.generationId,
+      expectedMetadataUniverseGenerationId: universe.metadataUniverseGenerationId,
+    }, universe);
+
+    assert.strictEqual(plan.kind, 'support.enableObjectRules');
+    assert.strictEqual(plan.targetObjectId, SUPPORT_UUIDS.objectA);
+    assert.strictEqual(
+      plan.expectedMetadataUniverseGenerationId,
+      universe.metadataUniverseGenerationId,
+    );
+    assert.deepStrictEqual(
+      plan.patches.map((patch) => patch.kind),
+      [
+        'global',
+        'supplierBlock',
+        'objectMode',
+        'objectMode',
+        'supplierBlock',
+        'objectMode',
+        'objectMode',
+      ],
+    );
+    assertExactPatchDiff(beforeBytes, Buffer.from(plan.afterDocument.bytes), plan.patches);
+    assert.strictEqual(plan.after.globalEditability, 'enabled');
+    assert.ok(plan.after.supplierConfigurations.every((supplier) =>
+      supplier.blockEditability === 'enabled'));
+    assert.deepStrictEqual(plan.after.objectModes.get(SUPPORT_UUIDS.objectA), {
+      objectId: SUPPORT_UUIDS.objectA,
+      locked: false,
+      effectiveMode: 'editableWithSupport',
+      sources: [
+        {
+          supplierConfigurationId: SUPPORT_UUIDS.supplierA,
+          rawMode: 'editableWithSupport',
+        },
+        {
+          supplierConfigurationId: SUPPORT_UUIDS.supplierB,
+          rawMode: 'editableWithSupport',
+        },
+      ],
+    });
+    assert.strictEqual(plan.after.objectModes.get(SUPPORT_UUIDS.objectB)?.locked, true);
+    assert.strictEqual(
+      plan.after.objectModes.get(SUPPORT_UUIDS.objectB)?.effectiveMode,
+      'notEditable',
+    );
+    assert.strictEqual(plan.after.configurationMode, 'mixed');
+    assert.deepStrictEqual(Buffer.from(document.bytes), beforeBytes, 'planning must not mutate input');
+  });
+
+  test('enable-object-rules fails closed on stale universe, pre-enabled rules and incomplete subjects', () => {
+    const configRoot = pathForSyntheticRoot();
+    const locked = parseReadyDocument(buildParentConfigurations({ globalFlag: '1' }), configRoot);
+    const enabled = parseReadyDocument(buildParentConfigurations(), configRoot);
+    assert.strictEqual(locked.state.kind, 'ready');
+    assert.strictEqual(enabled.state.kind, 'ready');
+    if (locked.state.kind !== 'ready' || enabled.state.kind !== 'ready') {
+      return;
+    }
+    const enabledGenerationId = enabled.state.snapshot.generationId;
+    const universe = metadataUniverse(configRoot, SUPPORT_UUIDS.objectA);
+    const baseRequest = {
+      configurationId: SUPPORT_TEST_CONFIGURATION_ID,
+      targetObjectId: SUPPORT_UUIDS.objectA,
+      targetMode: 'editableWithSupport' as const,
+      expectedGenerationId: locked.state.snapshot.generationId,
+      expectedMetadataUniverseGenerationId: universe.metadataUniverseGenerationId,
+    };
+
+    assertMutationError(() => ParentConfigurationsCodec.planEnableObjectRules(
+      locked,
+      {
+        ...baseRequest,
+        expectedMetadataUniverseGenerationId: 'stale-universe',
+      },
+      universe,
+    ), 'SUPPORT_METADATA_UNIVERSE_STALE');
+    assertMutationError(() => ParentConfigurationsCodec.planEnableObjectRules(
+      enabled,
+      {
+        ...baseRequest,
+        expectedGenerationId: enabledGenerationId,
+      },
+      universe,
+    ), 'SUPPORT_EFFECTIVE_DIFF_VIOLATION');
+    assertMutationError(() => ParentConfigurationsCodec.planEnableObjectRules(
+      locked,
+      {
+        ...baseRequest,
+        targetObjectId: SUPPORT_UUIDS.objectC,
+      },
+      universe,
+    ), 'SUPPORT_OBJECT_NOT_FOUND');
+    const incompleteUniverse = metadataUniverse(
+      configRoot,
+      SUPPORT_UUIDS.objectA,
+      SUPPORT_UUIDS.objectB,
+    );
+    assertMutationError(() => ParentConfigurationsCodec.planEnableObjectRules(
+      locked,
+      {
+        ...baseRequest,
+        expectedMetadataUniverseGenerationId: incompleteUniverse.metadataUniverseGenerationId,
+      },
+      incompleteUniverse,
+    ), 'SUPPORT_OBJECT_UNIVERSE_INCOMPLETE');
   });
 
   test('plans exact one-byte patches for every supplier source and changes no unrelated byte', () => {
@@ -404,4 +609,67 @@ function assertUnknown(
 function assertMutationError(operation: () => unknown, code: SupportMutationError['code']): void {
   assert.throws(operation, (error: unknown) =>
     error instanceof SupportMutationError && error.code === code);
+}
+
+function pathForSyntheticRoot(): string {
+  return 'C:/synthetic/support-root';
+}
+
+function metadataUniverse(
+  configRoot: string,
+  ...supportSubjectUuids: readonly string[]
+): MetadataUniverseSnapshot {
+  const metadataUniverseGenerationId = createHash('sha256')
+    .update(supportSubjectUuids.join('\0'), 'utf8')
+    .digest('hex');
+  return {
+    configRoot,
+    metadataUniverseGenerationId,
+    entries: supportSubjectUuids.map((supportSubjectUuid, index) => ({
+      relativeMetadataPath: `Catalogs/Object${index}.xml`,
+      objectUuid: supportSubjectUuid.toLowerCase(),
+      supportSubjectUuid: supportSubjectUuid.toLowerCase(),
+    })),
+  };
+}
+
+function syntheticUuid(prefix: number, index: number): string {
+  return `${prefix.toString(16).padStart(8, '0')}-0000-4000-8000-${index.toString(16).padStart(12, '0')}`;
+}
+
+function countArrayPredicateCallbacks<T>(operation: () => T): {
+  readonly result: T;
+  readonly callbackCount: number;
+} {
+  const someDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, 'some');
+  const filterDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, 'filter');
+  if (!someDescriptor?.value || !filterDescriptor?.value) {
+    throw new Error('Array predicate methods are unavailable.');
+  }
+  const originalSome = someDescriptor.value as (...args: unknown[]) => unknown;
+  const originalFilter = filterDescriptor.value as (...args: unknown[]) => unknown;
+  let callbackCount = 0;
+  const instrument = (original: (...args: unknown[]) => unknown) =>
+    function (this: unknown, predicate: (...args: unknown[]) => unknown, thisArg?: unknown): unknown {
+      const counted = (...args: unknown[]) => {
+        callbackCount += 1;
+        return Reflect.apply(predicate, thisArg, args);
+      };
+      return Reflect.apply(original, this, [counted]);
+    };
+
+  Object.defineProperty(Array.prototype, 'some', {
+    ...someDescriptor,
+    value: instrument(originalSome),
+  });
+  Object.defineProperty(Array.prototype, 'filter', {
+    ...filterDescriptor,
+    value: instrument(originalFilter),
+  });
+  try {
+    return { result: operation(), callbackCount };
+  } finally {
+    Object.defineProperty(Array.prototype, 'some', someDescriptor);
+    Object.defineProperty(Array.prototype, 'filter', filterDescriptor);
+  }
 }

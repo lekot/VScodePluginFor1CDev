@@ -8,7 +8,7 @@ import {
   supportVerifyInput,
 } from './schemas';
 import type { McpToolDefinition } from './types';
-import { READ_CLOSED, READ_OPEN, WRITE_OPEN } from './types';
+import { READ_CLOSED, VERIFY_OPEN, WRITE_OPEN } from './types';
 
 /** Strict 1:1 MCP mappings for the six public support Agent operations. */
 export const SUPPORT_TOOLS: readonly McpToolDefinition[] = [
@@ -50,7 +50,7 @@ export const SUPPORT_TOOLS: readonly McpToolDefinition[] = [
       'Verify support synchronization through read-only Configurator dumps of selected infobases.',
     command: AGENT_SUPPORT_COMMAND_IDS.verify,
     inputSchema: supportVerifyInput,
-    annotations: READ_OPEN,
+    annotations: VERIFY_OPEN,
   },
   {
     name: 'cdt_support_get_last_run',

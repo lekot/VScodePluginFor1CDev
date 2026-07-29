@@ -54,9 +54,6 @@ export class MetadataUniverseResolver {
     const keys = new Set<string>();
     const ownObjectPaths = new Map<string, string>();
     this.visit(tree, root, entries, keys, ownObjectPaths);
-    if (entries.length === 0) {
-      throw new Error('Metadata universe is incomplete: no concrete metadata nodes were resolved.');
-    }
 
     entries.sort(compareEntry);
     const canonical = entries

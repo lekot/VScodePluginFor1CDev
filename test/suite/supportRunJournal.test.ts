@@ -20,7 +20,12 @@ suite('SupportRunJournal', () => {
   });
 
   teardown(async () => {
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 20,
+    });
   });
 
   test('enforces legal transitions and survives terminal restart', async () => {
@@ -80,15 +85,54 @@ suite('SupportRunJournal', () => {
     const restarted = new SupportRunJournal(journalPath);
     const terminal = await restarted.getLastRun(configurationId());
     assert.ok(terminal);
-    assert.strictEqual(terminal!.state, 'cancelled');
-    assert.strictEqual(terminal!.targets[0]?.state, 'skipped');
-    if (terminal!.targets[0]?.state === 'skipped') {
-      assert.strictEqual(terminal!.targets[0].reason, 'cancelled');
+    assert.strictEqual(terminal!.state, 'failed');
+    assert.strictEqual(terminal!.targets[0]?.state, 'failed');
+    if (terminal!.targets[0]?.state === 'failed') {
+      assert.strictEqual(terminal!.targets[0].stage, 'prepare');
+      assert.strictEqual(terminal!.targets[0].errorCode, 'SUPPORT_RUN_INTERRUPTED');
+      assert.strictEqual(terminal!.targets[0].retryable, true);
     }
     assert.strictEqual(await restarted.getActiveRun(configurationId()), undefined);
 
     const secondRestart = new SupportRunJournal(journalPath);
-    assert.strictEqual((await secondRestart.getLastRun(configurationId()))?.state, 'cancelled');
+    assert.strictEqual((await secondRestart.getLastRun(configurationId()))?.state, 'failed');
+  });
+
+  test('applying permits only the proven no-effect masterAdvanced CAS abort', async () => {
+    const journal = new SupportRunJournal(journalPath);
+    await journal.begin(header(), [targetRef()]);
+    await journal.transition(configurationId(), 'run-1', {
+      ...targetRef(),
+      state: 'preparing',
+      startedAt: '2026-01-01T00:00:00.000Z',
+    });
+    await journal.transition(configurationId(), 'run-1', {
+      ...targetRef(),
+      state: 'applying',
+      startedAt: '2026-01-01T00:00:01.000Z',
+    });
+
+    await assert.rejects(
+      journal.transition(configurationId(), 'run-1', {
+        ...targetRef(),
+        state: 'stale',
+        reason: 'targetDrift',
+      }),
+      (error: unknown) =>
+        error instanceof SupportRunJournalError
+        && error.code === 'SUPPORT_JOURNAL_CONFLICT',
+    );
+    await journal.transition(configurationId(), 'run-1', {
+      ...targetRef(),
+      state: 'stale',
+      reason: 'masterAdvanced',
+    });
+
+    const active = await journal.getActiveRun(configurationId());
+    assert.strictEqual(active?.targets[0]?.state, 'stale');
+    if (active?.targets[0]?.state === 'stale') {
+      assert.strictEqual(active.targets[0].reason, 'masterAdvanced');
+    }
   });
 
   test('rename failure does not publish or mutate in-memory run state', async () => {
@@ -117,6 +161,25 @@ suite('SupportRunJournal', () => {
         && error.code === 'SUPPORT_JOURNAL_DURABILITY_BARRIER_FAILED',
     );
     assert.strictEqual((await journal.getActiveRun(configurationId()))?.runId, 'run-1');
+  });
+
+  test('serializes a cold-load reader with begin so the reader cannot overwrite the active run', async () => {
+    const memory = new ColdLoadRaceJournalFs('C:/journal/journal.json');
+    const journal = new SupportRunJournal('C:/journal/journal.json', {
+      fileSystem: memory,
+      createTemporaryId: () => 'tmp',
+    });
+
+    const reader = journal.getLastRun(configurationId());
+    await memory.firstReadStarted;
+    const begin = journal.begin(header(), [targetRef()]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    memory.releaseFirstRead();
+
+    assert.strictEqual(await reader, undefined);
+    await begin;
+    assert.strictEqual((await journal.getActiveRun(configurationId()))?.runId, 'run-1');
+    assert.strictEqual(memory.coldReadCalls, 1);
   });
 });
 
@@ -184,5 +247,36 @@ class MemoryJournalFs implements SupportRunJournalFileSystem {
     if (this.syncError) {
       throw this.syncError;
     }
+  }
+}
+
+class ColdLoadRaceJournalFs extends MemoryJournalFs {
+  readonly firstReadStarted: Promise<void>;
+  coldReadCalls = 0;
+  private publishFirstReadStarted: (() => void) | undefined;
+  private finishFirstRead: (() => void) | undefined;
+
+  constructor(private readonly journalPath: string) {
+    super();
+    this.firstReadStarted = new Promise<void>((resolve) => {
+      this.publishFirstReadStarted = resolve;
+    });
+  }
+
+  releaseFirstRead(): void {
+    this.finishFirstRead?.();
+  }
+
+  override async readFile(filePath: string): Promise<string> {
+    if (filePath === this.journalPath) {
+      this.coldReadCalls += 1;
+      if (this.coldReadCalls === 1) {
+        this.publishFirstReadStarted?.();
+        await new Promise<void>((resolve) => {
+          this.finishFirstRead = resolve;
+        });
+      }
+    }
+    return super.readFile(filePath);
   }
 }

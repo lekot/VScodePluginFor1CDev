@@ -331,7 +331,7 @@ export type SupportPrepareOutcome =
 
 export type SupportApplyOutcome =
   | { readonly status: 'acknowledged'; readonly acknowledgedGenerationId: string }
-  | { readonly status: 'stale'; readonly reason: 'targetDrift' }
+  | { readonly status: 'stale'; readonly reason: 'targetDrift' | 'masterAdvanced' }
   | {
       readonly status: 'failed';
       readonly errorCode: SupportOperationalErrorCode;
@@ -369,6 +369,7 @@ export interface SupportApplicator {
     snapshot: MasterSupportSnapshot,
     payload: PreparedTargetSupportPayload,
     cancellation: SupportCancellation,
+    beforeEffect: () => Promise<boolean>,
   ): Promise<SupportApplyOutcome>;
   verify(
     target: InfobaseEntry,
@@ -491,9 +492,30 @@ export interface SupportPreflightRejectedOutcome {
   readonly preflight: Extract<SupportPreflightResult, { readonly accepted: false }>;
 }
 
+interface SupportTargetSelectionRejectedBase {
+  readonly status: 'targetSelectionRejected';
+  readonly master: MasterSupportSnapshot;
+  readonly errorCode: 'SUPPORT_TARGET_SELECTION_REJECTED';
+  readonly requestedTargetIds: readonly string[];
+}
+
+export type SupportTargetSelectionRejectedOutcome =
+  | SupportTargetSelectionRejectedBase & {
+      readonly reason: 'empty' | 'noMatch';
+    }
+  | SupportTargetSelectionRejectedBase & {
+      readonly reason: 'duplicate';
+      readonly duplicateTargetIds: readonly string[];
+    }
+  | SupportTargetSelectionRejectedBase & {
+      readonly reason: 'unknown';
+      readonly unknownTargetIds: readonly string[];
+    };
+
 export type SupportSyncOutcome =
   | SupportMasterRejectedOutcome
   | SupportPreflightRejectedOutcome
+  | SupportTargetSelectionRejectedOutcome
   | {
       readonly status: 'completed';
       readonly master: MasterSupportSnapshot;
@@ -510,6 +532,7 @@ export type SupportSyncOutcome =
 export type SupportVerifyRunOutcome =
   | SupportMasterRejectedOutcome
   | SupportPreflightRejectedOutcome
+  | SupportTargetSelectionRejectedOutcome
   | {
       readonly status: 'completed';
       readonly master: MasterSupportSnapshot;
@@ -528,12 +551,23 @@ export interface SupportStatusRequest {
   readonly objectIds?: readonly string[];
 }
 
-export interface SupportStatusResult {
-  readonly status: 'available';
-  readonly master: MasterSupportState;
-  readonly metadataUniverse: MetadataUniverseSnapshot;
-  readonly lastRun?: SupportRunSummary;
+export interface SupportMasterStatusRequest {
+  readonly configurationId: ConfigurationId;
 }
+
+export type SupportStatusResult =
+  | {
+      readonly status: 'available';
+      readonly master: Extract<MasterSupportState, { readonly kind: 'ready' }>;
+      readonly metadataUniverse: MetadataUniverseSnapshot;
+      readonly lastRun?: SupportRunSummary;
+    }
+  | {
+      readonly status: 'available';
+      readonly master: Exclude<MasterSupportState, { readonly kind: 'ready' }>;
+      readonly metadataUniverse?: never;
+      readonly lastRun?: SupportRunSummary;
+    };
 
 export interface SupportSyncOperationRequest {
   readonly configurationId: ConfigurationId;
@@ -557,6 +591,13 @@ export interface SupportOperationRejectedOutcome {
 }
 
 export type SupportStatusOutcome = SupportStatusResult | SupportOperationRejectedOutcome;
+
+export type SupportMasterStatusOutcome =
+  | {
+      readonly status: 'available';
+      readonly master: MasterSupportState;
+    }
+  | SupportOperationRejectedOutcome;
 
 export type SupportGetLastRunOutcome =
   | {
@@ -623,6 +664,7 @@ export type SupportModeMutationOutcome =
 export type SupportSyncOperationOutcome =
   | SupportMasterRejectedOutcome
   | SupportPreflightRejectedOutcome
+  | SupportTargetSelectionRejectedOutcome
   | SupportOperationRejectedOutcome
   | {
       readonly status: 'synchronized';
@@ -642,6 +684,7 @@ export type SupportSyncOperationOutcome =
 export type SupportVerifyOperationOutcome =
   | SupportMasterRejectedOutcome
   | SupportPreflightRejectedOutcome
+  | SupportTargetSelectionRejectedOutcome
   | SupportOperationRejectedOutcome
   | {
       readonly status: 'synchronized';

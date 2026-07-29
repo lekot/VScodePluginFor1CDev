@@ -1121,8 +1121,16 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
         calls[1]!.relativeFiles.some((f) => f.toLowerCase().startsWith('commonmodules/bar')),
         'second call must still have Bar',
       );
-      assert.strictEqual(summary.successCount, 1);
-      assert.ok(vscodeTestState.outputChannelLines.some((l) => l.includes('[support-mode]') && l.includes('Отфильтровано')));
+      assert.strictEqual(summary.successCount, 0);
+      assert.strictEqual(summary.skippedCount, 1);
+      assert.strictEqual(summary.hasPartial, true);
+      assert.deepStrictEqual(summary.results[0]?.skippedFiles, ['CommonModules/Foo.xml']);
+      assert.ok(vscodeTestState.outputChannelLines.some((line) =>
+        line.includes('[support-mode:fallback]')
+        && line.includes('CommonModule.Foo')
+        && line.includes('Отфильтровано файлов: 1')
+        && line.includes('оставлено: 1')
+      ));
       assert.strictEqual(vscodeTestState.warningMessageReturnQueue.length, 0, 'no blocking dialog must be awaited');
     } finally {
       rmDirQuiet(work);
@@ -1153,7 +1161,9 @@ suite('deploySelectedObjects: supportMode locked retry', () => {
         token: { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: () => undefined }) },
       });
 
-      assert.strictEqual(summary.successCount, 1, 'deploy must complete without any queued warningMessage reply');
+      assert.strictEqual(summary.successCount, 0);
+      assert.strictEqual(summary.skippedCount, 1, 'partial deploy must be explicit without blocking for user input');
+      assert.strictEqual(summary.hasPartial, true);
     } finally {
       rmDirQuiet(work);
     }

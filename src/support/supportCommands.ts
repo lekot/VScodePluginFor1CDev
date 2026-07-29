@@ -3,6 +3,7 @@ import type { ConfigurationId } from '../services/configurationSession/types';
 import type { SupportApplicationFacade } from './supportApplicationServiceRegistry';
 import type {
   MasterSupportSnapshot,
+  MetadataUniverseSnapshot,
   ObjectSupportMode,
   SupportModeMutationOutcome,
   SupportRunSummary,
@@ -13,6 +14,14 @@ import type {
   TargetSupportSyncResult,
   TargetSupportVerifyResult,
 } from './supportTypes';
+
+type ReadySupportStatusResult = SupportStatusResult & {
+  readonly master: {
+    readonly kind: 'ready';
+    readonly snapshot: MasterSupportSnapshot;
+  };
+  readonly metadataUniverse: MetadataUniverseSnapshot;
+};
 
 export const SUPPORT_COMMAND_IDS = Object.freeze({
   setObjectMode: '1c-metadata-tree.support.setObjectMode',
@@ -319,7 +328,7 @@ function requireConfigurationContext(
 async function requireFreshReadyStatus(
   deps: RegisterSupportCommandsDeps,
   configurationId: ConfigurationId,
-): Promise<SupportStatusResult | undefined> {
+): Promise<ReadySupportStatusResult | undefined> {
   const status = await deps.facade.getStatus({ configurationId });
   if (status.status === 'operationRejected') {
     await showErrorCode(status.errorCode);
@@ -329,14 +338,18 @@ async function requireFreshReadyStatus(
     await showErrorCode(masterErrorCode(status.master));
     return undefined;
   }
-  return status;
+  if (status.metadataUniverse === undefined) {
+    await showErrorCode('SUPPORT_OPERATION_FAILED');
+    return undefined;
+  }
+  return status as ReadySupportStatusResult;
 }
 
 async function getFreshObjectStatus(
   deps: RegisterSupportCommandsDeps,
   context: Extract<SupportCommandContext, { readonly kind: 'object' }>,
 ): Promise<{
-  readonly status: SupportStatusResult;
+  readonly status: ReadySupportStatusResult;
   readonly snapshot: MasterSupportSnapshot;
   readonly objectMode: ObjectSupportMode;
 } | undefined> {
@@ -352,13 +365,17 @@ async function getFreshObjectStatus(
     await showErrorCode(masterErrorCode(status.master));
     return undefined;
   }
+  if (status.metadataUniverse === undefined) {
+    await showErrorCode('SUPPORT_OPERATION_FAILED');
+    return undefined;
+  }
   const object = status.master.snapshot.objectModes.get(context.objectId);
   if (!object) {
     await showErrorCode('SUPPORT_OBJECT_NOT_FOUND');
     return undefined;
   }
   return {
-    status,
+    status: status as ReadySupportStatusResult,
     snapshot: status.master.snapshot,
     objectMode: object.effectiveMode,
   };
@@ -467,6 +484,9 @@ async function reportSyncOutcome(outcome: SupportSyncOperationOutcome): Promise<
     case 'preflightRejected':
       await showPreflightError(outcome.preflight);
       return;
+    case 'targetSelectionRejected':
+      await showErrorCode(outcome.errorCode);
+      return;
     case 'operationRejected':
       await showErrorCode(outcome.errorCode);
       return;
@@ -493,6 +513,9 @@ async function reportVerifyOutcome(outcome: SupportVerifyOperationOutcome): Prom
       return;
     case 'preflightRejected':
       await showPreflightError(outcome.preflight);
+      return;
+    case 'targetSelectionRejected':
+      await showErrorCode(outcome.errorCode);
       return;
     case 'operationRejected':
       await showErrorCode(outcome.errorCode);

@@ -6,6 +6,8 @@ import type {
   EnableObjectRulesRequest,
   SupportGetLastRunOutcome,
   SupportGetLastRunRequest,
+  SupportMasterStatusOutcome,
+  SupportMasterStatusRequest,
   SupportModeMutationOutcome,
   SupportMutationRequest,
   SupportOperationRejectedOutcome,
@@ -24,9 +26,10 @@ export interface SupportConfigurationRegistration {
   readonly configRelativePath: string;
 }
 
-/** The only support surface exposed to UI and Agent/MCP adapters. */
+/** The support surface exposed to UI, deploy, and Agent/MCP adapters. */
 export interface SupportApplicationFacade {
   getStatus(request: SupportStatusRequest): Promise<SupportStatusOutcome>;
+  getMasterStatus(request: SupportMasterStatusRequest): Promise<SupportMasterStatusOutcome>;
   setObjectMode(request: SupportMutationRequest): Promise<SupportModeMutationOutcome>;
   enableObjectRules(request: EnableObjectRulesRequest): Promise<SupportModeMutationOutcome>;
   sync(request: SupportSyncOperationRequest): Promise<SupportSyncOperationOutcome>;
@@ -45,7 +48,7 @@ interface RegisteredConfiguration {
 
 /**
  * Extension-scoped multi-root router. Registration is cheap; the complete per-configuration
- * application service graph is created only when one of the six facade operations is called.
+ * application service graph is created only when a facade operation is called.
  */
 export class SupportApplicationServiceRegistry {
   private readonly byConfigurationId = new Map<ConfigurationId, RegisteredConfiguration>();
@@ -56,6 +59,7 @@ export class SupportApplicationServiceRegistry {
   constructor(private readonly createService: SupportApplicationServiceFactory) {
     this.facade = Object.freeze({
       getStatus: (request: SupportStatusRequest) => this.getStatus(request),
+      getMasterStatus: (request: SupportMasterStatusRequest) => this.getMasterStatus(request),
       setObjectMode: (request: SupportMutationRequest) => this.setObjectMode(request),
       enableObjectRules: (request: EnableObjectRulesRequest) => this.enableObjectRules(request),
       sync: (request: SupportSyncOperationRequest) => this.sync(request),
@@ -125,6 +129,11 @@ export class SupportApplicationServiceRegistry {
   async getStatus(request: SupportStatusRequest): Promise<SupportStatusOutcome> {
     const service = this.get(request.configurationId);
     return service ? service.getStatus(request) : operationRejected();
+  }
+
+  async getMasterStatus(request: SupportMasterStatusRequest): Promise<SupportMasterStatusOutcome> {
+    const service = this.get(request.configurationId);
+    return service ? service.getMasterStatus(request) : operationRejected();
   }
 
   async setObjectMode(request: SupportMutationRequest): Promise<SupportModeMutationOutcome> {

@@ -67,11 +67,7 @@ suite('extension manifest contracts', () => {
 
   test('contributes every registered public Agent API command', () => {
     const root = repositoryRoot();
-    const source = fs.readFileSync(path.join(root, 'src', 'agent', 'agentCommands.ts'), 'utf8');
-    const registered = new Set(
-      [...source.matchAll(/['"](1c-metadata-tree\.agent\.[A-Za-z0-9_.-]+)['"]/g)]
-        .map((match) => match[1]),
-    );
+    const registered = registeredAgentCommandIds(root);
     const contributed = new Set<string>(
       readPackageJson().contributes.commands
         .map((entry: { command: string }) => entry.command)
@@ -79,6 +75,7 @@ suite('extension manifest contracts', () => {
     );
 
     assert.strictEqual(registered.size, 69, 'Update the documented Agent API count intentionally.');
+    assert.strictEqual(contributed.size, 69, 'Manifest must contribute exactly the documented Agent API.');
     assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
   });
 
@@ -130,4 +127,16 @@ function readPackageJson(): any {
 
 function repositoryRoot(): string {
   return path.resolve(__dirname, '../../..');
+}
+
+function registeredAgentCommandIds(root: string): Set<string> {
+  const registrySources = [
+    path.join(root, 'src', 'agent', 'agentCommands.ts'),
+    path.join(root, 'src', 'agent', 'agentSupportOperations.ts'),
+  ];
+  return new Set(registrySources.flatMap((sourcePath) => {
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    return [...source.matchAll(/['"](1c-metadata-tree\.agent\.[A-Za-z0-9_.-]+)['"]/g)]
+      .map((match) => match[1]);
+  }));
 }

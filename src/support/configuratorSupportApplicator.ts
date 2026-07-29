@@ -139,7 +139,6 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
       if (resolution.status === 'failed') {
         return failedPrepare(resolution.errorCode, false, resolution.diagnostics);
       }
-      const desiredMasterBytes = await this.readDesiredMaster(snapshot);
       const cached = await this.cache.load(resolution.target.key, resolution.target.stamp);
       if (cached) {
         if (cached.acknowledgedGenerationId === snapshot.generationId) {
@@ -149,11 +148,13 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
             evidence: 'cachedConfiguratorAck',
           };
         }
+        const desiredMasterBytes = await this.readDesiredMaster(snapshot);
         return {
           status: 'prepared',
           payload: attachDesiredSnapshot(cached, snapshot.generationId, desiredMasterBytes),
         };
       }
+      const desiredMasterBytes = await this.readDesiredMaster(snapshot);
       return await this.prepareCold(target, snapshot, resolution.target, desiredMasterBytes, cancellation);
     } catch (error) {
       return failedPrepare('SUPPORT_PREPARE_FAILED', true, [safeErrorMessage(error)]);
@@ -165,6 +166,7 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
     snapshot: MasterSupportSnapshot,
     payload: PreparedTargetSupportPayload,
     cancellation: SupportCancellation,
+    beforeEffect: () => Promise<boolean>,
   ): Promise<SupportApplyOutcome> {
     let temporaryPath: string | undefined;
     try {
@@ -223,6 +225,9 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
         outputFilePath,
         ...(credentials ? { credentials } : {}),
       });
+      if (!await beforeEffect()) {
+        return { status: 'stale', reason: 'masterAdvanced' };
+      }
       const processOutcome = await this.runProcess({
         executablePath: resolution.target.executablePath,
         batchArguments,
@@ -242,8 +247,8 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
         );
       }
 
-      const actualStamp = await this.databaseStamp(resolution.target.identity.databaseFilePath);
       try {
+        const actualStamp = await this.databaseStamp(resolution.target.identity.databaseFilePath);
         const acknowledged = await this.cache.acknowledge(
           resolution.target.key,
           payload.databaseStamp,

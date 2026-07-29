@@ -205,11 +205,6 @@ export async function runDeployForConfigurationFromTree(
   }
 
   const preview = listDeployTargetLabels(binding, catalog);
-  const ibcmd = getIbcmdService();
-  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
-    await showIbcmdNotFoundDialog();
-    return;
-  }
 
   const lines = preview.length > 0 ? `\n\n${preview.join('\n')}` : '';
   const deployMode = readDeployMode();

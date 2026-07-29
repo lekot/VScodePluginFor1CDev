@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import * as path from 'path';
 import type { BindingManager } from '../bindings/bindingManager';
 import type { InfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
@@ -37,6 +38,7 @@ import {
 } from './supportTypes';
 
 const JOURNAL_FILE = 'support-run-journal-v1.json';
+const RECOVERY_STORAGE_DIRECTORY = 'support-master-recovery-v1';
 const OPERATIONAL_CODES: ReadonlySet<string> = new Set(SUPPORT_OPERATIONAL_ERROR_CODES);
 
 export interface SupportServiceCompositionDeps {
@@ -131,6 +133,7 @@ export function createSupportServiceComposition(
   };
   const facade: SupportApplicationFacade = {
     getStatus: (request) => track(() => registry.facade.getStatus(request), rejected()),
+    getMasterStatus: (request) => track(() => registry.facade.getMasterStatus(request), rejected()),
     setObjectMode: (request) => track(() => registry.facade.setObjectMode(request), rejected()),
     enableObjectRules: (request) => track(() => registry.facade.enableObjectRules(request), rejected()),
     sync: (request) => track(() => registry.facade.sync(request), rejected()),
@@ -171,6 +174,7 @@ function createConfigurationService(
 ): SupportApplicationService {
   const universeResolver = new MetadataUniverseResolver();
   const store = new ParentConfigurationsStore(registration.configurationId, {
+    recoveryRoot: supportRecoveryRoot(deps.globalStorageRoot, registration),
     universeResolver,
     runExclusive: deps.runExclusiveConfigurationOperation,
   });
@@ -212,6 +216,26 @@ function createConfigurationService(
     journal,
     cancellation,
   });
+}
+
+function supportRecoveryRoot(
+  globalStorageRoot: string,
+  registration: SupportConfigurationRegistration,
+): string {
+  const resolvedRoot = path.resolve(registration.configRoot);
+  const normalizedRoot = process.platform === 'win32'
+    ? resolvedRoot.toLocaleLowerCase()
+    : resolvedRoot;
+  const isolationKey = createHash('sha256')
+    .update(registration.configurationId, 'utf8')
+    .update('\0', 'utf8')
+    .update(normalizedRoot, 'utf8')
+    .digest('hex');
+  return path.join(
+    path.resolve(globalStorageRoot),
+    RECOVERY_STORAGE_DIRECTORY,
+    isolationKey,
+  );
 }
 
 async function resolveBindingPreflight(

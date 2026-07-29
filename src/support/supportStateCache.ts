@@ -3,6 +3,7 @@ import type { ConfigurationId } from '../services/configurationSession/types';
 import type {
   MasterSupportState,
   MetadataUniverseEntry,
+  MetadataUniverseSnapshot,
   SupportStatusRequest,
   SupportStatusResult,
 } from './supportTypes';
@@ -12,14 +13,25 @@ export interface SupportStatusFacade {
   getStatus(request: SupportStatusRequest): Promise<SupportStatusResult>;
 }
 
-export interface CachedSupportStatus extends SupportStatusResult {
+interface CachedSupportStatusBase {
   readonly configRoot: string;
   readonly configurationId: ConfigurationId;
   /** Present only when the master file supplied an immutable content generation. */
   readonly generationId?: string;
-  /** Immutable O(1) membership index for exact universe identities used by tree decoration. */
-  readonly metadataUniverseIdentityIndex: MetadataUniverseIdentityIndex;
 }
+
+export type CachedSupportStatus =
+  | Extract<SupportStatusResult, { readonly metadataUniverse: MetadataUniverseSnapshot }>
+    & CachedSupportStatusBase
+    & {
+  /** Immutable O(1) membership index for exact universe identities used by tree decoration. */
+      readonly metadataUniverseIdentityIndex: MetadataUniverseIdentityIndex;
+    }
+  | Exclude<SupportStatusResult, { readonly metadataUniverse: MetadataUniverseSnapshot }>
+    & CachedSupportStatusBase
+    & {
+      readonly metadataUniverseIdentityIndex?: never;
+    };
 
 export interface MetadataUniverseIdentityIndex {
   has(entry: MetadataUniverseEntry): boolean;
@@ -174,17 +186,28 @@ function freezeCachedStatus(
   status: SupportStatusResult,
 ): CachedSupportStatus {
   const generationId = masterGenerationId(status.master);
-  return Object.freeze({
-    status: 'available',
+  const common = {
+    status: 'available' as const,
     configRoot: registration.configRoot,
     configurationId: registration.configurationId,
     master: status.master,
-    metadataUniverse: status.metadataUniverse,
-    metadataUniverseIdentityIndex: createMetadataUniverseIdentityIndex(
-      status.metadataUniverse.entries
-    ),
     ...(status.lastRun === undefined ? {} : { lastRun: status.lastRun }),
     ...(generationId === undefined ? {} : { generationId }),
+  };
+  if (status.master.kind !== 'ready') {
+    return Object.freeze(common) as CachedSupportStatus;
+  }
+  const metadataUniverse = status.metadataUniverse;
+  if (metadataUniverse === undefined) {
+    throw new Error('Ready support status must include the metadata universe.');
+  }
+  return Object.freeze({
+    ...common,
+    master: status.master,
+    metadataUniverse,
+    metadataUniverseIdentityIndex: createMetadataUniverseIdentityIndex(
+      metadataUniverse.entries
+    ),
   });
 }
 

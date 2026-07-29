@@ -152,7 +152,7 @@ export function formatConfiguratorDiagnosticCommand(
   executablePath: string,
   args: ConfiguratorBatchArguments
 ): string {
-  return [executablePath, ...args.diagnosticArgs].map(quoteDiagnosticToken).join(' ');
+  return [executablePath, ...args.diagnosticArgs].map((token) => JSON.stringify(token)).join(' ');
 }
 
 function buildCommonArgs(options: ConfiguratorBatchBaseOptions): {
@@ -224,11 +224,4 @@ function resolveForPlatform(value: string, platform: NodeJS.Platform): string {
   return platform === 'win32'
     ? path.win32.resolve(value).replace(/\//g, '\\')
     : path.posix.resolve(value);
-}
-
-function quoteDiagnosticToken(value: string): string {
-  if (!/[\s"]/u.test(value)) {
-    return value;
-  }
-  return `"${value.replace(/"/g, '\\"')}"`;
 }

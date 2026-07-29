@@ -27,6 +27,7 @@ import { checkRecentDeploy, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
 import {
   DeployLockedObjectsPlanner,
+  type DeploySupportPlannerRequest,
   type DeploySupportPreflight,
   type DeploySupportPreflightErrorCode,
   filterOutLockedObjectFiles,
@@ -35,7 +36,7 @@ import { MESSAGES } from '../constants/messages';
 import type { TreeNode } from '../models/treeNode';
 import type { ConfigurationId } from '../services/configurationSession/types';
 import type { SupportApplicationFacade } from '../support/supportApplicationServiceRegistry';
-import type { SupportStatusResult } from '../support/supportTypes';
+import type { MasterSupportState, SupportStatusResult } from '../support/supportTypes';
 import {
   assertExistingPathWithinRootSync,
   PathBoundaryError,
@@ -77,12 +78,13 @@ export type DeploySupportErrorCode =
   | 'SUPPORT_FILE_MISSING'
   | 'SUPPORT_NOT_MANAGED'
   | 'SUPPORT_REPLICATION_FAILED'
-  | 'SUPPORT_REPLICATION_INCOMPLETE';
+  | 'SUPPORT_REPLICATION_INCOMPLETE'
+  | 'SUPPORT_TARGET_SELECTION_REJECTED';
 
 /** Exact support facade/identity pair supplied by UI and Agent composition roots. */
 export interface DeploySupportContext {
   readonly configurationId: ConfigurationId;
-  readonly facade: Pick<SupportApplicationFacade, 'getStatus' | 'sync'>;
+  readonly facade: Pick<SupportApplicationFacade, 'getStatus' | 'getMasterStatus' | 'sync'>;
 }
 
 export type DeployMode = 'copy' | 'block';
@@ -454,8 +456,8 @@ export class DeployService {
       return s;
     }
 
-    const supportPreflight = await planDeploySupport(params.support, []);
-    if (supportPreflight?.kind === 'unknown') {
+    const supportPreflight = await planDeploySupport(params.support, 'full', []);
+    if (isDeploySupportRejected(supportPreflight)) {
       return rejectDeployBeforeIbcmd(supportPreflight);
     }
 
@@ -724,8 +726,8 @@ export class DeployService {
     // BSL expansion: for .bsl files add descriptor XML + all sibling files in object dir.
     const withSiblings = expandBslSiblings(relativeFiles, configRoot);
     appendIbcmdOutputLine(`[bsl-expansion] было ${relativeFiles.length} файлов, стало ${withSiblings.length}`);
-    const supportPreflight = await planDeploySupport(params.support, withSiblings);
-    if (supportPreflight?.kind === 'unknown') {
+    const supportPreflight = await planDeploySupport(params.support, 'files', withSiblings);
+    if (isDeploySupportRejected(supportPreflight)) {
       return rejectDeployBeforeIbcmd(supportPreflight);
     }
     const deployFiles = supportPreflight?.relativeFiles ?? withSiblings;
@@ -1006,8 +1008,8 @@ export class DeployService {
       return s;
     }
     const configRoot = resolved.sourceDir;
-    const supportPreflight = await planDeploySupport(params.support, params.relativeFiles);
-    if (supportPreflight?.kind === 'unknown') {
+    const supportPreflight = await planDeploySupport(params.support, 'files', params.relativeFiles);
+    if (isDeploySupportRejected(supportPreflight)) {
       return rejectDeployBeforeIbcmd(supportPreflight);
     }
     const deployFiles = supportPreflight?.relativeFiles ?? params.relativeFiles;
@@ -1269,6 +1271,7 @@ type TargetSupportGate =
 
 async function planDeploySupport(
   support: DeploySupportContext | undefined,
+  mode: DeploySupportPlannerRequest['mode'],
   relativeFiles: readonly string[],
 ): Promise<DeploySupportPreflight | undefined> {
   if (!support) {
@@ -1276,6 +1279,7 @@ async function planDeploySupport(
   }
   return new DeployLockedObjectsPlanner(support.facade).plan({
     configurationId: support.configurationId,
+    mode,
     relativeFiles,
   });
 }
@@ -1289,17 +1293,17 @@ async function gateConfigurationXmlRetry(
   if (!support) {
     return { accepted: true };
   }
-  const freshPreflight = await planDeploySupport(support, retryFiles);
+  const freshPreflight = await planDeploySupport(support, 'files', retryFiles);
   if (!freshPreflight) {
     return supportGateFailure(
       'SUPPORT_OPERATION_FAILED',
       'Не удалось сформировать свежий support-план для повтора с Configuration.xml.',
     );
   }
-  if (freshPreflight.kind === 'unknown') {
+  if (isDeploySupportRejected(freshPreflight)) {
     return supportGateFailure(
       freshPreflight.errorCode,
-      `Повтор с Configuration.xml запрещён: support replan завершился неопределённо. ${freshPreflight.diagnostics.join(' ')}`,
+      `Повтор с Configuration.xml запрещён: support replan отклонён. ${freshPreflight.diagnostics.join(' ')}`,
     );
   }
   if (
@@ -1343,40 +1347,46 @@ async function synchronizePendingSupportForTarget(
   if (!support) {
     return { accepted: true };
   }
+  if (!expectedPreflight || isDeploySupportRejected(expectedPreflight)) {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      'Раскатка запрещена: отсутствует согласованный immutable support-план.',
+    );
+  }
 
-  let status;
+  let masterStatus;
   try {
-    status = await support.facade.getStatus({
+    masterStatus = await support.facade.getMasterStatus({
       configurationId: support.configurationId,
     });
   } catch {
     return supportGateFailure(
       'SUPPORT_OPERATION_FAILED',
-      'Не удалось получить состояние поддержки перед раскаткой.',
+      'Не удалось получить master-состояние поддержки перед раскаткой.',
     );
   }
-  if (status.status !== 'available') {
+  if (masterStatus.status !== 'available') {
     return supportGateFailure(
       'SUPPORT_OPERATION_FAILED',
-      `Состояние поддержки недоступно: ${status.errorCode}.`,
+      `Master-состояние поддержки недоступно: ${masterStatus.errorCode}.`,
     );
   }
-  if (!samePlannedMaster(expectedPreflight, status)) {
+  if (!samePlannedMaster(expectedPreflight, masterStatus.master)) {
     return supportGateFailure(
       'SUPPORT_OPERATION_FAILED',
       'Состояние master поддержки изменилось после deploy preflight; сформируйте план раскатки повторно.',
     );
   }
-  if (status.master.kind === 'unknown') {
+  if (masterStatus.master.kind === 'unknown') {
     return supportGateFailure(
-      status.master.errorCode,
-      `Раскатка запрещена: состояние ParentConfigurations.bin неизвестно (${status.master.errorCode}).`,
+      masterStatus.master.errorCode,
+      `Раскатка запрещена: состояние ParentConfigurations.bin неизвестно (${masterStatus.master.errorCode}).`,
     );
   }
-  if (status.master.kind === 'unmanaged') {
+  if (masterStatus.master.kind === 'unmanaged') {
     return { accepted: true };
   }
-  const plannedGenerationId = status.master.snapshot.generationId;
+  const plannedGenerationId = masterStatus.master.snapshot.generationId;
 
   let identity;
   try {
@@ -1387,7 +1397,7 @@ async function synchronizePendingSupportForTarget(
       'Не удалось вычислить canonical identity целевой ИБ для support/deploy lease.',
     );
   }
-  if (!forceSync && !isTargetSupportPending(status, identity.canonicalTargetId)) {
+  if (!forceSync && !isTargetSupportPending(expectedPreflight.status, identity.canonicalTargetId)) {
     return { accepted: true };
   }
 
@@ -1454,20 +1464,19 @@ function supportSyncErrorCode(
 }
 
 function samePlannedMaster(
-  expected: DeploySupportPreflight | undefined,
-  actual: SupportStatusResult,
+  expected: Exclude<DeploySupportPreflight, RejectedDeploySupportPreflight>,
+  actual: MasterSupportState,
 ): boolean {
-  if (!expected) {
-    return true;
-  }
-  if (expected.kind === 'unknown') {
-    return false;
-  }
   if (expected.kind === 'unmanaged') {
-    return actual.master.kind === 'unmanaged' && actual.master.reason === expected.reason;
+    return actual.kind === 'unmanaged'
+      && actual.reason === expected.reason
+      && expected.status.master.kind === 'unmanaged'
+      && expected.status.master.reason === expected.reason;
   }
-  return actual.master.kind === 'ready'
-    && actual.master.snapshot.generationId === expected.generationId;
+  return actual.kind === 'ready'
+    && actual.snapshot.generationId === expected.generationId
+    && expected.status.master.kind === 'ready'
+    && expected.status.master.snapshot.generationId === expected.generationId;
 }
 
 function isTargetSupportPending(
@@ -1529,8 +1538,19 @@ function targetSupportGateFailure(
   };
 }
 
+type RejectedDeploySupportPreflight = Extract<
+  DeploySupportPreflight,
+  { readonly kind: 'unknown' | 'fullDeployUnsafe' }
+>;
+
+function isDeploySupportRejected(
+  preflight: DeploySupportPreflight | undefined,
+): preflight is RejectedDeploySupportPreflight {
+  return preflight?.kind === 'unknown' || preflight?.kind === 'fullDeployUnsafe';
+}
+
 function rejectDeployBeforeIbcmd(
-  preflight: Extract<DeploySupportPreflight, { readonly kind: 'unknown' }>,
+  preflight: RejectedDeploySupportPreflight,
 ): DeployRunSummary {
   const message = `Раскатка отклонена до запуска ibcmd: ${preflight.errorCode}. ${preflight.diagnostics.join(' ')}`;
   const summary = summarizeDeployRun(
@@ -1549,7 +1569,7 @@ function rejectDeployBeforeIbcmd(
 }
 
 function appendSupportFilePlan(preflight: DeploySupportPreflight | undefined): void {
-  if (!preflight || preflight.kind === 'unknown') {
+  if (!preflight || isDeploySupportRejected(preflight)) {
     return;
   }
   if (preflight.supportFileRouted) {
@@ -1565,7 +1585,7 @@ function appendSupportFilePlan(preflight: DeploySupportPreflight | undefined): v
 }
 
 function supportSkipMessage(preflight: DeploySupportPreflight | undefined): string {
-  if (!preflight || preflight.kind === 'unknown') {
+  if (!preflight || isDeploySupportRejected(preflight)) {
     return 'Файлы для раскатки отсутствуют.';
   }
   const parts: string[] = [];

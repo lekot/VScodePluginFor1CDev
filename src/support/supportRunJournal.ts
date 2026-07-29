@@ -204,24 +204,24 @@ export class SupportRunJournal {
   }
 
   async getLastRun(configurationId: ConfigurationId): Promise<SupportRunSummary | undefined> {
-    this.assertUsable();
-    await this.tail;
-    this.assertUsable();
-    await this.ensureLoaded();
-    const record = this.runs.get(configurationId);
-    return record?.kind === 'terminal' ? copySummary(record.summary) : undefined;
+    return this.enqueue(async () => {
+      const record = this.runs.get(configurationId);
+      return record?.kind === 'terminal' ? copySummary(record.summary) : undefined;
+    });
   }
 
   async getActiveRun(configurationId: ConfigurationId): Promise<ActiveSupportRun | undefined> {
-    this.assertUsable();
-    await this.tail;
-    this.assertUsable();
-    await this.ensureLoaded();
-    const record = this.runs.get(configurationId);
-    return record?.kind === 'active' ? copyActiveRun(record) : undefined;
+    return this.enqueue(async () => {
+      const record = this.runs.get(configurationId);
+      return record?.kind === 'active' ? copyActiveRun(record) : undefined;
+    });
   }
 
   private async mutate(operation: () => Promise<void>): Promise<void> {
+    await this.enqueue(operation);
+  }
+
+  private async enqueue<T>(operation: () => Promise<T>): Promise<T> {
     this.assertUsable();
     let release: (() => void) | undefined;
     const next = new Promise<void>((resolve) => { release = resolve; });
@@ -231,7 +231,7 @@ export class SupportRunJournal {
     try {
       this.assertUsable();
       await this.ensureLoaded();
-      await operation();
+      return await operation();
     } finally {
       release?.();
     }
@@ -827,7 +827,7 @@ function assertLegalTransition(
       legal = after.state === 'applied'
         || (after.state === 'failed' && after.stage === 'apply')
         || (after.state === 'inDoubt' && after.stage === 'apply')
-        || (after.state === 'stale' && after.reason === 'targetDrift')
+        || (after.state === 'stale' && after.reason === 'masterAdvanced')
         || obsoleteSkip;
       break;
     case 'applied':

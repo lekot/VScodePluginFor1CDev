@@ -120,4 +120,3 @@ export async function runCompositeInfobaseConfigurationOperation<T>(
   const identities = await Promise.all(entries.map(resolveInfobaseCanonicalIdentity));
   return sharedInfobaseConfigurationOperationQueue.runComposite(identities, operation);
 }
-

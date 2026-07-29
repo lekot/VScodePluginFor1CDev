@@ -26,15 +26,25 @@ const supportUuid = z.string().regex(
   'must be a UUID',
 );
 const supportGenerationId = trimmedNonEmptyString;
+const uniqueSupportRetryStates = z.array(
+  z.enum(['failed', 'inDoubt', 'targetDrift']),
+).min(1).refine(
+  (values) => new Set(values).size === values.length,
+  { message: 'must contain unique retry states' },
+);
+const uniqueSupportTargetIds = z.array(trimmedNonEmptyString).min(1).refine(
+  (values) => new Set(values).size === values.length,
+  { message: 'must contain unique target IDs' },
+);
 const supportTargetSelection = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('all') }),
   z.strictObject({
     kind: z.literal('retryable'),
-    include: z.array(z.enum(['failed', 'inDoubt', 'targetDrift'])),
+    include: uniqueSupportRetryStates,
   }),
   z.strictObject({
     kind: z.literal('ids'),
-    targetIds: z.array(trimmedNonEmptyString),
+    targetIds: uniqueSupportTargetIds,
   }),
 ]);
 

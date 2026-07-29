@@ -75,12 +75,21 @@
 | `cdt_support_set_object_mode` | `1c-metadata-tree.agent.supportSetObjectMode` | F/T/F/T |
 | `cdt_support_enable_object_rules` | `1c-metadata-tree.agent.supportEnableObjectRules` | F/T/F/T |
 | `cdt_support_sync` | `1c-metadata-tree.agent.supportSync` | F/T/F/T |
-| `cdt_support_verify` | `1c-metadata-tree.agent.supportVerify` | T/F/T/T |
+| `cdt_support_verify` | `1c-metadata-tree.agent.supportVerify` | F/F/F/T |
 | `cdt_support_get_last_run` | `1c-metadata-tree.agent.supportGetLastRun` | T/F/T/F |
 
-`getStatus` и `getLastRun` читают только локальные master/journal. `verify` не пишет данные, но
-запускает внешний Configurator dump, поэтому имеет `openWorldHint=true`. Три пишущие операции могут
-изменить `ParentConfigurations.bin` и/или связанные информационные базы.
+`getStatus` и `getLastRun` читают только локальные master/journal. `verify` не меняет master или
+информационные базы, но запускает внешний Configurator dump и записывает новый durable audit run:
+поэтому его annotations — non-readonly, non-destructive, non-idempotent и open-world. Три
+destructive операции могут изменить `ParentConfigurations.bin` и/или связанные информационные базы.
+
+`SupportStatusResult` является discriminated contract: при `master.kind: "ready"`
+`metadataUniverse` обязателен, при `unmanaged | unknown` это поле отсутствует; `lastRun` optional в
+обоих случаях. `TargetSelection.ids.targetIds` — непустой массив уникальных canonical IDs и точное
+подмножество replicated targets. Empty/duplicate/unknown/no-match selection не расширяется до
+`all`, а возвращает typed `targetSelectionRejected` / `SUPPORT_TARGET_SELECTION_REJECTED`.
+Retryable selection учитывает только текущую master generation, исключает permanent failures и
+для `inDoubt` требует reconcile вместо blind apply.
 
 ### Типы, командный интерфейс и характеристики
 
@@ -152,7 +161,8 @@
 - forms start требует хотя бы одно из `url`/`dbPath`; оба поля одновременно разрешены, и существующий Agent runtime отдаёт приоритет `dbPath`;
 - `debuggeeType` — только `thinClient | webServer`; SKD `mode`, `operation`, XDTO `joinStrategy` и command visibility задаются исчерпывающими enums.
 - support UUID — канонический UUID без coercion; `configurationId` и generation ids непустые;
-  `TargetSelection` является strict discriminated union `all | retryable | ids`.
+  `TargetSelection` является strict discriminated union `all | retryable | ids`, а `ids.targetIds`
+  и `retryable.include` — непустые массивы уникальных значений.
 
 Точные shapes по доменам:
 

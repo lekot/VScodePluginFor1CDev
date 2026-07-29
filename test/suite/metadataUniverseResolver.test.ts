@@ -72,8 +72,9 @@ suite('MetadataUniverseResolver', () => {
   test('generation is SHA-256 of sorted exact triples and independent of traversal order', async () => {
     const firstTree = completeTree(configRoot);
     const secondTree = completeTree(configRoot);
-    secondTree.children!.reverse();
-    secondTree.children![0]!.children!.reverse();
+    const secondCatalog = secondTree.children![0]!.children![0]!;
+    secondCatalog.children!.reverse();
+    secondCatalog.children![1]!.children!.reverse();
     const resolverA = new MetadataUniverseResolver({ loadTree: async () => firstTree });
     const resolverB = new MetadataUniverseResolver({ loadTree: async () => secondTree });
 
@@ -117,7 +118,7 @@ suite('MetadataUniverseResolver', () => {
     assert.notStrictEqual(changedPath.metadataUniverseGenerationId, baseline.metadataUniverseGenerationId);
   });
 
-  test('rejects wrong root, empty universe, lazy tree and concrete objects without valid UUID', async () => {
+  test('accepts an empty configuration universe and rejects structurally incomplete trees', async () => {
     const wrongRoot: TreeNode = {
       id: 'Catalog',
       name: 'Catalog',
@@ -132,7 +133,12 @@ suite('MetadataUniverseResolver', () => {
     delete missingUuid.children![0]!.children![0]!.properties.uuid;
 
     await assert.rejects(resolveTree(configRoot, wrongRoot), /root is not a configuration/);
-    await assert.rejects(resolveTree(configRoot, emptyRoot), /no concrete metadata nodes/);
+    const empty = await resolveTree(configRoot, emptyRoot);
+    assert.deepStrictEqual(empty.entries, []);
+    assert.strictEqual(
+      empty.metadataUniverseGenerationId,
+      createHash('sha256').update('', 'utf8').digest('hex'),
+    );
     await assert.rejects(resolveTree(configRoot, lazyRoot), /lazy node/);
     await assert.rejects(resolveTree(configRoot, missingUuid), /concrete node .* has no valid UUID/);
   });
