@@ -11,6 +11,7 @@ export const coreSuiteFiles: string[] = [
   'suite/supportStateLifecycle.test.js',
   'suite/supportApplicationLifecycle.test.js',
   'suite/supportCapabilityRegistry.test.js',
+  'suite/configuratorBatchArgs.test.js',
   'suite/configuratorSupportApplicator.test.js',
   'suite/configuratorProcessRunner.test.js',
   'suite/supportSyncCoordinator.test.js',
