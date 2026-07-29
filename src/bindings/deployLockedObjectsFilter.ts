@@ -15,10 +15,12 @@ export type DeploySupportPreflightErrorCode =
   | 'SUPPORT_FORMAT_UNSUPPORTED'
   | 'SUPPORT_MASTER_RECOVERY_REQUIRED'
   | 'SUPPORT_OBJECT_UNIVERSE_INCOMPLETE'
+  | 'SUPPORT_MANAGED_FULL_DEPLOY_UNSAFE'
   | 'SUPPORT_OPERATION_FAILED';
 
 export interface DeploySupportPlannerRequest {
   readonly configurationId: ConfigurationId;
+  readonly mode: 'full' | 'files';
   readonly relativeFiles: readonly string[];
 }
 
@@ -45,6 +47,12 @@ export type DeploySupportPreflight =
       readonly kind: 'unknown';
       readonly errorCode: DeploySupportPreflightErrorCode;
       readonly diagnostics: readonly string[];
+    }
+  | {
+      readonly kind: 'fullDeployUnsafe';
+      readonly errorCode: 'SUPPORT_MANAGED_FULL_DEPLOY_UNSAFE';
+      readonly diagnostics: readonly string[];
+      readonly generationId: string;
     };
 
 /**
@@ -88,11 +96,25 @@ export class DeployLockedObjectsPlanner {
         supportFileRouted: routed.supportFileRouted,
       };
     }
+    if (request.mode === 'full') {
+      return {
+        kind: 'fullDeployUnsafe',
+        errorCode: 'SUPPORT_MANAGED_FULL_DEPLOY_UNSAFE',
+        diagnostics: [
+          'Full-directory deploy is unsafe for a managed configuration; use file deploy with support routing.',
+        ],
+        generationId: master.snapshot.generationId,
+      };
+    }
+    const metadataUniverse = outcome.metadataUniverse;
+    if (!metadataUniverse) {
+      return operationFailed('Metadata universe is unavailable for managed support deploy.');
+    }
 
     const filtered = filterFilesByMasterLocks(
       routed.relativeFiles,
       master.snapshot,
-      outcome.metadataUniverse.entries,
+      metadataUniverse.entries,
     );
     if (filtered.mappingDiagnostics.length > 0) {
       return {

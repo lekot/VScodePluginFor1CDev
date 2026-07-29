@@ -65,6 +65,12 @@ suite('Support application/registry/composition lifecycle', () => {
     registry.clear();
     const rejected = await registry.facade.getLastRun({ configurationId: 'cfg-a' as ConfigurationId });
     assert.strictEqual(rejected.status, 'operationRejected');
+    assert.strictEqual(
+      (await registry.facade.getMasterStatus({
+        configurationId: 'cfg-a' as ConfigurationId,
+      })).status,
+      'operationRejected',
+    );
   });
 
   test('application service filters object status and rejects wrong identity/journal failure', async () => {
@@ -78,6 +84,10 @@ suite('Support application/registry/composition lifecycle', () => {
           status: 'available',
           master: { kind: 'ready', snapshot },
           metadataUniverse: universe(),
+        }),
+        getMasterStatus: async () => ({
+          status: 'available',
+          master: { kind: 'ready', snapshot },
         }),
         setObjectMode: async () => rejectedMutation(),
         enableObjectRules: async () => rejectedMutation(),
@@ -113,6 +123,116 @@ suite('Support application/registry/composition lifecycle', () => {
       (await service.getStatus({ configurationId })).status,
       'operationRejected',
     );
+  });
+
+  test('mode status reads master first, skips universe for unavailable masters and accepts empty ready universe', async () => {
+    const configurationId = 'cfg-master-first' as ConfigurationId;
+    const unavailable: readonly MasterSupportState[] = [
+      {
+        kind: 'unmanaged',
+        reason: 'missing',
+        configurationId,
+        expectedFilePath: path.resolve('missing', 'Ext', 'ParentConfigurations.bin'),
+      },
+      {
+        kind: 'unknown',
+        configurationId,
+        filePath: path.resolve('invalid', 'Ext', 'ParentConfigurations.bin'),
+        errorCode: 'SUPPORT_FILE_INVALID',
+        diagnostics: ['invalid'],
+      },
+    ];
+
+    for (const masterState of unavailable) {
+      let universeCalls = 0;
+      const service = modeServiceForStatus(masterState, async () => {
+        universeCalls += 1;
+        return universe();
+      });
+      const outcome = await service.getStatus();
+      assert.strictEqual(outcome.status, 'available');
+      if (outcome.status === 'available') {
+        assert.strictEqual(outcome.master.kind, masterState.kind);
+        assert.strictEqual('metadataUniverse' in outcome, false);
+      }
+      assert.strictEqual(universeCalls, 0);
+    }
+
+    const ready = master(configurationId, 'ready', []);
+    let universeCalls = 0;
+    const service = modeServiceForStatus({ kind: 'ready', snapshot: ready }, async () => {
+      universeCalls += 1;
+      return universe();
+    });
+    const outcome = await service.getStatus();
+    assert.strictEqual(outcome.status, 'available');
+    if (outcome.status === 'available' && outcome.master.kind === 'ready') {
+      assert.deepStrictEqual(outcome.metadataUniverse?.entries, []);
+    }
+    assert.strictEqual(universeCalls, 1);
+  });
+
+  test('application sync and verify use master-only status without resolving metadata universe', async () => {
+    const configurationId = 'cfg-master-only-operations' as ConfigurationId;
+    const snapshot = master(configurationId, 'generation', []);
+    let universeCalls = 0;
+    const modeService = modeServiceForStatus({ kind: 'ready', snapshot }, async () => {
+      universeCalls += 1;
+      throw new Error('sync/verify must not resolve the metadata universe');
+    });
+    const masterOnlyPreflight = {
+      accepted: true as const,
+      scope: 'masterOnly' as const,
+      targets: [] as const,
+    };
+    const service = new SupportApplicationService({
+      configurationId,
+      modeService,
+      coordinator: {
+        sync: async () => ({
+          status: 'completed',
+          master: snapshot,
+          preflight: masterOnlyPreflight,
+          run: {
+            runId: 'sync-master-only',
+            configurationId,
+            desiredGenerationId: snapshot.generationId,
+            operation: 'sync',
+            scope: 'masterOnly',
+            targets: [],
+            state: 'complete',
+          },
+        }),
+        verifyOnly: async () => ({
+          status: 'completed',
+          master: snapshot,
+          preflight: masterOnlyPreflight,
+          run: {
+            runId: 'verify-master-only',
+            configurationId,
+            desiredGenerationId: snapshot.generationId,
+            operation: 'verify',
+            scope: 'masterOnly',
+            targets: [],
+            state: 'complete',
+          },
+        }),
+      },
+      journal: { getLastRun: async () => undefined },
+    });
+
+    const sync = await service.sync({
+      configurationId,
+      targets: { kind: 'all' },
+    });
+    const verify = await service.verify({
+      configurationId,
+      targets: { kind: 'all' },
+    });
+
+    assert.strictEqual(sync.status, 'synchronized');
+    assert.strictEqual(verify.status, 'synchronized');
+    assert.strictEqual(universeCalls, 0);
   });
 
   test('mode service distinguishes precommit rejection from postcommit replication failure', async () => {
@@ -329,6 +449,42 @@ function rejectedMutation(): SupportModeMutationOutcome {
     errorCode: 'SUPPORT_OPERATION_FAILED',
     retryable: true,
   };
+}
+
+function modeServiceForStatus(
+  masterState: MasterSupportState,
+  resolveUniverse: () => Promise<MetadataUniverseSnapshot>,
+): SupportModeService {
+  const configurationId = (
+    masterState.kind === 'ready'
+      ? masterState.snapshot.configurationId
+      : masterState.configurationId
+  );
+  return new SupportModeService({
+    configurationId,
+    configRoot: path.resolve('master-status-root'),
+    store: {
+      read: async () => masterState,
+      readParsedWithinExclusiveLease: async () => {
+        throw new Error('status must not request an exclusive parsed document');
+      },
+      commitWithinExclusiveLease: async () => {
+        throw new Error('status must not commit');
+      },
+    },
+    universeResolver: { resolve: async () => resolveUniverse() },
+    preflight: async () => ({
+      accepted: true,
+      scope: 'masterOnly',
+      targets: [],
+    }),
+    coordinator: {
+      sync: async () => {
+        throw new Error('status must not synchronize');
+      },
+    },
+    runExclusiveConfigurationOperation: async (_resource, _kind, operation) => operation(),
+  });
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {

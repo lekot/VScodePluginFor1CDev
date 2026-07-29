@@ -14,6 +14,7 @@ import type {
   SupportSyncRequest,
   SupportSyncRunSummary,
   SupportTargetCapability,
+  SupportTargetSelectionRejectedOutcome,
   SupportVerifyOutcome,
   SupportVerifyRequest,
   SupportVerifyRunOutcome,
@@ -71,6 +72,17 @@ export class SupportSyncCoordinator {
     if (!preflight.accepted) {
       return { status: 'preflightRejected', master: request.snapshot, preflight };
     }
+    const lastRun = await this.deps.journal.getLastRun(request.snapshot.configurationId);
+    const selection = selectTargets(
+      preflight.scope === 'replicated' ? preflight.targets : [],
+      request.targets,
+      lastRun?.targets ?? [],
+      request.snapshot.generationId,
+    );
+    if (!selection.accepted) {
+      return targetSelectionRejected(request.snapshot, selection);
+    }
+    const targets = selection.targets;
     const runId = this.createRunId();
     if (preflight.scope === 'masterOnly') {
       const run: Extract<SupportSyncRunSummary, { readonly scope: 'masterOnly' }> = {
@@ -86,8 +98,6 @@ export class SupportSyncCoordinator {
       return { status: 'completed', master: request.snapshot, preflight, run };
     }
 
-    const lastRun = await this.deps.journal.getLastRun(request.snapshot.configurationId);
-    const targets = selectTargets(preflight.targets, request.targets, lastRun?.targets ?? []);
     const refs = targets.map((target) => targetRef(target, request.snapshot.generationId));
     await this.deps.journal.begin({
       runId,
@@ -139,6 +149,10 @@ export class SupportSyncCoordinator {
             index + 1 < targets.length
             || results.some((targetResult) =>
               targetResult.state === 'applied' || targetResult.state === 'verified')
+            || (
+              result.state === 'stale'
+              && result.reason === 'masterAdvanced'
+            )
           )
         ) {
           await this.obsoleteRemaining(
@@ -210,6 +224,17 @@ export class SupportSyncCoordinator {
     if (!preflight.accepted) {
       return { status: 'preflightRejected', master: request.snapshot, preflight };
     }
+    const lastRun = await this.deps.journal.getLastRun(request.snapshot.configurationId);
+    const selection = selectTargets(
+      preflight.scope === 'replicated' ? preflight.targets : [],
+      request.targets,
+      lastRun?.targets ?? [],
+      request.snapshot.generationId,
+    );
+    if (!selection.accepted) {
+      return targetSelectionRejected(request.snapshot, selection);
+    }
+    const targets = selection.targets;
     const runId = this.createRunId();
     if (preflight.scope === 'masterOnly') {
       const run: Extract<SupportVerifyRunSummary, { readonly scope: 'masterOnly' }> = {
@@ -225,8 +250,6 @@ export class SupportSyncCoordinator {
       return { status: 'completed', master: request.snapshot, preflight, run };
     }
 
-    const lastRun = await this.deps.journal.getLastRun(request.snapshot.configurationId);
-    const targets = selectTargets(preflight.targets, request.targets, lastRun?.targets ?? []);
     const refs = targets.map((target) => targetRef(target, request.snapshot.generationId));
     await this.deps.journal.begin({
       runId,
@@ -424,20 +447,23 @@ export class SupportSyncCoordinator {
     cancellation: SupportCancellation,
   ): Promise<TargetSupportSyncResult> {
     const ref = targetRef(target, snapshot.generationId);
-    const currentGenerationId = await this.deps.getCurrentGenerationId(snapshot.configurationId);
-    if (currentGenerationId !== snapshot.generationId) {
-      return this.finish(snapshot.configurationId, runId, {
-        ...ref,
-        state: 'skipped',
-        reason: 'obsolete',
-      });
-    }
-    await this.record(snapshot.configurationId, runId, {
-      ...ref,
-      state: 'applying',
-      startedAt: this.now(),
-    });
-    const outcome = await this.deps.applicator.apply(target.entry, snapshot, payload, cancellation);
+    const outcome = await this.deps.applicator.apply(
+      target.entry,
+      snapshot,
+      payload,
+      cancellation,
+      async () => {
+        await this.record(snapshot.configurationId, runId, {
+          ...ref,
+          state: 'applying',
+          startedAt: this.now(),
+        });
+        const generationImmediatelyBeforeApply = await this.deps.getCurrentGenerationId(
+          snapshot.configurationId,
+        );
+        return generationImmediatelyBeforeApply === snapshot.generationId;
+      },
+    );
     const terminal = await this.mapApplyOutcome(runId, target, snapshot, outcome);
     if (
       terminal.state === 'applied'
@@ -476,7 +502,7 @@ export class SupportSyncCoordinator {
         return this.finish(snapshot.configurationId, runId, {
           ...ref,
           state: 'stale',
-          reason: 'targetDrift',
+          reason: outcome.reason,
         });
       case 'failed':
         return this.finish(snapshot.configurationId, runId, {
@@ -819,25 +845,125 @@ export class SupportSyncCoordinator {
   }
 }
 
+type RejectedTargetSelection =
+  | {
+      readonly accepted: false;
+      readonly reason: 'empty' | 'noMatch';
+      readonly requestedTargetIds: readonly string[];
+    }
+  | {
+      readonly accepted: false;
+      readonly reason: 'duplicate';
+      readonly requestedTargetIds: readonly string[];
+      readonly duplicateTargetIds: readonly string[];
+    }
+  | {
+      readonly accepted: false;
+      readonly reason: 'unknown';
+      readonly requestedTargetIds: readonly string[];
+      readonly unknownTargetIds: readonly string[];
+    };
+
+type TargetSelectionResult =
+  | {
+      readonly accepted: true;
+      readonly targets: CoordinatorReadySupportTarget[];
+    }
+  | RejectedTargetSelection;
+
 function selectTargets(
   available: readonly CoordinatorReadySupportTarget[],
   selection: TargetSelection,
   previous: readonly TargetSupportSyncResult[],
-): CoordinatorReadySupportTarget[] {
+  desiredGenerationId: string,
+): TargetSelectionResult {
   if (selection.kind === 'all') {
-    return [...available];
+    return { accepted: true, targets: [...available] };
   }
   if (selection.kind === 'ids') {
-    const ids = new Set(selection.targetIds);
-    return available.filter((target) => ids.has(target.canonicalTargetId));
+    const requestedTargetIds = [...selection.targetIds];
+    if (requestedTargetIds.length === 0) {
+      return { accepted: false, reason: 'empty', requestedTargetIds };
+    }
+    const duplicateTargetIds = duplicateValues(requestedTargetIds);
+    if (duplicateTargetIds.length > 0) {
+      return {
+        accepted: false,
+        reason: 'duplicate',
+        requestedTargetIds,
+        duplicateTargetIds,
+      };
+    }
+    const availableIds = new Set(available.map((target) => target.canonicalTargetId));
+    const unknownTargetIds = requestedTargetIds.filter((targetId) => !availableIds.has(targetId));
+    if (unknownTargetIds.length > 0) {
+      return {
+        accepted: false,
+        reason: 'unknown',
+        requestedTargetIds,
+        unknownTargetIds,
+      };
+    }
+    const ids = new Set(requestedTargetIds);
+    return {
+      accepted: true,
+      targets: available.filter((target) => ids.has(target.canonicalTargetId)),
+    };
   }
   const allowed = new Set(selection.include);
   const retryable = new Set(previous.filter((target) => {
-    return (target.state === 'failed' && allowed.has('failed'))
+    if (target.desiredGenerationId !== desiredGenerationId) {
+      return false;
+    }
+    return (target.state === 'failed' && target.retryable && allowed.has('failed'))
       || (target.state === 'inDoubt' && allowed.has('inDoubt'))
-      || (target.state === 'stale' && target.reason === 'targetDrift' && allowed.has('targetDrift'));
+      || (
+        target.state === 'stale'
+        && target.reason === 'targetDrift'
+        && allowed.has('targetDrift')
+      );
   }).map((target) => target.canonicalTargetId));
-  return available.filter((target) => retryable.has(target.canonicalTargetId));
+  const targets = available.filter((target) => retryable.has(target.canonicalTargetId));
+  if (targets.length === 0) {
+    return {
+      accepted: false,
+      reason: 'noMatch',
+      requestedTargetIds: [],
+    };
+  }
+  return { accepted: true, targets };
+}
+
+function duplicateValues(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) {
+      duplicates.add(value);
+    } else {
+      seen.add(value);
+    }
+  }
+  return [...duplicates];
+}
+
+function targetSelectionRejected(
+  master: MasterSupportSnapshot,
+  selection: RejectedTargetSelection,
+): SupportTargetSelectionRejectedOutcome {
+  return {
+    status: 'targetSelectionRejected',
+    master,
+    errorCode: 'SUPPORT_TARGET_SELECTION_REJECTED',
+    reason: selection.reason,
+    requestedTargetIds: [...selection.requestedTargetIds],
+    ...(selection.reason === 'duplicate'
+      ? { duplicateTargetIds: [...selection.duplicateTargetIds] }
+      : {}),
+    ...(selection.reason === 'unknown'
+      ? { unknownTargetIds: [...selection.unknownTargetIds] }
+      : {}),
+  } as SupportTargetSelectionRejectedOutcome;
 }
 
 function findPriorTarget(

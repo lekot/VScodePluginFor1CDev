@@ -404,6 +404,7 @@ async function resolveAgentDeploySupportContext(
     configurationId: descriptor.configurationId,
     facade: Object.freeze({
       getStatus: (request) => composition.facade.getStatus(request),
+      getMasterStatus: (request) => composition.facade.getMasterStatus(request),
       sync: (request) => composition.facade.sync(request),
     }),
   };

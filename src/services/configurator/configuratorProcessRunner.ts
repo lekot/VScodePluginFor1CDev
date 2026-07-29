@@ -40,9 +40,7 @@ export type ConfiguratorProcessOutcome =
       errorCode:
         | 'CONFIGURATOR_CANCELLED_BEFORE_START'
         | 'CONFIGURATOR_OUTPUT_PREPARE_FAILED'
-        | 'CONFIGURATOR_SPAWN_FAILED'
-        | 'CONFIGURATOR_EXIT_FAILED'
-        | 'CONFIGURATOR_FATAL_MARKER';
+        | 'CONFIGURATOR_SPAWN_FAILED';
       retryable: boolean;
       errorMessage?: string;
     }
@@ -55,7 +53,9 @@ export type ConfiguratorProcessOutcome =
         | 'CONFIGURATOR_PROCESS_START_UNCERTAIN'
         | 'CONFIGURATOR_PROCESS_CRASHED'
         | 'CONFIGURATOR_ACKNOWLEDGEMENT_LOST'
-        | 'CONFIGURATOR_OUTPUT_UNREADABLE';
+        | 'CONFIGURATOR_OUTPUT_UNREADABLE'
+        | 'CONFIGURATOR_EXIT_FAILED'
+        | 'CONFIGURATOR_FATAL_MARKER';
       errorMessage?: string;
     };
 
@@ -249,18 +249,20 @@ export async function runConfiguratorProcess(
   if (raw.exitCode !== 0) {
     return {
       ...base,
-      status: 'failed',
+      status: 'inDoubt',
+      started: true,
+      effectPossible: true,
       errorCode: 'CONFIGURATOR_EXIT_FAILED',
-      retryable: true,
       ...(outputReadError ? { errorMessage: outputReadError } : {}),
     };
   }
   if (fatalMarkerMatched) {
     return {
       ...base,
-      status: 'failed',
+      status: 'inDoubt',
+      started: true,
+      effectPossible: true,
       errorCode: 'CONFIGURATOR_FATAL_MARKER',
-      retryable: false,
     };
   }
   if (outputReadError) {

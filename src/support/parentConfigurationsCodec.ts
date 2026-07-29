@@ -319,31 +319,46 @@ function buildSnapshot(
   generationId: string,
 ): MasterSupportSnapshot {
   const globalEditability = parseEditability(model.globalToken.value, 'global flag');
-  const sourceMap = new Map<string, ObjectSupportSource[]>();
+  const sourceMap = new Map<string, {
+    readonly sources: ObjectSupportSource[];
+    supplierLocked: boolean;
+  }>();
   for (const supplier of model.suppliers) {
     for (const object of supplier.objects) {
-      const sources = sourceMap.get(object.localUuid) ?? [];
-      sources.push({ supplierConfigurationId: supplier.supplierConfigurationId, rawMode: object.mode });
-      sourceMap.set(object.localUuid, sources);
+      const entry = sourceMap.get(object.localUuid) ?? {
+        sources: [],
+        supplierLocked: false,
+      };
+      entry.sources.push({
+        supplierConfigurationId: supplier.supplierConfigurationId,
+        rawMode: object.mode,
+      });
+      entry.supplierLocked ||= supplier.blockEditability === 'disabled';
+      sourceMap.set(object.localUuid, entry);
     }
   }
   const objectModes = new Map<string, ObjectSupportState>();
-  for (const [objectId, sources] of sourceMap) {
-    const relevantSuppliers = model.suppliers.filter((supplier) =>
-      supplier.objects.some((object) => object.localUuid === objectId));
+  for (const [objectId, entry] of sourceMap) {
     const locked = globalEditability === 'disabled'
-      || relevantSuppliers.some((supplier) => supplier.blockEditability === 'disabled')
-      || sources.some((source) => source.rawMode === 'notEditable');
+      || entry.supplierLocked
+      || entry.sources.some((source) => source.rawMode === 'notEditable');
     const effectiveMode: ObjectSupportMode = locked
       ? 'notEditable'
-      : sources.some((source) => source.rawMode === 'editableWithSupport')
+      : entry.sources.some((source) => source.rawMode === 'editableWithSupport')
         ? 'editableWithSupport'
         : 'removedFromSupport';
-    objectModes.set(objectId, { objectId, locked, effectiveMode, sources: [...sources] });
+    objectModes.set(objectId, {
+      objectId,
+      locked,
+      effectiveMode,
+      sources: [...entry.sources],
+    });
   }
   const values = [...objectModes.values()];
   const lockedCount = values.filter((value) => value.locked).length;
-  const configurationMode = lockedCount === values.length ? 'locked' : lockedCount === 0 ? 'editable' : 'mixed';
+  const configurationMode = values.length === 0
+    ? globalEditability === 'disabled' ? 'locked' : 'editable'
+    : lockedCount === values.length ? 'locked' : lockedCount === 0 ? 'editable' : 'mixed';
   const supplierConfigurations: SupplierSupportState[] = model.suppliers.map((supplier) => ({
     supplierConfigurationId: supplier.supplierConfigurationId,
     name: supplier.name,

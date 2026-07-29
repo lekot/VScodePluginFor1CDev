@@ -71,7 +71,7 @@ Bearer даёт аутентифицированному локальному MC
 - `cdt_debug_evaluate` исполняет BSL-выражение, которое может иметь side effects;
 - deploy/pull меняют информационные базы или workspace;
 - support set/enable/sync меняют master-файл и могут запускать Configurator для связанных ИБ;
-- support verify не пишет данные, но запускает внешние Configurator dump-процессы;
+- support verify не меняет master или информационные базы, но запускает внешние Configurator dump-процессы и записывает durable audit run в локальный журнал;
 - debug/forms/SKD запускают и останавливают дочерние процессы; SKD принимает локальные input/output paths;
 - XDTO export с `outputPath`, import/create/merge и metadata tools изменяют файлы конфигурации.
 
@@ -387,9 +387,12 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 
 - `configPath` — путь к каталогу конфигурации (необязательно, по умолчанию — из дерева метаданных)
 
-Возвращает: `{ summary: { success, error, skipped }, results: [{ infobase, status, message }] }`.
+Возвращает: `{ summary: { success, error, skipped, hasPartial }, results: [{ infobase, status, message, errorCode?, skippedFiles? }] }`.
 
 Требует предварительной привязки базы через UI («Привязать базы…»).
+Для конфигурации с управляемым `ParentConfigurations.bin` полный directory import небезопасен и
+отклоняется до запуска `ibcmd` с кодом `SUPPORT_MANAGED_FULL_DEPLOY_UNSAFE`. Используйте файловую
+раскатку, которая умеет маршрутизировать master поддержки и исключать заблокированные объекты.
 
 #### `1c-metadata-tree.agent.deploySelectedObjects`
 
@@ -405,7 +408,10 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 - `configPath` — путь к каталогу конфигурации (необязательно)
 - `files` — массив относительных путей файлов от корня конфигурации (forward slashes, обязательно)
 
-Возвращает: `{ summary: { success, error, skipped }, results: [{ infobase, status, message }] }`.
+Возвращает общий deploy-result с `summary.hasPartial` и optional `results[].skippedFiles`.
+`Ext/ParentConfigurations.bin` не передаётся в `ibcmd import files`, а маршрутизируется через
+support facade. Файлы объектов, заблокированных master поддержки, исключаются; оставшиеся
+импортируются, а результат считается частичным (`hasPartial: true`) и не маскируется как полный успех.
 
 #### `1c-metadata-tree.agent.deployChangedFiles`
 
@@ -419,7 +425,8 @@ Fuzzy match: `"uh"` → `FormatSamples/uh/Configuration.xml`.
 
 - `configPath` — путь к каталогу конфигурации (необязательно)
 
-Возвращает тот же формат.
+Возвращает тот же формат и использует ту же partial-семантику поддержки, что
+`deploySelectedObjects`.
 
 #### `1c-metadata-tree.agent.pullSelectedObjects`
 
@@ -485,8 +492,9 @@ Support outcome целиком возвращается в `AgentResult.data`. `
 
 #### `1c-metadata-tree.agent.supportGetStatus`
 
-Читает актуальный master, metadata universe и последний завершённый sync/verify run. `objectIds`
-необязателен и ограничивает `objectModes` заданными UUID.
+Читает актуальный master и последний завершённый sync/verify run. Для `master.kind: "ready"`
+дополнительно строит metadata universe. `objectIds` необязателен и ограничивает `objectModes`
+заданными UUID.
 
 ```json
 {
@@ -497,7 +505,8 @@ Support outcome целиком возвращается в `AgentResult.data`. `
 
 Outcome:
 
-- `available` — содержит `master`, `metadataUniverse` и optional `lastRun`;
+- `available` с `master.kind: "ready"` — содержит обязательный `metadataUniverse` и optional `lastRun`;
+- `available` с `master.kind: "unmanaged" | "unknown"` — не содержит `metadataUniverse`, но может содержать `lastRun`;
 - `operationRejected` — чтение или журнал недоступны; `retryable: true`.
 
 `master.kind` равен `ready`, `unmanaged` или `unknown`. Для `unknown` запись, sync и deploy
@@ -574,7 +583,15 @@ Mutation outcomes для `supportSetObjectMode` и `supportEnableObjectRules`:
 ```
 
 Retryable preset использует точные причины `failed | inDoubt | targetDrift`; permanent failure не
-становится retryable. `inDoubt` сначала проходит reconcile, blind repeat apply запрещён.
+становится retryable. Выбор generation-scoped: учитываются только результаты с
+`desiredGenerationId`, равным текущей master generation. `inDoubt` сначала проходит reconcile,
+blind repeat apply запрещён.
+
+Для `kind: "ids"` массив `targetIds` должен быть непустым и содержать уникальные canonical IDs.
+Selector задаёт точное подмножество доступных replicated targets — расширения до `all` нет. Пустой список,
+дубликаты, неизвестные IDs и отсутствие совпадений для retryable selector возвращают typed outcome
+`targetSelectionRejected` с `SUPPORT_TARGET_SELECTION_REJECTED`, `reason` и диагностическими
+списками IDs.
 
 #### `1c-metadata-tree.agent.supportSync`
 
@@ -589,12 +606,14 @@ Retryable preset использует точные причины `failed | inDo
 ```
 
 `verification`: optional `fast | strict`, по умолчанию `fast`. Outcome:
-`synchronized | incomplete | masterRejected | preflightRejected | operationRejected`.
+`synchronized | incomplete | masterRejected | preflightRejected | targetSelectionRejected | operationRejected`.
 `incomplete` содержит сохранённый target-by-target run, если он успел сформироваться.
 
 #### `1c-metadata-tree.agent.supportVerify`
 
-Read-only строгая проверка через Configurator dump; информационные базы и master не изменяются:
+Строгая проверка через Configurator dump: информационные базы и master не изменяются, но результат
+записывается в durable audit journal как новый verify run. Поэтому операция не является storage
+read-only или идемпотентной, хотя не выполняет destructive mutation конфигурации или ИБ:
 
 ```json
 {
@@ -603,7 +622,8 @@ Read-only строгая проверка через Configurator dump; инфо
 }
 ```
 
-Outcome имеет те же верхнеуровневые статусы, что `supportSync`. `inDoubt`, `stale`, `failed`,
+Outcome имеет те же верхнеуровневые статусы, что `supportSync`, включая
+`targetSelectionRejected`. `inDoubt`, `stale`, `failed`,
 `skipped` и `obsolete` остаются явными terminal states и не преобразуются в success.
 
 #### `1c-metadata-tree.agent.supportGetLastRun`

@@ -218,11 +218,15 @@ function resolveExactConcreteIdentity(
   node: TreeNode,
   cached: CachedSupportStatus,
 ): MetadataUniverseEntry | undefined {
+  const universe = cached.metadataUniverse;
+  const identityIndex = cached.metadataUniverseIdentityIndex;
   if (
-    !CONCRETE_OBJECT_TYPES.has(node.type)
+    universe === undefined
+    || identityIndex === undefined
+    || !CONCRETE_OBJECT_TYPES.has(node.type)
     || node.properties.isModule === true
     || node.properties.isVirtual === true
-    || normalizePath(cached.metadataUniverse.configRoot) !== normalizePath(cached.configRoot)
+    || normalizePath(universe.configRoot) !== normalizePath(cached.configRoot)
   ) {
     return undefined;
   }
@@ -231,7 +235,7 @@ function resolveExactConcreteIdentity(
     return undefined;
   }
   try {
-    const resolved = resolveMetadataUniverseEntry(cached.metadataUniverse.configRoot, node);
+    const resolved = resolveMetadataUniverseEntry(universe.configRoot, node);
     if (
       !resolved
       || resolved.objectUuid !== ownUuid
@@ -239,7 +243,7 @@ function resolveExactConcreteIdentity(
     ) {
       return undefined;
     }
-    if (!cached.metadataUniverseIdentityIndex.has(resolved)) {
+    if (!identityIndex.has(resolved)) {
       return undefined;
     }
     return resolved;

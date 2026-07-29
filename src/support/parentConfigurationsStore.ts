@@ -11,10 +11,12 @@ import type { MasterSupportState, SupportMutationResult } from './supportTypes';
 import { SupportMutationError } from './supportTypes';
 
 const SUPPORT_RELATIVE_PATH = path.join('Ext', 'ParentConfigurations.bin');
-const RECOVERY_DIRECTORY = '.cdt-support-recovery';
+const RECOVERY_LIVE_DIRECTORY = 'live';
+const RECOVERY_TOMBSTONE_DIRECTORY = 'tombstone';
 const RECOVERY_JOURNAL_FILE = 'journal.json';
 const RECOVERY_BACKUP_FILE = 'ParentConfigurations.bin.backup';
 const SHA256 = /^[0-9a-f]{64}$/;
+const MAX_CACHED_GENERATIONS_PER_ROOT = 8;
 
 interface SupportRecoveryJournal {
   readonly version: 1;
@@ -36,6 +38,7 @@ type RecoveryResult =
     };
 
 export interface ParentConfigurationsStoreDeps {
+  readonly recoveryRoot: string;
   readonly universeResolver?: MetadataUniverseResolver;
   readonly createStorage?: (configRoot: string) => AtomicFileStorage;
   readonly readFile?: (filePath: string) => Promise<Buffer>;
@@ -45,12 +48,15 @@ export interface ParentConfigurationsStoreDeps {
 }
 
 export class ParentConfigurationsStore {
-  private readonly documentsByGeneration = new Map<string, ParsedParentConfigurations>();
+  private readonly documentsByRoot = new Map<string, Map<string, ParsedParentConfigurations>>();
+  private readonly recoveryRoot: string;
 
   constructor(
     private readonly configurationId: ConfigurationId,
-    private readonly deps: ParentConfigurationsStoreDeps = {},
-  ) {}
+    private readonly deps: ParentConfigurationsStoreDeps,
+  ) {
+    this.recoveryRoot = path.resolve(deps.recoveryRoot);
+  }
 
   async read(configRoot: string): Promise<MasterSupportState> {
     return (await this.readParsed(configRoot)).state;
@@ -59,7 +65,7 @@ export class ParentConfigurationsStore {
   async readParsed(configRoot: string): Promise<ParsedParentConfigurations> {
     const root = path.resolve(configRoot);
     const filePath = path.join(root, SUPPORT_RELATIVE_PATH);
-    if (await this.hasRecoveryArtifacts(root)) {
+    if (await this.hasRecoveryArtifacts()) {
       return this.runExclusive(
         filePath,
         'support.recoverParentConfigurations',
@@ -111,6 +117,7 @@ export class ParentConfigurationsStore {
     configRoot: string,
     resourcePath: string,
   ): Promise<SupportMutationResult> {
+    await this.invalidateRoot(configRoot);
     if (
       plan.before.configurationId !== this.configurationId
       || plan.before.generationId !== expectedGenerationId
@@ -135,7 +142,6 @@ export class ParentConfigurationsStore {
     }
 
     await this.prepareRecoveryJournal(
-      configRoot,
       Buffer.from(live.bytes),
       plan.before.generationId,
       plan.after.generationId,
@@ -175,7 +181,8 @@ export class ParentConfigurationsStore {
       throw new SupportMutationError('SUPPORT_MASTER_RECOVERY_REQUIRED', 'Post-write support master is unreadable.');
     }
     await this.cleanupRecoveryArtifacts(configRoot);
-    this.documentsByGeneration.set(postWrite.state.snapshot.generationId, postWrite);
+    const canonicalRoot = await canonicalConfigRoot(configRoot);
+    this.cacheDocument(canonicalRoot, resourcePath, postWrite.state.snapshot.generationId, postWrite);
     return {
       before: plan.before,
       after: postWrite.state.snapshot,
@@ -215,40 +222,73 @@ export class ParentConfigurationsStore {
         expectedFilePath: filePath,
       });
     }
+    const generationId = hash(bytes);
+    const canonicalRoot = await canonicalConfigRoot(configRoot);
+    const cached = this.cachedDocument(canonicalRoot, filePath, generationId);
+    if (cached) {
+      return cached;
+    }
     const document = ParentConfigurationsCodec.parse(bytes, {
       configurationId: this.configurationId,
       filePath,
       configRoot,
     });
-    if (document.state.kind === 'ready') {
-      const cached = this.documentsByGeneration.get(document.state.snapshot.generationId);
-      if (cached) { return cached; }
-      this.documentsByGeneration.set(document.state.snapshot.generationId, document);
-    }
+    this.cacheDocument(canonicalRoot, filePath, generationId, document);
     return document;
   }
 
   private async recoverPending(configRoot: string): Promise<RecoveryResult> {
-    const recoveryPath = this.recoveryPath(configRoot);
-    const journalPath = path.join(recoveryPath, RECOVERY_JOURNAL_FILE);
-    const backupPath = path.join(recoveryPath, RECOVERY_BACKUP_FILE);
-    const journalExists = await exists(journalPath);
-    const backupExists = await exists(backupPath);
-    if (!journalExists && !backupExists) {
+    try {
+      await this.invalidateRoot(configRoot);
+      return await this.recoverPendingGuarded(configRoot);
+    } catch (error) {
+      return {
+        kind: 'required',
+        diagnostics: [`Support recovery failed closed: ${errorMessage(error)}`],
+      };
+    }
+  }
+
+  private async recoverPendingGuarded(configRoot: string): Promise<RecoveryResult> {
+    if (!await this.recoveryRootExists()) {
+      return { kind: 'clean' };
+    }
+    await this.validateRecoveryBase();
+    const livePath = this.liveRecoveryPath();
+    const tombstonePath = this.tombstoneRecoveryPath();
+    const liveExists = await this.safeRecoveryExists(livePath);
+    const tombstoneExists = await this.safeRecoveryExists(tombstonePath);
+    if (liveExists && tombstoneExists) {
+      return {
+        kind: 'required',
+        diagnostics: ['Both live and tombstone support recovery markers exist.'],
+      };
+    }
+    if (tombstoneExists) {
+      return this.deleteValidatedTombstone();
+    }
+    if (!liveExists) {
       return { kind: 'clean' };
     }
 
+    const liveEntries = await this.validateRecoveryDirectory(livePath, 'live');
+    const journalPath = path.join(livePath, RECOVERY_JOURNAL_FILE);
+    const backupPath = path.join(livePath, RECOVERY_BACKUP_FILE);
+    const journalExists = liveEntries.has(RECOVERY_JOURNAL_FILE);
+    const backupExists = liveEntries.has(RECOVERY_BACKUP_FILE);
     if (!journalExists && backupExists) {
       try {
         const live = await this.readFreshMaster(configRoot);
         if (live.state.kind !== 'ready') {
           return { kind: 'required', diagnostics: ['Orphan recovery backup exists and live master is not valid.'] };
         }
-        await this.cleanupRecoveryArtifacts(configRoot);
-        return { kind: 'recovered' };
+        return this.finalizeRecoveryDirectory();
       } catch (error) {
         return { kind: 'required', diagnostics: [`Orphan recovery backup cleanup failed: ${errorMessage(error)}`] };
       }
+    }
+    if (!journalExists && !backupExists) {
+      return this.finalizeRecoveryDirectory();
     }
     if (!backupExists) {
       return { kind: 'required', diagnostics: ['Recovery journal exists without its exact backup.'] };
@@ -257,7 +297,9 @@ export class ParentConfigurationsStore {
     let journal: SupportRecoveryJournal;
     let backup: Buffer;
     try {
+      await assertSafeRecoveryPath(this.recoveryRoot, journalPath, 'read recovery journal');
       journal = parseRecoveryJournal(await fs.readFile(journalPath, 'utf8'), this.configurationId);
+      await assertSafeRecoveryPath(this.recoveryRoot, backupPath, 'read recovery backup');
       backup = await fs.readFile(backupPath);
     } catch (error) {
       return { kind: 'required', diagnostics: [`Recovery artifacts are invalid: ${errorMessage(error)}`] };
@@ -287,8 +329,7 @@ export class ParentConfigurationsStore {
         return { kind: 'required', observedGenerationId, diagnostics: ['Recovery before-generation is not a valid master.'] };
       }
       try {
-        await this.cleanupRecoveryArtifacts(configRoot);
-        return { kind: 'recovered' };
+        return await this.finalizeRecoveryDirectory();
       } catch (error) {
         return { kind: 'required', observedGenerationId, diagnostics: [`Recovery cleanup failed: ${errorMessage(error)}`] };
       }
@@ -327,9 +368,7 @@ export class ParentConfigurationsStore {
           diagnostics: ['Restored source generation could not be proven.'],
         };
       }
-      await this.cleanupRecoveryArtifacts(configRoot);
-      this.documentsByGeneration.clear();
-      return { kind: 'recovered' };
+      return await this.finalizeRecoveryDirectory();
     } catch (error) {
       return {
         kind: 'required',
@@ -340,7 +379,6 @@ export class ParentConfigurationsStore {
   }
 
   private async prepareRecoveryJournal(
-    configRoot: string,
     backup: Buffer,
     beforeGenerationId: string,
     plannedAfterGenerationId: string,
@@ -349,11 +387,23 @@ export class ParentConfigurationsStore {
     if (hash(backup) !== beforeGenerationId) {
       throw new SupportMutationError('SUPPORT_STALE_GENERATION', 'Exact backup does not match the planned generation.');
     }
-    const recoveryPath = this.recoveryPath(configRoot);
-    await fs.mkdir(recoveryPath, { recursive: true });
-    await this.syncDirectory(configRoot);
-    const backupPath = path.join(recoveryPath, RECOVERY_BACKUP_FILE);
-    const journalPath = path.join(recoveryPath, RECOVERY_JOURNAL_FILE);
+    await this.ensureRecoveryRoot();
+    await this.validateRecoveryBase();
+    const livePath = this.liveRecoveryPath();
+    if (
+      await this.safeRecoveryExists(livePath)
+      || await this.safeRecoveryExists(this.tombstoneRecoveryPath())
+    ) {
+      throw new SupportMutationError(
+        'SUPPORT_MASTER_RECOVERY_REQUIRED',
+        'Support recovery marker already exists.',
+      );
+    }
+    await assertSafeRecoveryPath(this.recoveryRoot, livePath, 'create live recovery marker');
+    await fs.mkdir(livePath);
+    await assertSafeRecoveryPath(this.recoveryRoot, livePath, 'use live recovery marker');
+    const backupPath = path.join(livePath, RECOVERY_BACKUP_FILE);
+    const journalPath = path.join(livePath, RECOVERY_JOURNAL_FILE);
     const journal: SupportRecoveryJournal = {
       version: 1,
       configurationId: this.configurationId,
@@ -363,16 +413,23 @@ export class ParentConfigurationsStore {
       expectedMetadataUniverseGenerationId: expectedUniverseGenerationId ?? null,
       backupFile: RECOVERY_BACKUP_FILE,
     };
+    await assertSafeRecoveryPath(this.recoveryRoot, backupPath, 'write recovery backup');
     await writeNewAndSync(backupPath, backup);
+    await assertSafeRecoveryPath(this.recoveryRoot, journalPath, 'write recovery journal');
     await writeNewAndSync(journalPath, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`, 'utf8'));
-    await this.syncDirectory(recoveryPath);
+    await assertSafeRecoveryPath(this.recoveryRoot, livePath, 'sync live recovery marker');
+    await this.syncDirectory(livePath);
+    await this.syncDirectory(this.recoveryRoot);
   }
 
   private async cleanupAfterProvenNoWrite(configRoot: string): Promise<void> {
     try {
       await this.stableRead(path.join(configRoot, SUPPORT_RELATIVE_PATH));
       await this.cleanupRecoveryArtifacts(configRoot);
-    } catch {
+    } catch (error) {
+      if (error instanceof RecoveryPathViolation) {
+        throw error;
+      }
       // Leave the durable journal intact; the next read will fail closed instead of guessing.
     }
   }
@@ -411,7 +468,7 @@ export class ParentConfigurationsStore {
   }
 
   private async readFreshMaster(configRoot: string): Promise<ParsedParentConfigurations> {
-    this.documentsByGeneration.clear();
+    await this.invalidateRoot(configRoot);
     return this.readMaster(configRoot);
   }
 
@@ -455,23 +512,212 @@ export class ParentConfigurationsStore {
     return this.deps.createStorage?.(configRoot) ?? new AtomicFileStorage(configRoot);
   }
 
-  private recoveryPath(configRoot: string): string {
-    return path.join(configRoot, RECOVERY_DIRECTORY);
+  private cachedDocument(
+    canonicalRoot: string,
+    filePath: string,
+    generationId: string,
+  ): ParsedParentConfigurations | undefined {
+    const rootKey = normalizePath(canonicalRoot);
+    const cache = this.documentsByRoot.get(rootKey);
+    if (!cache) {
+      return undefined;
+    }
+    const key = documentCacheKey(canonicalRoot, filePath, generationId);
+    const document = cache.get(key);
+    if (document) {
+      // Refresh insertion order so eviction behaves as a small per-root LRU.
+      cache.delete(key);
+      cache.set(key, document);
+    }
+    return document;
   }
 
-  private async hasRecoveryArtifacts(configRoot: string): Promise<boolean> {
-    const recoveryPath = this.recoveryPath(configRoot);
-    return (await exists(path.join(recoveryPath, RECOVERY_JOURNAL_FILE)))
-      || (await exists(path.join(recoveryPath, RECOVERY_BACKUP_FILE)));
+  private cacheDocument(
+    canonicalRoot: string,
+    filePath: string,
+    generationId: string,
+    document: ParsedParentConfigurations,
+  ): void {
+    const rootKey = normalizePath(canonicalRoot);
+    const cache = this.documentsByRoot.get(rootKey) ?? new Map<string, ParsedParentConfigurations>();
+    const key = documentCacheKey(canonicalRoot, filePath, generationId);
+    cache.delete(key);
+    cache.set(key, document);
+    while (cache.size > MAX_CACHED_GENERATIONS_PER_ROOT) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (oldest === undefined) {
+        break;
+      }
+      cache.delete(oldest);
+    }
+    this.documentsByRoot.set(rootKey, cache);
+  }
+
+  private async invalidateRoot(configRoot: string): Promise<void> {
+    const canonicalRoot = await canonicalConfigRoot(configRoot);
+    this.documentsByRoot.delete(normalizePath(canonicalRoot));
+  }
+
+  private liveRecoveryPath(): string {
+    return path.join(this.recoveryRoot, RECOVERY_LIVE_DIRECTORY);
+  }
+
+  private tombstoneRecoveryPath(): string {
+    return path.join(this.recoveryRoot, RECOVERY_TOMBSTONE_DIRECTORY);
+  }
+
+  private async recoveryRootExists(): Promise<boolean> {
+    try {
+      const stat = await fs.lstat(this.recoveryRoot);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new RecoveryPathViolation(
+          'inspect recovery root',
+          `recovery root is not a trusted directory: ${this.recoveryRoot}`,
+        );
+      }
+      return true;
+    } catch (error) {
+      if (isMissing(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async ensureRecoveryRoot(): Promise<void> {
+    await fs.mkdir(this.recoveryRoot, { recursive: true });
+    if (!await this.recoveryRootExists()) {
+      throw new RecoveryPathViolation('create recovery root', 'recovery root was not created');
+    }
+  }
+
+  private async safeRecoveryExists(filePath: string): Promise<boolean> {
+    await assertSafeRecoveryPath(this.recoveryRoot, filePath, 'inspect recovery artifact');
+    try {
+      await fs.lstat(filePath);
+      return true;
+    } catch (error) {
+      if (isMissing(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async validateRecoveryBase(): Promise<void> {
+    await assertSafeRecoveryPath(this.recoveryRoot, this.recoveryRoot, 'inspect recovery namespace');
+    const entries = await fs.readdir(this.recoveryRoot);
+    const allowed = new Set([RECOVERY_LIVE_DIRECTORY, RECOVERY_TOMBSTONE_DIRECTORY]);
+    const foreign = entries.filter((entry) => !allowed.has(entry));
+    if (foreign.length > 0) {
+      throw new RecoveryPathViolation(
+        'inspect recovery namespace',
+        `foreign entries exist: ${foreign.join(', ')}`,
+      );
+    }
+  }
+
+  private async validateRecoveryDirectory(
+    directoryPath: string,
+    marker: 'live' | 'tombstone',
+  ): Promise<ReadonlySet<string>> {
+    await assertSafeRecoveryPath(this.recoveryRoot, directoryPath, `validate ${marker} recovery marker`);
+    const directoryStat = await fs.lstat(directoryPath);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      throw new RecoveryPathViolation(
+        `validate ${marker} recovery marker`,
+        `${directoryPath} is not a plain directory`,
+      );
+    }
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+    const allowed = new Set([RECOVERY_JOURNAL_FILE, RECOVERY_BACKUP_FILE]);
+    for (const entry of entries) {
+      if (!allowed.has(entry.name) || !entry.isFile()) {
+        throw new RecoveryPathViolation(
+          `validate ${marker} recovery marker`,
+          `foreign entry exists: ${entry.name}`,
+        );
+      }
+      await assertSafeRecoveryPath(
+        this.recoveryRoot,
+        path.join(directoryPath, entry.name),
+        `validate ${marker} recovery evidence`,
+      );
+    }
+    return new Set(entries.map((entry) => entry.name));
+  }
+
+  private async hasRecoveryArtifacts(): Promise<boolean> {
+    try {
+      if (!await this.recoveryRootExists()) {
+        return false;
+      }
+      await this.validateRecoveryBase();
+      return await this.safeRecoveryExists(this.liveRecoveryPath())
+        || await this.safeRecoveryExists(this.tombstoneRecoveryPath());
+    } catch {
+      // Any invalid namespace must enter the exclusive fail-closed recovery path.
+      return true;
+    }
+  }
+
+  private async finalizeRecoveryDirectory(): Promise<RecoveryResult> {
+    await this.validateRecoveryBase();
+    const livePath = this.liveRecoveryPath();
+    const tombstonePath = this.tombstoneRecoveryPath();
+    await this.validateRecoveryDirectory(livePath, 'live');
+    if (await this.safeRecoveryExists(tombstonePath)) {
+      return {
+        kind: 'required',
+        diagnostics: ['Tombstone marker already exists before recovery finalization.'],
+      };
+    }
+    try {
+      await assertSafeRecoveryPath(this.recoveryRoot, livePath, 'rename live recovery marker');
+      await assertSafeRecoveryPath(this.recoveryRoot, tombstonePath, 'create recovery tombstone marker');
+      await fs.rename(livePath, tombstonePath);
+    } catch (error) {
+      const liveExists = await this.safeRecoveryExists(livePath);
+      const tombstoneExists = await this.safeRecoveryExists(tombstonePath);
+      if (liveExists || !tombstoneExists) {
+        return {
+          kind: 'required',
+          diagnostics: [`Recovery marker rename failed: ${errorMessage(error)}`],
+        };
+      }
+    }
+    return this.deleteValidatedTombstone();
+  }
+
+  private async deleteValidatedTombstone(): Promise<RecoveryResult> {
+    const tombstonePath = this.tombstoneRecoveryPath();
+    try {
+      await this.validateRecoveryBase();
+      await this.validateRecoveryDirectory(tombstonePath, 'tombstone');
+      await assertSafeRecoveryPath(this.recoveryRoot, tombstonePath, 'delete recovery tombstone');
+      await fs.rm(tombstonePath, { recursive: true });
+      return { kind: 'recovered' };
+    } catch (error) {
+      let markerExists = true;
+      try {
+        markerExists = await this.safeRecoveryExists(tombstonePath);
+      } catch {
+        // An unreadable marker remains fail-closed.
+      }
+      if (!markerExists) {
+        return { kind: 'recovered' };
+      }
+      return {
+        kind: 'required',
+        diagnostics: [`Recovery tombstone cleanup failed: ${errorMessage(error)}`],
+      };
+    }
   }
 
   private async cleanupRecoveryArtifacts(configRoot: string): Promise<void> {
-    const recoveryPath = this.recoveryPath(configRoot);
-    await fs.rm(path.join(recoveryPath, RECOVERY_JOURNAL_FILE), { force: true });
-    await fs.rm(path.join(recoveryPath, RECOVERY_BACKUP_FILE), { force: true });
-    await this.syncDirectory(recoveryPath);
-    await fs.rmdir(recoveryPath);
-    await this.syncDirectory(configRoot);
+    await this.invalidateRoot(configRoot);
+    const cleanup = await this.finalizeRecoveryDirectory();
+    this.throwIfRecoveryRequired(cleanup);
   }
 
   private syncDirectory(directoryPath: string): Promise<void> {
@@ -532,16 +778,6 @@ function isUnsupportedDirectorySync(error: unknown): boolean {
   return code === 'EPERM' || code === 'EINVAL' || code === 'ENOTSUP' || code === 'EISDIR';
 }
 
-async function exists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch (error) {
-    if (isMissing(error)) { return false; }
-    throw error;
-  }
-}
-
 function sameStat(
   left: { size: number; mtimeMs: number; ino?: number },
   right: { size: number; mtimeMs: number; ino?: number },
@@ -553,6 +789,76 @@ function sameStat(
 function normalizePath(filePath: string): string {
   const resolved = path.resolve(filePath);
   return process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved;
+}
+
+async function canonicalConfigRoot(configRoot: string): Promise<string> {
+  return path.resolve(await fs.realpath(path.resolve(configRoot)));
+}
+
+function documentCacheKey(configRoot: string, filePath: string, generationId: string): string {
+  return `${normalizePath(configRoot)}\0${normalizePath(filePath)}\0${generationId}`;
+}
+
+class RecoveryPathViolation extends SupportMutationError {
+  constructor(operation: string, detail: string) {
+    super(
+      'SUPPORT_MASTER_RECOVERY_REQUIRED',
+      `Unsafe support recovery path during ${operation}: ${detail}. Recovery evidence was preserved.`,
+    );
+    this.name = 'RecoveryPathViolation';
+  }
+}
+
+async function assertSafeRecoveryPath(
+  configRoot: string,
+  targetPath: string,
+  operation: string,
+): Promise<void> {
+  const canonicalRoot = path.resolve(await fs.realpath(path.resolve(configRoot)));
+  const resolvedTarget = path.resolve(targetPath);
+  if (!isContainedPath(path.resolve(configRoot), resolvedTarget)) {
+    throw new RecoveryPathViolation(operation, 'target escapes the configuration root');
+  }
+
+  const relative = path.relative(path.resolve(configRoot), resolvedTarget);
+  const components = relative ? relative.split(path.sep).filter(Boolean) : [];
+  let current = canonicalRoot;
+  await assertExistingComponentSafe(canonicalRoot, current, operation);
+  for (const component of components) {
+    current = path.join(current, component);
+    try {
+      await assertExistingComponentSafe(canonicalRoot, current, operation);
+    } catch (error) {
+      if (isMissing(error)) {
+        return;
+      }
+      throw error;
+    }
+  }
+}
+
+async function assertExistingComponentSafe(
+  canonicalRoot: string,
+  componentPath: string,
+  operation: string,
+): Promise<void> {
+  const stat = await fs.lstat(componentPath);
+  if (stat.isSymbolicLink()) {
+    throw new RecoveryPathViolation(operation, `link or reparse component ${componentPath}`);
+  }
+  const realComponent = path.resolve(await fs.realpath(componentPath));
+  if (!isContainedPath(canonicalRoot, realComponent)) {
+    throw new RecoveryPathViolation(operation, `component resolves outside the configuration root: ${componentPath}`);
+  }
+}
+
+function isContainedPath(rootPath: string, candidatePath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === '' || (
+    relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
 }
 
 function hash(bytes: Uint8Array): string {

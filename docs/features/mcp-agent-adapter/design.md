@@ -61,7 +61,8 @@ coordinator, journal, binding или process runner. Доменный outcome ц
 object по UUID. `success=true` допустим только для `available` и полностью `synchronized` outcomes.
 
 Annotations support tools фиксированы контрактом: `getStatus/getLastRun` — `READ_CLOSED`, `verify` —
-`READ_OPEN`, `setObjectMode/enableObjectRules/sync` — `WRITE_OPEN`.
+`VERIFY_OPEN` (durable audit write без destructive mutation master/ИБ),
+`setObjectMode/enableObjectRules/sync` — `WRITE_OPEN`.
 
 ## Инвариант покрытия
 

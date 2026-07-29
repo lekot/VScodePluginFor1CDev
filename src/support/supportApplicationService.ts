@@ -8,6 +8,8 @@ import type {
   SupportCancellation,
   SupportGetLastRunOutcome,
   SupportGetLastRunRequest,
+  SupportMasterStatusOutcome,
+  SupportMasterStatusRequest,
   SupportModeMutationOutcome,
   SupportMutationRequest,
   SupportOperationRejectedOutcome,
@@ -30,7 +32,7 @@ export interface SupportApplicationServiceDeps {
   readonly configurationId: ConfigurationId;
   readonly modeService: Pick<
     SupportModeService,
-    'getStatus' | 'setObjectMode' | 'enableObjectRules'
+    'getStatus' | 'getMasterStatus' | 'setObjectMode' | 'enableObjectRules'
   >;
   readonly coordinator: Pick<SupportSyncCoordinator, 'sync' | 'verifyOnly'>;
   readonly journal: Pick<SupportRunJournal, 'getLastRun'>;
@@ -55,15 +57,33 @@ export class SupportApplicationService {
     }
     try {
       const lastRun = await this.deps.journal.getLastRun(request.configurationId);
+      if (status.master.kind !== 'ready') {
+        return {
+          status: 'available',
+          master: status.master,
+          ...(lastRun ? { lastRun } : {}),
+        };
+      }
+      const metadataUniverse = status.metadataUniverse;
+      if (metadataUniverse === undefined) {
+        return operationRejected();
+      }
       return {
         status: 'available',
         master: filterMasterObjects(status.master, request.objectIds),
-        metadataUniverse: status.metadataUniverse,
+        metadataUniverse,
         ...(lastRun ? { lastRun } : {}),
       };
     } catch {
       return operationRejected();
     }
+  }
+
+  async getMasterStatus(request: SupportMasterStatusRequest): Promise<SupportMasterStatusOutcome> {
+    if (!this.isExpectedConfiguration(request.configurationId)) {
+      return operationRejected();
+    }
+    return this.deps.modeService.getMasterStatus();
   }
 
   setObjectMode(request: SupportMutationRequest): Promise<SupportModeMutationOutcome> {
@@ -84,7 +104,7 @@ export class SupportApplicationService {
     if (!this.isExpectedConfiguration(request.configurationId)) {
       return operationRejected();
     }
-    const status = await this.deps.modeService.getStatus();
+    const status = await this.getMasterStatus(request);
     if (status.status === 'operationRejected') {
       return status;
     }
@@ -132,7 +152,7 @@ export class SupportApplicationService {
     if (!this.isExpectedConfiguration(request.configurationId)) {
       return operationRejected();
     }
-    const status = await this.deps.modeService.getStatus();
+    const status = await this.getMasterStatus(request);
     if (status.status === 'operationRejected') {
       return status;
     }
@@ -193,10 +213,10 @@ export class SupportApplicationService {
 }
 
 function filterMasterObjects(
-  master: MasterSupportState,
+  master: Extract<MasterSupportState, { readonly kind: 'ready' }>,
   objectIds: readonly string[] | undefined,
-): MasterSupportState {
-  if (master.kind !== 'ready' || objectIds === undefined) {
+): Extract<MasterSupportState, { readonly kind: 'ready' }> {
+  if (objectIds === undefined) {
     return master;
   }
   const requested = new Set(objectIds.map((objectId) => objectId.toLocaleLowerCase()));

@@ -97,6 +97,7 @@ suite('Support state cache/watcher/root lifecycle', () => {
 
     fake.change(path.join(rootA, 'Ext', 'ParentConfigurations.bin'));
     fake.change(path.join(rootB, 'Ext', 'other.bin'));
+    await tick();
     assert.strictEqual(calls, 1);
     fake.change(path.join(rootA, 'Ext', 'ParentConfigurations.bin'));
     first.resolve(status('cfg-a' as ConfigurationId, 'stale'));

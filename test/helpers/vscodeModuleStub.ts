@@ -196,6 +196,19 @@ const ProgressLocation = {
   Notification: 15,
 } as const;
 
+class CancellationTokenSourceStub {
+  readonly token = {
+    isCancellationRequested: false,
+    onCancellationRequested: () => ({ dispose: () => undefined }),
+  };
+
+  cancel(): void {
+    this.token.isCancellationRequested = true;
+  }
+
+  dispose(): void {}
+}
+
 /** Mutable hooks for core tests (workspace keys, dialog results, command log). */
 export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
@@ -780,6 +793,7 @@ const vscodeStub = {
   ExtensionMode,
   ViewColumn,
   ProgressLocation,
+  CancellationTokenSource: CancellationTokenSourceStub,
   Position,
   Range,
   Location,

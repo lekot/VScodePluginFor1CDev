@@ -9,6 +9,7 @@ import type {
   MasterSupportState,
   MetadataUniverseSnapshot,
   SupportCancellation,
+  SupportMasterStatusOutcome,
   SupportModeMutationOutcome,
   SupportMutationRequest,
   SupportMutationResult,
@@ -56,11 +57,17 @@ export interface SupportModeServiceDeps {
   readonly cancellation?: SupportCancellation;
 }
 
-export interface SupportModeStatus {
-  readonly status: 'available';
-  readonly master: MasterSupportState;
-  readonly metadataUniverse: MetadataUniverseSnapshot;
-}
+export type SupportModeStatus =
+  | {
+      readonly status: 'available';
+      readonly master: Extract<MasterSupportState, { readonly kind: 'ready' }>;
+      readonly metadataUniverse: MetadataUniverseSnapshot;
+    }
+  | {
+      readonly status: 'available';
+      readonly master: Exclude<MasterSupportState, { readonly kind: 'ready' }>;
+      readonly metadataUniverse?: never;
+    };
 
 export type SupportModeStatusOutcome = SupportModeStatus | SupportOperationRejectedOutcome;
 
@@ -81,15 +88,34 @@ export class SupportModeService {
   }
 
   async getStatus(): Promise<SupportModeStatusOutcome> {
+    const masterStatus = await this.getMasterStatus();
+    if (masterStatus.status === 'operationRejected') {
+      return masterStatus;
+    }
+    const master = masterStatus.master;
+    if (master.kind !== 'ready') {
+      return {
+        status: 'available',
+        master,
+      };
+    }
     try {
-      const [master, universe] = await Promise.all([
-        this.deps.store.read(this.configRoot),
-        this.deps.universeResolver.resolve(this.configRoot),
-      ]);
+      const universe = await this.deps.universeResolver.resolve(this.configRoot);
       return {
         status: 'available',
         master,
         metadataUniverse: freezeUniverse(universe),
+      };
+    } catch {
+      return operationRejected();
+    }
+  }
+
+  async getMasterStatus(): Promise<SupportMasterStatusOutcome> {
+    try {
+      return {
+        status: 'available',
+        master: await this.deps.store.read(this.configRoot),
       };
     } catch {
       return operationRejected();
