@@ -4,7 +4,7 @@
 
 Дать стандартному MCP-клиенту полный доступ к существующему Agent API расширения без дублирования предметной логики. MCP является новым транспортом над теми же VS Code Agent-командами: каждый tool валидирует input и вызывает ровно одну команду через `vscode.commands.executeCommand`. Legacy Agent Bridge `/command` остаётся совместимым.
 
-Нормативная граница каталога — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. В текущей версии она регистрирует 61 Agent-команду, и MCP публикует их все в отношении 1:1.
+Нормативная граница каталога — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. В текущей версии она регистрирует 67 Agent-команд, и MCP публикует их все в отношении 1:1.
 
 Четыре UI-команды расширения не являются Agent API, не возвращают `AgentResult` и находятся вне scope:
 
@@ -66,6 +66,30 @@
 | `cdt_deploy_changed_files` | `1c-metadata-tree.agent.deployChangedFiles` | F/T/F/T |
 | `cdt_pull_selected_objects` | `1c-metadata-tree.agent.pullSelectedObjects` | F/T/F/T |
 | `cdt_export_status` | `1c-metadata-tree.agent.exportStatus` | T/F/T/T |
+
+### Поддержка конфигурации
+
+| Tool | Agent command | R/D/I/O |
+|---|---|---|
+| `cdt_support_get_status` | `1c-metadata-tree.agent.supportGetStatus` | T/F/T/F |
+| `cdt_support_set_object_mode` | `1c-metadata-tree.agent.supportSetObjectMode` | F/T/F/T |
+| `cdt_support_enable_object_rules` | `1c-metadata-tree.agent.supportEnableObjectRules` | F/T/F/T |
+| `cdt_support_sync` | `1c-metadata-tree.agent.supportSync` | F/T/F/T |
+| `cdt_support_verify` | `1c-metadata-tree.agent.supportVerify` | F/F/F/T |
+| `cdt_support_get_last_run` | `1c-metadata-tree.agent.supportGetLastRun` | T/F/T/F |
+
+`getStatus` и `getLastRun` читают только локальные master/journal. `verify` не меняет master или
+информационные базы, но запускает внешний Configurator dump и записывает новый durable audit run:
+поэтому его annotations — non-readonly, non-destructive, non-idempotent и open-world. Три
+destructive операции могут изменить `ParentConfigurations.bin` и/или связанные информационные базы.
+
+`SupportStatusResult` является discriminated contract: при `master.kind: "ready"`
+`metadataUniverse` обязателен, при `unmanaged | unknown` это поле отсутствует; `lastRun` optional в
+обоих случаях. `TargetSelection.ids.targetIds` — непустой массив уникальных canonical IDs и точное
+подмножество replicated targets. Empty/duplicate/unknown/no-match selection не расширяется до
+`all`, а возвращает typed `targetSelectionRejected` / `SUPPORT_TARGET_SELECTION_REJECTED`.
+Retryable selection учитывает только текущую master generation, исключает permanent failures и
+для `inDoubt` требует reconcile вместо blind apply.
 
 ### Типы, командный интерфейс и характеристики
 
@@ -136,12 +160,18 @@
 - SKD compile требует ровно одно из `definitionFile`/`value` и обязательный `outputPath`;
 - forms start требует хотя бы одно из `url`/`dbPath`; оба поля одновременно разрешены, и существующий Agent runtime отдаёт приоритет `dbPath`;
 - `debuggeeType` — только `thinClient | webServer`; SKD `mode`, `operation`, XDTO `joinStrategy` и command visibility задаются исчерпывающими enums.
+- support UUID — канонический UUID без coercion; `configurationId` и generation ids непустые;
+  `TargetSelection` является strict discriminated union `all | retryable | ids`, а `ids.targetIds`
+  и `retryable.include` — непустые массивы уникальных значений.
 
 Точные shapes по доменам:
 
 - metadata: `{}`, `{configurationId?,type,name,synonym?,properties?}`, `{configurationId?,path}`, `{configurationId?,type?,query?}`, `{configurationId?,path,name}`, `{configurationId?,path,newName}`, `{configurationId?,path,properties}`, `{configurationId?,path,types}`;
 - debug: `{rootProject,infobase,platformPath,extensions?,debugServerHost?,debugServerPort?,debuggeeType?,databasePath?}`, `{sessionId}`, `{file,line,condition?,hitCondition?,logMessage?}`, `{file?}`, `{sessionId,enabled,substring?}`, `{sessionId,timeoutMs?}`, `{sessionId,threadId}`, `{sessionId,frameId}`, `{sessionId,varRef}`, `{sessionId,expression,frameId?}`, `{configPath?,debuggeeType?}`;
 - bindings/deploy: `{configPath?}`, `{}`, `{configurationId?,configPath?}`, `{configurationId?,configPath?,files}`, `{configurationId?,configPath?,objectIds,infobaseName?}`;
+- support: `{configurationId,objectIds?}`, `{configurationId,objectId,targetMode,expectedGenerationId}`,
+  `{configurationId,targetObjectId,targetMode,expectedGenerationId,expectedMetadataUniverseGenerationId}`,
+  `{configurationId,targets,verification?}`, `{configurationId,targets}`, `{configurationId}`;
 - subsystem/characteristics: `{configurationId?,subsystemPath}`, `{configurationId?,subsystemPath,commandName,common}`, `{configurationId?,subsystemPath,entries: strict {commandName:string,commandGroup:string}[]}`, `{configurationId?,subsystemPath,order:string[]}`, `{configurationId?,path}`, `{configurationId?,path,predefinedName}`, `{configurationId?,path,predefinedName,types:string[]}`;
 - forms: `{url?,dbPath?,platformPath?,readyTimeoutMs?}`, `{script,timeoutMs?}`, `{}`, `{file?}`, `{}`;
 - SKD: `{definitionFile?,value?,outputPath}`, `{templatePath,mode?,name?,batch?,limit?,offset?,outFile?}`, `{templatePath,operation,value,dataSet?,variant?,noSelection?}`, `{templatePath,detailed?,maxErrors?,outFile?}`;
@@ -150,13 +180,17 @@
 ## Dispatch, результаты и ошибки
 
 - Валидный вызов исполняет ровно одну существующую Agent-команду через `vscode.commands.executeCommand`.
-- MCP не реализует XML, queue, binding, deploy, debug, forms, SKD или XDTO business logic.
+- MCP не реализует XML, support, queue, binding, deploy, debug, forms, SKD или XDTO business logic.
 - Исходный `AgentResult` без изменения семантики возвращается в `structuredContent` и JSON-копией в text content.
 - `AgentResult.success === false` даёт MCP tool result с `isError: true`.
 - Исключение Agent-команды нормализуется в `{ success: false, code: "AGENT_COMMAND_FAILED", error: "Agent command failed" }`; исходный exception и stack trace клиенту не возвращаются.
 - Неуспешный `debug.start`/`debug.startFromBinding` возвращает generic `AgentResult.error`, который не содержит `infobase`, connection string, credentials или сериализованный launch config; это ограничение действует до общего MCP mapper и для прямого Agent-вызова.
 - Ошибка schema/refinement не вызывает Agent-команду и остаётся стандартной ошибкой MCP tool invocation.
 - Mutating configuration tools сохраняют существующие `ConfigurationSession.enqueue`/`enqueuePlan`, потому что MCP вызывает Agent command, а не нижележащий service.
+- Support Agent-команды возвращают полный discriminated facade outcome в `AgentResult.data`.
+  `committedWithReplicationIssue`, `incomplete`, rejected и recovery outcomes имеют
+  `AgentResult.success=false`; локальный commit при незавершённой репликации не маскируется как успех.
+  `MasterSupportSnapshot.objectModes` сериализуется как JSON object с UUID-ключами.
 
 Cancellation проверяется перед dispatch и после его завершения. Отмена до dispatch не запускает Agent-команду. Отмена во время исполнения не прерывает уже запущенную команду: adapter дожидается её, отбрасывает результат и возвращает `{ success: false, code: "REQUEST_CANCELLED", error: "MCP request was cancelled" }` с `isError: true`. Принудительная остановка процессов, debug/forms sessions и мутаций не обещается без отдельного cancellation-контракта Agent API.
 
@@ -183,7 +217,7 @@ Stop: запрет новых запросов → закрытие MCP sessions
 ## Критерии приёмки
 
 1. Official SDK client проходит `initialize → tools/list → tools/call → DELETE session` по discovery URL и Bearer token.
-2. `tools/list` содержит ровно 61 уникальный tool и ровно 61 уникальный Agent command mapping.
+2. `tools/list` содержит ровно 67 уникальных tools и ровно 67 уникальных Agent command mappings.
 3. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
 4. Четыре перечисленные UI-команды отсутствуют в MCP catalog.
 5. Для каждого tool проверены имя, command id, strict schema, refinements и статические annotations.

@@ -11,6 +11,7 @@ import {
   ibcmdOfflineConnectionFromPrepared,
   type IbcmdConfigCliCredentials,
 } from './ibcmd/ibcmdInfobaseConfigArgs';
+import { runInfobaseConfigurationOperation } from '../infobases/infobaseConfigurationOperationQueue';
 
 const PREVIEW_MAX = 8000;
 
@@ -89,12 +90,15 @@ export async function runIbcmdXmlImportPreflight(params: {
       },
     );
 
-    const { stdout, stderr } = await runIbcmdExecutable(
-      pathResult.path,
-      args,
-      ibcmd.getTimeoutMs(),
-      params.execImpl,
-      getIbcmdConsoleOutputEncodingSetting(),
+    const { stdout, stderr } = await runInfobaseConfigurationOperation(
+      params.entry,
+      () => runIbcmdExecutable(
+        pathResult.path,
+        args,
+        ibcmd.getTimeoutMs(),
+        params.execImpl,
+        getIbcmdConsoleOutputEncodingSetting(),
+      ),
     );
     const details = combineOutput(stdout, stderr);
     return {

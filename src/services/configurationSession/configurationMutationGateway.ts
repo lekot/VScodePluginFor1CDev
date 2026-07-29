@@ -3,8 +3,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MutationPlanExecutor } from './mutationPlan';
 
-type MutationRunner = <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
-type PlanRunner = <T>(resourcePath: string, plan: MutationPlan<T>) => Promise<T>;
+export type MutationRunner = <T>(resourcePath: string, kind: string, operation: () => Promise<T>) => Promise<T>;
+export type PlanRunner = <T>(resourcePath: string, plan: MutationPlan<T>) => Promise<T>;
+export type ExclusiveConfigurationCallback<T> = () => Promise<T>;
 
 let mutationRunner: MutationRunner | undefined;
 let planRunner: PlanRunner | undefined;
@@ -30,6 +31,18 @@ export function runConfigurationMutation<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   return mutationRunner ? mutationRunner(resourcePath, kind, operation) : operation();
+}
+
+/**
+ * Runs a short configuration-wide critical section on the same FIFO lease as metadata mutations.
+ * External process fan-out must start only after this promise settles.
+ */
+export function runExclusiveConfigurationOperation<T>(
+  resourcePath: string,
+  kind: string,
+  operation: ExclusiveConfigurationCallback<T>,
+): Promise<T> {
+  return runConfigurationMutation(resourcePath, kind, operation);
 }
 
 export function runConfigurationPlan<T>(resourcePath: string, plan: MutationPlan<T>): Promise<T> {

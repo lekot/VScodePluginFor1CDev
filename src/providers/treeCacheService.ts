@@ -79,6 +79,10 @@ export class TreeCacheService {
     return this.nodeCache.get(id) ?? null;
   }
 
+  contains(node: TreeNode): boolean {
+    return this.nodeCandidatesById.get(node.id)?.includes(node) ?? false;
+  }
+
   /**
    * Find nodes by exact lowercase name (used for search).
    */

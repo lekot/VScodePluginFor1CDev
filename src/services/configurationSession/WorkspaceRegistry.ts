@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { CONFIGURATION_XML } from '../../constants/fileNames';
 import { ConfigFormat } from '../../parsers/formatDetector';
 import { ConfigurationSession } from './ConfigurationSession';
+import type { ExclusiveConfigurationOperation, MutationOutcome } from './ConfigurationSession';
 import { assertPathWithinRoot, isPathInside } from './pathBoundary';
 import type { ConfigurationDescriptor, ConfigurationId, ConfigurationIdentity } from './types';
 
@@ -163,6 +164,15 @@ export class WorkspaceRegistry {
       throw new WorkspaceRegistryError('CONFIGURATION_NOT_FOUND', `Ресурс не принадлежит конфигурации: ${resource}`);
     }
     return best;
+  }
+
+  /** Resolves ownership and enters the same per-configuration FIFO used by all metadata mutations. */
+  async runExclusiveResource<T>(
+    resource: string,
+    operation: ExclusiveConfigurationOperation<T>,
+  ): Promise<MutationOutcome<T>> {
+    const session = await this.resolveResource(resource);
+    return session.runExclusive(operation);
   }
 
   async dispose(): Promise<void> {

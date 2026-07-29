@@ -42,3 +42,10 @@ export const WRITE_OPEN: McpToolAnnotations = {
   idempotentHint: false,
   openWorldHint: true,
 };
+
+export const VERIFY_OPEN: McpToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+};

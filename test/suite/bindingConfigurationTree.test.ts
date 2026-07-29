@@ -12,7 +12,10 @@ import { bindingKey } from '../../src/bindings/bindingPathUtils';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
 import type { ExtensionState } from '../../src/state/extensionState';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
-import { resetIbcmdServiceSingletonForTests } from '../../src/services/ibcmd/ibcmdServiceSingleton';
+import {
+  getIbcmdService,
+  resetIbcmdServiceSingletonForTests,
+} from '../../src/services/ibcmd/ibcmdServiceSingleton';
 import {
   resetVscodeTestState,
   restoreVscodeWorkspaceFoldersGetter,
@@ -445,14 +448,15 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     assert.ok(vscodeTestState.errorLog.some((m) => m.includes('Не удалось загрузить каталог')));
   });
 
-  test('when ibcmd unresolved shows ibcmd dialog and does not run deploy', async () => {
+  test('when ibcmd unresolved delegates discovery to DeployService and does not import', async () => {
     const wsRoot = fixtureSmallMatrixRoot();
-    const missingParent = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-ibcmd-abs-'));
-    tempDirs.push(missingParent);
-    const missing = path.join(missingParent, 'no-ibcmd');
-    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.path'] = missing;
-    vscodeTestState.workspaceConfig['1cMetadataTree.ibcmd.autoDetect'] = false;
-    resetIbcmdServiceSingletonForTests();
+    vscodeTestState.warningMessageReturnQueue = ['Продолжить'];
+    let resolveCalls = 0;
+    const ibcmd = getIbcmdService();
+    ibcmd.resolveExecutablePathAsync = async () => {
+      resolveCalls += 1;
+      return { kind: 'notFound', hint: 'test not found' };
+    };
 
     vscodeTestState.mockWorkspaceFolders = [{ name: 'MyWs', index: 0, uri: vscode.Uri.file(wsRoot) }];
     const work = fs.mkdtempSync(path.join(os.tmpdir(), '1cv-deploy-cmd-'));
@@ -489,8 +493,9 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
       },
     } as unknown as ExtensionState;
     await runDeployForConfigurationFromTree(configurationNode(wsRoot), state, tree);
-    assert.ok(vscodeTestState.warningLog.some((m) => m.includes('ibcmd не найден')));
-    assert.ok(!vscodeTestState.outputChannelLines.some((l) => l.includes('[раскатка] Итого:')));
+    assert.strictEqual(resolveCalls, 1);
+    assert.ok(vscodeTestState.warningLog.some((m) => m.includes('1 с ошибками')));
+    assert.ok(vscodeTestState.outputChannelLines.some((l) => l.includes('[раскатка] Итого:')));
   });
 
   test('confirm deploy dialog mentions copy mode (temporary snapshot)', async () => {
@@ -762,5 +767,58 @@ suite('WOW §2D runDeployForConfigurationFromTree', () => {
     const d2 = ctx.find((e) => e.command === '1c-metadata-tree.config.deployMultiple');
     assert.ok(d1?.when?.includes('deployOne'));
     assert.ok(d2?.when?.includes('deployMany'));
+  });
+});
+
+suite('binding command ibcmd discovery contract', () => {
+  function commandSource(name: string): string {
+    const root = path.join(__dirname, '..', '..', '..');
+    const source = fs.readFileSync(
+      path.join(root, 'src', 'bindings', 'bindingCommands.ts'),
+      'utf8',
+    );
+    const marker = `export async function ${name}(`;
+    const start = source.indexOf(marker);
+    assert.notStrictEqual(start, -1, `command source not found: ${name}`);
+    const next = source.indexOf('\nexport async function ', start + marker.length);
+    return source.slice(start, next === -1 ? source.length : next);
+  }
+
+  test('full deploy delegates ibcmd discovery to DeployService after support context resolution', () => {
+    const source = commandSource('runDeployForConfigurationFromTree');
+    const supportContext = source.indexOf('resolveDeploySupportContext(');
+    const deploy = source.indexOf('deployService.deployBinding(');
+
+    assert.ok(supportContext >= 0, 'full deploy must resolve its exact support context');
+    assert.ok(deploy > supportContext, 'full deploy must pass support context into DeployService');
+    assert.ok(
+      !source.includes('resolveExecutablePathAsync'),
+      'UI full deploy must not discover ibcmd before DeployService support preflight',
+    );
+    assert.ok(
+      !source.includes('showIbcmdNotFoundDialog'),
+      'UI full deploy must not intercept support rejection with the ibcmd dialog',
+    );
+  });
+
+  test('non-full binding commands retain their explicit ibcmd discovery guards', () => {
+    const guardedCommands = [
+      'runDeploySelectedObjectsFromTree',
+      'runPullSelectedObjectsFromTree',
+      'runDeployChangedFilesFromTree',
+      'runConfigExportStatusFromTree',
+    ];
+
+    for (const name of guardedCommands) {
+      const source = commandSource(name);
+      assert.ok(
+        source.includes('resolveExecutablePathAsync'),
+        `${name} must retain explicit ibcmd discovery`,
+      );
+      assert.ok(
+        source.includes('showIbcmdNotFoundDialog'),
+        `${name} must retain its ibcmd-not-found dialog`,
+      );
+    }
   });
 });

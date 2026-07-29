@@ -16,17 +16,27 @@ import {
   runInfobaseConfigImportFromDirectory,
   runInfobaseConfigIncrementalImport,
   runInfobaseConfigExportObjects,
-  serializeInfobaseConfigIbcmdOp,
 } from '../infobases/infobaseConfigCommands';
+import { runInfobaseConfigurationOperation } from '../infobases/infobaseConfigurationOperationQueue';
+import { resolveInfobaseCanonicalIdentity } from '../infobases/infobaseCanonicalIdentity';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { collectFilesForSelection, resolveIbcmdObjectId } from '../services/ibcmd/objectFileCollector';
 import { detectDeployGuards } from './deployPreflightGuards';
 import { expandBslSiblings } from './bslExpansion';
 import { checkRecentDeploy, recordDeploy } from './deployDedupCache';
 import { runIbcmdXmlImportPreflight } from '../services/ibcmdXmlPreflightService';
-import { filterOutLockedObjectFiles } from './deployLockedObjectsFilter';
+import {
+  DeployLockedObjectsPlanner,
+  type DeploySupportPlannerRequest,
+  type DeploySupportPreflight,
+  type DeploySupportPreflightErrorCode,
+  filterOutLockedObjectFiles,
+} from './deployLockedObjectsFilter';
 import { MESSAGES } from '../constants/messages';
 import type { TreeNode } from '../models/treeNode';
+import type { ConfigurationId } from '../services/configurationSession/types';
+import type { SupportApplicationFacade } from '../support/supportApplicationServiceRegistry';
+import type { MasterSupportState, SupportStatusResult } from '../support/supportTypes';
 import {
   assertExistingPathWithinRootSync,
   PathBoundaryError,
@@ -40,6 +50,8 @@ export interface DeployItemResult {
   readonly name: string;
   readonly status: DeployItemStatus;
   readonly message: string;
+  readonly errorCode?: DeploySupportErrorCode;
+  readonly skippedFiles?: readonly string[];
 }
 
 export interface DeployRunSummary {
@@ -48,12 +60,31 @@ export interface DeployRunSummary {
   readonly errorCount: number;
   /** Предпролётные пропуски, веб-базы, отмена и т.п. */
   readonly skippedCount: number;
+  /** At least one target omitted concrete requested files from its result. */
+  readonly hasPartial: boolean;
   /** Пользователь отменил во время цепочки — дальнейшие базы не запускались. */
   readonly cancelledMidChain: boolean;
 }
 
 export interface DeployProgressSink {
   report(value: { message?: string; increment?: number }): void;
+}
+
+export type DeploySupportErrorCode =
+  | DeploySupportPreflightErrorCode
+  | 'SUPPORT_DEPLOY_TARGET_NOT_REPLICATED'
+  | 'SUPPORT_BINDING_INVALID'
+  | 'SUPPORT_TARGET_UNSUPPORTED'
+  | 'SUPPORT_FILE_MISSING'
+  | 'SUPPORT_NOT_MANAGED'
+  | 'SUPPORT_REPLICATION_FAILED'
+  | 'SUPPORT_REPLICATION_INCOMPLETE'
+  | 'SUPPORT_TARGET_SELECTION_REJECTED';
+
+/** Exact support facade/identity pair supplied by UI and Agent composition roots. */
+export interface DeploySupportContext {
+  readonly configurationId: ConfigurationId;
+  readonly facade: Pick<SupportApplicationFacade, 'getStatus' | 'getMasterStatus' | 'sync'>;
 }
 
 export type DeployMode = 'copy' | 'block';
@@ -362,6 +393,7 @@ export interface DeploySelectedObjectsParams {
   selectedNodes: readonly TreeNode[];
   progress: DeployProgressSink;
   token: vscode.CancellationToken;
+  support?: DeploySupportContext;
 }
 
 export interface DeployChangedFilesParams {
@@ -372,6 +404,7 @@ export interface DeployChangedFilesParams {
   relativeFiles: readonly string[];
   progress: DeployProgressSink;
   token: vscode.CancellationToken;
+  support?: DeploySupportContext;
 }
 
 export interface PullSelectedObjectsParams {
@@ -403,6 +436,7 @@ export class DeployService {
     catalog: readonly InfobaseEntry[];
     progress: DeployProgressSink;
     token: vscode.CancellationToken;
+    support?: DeploySupportContext;
   }): Promise<DeployRunSummary> {
     const catalogById = new Map(params.catalog.map((e) => [e.id, e] as const));
     const resolved = resolveConfigurationXmlDirectory(params.workspaceFolderRoot, params.binding.configRelativePath);
@@ -420,6 +454,11 @@ export class DeployService {
       );
       appendDeployRunSummaryLine(s);
       return s;
+    }
+
+    const supportPreflight = await planDeploySupport(params.support, 'full', []);
+    if (isDeploySupportRejected(supportPreflight)) {
+      return rejectDeployBeforeIbcmd(supportPreflight);
     }
 
     const ibcmd = getIbcmdService();
@@ -527,6 +566,16 @@ export class DeployService {
         }
 
         const entry = entries[i]!;
+        const preflightAndImport = await runInfobaseConfigurationOperation(entry, async () => {
+          const supportGate = await synchronizePendingSupportForTarget(
+            params.support,
+            entry,
+            false,
+            supportPreflight,
+          );
+        if (!supportGate.accepted) {
+          return supportGate;
+        }
         if (readDeployPrecheckXmlBeforeImportSetting()) {
           const preflight = await (this.deps.runXmlPreflight ?? runIbcmdXmlImportPreflight)({
             entry,
@@ -566,16 +615,23 @@ export class DeployService {
           increment,
         });
 
-        const interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-          runInfobaseConfigImportFromDirectory({
+        return runInfobaseConfigImportFromDirectory({
             storage: params.storage,
             entry,
             absoluteSourceDir: sourceDir,
             token: params.token,
             logContext: 'раскатка',
             ibcmdExtensionName: params.binding.ibcmdExtensionName,
-          }),
-        );
+          });
+        });
+        if (isSupportGateFailure(preflightAndImport)) {
+          results.push(targetSupportGateFailure(entry, preflightAndImport));
+          continue;
+        }
+        if ('successCount' in preflightAndImport) {
+          return preflightAndImport;
+        }
+        const interpreted = preflightAndImport;
 
         if (interpreted.status === 'cancelled') {
           cancelledMidChain = true;
@@ -670,9 +726,15 @@ export class DeployService {
     // BSL expansion: for .bsl files add descriptor XML + all sibling files in object dir.
     const withSiblings = expandBslSiblings(relativeFiles, configRoot);
     appendIbcmdOutputLine(`[bsl-expansion] было ${relativeFiles.length} файлов, стало ${withSiblings.length}`);
+    const supportPreflight = await planDeploySupport(params.support, 'files', withSiblings);
+    if (isDeploySupportRejected(supportPreflight)) {
+      return rejectDeployBeforeIbcmd(supportPreflight);
+    }
+    const deployFiles = supportPreflight?.relativeFiles ?? withSiblings;
+    appendSupportFilePlan(supportPreflight);
 
     // Preflight guards: detect Configuration.xml inclusion and missing files.
-    const guards = detectDeployGuards(withSiblings, configRoot);
+    const guards = detectDeployGuards(deployFiles, configRoot);
     appendIbcmdOutputLine(`[preflight] hasConfigurationXml=${guards.hasConfigurationXml}, missingFiles=${guards.missingFiles.length}`);
 
     if (guards.hasConfigurationXml || guards.missingFiles.length > 0) {
@@ -693,10 +755,10 @@ export class DeployService {
       return s;
     }
 
-    const hasStructuralFiles = withSiblings.some((f) => f.endsWith('.xml'));
+    const hasStructuralFiles = deployFiles.some((f) => f.endsWith('.xml'));
 
-    appendIbcmdOutputLine(`[раскатка выбранных] Найдено файлов: ${withSiblings.length}`);
-    for (const f of withSiblings) {
+    appendIbcmdOutputLine(`[раскатка выбранных] Найдено файлов: ${deployFiles.length}`);
+    for (const f of deployFiles) {
       appendIbcmdOutputLine(`  ${f}`);
     }
 
@@ -727,42 +789,60 @@ export class DeployService {
       const entry = entries[i]!;
       params.progress.report({ message: `Раскатка выбранных: ${entry.name} (${i + 1}/${total})`, increment });
 
-      const dedupResult = checkRecentDeploy({ bindingId, infobaseId: entry.id }, { relativeFiles: withSiblings }, Date.now());
-      if (dedupResult.isDuplicate) {
-        appendIbcmdOutputLine(`[dedup] пропуск ${dedupResult.ageMs} ms назад уже раскатывали тот же набор на ${entry.name}`);
-        results.push({ infobaseId: entry.id, name: entry.name, status: 'skipped', message: `Пропущено: тот же набор файлов уже раскатывался ${dedupResult.ageMs} мс назад.` });
-        continue;
-      }
-
       const doImport = this.deps.runIncrementalImport ?? runInfobaseConfigIncrementalImport;
+      const supportAndImport = await runInfobaseConfigurationOperation(entry, async () => {
+        const supportGate = await synchronizePendingSupportForTarget(
+          params.support,
+          entry,
+          supportPreflight?.kind === 'ready' && supportPreflight.supportFileRouted,
+          supportPreflight,
+        );
+        if (!supportGate.accepted) {
+          return supportGate;
+        }
+        if (deployFiles.length === 0) {
+          return { kind: 'skippedBySupport' as const };
+        }
+        const dedupResult = checkRecentDeploy(
+          { bindingId, infobaseId: entry.id },
+          { relativeFiles: deployFiles },
+          Date.now(),
+        );
+        if (dedupResult.isDuplicate) {
+          return { kind: 'duplicate' as const, ageMs: dedupResult.ageMs };
+        }
 
-      let interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-        doImport({
+        let candidateFiles = deployFiles;
+        let importedFiles: readonly string[] = [];
+        let reactiveSkippedFiles: readonly string[] = [];
+        let reactiveLockObserved = false;
+        let interpreted = await doImport({
           storage: params.storage,
           entry,
           configRoot,
-          relativeFiles: withSiblings,
+          relativeFiles: candidateFiles,
           token: params.token,
           logContext: 'выбранные объекты',
           ibcmdExtensionName: params.binding.ibcmdExtensionName,
-        }),
-      );
+        });
 
-      if (interpreted.status === 'error' && interpreted.lockedObjects && interpreted.lockedObjects.length > 0) {
-        const locked = interpreted.lockedObjects;
-        const { kept, filtered } = filterOutLockedObjectFiles(withSiblings, locked);
-        const lockedNames = locked.map((o) => o.fullName).join(', ');
-        appendIbcmdOutputLine(
-          `[support-mode] Объекты на поддержке: ${lockedNames}. Отфильтровано файлов: ${filtered.length}; оставлено: ${kept.length}.`,
-        );
-        if (kept.length === 0) {
-          void vscode.window.showWarningMessage(MESSAGES.LOCKED_OBJECTS_ALL_FILTERED);
-        } else {
-          void vscode.window.showWarningMessage(
-            `На поддержке и пропущены: ${lockedNames}. Продолжаем раскатку без них.`,
+        if (interpreted.status === 'error' && interpreted.lockedObjects && interpreted.lockedObjects.length > 0) {
+          reactiveLockObserved = true;
+          const locked = interpreted.lockedObjects;
+          const { kept, filtered } = filterOutLockedObjectFiles(candidateFiles, locked);
+          candidateFiles = kept;
+          reactiveSkippedFiles = filtered;
+          const lockedNames = locked.map((o) => o.fullName).join(', ');
+          appendIbcmdOutputLine(
+            `[support-mode:fallback] Внешний drift: ${lockedNames}. Отфильтровано файлов: ${filtered.length}; оставлено: ${kept.length}.`,
           );
-          interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-            doImport({
+          if (kept.length === 0) {
+            void vscode.window.showWarningMessage(MESSAGES.LOCKED_OBJECTS_ALL_FILTERED);
+          } else {
+            void vscode.window.showWarningMessage(
+              `Состояние поддержки в ИБ изменилось после preflight. Пропущены: ${lockedNames}.`,
+            );
+            interpreted = await doImport({
               storage: params.storage,
               entry,
               configRoot,
@@ -770,40 +850,101 @@ export class DeployService {
               token: params.token,
               logContext: 'выбранные объекты (без залоченных)',
               ibcmdExtensionName: params.binding.ibcmdExtensionName,
-            }),
-          );
+            });
+          }
         }
-      }
 
-      // Fallback: if import failed and we have structural (.xml) files,
-      // offer to retry with Configuration.xml included.
-      if (interpreted.status === 'error' && hasStructuralFiles && !(interpreted.lockedObjects && interpreted.lockedObjects.length > 0)) {
-        const retry = await vscode.window.showWarningMessage(
-          `Раскатка в «${entry.name}» не удалась. Повторить с Configuration.xml? ` +
-            '(будут применены ВСЕ структурные изменения конфигурации)',
-          'Повторить с Configuration.xml',
-          'Пропустить',
-        );
-        if (retry === 'Повторить с Configuration.xml') {
-          appendIbcmdOutputLine(`[раскатка выбранных] Повтор с Configuration.xml...`);
-          interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-            doImport({
+        // Fallback: if import failed and we have structural (.xml) files,
+        // offer to retry with Configuration.xml included.
+        if (
+          interpreted.status === 'error'
+          && hasStructuralFiles
+          && !reactiveLockObserved
+          && !(interpreted.lockedObjects && interpreted.lockedObjects.length > 0)
+        ) {
+          const retryFiles = stableUniqueFiles(['Configuration.xml', ...candidateFiles]);
+          const retrySupportGate = await gateConfigurationXmlRetry(
+            params.support,
+            entry,
+            supportPreflight,
+            retryFiles,
+          );
+          if (!retrySupportGate.accepted) {
+            return retrySupportGate;
+          }
+          const retry = await vscode.window.showWarningMessage(
+            `Раскатка в «${entry.name}» не удалась. Повторить с Configuration.xml? ` +
+              '(будут применены ВСЕ структурные изменения конфигурации)',
+            'Повторить с Configuration.xml',
+            'Пропустить',
+          );
+          if (retry === 'Повторить с Configuration.xml') {
+            appendIbcmdOutputLine(`[раскатка выбранных] Повтор с Configuration.xml...`);
+            interpreted = await doImport({
               storage: params.storage,
               entry,
               configRoot,
-              relativeFiles: ['Configuration.xml', ...withSiblings],
+              relativeFiles: retryFiles,
               token: params.token,
               logContext: 'выбранные объекты + Configuration.xml',
               ibcmdExtensionName: params.binding.ibcmdExtensionName,
-            }),
-          );
+            });
+            candidateFiles = retryFiles;
+          }
         }
+        if (interpreted.status === 'success') {
+          importedFiles = candidateFiles;
+        }
+        return {
+          kind: 'import' as const,
+          interpreted,
+          importedFiles,
+          skippedFiles: reactiveSkippedFiles,
+        };
+      });
+      if (isSupportGateFailure(supportAndImport)) {
+        results.push(targetSupportGateFailure(entry, supportAndImport));
+        continue;
       }
+      if ('kind' in supportAndImport && supportAndImport.kind === 'skippedBySupport') {
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: 'skipped',
+          message: supportSkipMessage(supportPreflight),
+          skippedFiles: supportPreflight?.skippedLockedFiles,
+        });
+        continue;
+      }
+      if (supportAndImport.kind === 'duplicate') {
+        appendIbcmdOutputLine(
+          `[dedup] пропуск ${supportAndImport.ageMs} ms назад уже раскатывали тот же набор на ${entry.name}`,
+        );
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: 'skipped',
+          message: `Пропущено: тот же набор файлов уже раскатывался ${supportAndImport.ageMs} мс назад.`,
+          skippedFiles: supportPreflight?.skippedLockedFiles,
+        });
+        continue;
+      }
+      const interpreted = supportAndImport.interpreted;
+      const skippedFiles = stableUniqueFiles([
+        ...(supportPreflight?.skippedLockedFiles ?? []),
+        ...supportAndImport.skippedFiles,
+      ]);
 
       if (interpreted.status === 'cancelled') {
         cancelledMidChain = true;
         appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: отменено — ${interpreted.userMessage}`);
-        results.push({ infobaseId: entry.id, name: entry.name, status: 'skipped', message: interpreted.userMessage });
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: 'skipped',
+          message: interpreted.userMessage,
+          skippedFiles,
+        });
         for (let j = i + 1; j < entries.length; j++) {
           const e = entries[j]!;
           results.push({ infobaseId: e.id, name: e.name, status: 'skipped', message: 'Пропущено: отмена.' });
@@ -812,12 +953,31 @@ export class DeployService {
       }
 
       if (interpreted.status === 'success') {
-        recordDeploy({ bindingId, infobaseId: entry.id }, { relativeFiles: withSiblings }, Date.now());
+        recordDeploy(
+          { bindingId, infobaseId: entry.id },
+          { relativeFiles: supportAndImport.importedFiles },
+          Date.now(),
+        );
         appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: успех — ${interpreted.userMessage}`);
-        results.push({ infobaseId: entry.id, name: entry.name, status: 'success', message: interpreted.userMessage });
+        const partial = skippedFiles.length > 0;
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: partial ? 'skipped' : 'success',
+          message: partial
+            ? partialDeployMessage(interpreted.userMessage, skippedFiles.length)
+            : interpreted.userMessage,
+          skippedFiles,
+        });
       } else {
         appendIbcmdOutputLine(`[раскатка выбранных] ${entry.name}: ошибка — ${interpreted.userMessage}`);
-        results.push({ infobaseId: entry.id, name: entry.name, status: 'error', message: interpreted.userMessage });
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: 'error',
+          message: interpreted.userMessage,
+          skippedFiles,
+        });
       }
     }
 
@@ -848,6 +1008,12 @@ export class DeployService {
       return s;
     }
     const configRoot = resolved.sourceDir;
+    const supportPreflight = await planDeploySupport(params.support, 'files', params.relativeFiles);
+    if (isDeploySupportRejected(supportPreflight)) {
+      return rejectDeployBeforeIbcmd(supportPreflight);
+    }
+    const deployFiles = supportPreflight?.relativeFiles ?? params.relativeFiles;
+    appendSupportFilePlan(supportPreflight);
 
     const ibcmd = getIbcmdService();
     if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
@@ -859,8 +1025,8 @@ export class DeployService {
       return s;
     }
 
-    appendIbcmdOutputLine(`[раскатка изменённых] Файлов к загрузке: ${params.relativeFiles.length}`);
-    for (const f of params.relativeFiles) {
+    appendIbcmdOutputLine(`[раскатка изменённых] Файлов к загрузке: ${deployFiles.length}`);
+    for (const f of deployFiles) {
       appendIbcmdOutputLine(`  ${f}`);
     }
 
@@ -889,22 +1055,90 @@ export class DeployService {
       const entry = entries[i]!;
       params.progress.report({ message: `Раскатка изменённых: ${entry.name} (${i + 1}/${total})`, increment });
 
-      const interpreted = await serializeInfobaseConfigIbcmdOp(() =>
-        runInfobaseConfigIncrementalImport({
+      const supportAndImport = await runInfobaseConfigurationOperation(entry, async () => {
+        const supportGate = await synchronizePendingSupportForTarget(
+          params.support,
+          entry,
+          supportPreflight?.kind === 'ready' && supportPreflight.supportFileRouted,
+          supportPreflight,
+        );
+        if (!supportGate.accepted) {
+          return supportGate;
+        }
+        if (deployFiles.length === 0) {
+          return { kind: 'skippedBySupport' as const };
+        }
+        let candidateFiles = deployFiles;
+        let importedFiles: readonly string[] = [];
+        let reactiveSkippedFiles: readonly string[] = [];
+        let interpreted = await runInfobaseConfigIncrementalImport({
           storage: params.storage,
           entry,
           configRoot,
-          relativeFiles: params.relativeFiles,
+          relativeFiles: candidateFiles,
           token: params.token,
           logContext: 'изменённые файлы',
           ibcmdExtensionName: params.binding.ibcmdExtensionName,
-        }),
-      );
+        });
+        if (interpreted.status === 'error' && interpreted.lockedObjects?.length) {
+          const filtered = filterOutLockedObjectFiles(candidateFiles, interpreted.lockedObjects);
+          candidateFiles = filtered.kept;
+          reactiveSkippedFiles = filtered.filtered;
+          appendIbcmdOutputLine(
+            `[support-mode:fallback] Внешний drift: отфильтровано ${filtered.filtered.length}, оставлено ${filtered.kept.length}.`,
+          );
+          if (filtered.kept.length > 0) {
+            interpreted = await runInfobaseConfigIncrementalImport({
+              storage: params.storage,
+              entry,
+              configRoot,
+              relativeFiles: filtered.kept,
+              token: params.token,
+              logContext: 'изменённые файлы (drift fallback)',
+              ibcmdExtensionName: params.binding.ibcmdExtensionName,
+            });
+          }
+        }
+        if (interpreted.status === 'success') {
+          importedFiles = candidateFiles;
+        }
+        return {
+          kind: 'import' as const,
+          interpreted,
+          importedFiles,
+          skippedFiles: reactiveSkippedFiles,
+        };
+      });
+      if (isSupportGateFailure(supportAndImport)) {
+        results.push(targetSupportGateFailure(entry, supportAndImport));
+        continue;
+      }
+      if ('kind' in supportAndImport && supportAndImport.kind === 'skippedBySupport') {
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: 'skipped',
+          message: supportSkipMessage(supportPreflight),
+          skippedFiles: supportPreflight?.skippedLockedFiles,
+        });
+        continue;
+      }
+      const interpreted = supportAndImport.interpreted;
+      const skippedFiles = stableUniqueFiles([
+        ...(supportPreflight?.skippedLockedFiles ?? []),
+        ...supportAndImport.skippedFiles,
+      ]);
 
       if (interpreted.status === 'cancelled') {
         cancelledMidChain = true;
         appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: отменено — ${interpreted.userMessage}`);
-        results.push({ infobaseId: entry.id, name: entry.name, status: 'skipped', message: interpreted.userMessage });
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: 'skipped',
+          message: interpreted.userMessage,
+          skippedFiles,
+        });
         for (let j = i + 1; j < entries.length; j++) {
           const e = entries[j]!;
           results.push({ infobaseId: e.id, name: e.name, status: 'skipped', message: 'Пропущено: отмена.' });
@@ -914,10 +1148,25 @@ export class DeployService {
 
       if (interpreted.status === 'success') {
         appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: успех — ${interpreted.userMessage}`);
-        results.push({ infobaseId: entry.id, name: entry.name, status: 'success', message: interpreted.userMessage });
+        const partial = skippedFiles.length > 0;
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: partial ? 'skipped' : 'success',
+          message: partial
+            ? partialDeployMessage(interpreted.userMessage, skippedFiles.length)
+            : interpreted.userMessage,
+          skippedFiles,
+        });
       } else {
         appendIbcmdOutputLine(`[раскатка изменённых] ${entry.name}: ошибка — ${interpreted.userMessage}`);
-        results.push({ infobaseId: entry.id, name: entry.name, status: 'error', message: interpreted.userMessage });
+        results.push({
+          infobaseId: entry.id,
+          name: entry.name,
+          status: 'error',
+          message: interpreted.userMessage,
+          skippedFiles,
+        });
       }
     }
 
@@ -929,7 +1178,7 @@ export class DeployService {
   /**
    * Выгрузка отдельных объектов метаданных из базы в файлы конфигурации.
    * Использует `ibcmd infobase config export objects`.
-   * Не оборачивается в serializeInfobaseConfigIbcmdOp — это делает вызывающая сторона.
+   * Общую очередь конфигурации целевой ИБ захватывает вызывающая сторона.
    */
   async pullSelectedObjects(params: PullSelectedObjectsParams): Promise<DeployRunSummary> {
     const resolved = resolveConfigurationXmlDirectory(params.workspaceFolderRoot, params.binding.configRelativePath);
@@ -1012,11 +1261,369 @@ export class DeployService {
   }
 }
 
+type TargetSupportGate =
+  | { readonly accepted: true }
+  | {
+      readonly accepted: false;
+      readonly errorCode: DeploySupportErrorCode;
+      readonly message: string;
+    };
+
+async function planDeploySupport(
+  support: DeploySupportContext | undefined,
+  mode: DeploySupportPlannerRequest['mode'],
+  relativeFiles: readonly string[],
+): Promise<DeploySupportPreflight | undefined> {
+  if (!support) {
+    return undefined;
+  }
+  return new DeployLockedObjectsPlanner(support.facade).plan({
+    configurationId: support.configurationId,
+    mode,
+    relativeFiles,
+  });
+}
+
+async function gateConfigurationXmlRetry(
+  support: DeploySupportContext | undefined,
+  entry: InfobaseEntry,
+  plannedPreflight: DeploySupportPreflight | undefined,
+  retryFiles: readonly string[],
+): Promise<TargetSupportGate> {
+  if (!support) {
+    return { accepted: true };
+  }
+  const freshPreflight = await planDeploySupport(support, 'files', retryFiles);
+  if (!freshPreflight) {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      'Не удалось сформировать свежий support-план для повтора с Configuration.xml.',
+    );
+  }
+  if (isDeploySupportRejected(freshPreflight)) {
+    return supportGateFailure(
+      freshPreflight.errorCode,
+      `Повтор с Configuration.xml запрещён: support replan отклонён. ${freshPreflight.diagnostics.join(' ')}`,
+    );
+  }
+  if (
+    plannedPreflight?.kind === 'ready'
+    && (
+      freshPreflight.kind !== 'ready'
+      || freshPreflight.generationId !== plannedPreflight.generationId
+    )
+  ) {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      'Повтор с Configuration.xml запрещён: generation master поддержки изменилась; сформируйте план раскатки повторно.',
+    );
+  }
+  if (freshPreflight.kind === 'ready' && freshPreflight.lockedSupportSubjectIds.length > 0) {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      'Повтор с Configuration.xml запрещён: свежий support-план содержит заблокированные объекты.',
+    );
+  }
+  return synchronizePendingSupportForTarget(
+    support,
+    entry,
+    false,
+    freshPreflight,
+  );
+}
+
+/**
+ * Called only from an outer shared target queue lease. The facade sync uses an
+ * `ids` selection containing that exact canonical key; the queue's
+ * AsyncLocalStorage reentrancy therefore keeps support apply and ibcmd under
+ * one lease without reacquisition or all-target expansion.
+ */
+async function synchronizePendingSupportForTarget(
+  support: DeploySupportContext | undefined,
+  entry: InfobaseEntry,
+  forceSync: boolean,
+  expectedPreflight: DeploySupportPreflight | undefined,
+): Promise<TargetSupportGate> {
+  if (!support) {
+    return { accepted: true };
+  }
+  if (!expectedPreflight || isDeploySupportRejected(expectedPreflight)) {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      'Раскатка запрещена: отсутствует согласованный immutable support-план.',
+    );
+  }
+
+  let masterStatus;
+  try {
+    masterStatus = await support.facade.getMasterStatus({
+      configurationId: support.configurationId,
+    });
+  } catch {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      'Не удалось получить master-состояние поддержки перед раскаткой.',
+    );
+  }
+  if (masterStatus.status !== 'available') {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      `Master-состояние поддержки недоступно: ${masterStatus.errorCode}.`,
+    );
+  }
+  if (!samePlannedMaster(expectedPreflight, masterStatus.master)) {
+    return supportGateFailure(
+      'SUPPORT_OPERATION_FAILED',
+      'Состояние master поддержки изменилось после deploy preflight; сформируйте план раскатки повторно.',
+    );
+  }
+  if (masterStatus.master.kind === 'unknown') {
+    return supportGateFailure(
+      masterStatus.master.errorCode,
+      `Раскатка запрещена: состояние ParentConfigurations.bin неизвестно (${masterStatus.master.errorCode}).`,
+    );
+  }
+  if (masterStatus.master.kind === 'unmanaged') {
+    return { accepted: true };
+  }
+  const plannedGenerationId = masterStatus.master.snapshot.generationId;
+
+  let identity;
+  try {
+    identity = await resolveInfobaseCanonicalIdentity(entry);
+  } catch {
+    return supportGateFailure(
+      'SUPPORT_REPLICATION_FAILED',
+      'Не удалось вычислить canonical identity целевой ИБ для support/deploy lease.',
+    );
+  }
+  if (!forceSync && !isTargetSupportPending(expectedPreflight.status, identity.canonicalTargetId)) {
+    return { accepted: true };
+  }
+
+  let syncOutcome;
+  try {
+    syncOutcome = await support.facade.sync({
+      configurationId: support.configurationId,
+      targets: { kind: 'ids', targetIds: [identity.canonicalTargetId] },
+      verification: 'fast',
+    });
+  } catch {
+    return supportGateFailure(
+      'SUPPORT_REPLICATION_FAILED',
+      'Синхронизация поддержки перед раскаткой завершилась с ошибкой.',
+    );
+  }
+  if (syncOutcome.status !== 'synchronized') {
+    const code = supportSyncErrorCode(syncOutcome);
+    return supportGateFailure(
+      code,
+      `Поддержка не синхронизирована с целевой ИБ: ${code}.`,
+    );
+  }
+  if (syncOutcome.preflight.scope !== 'replicated' || syncOutcome.run.scope !== 'replicated') {
+    return supportGateFailure(
+      'SUPPORT_DEPLOY_TARGET_NOT_REPLICATED',
+      'Support sync неожиданно завершился в masterOnly scope; раскатка в целевую ИБ запрещена.',
+    );
+  }
+  const target = syncOutcome.run.targets.find(
+    (item) => item.canonicalTargetId === identity.canonicalTargetId,
+  );
+  if (
+    syncOutcome.master.generationId !== plannedGenerationId
+    || syncOutcome.run.desiredGenerationId !== plannedGenerationId
+    || !target
+    || target.desiredGenerationId !== plannedGenerationId
+    || !(
+      (target.state === 'applied' && target.acknowledgedGenerationId === plannedGenerationId)
+      || (target.state === 'verified' && target.verifiedGenerationId === plannedGenerationId)
+    )
+  ) {
+    return supportGateFailure(
+      'SUPPORT_REPLICATION_INCOMPLETE',
+      'Support sync не подтвердил planned generation на master/run/target; сформируйте план раскатки повторно.',
+    );
+  }
+  return { accepted: true };
+}
+
+function supportSyncErrorCode(
+  outcome: Exclude<
+    Awaited<ReturnType<SupportApplicationFacade['sync']>>,
+    { readonly status: 'synchronized' }
+  >,
+): DeploySupportErrorCode {
+  if (outcome.status === 'incomplete' || outcome.status === 'operationRejected') {
+    return outcome.errorCode;
+  }
+  if (outcome.status === 'preflightRejected') {
+    return outcome.preflight.errorCode;
+  }
+  return outcome.errorCode;
+}
+
+function samePlannedMaster(
+  expected: Exclude<DeploySupportPreflight, RejectedDeploySupportPreflight>,
+  actual: MasterSupportState,
+): boolean {
+  if (expected.kind === 'unmanaged') {
+    return actual.kind === 'unmanaged'
+      && actual.reason === expected.reason
+      && expected.status.master.kind === 'unmanaged'
+      && expected.status.master.reason === expected.reason;
+  }
+  return actual.kind === 'ready'
+    && actual.snapshot.generationId === expected.generationId
+    && expected.status.master.kind === 'ready'
+    && expected.status.master.snapshot.generationId === expected.generationId;
+}
+
+function isTargetSupportPending(
+  status: SupportStatusResult,
+  canonicalTargetId: string,
+): boolean {
+  if (status.master.kind !== 'ready') {
+    return false;
+  }
+  const generationId = status.master.snapshot.generationId;
+  const run = status.lastRun;
+  if (
+    !run
+    || run.desiredGenerationId !== generationId
+    || run.scope !== 'replicated'
+  ) {
+    return true;
+  }
+  const target = run.targets.find((item) => item.canonicalTargetId === canonicalTargetId);
+  if (!target) {
+    return true;
+  }
+  return !(
+    target.desiredGenerationId === generationId
+    && (
+      (target.state === 'applied' && target.acknowledgedGenerationId === generationId)
+      || (target.state === 'verified' && target.verifiedGenerationId === generationId)
+    )
+  );
+}
+
+function supportGateFailure(
+  errorCode: DeploySupportErrorCode,
+  message: string,
+): TargetSupportGate {
+  return { accepted: false, errorCode, message };
+}
+
+function isSupportGateFailure(
+  value: unknown,
+): value is Extract<TargetSupportGate, { readonly accepted: false }> {
+  return typeof value === 'object'
+    && value !== null
+    && 'accepted' in value
+    && (value as { readonly accepted?: unknown }).accepted === false;
+}
+
+function targetSupportGateFailure(
+  entry: InfobaseEntry,
+  gate: Extract<TargetSupportGate, { readonly accepted: false }>,
+): DeployItemResult {
+  appendIbcmdOutputLine(`[support-preflight] ${entry.name}: ${gate.message}`);
+  return {
+    infobaseId: entry.id,
+    name: entry.name,
+    status: 'error',
+    message: gate.message,
+    errorCode: gate.errorCode,
+  };
+}
+
+type RejectedDeploySupportPreflight = Extract<
+  DeploySupportPreflight,
+  { readonly kind: 'unknown' | 'fullDeployUnsafe' }
+>;
+
+function isDeploySupportRejected(
+  preflight: DeploySupportPreflight | undefined,
+): preflight is RejectedDeploySupportPreflight {
+  return preflight?.kind === 'unknown' || preflight?.kind === 'fullDeployUnsafe';
+}
+
+function rejectDeployBeforeIbcmd(
+  preflight: RejectedDeploySupportPreflight,
+): DeployRunSummary {
+  const message = `Раскатка отклонена до запуска ibcmd: ${preflight.errorCode}. ${preflight.diagnostics.join(' ')}`;
+  const summary = summarizeDeployRun(
+    [{
+      infobaseId: '',
+      name: '',
+      status: 'error',
+      message,
+      errorCode: preflight.errorCode,
+    }],
+    false,
+  );
+  appendIbcmdOutputLine(`[support-preflight] ${message}`);
+  appendDeployRunSummaryLine(summary);
+  return summary;
+}
+
+function appendSupportFilePlan(preflight: DeploySupportPreflight | undefined): void {
+  if (!preflight || isDeploySupportRejected(preflight)) {
+    return;
+  }
+  if (preflight.supportFileRouted) {
+    appendIbcmdOutputLine(
+      '[support-preflight] Ext/ParentConfigurations.bin исключён из ibcmd import files и маршрутизирован через support facade.',
+    );
+  }
+  if (preflight.skippedLockedFiles.length > 0) {
+    appendIbcmdOutputLine(
+      `[support-preflight] Заблокированные master-файлы пропущены: ${preflight.skippedLockedFiles.length}.`,
+    );
+  }
+}
+
+function supportSkipMessage(preflight: DeploySupportPreflight | undefined): string {
+  if (!preflight || isDeploySupportRejected(preflight)) {
+    return 'Файлы для раскатки отсутствуют.';
+  }
+  const parts: string[] = [];
+  if (preflight.skippedLockedFiles.length > 0) {
+    parts.push(`заблокировано поддержкой: ${preflight.skippedLockedFiles.length}`);
+  }
+  if (preflight.supportFileRouted) {
+    parts.push('ParentConfigurations.bin обработан support facade');
+  }
+  return `ibcmd не запускался (${parts.join('; ') || 'после preflight файлов не осталось'}).`;
+}
+
+function stableUniqueFiles(files: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const file of files) {
+    const key = file.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+/g, '/').toLocaleLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(file);
+    }
+  }
+  return result;
+}
+
+function partialDeployMessage(message: string, skippedFileCount: number): string {
+  return `Частично применено: ${message} Пропущено файлов: ${skippedFileCount}.`;
+}
+
 function summarizeDeployRun(results: DeployItemResult[], cancelledMidChain: boolean): DeployRunSummary {
   let successCount = 0;
   let errorCount = 0;
   let skippedCount = 0;
+  let hasPartial = false;
   for (const r of results) {
+    if ((r.skippedFiles?.length ?? 0) > 0) {
+      hasPartial = true;
+    }
     if (r.status === 'success') {
       successCount += 1;
     } else if (r.status === 'error') {
@@ -1025,7 +1632,7 @@ function summarizeDeployRun(results: DeployItemResult[], cancelledMidChain: bool
       skippedCount += 1;
     }
   }
-  return { results, successCount, errorCount, skippedCount, cancelledMidChain };
+  return { results, successCount, errorCount, skippedCount, hasPartial, cancelledMidChain };
 }
 
 /** Итог раскатки в Output (дизайн UC-12 §12.5). */

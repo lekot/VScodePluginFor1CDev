@@ -21,6 +21,68 @@ export const optionalElementName = z.string().refine(
 );
 export const debugServerPort = z.number().int().min(1).max(65535);
 
+const supportUuid = z.string().regex(
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  'must be a UUID',
+);
+const supportGenerationId = trimmedNonEmptyString;
+const uniqueSupportRetryStates = z.array(
+  z.enum(['failed', 'inDoubt', 'targetDrift']),
+).min(1).refine(
+  (values) => new Set(values).size === values.length,
+  { message: 'must contain unique retry states' },
+);
+const uniqueSupportTargetIds = z.array(trimmedNonEmptyString).min(1).refine(
+  (values) => new Set(values).size === values.length,
+  { message: 'must contain unique target IDs' },
+);
+const supportTargetSelection = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('all') }),
+  z.strictObject({
+    kind: z.literal('retryable'),
+    include: uniqueSupportRetryStates,
+  }),
+  z.strictObject({
+    kind: z.literal('ids'),
+    targetIds: uniqueSupportTargetIds,
+  }),
+]);
+
+export const supportGetStatusInput = z.strictObject({
+  configurationId: trimmedNonEmptyString,
+  objectIds: z.array(supportUuid).optional(),
+});
+
+export const supportSetObjectModeInput = z.strictObject({
+  configurationId: trimmedNonEmptyString,
+  objectId: supportUuid,
+  targetMode: z.enum(['notEditable', 'editableWithSupport', 'removedFromSupport']),
+  expectedGenerationId: supportGenerationId,
+});
+
+export const supportEnableObjectRulesInput = z.strictObject({
+  configurationId: trimmedNonEmptyString,
+  targetObjectId: supportUuid,
+  targetMode: z.enum(['editableWithSupport', 'removedFromSupport']),
+  expectedGenerationId: supportGenerationId,
+  expectedMetadataUniverseGenerationId: supportGenerationId,
+});
+
+export const supportSyncInput = z.strictObject({
+  configurationId: trimmedNonEmptyString,
+  targets: supportTargetSelection,
+  verification: z.enum(['fast', 'strict']).optional(),
+});
+
+export const supportVerifyInput = z.strictObject({
+  configurationId: trimmedNonEmptyString,
+  targets: supportTargetSelection,
+});
+
+export const supportGetLastRunInput = z.strictObject({
+  configurationId: trimmedNonEmptyString,
+});
+
 const AGENT_PATH_LENGTHS = new Set([2, 4, 6]);
 
 function isAgentPath(value: string, allowedLengths = AGENT_PATH_LENGTHS): boolean {

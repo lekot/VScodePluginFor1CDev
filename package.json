@@ -636,7 +636,19 @@
       { "command": "1c-metadata-tree.agent.xdto.importXsd", "title": "Agent: Импортировать XSD в XDTO", "category": "CDT 41 Agent" },
       { "command": "1c-metadata-tree.agent.xdto.createFromXsd", "title": "Agent: Создать XDTO из XSD", "category": "CDT 41 Agent" },
       { "command": "1c-metadata-tree.agent.xdto.compare", "title": "Agent: Сравнить XDTO-пакет", "category": "CDT 41 Agent" },
-      { "command": "1c-metadata-tree.agent.xdto.merge", "title": "Agent: Объединить XDTO-пакет", "category": "CDT 41 Agent" }
+      { "command": "1c-metadata-tree.agent.xdto.merge", "title": "Agent: Объединить XDTO-пакет", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.supportGetStatus", "title": "Agent: Получить состояние поддержки", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.supportSetObjectMode", "title": "Agent: Изменить режим поддержки объекта", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.supportEnableObjectRules", "title": "Agent: Включить объектные правила поддержки", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.supportSync", "title": "Agent: Синхронизировать поддержку", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.supportVerify", "title": "Agent: Проверить синхронизацию поддержки", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.supportGetLastRun", "title": "Agent: Получить последний прогон поддержки", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.support.setObjectMode", "title": "Изменить режим поддержки…", "category": "CDT 41" },
+      { "command": "1c-metadata-tree.support.allowObjectEditing", "title": "Разрешить редактирование с сохранением поддержки", "category": "CDT 41" },
+      { "command": "1c-metadata-tree.support.enableObjectRules", "title": "Включить возможность изменения конфигурации…", "category": "CDT 41" },
+      { "command": "1c-metadata-tree.support.sync", "title": "Синхронизировать поддержку с ИБ…", "category": "CDT 41" },
+      { "command": "1c-metadata-tree.support.verify", "title": "Проверить синхронизацию поддержки…", "category": "CDT 41" },
+      { "command": "1c-metadata-tree.support.showLastRun", "title": "Показать результат синхронизации", "category": "CDT 41" }
     ],
     "customEditors": [
       {
@@ -713,6 +725,30 @@
         {
           "command": "1c-metadata-tree.agent.exportStatus",
           "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.support.setObjectMode",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.support.allowObjectEditing",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.support.enableObjectRules",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.support.sync",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.support.verify",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.support.showLastRun",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -782,6 +818,36 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "1c-metadata-tree.support.setObjectMode",
+          "when": "view == 1c-metadata-tree && viewItem =~ /supportObject/",
+          "group": "support@1"
+        },
+        {
+          "command": "1c-metadata-tree.support.allowObjectEditing",
+          "when": "view == 1c-metadata-tree && viewItem =~ /supportObject\\.locked/",
+          "group": "support@2"
+        },
+        {
+          "command": "1c-metadata-tree.support.enableObjectRules",
+          "when": "view == 1c-metadata-tree && viewItem =~ /supportObject\\.locked/",
+          "group": "support@3"
+        },
+        {
+          "command": "1c-metadata-tree.support.sync",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration(?:\\s|$)/",
+          "group": "support@1"
+        },
+        {
+          "command": "1c-metadata-tree.support.verify",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration(?:\\s|$)/",
+          "group": "support@2"
+        },
+        {
+          "command": "1c-metadata-tree.support.showLastRun",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration(?:\\s|$)/",
+          "group": "support@3"
+        },
         {
           "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
           "when": "view == 1c-metadata-tree && viewItem =~ /^Configuration/",

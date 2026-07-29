@@ -22,6 +22,14 @@ export interface MutationRequest<T> {
   readonly commitWhen?: (value: T) => boolean;
 }
 
+export interface ExclusiveConfigurationOperation<T> {
+  readonly kind: string;
+  readonly operationId?: string;
+  readonly clientSnapshotVersion?: number;
+  readonly cancellation?: CancellationLike;
+  readonly execute: () => Promise<T>;
+}
+
 export type MutationOutcome<T> =
   | MutationEnvelope<T> & { status: 'committed'; value: T }
   | MutationEnvelope<T> & { status: 'failed'; value?: T; error?: Error }
@@ -133,6 +141,17 @@ export class ConfigurationSession {
       ...options,
       operationId,
       execute: () => this.mutations.execute(plan, operationId),
+    });
+  }
+
+  /** Uses the mutation FIFO for a short non-plan configuration critical section. */
+  runExclusive<T>(operation: ExclusiveConfigurationOperation<T>): Promise<MutationOutcome<T>> {
+    return this.enqueue({
+      kind: operation.kind,
+      operationId: operation.operationId,
+      clientSnapshotVersion: operation.clientSnapshotVersion,
+      cancellation: operation.cancellation,
+      execute: operation.execute,
     });
   }
 

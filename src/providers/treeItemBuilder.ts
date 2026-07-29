@@ -4,6 +4,11 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import { getFormPaths } from '../formEditor/formPaths';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import type { ConfigurationBindingDecoration } from '../bindings/bindingDecorationTypes';
+import type {
+  ConfigurationSupportDecoration,
+  ObjectSupportDecoration,
+  SupportTreeDecoration,
+} from '../support/supportTreeDecorations';
 import { getIconForType } from './treeIconMapper';
 import { Logger } from '../utils/logger';
 
@@ -22,6 +27,8 @@ export interface TreeItemBuildOptions {
   nodeMatchesSearch: boolean;
   /** Config directory path for the node (used for resourceUri on Configuration nodes). */
   configDirPath: string | null;
+  /** Already-resolved support overlay. Building a tree item never loads support state. */
+  supportDecoration?: SupportTreeDecoration;
 }
 
 /**
@@ -97,6 +104,12 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
       // deploy-selected-objects context menu commands become visible.
       treeItem.contextValue = `${treeItem.contextValue} bindingBound`;
     }
+    if (options.supportDecoration?.kind === 'object') {
+      treeItem.contextValue = appendContextTokens(
+        treeItem.contextValue,
+        options.supportDecoration.contextTokens
+      );
+    }
 
     // Set tooltip: name, type, path (additional_req.md п.14)
     const synonym = element.properties.synonym as string | undefined;
@@ -125,6 +138,15 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
         tooltipText += '\n\nПривязка ИБ расширения: не настроена. Контекстное меню → «Привязать базы…».';
       }
     }
+    if (options.supportDecoration) {
+      tooltipText += `\n\n${options.supportDecoration.tooltip}`;
+      if (
+        options.supportDecoration.kind === 'configuration'
+        && options.supportDecoration.syncHealth
+      ) {
+        tooltipText += `\n${options.supportDecoration.syncHealth.tooltip}`;
+      }
+    }
     treeItem.tooltip = tooltipText;
 
     // Set description (shown next to the label); для Configuration — бейдж числа привязок (§2C)
@@ -151,6 +173,15 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
       const extDesc = prefix ? `(${purpose}, ${prefix})` : `(${purpose})`;
       descParts.push(extDesc);
     }
+    if (options.supportDecoration) {
+      descParts.push(supportDescription(options.supportDecoration));
+      if (
+        options.supportDecoration.kind === 'configuration'
+        && options.supportDecoration.syncHealth
+      ) {
+        descParts.push(`синхронизация: ${options.supportDecoration.syncHealth.state}`);
+      }
+    }
 
     if (descParts.length > 0) {
       treeItem.description = descParts.join(' · ');
@@ -162,6 +193,12 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
     // Virtual CommandInterface node: use distinct icon
     if (props?.isVirtual && element.id.endsWith('.CommandInterface')) {
       treeItem.iconPath = new vscode.ThemeIcon('list-tree');
+    }
+    if (
+      options.supportDecoration?.kind === 'object'
+      && options.supportDecoration.iconIntent === 'lock'
+    ) {
+      treeItem.iconPath = new vscode.ThemeIcon(options.supportDecoration.iconIntent);
     }
 
     // BSL module nodes: open module on click (creates file if virtual)
@@ -202,4 +239,42 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
     // Return minimal tree item on error
     return new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.None);
   }
+}
+
+function appendContextTokens(
+  contextValue: string | undefined,
+  tokens: readonly string[]
+): string {
+  return [...new Set([...(contextValue?.split(/\s+/).filter(Boolean) ?? []), ...tokens])].join(' ');
+}
+
+function supportDescription(decoration: SupportTreeDecoration): string {
+  return decoration.kind === 'object'
+    ? objectSupportDescription(decoration)
+    : configurationSupportDescription(decoration);
+}
+
+function objectSupportDescription(decoration: ObjectSupportDecoration): string {
+  if (decoration.locked) {
+    return '🔒 поддержка: заблокирован';
+  }
+  const labels: Record<ObjectSupportDecoration['effectiveMode'], string> = {
+    notEditable: 'поддержка: не редактируется',
+    editableWithSupport: 'поддержка: редактируется',
+    removedFromSupport: 'поддержка: снят',
+  };
+  return labels[decoration.effectiveMode];
+}
+
+function configurationSupportDescription(
+  decoration: ConfigurationSupportDecoration
+): string {
+  const labels: Record<ConfigurationSupportDecoration['mode'], string> = {
+    locked: 'поддержка: заблокирована',
+    mixed: 'поддержка: смешанный режим',
+    editable: 'поддержка: редактирование разрешено',
+    unmanaged: 'без поддержки',
+    unknown: '⚠ поддержка: состояние неизвестно',
+  };
+  return labels[decoration.mode];
 }

@@ -4,8 +4,8 @@ export interface LockedObjectRef {
   readonly fullName: string;
 }
 
-// Reactive approach: parse stderr after ibcmd failure.
-// Pre-flight via XML is not feasible in Designer format (ParentConfigurations.bin is binary).
+// Drift fallback only: the proactive deploy planner reads the public support
+// facade backed by ParentConfigurations.bin before any ibcmd import.
 const RU_PATTERN = /редактирование объекта метаданных (\S+?) запрещено/gi;
 const EN_PATTERN = /editing of metadata object (\S+?) is forbidden/gi;
 

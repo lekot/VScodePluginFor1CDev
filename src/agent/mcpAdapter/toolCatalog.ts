@@ -9,6 +9,7 @@ import { ADVANCED_METADATA_TOOLS } from './catalog/advancedMetadataTools';
 import { FORMS_TOOLS } from './catalog/formsTools';
 import { SKD_TOOLS } from './catalog/skdTools';
 import { XDTO_TOOLS } from './catalog/xdtoTools';
+import { SUPPORT_TOOLS } from './catalog/supportTools';
 import type { McpToolDefinition } from './catalog/types';
 
 export type { McpToolDefinition } from './catalog/types';
@@ -22,6 +23,7 @@ export const MCP_TOOL_CATALOG: readonly McpToolDefinition[] = [
   ...FORMS_TOOLS,
   ...SKD_TOOLS,
   ...XDTO_TOOLS,
+  ...SUPPORT_TOOLS,
 ];
 
 export type AgentCommandExecutor = (

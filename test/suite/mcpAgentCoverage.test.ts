@@ -5,7 +5,7 @@ import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import { MCP_TOOL_CATALOG } from '../../src/agent/mcpAdapter/toolCatalog';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
-type AnnotationKind = 'readClosed' | 'writeClosed' | 'readOpen' | 'writeOpen';
+type AnnotationKind = 'readClosed' | 'writeClosed' | 'readOpen' | 'writeOpen' | 'verifyOpen';
 
 interface ExpectedTool {
   readonly name: string;
@@ -88,6 +88,13 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_xdto_create_from_xsd', 'xdto.createFromXsd', 'writeClosed'),
   tool('cdt_xdto_compare', 'xdto.compare', 'readClosed'),
   tool('cdt_xdto_merge', 'xdto.merge', 'writeClosed'),
+
+  tool('cdt_support_get_status', 'supportGetStatus', 'readClosed'),
+  tool('cdt_support_set_object_mode', 'supportSetObjectMode', 'writeOpen'),
+  tool('cdt_support_enable_object_rules', 'supportEnableObjectRules', 'writeOpen'),
+  tool('cdt_support_sync', 'supportSync', 'writeOpen'),
+  tool('cdt_support_verify', 'supportVerify', 'verifyOpen'),
+  tool('cdt_support_get_last_run', 'supportGetLastRun', 'readClosed'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
@@ -95,6 +102,7 @@ const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<stri
   writeClosed: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   readOpen: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   writeOpen: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  verifyOpen: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 };
 
 const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
@@ -159,6 +167,33 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_xdto_create_from_xsd: { configurationId: 'cfg', packageName: 'example', inputPath: 'C:/project/example.xsd' },
   cdt_xdto_compare: { configurationId: 'cfg', packageName: 'example', source: '<xs:schema/>', includeTree: true, joinStrategy: 'full' },
   cdt_xdto_merge: { configurationId: 'cfg', metadataPath: 'XDTOPackage.example', inputPath: 'C:/project/example.xsd', selectedIds: ['type:Product'], joinStrategy: 'left' },
+  cdt_support_get_status: {
+    configurationId: 'cfg',
+    objectIds: ['11111111-1111-1111-1111-111111111111'],
+  },
+  cdt_support_set_object_mode: {
+    configurationId: 'cfg',
+    objectId: '11111111-1111-1111-1111-111111111111',
+    targetMode: 'editableWithSupport',
+    expectedGenerationId: 'a'.repeat(64),
+  },
+  cdt_support_enable_object_rules: {
+    configurationId: 'cfg',
+    targetObjectId: '11111111-1111-1111-1111-111111111111',
+    targetMode: 'removedFromSupport',
+    expectedGenerationId: 'b'.repeat(64),
+    expectedMetadataUniverseGenerationId: 'c'.repeat(64),
+  },
+  cdt_support_sync: {
+    configurationId: 'cfg',
+    targets: { kind: 'ids', targetIds: ['file:C:/db/main'] },
+    verification: 'strict',
+  },
+  cdt_support_verify: {
+    configurationId: 'cfg',
+    targets: { kind: 'all' },
+  },
+  cdt_support_get_last_run: { configurationId: 'cfg' },
 };
 
 interface InvalidRefinementCase {
@@ -218,6 +253,19 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'pullSelectedObjects empty objectIds', tool: 'cdt_pull_selected_objects', input: { objectIds: [] } },
   { label: 'formsStart missing url and dbPath', tool: 'cdt_forms_start', input: {} },
   { label: 'formsExec empty script', tool: 'cdt_forms_exec', input: { script: '' } },
+  {
+    label: 'supportSync ids require at least one target',
+    tool: 'cdt_support_sync',
+    input: { configurationId: 'cfg', targets: { kind: 'ids', targetIds: [] } },
+  },
+  {
+    label: 'supportVerify ids must be unique',
+    tool: 'cdt_support_verify',
+    input: {
+      configurationId: 'cfg',
+      targets: { kind: 'ids', targetIds: ['file:C:/db', 'file:C:/db'] },
+    },
+  },
 
   { label: 'SKD compile empty outputPath', tool: 'cdt_skd_compile', input: { value: '{}', outputPath: '' } },
   { label: 'SKD compile missing source', tool: 'cdt_skd_compile', input: { outputPath: 'out.xml' } },
@@ -261,10 +309,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('catalog has the exact 61 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 61, 'test oracle must enumerate all 61 tools');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 61);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 61);
+  test('catalog has the exact 67 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 67, 'test oracle must enumerate all 67 tools');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 67);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 67);
 
     assert.deepStrictEqual(
       MCP_TOOL_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -291,14 +339,24 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
+  test('support verify advertises external, non-destructive, non-idempotent process effects', () => {
+    const verify = MCP_TOOL_CATALOG.find(({ name }) => name === 'cdt_support_verify');
+    assert.deepStrictEqual(verify?.annotations, {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+  });
+
   test('runtime Agent registration is exactly the catalog command set and excludes UI commands', () => {
     const context = { subscriptions: [] as Array<{ dispose(): void }> };
     registerAgentCommands(context as never, () => null, async () => null, new DebugSessionRegistry());
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 61);
-    assert.strictEqual(new Set(registered).size, 61);
+    assert.strictEqual(registered.length, 67);
+    assert.strictEqual(new Set(registered).size, 67);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -311,7 +369,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 61 valid fixtures pass and every root schema rejects an extra property', () => {
+  test('all 67 valid fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

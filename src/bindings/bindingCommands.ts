@@ -16,10 +16,12 @@ import {
   readDeployPrecheckXmlBeforeImportSetting,
   listDeployTargetLabels,
   readDeployMode,
+  resolveConfigurationXmlDirectory,
   resolveDeployTargetsForBinding,
   vscodeSupportsDeployReadonlyLock,
+  type DeploySupportContext,
 } from './deployService';
-import { showIbcmdInfobaseOutputChannel, runInfobaseConfigExportStatus, serializeInfobaseConfigIbcmdOp } from '../infobases/infobaseConfigCommands';
+import { showIbcmdInfobaseOutputChannel, runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
 import { getIbcmdService } from '../services/ibcmd/ibcmdServiceSingleton';
 import { showIbcmdNotFoundDialog } from '../services/ibcmd/showIbcmdNotFoundDialog';
 import { detectChangedConfigFiles } from '../services/ibcmd/incrementalChangeDetector';
@@ -32,6 +34,33 @@ export interface BindingDialogLike {
     configRelativePath: string,
     ibcmdExtensionName?: string,
   ): Promise<void>;
+}
+
+async function resolveDeploySupportContext(
+  state: ExtensionState,
+  workspaceFolderRoot: string,
+  binding: { readonly configRelativePath: string },
+): Promise<DeploySupportContext | undefined> {
+  const composition = state.supportComposition;
+  if (!composition) {
+    return undefined;
+  }
+  const cache = state.supportStateCache;
+  if (!cache) {
+    throw new Error('Support state cache is not initialized.');
+  }
+  const resolved = resolveConfigurationXmlDirectory(
+    workspaceFolderRoot,
+    binding.configRelativePath,
+  );
+  if (!resolved.ok) {
+    throw new Error(resolved.message);
+  }
+  const status = cache.get(resolved.sourceDir) ?? await cache.load(resolved.sourceDir);
+  return {
+    configurationId: status.configurationId,
+    facade: composition.facade,
+  };
 }
 
 export function resolveBindingTargetForConfigurationTreeNode(
@@ -176,11 +205,6 @@ export async function runDeployForConfigurationFromTree(
   }
 
   const preview = listDeployTargetLabels(binding, catalog);
-  const ibcmd = getIbcmdService();
-  if ((await ibcmd.resolveExecutablePathAsync()).kind !== 'resolved') {
-    await showIbcmdNotFoundDialog();
-    return;
-  }
 
   const lines = preview.length > 0 ? `\n\n${preview.join('\n')}` : '';
   const deployMode = readDeployMode();
@@ -215,6 +239,15 @@ export async function runDeployForConfigurationFromTree(
       ? 'Раскатка конфигурации в привязанную базу'
       : 'Раскатка конфигурации в привязанные базы';
 
+  let support: DeploySupportContext | undefined;
+  try {
+    support = await resolveDeploySupportContext(state, wf.uri.fsPath, binding);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Раскатка отклонена: не удалось подготовить preflight поддержки. ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
   const deployService = new DeployService();
   const summary = await vscode.window.withProgress(
     {
@@ -230,6 +263,7 @@ export async function runDeployForConfigurationFromTree(
         catalog,
         progress,
         token,
+        support,
       }),
   );
 
@@ -243,9 +277,11 @@ export async function runDeployForConfigurationFromTree(
   }
   const msg = `Раскатка завершена: ${parts.join(', ')}.${tail}`;
   const showOut = 'Показать вывод';
-  /** Ошибок и отмены нет; ожидаемые пропуски (веб, нет в каталоге) не понижают уровень до warning. */
-  const noErrorsOrCancel = summary.errorCount === 0 && !summary.cancelledMidChain;
-  if (summary.successCount > 0 && noErrorsOrCancel) {
+  /** Expected target skips stay informational; omitted requested files are always a warning. */
+  const fullySuccessful = summary.errorCount === 0
+    && !summary.cancelledMidChain
+    && !summary.hasPartial;
+  if (summary.successCount > 0 && fullySuccessful) {
     const r = await vscode.window.showInformationMessage(msg, showOut);
     if (r === showOut) {
       showIbcmdInfobaseOutputChannel();
@@ -279,7 +315,13 @@ function resolveConfigRootFromAnyNode(
   return undefined;
 }
 
-function showDeployRunSummaryToast(summary: { successCount: number; errorCount: number; skippedCount: number; cancelledMidChain: boolean }): void {
+function showDeployRunSummaryToast(summary: {
+  successCount: number;
+  errorCount: number;
+  skippedCount: number;
+  hasPartial: boolean;
+  cancelledMidChain: boolean;
+}): void {
   const tail = summary.cancelledMidChain ? ' Часть баз пропущена (отмена).' : '';
   const parts: string[] = [`${summary.successCount} успешно`];
   if (summary.errorCount > 0) {
@@ -290,8 +332,10 @@ function showDeployRunSummaryToast(summary: { successCount: number; errorCount: 
   }
   const msg = `Раскатка завершена: ${parts.join(', ')}.${tail}`;
   const showOut = 'Показать вывод';
-  const noErrorsOrCancel = summary.errorCount === 0 && !summary.cancelledMidChain;
-  if (summary.successCount > 0 && noErrorsOrCancel) {
+  const fullySuccessful = summary.errorCount === 0
+    && !summary.cancelledMidChain
+    && !summary.hasPartial;
+  if (summary.successCount > 0 && fullySuccessful) {
     void vscode.window.showInformationMessage(msg, showOut).then((r) => {
       if (r === showOut) {
         showIbcmdInfobaseOutputChannel();
@@ -377,6 +421,15 @@ export async function runDeploySelectedObjectsFromTree(
     return;
   }
 
+  let support: DeploySupportContext | undefined;
+  try {
+    support = await resolveDeploySupportContext(state, wf.uri.fsPath, binding);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Раскатка отклонена: не удалось подготовить preflight поддержки. ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
   const deployService = new DeployService();
   const summary = await vscode.window.withProgress(
     {
@@ -393,6 +446,7 @@ export async function runDeploySelectedObjectsFromTree(
         selectedNodes,
         progress,
         token,
+        support,
       }),
   );
 
@@ -493,8 +547,7 @@ export async function runPullSelectedObjectsFromTree(
       cancellable: true,
     },
     async (progress, token) =>
-      serializeInfobaseConfigIbcmdOp(() =>
-        deployService.pullSelectedObjects({
+      deployService.pullSelectedObjects({
           binding,
           workspaceFolderRoot: wf.uri.fsPath,
           storage: state.infobaseStorage!,
@@ -503,7 +556,6 @@ export async function runPullSelectedObjectsFromTree(
           progress,
           token,
         }),
-      ),
   );
 
   showDeployRunSummaryToast(summary);
@@ -603,6 +655,15 @@ export async function runDeployChangedFilesFromTree(
     return;
   }
 
+  let support: DeploySupportContext | undefined;
+  try {
+    support = await resolveDeploySupportContext(state, wf.uri.fsPath, binding);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Раскатка отклонена: не удалось подготовить preflight поддержки. ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
   const deployService = new DeployService();
   const summary = await vscode.window.withProgress(
     {
@@ -619,6 +680,7 @@ export async function runDeployChangedFilesFromTree(
         relativeFiles: changesResult.relativePaths,
         progress,
         token,
+        support,
       }),
   );
 
