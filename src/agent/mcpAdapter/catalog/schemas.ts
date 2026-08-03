@@ -157,3 +157,37 @@ export function hasExternalSource(value: { inputPath?: string; source?: string }
 export function hasExactlyOneExternalSource(value: { inputPath?: string; source?: string }): boolean {
   return Number(Boolean(value.inputPath)) + Number(value.source !== undefined) === 1;
 }
+
+const externalProcessorCredentials = z.strictObject({
+  user: z.string().optional(),
+  password: z.string().optional(),
+});
+
+const externalProcessorContext = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('infobase'),
+    infobasePath: trimmedNonEmptyString,
+    credentials: externalProcessorCredentials.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal('standalone'),
+    acknowledgeTypeLoss: z.literal(true),
+  }),
+]);
+
+const externalProcessorTimeout = z.number().int().positive();
+
+export const agentDumpExternalProcessorSchema = z.strictObject({
+  srcPath: trimmedNonEmptyString,
+  outDir: trimmedNonEmptyString.optional(),
+  format: z.enum(['Plain', 'Hierarchical']),
+  context: externalProcessorContext,
+  timeoutMs: externalProcessorTimeout.optional(),
+});
+
+export const agentBuildExternalProcessorSchema = z.strictObject({
+  rootXmlPath: trimmedNonEmptyString,
+  dstPath: trimmedNonEmptyString.optional(),
+  context: externalProcessorContext,
+  timeoutMs: externalProcessorTimeout.optional(),
+});

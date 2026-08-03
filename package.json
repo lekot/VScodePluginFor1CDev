@@ -643,6 +643,10 @@
       { "command": "1c-metadata-tree.agent.supportSync", "title": "Agent: Синхронизировать поддержку", "category": "CDT 41 Agent" },
       { "command": "1c-metadata-tree.agent.supportVerify", "title": "Agent: Проверить синхронизацию поддержки", "category": "CDT 41 Agent" },
       { "command": "1c-metadata-tree.agent.supportGetLastRun", "title": "Agent: Получить последний прогон поддержки", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.dumpExternalProcessor", "title": "Agent: Разобрать EPF/ERF", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.agent.buildExternalProcessor", "title": "Agent: Собрать EPF/ERF", "category": "CDT 41 Agent" },
+      { "command": "1c-metadata-tree.dumpExternalProcessor", "title": "Разобрать внешнюю обработку/отчёт…", "category": "CDT 41" },
+      { "command": "1c-metadata-tree.buildExternalProcessor", "title": "Собрать внешнюю обработку/отчёт…", "category": "CDT 41" },
       { "command": "1c-metadata-tree.support.setObjectMode", "title": "Изменить режим поддержки…", "category": "CDT 41" },
       { "command": "1c-metadata-tree.support.allowObjectEditing", "title": "Разрешить редактирование с сохранением поддержки", "category": "CDT 41" },
       { "command": "1c-metadata-tree.support.enableObjectRules", "title": "Включить возможность изменения конфигурации…", "category": "CDT 41" },
@@ -749,6 +753,14 @@
         {
           "command": "1c-metadata-tree.support.showLastRun",
           "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.agent.dumpExternalProcessor",
+          "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.agent.buildExternalProcessor",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -801,6 +813,18 @@
           "command": "1c-metadata-tree.infobases.newFolder",
           "when": "view == 1c-infobase-manager",
           "group": "navigation@6"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "1c-metadata-tree.dumpExternalProcessor",
+          "when": "resourceExtname == .epf || resourceExtname == .erf",
+          "group": "1c_tools@1"
+        },
+        {
+          "command": "1c-metadata-tree.buildExternalProcessor",
+          "when": "resourceExtname == .xml",
+          "group": "1c_tools@2"
         }
       ],
       "editor/title": [

@@ -4,7 +4,7 @@
 
 Дать стандартному MCP-клиенту полный доступ к существующему Agent API расширения без дублирования предметной логики. MCP является новым транспортом над теми же VS Code Agent-командами: каждый tool валидирует input и вызывает ровно одну команду через `vscode.commands.executeCommand`. Legacy Agent Bridge `/command` остаётся совместимым.
 
-Нормативная граница каталога — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. В текущей версии она регистрирует 67 Agent-команд, и MCP публикует их все в отношении 1:1.
+Нормативная граница каталога — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. В текущей версии она регистрирует 69 Agent-команд, и MCP публикует их все в отношении 1:1.
 
 Четыре UI-команды расширения не являются Agent API, не возвращают `AgentResult` и находятся вне scope:
 
@@ -91,6 +91,19 @@ destructive операции могут изменить `ParentConfigurations.b
 Retryable selection учитывает только текущую master generation, исключает permanent failures и
 для `inDoubt` требует reconcile вместо blind apply.
 
+### Внешние обработки и отчёты
+
+| Tool | Agent command | R/D/I/O |
+|---|---|---|
+| `cdt_dump_external_processor` | `1c-metadata-tree.agent.dumpExternalProcessor` | F/T/F/T |
+| `cdt_build_external_processor` | `1c-metadata-tree.agent.buildExternalProcessor` | F/T/F/T |
+
+Оба tool записывают локальные файлы, запускают внешний Configurator и могут обращаться к
+информационной базе, поэтому имеют консервативный контракт `WRITE_OPEN`. Dump никогда не
+перезаписывает существующий каталог, build — существующий `.epf`/`.erf`. Для обоих вызовов обязателен
+явный execution context: файловая информационная база либо standalone с подтверждённым риском потери
+типов. Временная информационная база не создаётся и не выбирается неявно.
+
 ### Типы, командный интерфейс и характеристики
 
 | Tool | Agent command | R/D/I/O |
@@ -163,6 +176,12 @@ Retryable selection учитывает только текущую master genera
 - support UUID — канонический UUID без coercion; `configurationId` и generation ids непустые;
   `TargetSelection` является strict discriminated union `all | retryable | ids`, а `ids.targetIds`
   и `retryable.include` — непустые массивы уникальных значений.
+- контекст внешней обработки — strict discriminated union:
+  `{kind:"infobase",infobasePath:string,credentials?:{user?:string,password?:string}}` либо
+  `{kind:"standalone",acknowledgeTypeLoss:true}`; `infobasePath` непустой, standalone требует
+  буквального `true`, неизвестные поля запрещены также внутри `credentials`;
+- `timeoutMs` внешней обработки — положительное целое; обязательные и optional пути непустые,
+  dump format — только `Plain | Hierarchical`.
 
 Точные shapes по доменам:
 
@@ -172,6 +191,8 @@ Retryable selection учитывает только текущую master genera
 - support: `{configurationId,objectIds?}`, `{configurationId,objectId,targetMode,expectedGenerationId}`,
   `{configurationId,targetObjectId,targetMode,expectedGenerationId,expectedMetadataUniverseGenerationId}`,
   `{configurationId,targets,verification?}`, `{configurationId,targets}`, `{configurationId}`;
+- external processors: `{srcPath,outDir?,format,context,timeoutMs?}`,
+  `{rootXmlPath,dstPath?,context,timeoutMs?}`;
 - subsystem/characteristics: `{configurationId?,subsystemPath}`, `{configurationId?,subsystemPath,commandName,common}`, `{configurationId?,subsystemPath,entries: strict {commandName:string,commandGroup:string}[]}`, `{configurationId?,subsystemPath,order:string[]}`, `{configurationId?,path}`, `{configurationId?,path,predefinedName}`, `{configurationId?,path,predefinedName,types:string[]}`;
 - forms: `{url?,dbPath?,platformPath?,readyTimeoutMs?}`, `{script,timeoutMs?}`, `{}`, `{file?}`, `{}`;
 - SKD: `{definitionFile?,value?,outputPath}`, `{templatePath,mode?,name?,batch?,limit?,offset?,outFile?}`, `{templatePath,operation,value,dataSet?,variant?,noSelection?}`, `{templatePath,detailed?,maxErrors?,outFile?}`;
@@ -191,6 +212,14 @@ Retryable selection учитывает только текущую master genera
   `committedWithReplicationIssue`, `incomplete`, rejected и recovery outcomes имеют
   `AgentResult.success=false`; локальный commit при незавершённой репликации не маскируется как успех.
   `MasterSupportSnapshot.objectModes` сериализуется как JSON object с UUID-ключами.
+- External processor Agent-команды являются тонкими обёртками над общим service: `completed`
+  даёт `AgentResult.success=true`, `failed` и `inDoubt` — `success=false` с исходными `code`,
+  `message` и полным discriminated result в `data`. Missing или malformed execution context прямого
+  и legacy Agent-вызова нормализуется в `EXTERNAL_CONTEXT_INVALID` до path resolution и без
+  исключения наружу. Для `inDoubt` обязательный `stagingPath` указывает staging/evidence;
+  optional `publishedArtifactPath` присутствует только если canonical destination уже опубликован
+  или мог стать видимым. Клиент не должен считать отсутствие файла по `stagingPath` доказательством
+  отсутствия опубликованного эффекта, когда задан `publishedArtifactPath`.
 
 Cancellation проверяется перед dispatch и после его завершения. Отмена до dispatch не запускает Agent-команду. Отмена во время исполнения не прерывает уже запущенную команду: adapter дожидается её, отбрасывает результат и возвращает `{ success: false, code: "REQUEST_CANCELLED", error: "MCP request was cancelled" }` с `isError: true`. Принудительная остановка процессов, debug/forms sessions и мутаций не обещается без отдельного cancellation-контракта Agent API.
 
@@ -204,6 +233,10 @@ Cancellation проверяется перед dispatch и после его з�
 - Аутентифицированный локальный MCP-клиент находится в той же trust boundary и обладает теми же правами, что клиент legacy `/command`; annotations являются подсказками клиенту, а не механизмом авторизации.
 - `cdt_forms_exec` исполняет произвольный JavaScript, а `cdt_debug_evaluate` — произвольное BSL-выражение. Оба tools явно destructive/open-world.
 - SKD tools запускают дочерние процессы и принимают локальные пути, включая выходные; поэтому их `openWorldHint` статически равен `true`.
+- `cdt_dump_external_processor` и `cdt_build_external_processor` запускают Configurator, записывают
+  локальные артефакты и в режиме `infobase` обращаются к указанной базе. Пароль передаётся только
+  процессу, не включается в result/log/error. Режим `standalone` может потерять ссылочные типы и
+  доступен только при `acknowledgeTypeLoss: true`.
 - До публикации debug tools логи и `AgentResult.error` для `debug.start`/`debug.startFromBinding` не должны содержать `infobase`, connection string, полный launch config или credentials. Допустимы только redacted operational fields и generic внешняя ошибка.
 
 Используются `@modelcontextprotocol/sdk` `^1.29.0` и `zod` `^4`; runtime — Node 18+/VS Code `^1.82.0`, WebCrypto устанавливается до ленивой загрузки SDK.
@@ -217,7 +250,7 @@ Stop: запрет новых запросов → закрытие MCP sessions
 ## Критерии приёмки
 
 1. Official SDK client проходит `initialize → tools/list → tools/call → DELETE session` по discovery URL и Bearer token.
-2. `tools/list` содержит ровно 67 уникальных tools и ровно 67 уникальных Agent command mappings.
+2. `tools/list` содержит ровно 69 уникальных tools и ровно 69 уникальных Agent command mappings.
 3. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
 4. Четыре перечисленные UI-команды отсутствуют в MCP catalog.
 5. Для каждого tool проверены имя, command id, strict schema, refinements и статические annotations.

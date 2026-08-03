@@ -2,7 +2,7 @@
 
 ## Контекст
 
-Agent API — прикладная граница: 67 команд в `registerAgentCommands` выбирают конфигурацию, проверяют capabilities, используют `ConfigurationSession` или общий support application facade и возвращают `AgentResult`. MCP не становится вторым прикладным API и не вызывает operations/services напрямую.
+Agent API — прикладная граница: 69 команд в `registerAgentCommands` выбирают конфигурацию, проверяют capabilities, используют `ConfigurationSession` или общий application/service facade и возвращают `AgentResult`. MCP не становится вторым прикладным API и не вызывает operations/services напрямую.
 
 Четыре UI-команды `borrowToExtension`, `navigateToMainObject`, `showRelatedObjects`, `showInterceptors` не зарегистрированы `registerAgentCommands`, не имеют `AgentResult`-контракта и не входят в MCP catalog.
 
@@ -14,7 +14,7 @@ Agent API — прикладная граница: 67 команд в `registerA
 
 ### 2. Один `/mcp` route и один монолитный каталог
 
-Сохраняет единый listener и thin dispatch, но 67 schemas в одном файле создают высокую связность и неудобный review. Подход использован первой вертикалью, но не масштабируется на полный API.
+Сохраняет единый listener и thin dispatch, но 69 schemas в одном файле создают высокую связность и неудобный review. Подход использован первой вертикалью, но не масштабируется на полный API.
 
 ### 3. `/mcp` в Agent Bridge и доменные catalog modules — выбран
 
@@ -31,7 +31,7 @@ flowchart LR
     R --> K["MCP_TOOL_CATALOG"]
     K --> D["Domain catalog modules"]
     K --> V["vscode.commands.executeCommand"]
-    V --> A["67 Agent commands"]
+    V --> A["69 Agent commands"]
     A --> Q["ConfigurationSession / services / processes"]
 ```
 
@@ -64,13 +64,22 @@ Annotations support tools фиксированы контрактом: `getStatu
 `VERIFY_OPEN` (durable audit write без destructive mutation master/ИБ),
 `setObjectMode/enableObjectRules/sync` — `WRITE_OPEN`.
 
+External processor vertical добавляет две тонкие Agent-операции и два declarative MCP definition:
+dump `.epf`/`.erf` в XML и build из корневого XML. MCP не вызывает Configurator service напрямую.
+Обе операции требуют явного strict execution context (`infobase` либо подтверждённый `standalone`),
+имеют `WRITE_OPEN` и сохраняют общие queue/staging/publish/postcondition semantics сервиса.
+Standalone не создаёт фиктивную временную базу: потеря ссылочных типов является явным принятым
+риском. Существующие destination не перезаписываются. Неопределённый исход сохраняет `stagingPath`
+как staging/evidence и отдельно сообщает `publishedArtifactPath`, только если canonical destination
+уже опубликован или мог стать видимым; UI и Agent/MCP не подменяют одно место эффекта другим.
+
 ## Инвариант покрытия
 
 Source of truth для состава Agent API — фактическое выполнение `registerAgentCommands`. Contract test вызывает функцию на общем VS Code stub, читает runtime-capture `vscodeTestState.registeredCommandIds` и сравнивает множество с `MCP_TOOL_CATALOG.map(command)`. Regex или разбор исходного текста не используются: они не доказывают, что команда действительно зарегистрирована.
 
 Тест требует:
 
-- точного равенства множеств и текущего размера 67;
+- точного равенства множеств и текущего размера 69;
 - отсутствия duplicate tool names и command ids;
 - отсутствия четырёх UI-команд вне Agent API;
 - соответствия каждого definition зафиксированным schema/annotation contracts.

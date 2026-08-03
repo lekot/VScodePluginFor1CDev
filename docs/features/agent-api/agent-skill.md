@@ -1,8 +1,8 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **67** runtime-команд Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **69** runtime-команд Agent API для программного
 управления метаданными, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
-СКД и XDTO-пакетами 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
+СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
 
 ## MCP (Streamable HTTP) и discovery
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-MCP публикует полный Agent API: **67 tools для 67 runtime-команд**.
+MCP публикует полный Agent API: **69 tools для 69 runtime-команд**.
 
 | Домен | MCP tools |
 |---|---|
@@ -54,6 +54,7 @@ MCP публикует полный Agent API: **67 tools для 67 runtime-ко
 | Debug (15) | `cdt_debug_start`, `cdt_debug_stop`, `cdt_debug_set_breakpoint`, `cdt_debug_clear_breakpoints`, `cdt_debug_set_exception_filter`, `cdt_debug_wait_for_stop`, `cdt_debug_get_stack_trace`, `cdt_debug_get_scopes`, `cdt_debug_get_variables`, `cdt_debug_evaluate`, `cdt_debug_continue`, `cdt_debug_step_over`, `cdt_debug_step_in`, `cdt_debug_step_out`, `cdt_debug_start_from_binding` |
 | Bindings/deploy (7) | `cdt_resolve_binding`, `cdt_list_bindings`, `cdt_deploy`, `cdt_deploy_selected_objects`, `cdt_deploy_changed_files`, `cdt_pull_selected_objects`, `cdt_export_status` |
 | Support (6) | `cdt_support_get_status`, `cdt_support_set_object_mode`, `cdt_support_enable_object_rules`, `cdt_support_sync`, `cdt_support_verify`, `cdt_support_get_last_run` |
+| External EPF/ERF (2) | `cdt_dump_external_processor`, `cdt_build_external_processor` |
 | Types/subsystems/characteristics (10) | `cdt_get_type`, `cdt_set_type`, `cdt_get_subsystem_command_interface`, `cdt_set_subsystem_command_visibility`, `cdt_set_subsystem_command_order`, `cdt_set_subsystem_subsystems_order`, `cdt_list_predefined_characteristics`, `cdt_get_predefined_characteristic_type`, `cdt_set_predefined_characteristic_type`, `cdt_get_characteristic_value_registers` |
 | Forms (5) | `cdt_forms_start`, `cdt_forms_exec`, `cdt_forms_stop`, `cdt_forms_shot`, `cdt_forms_status` |
 | SKD (4) | `cdt_skd_compile`, `cdt_skd_info`, `cdt_skd_edit`, `cdt_skd_validate` |
@@ -72,6 +73,7 @@ Bearer даёт аутентифицированному локальному MC
 - deploy/pull меняют информационные базы или workspace;
 - support set/enable/sync меняют master-файл и могут запускать Configurator для связанных ИБ;
 - support verify не меняет master или информационные базы, но запускает внешние Configurator dump-процессы и записывает durable audit run в локальный журнал;
+- `cdt_dump_external_processor` и `cdt_build_external_processor` запускают Configurator и создают файлы; standalone может потерять ссылочные типы и требует явного `acknowledgeTypeLoss: true`;
 - debug/forms/SKD запускают и останавливают дочерние процессы; SKD принимает локальные input/output paths;
 - XDTO export с `outputPath`, import/create/merge и metadata tools изменяют файлы конфигурации.
 
@@ -639,6 +641,61 @@ Outcome имеет те же верхнеуровневые статусы, чт
 `available.run` может отсутствовать. Если run есть, он содержит `desiredGenerationId`, operation,
 scope, terminal state и результаты каждой canonical target. Active run после crash сначала
 восстанавливается журналом; неподтверждённый apply остаётся `inDoubt`.
+
+---
+
+### Внешние обработки и отчёты (2 команды)
+
+Обе команды являются мутациями `WRITE_OPEN`: результат публикуется только в отсутствующий путь.
+Контекст выполнения обязателен и выбирается ровно одним discriminant:
+
+```json
+{ "kind": "infobase", "infobasePath": "C:/bases/main", "credentials": { "user": "Администратор", "password": "..." } }
+```
+
+или
+
+```json
+{ "kind": "standalone", "acknowledgeTypeLoss": true }
+```
+
+Standalone не подменяется временной ИБ и может потерять ссылочные типы конфигурации. Пароль не
+попадает в диагностический log. Результат находится в `AgentResult.data`: `state` равен
+`completed`, `failed` или `inDoubt`. Для `inDoubt` обязательный `stagingPath` указывает
+staging/evidence, а optional `publishedArtifactPath` — canonical destination, который уже
+опубликован или мог стать видимым; эти места нельзя считать взаимозаменяемыми.
+
+#### `1c-metadata-tree.agent.dumpExternalProcessor`
+
+Разбирает `.epf` или `.erf` в новый каталог XML. Формат обязателен:
+
+```json
+{
+  "srcPath": "C:/work/Обработка.epf",
+  "outDir": "C:/work/Обработка_src",
+  "format": "Hierarchical",
+  "context": { "kind": "standalone", "acknowledgeTypeLoss": true }
+}
+```
+
+`outDir` можно опустить: используется соседний `<имя>_src`. MCP tool:
+`cdt_dump_external_processor`.
+
+#### `1c-metadata-tree.agent.buildExternalProcessor`
+
+Собирает `.epf` или `.erf` из корневого XML-файла, а не из каталога:
+
+```json
+{
+  "rootXmlPath": "C:/work/Обработка_src/Обработка.xml",
+  "dstPath": "C:/work/Обработка_built.epf",
+  "context": { "kind": "infobase", "infobasePath": "C:/bases/main" }
+}
+```
+
+Тип результата определяется по metadata root `ExternalDataProcessor` или `ExternalReport`.
+`dstPath` можно опустить: сервис предложит соседний `_built.epf` или `_built.erf`. MCP tool:
+`cdt_build_external_processor`.
 
 ---
 

@@ -74,9 +74,57 @@ suite('extension manifest contracts', () => {
         .filter((command: string) => command.startsWith('1c-metadata-tree.agent.')),
     );
 
-    assert.strictEqual(registered.size, 67, 'Update the documented Agent API count intentionally.');
-    assert.strictEqual(contributed.size, 67, 'Manifest must contribute exactly the documented Agent API.');
+    assert.strictEqual(registered.size, 69, 'Update the documented Agent API count intentionally.');
+    assert.strictEqual(contributed.size, 69, 'Manifest must contribute exactly the documented Agent API.');
     assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
+  });
+
+  test('declares EPF/ERF UI and hidden Agent commands with exact Explorer routing', () => {
+    const pkg = readPackageJson();
+    const contributed = new Set<string>(
+      pkg.contributes.commands.map((entry: { command: string }) => entry.command),
+    );
+    for (const command of [
+      '1c-metadata-tree.dumpExternalProcessor',
+      '1c-metadata-tree.buildExternalProcessor',
+      '1c-metadata-tree.agent.dumpExternalProcessor',
+      '1c-metadata-tree.agent.buildExternalProcessor',
+    ]) {
+      assert.ok(contributed.has(command), command);
+    }
+    const palette = pkg.contributes.menus.commandPalette as Array<{
+      command: string;
+      when?: string;
+    }>;
+    for (const command of [
+      '1c-metadata-tree.agent.dumpExternalProcessor',
+      '1c-metadata-tree.agent.buildExternalProcessor',
+    ]) {
+      assert.deepStrictEqual(
+        palette.find((entry) => entry.command === command),
+        { command, when: 'false' },
+      );
+    }
+    const explorer = pkg.contributes.menus['explorer/context'] as Array<{
+      command: string;
+      when?: string;
+      group?: string;
+    }>;
+    assert.deepStrictEqual(
+      explorer.filter((entry) => entry.command.includes('ExternalProcessor')),
+      [
+        {
+          command: '1c-metadata-tree.dumpExternalProcessor',
+          when: 'resourceExtname == .epf || resourceExtname == .erf',
+          group: '1c_tools@1',
+        },
+        {
+          command: '1c-metadata-tree.buildExternalProcessor',
+          when: 'resourceExtname == .xml',
+          group: '1c_tools@2',
+        },
+      ],
+    );
   });
 
   test('registers test-only commands only in ExtensionMode.Test', () => {

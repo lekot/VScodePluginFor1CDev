@@ -51,7 +51,7 @@ function signal(aborted = false): AbortSignal {
 suite('MCP adapter: tool contract', () => {
   test('registerMcpTools preserves every catalog schema and annotation object', () => {
     const tools = captureRegisteredTools(async () => ({ success: true }));
-    assert.strictEqual(tools.length, 67);
+    assert.strictEqual(tools.length, 69);
     assert.deepStrictEqual(
       tools.map(({ name, config }) => ({ name, annotations: config.annotations })),
       MCP_TOOL_CATALOG.map(({ name, annotations }) => ({ name, annotations })),
@@ -78,7 +78,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     assert.deepStrictEqual(mapped.structuredContent, source);
   });
 
-  test('representative read, mutation, debug, forms, SKD and XDTO tools dispatch generically', async () => {
+  test('representative tools including both external processor commands dispatch generically', async () => {
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const tools = captureRegisteredTools(async (command, args) => {
       calls.push({ command, args });
@@ -91,6 +91,23 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       ['cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],
       ['cdt_skd_validate', { templatePath: 'template.xml' }, '1c-metadata-tree.agent.skd.validate'],
       ['cdt_xdto_compare', { packageName: 'p', source: '<x/>' }, '1c-metadata-tree.agent.xdto.compare'],
+      [
+        'cdt_dump_external_processor',
+        {
+          srcPath: 'C:/work/Processor.epf',
+          format: 'Plain',
+          context: { kind: 'standalone', acknowledgeTypeLoss: true },
+        },
+        '1c-metadata-tree.agent.dumpExternalProcessor',
+      ],
+      [
+        'cdt_build_external_processor',
+        {
+          rootXmlPath: 'C:/work/Report_src/Report.xml',
+          context: { kind: 'infobase', infobasePath: 'C:/db' },
+        },
+        '1c-metadata-tree.agent.buildExternalProcessor',
+      ],
     ];
     for (const [name, args] of cases) {
       const target = tools.find((candidate) => candidate.name === name)!;

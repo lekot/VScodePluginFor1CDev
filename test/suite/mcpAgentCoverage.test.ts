@@ -95,6 +95,9 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_support_sync', 'supportSync', 'writeOpen'),
   tool('cdt_support_verify', 'supportVerify', 'verifyOpen'),
   tool('cdt_support_get_last_run', 'supportGetLastRun', 'readClosed'),
+
+  tool('cdt_dump_external_processor', 'dumpExternalProcessor', 'writeOpen'),
+  tool('cdt_build_external_processor', 'buildExternalProcessor', 'writeOpen'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
@@ -194,6 +197,19 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
     targets: { kind: 'all' },
   },
   cdt_support_get_last_run: { configurationId: 'cfg' },
+  cdt_dump_external_processor: {
+    srcPath: 'C:/test/file.epf',
+    format: 'Hierarchical',
+    context: { kind: 'standalone', acknowledgeTypeLoss: true },
+  },
+  cdt_build_external_processor: {
+    rootXmlPath: 'C:/test/file_src/file.xml',
+    context: {
+      kind: 'infobase',
+      infobasePath: 'C:/db',
+      credentials: { user: 'operator', password: 'secret' },
+    },
+  },
 };
 
 interface InvalidRefinementCase {
@@ -254,6 +270,40 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'formsStart missing url and dbPath', tool: 'cdt_forms_start', input: {} },
   { label: 'formsExec empty script', tool: 'cdt_forms_exec', input: { script: '' } },
   {
+    label: 'external dump requires execution context',
+    tool: 'cdt_dump_external_processor',
+    input: { srcPath: 'file.epf', format: 'Plain' },
+  },
+  {
+    label: 'external standalone requires explicit type-loss acknowledgement',
+    tool: 'cdt_dump_external_processor',
+    input: {
+      srcPath: 'file.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: false },
+    },
+  },
+  {
+    label: 'external standalone rejects infobase fields',
+    tool: 'cdt_build_external_processor',
+    input: {
+      rootXmlPath: 'file.xml',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true, infobasePath: 'C:/db' },
+    },
+  },
+  {
+    label: 'external credentials are strict',
+    tool: 'cdt_build_external_processor',
+    input: {
+      rootXmlPath: 'file.xml',
+      context: {
+        kind: 'infobase',
+        infobasePath: 'C:/db',
+        credentials: { user: 'operator', password: 'secret', token: 'unexpected' },
+      },
+    },
+  },
+  {
     label: 'supportSync ids require at least one target',
     tool: 'cdt_support_sync',
     input: { configurationId: 'cfg', targets: { kind: 'ids', targetIds: [] } },
@@ -309,10 +359,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('catalog has the exact 67 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 67, 'test oracle must enumerate all 67 tools');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 67);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 67);
+  test('catalog has the exact 69 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 69, 'test oracle must enumerate all 69 tools');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 69);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 69);
 
     assert.deepStrictEqual(
       MCP_TOOL_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -355,8 +405,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 67);
-    assert.strictEqual(new Set(registered).size, 67);
+    assert.strictEqual(registered.length, 69);
+    assert.strictEqual(new Set(registered).size, 69);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -369,7 +419,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 67 valid fixtures pass and every root schema rejects an extra property', () => {
+  test('all 69 valid fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

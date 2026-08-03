@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { registerExternalProcessorCommands } from './externalProcessorCommands';
 import { ExtensionState } from '../state/extensionState';
 import type { MetadataTreeLifecycle } from '../extension/metadataTreeLifecycle';
 import { registerElementCommands } from './elementCommands';
@@ -62,6 +63,7 @@ export async function registerAllCommands({
     loadMetadataTree: lifecycle.loadMetadataTree,
     extensionContext: context,
   };
+  registerExternalProcessorCommands(context);
   registerExtensionCommands(context, state);
 
   const configurationRegistry = new WorkspaceRegistry(
