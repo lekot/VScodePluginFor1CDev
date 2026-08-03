@@ -1,5 +1,5 @@
 import type { McpToolDefinition } from './types';
-import { READ_OPEN, WRITE_OPEN } from './types';
+import { WRITE_OPEN } from './types';
 import {
   agentBuildExternalProcessorSchema,
   agentDumpExternalProcessorSchema,
@@ -11,7 +11,7 @@ export const EXTERNAL_PROCESSOR_MCP_TOOLS: readonly McpToolDefinition[] = [
     description: 'Decompile/dump an external processor (.epf) or report (.erf) binary file into XML sources.',
     command: '1c-metadata-tree.agent.dumpExternalProcessor',
     inputSchema: agentDumpExternalProcessorSchema,
-    annotations: READ_OPEN,
+    annotations: WRITE_OPEN,
   },
   {
     name: 'cdt_build_external_processor',

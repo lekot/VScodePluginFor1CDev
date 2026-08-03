@@ -22,6 +22,7 @@ interface ConfiguratorProcessOutcomeBase {
   signal: NodeJS.Signals | null;
   combinedLog: string;
   logTruncated: boolean;
+  termination?: ProcessTreeTerminationOutcome;
   diagnostic: {
     executablePath: string;
     args: readonly string[];
@@ -54,6 +55,7 @@ export type ConfiguratorProcessOutcome =
         | 'CONFIGURATOR_PROCESS_CRASHED'
         | 'CONFIGURATOR_ACKNOWLEDGEMENT_LOST'
         | 'CONFIGURATOR_OUTPUT_UNREADABLE'
+        | 'CONFIGURATOR_OUTPUT_CLEANUP_FAILED'
         | 'CONFIGURATOR_EXIT_FAILED'
         | 'CONFIGURATOR_FATAL_MARKER';
       errorMessage?: string;
@@ -155,6 +157,15 @@ export async function runConfiguratorProcess(
       options.batchArguments.executionArgs
     );
   }
+  let outputCleanupError: string | undefined;
+  try {
+    await removeOutputFile(options.batchArguments.outputFilePath);
+  } catch (error) {
+    outputCleanupError = redactBatchSecrets(
+      errorMessage(error),
+      options.batchArguments.executionArgs
+    );
+  }
   const redactedOutputFileLog = redactBatchSecrets(
     outputFileLog,
     options.batchArguments.executionArgs
@@ -176,6 +187,7 @@ export async function runConfiguratorProcess(
     signal: raw.signal,
     combinedLog,
     logTruncated: raw.logTruncated || retained.truncated,
+    ...(raw.termination ? { termination: raw.termination } : {}),
     diagnostic,
   };
   const processErrorMessage = raw.spawnErrorMessage
@@ -263,6 +275,16 @@ export async function runConfiguratorProcess(
       started: true,
       effectPossible: true,
       errorCode: 'CONFIGURATOR_FATAL_MARKER',
+    };
+  }
+  if (outputCleanupError) {
+    return {
+      ...base,
+      status: 'inDoubt',
+      started: true,
+      effectPossible: true,
+      errorCode: 'CONFIGURATOR_OUTPUT_CLEANUP_FAILED',
+      errorMessage: outputCleanupError,
     };
   }
   if (outputReadError) {

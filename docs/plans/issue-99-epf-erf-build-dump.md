@@ -11,10 +11,12 @@
 
 Официальный контракт платформы:
 
-- `/DumpExternalDataProcessorOrReportToFiles <dump directory> <epf-or-erf> -Format <Plain|Hierarchical>`;
+- `/DumpExternalDataProcessorOrReportToFiles <output prefix> <epf-or-erf> -Format <Plain|Hierarchical>`;
 - `/LoadExternalDataProcessorOrReportFromFiles <root xml> <epf-or-erf>`;
 - для load параметр `-Format` не используется;
 - без подключения к ИБ разрешены только автономные EPF/ERF; ссылочные типы конфигурации могут быть потеряны.
+
+`output prefix` не является каталогом: Plain создаёт `<prefix>.xml` и вспомогательные sibling-файлы, Hierarchical — `<prefix>.xml` и каталог `<prefix>/...`. Сервис создаёт prefix внутри staging-wrapper и атомарно публикует весь wrapper как `outputDirectory`.
 
 ## Доказанные факты
 

@@ -39,6 +39,8 @@ import type {
     AgentSupportSyncParams,
     AgentSupportVerifyParams,
     AgentSupportGetLastRunParams,
+    AgentDumpExternalProcessorParams,
+    AgentBuildExternalProcessorParams,
 } from './types';
 import type {
     DebugStartParams,
@@ -961,7 +963,7 @@ export function registerAgentCommands(
 
     const dumpExternalProcessorCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.dumpExternalProcessor',
-        async (params: { srcPath: string; outDir?: string; format?: 'Hierarchical' | 'Plain' }) => {
+        async (params: AgentDumpExternalProcessorParams) => {
             const { agentDumpExternalProcessor } = await import('./agentExternalProcessorOperations');
             return agentDumpExternalProcessor(params);
         }
@@ -969,7 +971,7 @@ export function registerAgentCommands(
 
     const buildExternalProcessorCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.buildExternalProcessor',
-        async (params: { srcDir: string; dstPath?: string; format?: 'Hierarchical' | 'Plain' }) => {
+        async (params: AgentBuildExternalProcessorParams) => {
             const { agentBuildExternalProcessor } = await import('./agentExternalProcessorOperations');
             return agentBuildExternalProcessor(params);
         }

@@ -196,6 +196,13 @@ const ProgressLocation = {
   Notification: 15,
 } as const;
 
+const FileType = {
+  Unknown: 0,
+  File: 1,
+  Directory: 2,
+  SymbolicLink: 64,
+} as const;
+
 class CancellationTokenSourceStub {
   readonly token = {
     isCancellationRequested: false,
@@ -234,6 +241,7 @@ export const vscodeTestState = {
   openDialogQueue: [] as { fsPath: string; scheme: string }[][],
   /** Sequential results for `showSaveDialog` (shifted each call). */
   saveDialogQueue: [] as ({ fsPath: string; scheme: string } | undefined)[],
+  saveDialogOptionsLog: [] as unknown[],
   /** Sequential results for `showInputBox` (shifted each call). */
   inputBoxQueue: [] as (string | undefined)[],
   /**
@@ -246,6 +254,12 @@ export const vscodeTestState = {
    * Use `undefined` to simulate dismiss / cancel. When empty, stub keeps legacy behavior.
    */
   warningMessageReturnQueue: [] as (string | undefined)[],
+  /** File paths that `workspace.fs.stat` reports as regular files. */
+  workspaceFsFiles: new Set<string>(),
+  /** Makes the token passed by `window.withProgress` already cancelled. */
+  progressCancellationRequested: false,
+  /** Captured `withProgress` options for behavioral command tests. */
+  progressOptionsLog: [] as Array<{ location?: unknown; title?: string; cancellable?: boolean }>,
   /** URIs passed to `vscode.env.openExternal` (WOW platform / web infobase tests). */
   openExternalLog: [] as string[],
   /** When false, `openExternal` resolves to false. Default true. */
@@ -342,7 +356,8 @@ const windowStub = {
     }
     return undefined;
   },
-  showSaveDialog: async (_options?: unknown): Promise<{ fsPath: string; scheme: string } | undefined> => {
+  showSaveDialog: async (options?: unknown): Promise<{ fsPath: string; scheme: string } | undefined> => {
+    vscodeTestState.saveDialogOptionsLog.push(options);
     if (vscodeTestState.saveDialogQueue.length > 0) {
       return vscodeTestState.saveDialogQueue.shift();
     }
@@ -369,14 +384,15 @@ const windowStub = {
     return undefined;
   },
   withProgress: async <R>(
-    _options: { location?: unknown; title?: string; cancellable?: boolean },
+    options: { location?: unknown; title?: string; cancellable?: boolean },
     task: (
       progress: { report: (value: { message?: string; increment?: number }) => void },
       token: { isCancellationRequested: boolean; onCancellationRequested: () => { dispose: () => void } },
     ) => Thenable<R>,
   ): Promise<R> => {
+    vscodeTestState.progressOptionsLog.push(options);
     const token = {
-      isCancellationRequested: false,
+      isCancellationRequested: vscodeTestState.progressCancellationRequested,
       onCancellationRequested: () => ({ dispose: () => undefined }),
     };
     return await task({ report: () => undefined }, token);
@@ -395,6 +411,14 @@ const windowStub = {
 };
 
 const workspaceStub = {
+  fs: {
+    stat: async (uri: { fsPath: string }) => {
+      if (!vscodeTestState.workspaceFsFiles.has(path.normalize(uri.fsPath))) {
+        throw FileSystemError.FileNotFound(uri.fsPath);
+      }
+      return { type: 1, ctime: 0, mtime: 0, size: 1 };
+    },
+  },
   createFileSystemWatcher: (_pattern: unknown) => ({
     ignoreCreateEvents: false,
     ignoreChangeEvents: false,
@@ -493,9 +517,13 @@ export function resetVscodeTestState(): void {
   vscodeTestState.quickPickQueue = [];
   vscodeTestState.openDialogQueue = [];
   vscodeTestState.saveDialogQueue = [];
+  vscodeTestState.saveDialogOptionsLog = [];
   vscodeTestState.inputBoxQueue = [];
   vscodeTestState.inputBoxValidationFailures = [];
   vscodeTestState.warningMessageReturnQueue = [];
+  vscodeTestState.workspaceFsFiles = new Set();
+  vscodeTestState.progressCancellationRequested = false;
+  vscodeTestState.progressOptionsLog = [];
   vscodeTestState.openExternalLog = [];
   vscodeTestState.openExternalResult = true;
   vscodeTestState.mockWorkspaceFolders = [];
@@ -793,6 +821,7 @@ const vscodeStub = {
   ExtensionMode,
   ViewColumn,
   ProgressLocation,
+  FileType,
   CancellationTokenSource: CancellationTokenSourceStub,
   Position,
   Range,

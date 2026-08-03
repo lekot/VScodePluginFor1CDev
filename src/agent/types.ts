@@ -1,6 +1,11 @@
 // src/agent/types.ts
 // Agent API — публичные типы для команд агента. Без зависимостей от vscode.
 
+import type {
+    ExternalProcessorExecutionContext,
+    ExternalProcessorOperationResult,
+} from '../services/externalProcessor/externalProcessorTypes';
+
 export interface AgentResult<T = void> {
     success: boolean;
     data?: T;
@@ -10,6 +15,25 @@ export interface AgentResult<T = void> {
     operationId?: string;
     snapshotVersion?: number;
 }
+
+export type AgentExternalProcessorContext = ExternalProcessorExecutionContext;
+
+export interface AgentDumpExternalProcessorParams {
+    srcPath: string;
+    outDir?: string;
+    format: 'Plain' | 'Hierarchical';
+    context: AgentExternalProcessorContext;
+    timeoutMs?: number;
+}
+
+export interface AgentBuildExternalProcessorParams {
+    rootXmlPath: string;
+    dstPath?: string;
+    context: AgentExternalProcessorContext;
+    timeoutMs?: number;
+}
+
+export type ExternalProcessorAgentData = ExternalProcessorOperationResult;
 
 export interface ConfigurationScopedParams {
     /** Exact configuration selector. Optional only for a single compatible configuration. */

@@ -18,38 +18,45 @@ export interface ConfiguratorBatchArguments {
   outputFilePath: string;
 }
 
-interface ConfiguratorBatchBaseOptions {
-  target: ConfiguratorFileTarget;
+interface ConfiguratorBatchSharedOptions {
   outputFilePath: string;
   credentials?: ConfiguratorCredentials;
   platform?: NodeJS.Platform;
 }
 
-export interface ConfiguratorPartialApplyArgsOptions extends ConfiguratorBatchBaseOptions {
+interface ConfiguratorRequiredTargetOptions extends ConfiguratorBatchSharedOptions {
+  target: ConfiguratorFileTarget;
+}
+
+interface ConfiguratorExternalOptions extends ConfiguratorBatchSharedOptions {
+  target?: ConfiguratorFileTarget;
+}
+
+export interface ConfiguratorPartialApplyArgsOptions extends ConfiguratorRequiredTargetOptions {
   stagingDirectory: string;
   listFilePath: string;
 }
 
-export interface ConfiguratorMinimalDumpArgsOptions extends ConfiguratorBatchBaseOptions {
+export interface ConfiguratorMinimalDumpArgsOptions extends ConfiguratorRequiredTargetOptions {
   dumpDirectory: string;
   listFilePath: string;
 }
 
-export interface ConfiguratorDumpExternalArgsOptions extends ConfiguratorBatchBaseOptions {
+export interface ConfiguratorDumpExternalArgsOptions extends ConfiguratorExternalOptions {
   dumpDirectory: string;
   externalFilePath: string;
   format?: 'Hierarchical' | 'Plain';
 }
 
-export interface ConfiguratorLoadExternalArgsOptions extends ConfiguratorBatchBaseOptions {
-  externalFilePath: string;
-  sourceDirectory: string;
-  format?: 'Hierarchical' | 'Plain';
+export interface ConfiguratorLoadExternalArgsOptions extends ConfiguratorExternalOptions {
+  rootXmlPath: string;
+  destinationPath: string;
 }
 
 export function buildConfiguratorPartialApplyArgs(
   options: ConfiguratorPartialApplyArgsOptions
 ): ConfiguratorBatchArguments {
+  requireTarget(options.target);
   const common = buildCommonArgs(options);
   const executionArgs = [
     ...common.executionArgs,
@@ -78,6 +85,7 @@ export function buildConfiguratorPartialApplyArgs(
 export function buildConfiguratorMinimalDumpArgs(
   options: ConfiguratorMinimalDumpArgsOptions
 ): ConfiguratorBatchArguments {
+  requireTarget(options.target);
   const common = buildCommonArgs(options);
   const executionArgs = [
     ...common.executionArgs,
@@ -108,15 +116,14 @@ export function buildConfiguratorDumpExternalArgs(
   const format = options.format ?? 'Hierarchical';
   const dumpDir = requireValue(options.dumpDirectory, 'dumpDirectory');
   const externalFile = requireValue(options.externalFilePath, 'externalFilePath');
-  
+
   const extraArgs = [
     '/DumpExternalDataProcessorOrReportToFiles',
     dumpDir,
     externalFile,
+    '-Format',
+    format,
   ];
-  if (format === 'Hierarchical') {
-    extraArgs.push('-Format', 'Hierarchical');
-  }
 
   const executionArgs = [...common.executionArgs, ...extraArgs];
   const diagnosticArgs = [...common.diagnosticArgs, ...extraArgs];
@@ -128,18 +135,14 @@ export function buildConfiguratorLoadExternalArgs(
   options: ConfiguratorLoadExternalArgsOptions
 ): ConfiguratorBatchArguments {
   const common = buildCommonArgs(options);
-  const format = options.format ?? 'Hierarchical';
-  const externalFile = requireValue(options.externalFilePath, 'externalFilePath');
-  const sourceDir = requireValue(options.sourceDirectory, 'sourceDirectory');
+  const rootXmlPath = requireValue(options.rootXmlPath, 'rootXmlPath');
+  const destinationPath = requireValue(options.destinationPath, 'destinationPath');
 
   const extraArgs = [
     '/LoadExternalDataProcessorOrReportFromFiles',
-    externalFile,
-    sourceDir,
+    rootXmlPath,
+    destinationPath,
   ];
-  if (format === 'Hierarchical') {
-    extraArgs.push('-Format', 'Hierarchical');
-  }
 
   const executionArgs = [...common.executionArgs, ...extraArgs];
   const diagnosticArgs = [...common.diagnosticArgs, ...extraArgs];
@@ -155,29 +158,32 @@ export function formatConfiguratorDiagnosticCommand(
   return [executablePath, ...args.diagnosticArgs].map((token) => JSON.stringify(token)).join(' ');
 }
 
-function buildCommonArgs(options: ConfiguratorBatchBaseOptions): {
+function buildCommonArgs(options: ConfiguratorRequiredTargetOptions | ConfiguratorExternalOptions): {
   executionArgs: string[];
   diagnosticArgs: string[];
   outputFilePath: string;
 } {
-  if (options.target.type !== 'file') {
-    throw new Error('Configurator batch operations support file infobases only.');
-  }
   const platform = options.platform ?? process.platform;
-  const filePath = resolveForPlatform(
-    requireValue(options.target.filePath, 'target.filePath'),
-    platform
-  );
   const outputFilePath = requireValue(options.outputFilePath, 'outputFilePath');
   const executionArgs = [
     'DESIGNER',
-    '/F',
-    filePath,
     '/DisableStartupDialogs',
     '/DisableStartupMessages',
     '/Out',
     outputFilePath,
   ];
+  if (options.target) {
+    if (options.target.type !== 'file') {
+      throw new Error('Configurator batch operations support file infobases only.');
+    }
+    const filePath = resolveForPlatform(
+      requireValue(options.target.filePath, 'target.filePath'),
+      platform
+    );
+    executionArgs.splice(1, 0, '/F', filePath);
+  } else if (options.credentials !== undefined) {
+    throw new Error('Configurator credentials require an infobase execution context.');
+  }
   const diagnosticArgs = [...executionArgs];
   const user = options.credentials?.user?.trim();
   if (user) {
@@ -218,6 +224,12 @@ function requireValue(value: string, name: string): string {
     throw new Error(`${name} is required.`);
   }
   return result;
+}
+
+function requireTarget(target: ConfiguratorFileTarget | undefined): void {
+  if (!target) {
+    throw new Error('target is required.');
+  }
 }
 
 function resolveForPlatform(value: string, platform: NodeJS.Platform): string {

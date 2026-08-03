@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import {
   buildConfiguratorDumpExternalArgs,
   buildConfiguratorLoadExternalArgs,
+  buildConfiguratorMinimalDumpArgs,
   buildConfiguratorPartialApplyArgs,
   formatConfiguratorDiagnosticCommand,
   type ConfiguratorBatchArguments,
@@ -10,37 +11,118 @@ import {
 const JSON_STRING_TOKEN = /"(?:\\["\\/bfnrt]|\\u[0-9a-f]{4}|[^"\\])*"/giu;
 
 suite('ConfiguratorBatchArgs', () => {
-  test('buildConfiguratorDumpExternalArgs generates correct Designer flags', () => {
-    const args = buildConfiguratorDumpExternalArgs({
-      target: { type: 'file', filePath: 'C:\\db\\1Cv8.1CD' },
-      outputFilePath: 'C:\\logs\\out.log',
-      dumpDirectory: 'C:\\src\\epf_src',
-      externalFilePath: 'C:\\files\\MyProcessor.epf',
-      format: 'Hierarchical',
+  for (const format of ['Plain', 'Hierarchical'] as const) {
+    test(`dump external emits exact standalone argv with explicit ${format} format`, () => {
+      const args = buildConfiguratorDumpExternalArgs({
+        outputFilePath: 'C:\\logs\\out.log',
+        dumpDirectory: 'C:\\src\\epf_src',
+        externalFilePath: 'C:\\files\\MyProcessor.epf',
+        format,
+        platform: 'win32',
+      });
+
+      assert.strictEqual(args.operation, 'dumpExternal');
+      assert.deepStrictEqual(args.executionArgs, [
+        'DESIGNER',
+        '/DisableStartupDialogs',
+        '/DisableStartupMessages',
+        '/Out',
+        'C:\\logs\\out.log',
+        '/DumpExternalDataProcessorOrReportToFiles',
+        'C:\\src\\epf_src',
+        'C:\\files\\MyProcessor.epf',
+        '-Format',
+        format,
+      ]);
+      assert.deepStrictEqual(args.diagnosticArgs, args.executionArgs);
     });
+  }
 
-    assert.strictEqual(args.operation, 'dumpExternal');
-    assert.ok(args.executionArgs.includes('/DumpExternalDataProcessorOrReportToFiles'));
-    assert.ok(args.executionArgs.includes('C:\\src\\epf_src'));
-    assert.ok(args.executionArgs.includes('C:\\files\\MyProcessor.epf'));
-    assert.ok(args.executionArgs.includes('-Format'));
-    assert.ok(args.executionArgs.includes('Hierarchical'));
-  });
-
-  test('buildConfiguratorLoadExternalArgs generates correct Designer flags', () => {
+  test('load external emits root XML before destination and never emits Format', () => {
     const args = buildConfiguratorLoadExternalArgs({
-      target: { type: 'file', filePath: 'C:\\db\\1Cv8.1CD' },
       outputFilePath: 'C:\\logs\\out.log',
-      sourceDirectory: 'C:\\src\\epf_src',
-      externalFilePath: 'C:\\files\\MyProcessor.epf',
-      format: 'Plain',
+      rootXmlPath: 'C:\\src\\MyProcessor.xml',
+      destinationPath: 'C:\\files\\MyProcessor.epf',
+      platform: 'win32',
     });
 
     assert.strictEqual(args.operation, 'loadExternal');
-    assert.ok(args.executionArgs.includes('/LoadExternalDataProcessorOrReportFromFiles'));
-    assert.ok(args.executionArgs.includes('C:\\files\\MyProcessor.epf'));
-    assert.ok(args.executionArgs.includes('C:\\src\\epf_src'));
-    assert.strictEqual(args.executionArgs.includes('-Format'), false);
+    assert.deepStrictEqual(args.executionArgs, [
+      'DESIGNER',
+      '/DisableStartupDialogs',
+      '/DisableStartupMessages',
+      '/Out',
+      'C:\\logs\\out.log',
+      '/LoadExternalDataProcessorOrReportFromFiles',
+      'C:\\src\\MyProcessor.xml',
+      'C:\\files\\MyProcessor.epf',
+    ]);
+    assert.strictEqual(args.executionArgs.some((token) => token.toLocaleLowerCase() === '-format'), false);
+  });
+
+  test('file-infobase argv contains F and redacts credentials without changing execution argv', () => {
+    const password = 'secret\\"value\r\ninjected';
+    const args = buildConfiguratorDumpExternalArgs({
+      target: { type: 'file', filePath: 'C:\\Bases\\Main Base' },
+      credentials: { user: 'operator', password },
+      outputFilePath: 'C:\\Logs\\dump.log',
+      dumpDirectory: 'C:\\Temp\\stage',
+      externalFilePath: 'C:\\files\\MyProcessor.epf',
+      format: 'Plain',
+      platform: 'win32',
+    });
+
+    assert.deepStrictEqual(args.executionArgs.slice(0, 3), [
+      'DESIGNER',
+      '/F',
+      'C:\\Bases\\Main Base',
+    ]);
+    assert.strictEqual(args.executionArgs[args.executionArgs.indexOf('/P') + 1], password);
+    assert.strictEqual(args.diagnosticArgs[args.diagnosticArgs.indexOf('/P') + 1], '<redacted>');
+    assert.strictEqual(formatConfiguratorDiagnosticCommand('C:\\1C\\1cv8.exe', args).includes(password), false);
+  });
+
+  test('standalone argv rejects credentials instead of silently ignoring them', () => {
+    assert.throws(
+      () => buildConfiguratorLoadExternalArgs({
+        credentials: { user: 'operator', password: 'secret' },
+        outputFilePath: 'out.log',
+        rootXmlPath: 'processor.xml',
+        destinationPath: 'processor.epf',
+      }),
+      /credentials require an infobase execution context/iu,
+    );
+  });
+
+  test('support partial apply and minimal dump require an explicit file-infobase target at runtime', () => {
+    assert.throws(
+      () => buildConfiguratorPartialApplyArgs({
+        outputFilePath: 'out.log',
+        stagingDirectory: 'stage',
+        listFilePath: 'list.txt',
+      } as never),
+      /target is required/iu,
+    );
+    assert.throws(
+      () => buildConfiguratorMinimalDumpArgs({
+        outputFilePath: 'out.log',
+        dumpDirectory: 'dump',
+        listFilePath: 'list.txt',
+      } as never),
+      /target is required/iu,
+    );
+  });
+
+  test('standalone external commands reject even an empty credentials object', () => {
+    assert.throws(
+      () => buildConfiguratorDumpExternalArgs({
+        credentials: {},
+        outputFilePath: 'out.log',
+        dumpDirectory: 'dump',
+        externalFilePath: 'processor.epf',
+      }),
+      /credentials require an infobase execution context/iu,
+    );
   });
 
   test('diagnostic encoding preserves token boundaries and escapes quotes, backslashes and line breaks', () => {

@@ -96,7 +96,7 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_support_verify', 'supportVerify', 'verifyOpen'),
   tool('cdt_support_get_last_run', 'supportGetLastRun', 'readClosed'),
 
-  tool('cdt_dump_external_processor', 'dumpExternalProcessor', 'readOpen'),
+  tool('cdt_dump_external_processor', 'dumpExternalProcessor', 'writeOpen'),
   tool('cdt_build_external_processor', 'buildExternalProcessor', 'writeOpen'),
 ];
 
@@ -197,8 +197,19 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
     targets: { kind: 'all' },
   },
   cdt_support_get_last_run: { configurationId: 'cfg' },
-  cdt_dump_external_processor: { srcPath: 'C:/test/file.epf' },
-  cdt_build_external_processor: { srcDir: 'C:/test/file_src' },
+  cdt_dump_external_processor: {
+    srcPath: 'C:/test/file.epf',
+    format: 'Hierarchical',
+    context: { kind: 'standalone', acknowledgeTypeLoss: true },
+  },
+  cdt_build_external_processor: {
+    rootXmlPath: 'C:/test/file_src/file.xml',
+    context: {
+      kind: 'infobase',
+      infobasePath: 'C:/db',
+      credentials: { user: 'operator', password: 'secret' },
+    },
+  },
 };
 
 interface InvalidRefinementCase {
@@ -258,6 +269,40 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'pullSelectedObjects empty objectIds', tool: 'cdt_pull_selected_objects', input: { objectIds: [] } },
   { label: 'formsStart missing url and dbPath', tool: 'cdt_forms_start', input: {} },
   { label: 'formsExec empty script', tool: 'cdt_forms_exec', input: { script: '' } },
+  {
+    label: 'external dump requires execution context',
+    tool: 'cdt_dump_external_processor',
+    input: { srcPath: 'file.epf', format: 'Plain' },
+  },
+  {
+    label: 'external standalone requires explicit type-loss acknowledgement',
+    tool: 'cdt_dump_external_processor',
+    input: {
+      srcPath: 'file.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: false },
+    },
+  },
+  {
+    label: 'external standalone rejects infobase fields',
+    tool: 'cdt_build_external_processor',
+    input: {
+      rootXmlPath: 'file.xml',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true, infobasePath: 'C:/db' },
+    },
+  },
+  {
+    label: 'external credentials are strict',
+    tool: 'cdt_build_external_processor',
+    input: {
+      rootXmlPath: 'file.xml',
+      context: {
+        kind: 'infobase',
+        infobasePath: 'C:/db',
+        credentials: { user: 'operator', password: 'secret', token: 'unexpected' },
+      },
+    },
+  },
   {
     label: 'supportSync ids require at least one target',
     tool: 'cdt_support_sync',

@@ -239,6 +239,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentXdtoOperations.test.js',
   'suite/externalProcessorService.test.js',
   'suite/agentExternalProcessorOperations.test.js',
+  'suite/externalProcessorCommands.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),
