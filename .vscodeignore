@@ -47,6 +47,16 @@ node_modules/glob/**
 node_modules/mocha/**
 node_modules/prettier/**
 node_modules/typescript/**
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/__tests__/**
+node_modules/**/example/**
+node_modules/**/examples/**
+node_modules/**/README*
+node_modules/**/CHANGELOG*
+node_modules/**/*.map
+node_modules/**/*.d.ts
+node_modules/**/*.d.ts.map
 coverage/tmp/**
 .playwright-mcp/
 smoke-avansovyotchet-console.log

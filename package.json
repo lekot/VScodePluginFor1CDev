@@ -1516,9 +1516,10 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "package": "npm run compile && node node_modules/@vscode/vsce/vsce package",
+    "package": "node node_modules/@vscode/vsce/vsce package",
     "copy:webviews": "node scripts/copy-webviews.js",
-    "compile": "tsc -p ./ && node scripts/copy-webviews.js",
+    "compile": "tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
+    "verify:session-router-bundle": "node scripts/verify-session-router-bundle.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
@@ -1536,6 +1537,7 @@
     "format": "prettier --write \"src/**/*.ts\""
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/glob": "^8.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.0",
@@ -1546,21 +1548,21 @@
     "@vscode/test-electron": "^2.3.0",
     "@vscode/vsce": "^3.7.1",
     "c8": "^11.0.0",
+    "esbuild": "^0.25.0",
     "eslint": "^8.0.0",
     "fast-check": "^4.6.0",
     "glob": "^10.0.0",
     "mocha": "^10.0.0",
     "prettier": "^3.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "zod": "^4.4.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/debugadapter": "^1.68.0",
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
     "js-yaml": "^4.1.1",
-    "playwright": "^1.50.0",
-    "zod": "^4.4.3"
+    "playwright": "^1.50.0"
   },
   "c8": {
     "include": [

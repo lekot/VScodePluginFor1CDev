@@ -10,6 +10,10 @@
 npm run compile
 ```
 
+`compile` сначала компилирует весь `src/` в `dist/`, затем собирает
+`dist/agent/mcpAdapter/sessionRouter.js` в CommonJS-bundle со всеми MCP SDK и Zod.
+Проверить этот артефакт отдельно можно командой `npm run verify:session-router-bundle`.
+
 Результат в `dist/` (основной tsconfig). Для тестов используется `tsconfig.test.json`, выход в `out/`.
 
 ### Запуск тестов
