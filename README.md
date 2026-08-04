@@ -75,9 +75,9 @@ Legacy endpoint `/command` остаётся доступен для совмес
 
 ## Установка
 
-### Из VSIX (рекомендуется)
+### Из VSIX с GitHub Releases
 
-1. Скачайте файл `.vsix` из папки [releases](releases/) в репозитории (или со страницы Releases на GitHub).
+1. Скачайте файл `.vsix` со [страницы GitHub Releases](https://github.com/lekot/VScodePluginFor1CDev/releases).
 2. В VS Code: `Ctrl+Shift+P` → **Install from VSIX…** → укажите скачанный файл.
 3. Перезагрузите окно при необходимости.
 
@@ -98,7 +98,7 @@ Legacy endpoint `/command` остаётся доступен для совмес
 
 1. Откройте папку с конфигурацией 1С в VS Code
 2. Панель **CDT 41** появится автоматически в Explorer
-3. Или: **Ctrl+Alt+1** (Windows/Linux) / **Cmd+Alt+1** (macOS), либо Command Palette (**Ctrl+Shift+P**) → «CDT 41: Open Metadata Tree»
+3. Или: **Ctrl+Alt+1** (Windows/Linux) / **Cmd+Alt+1** (macOS), либо Command Palette (**Ctrl+Shift+P**) → «CDT 41: Открыть дерево метаданных»
 
 ### Команды (CDT 41)
 
@@ -139,7 +139,7 @@ Legacy endpoint `/command` остаётся доступен для совмес
 
 - **Развернуть/свернуть узел**: Клик на стрелку рядом с элементом
 - **Открыть файл**: Клик на элемент с файлом
-- **Обновить дерево**: Кнопка "Refresh" в панели или команда `1C: Refresh`
+- **Обновить дерево**: Кнопка «Обновить» в панели или команда палитры `CDT 41: Обновить`
 
 ### Поиск и фильтрация
 
@@ -191,8 +191,8 @@ Legacy endpoint `/command` остаётся доступен для совмес
 
 ## Требования
 
-- VS Code версии 1.80.0 или выше
-- Node.js 16.x или выше (для разработки)
+- VS Code версии 1.82.0 или выше (соответствует `engines.vscode` в пакете расширения)
+- Node.js 20.x рекомендуется для разработки и используется в CI
 - Конфигурация 1С в формате EDT или Designer
 
 ## Разработка

@@ -40,7 +40,7 @@ REM    set MATRIX_WORK_DIR=C:\копия\конфигурации
 REM ============================================================================
 
 echo [instrument-smoke] Compiling extension...
-node node_modules\typescript\bin\tsc -p .
+call npm run compile
 if errorlevel 1 exit /b 1
 
 echo [instrument-smoke] Compiling tests...
@@ -48,7 +48,7 @@ node node_modules\typescript\bin\tsc -p tsconfig.test.json
 if errorlevel 1 exit /b 1
 
 echo [instrument-smoke] Copying test fixtures to out\test\fixtures...
-node -e "require('fs').cpSync('test/fixtures','out/test/fixtures',{recursive:true,force:true})"
+call npm run copy:test-fixtures
 if errorlevel 1 exit /b 1
 
 echo [instrument-smoke] Core tests (suite containerMatrix.e2e excluded — runs next with ibcmd^)...

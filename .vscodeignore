@@ -36,7 +36,6 @@ mcp-*.md
 **/*.ts
 shcntx_help.db
 DEVELOPING.md
-MARKETPLACE.md
 node_modules/@types/**
 node_modules/@typescript-eslint/**
 node_modules/@vscode/test-electron/**

@@ -7,5 +7,4 @@ paths-ignore:
   - resources/**
   - node_modules/**
   - out/**
-  - releases/**
   - FormatSamples/**

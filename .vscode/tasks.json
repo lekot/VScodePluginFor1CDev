@@ -2,17 +2,6 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "compile-direct",
-      "type": "shell",
-      "command": "node",
-      "args": ["node_modules/typescript/bin/tsc", "-p", "."],
-      "problemMatcher": "$tsc",
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      }
-    },
-    {
       "label": "npm: compile",
       "type": "shell",
       "command": "npm",
@@ -20,8 +9,28 @@
       "problemMatcher": "$tsc",
       "group": {
         "kind": "build",
-        "isDefault": false
+        "isDefault": true
       }
+    },
+    {
+      "label": "compile tests",
+      "type": "shell",
+      "command": "node",
+      "args": ["node_modules/typescript/bin/tsc", "-p", "tsconfig.test.json"],
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "compile extension and tests",
+      "dependsOrder": "sequence",
+      "dependsOn": ["npm: compile", "compile tests", "copy test fixtures"],
+      "problemMatcher": []
+    },
+    {
+      "label": "copy test fixtures",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "copy:test-fixtures"],
+      "problemMatcher": []
     },
     {
       "label": "npm: watch",

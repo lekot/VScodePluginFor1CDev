@@ -24,13 +24,13 @@ npm run compile
 npm test
 ```
 
-**Быстрый прогон** (Windows): компиляция, копирование фикстур в `out/test/fixtures`, запуск набора тестов (парсеры, xmlWriter и др.):
+**Быстрый прогон** (Windows): компиляция, копирование фикстур в `out/test/fixtures`, запуск динамически зарегистрированного core-набора:
 
 ```bash
 .\test-suite.bat
 ```
 
-Тесты лежат в `test/suite/*.test.ts`, компилируются в `out/test/suite/*.test.js`. Фикстуры — `test/fixtures/` (например `designer-config` с Configuration.xml и каталогами).
+Тесты лежат в `test/suite/*.test.ts`, компилируются в `out/test/suite/*.test.js`. `npm test` обнаруживает все скомпилированные `out/test/suite/*.test.js` по glob и не требует регистрации в core-наборе. Изолированные фикстуры находятся в `test/fixtures/`; репозиторный пример выгрузки Designer — `FormatSamples/empty_conf/` (с `Configuration.xml`, `ConfigDumpInfo.xml` и каталогами метаданных).
 
 Тесты, использующие API VS Code (`vscode`), — treeDataProvider, integration, metadataWatcherService — запускаются через **Testing** в VS Code (Run/Debug Tests), а не через `node mocha` в командной строке.
 
@@ -39,8 +39,8 @@ npm test
 1. Создайте файл `test/suite/<name>.test.ts`.
 2. Импорты из `../../src/...`.
 3. Используйте `suite('...', () => { ... })` и `test('...', () => { ... })` (Mocha TDD).
-4. Запустите `npm test` — в прогон попадут все `out/test/suite/*.test.js`.
-5. При использовании `test-suite.bat` при необходимости добавьте новый файл в список вызовов mocha в батнике.
+4. Если suite должен постоянно выполняться через `test-suite.bat` и `npm run test:ci`, зарегистрируйте его в `test/suite/coreSuites.ts`.
+5. Запустите `npm test`; `test-suite.bat` и `test:ci` используют динамический core-список через `out/test/runCore.js`, поэтому список файлов в батнике не редактируется.
 
 ### Линтинг и форматирование
 
@@ -78,8 +78,8 @@ npm run format
 
 Также можно открыть последний отчёт прямо из палитры команд CDT 41:
 
-- `CDT 41: Open last ibcmd check report`
-- `CDT 41: Open last ibcmd import report`
+- `CDT 41: Открыть последний отчёт ibcmd check`
+- `CDT 41: Открыть последний отчёт ibcmd import`
 
 В логах задачи печатается путь вида `[ibcmd-cli] report: ...`, а в файле есть команда, exit code, stdout/stderr.
 
@@ -91,13 +91,8 @@ npm run format
 - **Интеграция**: `integration.test.ts` (загрузка конфигурации из фикстур, отображение в дереве).
 - **Панель свойств и редактор типа**: `propertiesProvider.test.ts`, тесты в `src/providers/test/`.
 
-Фикстуры в `test/fixtures/designer-config/` повторяют минимальную структуру конфигурации Designer (Configuration.xml, Catalogs, Documents и т.д.) и используются в интеграционных и парсер-тестах.
+`FormatSamples/empty_conf/` — полная репозиторная выгрузка Designer для ручной проверки и тестов целостности; `FormatSamples/form_preview_block3b/Form.xml` — отдельный пример формы, а `FormatSamples/cf/1Cv8.cf` — пример CF. Минимальные изолированные fixtures для unit-тестов остаются в `test/fixtures/designer-config/`.
 
 ## Примеры конфигураций и расширений
 
-В корне проекта могут находиться папки-примеры (не коммитятся, указаны в `.gitignore`):
-
-- **extensions_samples** — пример расширения конфигурации (Configuration.xml, Catalogs, форма с папкой Ext: Form.xml, Module.bsl). Удобно использовать для ручной проверки поддержки расширений: откройте папку `extensions_samples` в VS Code как workspace и убедитесь, что дерево метаданных отображает конфигурацию и узлы Ext (например, форма элемента справочника с Ext/Form).
-- **structure_samples**, **structure_backup** — образцы структуры конфигурации Designer для разработки и отладки.
-
-Содержимое этих папок не попадает в VSIX (указано в `.vscodeignore`).
+Коммитируемые примеры находятся в `FormatSamples/` и не включаются в VSIX (см. `.vscodeignore`). Используйте `FormatSamples/empty_conf/` как workspace для ручной проверки дерева метаданных.

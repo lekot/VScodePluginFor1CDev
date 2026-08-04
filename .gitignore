@@ -6,9 +6,14 @@ build/
 out/
 src/**/*.js
 src/**/*.js.map
+src/**/*.d.ts
+src/**/*.d.ts.map
+test/**/*.js
+test/**/*.js.map
+test/**/*.d.ts
+test/**/*.d.ts.map
 coverage/
 *.vsix
-!releases/*.vsix
 .DS_Store
 *.log
 .vscode-test/
@@ -46,7 +51,6 @@ mcp-*
 docs/features/mcp-agent-adapter/*
 !docs/features/mcp-agent-adapter/spec.md
 !docs/features/mcp-agent-adapter/design.md
-!docs/features/mcp-agent-adapter/plan.md
 shcntx_help.db
 .roo/
 

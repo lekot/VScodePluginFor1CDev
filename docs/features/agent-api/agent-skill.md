@@ -22,9 +22,9 @@
   "port": 63088,
   "token": "baf0b38e...hex64...",
   "pid": 42144,
-  "workspaceFolder": "c:\\reps\\1cviewer",
-  "createdAt": "2026-04-13T08:56:08.711Z",
-  "extensionVersion": "0.46.8",
+  "workspaceFolder": "C:/workspaces/my-configuration",
+  "createdAt": "<ISO-8601 activation time>",
+  "extensionVersion": "<installed extension version>",
   "docs": "https://github.com/lekot/VScodePluginFor1CDev/blob/main/docs/features/agent-api/agent-skill.md",
   "quickstart": "POST http://127.0.0.1:<port>/command ...",
   "mcp": {
@@ -32,8 +32,8 @@
     "transport": "streamable-http",
     "authorization": "bearer"
   },
-  "helperScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/call.sh",
-  "discoverScriptPath": "C:/Users/.../.vscode/extensions/nikolay-shirokov.1c-metadata-tree-vscode-0.46.8/resources/agent-bridge/discover.sh"
+  "helperScriptPath": "<extensionPath>/resources/agent-bridge/call.sh",
+  "discoverScriptPath": "<extensionPath>/resources/agent-bridge/discover.sh"
 }
 ```
 
@@ -152,7 +152,7 @@ MCP endpoint через `mcp.url`.
 | `Тип.Имя.TabularSection.ТЧ` | `Document.Заказ.TabularSection.Состав` | Табличная часть |
 | `Тип.Имя.TabularSection.ТЧ.Attribute.Колонка` | `Document.Заказ.TabularSection.Состав.Attribute.Количество` | Колонка ТЧ |
 
-Тип — английское имя rootTag: `Catalog`, `Document`, `Enum`, `InformationRegister`, `CommonModule`, `Subsystem`, `Report`, `DataProcessor`, `ChartOfAccounts`, `ChartOfCharacteristicTypes`, `AccumulationRegister`, `AccountingRegister`, `CalculationRegister`, `BusinessProcess`, `Task`, `ExchangePlan`, `Constant`, `Role`, `ScheduledJob`, `HTTPService`, `WebService` и др. (45 типов).
+Тип — английское имя rootTag: `Catalog`, `Document`, `Enum`, `InformationRegister`, `CommonModule`, `Subsystem`, `Report`, `DataProcessor`, `ChartOfAccounts`, `ChartOfCharacteristicTypes`, `AccumulationRegister`, `AccountingRegister`, `CalculationRegister`, `BusinessProcess`, `Task`, `ExchangePlan`, `Constant`, `Role`, `ScheduledJob`, `HTTPService`, `WebService` и др. (46 типов).
 
 ## Команды
 
@@ -1011,6 +1011,9 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 ```json
 { "file": "C:/tmp/shot.png" }
 ```
+
+Возвращает `{ file: "C:/tmp/shot.png" }` — абсолютный локальный путь к PNG. MCP не вкладывает
+изображение в ответ; вызывающий агент должен прочитать этот файл или приложить его отдельно.
 
 #### `1c-metadata-tree.agent.forms.status`
 

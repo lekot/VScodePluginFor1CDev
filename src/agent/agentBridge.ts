@@ -146,7 +146,7 @@ export class AgentBridge {
                     transport: 'streamable-http',
                     authorization: 'bearer',
                 },
-                quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd|\\.xdto)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start с debuggeeType=\'webServer\' или dbPath → потом playwright на webServerUrl. XDTO: agent.xdto.listPackages/getPackage/exportXsd/importXsd/createFromXsd/compare/merge. Отладка BSL — agent.debug.start (debuggeeType=\'webServer\' чтобы агент мог управлять формой; thinClient — нативное окно Windows, недоступно без ui-test).',
+                quickstart: 'POST http://127.0.0.1:<port>/command с заголовком Authorization: Bearer <token>, телом {"name":"1c-metadata-tree.agent.<cmd>","args":{...}}. Whitelist: /^1c-metadata-tree\\.agent(\\.debug|\\.forms|\\.skd|\\.xdto)?\\.[a-zA-Z]+$/. Для работы с формами используй agent.forms.start только с url готового веб-сервера или dbPath (и platformPath при необходимости). Для отладки BSL сначала вызови agent.debug.start с debuggeeType=\'webServer\', затем открой возвращённый webServerUrl через Playwright. XDTO: agent.xdto.listPackages/getPackage/exportXsd/importXsd/createFromXsd/compare/merge. thinClient — нативное окно Windows, недоступно без ui-test.',
                 ...(helperScriptPath ? { helperScriptPath } : {}),
                 ...(discoverScriptPath ? { discoverScriptPath } : {}),
             };

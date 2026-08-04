@@ -621,6 +621,15 @@ suite('AgentBridge — HTTP server', () => {
             assert.strictEqual(typeof content['createdAt'], 'string', 'createdAt должен быть строкой');
             const dt = new Date(content['createdAt'] as string);
             assert.ok(!isNaN(dt.getTime()), 'createdAt должен быть валидной ISO датой');
+
+            const quickstart = content['quickstart'] as string;
+            assert.strictEqual(typeof quickstart, 'string', 'quickstart должен быть строкой');
+            assert.ok(quickstart.includes('forms.start только с url'), 'forms.start должен принимать url');
+            assert.ok(quickstart.includes('или dbPath'), 'forms.start должен принимать dbPath');
+            assert.ok(quickstart.includes('agent.debug.start'), 'quickstart должен ссылаться на debug.start');
+            assert.ok(quickstart.includes("debuggeeType='webServer'"), 'должен использоваться webServer debuggee');
+            assert.ok(quickstart.includes('webServerUrl'), 'должен использоваться URL запущенного веб-сервера');
+            assert.ok(!quickstart.includes('forms.start с debuggeeType'), 'устаревший контракт forms.start запрещён');
         } finally {
             await b.stop();
         }
