@@ -1553,7 +1553,6 @@
     "fast-check": "^4.6.0",
     "glob": "^10.0.0",
     "mocha": "^10.0.0",
-    "playwright": "^1.50.0",
     "prettier": "^3.0.0",
     "typescript": "^5.0.0",
     "zod": "^4.4.3"
@@ -1562,7 +1561,8 @@
     "@vscode/debugadapter": "^1.68.0",
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "playwright": "^1.50.0"
   },
   "c8": {
     "include": [
