@@ -33,9 +33,11 @@ export async function cmdStart(url) {
     out({ ok: true, message: 'Browser ready', port, ...state });
   });
 
-  process.on('SIGINT', async () => {
+  const shutdown = async () => {
     await browser.disconnect();
     cleanup();
     process.exit(0);
-  });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
