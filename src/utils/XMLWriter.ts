@@ -459,7 +459,8 @@ export class XMLWriter {
   static async createMinimalElementFile(
     filePath: string,
     rootTag: string,
-    elementName: string
+    elementName: string,
+    targetVersion?: string
   ): Promise<void> {
     const uuid = this.generateSimpleUuid();
     const defaultProps = getDefaultPropertiesForRootTag(rootTag);
@@ -481,7 +482,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
 </MetaDataObject>
 `;
     content = injectInternalInfoIntoMetadataXml(content, rootTag, elementName);
-    content = normalizeMetaDataObjectRoot(content);
+    content = normalizeMetaDataObjectRoot(content, targetVersion);
     await fs.promises.writeFile(filePath, content, 'utf-8');
     Logger.info(`Created minimal ${rootTag} file ${filePath}`);
   }
