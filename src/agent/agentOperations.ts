@@ -318,7 +318,9 @@ export class AgentOperations {
             try {
               const cfgXml = await fs.promises.readFile(path.join(this.configRootPath, CONFIGURATION_XML), 'utf8');
               targetVersion = detectFormatVersionFromXml(cfgXml).version;
-            } catch {}
+            } catch {
+              // fallback to default format version
+            }
             content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
             content = normalizeMetaDataObjectRoot(content, targetVersion);
 
