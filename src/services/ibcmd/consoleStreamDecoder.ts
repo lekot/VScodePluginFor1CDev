@@ -99,10 +99,7 @@ export function decodeConsoleStreamAuto(raw: Buffer): string {
   if (isValidUtf8Buffer(raw)) {
     return raw.toString('utf8');
   }
-  if (process.platform === 'win32') {
-    return iconv.decode(raw, detectLegacyCyrillicEncoding(raw));
-  }
-  return raw.toString('utf8');
+  return iconv.decode(raw, detectLegacyCyrillicEncoding(raw));
 }
 
 export function decodeConsoleStream(raw: Buffer, mode: IbcmdConsoleOutputEncoding): string {
