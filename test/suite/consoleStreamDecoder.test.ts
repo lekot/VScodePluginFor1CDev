@@ -19,6 +19,16 @@ suite('consoleStreamDecoder detectLegacyCyrillicEncoding', () => {
   test('detects Windows-1251 output', () => {
     assert.strictEqual(detectLegacyCyrillicEncoding(iconv.encode(message, 'cp1251')), 'cp1251');
   });
+
+  test('empty buffer returns cp866 as default', () => {
+    assert.strictEqual(detectLegacyCyrillicEncoding(Buffer.alloc(0)), 'cp866');
+  });
+
+  test('single high-byte buffer detects encoding without crashing', () => {
+    const singleByte = Buffer.from([0xc0]);
+    const detected = detectLegacyCyrillicEncoding(singleByte);
+    assert.ok(detected === 'cp866' || detected === 'cp1251');
+  });
 });
 
 suite('consoleStreamDecoder isLikelyUtf8', () => {
@@ -83,14 +93,14 @@ suite('consoleStreamDecoder decodeConsoleStreamAuto', () => {
     assert.strictEqual(decodeConsoleStreamAuto(buf), 'Кириллица UTF-8');
   });
 
-  test('on Windows, invalid UTF-8 bytes fall back to CP866', () => {
+  test('invalid UTF-8 bytes fall back to CP866', () => {
     const raw = iconv.encode('Только OEM', 'cp866');
-    if (process.platform === 'win32') {
-      assert.strictEqual(decodeConsoleStreamAuto(raw), 'Только OEM');
-    } else {
-      // Non-Windows: invalid UTF-8 uses utf8 toString (replacement / mojibake), not OEM.
-      assert.ok(typeof decodeConsoleStreamAuto(raw) === 'string');
-    }
+    assert.strictEqual(decodeConsoleStreamAuto(raw), 'Только OEM');
+  });
+
+  test('invalid UTF-8 bytes fall back to CP1251', () => {
+    const raw = iconv.encode('Только ANSI', 'cp1251');
+    assert.strictEqual(decodeConsoleStreamAuto(raw), 'Только ANSI');
   });
 });
 
