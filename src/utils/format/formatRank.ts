@@ -20,14 +20,14 @@ export interface FormatVersionInfo {
 }
 
 /**
- * Calculates a monotonic integer rank from a format version string "N.NN" (e.g. "2.17" -> 217, "2.20" -> 220).
+ * Calculates a monotonic integer rank from a format version string "N.NN" or "N.NN.N" (e.g. "2.17" -> 217, "2.20" -> 220, "2.20.1" -> 220).
  * Returns 0 if version is empty or malformed.
  */
 export function getFormatRank(versionStr: string | undefined | null): number {
   if (!versionStr) {
     return 0;
   }
-  const match = /^(\d+)\.(\d+)$/.exec(versionStr.trim());
+  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(versionStr.trim());
   if (!match) {
     return 0;
   }
@@ -60,8 +60,8 @@ export function detectFormatVersionFromXml(xmlContent: string): FormatVersionInf
     };
   }
 
-  const match = /<MetaDataObject\b[^>]*\bversion=["'](\d+\.\d+)["']/i.exec(xmlContent)
-    || /<[A-Za-z0-9_:]+\b[^>]*\bversion=["'](\d+\.\d+)["']/i.exec(xmlContent);
+  const match = /<MetaDataObject\b[^>]*\bversion=["'](\d+\.\d+(?:\.\d+)?)["']/i.exec(xmlContent)
+    || /<[A-Za-z0-9_:]+\b[^>]*\bversion=["'](\d+\.\d+(?:\.\d+)?)["']/i.exec(xmlContent);
 
   if (match && match[1]) {
     const version = match[1];

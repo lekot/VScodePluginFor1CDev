@@ -29,6 +29,11 @@ suite('consoleStreamDecoder detectLegacyCyrillicEncoding', () => {
     const detected = detectLegacyCyrillicEncoding(singleByte);
     assert.ok(detected === 'cp866' || detected === 'cp1251');
   });
+
+  test('high-byte buffer without Cyrillic characters returns cp866 as tie-breaker default', () => {
+    const nonCyrillicHighBytes = Buffer.from([0xb0, 0xb1]);
+    assert.strictEqual(detectLegacyCyrillicEncoding(nonCyrillicHighBytes), 'cp866');
+  });
 });
 
 suite('consoleStreamDecoder isLikelyUtf8', () => {

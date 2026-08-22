@@ -9,7 +9,8 @@ function russianLetterCount(text: string): number {
 
 /**
  * Chooses the legacy Cyrillic code page whose decoded text contains more Russian letters.
- * CP866 wins ties because ibcmd is a console application and commonly writes through the OEM code page.
+ * CP866 wins ties (including when no Russian letters are present, e.g. binary/symbol bytes)
+ * because ibcmd is a console application and Windows console defaults to OEM code page CP866.
  */
 export function detectLegacyCyrillicEncoding(raw: Buffer): LegacyCyrillicEncoding {
   const cp866Score = russianLetterCount(iconv.decode(raw, 'cp866'));

@@ -19,6 +19,7 @@ import { MESSAGES } from '../constants/messages';
 import { buildRootObjectConfigurationContent } from '../services/configurationXmlUpdater';
 import { XMLWriter } from '../utils/XMLWriter';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
+import { detectFormatVersionFromXml } from '../utils/format/formatRank';
 import { metadataConverter, rulesRegistry } from '../rules';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
 import { convert1cPackageToXsd, convertXsdTo1cPackage } from '../xdtoPackageEditor/xdtoXsdConverter';
@@ -68,7 +69,7 @@ function getXdtoPackagesDir(state: ExtensionState, node: TreeNode | undefined): 
   return configPath ? path.join(configPath, 'XDTOPackages') : undefined;
 }
 
-function buildXdtoPackageMetadataXml(packageName: string, namespace: string): string {
+function buildXdtoPackageMetadataXml(packageName: string, namespace: string, targetVersion?: string): string {
   const rules = rulesRegistry.get('XDTOPackage');
   if (!rules) {
     throw new Error('XDTOPackage rules are not registered.');
@@ -79,7 +80,7 @@ function buildXdtoPackageMetadataXml(packageName: string, namespace: string): st
     metadataConverter.mergeProperties(ir, { namespace }),
     rules
   );
-  return normalizeMetaDataObjectRoot(content);
+  return normalizeMetaDataObjectRoot(content, targetVersion);
 }
 
 function sanitizePackageName(raw: string): string {
@@ -683,13 +684,14 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
 
         const configurationPath = path.join(configRootPath, CONFIGURATION_XML);
         const configurationContent = fs.readFileSync(configurationPath, 'utf8');
+        const targetVersion = detectFormatVersionFromXml(configurationContent).version;
         const plan: MutationPlan<void> = {
           kind: 'ui.xdto.createFromXsd',
           steps: [
             { type: 'ensureDirectory', targetPath: packagesDir },
             {
               type: 'writeFile', targetPath: metadataPath,
-              content: buildXdtoPackageMetadataXml(packageName, namespace),
+              content: buildXdtoPackageMetadataXml(packageName, namespace, targetVersion),
               encoding: 'utf8', expected: { state: 'missing' },
             },
             { type: 'ensureDirectory', targetPath: path.dirname(schemaPath) },

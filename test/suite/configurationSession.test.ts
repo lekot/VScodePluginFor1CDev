@@ -13,7 +13,7 @@ suite('ConfigurationSession and WorkspaceRegistry', () => {
   });
 
   teardown(async () => {
-    await fs.promises.rm(tempDir, { recursive: true, force: true });
+    await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
   });
 
   test('requires an exact selector in multi-root and preserves single-root legacy routing', async () => {

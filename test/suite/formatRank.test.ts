@@ -24,8 +24,9 @@ suite('FormatRank and Version Detection Tests', () => {
     assert.strictEqual(getFormatRank(''), 0);
     assert.strictEqual(getFormatRank(undefined), 0);
     assert.strictEqual(getFormatRank(null), 0);
+    assert.strictEqual(getFormatRank('2.20.1'), 220);
+    assert.strictEqual(getFormatRank('2.17.5'), 217);
     assert.strictEqual(getFormatRank('invalid'), 0);
-    assert.strictEqual(getFormatRank('2.20.1'), 0);
   });
 
   test('normalizeFormatVersion falls back to default on invalid input', () => {

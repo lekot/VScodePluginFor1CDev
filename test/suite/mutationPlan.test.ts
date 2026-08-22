@@ -13,7 +13,7 @@ suite('MutationPlanExecutor', () => {
   });
 
   teardown(async () => {
-    await fs.promises.rm(tempDir, { recursive: true, force: true });
+    await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
   });
 
   test('rolls every file back when a later step fails', async () => {
