@@ -1256,7 +1256,7 @@
             "oem866",
             "windows1251"
           ],
-          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. \"auto\" uses UTF-8 streaming (typical piped ibcmd [INFO] lines). If text is garbled, try \"oem866\" (legacy Russian console) or \"windows1251\". For UTF-16 LE output, use \"utf16le\"."
+          "description": "How to decode ibcmd stdout/stderr for the Infobase output channel. \"auto\" detects UTF-8, OEM866, and Windows-1251 output. Manual modes remain available for unusual output; use \"utf16le\" for UTF-16 LE."
         },
         "1cMetadataTree.ibcmd.importDiagnostics": {
           "type": "boolean",
