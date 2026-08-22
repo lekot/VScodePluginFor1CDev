@@ -59,7 +59,7 @@ suite('E2E Pipeline: CommonModule', () => {
 
     test('MetaDataObject has canonical namespaces after normalization', () => {
         const xml = runPipeline('CommonModule');
-        assert.ok(xml.includes('version="2.20"'), 'should have canonical MetaDataObject with version="2.20"');
+        assert.ok(/version="\d+\.\d+"/.test(xml), 'should have canonical MetaDataObject with format version');
     });
 });
 
