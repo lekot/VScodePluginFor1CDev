@@ -108,7 +108,7 @@ export class MutationPlanExecutor {
       journal.state = 'committed';
       await this.writeJournal(operationPath, journal);
       // Commit is durable; cleanup is best-effort and recovery will remove a committed journal.
-      await fs.promises.rm(operationPath, { recursive: true, force: true }).catch(() => undefined);
+      await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
       await this.removeJournalRootWhenEmpty().catch(() => undefined);
       return plan.result;
     } catch (error) {
@@ -122,7 +122,7 @@ export class MutationPlanExecutor {
         : snapshots;
       try {
         await this.restoreSnapshots(operationPath, snapshotsToRestore);
-        await fs.promises.rm(operationPath, { recursive: true, force: true });
+        await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
         await this.removeJournalRootWhenEmpty();
       } catch (rollbackError) {
         throw new MutationPlanError(
@@ -173,7 +173,7 @@ export class MutationPlanExecutor {
         if (journal.state !== 'committed') {
           await this.restoreSnapshots(operationPath, journal.snapshots);
         }
-        await fs.promises.rm(operationPath, { recursive: true, force: true });
+        await fs.promises.rm(operationPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       } catch (error) {
         throw new MutationPlanError(
           'RECOVERY_REQUIRED',
