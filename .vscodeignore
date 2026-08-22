@@ -1,4 +1,5 @@
 # resources/ packaged (designer templates in resources/designerTemplates/)
+resources/**/node_modules/**
 .vscode/**
 .roo/**
 .agents/**
