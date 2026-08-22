@@ -2,11 +2,24 @@ import * as assert from 'assert';
 import iconv from 'iconv-lite';
 import {
   createIbcmdStreamChunkDecoders,
+  detectLegacyCyrillicEncoding,
   decodeConsoleStream,
   decodeConsoleStreamAuto,
   decodeIbcmdProcessStreams,
   isLikelyUtf8,
 } from '../../src/services/ibcmd/consoleStreamDecoder';
+
+suite('consoleStreamDecoder detectLegacyCyrillicEncoding', () => {
+  const message = 'Ошибка исключительной блокировки информационной базы.';
+
+  test('detects ibcmd OEM866 output', () => {
+    assert.strictEqual(detectLegacyCyrillicEncoding(iconv.encode(message, 'cp866')), 'cp866');
+  });
+
+  test('detects Windows-1251 output', () => {
+    assert.strictEqual(detectLegacyCyrillicEncoding(iconv.encode(message, 'cp1251')), 'cp1251');
+  });
+});
 
 suite('consoleStreamDecoder isLikelyUtf8', () => {
   test('ASCII-only buffer returns true', () => {
@@ -146,13 +159,16 @@ suite('consoleStreamDecoder createIbcmdStreamChunkDecoders', () => {
     assert.strictEqual(dec.decodeStdout(buf), 'Импорт конфигурации из XML');
   });
 
-  test('auto: CP1251 chunk decoded correctly on Windows', () => {
-    if (process.platform !== 'win32') {
-      return;
-    }
+  test('auto: CP1251 chunk decoded correctly', () => {
     const dec = createIbcmdStreamChunkDecoders('auto');
     const raw = iconv.encode('Справочник', 'cp1251');
     assert.strictEqual(dec.decodeStdout(raw), 'Справочник');
+  });
+
+  test('auto: ibcmd CP866 error is decoded without mojibake', () => {
+    const message = 'Ошибка исключительной блокировки информационной базы.';
+    const dec = createIbcmdStreamChunkDecoders('auto');
+    assert.strictEqual(dec.decodeStderr(iconv.encode(message, 'cp866')), message);
   });
 
   test('auto: ASCII-only chunks defer decision and decode as UTF-8', () => {

@@ -1,6 +1,22 @@
 import iconv from 'iconv-lite';
 import type { IbcmdConsoleOutputEncoding } from './ibcmdConsoleEncodingTypes';
 
+type LegacyCyrillicEncoding = 'cp866' | 'cp1251';
+
+function russianLetterCount(text: string): number {
+  return text.match(/[А-Яа-яЁё]/gu)?.length ?? 0;
+}
+
+/**
+ * Chooses the legacy Cyrillic code page whose decoded text contains more Russian letters.
+ * CP866 wins ties because ibcmd is a console application and commonly writes through the OEM code page.
+ */
+export function detectLegacyCyrillicEncoding(raw: Buffer): LegacyCyrillicEncoding {
+  const cp866Score = russianLetterCount(iconv.decode(raw, 'cp866'));
+  const cp1251Score = russianLetterCount(iconv.decode(raw, 'cp1251'));
+  return cp866Score >= cp1251Score ? 'cp866' : 'cp1251';
+}
+
 function isValidUtf8Buffer(buf: Buffer): boolean {
   if (buf.length === 0) {
     return true;
@@ -74,7 +90,7 @@ export function isLikelyUtf8(buf: Buffer): boolean {
 }
 
 /**
- * Full-buffer heuristic: prefer UTF-8 when the byte sequence is valid UTF-8; on Windows otherwise use CP866 (typical console).
+ * Full-buffer heuristic: prefer UTF-8 when the byte sequence is valid UTF-8; on Windows otherwise detect CP866 / CP1251.
  */
 export function decodeConsoleStreamAuto(raw: Buffer): string {
   if (raw.length === 0) {
@@ -84,7 +100,7 @@ export function decodeConsoleStreamAuto(raw: Buffer): string {
     return raw.toString('utf8');
   }
   if (process.platform === 'win32') {
-    return iconv.decode(raw, 'cp866');
+    return iconv.decode(raw, detectLegacyCyrillicEncoding(raw));
   }
   return raw.toString('utf8');
 }
@@ -133,7 +149,7 @@ export interface IbcmdStreamChunkDecoders {
  *
  * `auto` mode detects encoding on the first chunk containing non-ASCII bytes (≥ 0x80).
  * If that chunk is valid UTF-8, all subsequent chunks are decoded as UTF-8 streaming.
- * Otherwise the fallback encoding is CP1251 on Windows or CP866 on other platforms.
+ * Otherwise CP866 and CP1251 are scored by how many Russian letters they produce.
  * If no non-ASCII bytes appear before the stream ends, UTF-8 is used throughout.
  *
  * The encoding decision is shared between stdout and stderr: the first non-ASCII chunk
@@ -170,9 +186,9 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
   if (mode === 'auto') {
     let decided = false;
     let useUtf8 = true;
+    let legacyEncoding: LegacyCyrillicEncoding = 'cp866';
     const utf8Out = new TextDecoder('utf-8', { fatal: false });
     const utf8Err = new TextDecoder('utf-8', { fatal: false });
-    const fallbackEnc = process.platform === 'win32' ? 'cp1251' : 'cp866';
 
     const decodeAuto = (chunk: Buffer, utf8Dec: InstanceType<typeof TextDecoder>): string => {
       if (!decided) {
@@ -181,14 +197,15 @@ export function createIbcmdStreamChunkDecoders(mode: IbcmdConsoleOutputEncoding)
           decided = true;
           useUtf8 = isLikelyUtf8(chunk);
           if (!useUtf8) {
-            return iconv.decode(chunk, fallbackEnc);
+            legacyEncoding = detectLegacyCyrillicEncoding(chunk);
+            return iconv.decode(chunk, legacyEncoding);
           }
         }
       }
       if (useUtf8) {
         return utf8Dec.decode(chunk, { stream: true });
       }
-      return iconv.decode(chunk, fallbackEnc);
+      return iconv.decode(chunk, legacyEncoding);
     };
 
     return {

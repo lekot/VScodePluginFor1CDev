@@ -1,6 +1,6 @@
 /**
- * ibcmd may emit OEM (CP866) or UTF-8 depending on build and pipe. Spawn streaming `auto` assumes UTF-8; pick `oem866` / `windows1251`
- * when needed. After {@link decodeIbcmdProcessStreams}, strings are normalized for UI (JavaScript UTF-16).
+ * ibcmd may emit UTF-8, OEM (CP866), or Windows-1251 depending on build and pipe. Spawn streaming `auto` detects these encodings.
+ * After {@link decodeIbcmdProcessStreams}, strings are normalized for UI (JavaScript UTF-16).
  */
 
 /** Values for `1cMetadataTree.ibcmd.consoleOutputEncoding`. */
