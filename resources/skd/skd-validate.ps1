@@ -1,7 +1,9 @@
-﻿# skd-validate v1.1 — Validate 1C DCS structure
+﻿# skd-validate v1.4 — Validate 1C DCS structure
 # Source: https://github.com/Nikolay-Shirokov/cc-1c-skills
+[CmdletBinding(PositionalBinding=$false)]
 param(
-	[Parameter(Mandatory)]
+	[Parameter(Mandatory, Position=0)]
+	[Alias('Path')]
 	[string]$TemplatePath,
 
 	[switch]$Detailed,
@@ -437,6 +439,17 @@ if ($script:stopped) { & $finalize; exit 1 }
 if ($calcFieldNodes.Count -gt 0) {
 	$cfOk = $true
 	$cfSeen = @{}
+	# Collect totalField dataPaths — an empty calculatedField is legitimate if a
+	# totalField with the same dataPath provides the expression (real-world
+	# pattern in vendor ERP/БП reports for fields visible only in totals).
+	$tfPaths = @{}
+	foreach ($tf in $totalFieldNodes) {
+		$tfDp = $tf.SelectSingleNode("s:dataPath", $ns)
+		if ($tfDp -and $tfDp.InnerText) {
+			$tfPaths[$tfDp.InnerText] = $true
+		}
+	}
+
 	foreach ($cf in $calcFieldNodes) {
 		$dp = $cf.SelectSingleNode("s:dataPath", $ns)
 		$expr = $cf.SelectSingleNode("s:expression", $ns)
@@ -456,8 +469,15 @@ if ($calcFieldNodes.Count -gt 0) {
 		}
 
 		if (-not $expr -or -not $expr.InnerText.Trim()) {
-			Report-Error "CalculatedField '$path' has empty expression"
-			$cfOk = $false
+			# Empty expression is legitimate in several vendor patterns:
+			#   - totalField with same dataPath provides the calculation
+			#   - groupTemplate uses the field as group name (declarative only)
+			#   - field is referenced only by settingsVariants for grouping
+			# Surface as warning, not error, to avoid false positives on real
+			# ERP/БП reports while still flagging the unusual shape.
+			if (-not $tfPaths.ContainsKey($path)) {
+				Report-Warn "CalculatedField '$path' has empty expression (declarative-only?)"
+			}
 		}
 
 		# Warn if collides with a dataset field
@@ -541,14 +561,16 @@ if ($templateNodes.Count -gt 0) {
 		}
 		$tName = $nameNode.InnerText
 		if ($tplSeen.ContainsKey($tName)) {
-			Report-Error "Duplicate template name: $tName"
-			$tplOk = $false
+			# Vendor configs (ERP/БП) ship templates with repeating names — the
+			# platform identifies them by position/context, not by <name>. Demote
+			# to warning so the check still surfaces the collision without failing.
+			Report-Warn "Duplicate template name: $tName (allowed by platform but ambiguous)"
 		} else {
 			$tplSeen[$tName] = $true
 		}
 	}
 	if ($tplOk) {
-		Report-OK "$($templateNodes.Count) template(s): names unique"
+		Report-OK "$($templateNodes.Count) template(s) found"
 	}
 }
 
@@ -580,7 +602,8 @@ if ($script:stopped) { & $finalize; exit 1 }
 
 $validComparisonTypes = @(
 	"Equal","NotEqual","Greater","GreaterOrEqual","Less","LessOrEqual",
-	"InList","NotInList","InHierarchy","InListByHierarchy",
+	"InList","NotInList","InHierarchy","NotInHierarchy",
+	"InListByHierarchy","NotInListByHierarchy",
 	"Contains","NotContains","BeginsWith","NotBeginsWith",
 	"Filled","NotFilled"
 )
@@ -732,6 +755,176 @@ if ($variantNodes.Count -eq 0) {
 		Report-OK "$($variantNodes.Count) settingsVariant(s) found"
 	}
 }
+
+# --- 16. valueType structural checks ---
+# Catches broken XDTO that XML/structural checks miss (decimal without xs:,
+# missing qualifiers, mismatched qualifier blocks, unknown sign/length tokens).
+
+$validTypeQualifier = @{
+	'xs:decimal'        = 'v8:NumberQualifiers'
+	'xs:string'         = 'v8:StringQualifiers'
+	'xs:dateTime'       = 'v8:DateQualifiers'
+	'xs:boolean'        = ''
+	'v8:StandardPeriod' = ''
+	'v8:UUID'           = ''
+	'v8:Null'           = ''
+	'v8:Type'           = ''
+	'v8:ValueStorage'   = ''
+}
+$validSign       = @('Any', 'Nonnegative', 'Negative')
+$validLength     = @('Variable', 'Fixed')
+$validFractions  = @('Date', 'DateTime', 'Time')
+
+# DCS supports composite types: multiple <v8:Type> blocks may share a single
+# trailing qualifier block (e.g. xs:string + CatalogRef.X + StringQualifiers).
+# So we collect all types and qualifiers per valueType, then check consistency.
+$qualifierProducers = @{
+	'v8:NumberQualifiers' = 'xs:decimal'
+	'v8:StringQualifiers' = 'xs:string'
+	'v8:DateQualifiers'   = 'xs:dateTime'
+}
+
+$valueTypeNodes = $root.SelectNodes("//s:valueType", $ns)
+$vtChecked = 0
+$vtOk = $true
+foreach ($vt in $valueTypeNodes) {
+	$vtChecked++
+	$types = @()       # list of short type strings; '' marks a ref type
+	$qualifiers = @()  # list of @{ name = 'v8:XQualifiers'; node = $child }
+
+	foreach ($child in $vt.ChildNodes) {
+		if ($child.NodeType -ne 'Element') { continue }
+		if ($child.NamespaceURI -ne 'http://v8.1c.ru/8.1/data/core') { continue }
+		$localName = $child.LocalName
+
+		if ($localName -eq 'Type') {
+			$t = "$($child.InnerText)".Trim()
+			if (-not $t) {
+				Report-Error "valueType: <v8:Type> is empty"
+				$vtOk = $false
+				continue
+			}
+			if ($t -match '^([A-Za-z][A-Za-z0-9]*):(.+)$') {
+				$prefix = $Matches[1]
+				$localT = $Matches[2]
+				if ($prefix -eq 'xs' -or $prefix -eq 'v8') {
+					if (-not $validTypeQualifier.ContainsKey($t)) {
+						Report-Error "valueType: unknown type '$t' (allowed: xs:decimal/xs:string/xs:dateTime/xs:boolean/v8:StandardPeriod or <prefix>:*Ref.X)"
+						$vtOk = $false
+					} else {
+						$types += $t
+					}
+				} else {
+					$prefixNs = $child.GetNamespaceOfPrefix($prefix)
+					if ($prefixNs -eq 'http://v8.1c.ru/8.1/data/enterprise/current-config') {
+						if (-not ($localT -match '^[A-Za-z]+(Ref)?\.')) {
+							Report-Error "valueType: ref type '$t' must look like '<prefix>:<Kind>.<Name>' (e.g. d5p1:CatalogRef.X)"
+							$vtOk = $false
+						} else {
+							$types += ''   # ref — no qualifier needed
+						}
+					} elseif ($prefixNs -eq 'http://v8.1c.ru/8.1/data/enterprise') {
+						# System types: AccumulationRecordType etc. — no qualifiers
+						if (-not ($localT -match '^[A-Za-z][A-Za-z0-9]*$')) {
+							Report-Error "valueType: system type '$t' has unexpected local-name shape"
+							$vtOk = $false
+						} else {
+							$types += ''
+						}
+					} else {
+						Report-Error "valueType: type '$t' uses prefix '$prefix' bound to unexpected namespace '$prefixNs'"
+						$vtOk = $false
+					}
+				}
+			} else {
+				Report-Error "valueType: type '$t' has no namespace prefix (expected xs:/v8:/d5p1: — e.g. xs:decimal not decimal)"
+				$vtOk = $false
+			}
+		} elseif ($localName -match 'Qualifiers$') {
+			$qName = "v8:$localName"
+			$qualifiers += @{ name = $qName; node = $child }
+			# Validate qualifier internals
+			if ($qName -eq 'v8:NumberQualifiers') {
+				$digits = $child.SelectSingleNode("v8:Digits", $ns)
+				$frac   = $child.SelectSingleNode("v8:FractionDigits", $ns)
+				$sign   = $child.SelectSingleNode("v8:AllowedSign", $ns)
+				if (-not $digits -or -not ($digits.InnerText -match '^\d+$')) {
+					Report-Error "v8:NumberQualifiers: <v8:Digits> missing or not a non-negative integer"
+					$vtOk = $false
+				}
+				if (-not $frac -or -not ($frac.InnerText -match '^\d+$')) {
+					Report-Error "v8:NumberQualifiers: <v8:FractionDigits> missing or not a non-negative integer"
+					$vtOk = $false
+				}
+				if ($sign -and $sign.InnerText -and $sign.InnerText -notin $validSign) {
+					Report-Error "v8:NumberQualifiers: <v8:AllowedSign>$($sign.InnerText)</v8:AllowedSign> — must be one of: $($validSign -join ', ')"
+					$vtOk = $false
+				}
+			} elseif ($qName -eq 'v8:StringQualifiers') {
+				$len = $child.SelectSingleNode("v8:Length", $ns)
+				$al  = $child.SelectSingleNode("v8:AllowedLength", $ns)
+				if (-not $len -or -not ($len.InnerText -match '^\d+$')) {
+					Report-Error "v8:StringQualifiers: <v8:Length> missing or not a non-negative integer"
+					$vtOk = $false
+				}
+				if ($al -and $al.InnerText -and $al.InnerText -notin $validLength) {
+					Report-Error "v8:StringQualifiers: <v8:AllowedLength>$($al.InnerText)</v8:AllowedLength> — must be one of: $($validLength -join ', ')"
+					$vtOk = $false
+				}
+			} elseif ($qName -eq 'v8:DateQualifiers') {
+				$df = $child.SelectSingleNode("v8:DateFractions", $ns)
+				if ($df -and $df.InnerText -and $df.InnerText -notin $validFractions) {
+					Report-Error "v8:DateQualifiers: <v8:DateFractions>$($df.InnerText)</v8:DateFractions> — must be one of: $($validFractions -join ', ')"
+					$vtOk = $false
+				}
+			}
+		}
+	}
+
+	# Cross-check: every qualifier must have a matching scalar type in this valueType
+	foreach ($q in $qualifiers) {
+		$producer = $qualifierProducers[$q.name]
+		if (-not $producer) { continue }
+		if ($types -notcontains $producer) {
+			Report-Error "valueType: <$($q.name)> has no matching <v8:Type>$producer</v8:Type> in this valueType"
+			$vtOk = $false
+		}
+	}
+}
+if ($vtChecked -gt 0 -and $vtOk) {
+	Report-OK "$vtChecked valueType block(s): structure and qualifiers OK"
+}
+
+if ($script:stopped) { & $finalize; exit 1 }
+
+# --- 17. value content checks ---
+# Catches literal placeholders ("_") and empty strings in DesignTimeValue refs
+# that XDTO would reject at db-load-xml.
+
+$valueNodes = @()
+$valueNodes += @($root.SelectNodes("//s:value[@xsi:type]", $ns))
+$valueNodes += @($root.SelectNodes("//dcscor:value[@xsi:type]", $ns))
+$vChecked = 0
+$vOk = $true
+foreach ($vn in $valueNodes) {
+	if (-not $vn) { continue }
+	$vChecked++
+	$xsiType = $vn.GetAttribute("type", "http://www.w3.org/2001/XMLSchema-instance")
+	$text = $vn.InnerText
+	if ($xsiType -eq 'dcscor:DesignTimeValue') {
+		if (-not $text -or $text.Trim() -eq '' -or $text.Trim() -eq '_') {
+			Report-Error "<value xsi:type=`"dcscor:DesignTimeValue`">$text</value> — DesignTimeValue must be a reference path (e.g. Перечисление.X.Y), not '$text'"
+			$vOk = $false
+		} elseif (-not ($text -match '^[A-Za-zА-Яа-яЁё]+\.[A-Za-zА-Яа-яЁё0-9_]+')) {
+			Report-Warn "<value xsi:type=`"dcscor:DesignTimeValue`">$text</value> — doesn't look like a typical ref path"
+		}
+	}
+}
+if ($vChecked -gt 0 -and $vOk) {
+	Report-OK "$vChecked <value> element(s) with xsi:type: content OK"
+}
+
+if ($script:stopped) { & $finalize; exit 1 }
 
 # --- Final output ---
 

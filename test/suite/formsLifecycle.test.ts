@@ -613,10 +613,12 @@ async function startFakeBrowserRunner(prefix: string): Promise<{
   const browserPath = path.join(tempDir, 'browser.mjs');
   const sessionFile = path.join(tempDir, 'session.json');
   const disconnectLog = path.join(tempDir, 'disconnect.log');
-  await fs.promises.copyFile(path.resolve(__dirname, '../../../resources/web-test/run.mjs'), runnerPath);
+  const webTestDir = path.resolve(__dirname, '../../../resources/web-test');
+  await fs.promises.cp(webTestDir, tempDir, { recursive: true });
   await fs.promises.writeFile(browserPath, [
     "import { appendFileSync } from 'fs';",
     'let connected = false;',
+    'export function setPreserveClipboard() {}',
     'export async function connect(url) { connected = true; return { url }; }',
     'export async function disconnect() {',
     '  await new Promise(resolve => setTimeout(resolve, 25));',

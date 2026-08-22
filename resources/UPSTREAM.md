@@ -1,10 +1,10 @@
-# Vendored files from cc-1c-skills
+﻿# Vendored files from cc-1c-skills
 
 ## Upstream
 
 - **Repo:** `C:\reps\cc-1c-skills` (https://github.com/Nikolay-Shirokov/cc-1c-skills)
-- **Commit:** d574320849793e124cbc9665df8603a0e84385dd
-- **Date:** 2026-04-22
+- **Commit:** 12aecbf50be0f3ee16a4ba764292ca1a9aabde0e
+- **Date:** 2026-08-22
 
 ## Files
 
@@ -36,3 +36,4 @@ scripts\sync-cc-1c-skills.bat
 ```
 
 Скрипт обновит файлы и заменит коммит-хэш и дату в этом файле.
+

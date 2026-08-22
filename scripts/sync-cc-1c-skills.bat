@@ -55,7 +55,7 @@ copy /y "%CC_1C_SKILLS_DIR%\.claude\skills\skd-validate\scripts\skd-validate.ps1
 echo [sync] skd: 4 files OK
 
 :: -----------------------------------------------------------------------
-:: Update UPSTREAM.md — commit hash and date
+:: Update UPSTREAM.md ??? commit hash and date
 :: -----------------------------------------------------------------------
 set UPSTREAM_MD=%RESOURCES_DIR%\UPSTREAM.md
 
@@ -80,7 +80,7 @@ echo [sync] UPSTREAM.md updated (commit: %COMMIT%, date: %TODAY%)
 
 :done
 echo.
-echo Sync OK -- проверь diff через git status
+echo Sync OK -- ?????????????? diff ?????????? git status
 exit /b 0
 
 :copy_error

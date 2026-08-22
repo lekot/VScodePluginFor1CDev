@@ -36,7 +36,7 @@ suite('MergeExecutor XML and file operations', () => {
 
   teardown(async () => {
     await Promise.all(
-      tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true }))
+      tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }))
     );
   });
 
