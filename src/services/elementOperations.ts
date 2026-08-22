@@ -43,7 +43,18 @@ import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
 } from '../utils/treeNormalization';
+import { detectFormatVersionFromXml, DEFAULT_FORMAT_VERSION } from '../utils/format/formatRank';
 import { rulesRegistry, metadataConverter } from '../rules';
+
+async function resolveProjectFormatVersion(configRootPath: string): Promise<string> {
+  try {
+    const configXmlPath = path.join(configRootPath, CONFIGURATION_XML);
+    const content = await fs.promises.readFile(configXmlPath, 'utf8');
+    return detectFormatVersionFromXml(content).version;
+  } catch {
+    return DEFAULT_FORMAT_VERSION;
+  }
+}
 
 function resolveTopLevelMetadataObject(node: TreeNode | undefined): TreeNode | undefined {
   let p: TreeNode | undefined = node;
@@ -185,6 +196,7 @@ async function ensureCompanionTaskForBusinessProcess(
   businessProcessesFolderPath: string,
   taskName: string
 ): Promise<void> {
+  const targetVersion = await resolveProjectFormatVersion(configRootPath);
   const tasksDir = path.join(path.dirname(businessProcessesFolderPath), 'Tasks');
   await fs.promises.mkdir(tasksDir, { recursive: true });
   const taskFilePath = path.join(tasksDir, `${taskName}.xml`);
@@ -203,10 +215,10 @@ async function ensureCompanionTaskForBusinessProcess(
       Synonym_ru: taskName,
     });
     content = injectInternalInfoIntoMetadataXml(content, 'Task', taskName);
-    content = normalizeMetaDataObjectRoot(content);
+    content = normalizeMetaDataObjectRoot(content, targetVersion);
     await fs.promises.writeFile(taskFilePath, content, 'utf-8');
   } else {
-    await XMLWriter.createMinimalElementFile(taskFilePath, 'Task', taskName);
+    await XMLWriter.createMinimalElementFile(taskFilePath, 'Task', taskName, targetVersion);
   }
   const taskElementDir = path.join(tasksDir, taskName);
   await fs.promises.mkdir(taskElementDir, { recursive: true });
@@ -287,6 +299,7 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
 
   const rootTag = String(parentNode.type);
   const configRootPath = await findConfigurationRootDir(typeFolderPath);
+  const targetVersion = await resolveProjectFormatVersion(configRootPath);
 
   if (rootTag === 'BusinessProcess') {
     await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
@@ -302,7 +315,7 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
     const ir = metadataConverter.createDefaultIR(rules, { name, uuid });
     let content = metadataConverter.irToXml(ir, rules);
     content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
-    content = normalizeMetaDataObjectRoot(content);
+    content = normalizeMetaDataObjectRoot(content, targetVersion);
     await fs.promises.writeFile(newFilePath, content, 'utf-8');
   } else {
     // Template-based fallback (все остальные типы)
@@ -326,10 +339,10 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
           : {}),
       });
       content = injectInternalInfoIntoMetadataXml(content, rootTag, name);
-      content = normalizeMetaDataObjectRoot(content);
+      content = normalizeMetaDataObjectRoot(content, targetVersion);
       await fs.promises.writeFile(newFilePath, content, 'utf-8');
     } else {
-      await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name);
+      await XMLWriter.createMinimalElementFile(newFilePath, rootTag, name, targetVersion);
     }
   }
 

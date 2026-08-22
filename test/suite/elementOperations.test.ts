@@ -2106,4 +2106,60 @@ suite('elementOperations', () => {
       await cleanupTempDir(dir);
     }
   });
+
+  test('createElement respects project format version 2.17 (8.3.24)', async () => {
+    const dir = await createTempDir('1cviewer-fmt-217-');
+    try {
+      const configXmlPath = path.join(dir, 'Configuration.xml');
+      const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17">
+  <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
+    <Properties><Name>TestConfig217</Name></Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>`;
+      await fs.promises.writeFile(configXmlPath, configXml, 'utf-8');
+      const catalogsPath = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(catalogsPath, { recursive: true });
+      const confNode = createConfigNode();
+      const catTypeNode = createCatalogsTypeNode(confNode, catalogsPath);
+
+      await createElement(catTypeNode, 'Product217');
+      const productXmlPath = path.join(catalogsPath, 'Product217.xml');
+      const productXml = await readFileContent(productXmlPath);
+
+      assert.ok(productXml.includes('version="2.17"'), 'Generated XML must have version="2.17"');
+      assert.ok(!productXml.includes('xmlns:pal'), 'Version 2.17 must not include xmlns:pal');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  test('createElement respects project format version 2.21 (8.5.1)', async () => {
+    const dir = await createTempDir('1cviewer-fmt-221-');
+    try {
+      const configXmlPath = path.join(dir, 'Configuration.xml');
+      const configXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21">
+  <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
+    <Properties><Name>TestConfig221</Name></Properties>
+    <ChildObjects/>
+  </Configuration>
+</MetaDataObject>`;
+      await fs.promises.writeFile(configXmlPath, configXml, 'utf-8');
+      const catalogsPath = path.join(dir, 'Catalogs');
+      await fs.promises.mkdir(catalogsPath, { recursive: true });
+      const confNode = createConfigNode();
+      const catTypeNode = createCatalogsTypeNode(confNode, catalogsPath);
+
+      await createElement(catTypeNode, 'Product221');
+      const productXmlPath = path.join(catalogsPath, 'Product221.xml');
+      const productXml = await readFileContent(productXmlPath);
+
+      assert.ok(productXml.includes('version="2.21"'), 'Generated XML must have version="2.21"');
+      assert.ok(productXml.includes('xmlns:pal'), 'Version 2.21 must include xmlns:pal');
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
 });

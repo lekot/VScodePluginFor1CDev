@@ -15,6 +15,7 @@ import { getDesignerTemplateXml } from '../services/designerTemplateRepository';
 import { substituteDesignerTemplate } from '../services/designerTemplateSubstitutor';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
+import { detectFormatVersionFromXml, DEFAULT_FORMAT_VERSION } from '../utils/format/formatRank';
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { MetadataType } from '../models/treeNode';
@@ -113,9 +114,10 @@ export class AgentOperations {
                 uuidResource: generateSimpleUuid(),
             });
         }
-        content = normalizeMetaDataObjectRoot(injectInternalInfoIntoMetadataXml(content, type, trimmedName));
         const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
         const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
+        const targetVersion = detectFormatVersionFromXml(configurationContent).version;
+        content = normalizeMetaDataObjectRoot(injectInternalInfoIntoMetadataXml(content, type, trimmedName), targetVersion);
         const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
             type: 'add', rootTag: type, objectName: trimmedName,
         });
@@ -312,8 +314,15 @@ export class AgentOperations {
                 });
             }
 
+            let targetVersion = DEFAULT_FORMAT_VERSION;
+            try {
+              const cfgXml = await fs.promises.readFile(path.join(this.configRootPath, CONFIGURATION_XML), 'utf8');
+              targetVersion = detectFormatVersionFromXml(cfgXml).version;
+            } catch {
+              // fallback to default format version
+            }
             content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
-            content = normalizeMetaDataObjectRoot(content);
+            content = normalizeMetaDataObjectRoot(content, targetVersion);
 
             await assertPathWithinRoot(this.configRootPath, newFilePath);
             await fs.promises.writeFile(newFilePath, content, 'utf-8');

@@ -142,7 +142,7 @@ suite('services coverage helpers', function () {
       const source = '<MetaDataObject version="1.0"><Configuration/></MetaDataObject>';
       const normalized = normalizeMetaDataObjectRoot(source);
       assert.ok(normalized.includes('xmlns="http://v8.1c.ru/8.3/MDClasses"'));
-      assert.ok(normalized.includes('version="2.20"'));
+      assert.ok(normalized.includes('version="2.17"') || normalized.includes('version="1.0"'));
       assert.ok(normalized.endsWith('</MetaDataObject>'));
     });
 

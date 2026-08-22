@@ -67,7 +67,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(bslReads, 12);
       assert.ok(peakReads <= 2, `Expected no more than 2 concurrent reads, got ${peakReads}`);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -115,7 +115,7 @@ suite('ConfigurationCompareService', () => {
           (error as { code?: unknown }).code === 'CONFIGURATION_COMPARE_CANCELLED'
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -146,7 +146,7 @@ suite('ConfigurationCompareService', () => {
         0
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -178,7 +178,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(node.status, 'rightOnly');
       assert.strictEqual(node.mergeable, true);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -221,7 +221,7 @@ suite('ConfigurationCompareService', () => {
         0
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -260,7 +260,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(conflict.mergeable, false);
       assert.deepStrictEqual(objectCopyCandidates, []);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -338,7 +338,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(await readText(leftModulePath), expectedMergedSource);
       assert.strictEqual(await readText(rightModulePath), rightSource);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -400,7 +400,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(await readText(leftModulePath), `${sharedRoutine}\n`);
       assert.strictEqual(await readText(rightModulePath), sharedRoutine);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -434,7 +434,7 @@ suite('ConfigurationCompareService', () => {
       const rightOnlyMessage = rightOnlyMessages[0]!;
       assert.strictEqual(rightOnlyMessage.status, 'rightOnly');
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -467,7 +467,7 @@ suite('ConfigurationCompareService', () => {
         duplicateDiagnostics.length
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -513,7 +513,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(JSON.stringify(previewResult.preview).includes('expectedOldHash'), false);
       assert.strictEqual(JSON.stringify(previewResult.preview).includes('operations'), false);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -566,7 +566,7 @@ suite('ConfigurationCompareService', () => {
         path.resolve(leftRoot)
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -616,7 +616,7 @@ suite('ConfigurationCompareService', () => {
         `${logicalIncomingRoutine()}\n\n${secondIncomingRoutine()}`
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -648,7 +648,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(preview.ok, false);
       assert.strictEqual(preview.diagnostics[0]?.code, 'CONFIG_COMPARE_UNKNOWN_SELECTION');
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -764,7 +764,7 @@ suite('ConfigurationCompareService', () => {
         'new-logo'
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -822,7 +822,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(synonym.mergeable, true);
       assert.ok(result.workspace.listMergeableNodeIds().includes(synonym.id));
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -909,7 +909,7 @@ suite('ConfigurationCompareService', () => {
       assert.ok(result.workspace.listMergeableNodeIds().includes(commonFormTitle.id));
       assert.ok(result.workspace.listMergeableNodeIds().includes(predefinedPresentation.id));
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -950,7 +950,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(execution.ok, true, JSON.stringify(execution));
       assert.deepStrictEqual(await fs.readFile(leftLogoPath), rightBytes);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -995,7 +995,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(execution.result.backupPaths.length, 1);
       assert.deepStrictEqual(await fs.readFile(execution.result.backupPaths[0]!), leftBytes);
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -1041,7 +1041,7 @@ suite('ConfigurationCompareService', () => {
         rightBytes
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -1085,7 +1085,7 @@ suite('ConfigurationCompareService', () => {
       assert.strictEqual(rightOnlyBslDiagnostics.length, 0);
       assert.ok(result.workspace.listMergeableNodeIds().includes(productsNodes[0]!.id));
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -1134,7 +1134,7 @@ suite('ConfigurationCompareService', () => {
         leftBytes
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -1175,7 +1175,7 @@ suite('ConfigurationCompareService', () => {
         `// local header after compare\n${logicalIncomingRoutine()}`
       );
     } finally {
-      await fs.rm(tempRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 });
