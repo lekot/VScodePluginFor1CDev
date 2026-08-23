@@ -9,6 +9,7 @@ import { isFormParseError } from '../../src/formEditor/formModel';
 
 function createBaseModel(): FormModel {
   return {
+    version: '2.20',
     childItemsRoot: [],
     attributes: [],
     commands: [],
@@ -17,13 +18,27 @@ function createBaseModel(): FormModel {
 }
 
 suite('FormXmlWriter', () => {
-  test('writes default Form version 2.20 when model version is absent', async () => {
+  test('writes provided Form version for a new document', async () => {
     const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-version-'));
     const formXmlPath = path.join(tmpRoot, 'Form.xml');
     try {
       await writeFormXml(formXmlPath, createBaseModel());
       const xml = await fs.promises.readFile(formXmlPath, 'utf-8');
       assert.ok(xml.includes('<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">'));
+    } finally {
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects creating a Form.xml without an explicit target version before creating a backup', async () => {
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-form-writer-no-version-'));
+    const formXmlPath = path.join(tmpRoot, 'Form.xml');
+    try {
+      const model = createBaseModel();
+      delete model.version;
+      await assert.rejects(() => writeFormXml(formXmlPath, model), /формат XML/);
+      assert.ok(!fs.existsSync(formXmlPath));
+      assert.ok(!fs.existsSync(`${formXmlPath}.bak`));
     } finally {
       await fs.promises.rm(tmpRoot, { recursive: true, force: true });
     }

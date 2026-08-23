@@ -106,7 +106,7 @@ ${childObjects}
     await fs.promises.mkdir(catalogsPath, { recursive: true });
 
     const existingCatalog = path.join(catalogsPath, 'ExistingCatalog.xml');
-    await XMLWriter.createMinimalElementFile(existingCatalog, 'Catalog', 'ExistingCatalog');
+    await XMLWriter.createMinimalElementFile(existingCatalog, 'Catalog', 'ExistingCatalog', '2.20');
 
     fs.writeFileSync(configXmlPath(), BASE_CONFIG_XML('      <Catalog>ExistingCatalog</Catalog>'), 'utf-8');
 
@@ -127,7 +127,7 @@ ${childObjects}
     await fs.promises.mkdir(catalogsPath, { recursive: true });
 
     const catalogPath = path.join(catalogsPath, 'TestCatalog.xml');
-    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'TestCatalog');
+    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'TestCatalog', '2.20');
 
     fs.writeFileSync(configXmlPath(), BASE_CONFIG_XML('      <Catalog>TestCatalog</Catalog>'), 'utf-8');
 
@@ -146,7 +146,7 @@ ${childObjects}
     await fs.promises.mkdir(catalogsPath, { recursive: true });
 
     const catalogPath = path.join(catalogsPath, 'TestCatalog.xml');
-    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'TestCatalog');
+    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'TestCatalog', '2.20');
 
     fs.writeFileSync(
       configXmlPath(),
@@ -175,7 +175,7 @@ ${childObjects}
     await fs.promises.mkdir(catalogsPath, { recursive: true });
 
     const catalogPath = path.join(catalogsPath, 'CatWithAttr.xml');
-    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'CatWithAttr');
+    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'CatWithAttr', '2.20');
     await XMLWriter.addNestedElement(catalogPath, 'Attribute', 'TestAttr');
 
     fs.writeFileSync(configXmlPath(), BASE_CONFIG_XML('      <Catalog>CatWithAttr</Catalog>'), 'utf-8');

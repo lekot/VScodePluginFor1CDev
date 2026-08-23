@@ -117,7 +117,7 @@ suite('ConfigurationSession and WorkspaceRegistry', () => {
 
     await fs.promises.writeFile(
       path.join(root, 'Configuration.xml'),
-      '<MetaDataObject><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"/></MetaDataObject>',
+      '<MetaDataObject version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"/></MetaDataObject>',
       'utf8',
     );
     const promotedRegistry = new WorkspaceRegistry(storePath);
@@ -129,7 +129,7 @@ suite('ConfigurationSession and WorkspaceRegistry', () => {
 
     await fs.promises.writeFile(
       path.join(root, 'Configuration.xml'),
-      '<MetaDataObject><Configuration uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"/></MetaDataObject>',
+      '<MetaDataObject version="2.20"><Configuration uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"/></MetaDataObject>',
       'utf8',
     );
     const replacedRegistry = new WorkspaceRegistry(storePath);
@@ -151,7 +151,7 @@ async function createConfiguration(parent: string, name: string, uuid: string): 
   await fs.promises.mkdir(root, { recursive: true });
   await fs.promises.writeFile(
     path.join(root, 'Configuration.xml'),
-    `<MetaDataObject><Configuration uuid="${uuid}"><ChildObjects/></Configuration></MetaDataObject>`,
+    `<MetaDataObject version="2.20"><Configuration uuid="${uuid}"><ChildObjects/></Configuration></MetaDataObject>`,
     'utf8',
   );
   return fs.promises.realpath(root);

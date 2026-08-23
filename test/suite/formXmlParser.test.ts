@@ -59,6 +59,7 @@ suite('FormXmlParser', () => {
     const formXmlPath = path.join(tmpRoot, 'Form.xml');
     try {
       await writeFormXml(formXmlPath, {
+        version: '2.20',
         childItemsRoot: [],
         attributes: [],
         commands: [],
@@ -93,6 +94,7 @@ suite('FormXmlParser', () => {
     const formXmlPath = path.join(tmpRoot, 'Form.xml');
     try {
       await writeFormXml(formXmlPath, {
+        version: '2.20',
         childItemsRoot: [],
         attributes: [],
         commands: [],

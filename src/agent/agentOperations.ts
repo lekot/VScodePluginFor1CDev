@@ -15,7 +15,7 @@ import { getDesignerTemplateXml } from '../services/designerTemplateRepository';
 import { substituteDesignerTemplate } from '../services/designerTemplateSubstitutor';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
-import { detectFormatVersionFromXml, DEFAULT_FORMAT_VERSION } from '../utils/format/formatRank';
+import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
 import { generateSimpleUuid } from '../utils/xml/xmlHelpers';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { MetadataType } from '../models/treeNode';
@@ -116,7 +116,7 @@ export class AgentOperations {
         }
         const configurationPath = path.join(this.configRootPath, CONFIGURATION_XML);
         const configurationContent = await fs.promises.readFile(configurationPath, 'utf8');
-        const targetVersion = detectFormatVersionFromXml(configurationContent).version;
+        const targetVersion = requireProjectWriteFormatProfile(configurationContent).version;
         content = normalizeMetaDataObjectRoot(injectInternalInfoIntoMetadataXml(content, type, trimmedName), targetVersion);
         const nextConfigurationContent = buildRootObjectConfigurationContent(configurationContent, {
             type: 'add', rootTag: type, objectName: trimmedName,
@@ -269,6 +269,8 @@ export class AgentOperations {
             // Определяем папку типа через маппинг, fallback = rootTag + 's'
             const typeFolderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(type as MetadataType) ?? `${type}s`;
             const typeFolderPath = path.join(this.configRootPath, typeFolderName);
+            const cfgXml = await fs.promises.readFile(path.join(this.configRootPath, CONFIGURATION_XML), 'utf8');
+            const targetVersion = requireProjectWriteFormatProfile(cfgXml).version;
             const nameValidation = validateElementName(trimmedName, await listXmlSiblingNames(typeFolderPath));
             if (nameValidation) {
                 return { success: false, error: nameValidation };
@@ -314,13 +316,6 @@ export class AgentOperations {
                 });
             }
 
-            let targetVersion = DEFAULT_FORMAT_VERSION;
-            try {
-              const cfgXml = await fs.promises.readFile(path.join(this.configRootPath, CONFIGURATION_XML), 'utf8');
-              targetVersion = detectFormatVersionFromXml(cfgXml).version;
-            } catch {
-              // fallback to default format version
-            }
             content = injectInternalInfoIntoMetadataXml(content, type, trimmedName);
             content = normalizeMetaDataObjectRoot(content, targetVersion);
 

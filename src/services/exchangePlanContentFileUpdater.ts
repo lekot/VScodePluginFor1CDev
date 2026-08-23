@@ -7,6 +7,12 @@ import { XmlParser } from '../parsers/xmlParser';
 import { validateSubsystemCompositionRef } from '../parsers/xmlChildObjects';
 import type { ContentReadResult, ContentUpdateDiff } from '../compositionEditor/compositionContracts';
 import { localName, getValueByLocalName } from '../parsers/xmlNavHelpers';
+import {
+  requireDocumentWriteFormatProfile,
+  requireProjectWriteFormatProfile,
+  requireWriteFormatProfile,
+} from '../utils/format/formatRank';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 /**
  * Navigate to the Item array inside the parsed ExchangePlanContent root.
@@ -105,6 +111,7 @@ export async function readExchangePlanContent(filePath: string): Promise<Content
 export async function applyExchangePlanContentUpdate(
   filePath: string,
   diff: ContentUpdateDiff,
+  targetVersion?: string,
 ): Promise<{ rejected: Array<{ ref: string; reason: string }> }> {
   const rejected: Array<{ ref: string; reason: string }> = [];
 
@@ -113,8 +120,10 @@ export async function applyExchangePlanContentUpdate(
   let existingRefs: string[];
   let existingSettings: Map<string, Record<string, string>>;
 
-  try {
-    await fs.promises.access(filePath);
+  const exists = await fs.promises.access(filePath).then(() => true).catch(() => false);
+  if (exists) {
+    const existingXml = await fs.promises.readFile(filePath, 'utf8');
+    requireDocumentWriteFormatProfile(existingXml);
     parsed = await XmlParser.parseFileAsync(filePath);
     const items = getItemsFromParsed(parsed);
     existingRefs = [];
@@ -130,15 +139,17 @@ export async function applyExchangePlanContentUpdate(
         existingSettings.set(ref, { AutoRecord: typeof autoRaw === 'string' ? autoRaw.trim() : 'Allow' });
       }
     }
-  } catch {
-    // File does not exist — build a minimal root
+  } else {
+    // Resolve before creating Ext/ or Content.xml. Existing child documents
+    // retain their own root version; only a missing one uses the project.
+    const profile = await resolveContentCreateProfile(filePath, targetVersion);
     parsed = {
       ExchangePlanContent: {
         '@_xmlns': 'http://v8.1c.ru/8.3/xcf/extrnprops',
         '@_xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
         '@_xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
         '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-        '@_version': '2.20',
+        '@_version': profile.version,
         Item: [],
       },
     };
@@ -206,4 +217,25 @@ export async function applyExchangePlanContentUpdate(
   await fs.promises.writeFile(filePath, xml, 'utf-8');
 
   return { rejected };
+}
+
+async function resolveContentCreateProfile(filePath: string, targetVersion?: string) {
+  if (targetVersion) {
+    return requireWriteFormatProfile(targetVersion);
+  }
+  let dir = path.dirname(filePath);
+  for (let depth = 0; depth < 16; depth++) {
+    const configurationPath = path.join(dir, CONFIGURATION_XML);
+    try {
+      return requireProjectWriteFormatProfile(await fs.promises.readFile(configurationPath, 'utf8'));
+    } catch (error) {
+      if (error instanceof Error && error.name === 'UnsupportedMetadataFormatError') {
+        throw error;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) { break; }
+    dir = parent;
+  }
+  return requireWriteFormatProfile(undefined);
 }

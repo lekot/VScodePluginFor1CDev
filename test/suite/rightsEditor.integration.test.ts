@@ -13,10 +13,10 @@ import * as path from 'path';
 import { RoleXmlParser } from '../../src/rolesEditor/roleXmlParser';
 import { updateRight } from '../../src/rolesEditor/rightsUpdateUtils';
 import {
-  createMinimalRightsDom,
-  loadRightsXml,
+  createMinimalRightsDom as createMinimalRightsDomImpl,
+  loadRightsXml as loadRightsXmlImpl,
   mergeRightsIntoDom,
-  serializeRightsDomToXml,
+  serializeRightsDomToXml as serializeRightsDomToXmlImpl,
 } from '../../src/rolesEditor/rightsXmlEditWriter';
 import { RolesRightsEditorProvider } from '../../src/rolesEditor/rolesRightsEditorProvider';
 import {
@@ -24,6 +24,12 @@ import {
   createFakeWebviewPanel,
   patchCreateWebviewPanel,
 } from '../helpers/rightsEditorTestHarness';
+
+const TEST_WRITE_VERSION = '2.20';
+const createMinimalRightsDom = () => createMinimalRightsDomImpl(TEST_WRITE_VERSION);
+const loadRightsXml = (rightsPath: string) => loadRightsXmlImpl(rightsPath, TEST_WRITE_VERSION);
+const serializeRightsDomToXml = (dom: ReturnType<typeof createMinimalRightsDom>) =>
+  serializeRightsDomToXmlImpl(dom, TEST_WRITE_VERSION);
 
 /**
  * Windows: immediate `fs.rm(recursive)` after rights save sometimes throws ENOTEMPTY on a
@@ -274,6 +280,11 @@ suite('rightsEditor integration', () => {
       const rightsPath = path.join(roleDir, 'NewRole', 'Ext', 'Rights.xml');
       try {
         await fs.promises.mkdir(roleDir, { recursive: true });
+        await fs.promises.writeFile(
+          path.join(tmpRoot, 'Configuration.xml'),
+          '<MetaDataObject version="2.20"><Configuration><ChildObjects/></Configuration></MetaDataObject>',
+          'utf8'
+        );
         await fs.promises.writeFile(
           rolePath,
           [
@@ -721,4 +732,3 @@ suite('rightsEditor integration', () => {
   });
 
 });
-

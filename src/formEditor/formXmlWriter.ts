@@ -5,6 +5,10 @@
 import * as fs from 'fs';
 import { XMLBuilder } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
+import {
+  requireDocumentWriteFormatProfile,
+  requireWriteFormatProfile,
+} from '../utils/format/formatRank';
 import type { FormModel, FormChildItem, FormEventItem } from './formModel';
 
 const BUILDER_OPTIONS = {
@@ -118,6 +122,7 @@ function buildChildItem(item: FormChildItem): Record<string, unknown> {
 export function buildFormContent(model: FormModel): unknown[] {
   const formContent: unknown[] = [];
   const rootAttrs: Record<string, string> = {};
+  const profile = requireWriteFormatProfile(model.version);
   if (model.xmlnsDeclarations && Object.keys(model.xmlnsDeclarations).length) {
     for (const [key, uri] of Object.entries(model.xmlnsDeclarations)) {
       rootAttrs[`@_${key}`] = uri;
@@ -125,11 +130,7 @@ export function buildFormContent(model: FormModel): unknown[] {
   } else {
     rootAttrs['@_xmlns'] = 'http://v8.1c.ru/8.3/xcf/logform';
   }
-  if (model.version) {
-    rootAttrs['@_version'] = model.version;
-  } else {
-    rootAttrs['@_version'] = '2.20';
-  }
+  rootAttrs['@_version'] = profile.version;
   formContent.push({ ':@': rootAttrs });
   const topLevelFields = model.topLevelFields ?? [];
   const rawCommandSet = topLevelFields.find((field) => localName(field.tag) === 'CommandSet');
@@ -261,7 +262,7 @@ function escapeXmlAttrValue(s: string): string {
  * Ensures both are present for platform-compatible Ext/Form.xml (B.1 / sprint spec).
  */
 export function injectMissingFormOpenTagAttrs(xmlString: string, model: FormModel): string {
-  const versionRaw = (model.version && model.version.trim()) || '2.20';
+  const versionRaw = requireWriteFormatProfile(model.version).version;
   const version = escapeXmlAttrValue(versionRaw);
   return xmlString.replace(/<Form(\s[^>]*)?>/, (_full, inner: string | undefined) => {
     const attrs = inner ?? '';
@@ -294,7 +295,7 @@ export function injectXmlnsIntoFormTag(xmlString: string, xmlnsDeclarations: Rec
   const xmlnsStr = entries.map(([k, v]) => `${k}="${v}"`).join(' ');
   // Replace <Form ...> or <Form> — insert xmlns before version or at end of opening tag
   return xmlString.replace(/^(<Form)(\s[^>]*>|>)/m, (_match, tag, rest) => {
-    // rest may be ' version="2.20">' or '>'
+    // rest may contain a validated `version` attribute or just '>'.
     // Insert xmlns declarations right after <Form
     return `${tag} ${xmlnsStr}${rest}`;
   });
@@ -304,7 +305,22 @@ export function injectXmlnsIntoFormTag(xmlString: string, xmlnsDeclarations: Rec
  * Write FormModel to Ext/Form.xml. Creates backup before write; on write failure restores from backup.
  */
 export async function writeFormXml(formXmlPath: string, model: FormModel): Promise<void> {
-  const rawContent = buildFormContent(model);
+  // Existing Form.xml is authoritative for updates. Validate and preserve its
+  // exact version before any backup or write is attempted.
+  let existingContent = '';
+  try {
+    existingContent = await fs.promises.readFile(formXmlPath, 'utf-8');
+  } catch (readErr) {
+    if ((readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw readErr;
+    }
+  }
+  const profile = existingContent.trim()
+    ? requireDocumentWriteFormatProfile(existingContent)
+    : requireWriteFormatProfile(model.version);
+  const effectiveModel: FormModel = { ...model, version: profile.version };
+
+  const rawContent = buildFormContent(effectiveModel);
   const head = rawContent[0] as Record<string, unknown> | undefined;
   const formAttrs =
     head && typeof head === 'object' && Object.keys(head).length === 1 && head[':@'] !== undefined
@@ -325,10 +341,10 @@ export async function writeFormXml(formXmlPath: string, model: FormModel): Promi
   }
 
   // Inject xmlns declarations (XMLBuilder strips them with ignoreNameSpace:true)
-  if (model.xmlnsDeclarations && Object.keys(model.xmlnsDeclarations).length) {
-    xmlString = injectXmlnsIntoFormTag(xmlString, model.xmlnsDeclarations);
+  if (effectiveModel.xmlnsDeclarations && Object.keys(effectiveModel.xmlnsDeclarations).length) {
+    xmlString = injectXmlnsIntoFormTag(xmlString, effectiveModel.xmlnsDeclarations);
   }
-  xmlString = injectMissingFormOpenTagAttrs(xmlString, model);
+  xmlString = injectMissingFormOpenTagAttrs(xmlString, effectiveModel);
 
   // Validate: never write empty Form when model has content
   if ((model.childItemsRoot?.length ?? 0) > 0 && /^<Form\s*\/>$|^<Form>\s*<\/Form>$/.test(xmlString.trim())) {
@@ -340,12 +356,6 @@ export async function writeFormXml(formXmlPath: string, model: FormModel): Promi
   const declaration = '<?xml version="1.0" encoding="UTF-8"?>\n';
   const fullContent = declaration + xmlString;
 
-  let existingContent: string;
-  try {
-    existingContent = await fs.promises.readFile(formXmlPath, 'utf-8');
-  } catch (readErr) {
-    existingContent = '';
-  }
   const backupPath = `${formXmlPath}.bak`;
   try {
     await fs.promises.writeFile(backupPath, existingContent || fullContent, 'utf-8');

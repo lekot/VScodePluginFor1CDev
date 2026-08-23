@@ -14,7 +14,7 @@ function runPipeline(rootTag: string): string {
     const ir = metadataConverter.createDefaultIR(rules, { name: TEST_NAME, uuid: TEST_UUID });
     const xml = metadataConverter.irToXml(ir, rules);
     const withInternal = injectInternalInfoIntoMetadataXml(xml, rootTag, TEST_NAME);
-    return normalizeMetaDataObjectRoot(withInternal);
+    return normalizeMetaDataObjectRoot(withInternal, '2.20');
 }
 
 suite('E2E Pipeline: CommonModule', () => {

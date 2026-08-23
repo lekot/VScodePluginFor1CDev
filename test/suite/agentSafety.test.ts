@@ -12,7 +12,7 @@ suite('Agent metadata path and name safety', () => {
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agent-safety-'));
     await fs.promises.writeFile(
       path.join(tempDir, 'Configuration.xml'),
-      '<MetaDataObject><Configuration uuid="cccccccc-cccc-cccc-cccc-cccccccccccc"><ChildObjects/></Configuration></MetaDataObject>',
+      '<MetaDataObject version="2.20"><Configuration uuid="cccccccc-cccc-cccc-cccc-cccccccccccc"><ChildObjects/></Configuration></MetaDataObject>',
       'utf8',
     );
   });
@@ -34,7 +34,7 @@ suite('Agent metadata path and name safety', () => {
   test('rejects a case-insensitive sibling duplicate', async () => {
     const catalogs = path.join(tempDir, 'Catalogs');
     await fs.promises.mkdir(catalogs);
-    await fs.promises.writeFile(path.join(catalogs, 'Goods.xml'), '<MetaDataObject/>', 'utf8');
+    await fs.promises.writeFile(path.join(catalogs, 'Goods.xml'), '<MetaDataObject version="2.20"/>', 'utf8');
 
     const result = await new AgentOperations(tempDir).createObject({ type: 'Catalog', name: 'goods' });
 
@@ -46,7 +46,7 @@ suite('Agent metadata path and name safety', () => {
     const catalogs = path.join(tempDir, 'Catalogs');
     await fs.promises.mkdir(catalogs);
     await fs.promises.writeFile(path.join(catalogs, 'Goods.xml'), `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
   <Catalog uuid="11111111-1111-1111-1111-111111111111">
     <Properties><Name>Goods</Name></Properties>
     <ChildObjects>
@@ -77,7 +77,7 @@ suite('Agent metadata path and name safety', () => {
 
   test('rejects an object descriptor reached through a junction escape', async function () {
     const outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'agent-safety-outside-'));
-    await fs.promises.writeFile(path.join(outside, 'Goods.xml'), '<MetaDataObject/>', 'utf8');
+    await fs.promises.writeFile(path.join(outside, 'Goods.xml'), '<MetaDataObject version="2.20"/>', 'utf8');
     const catalogsLink = path.join(tempDir, 'Catalogs');
     try {
       await fs.promises.symlink(outside, catalogsLink, process.platform === 'win32' ? 'junction' : 'dir');

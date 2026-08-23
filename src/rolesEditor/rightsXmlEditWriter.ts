@@ -9,6 +9,7 @@ import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
 import type { RightsMap, ObjectRights } from './models/roleModel';
 import { ALL_RIGHT_TYPES, type RightType } from './models/roleModel';
+import { requireDocumentWriteFormatProfile, requireWriteFormatProfile } from '../utils/format/formatRank';
 
 /** Mapping from ObjectRights property names to EDT Rights.xml right <name> values */
 const RIGHTS_TO_XML_NAME: Record<keyof ObjectRights, string> = {
@@ -62,17 +63,17 @@ const RIGHTS_ROOT_ATTRS_1C: Record<string, string> = {
   '@_xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
   '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
   '@_xsi:type': 'Rights',
-  '@_version': '2.20'
 };
 
 /**
  * fast-xml-parser XMLBuilder (preserveOrder) does not emit the leading `:@` attribute bag as root tag
  * attributes — output becomes a bare `<Rights>`. 1C then treats children as xs:anyType.
  */
-const RIGHTS_ROOT_OPEN_TAG_1C =
-  '<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">';
+function buildRightsRootOpenTag(version: string): string {
+  return `<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="${requireWriteFormatProfile(version).version}">`;
+}
 
-function applyRightsRootOpenTagFor1CXdto(xml: string): string {
+function applyRightsRootOpenTagFor1CXdto(xml: string, targetVersion: string): string {
   return xml.replace(/<(?:[a-zA-Z0-9_.]+:)?Rights\b[^>]*>/, (openTag) => {
     if (
       openTag.includes('http://v8.1c.ru/8.2/roles') &&
@@ -81,7 +82,7 @@ function applyRightsRootOpenTagFor1CXdto(xml: string): string {
     ) {
       return openTag;
     }
-    return RIGHTS_ROOT_OPEN_TAG_1C;
+    return buildRightsRootOpenTag(targetVersion);
   });
 }
 
@@ -98,7 +99,7 @@ function findRightsKey(root: Record<string, unknown>): string | undefined {
  * Ensure preserveOrder DOM has a leading attribute bag on the Rights root for 1C Configurator / EDT.
  * Mutates dom in place.
  */
-export function ensureRightsRootAttrsFor1CXdto(dom: RightsDom): void {
+export function ensureRightsRootAttrsFor1CXdto(dom: RightsDom, targetVersion?: string): void {
   if (!dom.length || typeof dom[0] !== 'object' || dom[0] === null) {
     return;
   }
@@ -107,6 +108,7 @@ export function ensureRightsRootAttrsFor1CXdto(dom: RightsDom): void {
   if (!rightsKey) {
     return;
   }
+  const profile = requireWriteFormatProfile(targetVersion);
   const val = root[rightsKey];
   if (!Array.isArray(val)) {
     return;
@@ -123,7 +125,7 @@ export function ensureRightsRootAttrsFor1CXdto(dom: RightsDom): void {
 
   if (isAttrBag) {
     const bag = (first as Record<string, unknown>)[':@'] as Record<string, string>;
-    for (const [attrName, defaultVal] of Object.entries(RIGHTS_ROOT_ATTRS_1C)) {
+    for (const [attrName, defaultVal] of Object.entries({ ...RIGHTS_ROOT_ATTRS_1C, '@_version': profile.version })) {
       const cur = bag[attrName];
       if (cur === undefined || cur === '') {
         bag[attrName] = defaultVal;
@@ -132,7 +134,7 @@ export function ensureRightsRootAttrsFor1CXdto(dom: RightsDom): void {
     return;
   }
 
-  content.unshift({ ':@': { ...RIGHTS_ROOT_ATTRS_1C } });
+  content.unshift({ ':@': { ...RIGHTS_ROOT_ATTRS_1C, '@_version': profile.version } });
 }
 
 /**
@@ -166,11 +168,13 @@ export function getRightsPath(roleFilePath: string): string {
  * Create minimal Rights document DOM (file does not exist).
  * Root <Rights> with xmlns, setForNewObjects, setForAttributesByDefault, independentRightsOfChildObjects.
  */
-export function createMinimalRightsDom(): RightsDom {
+export function createMinimalRightsDom(targetVersion?: string): RightsDom {
+  const profile = requireWriteFormatProfile(targetVersion);
   const content: unknown[] = [
     {
       ':@': {
-        ...RIGHTS_ROOT_ATTRS_1C
+        ...RIGHTS_ROOT_ATTRS_1C,
+        '@_version': profile.version,
       }
     },
     { setForNewObjects: [{ '#text': 'false' }] },
@@ -184,7 +188,7 @@ export function createMinimalRightsDom(): RightsDom {
  * Load and parse existing Rights.xml into a DOM. Preserves full structure.
  * If file does not exist, returns minimal DOM. On parse error throws.
  */
-export async function loadRightsXml(rightsPath: string): Promise<RightsDom> {
+export async function loadRightsXml(rightsPath: string, targetVersion?: string): Promise<RightsDom> {
   let xmlContent: string;
   try {
     xmlContent = await fs.promises.readFile(rightsPath, 'utf-8');
@@ -192,7 +196,7 @@ export async function loadRightsXml(rightsPath: string): Promise<RightsDom> {
     const code = err && typeof (err as NodeJS.ErrnoException).code === 'string' ? (err as NodeJS.ErrnoException).code : '';
     if (code === 'ENOENT') {
       Logger.debug(`Rights.xml not found at ${rightsPath}, using minimal document`);
-      return createMinimalRightsDom();
+      return createMinimalRightsDom(targetVersion);
     }
     Logger.error(`Failed to read Rights.xml: ${rightsPath}`, err);
     throw new Error(`Не удалось прочитать Rights.xml: ${err instanceof Error ? err.message : String(err)}`);
@@ -200,8 +204,9 @@ export async function loadRightsXml(rightsPath: string): Promise<RightsDom> {
 
   if (!xmlContent || xmlContent.trim() === '') {
     Logger.debug('Rights.xml is empty, using minimal document');
-    return createMinimalRightsDom();
+    return createMinimalRightsDom(targetVersion);
   }
+  const existingProfile = requireDocumentWriteFormatProfile(xmlContent);
 
   const parser = new XMLParser(RIGHTS_XML_PARSER_OPTIONS);
   let parsed: unknown;
@@ -218,7 +223,7 @@ export async function loadRightsXml(rightsPath: string): Promise<RightsDom> {
   }
 
   const dom = parsed as RightsDom;
-  ensureRightsRootAttrsFor1CXdto(dom);
+  ensureRightsRootAttrsFor1CXdto(dom, existingProfile.version);
   return dom;
 }
 
@@ -522,8 +527,9 @@ export function insertRestrictionTemplatesBeforeClosingRights(
   return next;
 }
 
-export function serializeRightsDomToXml(dom: RightsDom): string {
-  ensureRightsRootAttrsFor1CXdto(dom);
+export function serializeRightsDomToXml(dom: RightsDom, targetVersion?: string): string {
+  const profile = requireWriteFormatProfile(targetVersion);
+  ensureRightsRootAttrsFor1CXdto(dom, profile.version);
   const builder = new XMLBuilder(RIGHTS_XML_BUILDER_OPTIONS);
   let xmlString: string;
   try {
@@ -533,7 +539,7 @@ export function serializeRightsDomToXml(dom: RightsDom): string {
     Logger.error('Failed to serialize Rights.xml', err);
     throw new Error(`Не удалось сформировать Rights.xml: ${message}`);
   }
-  xmlString = applyRightsRootOpenTagFor1CXdto(xmlString);
+  xmlString = applyRightsRootOpenTagFor1CXdto(xmlString, profile.version);
   try {
     xmlString = unescapeQuotesInConditions(xmlString);
   } catch (e) {

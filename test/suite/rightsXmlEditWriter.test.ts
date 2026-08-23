@@ -12,18 +12,28 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
-  ensureRightsRootAttrsFor1CXdto,
+  ensureRightsRootAttrsFor1CXdto as ensureRightsRootAttrsFor1CXdtoImpl,
   listRightsXmlCandidatePaths,
   getRightsPath,
-  createMinimalRightsDom,
-  loadRightsXml,
+  createMinimalRightsDom as createMinimalRightsDomImpl,
+  loadRightsXml as loadRightsXmlImpl,
   mergeRightsIntoDom,
   stripRestrictionTemplateBlocksFromRightsXml,
   insertRestrictionTemplatesBeforeClosingRights,
-  serializeRightsDomToXml,
+  serializeRightsDomToXml as serializeRightsDomToXmlImpl,
   type RightsDom,
 } from '../../src/rolesEditor/rightsXmlEditWriter';
 import { createEmptyObjectRights } from '../../src/rolesEditor/models/roleModel';
+
+const TEST_WRITE_VERSION = '2.20';
+const ensureRightsRootAttrsFor1CXdto = (dom: RightsDom, version = TEST_WRITE_VERSION): void =>
+  ensureRightsRootAttrsFor1CXdtoImpl(dom, version);
+const createMinimalRightsDom = (version = TEST_WRITE_VERSION): RightsDom =>
+  createMinimalRightsDomImpl(version);
+const loadRightsXml = (rightsPath: string, version = TEST_WRITE_VERSION): Promise<RightsDom> =>
+  loadRightsXmlImpl(rightsPath, version);
+const serializeRightsDomToXml = (dom: RightsDom, version = TEST_WRITE_VERSION): string =>
+  serializeRightsDomToXmlImpl(dom, version);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -225,6 +235,10 @@ suite('getRightsPath', () => {
 // ---------------------------------------------------------------------------
 
 suite('createMinimalRightsDom', () => {
+  test('requires an explicit profile when creating a new document', () => {
+    assert.throws(() => createMinimalRightsDomImpl(undefined), /формат XML/);
+  });
+
   test('returns array with single Rights root', () => {
     const dom = createMinimalRightsDom();
     assert.ok(Array.isArray(dom));
@@ -327,11 +341,11 @@ suite('loadRightsXml', () => {
     const badPath = await writeTempFile(tmpDir, 'bad/Rights.xml', bad);
     await assert.rejects(
       () => loadRightsXml(badPath),
-      (err: unknown) => err instanceof Error && err.message.includes('Rights.xml')
+      (err: unknown) => err instanceof Error && err.message.includes('формат XML')
     );
   });
 
-  test('calls ensureRightsRootAttrsFor1CXdto — serialized output has 1C xmlns attrs after load of bare XML', async () => {
+  test('rejects a versionless existing Rights.xml before a save can repair it', async () => {
     // Rights.xml without xmlns attrs on the root element
     const bareXml = [
       '<?xml version="1.0" encoding="UTF-8"?>',
@@ -341,12 +355,7 @@ suite('loadRightsXml', () => {
       '',
     ].join('\n');
     const xmlPath = await writeTempFile(tmpDir, 'bare/Rights.xml', bareXml);
-    const dom = await loadRightsXml(xmlPath);
-    // After loadRightsXml, ensureRightsRootAttrsFor1CXdto must have run.
-    // The effect is visible via serializeRightsDomToXml which applies the root open tag.
-    const xml = serializeRightsDomToXml(dom);
-    assert.ok(xml.includes('http://v8.1c.ru/8.2/roles'), 'xmlns must be present in serialized output');
-    assert.ok(xml.includes('xsi:type="Rights"'), 'xsi:type must be in output');
+    await assert.rejects(() => loadRightsXml(xmlPath), /формат XML/);
   });
 });
 

@@ -19,7 +19,7 @@ import { MESSAGES } from '../constants/messages';
 import { buildRootObjectConfigurationContent } from '../services/configurationXmlUpdater';
 import { XMLWriter } from '../utils/XMLWriter';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
-import { detectFormatVersionFromXml } from '../utils/format/formatRank';
+import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
 import { metadataConverter, rulesRegistry } from '../rules';
 import { parseXdtoPackage } from '../parsers/xdtoPackageParser';
 import { convert1cPackageToXsd, convertXsdTo1cPackage } from '../xdtoPackageEditor/xdtoXsdConverter';
@@ -684,7 +684,7 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
 
         const configurationPath = path.join(configRootPath, CONFIGURATION_XML);
         const configurationContent = fs.readFileSync(configurationPath, 'utf8');
-        const targetVersion = detectFormatVersionFromXml(configurationContent).version;
+        const targetVersion = requireProjectWriteFormatProfile(configurationContent).version;
         const plan: MutationPlan<void> = {
           kind: 'ui.xdto.createFromXsd',
           steps: [

@@ -6,6 +6,7 @@
 import { XMLBuilder } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
 import { insertRestrictionTemplatesBeforeClosingRights } from './rightsXmlEditWriter';
+import { requireWriteFormatProfile } from '../utils/format/formatRank';
 import {
   RoleModel,
   ObjectRights,
@@ -69,7 +70,6 @@ const ROLE_NAMESPACES = {
   '@_xmlns:xr': 'http://v8.1c.ru/8.3/xcf/readable',
   '@_xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
   '@_xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-  '@_version': '2.13'
 };
 
 /**
@@ -83,10 +83,11 @@ export class RoleXmlSerializer {
    * @param roleModel RoleModel to serialize
    * @returns XML string in 1C Role.xml format
    */
-  static serializeToXml(roleModel: RoleModel): string {
+  static serializeToXml(roleModel: RoleModel, targetVersion?: string): string {
     try {
+      const profile = requireWriteFormatProfile(targetVersion);
       // Build XML structure
-      const xmlStructure = this.buildXmlStructure(roleModel);
+      const xmlStructure = this.buildXmlStructure(roleModel, profile.version);
 
       // Generate XML string
       let xmlString = this.builder.build(xmlStructure) as string;
@@ -107,6 +108,9 @@ export class RoleXmlSerializer {
       Logger.debug(`Serialized Role.xml: ${roleModel.name}, objects: ${Object.keys(roleModel.rights).length}`);
       return xmlString;
     } catch (err) {
+      if (err instanceof Error && err.name === 'UnsupportedMetadataFormatError') {
+        throw err;
+      }
       const message = err instanceof Error ? err.message : String(err);
       Logger.error(`Failed to serialize Role.xml: ${roleModel.name}`, err);
       throw new Error(`Failed to serialize Role.xml: ${message}`);
@@ -118,7 +122,7 @@ export class RoleXmlSerializer {
    * @param roleModel RoleModel to convert
    * @returns XML structure object
    */
-  private static buildXmlStructure(roleModel: RoleModel): Record<string, unknown> {
+  private static buildXmlStructure(roleModel: RoleModel, targetVersion: string | undefined): Record<string, unknown> {
     // Group objects by metadata type
     const objectsByType = this.groupObjectsByType(roleModel);
 
@@ -137,6 +141,7 @@ export class RoleXmlSerializer {
     // Build Role element
     const roleElement: Record<string, unknown> = {
       ...ROLE_NAMESPACES,
+      '@_version': requireWriteFormatProfile(targetVersion).version,
       Rights: rightsSection
     };
 

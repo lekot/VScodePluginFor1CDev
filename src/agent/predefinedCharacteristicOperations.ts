@@ -7,6 +7,7 @@ import { XMLParser } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
 import { parsePredefinedCharacteristics } from '../parsers/predefinedCharacteristicsParser';
 import { buildXmlString, writeUtf8FileWithBackup } from '../utils/xml/xmlFileIo';
+import { requireDocumentWriteFormatProfile } from '../utils/format/formatRank';
 import type { PredefinedCharacteristicEntry } from '../types/predefinedCharacteristic';
 
 // Designer folder name for COT
@@ -132,6 +133,7 @@ export async function setPredefinedCharacteristicType(
   const { cotDir } = resolveCotDir(configRoot, cotPath);
   const xmlPath = predefinedXmlPath(cotDir);
   const originalContent = await fs.promises.readFile(xmlPath, 'utf-8');
+  requireDocumentWriteFormatProfile(originalContent);
 
   let parsed: unknown;
   try {

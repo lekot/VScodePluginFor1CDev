@@ -123,12 +123,42 @@ suite('exchangePlanContentFileUpdater', () => {
       add: ['Catalog.New'],
       remove: [],
       settingsChanged: new Map(),
-    });
+    }, '2.20');
 
     assert.strictEqual(rejected.length, 0);
     const exists = await fs.promises.access(fp).then(() => true).catch(() => false);
     assert.ok(exists, 'file should be created');
     const result = await readExchangePlanContent(fp);
     assert.deepStrictEqual(result.refs, ['Catalog.New']);
+  });
+
+  for (const version of ['2.17', '2.21']) {
+    test(`applyExchangePlanContentUpdate — new child uses project profile ${version}`, async () => {
+      const fp = path.join(tmpDir, `ExchangePlan-${version}`, 'Ext', 'Content.xml');
+
+      await applyExchangePlanContentUpdate(fp, {
+        add: ['Catalog.New'],
+        remove: [],
+        settingsChanged: new Map(),
+      }, version);
+
+      const xml = await fs.promises.readFile(fp, 'utf8');
+      assert.ok(xml.includes(`version="${version}"`));
+    });
+  }
+
+  test('applyExchangePlanContentUpdate — preserves an existing child root version', async () => {
+    const fp = path.join(tmpDir, 'Content.xml');
+    await fs.promises.writeFile(fp, EXCHANGE_PLAN_CONTENT_XML, 'utf-8');
+
+    await applyExchangePlanContentUpdate(fp, {
+      add: ['Catalog.New'],
+      remove: [],
+      settingsChanged: new Map(),
+    }, '2.21');
+
+    const xml = await fs.promises.readFile(fp, 'utf8');
+    assert.ok(xml.includes('version="2.20"'));
+    assert.ok(!xml.includes('version="2.21"'));
   });
 });

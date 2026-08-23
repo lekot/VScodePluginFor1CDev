@@ -43,16 +43,22 @@ import {
   ensureTabularSectionColumnsPlaceholder,
   isTabularSectionColumnsContainer,
 } from '../utils/treeNormalization';
-import { detectFormatVersionFromXml, DEFAULT_FORMAT_VERSION } from '../utils/format/formatRank';
+import {
+  requireProjectWriteFormatProfile,
+  UnsupportedMetadataFormatError,
+} from '../utils/format/formatRank';
 import { rulesRegistry, metadataConverter } from '../rules';
 
 async function resolveProjectFormatVersion(configRootPath: string): Promise<string> {
   try {
     const configXmlPath = path.join(configRootPath, CONFIGURATION_XML);
     const content = await fs.promises.readFile(configXmlPath, 'utf8');
-    return detectFormatVersionFromXml(content).version;
-  } catch {
-    return DEFAULT_FORMAT_VERSION;
+    return requireProjectWriteFormatProfile(content).version;
+  } catch (error) {
+    if (error instanceof UnsupportedMetadataFormatError) {
+      throw error;
+    }
+    throw new UnsupportedMetadataFormatError(undefined, 'не удалось прочитать Configuration.xml');
   }
 }
 
@@ -194,9 +200,9 @@ async function findConfigurationRootDir(typeFolderPath: string): Promise<string>
 async function ensureCompanionTaskForBusinessProcess(
   configRootPath: string,
   businessProcessesFolderPath: string,
-  taskName: string
+  taskName: string,
+  targetVersion: string
 ): Promise<void> {
-  const targetVersion = await resolveProjectFormatVersion(configRootPath);
   const tasksDir = path.join(path.dirname(businessProcessesFolderPath), 'Tasks');
   await fs.promises.mkdir(tasksDir, { recursive: true });
   const taskFilePath = path.join(tasksDir, `${taskName}.xml`);
@@ -271,6 +277,11 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
     throw new Error(`Небезопасный путь: папка типа за пределами корня конфигурации: ${typeFolderPath}`);
   }
 
+  // This must precede an on-demand mkdir: unsupported projects are
+  // guaranteed to remain untouched.
+  const configRootPath = configRootForCheck;
+  const targetVersion = await resolveProjectFormatVersion(configRootPath);
+
   // When using placeholder type-nodes, the type folder may be absent on disk.
   // Create it on-demand so element creation can proceed.
   // Use a single async stat to avoid TOCTOU between existsSync and statSync.
@@ -298,11 +309,9 @@ async function handleCreateRootObject(parentNode: TreeNode, name: string): Promi
   }
 
   const rootTag = String(parentNode.type);
-  const configRootPath = await findConfigurationRootDir(typeFolderPath);
-  const targetVersion = await resolveProjectFormatVersion(configRootPath);
 
   if (rootTag === 'BusinessProcess') {
-    await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name);
+    await ensureCompanionTaskForBusinessProcess(configRootPath, typeFolderPath, name, targetVersion);
   }
 
   // Types that need template fallback (templates include ChildObjects with default children)
@@ -498,7 +507,9 @@ async function handleCreatePredefinedItem(predefinedFolder: TreeNode, owner: Tre
   if (!PREDEFINED_METADATA_ROOT_TYPES.has(owner.type)) {
     throw new Error('Создание предопределённых элементов для этого типа не поддерживается.');
   }
-  await appendPredefinedDesignerItem(predefinedPath, owner.type, name, name, owner.filePath);
+  const configRootPath = await findConfigurationRootDir(path.dirname(owner.filePath ?? predefinedPath));
+  const targetVersion = await resolveProjectFormatVersion(configRootPath);
+  await appendPredefinedDesignerItem(predefinedPath, owner.type, name, name, owner.filePath, targetVersion);
 }
 
 /** Branch: parentNode is a columns-container under a tabular section instance. */
@@ -651,14 +662,16 @@ export async function createElement(
 }
 
 /** Minimal Ext/Form.xml content for a new form (Designer). */
-const MINIMAL_EXT_FORM_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+function buildMinimalExtFormXml(targetVersion: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="${targetVersion}">
 \t<Events/>
 \t<ChildItems/>
 \t<Attributes/>
 \t<Commands/>
 </Form>
 `;
+}
 
 /**
  * Creates a new form under the Forms node (Designer format only).
@@ -689,6 +702,8 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   if (!formsPath) {
     throw new Error('Папка форм: не задан путь к каталогу Forms.');
   }
+  const configRootPath = await findConfigurationRootDir(formsPath);
+  const targetVersion = await resolveProjectFormatVersion(configRootPath);
   let formsStat: fs.Stats | undefined;
   try {
     formsStat = await fs.promises.stat(formsPath);
@@ -709,13 +724,13 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   if (metaExists || extRootExists) {
     throw new Error(`Форма с именем «${name}» уже существует.`);
   }
-  await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name);
+  await XMLWriter.createMinimalElementFile(formMetaPath, 'Form', name, targetVersion);
   const extDir = path.join(extRoot, 'Ext');
   const formXmlPath = path.join(extDir, FORM_XML);
   const formModuleDir = path.join(extDir, 'Form');
   const modulePath = path.join(formModuleDir, 'Module.bsl');
   await fs.promises.mkdir(formModuleDir, { recursive: true });
-  await fs.promises.writeFile(formXmlPath, MINIMAL_EXT_FORM_XML, 'utf-8');
+  await fs.promises.writeFile(formXmlPath, buildMinimalExtFormXml(targetVersion), 'utf-8');
   await fs.promises.writeFile(modulePath, '', 'utf-8');
   Logger.info(`Created form: ${formMetaPath}`);
 
@@ -838,6 +853,9 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
       throw new Error(`Файл уже существует: ${newFilePath}`);
     }
     const configRootPath = await findConfigurationRootDir(typeFolderPath);
+    // Duplicating a root creates a descriptor and may create an object
+    // directory. Validate Configuration.xml before either filesystem write.
+    await resolveProjectFormatVersion(configRootPath);
     const rootTag = String(node.type);
     const oldDir = path.join(typeFolderPath, node.name);
     const newDir = path.join(typeFolderPath, name);
@@ -1401,9 +1419,13 @@ export async function deleteElement(
     } catch {
       throw new Error('Файл элемента не найден.');
     }
-    await fs.promises.unlink(filePath);
     const dirPath = path.dirname(filePath);
     const elementDir = path.join(dirPath, node.name);
+    const configRootPath = await findConfigurationRootDir(dirPath);
+    // Removing the descriptor is irreversible if Configuration.xml cannot be
+    // safely updated, so resolve the profile before the first deletion.
+    await resolveProjectFormatVersion(configRootPath);
+    await fs.promises.unlink(filePath);
     let elementDirStat: fs.Stats | undefined;
     try {
       elementDirStat = await fs.promises.stat(elementDir);
@@ -1414,7 +1436,6 @@ export async function deleteElement(
       await fs.promises.rm(elementDir, { recursive: true });
     }
     const rootTag = String(node.type);
-    const configRootPath = path.dirname(dirPath);
     try {
       await removeRootObjectFromConfiguration(configRootPath, rootTag, node.name);
     } catch (err) {
@@ -1546,6 +1567,8 @@ export async function renameElement(
   if (TOP_LEVEL_TYPES.has(node.type)) {
     const typeFolderPath = path.dirname(filePath);
     const configRootPath = await findConfigurationRootDir(typeFolderPath);
+    // Rename writes a new descriptor and updates Configuration.xml.
+    await resolveProjectFormatVersion(configRootPath);
     const rootTag = String(node.type);
     const newFilePath = path.join(typeFolderPath, `${name}.xml`);
     if (newFilePath === filePath) {

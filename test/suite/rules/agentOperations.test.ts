@@ -9,7 +9,7 @@ import { createTempDir, cleanupTempDir } from '../../helpers/testHelpers';
 
 // Минимальный Configuration.xml для тестового конфига
 const MINIMAL_CONFIG_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Configuration uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">
     <Properties>
       <Name>TestConfig</Name>
@@ -61,6 +61,7 @@ suite('AgentOperations: createObject', () => {
         const content = fs.readFileSync(result.data!.filePath, 'utf-8');
         assert.ok(content.startsWith('<?xml'), 'should start with <?xml');
         assert.ok(content.includes('<MetaDataObject'), 'should contain <MetaDataObject');
+        assert.ok(content.includes('version="2.20"'), 'should preserve the project format version');
         assert.ok(content.includes('<Catalog '), 'should contain <Catalog root tag');
     });
 
@@ -258,7 +259,7 @@ suite('AgentOperations: listObjects', () => {
     test('parses real Configuration.xml fixture', async () => {
         // Пишем реальный Configuration.xml с объектами
         const configXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Configuration uuid="test-uuid">
     <Properties><Name>TestConf</Name></Properties>
     <ChildObjects>
@@ -304,7 +305,7 @@ const DEFINED_TYPE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </MetaDataObject>`;
 
 const CONFIG_XML_WITH_DEFINED_TYPE = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Configuration uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee">
     <Properties>
       <Name>TestConfig</Name>
@@ -438,7 +439,7 @@ suite('AgentOperations: setType', () => {
         const catalogsDir = path.join(tmpDir, 'Catalogs');
         fs.mkdirSync(catalogsDir, { recursive: true });
         fs.writeFileSync(path.join(catalogsDir, 'Товары.xml'), `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Catalog uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Товары</Name></Properties><ChildObjects>
     <TabularSection uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Первая</Name></Properties><ChildObjects><Attribute uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Значение</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects></TabularSection>
     <TabularSection uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>Вторая</Name></Properties><ChildObjects><Attribute uuid="55555555-5555-4555-8555-555555555555"><Properties><Name>Значение</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute></ChildObjects></TabularSection>

@@ -81,7 +81,7 @@ suite('Agent configuration routing', () => {
     await fs.promises.mkdir(path.dirname(schemaPath), { recursive: true });
     await fs.promises.writeFile(
       path.join(packagesDir, 'BasePackage.xml'),
-      '<MetaDataObject><XDTOPackage><Properties><Name>BasePackage</Name></Properties></XDTOPackage></MetaDataObject>',
+      '<MetaDataObject version="2.20"><XDTOPackage><Properties><Name>BasePackage</Name></Properties></XDTOPackage></MetaDataObject>',
       'utf8',
     );
     await fs.promises.writeFile(
@@ -158,13 +158,13 @@ suite('Agent configuration routing', () => {
     await fs.promises.mkdir(path.join(objectDirectory, 'Ext'), { recursive: true });
     await fs.promises.writeFile(
       objectPath,
-      '<MetaDataObject><Catalog><Properties><Name>Goods</Name></Properties><ChildObjects/></Catalog></MetaDataObject>',
+      '<MetaDataObject version="2.20"><Catalog><Properties><Name>Goods</Name></Properties><ChildObjects/></Catalog></MetaDataObject>',
       'utf8',
     );
     await fs.promises.writeFile(path.join(objectDirectory, 'Ext', 'ObjectModule.bsl'), '// Goods', 'utf8');
     await fs.promises.writeFile(
       descriptorPath,
-      '<MetaDataObject><Configuration uuid="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"><ChildObjects><Catalog>Goods</Catalog></ChildObjects></Configuration></MetaDataObject>',
+      '<MetaDataObject version="2.20"><Configuration uuid="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"><ChildObjects><Catalog>Goods</Catalog></ChildObjects></Configuration></MetaDataObject>',
       'utf8',
     );
     await registry.refresh([{ configPath: root }]);
@@ -181,7 +181,7 @@ suite('Agent configuration routing', () => {
     await fs.promises.mkdir(root, { recursive: true });
     await fs.promises.writeFile(
       path.join(root, 'Configuration.xml'),
-      `<MetaDataObject><Configuration uuid="${uuid}"><ChildObjects/></Configuration></MetaDataObject>`,
+      `<MetaDataObject version="2.20"><Configuration uuid="${uuid}"><ChildObjects/></Configuration></MetaDataObject>`,
       'utf8',
     );
     return fs.promises.realpath(root);

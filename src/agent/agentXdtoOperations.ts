@@ -24,7 +24,7 @@ import { buildRootObjectConfigurationContent } from '../services/configurationXm
 import type { XdtoPackageModel } from '../types/xdtoPackage';
 import { XMLWriter } from '../utils/XMLWriter';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
-import { detectFormatVersionFromXml } from '../utils/format/formatRank';
+import { requireProjectWriteFormatProfile } from '../utils/format/formatRank';
 import { metadataConverter, rulesRegistry } from '../rules';
 import { resolveXdtoPackageSchemaPath } from '../xdtoPackageEditor/xdtoPackagePaths';
 import { buildXdtoPackageSkeleton } from '../xdtoPackageEditor/xdtoPackageFiles';
@@ -232,7 +232,7 @@ export class XdtoAgentOperations {
         { type: 'ensureDirectory', targetPath: this.packagesDir() },
         {
           type: 'writeFile', targetPath: metadataPath,
-          content: buildXdtoPackageMetadataXml(packageName, namespace, detectFormatVersionFromXml(configurationContent).version),
+          content: buildXdtoPackageMetadataXml(packageName, namespace, requireProjectWriteFormatProfile(configurationContent).version),
           encoding: 'utf8', expected: metadataExpected,
         },
         { type: 'ensureDirectory', targetPath: path.dirname(schemaPath) },

@@ -21,6 +21,11 @@ import { Logger } from '../utils/logger';
 import { escapeJsonForScript } from '../utils/escapeJsonForScript';
 import { FilterState, createDefaultFilterState } from './models/filterState';
 import { MetadataType } from '../models/treeNode';
+import {
+  requireDocumentWriteFormatProfile,
+  requireProjectWriteFormatProfile,
+} from '../utils/format/formatRank';
+import { CONFIGURATION_XML } from '../constants/fileNames';
 
 /**
  * Provider for the roles and rights editor webview
@@ -33,6 +38,7 @@ export class RolesRightsEditorProvider {
   private saveDisabledNoConfig = false;
   private disposables: vscode.Disposable[] = [];
   private saveInProgress = false;
+  private configurationRootPath: string | undefined;
   /** Incremented on each `show` so stale async metadata loads do not postMessage over a newer session. */
   private objectsLoadGeneration = 0;
   private tableRenderStatusDisposable: vscode.Disposable | undefined;
@@ -121,6 +127,7 @@ export class RolesRightsEditorProvider {
 
       if (!configPath) {
         this.saveDisabledNoConfig = true;
+        this.configurationRootPath = undefined;
         Logger.warn('Configuration path not found, showing read-only mode');
         if (loadGeneration !== this.objectsLoadGeneration) {
           return;
@@ -138,6 +145,7 @@ export class RolesRightsEditorProvider {
       }
 
       this.saveDisabledNoConfig = false;
+      this.configurationRootPath = configPath;
 
       try {
         const objects = await loadMetadataObjects(
@@ -474,22 +482,23 @@ export class RolesRightsEditorProvider {
         : getRightsPath(this.currentRoleModel.filePath);
       // Temp file for atomic write: <target>.tmp only (e.g. Rights.xml.tmp). "Rights copy.xml" is not used by the extension.
       const tempPath = targetPath + '.tmp';
+      const targetVersion = await this.resolveRoleWriteVersion(targetPath);
       Logger.debug(`Save target: ${targetPath}, temp: ${tempPath}`);
 
       let xmlContent: string;
       if (isCaseB) {
-        xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel);
+        xmlContent = RoleXmlSerializer.serializeToXml(this.currentRoleModel, targetVersion);
         Logger.debug('Serialized (Case B)');
       } else {
         Logger.debug('Loading Rights.xml...');
-        const dom = await loadRightsXml(targetPath);
+        const dom = await loadRightsXml(targetPath, targetVersion);
         Logger.debug('Merging rights into DOM...');
         const compactWrite = vscode.workspace
           .getConfiguration('1cMetadataTree')
           .get<boolean>('rightsEditor.compactRightsWrite', true);
         mergeRightsIntoDom(dom, this.currentRoleModel.rights, { compactWrite });
         Logger.debug('Serializing DOM to XML...');
-        xmlContent = serializeRightsDomToXml(dom);
+        xmlContent = serializeRightsDomToXml(dom, targetVersion);
         xmlContent = insertRestrictionTemplatesBeforeClosingRights(
           xmlContent,
           this.currentRoleModel.restrictionTemplatesText ?? ''
@@ -540,6 +549,26 @@ export class RolesRightsEditorProvider {
     if (this.panel) {
       this.panel.dispose();
     }
+  }
+
+  /** Resolve before the temporary file or its parent directory is created. */
+  private async resolveRoleWriteVersion(targetPath: string): Promise<string> {
+    try {
+      const existing = await fs.promises.readFile(targetPath, 'utf8');
+      return requireDocumentWriteFormatProfile(existing).version;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+    if (!this.configurationRootPath) {
+      throw new Error('Не удалось определить Configuration.xml для создания файла прав.');
+    }
+    const configuration = await fs.promises.readFile(
+      path.join(this.configurationRootPath, CONFIGURATION_XML),
+      'utf8'
+    );
+    return requireProjectWriteFormatProfile(configuration).version;
   }
 
   /**
@@ -707,6 +736,7 @@ export class RolesRightsEditorProvider {
     this.currentRoleModel = undefined;
     this.allObjects = [];
     this.saveDisabledNoConfig = false;
+    this.configurationRootPath = undefined;
     this.filterState = createDefaultFilterState();
   }
 }

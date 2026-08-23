@@ -4,16 +4,24 @@ import * as os from 'os';
 import * as path from 'path';
 import type { RightsDom } from '../../src/rolesEditor/rightsXmlEditWriter';
 import {
-  createMinimalRightsDom,
-  ensureRightsRootAttrsFor1CXdto,
+  createMinimalRightsDom as createMinimalRightsDomImpl,
+  ensureRightsRootAttrsFor1CXdto as ensureRightsRootAttrsFor1CXdtoImpl,
   insertRestrictionTemplatesBeforeClosingRights,
-  loadRightsXml,
+  loadRightsXml as loadRightsXmlImpl,
   mergeRightsIntoDom,
-  serializeRightsDomToXml,
+  serializeRightsDomToXml as serializeRightsDomToXmlImpl,
   stripRestrictionTemplateBlocksFromRightsXml,
 } from '../../src/rolesEditor/rightsXmlEditWriter';
 import { RoleXmlParser } from '../../src/rolesEditor/roleXmlParser';
 import { createEmptyObjectRights } from '../../src/rolesEditor/models/roleModel';
+
+const TEST_WRITE_VERSION = '2.20';
+const createMinimalRightsDom = () => createMinimalRightsDomImpl(TEST_WRITE_VERSION);
+const ensureRightsRootAttrsFor1CXdto = (dom: RightsDom) =>
+  ensureRightsRootAttrsFor1CXdtoImpl(dom, TEST_WRITE_VERSION);
+const loadRightsXml = (rightsPath: string) => loadRightsXmlImpl(rightsPath, TEST_WRITE_VERSION);
+const serializeRightsDomToXml = (dom: RightsDom) =>
+  serializeRightsDomToXmlImpl(dom, TEST_WRITE_VERSION);
 
 suite('Rights.xml restrictionTemplate string helpers', () => {
   test('stripRestrictionTemplateBlocksFromRightsXml removes blocks', () => {
@@ -160,7 +168,7 @@ suite('Rights.xml 1C XDTO root', () => {
     assert.ok(out.includes('version="2.20"'));
   });
 
-  test('loadRightsXml normalizes bare Rights file on disk', async () => {
+  test('loadRightsXml rejects a bare Rights file instead of repairing its missing version', async () => {
     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1c-rights-xdto-'));
     const p = path.join(tmp, 'Rights.xml');
     try {
@@ -175,10 +183,9 @@ suite('Rights.xml 1C XDTO root', () => {
         ].join('\n'),
         'utf-8'
       );
-      const dom = await loadRightsXml(p);
-      const xml = serializeRightsDomToXml(dom);
-      assert.ok(xml.includes('http://v8.1c.ru/8.2/roles'));
-      assert.ok(xml.includes('xsi:type="Rights"'));
+      const before = await fs.promises.readFile(p, 'utf8');
+      await assert.rejects(() => loadRightsXml(p), /формат XML/);
+      assert.strictEqual(await fs.promises.readFile(p, 'utf8'), before);
     } finally {
       await fs.promises.rm(tmp, { recursive: true, force: true });
     }

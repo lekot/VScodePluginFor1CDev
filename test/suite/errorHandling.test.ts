@@ -62,7 +62,7 @@ suite('Error Handling Test Suite', () => {
     
     // Create a valid XML file
     const validXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject>
+<MetaDataObject version="2.20">
   <Properties>
     <Name>TestCatalog</Name>
     <Synonym>Test Catalog</Synonym>
@@ -98,7 +98,7 @@ suite('Error Handling Test Suite', () => {
     
     // Create a valid XML file
     const validXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject>
+<MetaDataObject version="2.20">
   <Properties>
     <Name>TestCatalog</Name>
     <Synonym>Original Synonym</Synonym>
@@ -134,7 +134,7 @@ suite('Error Handling Test Suite', () => {
   test('XMLWriter writeProperties keeps source intact and removes backup on failed write', async () => {
     const testPath = path.join(fixturesPath, 'temp-atomic-write-failure.xml');
     const originalXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject>
+<MetaDataObject version="2.20">
   <Properties>
     <Name>AtomicTest</Name>
     <Comment>Original Comment</Comment>

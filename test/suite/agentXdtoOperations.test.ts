@@ -179,12 +179,12 @@ function writeXdtoPackageMetadataOnly(configRoot: string, packageName: string, n
 
 function metadataXml(packageName: string, namespace = ''): string {
   const namespaceNode = namespace ? `<Properties><Namespace>${namespace}</Namespace></Properties>` : '';
-  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><XDTOPackage name="${packageName}">${namespaceNode}</XDTOPackage></MetaDataObject>`;
+  return `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage name="${packageName}">${namespaceNode}</XDTOPackage></MetaDataObject>`;
 }
 
 function writeConfigurationXml(configRoot: string): void {
   fs.writeFileSync(path.join(configRoot, 'Configuration.xml'), [
-    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">',
+    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">',
     '  <Configuration>',
     '    <ChildObjects>',
     '      <XDTOPackage>BasePackage</XDTOPackage>',

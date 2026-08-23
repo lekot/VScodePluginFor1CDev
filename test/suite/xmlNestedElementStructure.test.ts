@@ -17,7 +17,7 @@ import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
  */
 
 const SINGLE_ATTR_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <Document uuid="doc-1">
     <Properties>
       <Name>TestDoc</Name>
@@ -47,7 +47,7 @@ const SINGLE_ATTR_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </MetaDataObject>`;
 
 const TWO_ATTR_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <Document uuid="doc-1">
     <Properties>
       <Name>TestDoc</Name>

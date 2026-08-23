@@ -33,7 +33,7 @@ suite('DataProcessor Operations', () => {
     // Create Configuration.xml required for createElement (addRootObjectToConfiguration)
     const configXmlPath = path.join(tmpDir, 'Configuration.xml');
     const configXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
   <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
     <Properties><Name>TestConfig</Name></Properties>
     <ChildObjects>
@@ -118,7 +118,7 @@ suite('DataProcessor Operations', () => {
   test('createElement throws for duplicate DataProcessor name', async () => {
     // Create existing DataProcessor first
     const existingPath = path.join(tmpDir, 'DataProcessors', 'СуществующаяОбработка.xml');
-    await XMLWriter.createMinimalElementFile(existingPath, 'DataProcessor', 'СуществующаяОбработка');
+    await XMLWriter.createMinimalElementFile(existingPath, 'DataProcessor', 'СуществующаяОбработка', '2.20');
     
     await assert.rejects(
       async () => createElement(dataProcessorsTypeNode, 'СуществующаяОбработка'),
@@ -130,7 +130,7 @@ suite('DataProcessor Operations', () => {
     // Create DataProcessor first
     const elementPath = path.join(tmpDir, 'DataProcessors', 'ТестоваяОбработка.xml');
     const elementDir = path.join(tmpDir, 'DataProcessors', 'ТестоваяОбработка');
-    await XMLWriter.createMinimalElementFile(elementPath, 'DataProcessor', 'ТестоваяОбработка');
+    await XMLWriter.createMinimalElementFile(elementPath, 'DataProcessor', 'ТестоваяОбработка', '2.20');
     await fs.promises.mkdir(elementDir, { recursive: true });
     
     // Create test file in directory to verify directory deletion
@@ -181,7 +181,7 @@ suite('DataProcessor Operations', () => {
     // Create original DataProcessor
     const originalPath = path.join(tmpDir, 'DataProcessors', 'ИсходнаяОбработка.xml');
     const originalContent = `<?xml version='1.0' encoding='utf-8'?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
   <DataProcessor uuid="{original-uuid}">
     <Properties>
       <Name>ИсходнаяОбработка</Name>
@@ -225,7 +225,7 @@ suite('DataProcessor Operations', () => {
   test('renameElement renames DataProcessor file and folder', async () => {
     // Create original DataProcessor
     const originalPath = path.join(tmpDir, 'DataProcessors', 'СтараяОбработка.xml');
-    await XMLWriter.createMinimalElementFile(originalPath, 'DataProcessor', 'СтараяОбработка');
+    await XMLWriter.createMinimalElementFile(originalPath, 'DataProcessor', 'СтараяОбработка', '2.20');
     const configurationPath = path.join(tmpDir, 'Configuration.xml');
     const registeredConfiguration = (await fs.promises.readFile(configurationPath, 'utf-8')).replace(
       '<ChildObjects>',
@@ -266,7 +266,7 @@ suite('DataProcessor Operations', () => {
 
   test('renameElement to same name does nothing', async () => {
     const originalPath = path.join(tmpDir, 'DataProcessors', 'ТестоваяОбработка.xml');
-    await XMLWriter.createMinimalElementFile(originalPath, 'DataProcessor', 'ТестоваяОбработка');
+    await XMLWriter.createMinimalElementFile(originalPath, 'DataProcessor', 'ТестоваяОбработка', '2.20');
     
     const dataProcessorNode = {
       id: 'ТестоваяОбработка',

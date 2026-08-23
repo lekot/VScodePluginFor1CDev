@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 
 function makeModel(): FormModel {
   return {
+    version: '2.20',
     childItemsRoot: [],
     attributes: [],
     commands: [],

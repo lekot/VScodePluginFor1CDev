@@ -73,6 +73,7 @@ suite('Bug Condition Exploration: form-drag-clears-xml', () => {
       childItems: [page],
     };
     const model: FormModel = {
+      version: '2.20',
       childItemsRoot: [pages],
       attributes: [],
       commands: [],
@@ -115,6 +116,7 @@ suite('Bug Condition Exploration: form-drag-clears-xml', () => {
       childItems: [page],
     };
     const model: FormModel = {
+      version: '2.20',
       childItemsRoot: [pages],
       attributes: [],
       commands: [],

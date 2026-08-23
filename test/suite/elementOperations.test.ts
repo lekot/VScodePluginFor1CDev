@@ -29,6 +29,14 @@ import { ensureR6PlaceholdersForInstanceNode, NormalizeContext } from '../../src
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { addRootObjectToConfiguration } from '../../src/services/configurationXmlUpdater';
 
+async function writeConfigurationWithFormat(dir: string, version = '2.20'): Promise<void> {
+  await fs.promises.writeFile(
+    path.join(dir, 'Configuration.xml'),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<MetaDataObject version="${version}"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects/></Configuration></MetaDataObject>`,
+    'utf8'
+  );
+}
+
 suite('elementOperations', () => {
   let tmpDir: string;
   let catalogPath: string;
@@ -41,11 +49,11 @@ suite('elementOperations', () => {
     const catalogsPath = path.join(tmpDir, 'Catalogs');
     await fs.promises.mkdir(catalogsPath, { recursive: true });
     catalogPath = path.join(catalogsPath, 'ExistingCatalog.xml');
-    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'ExistingCatalog');
+    await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'ExistingCatalog', '2.20');
     // Configuration.xml required for createElement (addRootObjectToConfiguration)
     const configXmlPath = path.join(tmpDir, 'Configuration.xml');
     const configXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
   <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
     <Properties><Name>TestConfig</Name></Properties>
     <ChildObjects>
@@ -124,7 +132,7 @@ suite('elementOperations', () => {
       await fs.promises.mkdir(rolesPath, { recursive: true });
       const configXmlPath = path.join(dir, 'Configuration.xml');
       const configXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
   <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
     <Properties><Name>TestConfig</Name></Properties>
     <ChildObjects/>
@@ -171,7 +179,7 @@ suite('elementOperations', () => {
       await fs.promises.mkdir(cmPath, { recursive: true });
       const configXmlPath = path.join(dir, 'Configuration.xml');
       const configXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
   <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
     <Properties><Name>TestConfig</Name></Properties>
     <ChildObjects/>
@@ -223,7 +231,7 @@ suite('elementOperations', () => {
       await fs.promises.mkdir(srcRoles, { recursive: true });
       const configXmlPath = path.join(dir, 'Configuration.xml');
       const configXml = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
   <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
     <Properties><Name>EdtCfg</Name></Properties>
     <ChildObjects/>
@@ -378,7 +386,7 @@ suite('elementOperations', () => {
     const childUuid = '22222222-2222-4222-8222-222222222222';
     const externalUuid = '99999999-9999-4999-8999-999999999999';
     await fs.promises.writeFile(catalogPath, `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable" version="2.20">
   <Catalog uuid="11111111-1111-4111-8111-111111111111">
     <InternalInfo><xr:GeneratedType name="CatalogObject.ExistingCatalog" category="Object"><xr:TypeId>33333333-3333-4333-8333-333333333333</xr:TypeId><xr:ValueId>44444444-4444-4444-8444-444444444444</xr:ValueId></xr:GeneratedType></InternalInfo>
     <Properties><Name>ExistingCatalog</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>ExistingCatalog</v8:content></v8:item></Synonym><InputByString><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></InputByString></Properties>
@@ -431,6 +439,28 @@ suite('elementOperations', () => {
       'duplicate must be registered in Configuration.xml/ChildObjects'
     );
   });
+
+  for (const version of ['2.17', '2.21']) {
+    test(`createForm uses project profile ${version} for both child documents`, async () => {
+      const configPath = path.join(tmpDir, 'Configuration.xml');
+      const configuration = await readFileContent(configPath);
+      await fs.promises.writeFile(
+        configPath,
+        configuration.replace('version="2.20"', `version="${version}"`),
+        'utf8'
+      );
+      const formsPath = path.join(tmpDir, 'Catalogs', 'ExistingCatalog', 'Forms');
+      const formsNode = createFormsNode(catalogNode, formsPath);
+
+      await createForm(formsNode, `Profile${version.replace('.', '')}`);
+
+      const formName = `Profile${version.replace('.', '')}`;
+      const metaXml = await readFileContent(path.join(formsPath, `${formName}.xml`));
+      const extXml = await readFileContent(path.join(formsPath, formName, 'Ext', 'Form.xml'));
+      assert.ok(metaXml.includes(`version="${version}"`));
+      assert.ok(extXml.includes(`version="${version}"`));
+    });
+  }
 
   test('duplicateElement preflights target directory without leaving a descriptor', async () => {
     const targetDir = path.join(tmpDir, 'Catalogs', 'CopyCatalog');
@@ -499,7 +529,7 @@ suite('elementOperations', () => {
     const rootUuid = '11111111-1111-4111-8111-111111111111';
     const typeId = '33333333-3333-4333-8333-333333333333';
     await fs.promises.writeFile(catalogPath, `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.3/xcf/readable" version="2.20">
   <Catalog uuid="${rootUuid}"><InternalInfo><xr:GeneratedType name="CatalogObject.ExistingCatalog" category="Object"><xr:TypeId>${typeId}</xr:TypeId><xr:ValueId>44444444-4444-4444-8444-444444444444</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogRef.ExistingCatalog" category="Ref"><xr:TypeId>55555555-5555-4555-8555-555555555555</xr:TypeId><xr:ValueId>66666666-6666-4666-8666-666666666666</xr:ValueId></xr:GeneratedType></InternalInfo><Properties><Name>ExistingCatalog</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>ExistingCatalog</v8:content></v8:item></Synonym><InputByString><xr:Field>Catalog.ExistingCatalog.StandardAttribute.Description</xr:Field></InputByString></Properties><ChildObjects/></Catalog>
 </MetaDataObject>`, 'utf-8');
     const sourceDir = path.join(tmpDir, 'Catalogs', 'ExistingCatalog');
@@ -573,7 +603,7 @@ suite('elementOperations', () => {
     const rolesDir = path.join(tmpDir, 'Roles');
     await fs.promises.mkdir(rolesDir, { recursive: true });
     const roleXml = path.join(rolesDir, 'R1.xml');
-    await XMLWriter.createMinimalElementFile(roleXml, 'Role', 'R1');
+    await XMLWriter.createMinimalElementFile(roleXml, 'Role', 'R1', '2.20');
     const rolesTypeNode: TreeNode = {
       id: 'Roles',
       name: 'Роли',
@@ -1511,7 +1541,7 @@ suite('elementOperations', () => {
       const enumsDir = path.join(dir, 'Enums');
       await fs.promises.mkdir(enumsDir, { recursive: true });
       const enumPath = path.join(enumsDir, 'TestEnum.xml');
-      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'TestEnum');
+      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'TestEnum', '2.20');
       const enumNode: TreeNode = {
         id: 'Enums.TestEnum',
         name: 'TestEnum',
@@ -1547,7 +1577,7 @@ suite('elementOperations', () => {
       const regsDir = path.join(dir, 'InformationRegisters');
       await fs.promises.mkdir(regsDir, { recursive: true });
       const regPath = path.join(regsDir, 'TestIR.xml');
-      await XMLWriter.createMinimalElementFile(regPath, 'InformationRegister', 'TestIR');
+      await XMLWriter.createMinimalElementFile(regPath, 'InformationRegister', 'TestIR', '2.17');
       const regNode: TreeNode = {
         id: 'InformationRegisters.TestIR',
         name: 'TestIR',
@@ -1573,6 +1603,7 @@ suite('elementOperations', () => {
       assert.ok(xml.includes('<Dimension'), 'Dimension block expected');
       assert.ok(xml.includes('<Name>DimOne</Name>'), 'Dimension name expected');
       assert.ok(xml.includes('<Master>true</Master>'), 'First dimension is master');
+      assert.ok(!xml.includes('TypeReductionMode'), '2.17 must not emit TypeReductionMode');
     } finally {
       await cleanupTempDir(dir);
     }
@@ -1584,7 +1615,7 @@ suite('elementOperations', () => {
       const regsDir = path.join(dir, 'AccumulationRegisters');
       await fs.promises.mkdir(regsDir, { recursive: true });
       const regPath = path.join(regsDir, 'TestAR.xml');
-      await XMLWriter.createMinimalElementFile(regPath, 'AccumulationRegister', 'TestAR');
+      await XMLWriter.createMinimalElementFile(regPath, 'AccumulationRegister', 'TestAR', '2.20');
       const regNode: TreeNode = {
         id: 'AccumulationRegisters.TestAR',
         name: 'TestAR',
@@ -1617,10 +1648,11 @@ suite('elementOperations', () => {
   test('createElement creates Predefined.xml with Item under PredefinedData (Catalog)', async () => {
     const dir = await createTempDir('1cviewer-predef-');
     try {
+      await writeConfigurationWithFormat(dir);
       const catalogsDir = path.join(dir, 'Catalogs');
       await fs.promises.mkdir(path.join(catalogsDir, 'Cat1'), { recursive: true });
       const catPath = path.join(catalogsDir, 'Cat1.xml');
-      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Cat1');
+      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Cat1', '2.20');
       const predefinedPath = path.join(catalogsDir, 'Cat1', 'Ext', 'Predefined.xml');
       const catNode: TreeNode = {
         id: 'Catalogs.Cat1',
@@ -1656,10 +1688,11 @@ suite('elementOperations', () => {
   test('createElement creates Predefined.xml when PredefinedData filePath set via ensureR6Placeholders (no Ext dir)', async () => {
     const dir = await createTempDir('1cviewer-predef-r6-');
     try {
+      await writeConfigurationWithFormat(dir);
       const catalogsDir = path.join(dir, 'Catalogs');
       await fs.promises.mkdir(path.join(catalogsDir, 'Товары'), { recursive: true });
       const catPath = path.join(catalogsDir, 'Товары', 'Товары.xml');
-      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Товары');
+      await XMLWriter.createMinimalElementFile(catPath, 'Catalog', 'Товары', '2.20');
 
       const catalogsFolder: TreeNode = {
         id: 'Catalogs',
@@ -1710,6 +1743,60 @@ suite('elementOperations', () => {
     }
   });
 
+  test('createElement emits TypeReductionMode for InformationRegister Dimension from 2.18', async () => {
+    const dir = await createTempDir('1cviewer-dimension-218-');
+    try {
+      const regsDir = path.join(dir, 'InformationRegisters');
+      await fs.promises.mkdir(regsDir, { recursive: true });
+      const regPath = path.join(regsDir, 'TestIR.xml');
+      await XMLWriter.createMinimalElementFile(regPath, 'InformationRegister', 'TestIR', '2.18');
+      const regNode: TreeNode = {
+        id: 'InformationRegisters.TestIR', name: 'TestIR', type: MetadataType.InformationRegister,
+        filePath: regPath, properties: {}, children: [],
+      };
+      const dimensions: TreeNode = {
+        id: 'Dimensions', name: 'Dimensions', type: MetadataType.Dimension,
+        parent: regNode, properties: {}, children: [],
+      };
+      regNode.children = [dimensions];
+
+      await createElement(dimensions, 'Dim218');
+
+      assert.ok((await readFileContent(regPath)).includes('<TypeReductionMode>TransformValues</TypeReductionMode>'));
+    } finally {
+      await cleanupTempDir(dir);
+    }
+  });
+
+  for (const version of ['2.17', '2.21']) {
+    test(`createElement creates Predefined.xml with project profile ${version}`, async () => {
+      const dir = await createTempDir('1cviewer-predef-profile-');
+      try {
+        await writeConfigurationWithFormat(dir, version);
+        const catalogsDir = path.join(dir, 'Catalogs');
+        await fs.promises.mkdir(catalogsDir, { recursive: true });
+        const catalogPath = path.join(catalogsDir, 'Cat.xml');
+        await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'Cat', version);
+        const predefinedPath = path.join(catalogsDir, 'Cat', 'Ext', 'Predefined.xml');
+        const catalog: TreeNode = {
+          id: 'Catalogs.Cat', name: 'Cat', type: MetadataType.Catalog,
+          filePath: catalogPath, properties: {}, children: [],
+        };
+        const predefinedFolder: TreeNode = {
+          id: 'PredefinedData', name: 'PredefinedData', type: MetadataType.PredefinedItem,
+          filePath: predefinedPath, properties: {}, parent: catalog, children: [],
+        };
+        catalog.children = [predefinedFolder];
+
+        await createElement(predefinedFolder, 'Item');
+
+        assert.ok((await readFileContent(predefinedPath)).includes(`version="${version}"`));
+      } finally {
+        await cleanupTempDir(dir);
+      }
+    });
+  }
+
   for (const scenario of [
     {
       label: 'EnumValue', ownerType: MetadataType.Enum, ownerTag: 'Enum',
@@ -1730,7 +1817,7 @@ suite('elementOperations', () => {
         const ownerDir = path.join(dir, scenario.ownerFolder);
         await fs.promises.mkdir(ownerDir, { recursive: true });
         const ownerPath = path.join(ownerDir, 'Owner.xml');
-        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner');
+        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner', '2.20');
         const owner: TreeNode = {
           id: `${scenario.ownerFolder}.Owner`, name: 'Owner', type: scenario.ownerType,
           filePath: ownerPath, properties: {}, children: [],
@@ -1774,7 +1861,7 @@ suite('elementOperations', () => {
         await fs.promises.mkdir(trustedRoot, { recursive: true });
         await fs.promises.mkdir(externalRoot, { recursive: true });
         const ownerPath = path.join(externalRoot, 'Owner.xml');
-        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner');
+        await XMLWriter.createMinimalElementFile(ownerPath, scenario.ownerTag, 'Owner', '2.20');
         const owner: TreeNode = {
           id: 'External.Owner', name: 'Owner', type: scenario.ownerType,
           filePath: ownerPath, properties: {}, children: [],
@@ -1803,10 +1890,11 @@ suite('elementOperations', () => {
   test('deleteElement removes one PredefinedItem and preserves siblings and namespaces', async () => {
     const dir = await createTempDir('1cviewer-delete-predefined-');
     try {
+      await writeConfigurationWithFormat(dir);
       const catalogsDir = path.join(dir, 'Catalogs');
       await fs.promises.mkdir(catalogsDir, { recursive: true });
       const ownerPath = path.join(catalogsDir, 'Owner.xml');
-      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner');
+      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner', '2.20');
       const predefinedPath = path.join(catalogsDir, 'Owner', 'Ext', 'Predefined.xml');
       const owner: TreeNode = {
         id: 'Catalogs.Owner', name: 'Owner', type: MetadataType.Catalog,
@@ -1848,7 +1936,7 @@ suite('elementOperations', () => {
       await fs.promises.mkdir(trustedRoot, { recursive: true });
       await fs.promises.mkdir(catalogsDir, { recursive: true });
       const ownerPath = path.join(catalogsDir, 'Owner.xml');
-      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner');
+      await XMLWriter.createMinimalElementFile(ownerPath, 'Catalog', 'Owner', '2.20');
       const externalPath = path.join(catalogsDir, 'Owner', 'Ext', 'Predefined.xml');
       const externalXml = `<?xml version="1.0" encoding="UTF-8"?>
 <PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems">
@@ -1884,7 +1972,7 @@ suite('elementOperations', () => {
     const dir = await createTempDir('1cviewer-delete-r6-missing-');
     try {
       const enumPath = path.join(dir, 'Owner.xml');
-      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'Owner');
+      await XMLWriter.createMinimalElementFile(enumPath, 'Enum', 'Owner', '2.20');
       const owner: TreeNode = {
         id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
         filePath: enumPath, properties: {}, children: [],
@@ -1934,7 +2022,7 @@ suite('elementOperations', () => {
       await fs.promises.mkdir(trustedRoot, { recursive: true });
       await fs.promises.mkdir(externalEnums, { recursive: true });
       const externalOwnerPath = path.join(externalEnums, 'Owner.xml');
-      await XMLWriter.createMinimalElementFile(externalOwnerPath, 'Enum', 'Owner');
+      await XMLWriter.createMinimalElementFile(externalOwnerPath, 'Enum', 'Owner', '2.20');
       const externalOwner: TreeNode = {
         id: 'Enums.Owner', name: 'Owner', type: MetadataType.Enum,
         filePath: externalOwnerPath, properties: {}, children: [],
@@ -2041,7 +2129,7 @@ suite('elementOperations', () => {
     const subsystemsDir = path.join(tmpDir, 'Subsystems');
     await fs.promises.mkdir(subsystemsDir, { recursive: true });
     const subsystemXml = path.join(subsystemsDir, 'ПодсистемаТест.xml');
-    await XMLWriter.createMinimalElementFile(subsystemXml, 'Subsystem', 'ПодсистемаТест');
+    await XMLWriter.createMinimalElementFile(subsystemXml, 'Subsystem', 'ПодсистемаТест', '2.20');
     const subsystemsTypeNode: TreeNode = {
       id: 'Subsystems',
       name: 'Подсистемы',
@@ -2072,7 +2160,7 @@ suite('elementOperations', () => {
     try {
       const cotXml = path.join(dir, 'COT.xml');
       const cotContent = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
   <ChartOfCharacteristicTypes uuid="test-uuid">
     <Properties>
       <Name>TestCOT</Name>
@@ -2085,7 +2173,7 @@ suite('elementOperations', () => {
 </MetaDataObject>`;
       await fs.promises.writeFile(cotXml, cotContent, 'utf-8');
       const predefinedPath = path.join(dir, 'Ext', 'Predefined.xml');
-      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'ВидТест', 'ВидТест', cotXml);
+      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'ВидТест', 'ВидТест', cotXml, '2.20');
       const xml = await readFileContent(predefinedPath);
       assert.ok(xml.includes('xs:boolean'), 'Item Type must reflect COT owner Type (xs:boolean)');
       assert.ok(!xml.includes('xs:string'), 'Should not fall back to xs:string when owner has xs:boolean');
@@ -2099,7 +2187,7 @@ suite('elementOperations', () => {
     const dir = await createTempDir('1cviewer-cot-fallback-');
     try {
       const predefinedPath = path.join(dir, 'Ext', 'Predefined.xml');
-      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'Fallback', 'Fallback');
+      await appendPredefinedDesignerItem(predefinedPath, MetadataType.ChartOfCharacteristicTypes, 'Fallback', 'Fallback', undefined, '2.20');
       const xml = await readFileContent(predefinedPath);
       assert.ok(xml.includes('xs:string'), 'Should use xs:string fallback when no owner file provided');
     } finally {
@@ -2162,4 +2250,39 @@ suite('elementOperations', () => {
       await cleanupTempDir(dir);
     }
   });
+
+  for (const version of ['missing', '2.16', '2.22', 'malformed']) {
+    test(`createElement rejects project format ${version} before creating filesystem artifacts`, async () => {
+      const dir = await createTempDir('1cviewer-fmt-reject-');
+      try {
+        if (version === 'missing') {
+          await fs.promises.writeFile(
+            path.join(dir, 'Configuration.xml'),
+            '<MetaDataObject><Configuration version="2.21"/></MetaDataObject>',
+            'utf8'
+          );
+        } else {
+          const configVersion = version === 'malformed' ? '2.x' : version;
+          await writeConfigurationWithFormat(dir, configVersion);
+        }
+        const typeFolder = path.join(dir, 'Catalogs');
+        const configNode = createConfigNode();
+        const catalogsNode = createCatalogsTypeNode(configNode, typeFolder);
+        const configBefore = await readFileContent(path.join(dir, 'Configuration.xml'));
+
+        await assert.rejects(
+          () => createElement(catalogsNode, 'MustNotExist'),
+          (error: unknown) => !!error && typeof error === 'object'
+            && (error as { code?: string }).code === 'CDT_UNSUPPORTED_METADATA_WRITE_FORMAT'
+        );
+
+        assert.ok(!dirExists(typeFolder), 'type folder must not be created');
+        assert.ok(!fileExists(path.join(typeFolder, 'MustNotExist.xml')));
+        assert.ok(!fileExists(`${path.join(dir, 'Configuration.xml')}.bak`));
+        assert.strictEqual(await readFileContent(path.join(dir, 'Configuration.xml')), configBefore);
+      } finally {
+        await cleanupTempDir(dir);
+      }
+    });
+  }
 });

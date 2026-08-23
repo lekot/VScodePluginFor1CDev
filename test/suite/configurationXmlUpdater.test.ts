@@ -18,7 +18,7 @@ import { createTempDir, cleanupTempDir } from '../helpers/testHelpers';
  */
 
 const MINIMAL_CONFIG_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Configuration uuid="4b623a8e-ac76-4c84-97d7-795de87f4d82">
     <Properties>
       <Name>ТестКонфигурация</Name>
@@ -31,7 +31,7 @@ const MINIMAL_CONFIG_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </MetaDataObject>`;
 
 const CONFIG_NO_CHILDOBJECTS = `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Configuration uuid="4b623a8e-ac76-4c84-97d7-795de87f4d82">
     <Properties>
       <Name>ТестКонфигурация</Name>
@@ -115,7 +115,7 @@ suite('configurationXmlUpdater', () => {
   });
 
   test('handles lenient parser recovery for malformed xml in add', async () => {
-    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), '<MetaDataObject><Configuration>', 'utf-8');
+    fs.writeFileSync(path.join(tmpDir, 'Configuration.xml'), '<MetaDataObject version="2.20"><Configuration>', 'utf-8');
     await addRootObjectToConfiguration(tmpDir, 'Catalog', 'Test');
     const xml = readConfigXml(tmpDir);
     assert.ok(xml.includes('<Catalog>Test</Catalog>'));

@@ -7,6 +7,7 @@ import { MetadataType } from '../../models/treeNode';
 import { xmlParser } from './xmlCore';
 import { buildXmlString, writeUtf8FileWithBackup } from './xmlFileIo';
 import { generateSimpleUuid } from './xmlHelpers';
+import { requireDocumentWriteFormatProfile, requireWriteFormatProfile } from '../format/formatRank';
 
 function escapeXmlText(s: string): string {
   return s
@@ -17,11 +18,18 @@ function escapeXmlText(s: string): string {
     .replace(/'/g, '&apos;');
 }
 
-const PREDEFINED_ROOT_OPEN: Partial<Record<MetadataType, string>> = {
-  [MetadataType.Catalog]: `<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20">`,
-  [MetadataType.ChartOfCharacteristicTypes]: `<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="PlanOfCharacteristicKindPredefinedItems" version="2.20">`,
-  [MetadataType.ChartOfAccounts]: `<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ChartOfAccountsPredefinedItems" version="2.20">`,
+const PREDEFINED_XSI_TYPE: Partial<Record<MetadataType, string>> = {
+  [MetadataType.Catalog]: 'CatalogPredefinedItems',
+  [MetadataType.ChartOfCharacteristicTypes]: 'PlanOfCharacteristicKindPredefinedItems',
+  [MetadataType.ChartOfAccounts]: 'ChartOfAccountsPredefinedItems',
 };
+
+function buildPredefinedRootOpen(ownerType: MetadataType, targetVersion: string): string | undefined {
+  const xsiType = PREDEFINED_XSI_TYPE[ownerType];
+  if (!xsiType) { return undefined; }
+  const profile = requireWriteFormatProfile(targetVersion);
+  return `<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="${xsiType}" version="${profile.version}">`;
+}
 
 function findPredefinedDataRoot(parsed: Record<string, unknown>): Record<string, unknown> | null {
   for (const [key, val] of Object.entries(parsed)) {
@@ -154,9 +162,10 @@ function buildNewPredefinedFileContent(
   ownerType: MetadataType,
   name: string,
   description: string,
-  cotResolvedType?: Record<string, unknown>
+  cotResolvedType: Record<string, unknown> | undefined,
+  targetVersion: string
 ): string {
-  const open = PREDEFINED_ROOT_OPEN[ownerType];
+  const open = buildPredefinedRootOpen(ownerType, targetVersion);
   if (!open) {
     throw new Error('Unsupported predefined root');
   }
@@ -253,9 +262,10 @@ export async function appendPredefinedDesignerItem(
   ownerType: MetadataType,
   name: string,
   description?: string,
-  ownerFilePath?: string
+  ownerFilePath?: string,
+  targetVersion?: string
 ): Promise<void> {
-  if (!PREDEFINED_ROOT_OPEN[ownerType]) {
+  if (!PREDEFINED_XSI_TYPE[ownerType]) {
     throw new Error('Предопределённые элементы для этого типа объекта создаются только в XML вручную.');
   }
   const desc = description ?? name;
@@ -270,13 +280,17 @@ export async function appendPredefinedDesignerItem(
     xmlContent = await fs.promises.readFile(filePath, 'utf-8');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-      const body = buildNewPredefinedFileContent(ownerType, name, desc, cotResolvedType);
+      if (!targetVersion) {
+        throw new Error('Для создания Predefined.xml не определён формат проекта.');
+      }
+      const body = buildNewPredefinedFileContent(ownerType, name, desc, cotResolvedType, targetVersion);
       await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
       await fs.promises.writeFile(filePath, body, 'utf-8');
       return;
     }
     throw e;
   }
+  requireDocumentWriteFormatProfile(xmlContent);
 
   let parsed: unknown;
   try {
@@ -329,6 +343,7 @@ export async function removePredefinedDesignerItem(filePath: string, name: strin
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Не удалось прочитать Predefined.xml: ${message}`);
   }
+  requireDocumentWriteFormatProfile(xmlContent);
 
   let parsed: unknown;
   try {

@@ -207,14 +207,16 @@ export function addAttributeToTabularSectionInParsed(
   tabularSectionName: string,
   columnName: string,
   parentRootType: MetadataType,
-  parentObjectName: string
+  parentObjectName: string,
+  formatRank?: number
 ): unknown {
   const newBlock = buildMinimalNestedElement(
     'Attribute',
     columnName,
     {},
     parentRootType,
-    parentObjectName
+    parentObjectName,
+    formatRank
   );
   const unwrapped = (newBlock as Record<string, unknown>).Attribute;
 

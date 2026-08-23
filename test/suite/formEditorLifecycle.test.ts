@@ -11,6 +11,7 @@ const cancellation = { isCancellationRequested: false } as vscode.CancellationTo
 
 function makeModel(width = '100'): FormModel {
   return {
+    version: '2.20',
     attributes: [],
     commands: [],
     formEvents: [],

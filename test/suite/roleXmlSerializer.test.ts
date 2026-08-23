@@ -15,7 +15,14 @@ import {
 } from '../../src/rolesEditor/models/roleModel';
 
 suite('RoleXmlSerializer Tests', () => {
-  
+  test('serializeToXml requires an explicit write profile', () => {
+    const roleModel: RoleModel = {
+      name: 'TestRole', filePath: '/test/TestRole/Role.xml', rights: {},
+      metadata: { format: ConfigFormat.Designer, version: '2.20', lastModified: new Date() },
+    };
+    assert.throws(() => RoleXmlSerializer.serializeToXml(roleModel), /формат XML/);
+  });
+
   test('serializeToXml generates valid XML structure', () => {
     // Arrange
     const rights: RightsMap = {
@@ -39,7 +46,7 @@ suite('RoleXmlSerializer Tests', () => {
     };
 
     // Act
-    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+    const xml = RoleXmlSerializer.serializeToXml(roleModel, '2.20');
 
     // Assert
     assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
@@ -96,7 +103,7 @@ suite('RoleXmlSerializer Tests', () => {
     };
 
     // Act
-    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+    const xml = RoleXmlSerializer.serializeToXml(roleModel, '2.20');
 
     // Assert
     assert.ok(xml.includes('Products'));
@@ -134,7 +141,7 @@ suite('RoleXmlSerializer Tests', () => {
     };
 
     // Act
-    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+    const xml = RoleXmlSerializer.serializeToXml(roleModel, '2.20');
 
     // Assert
     assert.ok(xml.includes('<Catalog>'));
@@ -171,7 +178,7 @@ suite('RoleXmlSerializer Tests', () => {
     };
 
     // Act
-    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+    const xml = RoleXmlSerializer.serializeToXml(roleModel, '2.20');
 
     // Assert
     assert.ok(xml.includes('<InteractiveInsert>true</InteractiveInsert>'));
@@ -200,7 +207,7 @@ suite('RoleXmlSerializer Tests', () => {
       restrictionTemplatesText: `<restrictionTemplate><name>T</name><condition>${marker}</condition></restrictionTemplate>`
     };
 
-    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+    const xml = RoleXmlSerializer.serializeToXml(roleModel, '2.20');
 
     const rightsOpen = xml.indexOf('<Rights>');
     const rightsClose = xml.indexOf('</Rights>');
@@ -237,7 +244,7 @@ suite('RoleXmlSerializer Tests', () => {
     };
 
     // Act
-    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+    const xml = RoleXmlSerializer.serializeToXml(roleModel, '2.20');
 
     // Assert
     assert.ok(xml.includes('<Role'));
@@ -252,7 +259,7 @@ suite('RoleXmlSerializer Tests', () => {
 
     // Act
     const parsed = await RoleXmlParser.parseRoleXml(testRolePath);
-    const serialized = RoleXmlSerializer.serializeToXml(parsed);
+    const serialized = RoleXmlSerializer.serializeToXml(parsed, '2.20');
     
     // Parse the serialized XML to verify it's valid
     // We can't directly compare XML strings due to formatting differences,
@@ -298,7 +305,7 @@ suite('RoleXmlSerializer Tests', () => {
     };
 
     // Act
-    const xml = RoleXmlSerializer.serializeToXml(roleModel);
+    const xml = RoleXmlSerializer.serializeToXml(roleModel, '2.20');
 
     // Assert - verify alphabetical order
     const appleIndex = xml.indexOf('<Name>Apple</Name>');

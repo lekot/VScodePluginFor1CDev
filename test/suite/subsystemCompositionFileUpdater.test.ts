@@ -76,7 +76,7 @@ suite('subsystemCompositionFileUpdater (B.3 file slice)', () => {
     await fs.promises.writeFile(
       fp,
       `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses">
   <Configuration uuid="u">
     <Properties><Name>X</Name></Properties>
     <ChildObjects/>
@@ -95,7 +95,7 @@ suite('subsystemCompositionFileUpdater (B.3 file slice)', () => {
     await fs.promises.writeFile(
       fp,
       `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses">
   <Configuration uuid="u">
     <Properties><Name>X</Name></Properties>
     <ChildObjects/>

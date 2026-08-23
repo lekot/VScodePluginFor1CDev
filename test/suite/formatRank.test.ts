@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   getFormatRank,
   normalizeFormatVersion,
@@ -8,9 +10,15 @@ import {
   hasTypeReductionMode,
   hasPalNamespace,
   DEFAULT_FORMAT_VERSION,
-  DEFAULT_FORMAT_RANK,
+  requireProjectWriteFormatProfile,
+  requireWriteFormatProfile,
 } from '../../src/utils/format/formatRank';
-import { normalizeMetaDataObjectRoot } from '../../src/utils/xml/metaDataObjectRootNormalizer';
+import {
+  normalizeMetaDataObjectRoot,
+  profileGeneratedMetadataXml,
+} from '../../src/utils/xml/metaDataObjectRootNormalizer';
+import { buildDesignerDimensionBlock } from '../../src/utils/xml/childObjectsMutator';
+import { MetadataType } from '../../src/models/treeNode';
 
 suite('FormatRank and Version Detection Tests', () => {
   test('getFormatRank calculates correct monotonic integer rank', () => {
@@ -37,7 +45,7 @@ suite('FormatRank and Version Detection Tests', () => {
     assert.strictEqual(normalizeFormatVersion('bad'), DEFAULT_FORMAT_VERSION);
   });
 
-  test('detectFormatVersionFromXml extracts format version and rank', () => {
+  test('detectFormatVersionFromXml extracts a root format version and never invents one', () => {
     const xml217 = '<?xml version="1.0"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.17"><Catalog/></MetaDataObject>';
     const info217 = detectFormatVersionFromXml(xml217);
     assert.strictEqual(info217.version, '2.17');
@@ -52,11 +60,23 @@ suite('FormatRank and Version Detection Tests', () => {
 
     const xmlNoVer = '<?xml version="1.0"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog/></MetaDataObject>';
     const infoNoVer = detectFormatVersionFromXml(xmlNoVer);
-    assert.strictEqual(infoNoVer.version, DEFAULT_FORMAT_VERSION);
-    assert.strictEqual(infoNoVer.rank, DEFAULT_FORMAT_RANK);
+    assert.strictEqual(infoNoVer.version, '');
+    assert.strictEqual(infoNoVer.rank, 0);
+    assert.strictEqual(infoNoVer.isVerified, false);
 
     const emptyInfo = detectFormatVersionFromXml('');
-    assert.strictEqual(emptyInfo.version, DEFAULT_FORMAT_VERSION);
+    assert.strictEqual(emptyInfo.version, '');
+    assert.strictEqual(emptyInfo.isVerified, false);
+
+    const innerOnly = '<MetaDataObject><Configuration version="2.21"/></MetaDataObject>';
+    assert.strictEqual(detectFormatVersionFromXml(innerOnly).version, '');
+    assert.throws(() => requireProjectWriteFormatProfile(innerOnly), /формат XML/);
+    for (const version of ['', '2.16', '2.22', 'bad', '2.x']) {
+      assert.throws(() => requireWriteFormatProfile(version), /формат XML/);
+      const info = detectFormatVersionFromXml(`<MetaDataObject version="${version}"/>`);
+      assert.strictEqual(info.isVerified, false, `${version} must not become a verified default`);
+      assert.notStrictEqual(info.version, DEFAULT_FORMAT_VERSION, `${version} must not become 2.17`);
+    }
   });
 
   test('buildCanonicalMetaDataObjectOpenTag generates canonical header for given version', () => {
@@ -71,7 +91,7 @@ suite('FormatRank and Version Detection Tests', () => {
 
     const tag221 = buildCanonicalMetaDataObjectOpenTag('2.21');
     assert.ok(tag221.includes('version="2.21"'));
-    assert.ok(tag221.includes('xmlns:pal="http://v8.1c.ru/8.5/data/ui/palette"'));
+    assert.ok(tag221.includes('xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'));
   });
 
   test('feature gate helpers correctly check format rank', () => {
@@ -99,7 +119,41 @@ suite('FormatRank and Version Detection Tests', () => {
 
     const normalized221 = normalizeMetaDataObjectRoot(rawXml, '2.21');
     assert.ok(normalized221.includes('version="2.21"'));
-    assert.ok(normalized221.includes('xmlns:pal="http://v8.1c.ru/8.5/data/ui/palette"'));
+    assert.ok(normalized221.includes('xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"'));
     assert.ok(normalized221.includes('<Name>Test</Name>'));
+  });
+
+  test('profiles generated template properties without rewriting unrelated XML', () => {
+    const generated = '<MetaDataObject><Properties><TypeReductionMode>TransformValues</TypeReductionMode><xr:TypeReductionMode>TransformValues</xr:TypeReductionMode><LineNumberLength>12</LineNumberLength><xr:LineNumberLength>12</xr:LineNumberLength><Name>Keep</Name></Properties></MetaDataObject>';
+    const v217 = profileGeneratedMetadataXml(generated, '2.17');
+    assert.ok(!v217.includes('TypeReductionMode'));
+    assert.ok(!v217.includes('LineNumberLength'));
+    assert.ok(v217.includes('<Name>Keep</Name>'));
+
+    const v218 = profileGeneratedMetadataXml(generated, '2.18');
+    assert.ok(v218.includes('TypeReductionMode'));
+    assert.ok(!v218.includes('LineNumberLength'));
+  });
+
+  test('profiles all known TypeReductionMode spellings out of a 2.17 Catalog template', async () => {
+    const templatePath = path.resolve(
+      __dirname,
+      '../../../resources/designerTemplates/Designer/Catalog.xml'
+    );
+    const template = await fs.promises.readFile(templatePath, 'utf8');
+    const profiled = profileGeneratedMetadataXml(template, '2.17');
+    assert.ok(!/<(?:xr:)?TypeReductionMode\b/.test(profiled));
+    assert.ok(!/<(?:xr:)?LineNumberLength\b/.test(profiled));
+  });
+
+  test('nested InformationRegister Dimension emits TypeReductionMode only from 2.18', () => {
+    const v217 = JSON.stringify(
+      buildDesignerDimensionBlock('Dimension217', MetadataType.InformationRegister, true, 217)
+    );
+    const v218 = JSON.stringify(
+      buildDesignerDimensionBlock('Dimension218', MetadataType.InformationRegister, true, 218)
+    );
+    assert.ok(!v217.includes('TypeReductionMode'));
+    assert.ok(v218.includes('TypeReductionMode'));
   });
 });

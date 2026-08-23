@@ -1,15 +1,14 @@
 /**
- * Format Version and Format Rank utilities for 1C Metadata XML.
+ * Format-version parsing and write profiles for Designer XML.
  *
- * The format version is determined by the 1C platform version that exported the configuration
- * (e.g. 8.3.20 -> 2.13, 8.3.24 -> 2.17, 8.3.25 -> 2.18, 8.3.27 -> 2.20, 8.5.1 -> 2.21).
- *
- * We use a monotonic numeric format rank (major * 100 + minor) to allow safe range checks:
- * e.g. `formatRank >= 220` for features introduced in 2.20 (8.3.27).
+ * Reading remains permissive. Mutations are not: a version must be present on
+ * the document root and belong to an explicitly supported write range. In
+ * particular, an absent version must never become 2.17 before a write.
  */
 
-export const FORMAT_VERIFIED_MIN = 217; // 8.3.24
-export const FORMAT_VERIFIED_MAX = 221; // 8.5.1
+export const FORMAT_VERIFIED_MIN = 217;
+export const FORMAT_VERIFIED_MAX = 221;
+/** Kept only for callers that intentionally need a sample version. */
 export const DEFAULT_FORMAT_VERSION = '2.17';
 export const DEFAULT_FORMAT_RANK = 217;
 
@@ -19,79 +18,122 @@ export interface FormatVersionInfo {
   isVerified: boolean;
 }
 
-/**
- * Calculates a monotonic integer rank from a format version string "N.NN" or "N.NN.N" (e.g. "2.17" -> 217, "2.20" -> 220, "2.20.1" -> 220).
- * Returns 0 if version is empty or malformed.
- */
+export interface WriteFormatProfile {
+  /** Exact root `version` value, including an optional patch component. */
+  version: string;
+  rank: 217 | 218 | 219 | 220 | 221;
+  hasTypeReductionMode: boolean;
+  hasLineNumberLength: boolean;
+  hasPalNamespace: boolean;
+}
+
+/** One user-facing error shared by UI commands and Agent/MCP operations. */
+export class UnsupportedMetadataFormatError extends Error {
+  readonly code = 'CDT_UNSUPPORTED_METADATA_WRITE_FORMAT';
+  readonly userMessage: string;
+
+  constructor(version: string | undefined, reason?: string) {
+    const shownVersion = version?.trim() || 'не указан';
+    const suffix = reason ? ` (${reason})` : '';
+    super(
+      `Запись метаданных остановлена: формат XML «${shownVersion}» не поддерживается. ` +
+      'Поддерживается запись только для форматов 2.17–2.21; обновите расширение или откройте конфигурацию в совместимой версии платформы.' +
+      suffix
+    );
+    this.name = 'UnsupportedMetadataFormatError';
+    this.userMessage = this.message;
+  }
+}
+
+/** Calculates a monotonic integer rank from `N.NN` or `N.NN.N`; malformed values yield zero. */
 export function getFormatRank(versionStr: string | undefined | null): number {
-  if (!versionStr) {
-    return 0;
-  }
+  if (!versionStr) { return 0; }
   const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(versionStr.trim());
-  if (!match) {
-    return 0;
-  }
-  const major = parseInt(match[1], 10);
-  const minor = parseInt(match[2], 10);
-  return major * 100 + minor;
+  if (!match) { return 0; }
+  return parseInt(match[1], 10) * 100 + parseInt(match[2], 10);
 }
 
 /**
- * Normalizes a format version string. If invalid, returns the default format version ("2.17").
+ * Legacy normalization helper. Mutation paths must call
+ * {@link requireWriteFormatProfile} instead.
  */
 export function normalizeFormatVersion(versionStr: string | undefined | null): string {
-  const rank = getFormatRank(versionStr);
-  if (rank === 0) {
-    return DEFAULT_FORMAT_VERSION;
-  }
-  return versionStr!.trim();
+  return getFormatRank(versionStr) === 0 ? DEFAULT_FORMAT_VERSION : versionStr!.trim();
 }
 
-/**
- * Extracts the format version from an XML string (e.g. Configuration.xml or object XML header).
- * Looks for `<MetaDataObject ... version="N.NN">` or root element `version="N.NN"`.
- */
+function getRootOpeningTag(xmlContent: string): string | undefined {
+  // XML declaration and whitespace may precede the root. Do not search the
+  // full body: a nested `version` is never project-format evidence.
+  const withoutDeclaration = xmlContent.replace(/^\s*<\?xml\s+[\s\S]*?\?>\s*/i, '');
+  return /^<([A-Za-z_][A-Za-z0-9_.:-]*)\b[^>]*>/i.exec(withoutDeclaration)?.[0];
+}
+
+function extractVersionFromRoot(xmlContent: string, expectedRoot?: string): string | undefined {
+  const openTag = getRootOpeningTag(xmlContent);
+  if (!openTag) { return undefined; }
+  if (expectedRoot) {
+    const rootMatch = /<([A-Za-z_][A-Za-z0-9_.:-]*)\b/i.exec(openTag);
+    if (rootMatch?.[1]?.split(':').pop() !== expectedRoot) { return undefined; }
+  }
+  return /\bversion\s*=\s*["'](\d+\.\d+(?:\.\d+)?)["']/i.exec(openTag)?.[1];
+}
+
+/** Reads a format only from the XML root and never invents a default. */
 export function detectFormatVersionFromXml(xmlContent: string): FormatVersionInfo {
-  if (!xmlContent) {
-    return {
-      version: DEFAULT_FORMAT_VERSION,
-      rank: DEFAULT_FORMAT_RANK,
-      isVerified: true,
-    };
+  const version = extractVersionFromRoot(xmlContent);
+  const rank = getFormatRank(version);
+  return { version: version ?? '', rank, isVerified: rank >= FORMAT_VERIFIED_MIN && rank <= FORMAT_VERIFIED_MAX };
+}
+
+/** Strict project detector: only root `<MetaDataObject version="…">` is valid evidence. */
+export function detectConfigurationFormatVersion(xmlContent: string): FormatVersionInfo {
+  const version = extractVersionFromRoot(xmlContent, 'MetaDataObject');
+  const rank = getFormatRank(version);
+  return { version: version ?? '', rank, isVerified: rank >= FORMAT_VERIFIED_MIN && rank <= FORMAT_VERIFIED_MAX };
+}
+
+/** Converts an exact version to a write profile or throws before any mutation is planned. */
+export function requireWriteFormatProfile(version: string | undefined | null): WriteFormatProfile {
+  const normalized = version?.trim();
+  const rank = getFormatRank(normalized);
+  if (!normalized || !/^2\.\d+(?:\.\d+)?$/.test(normalized) || rank < FORMAT_VERIFIED_MIN || rank > FORMAT_VERIFIED_MAX) {
+    throw new UnsupportedMetadataFormatError(normalized);
   }
-
-  const match = /<MetaDataObject\b[^>]*\bversion=["'](\d+\.\d+(?:\.\d+)?)["']/i.exec(xmlContent)
-    || /<[A-Za-z0-9_:]+\b[^>]*\bversion=["'](\d+\.\d+(?:\.\d+)?)["']/i.exec(xmlContent);
-
-  if (match && match[1]) {
-    const version = match[1];
-    const rank = getFormatRank(version);
-    return {
-      version,
-      rank,
-      isVerified: rank >= FORMAT_VERIFIED_MIN && rank <= FORMAT_VERIFIED_MAX,
-    };
-  }
-
   return {
-    version: DEFAULT_FORMAT_VERSION,
-    rank: DEFAULT_FORMAT_RANK,
-    isVerified: true,
+    version: normalized,
+    rank: rank as WriteFormatProfile['rank'],
+    hasTypeReductionMode: rank >= 218,
+    hasLineNumberLength: rank >= 220,
+    hasPalNamespace: rank >= 221,
   };
 }
 
-/**
- * Constructs the canonical opening <MetaDataObject ...> tag with standard namespaces and the given format version.
- */
+/** Resolves a profile from Configuration.xml, fail-closed. */
+export function requireProjectWriteFormatProfile(configurationXml: string): WriteFormatProfile {
+  const info = detectConfigurationFormatVersion(configurationXml);
+  if (!info.version) {
+    throw new UnsupportedMetadataFormatError(undefined, 'в корне Configuration.xml нет корректного атрибута version');
+  }
+  return requireWriteFormatProfile(info.version);
+}
+
+/** Resolves a profile from any existing versioned child document, fail-closed. */
+export function requireDocumentWriteFormatProfile(xml: string): WriteFormatProfile {
+  const info = detectFormatVersionFromXml(xml);
+  if (!info.version) {
+    throw new UnsupportedMetadataFormatError(undefined, 'в корне XML-документа нет корректного атрибута version');
+  }
+  return requireWriteFormatProfile(info.version);
+}
+
+/** Constructs the canonical opening MetaDataObject tag for an already validated write profile. */
 export function buildCanonicalMetaDataObjectOpenTag(
-  version: string = DEFAULT_FORMAT_VERSION,
+  version: string,
   options?: { hasPalNamespace?: boolean }
 ): string {
-  const normVersion = normalizeFormatVersion(version);
-  const rank = getFormatRank(normVersion);
-  const includePal = options?.hasPalNamespace ?? (rank >= 221);
-
-  const palAttr = includePal ? ' xmlns:pal="http://v8.1c.ru/8.5/data/ui/palette"' : '';
+  const profile = requireWriteFormatProfile(version);
+  const includePal = options?.hasPalNamespace ?? profile.hasPalNamespace;
+  const palAttr = includePal ? ' xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"' : '';
 
   return (
     `<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"` +
@@ -112,7 +154,7 @@ export function buildCanonicalMetaDataObjectOpenTag(
     ` xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"` +
     ` xmlns:xs="http://www.w3.org/2001/XMLSchema"` +
     ` xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"` +
-    ` version="${normVersion}">`
+    ` version="${profile.version}">`
   );
 }
 

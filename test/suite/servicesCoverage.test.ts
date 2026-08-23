@@ -93,7 +93,7 @@ suite('services coverage helpers', function () {
 
     test('injectInternalInfoIntoMetadataXml does not inject InternalInfo for Role (Configurator/EDT shape)', () => {
       const source = [
-        '<MetaDataObject>',
+        '<MetaDataObject version="2.20">',
         '\t<Role uuid="00000000-0000-0000-0000-000000000001">',
         '\t\t<Properties>',
         '\t\t\t<Name>TestRole</Name>',
@@ -108,7 +108,7 @@ suite('services coverage helpers', function () {
 
     test('injectInternalInfoIntoMetadataXml does not inject InternalInfo for CommonModule', () => {
       const source = [
-        '<MetaDataObject>',
+        '<MetaDataObject version="2.20">',
         '\t<CommonModule uuid="00000000-0000-0000-0000-000000000002">',
         '\t\t<Properties>',
         '\t\t\t<Name>TestModule</Name>',
@@ -123,7 +123,7 @@ suite('services coverage helpers', function () {
 
     test('injectInternalInfoIntoMetadataXml does not inject InternalInfo for CommonForm (ibcmd)', () => {
       const source = [
-        '<MetaDataObject>',
+        '<MetaDataObject version="2.20">',
         '\t<CommonForm uuid="00000000-0000-0000-0000-000000000003">',
         '\t\t<Properties>',
         '\t\t\t<Name>F</Name>',
@@ -140,9 +140,9 @@ suite('services coverage helpers', function () {
   suite('metaDataObjectRootNormalizer', () => {
     test('normalizes MetaDataObject open tag to canonical one', () => {
       const source = '<MetaDataObject version="1.0"><Configuration/></MetaDataObject>';
-      const normalized = normalizeMetaDataObjectRoot(source);
+      const normalized = normalizeMetaDataObjectRoot(source, '2.20');
       assert.ok(normalized.includes('xmlns="http://v8.1c.ru/8.3/MDClasses"'));
-      assert.ok(normalized.includes('version="2.17"') || normalized.includes('version="1.0"'));
+      assert.ok(normalized.includes('version="2.20"'));
       assert.ok(normalized.endsWith('</MetaDataObject>'));
     });
 

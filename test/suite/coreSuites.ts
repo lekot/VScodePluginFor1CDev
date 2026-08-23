@@ -2,6 +2,7 @@ export const coreSuiteFiles: string[] = [
   'suite/epic36Block6Acceptance.test.js',
   'suite/designerParser.test.js',
   'suite/formatDetector.test.js',
+  'suite/formatRank.test.js',
   'suite/formEditorTitle.test.js',
   'suite/formatSamplesIntegrity.test.js',
   'suite/treeDataProvider.test.js',

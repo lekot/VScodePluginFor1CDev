@@ -99,9 +99,10 @@ function commonDimensionProps(
 /** Dimension for InformationRegister (and similar non-accumulation registers). */
 function buildInformationRegisterDimensionProperties(
   elementName: string,
-  isMaster: boolean
+  isMaster: boolean,
+  formatRank?: number
 ): Record<string, unknown> {
-  return commonDimensionProps(elementName, {
+  const properties: Record<string, unknown> = {
     FillFromFillingValue: false,
     FillValue: { '@_xsi:nil': 'true' },
     Master: isMaster,
@@ -110,8 +111,11 @@ function buildInformationRegisterDimensionProperties(
     Indexing: 'DontIndex',
     FullTextSearch: 'Use',
     DataHistory: 'Use',
-    TypeReductionMode: 'TransformValues',
-  });
+  };
+  if ((formatRank ?? 221) >= 218) {
+    properties.TypeReductionMode = 'TransformValues';
+  }
+  return commonDimensionProps(elementName, properties);
 }
 
 /** Dimension for AccumulationRegister. */
@@ -155,7 +159,8 @@ function buildCalculationRegisterDimensionProperties(
 export function buildDesignerDimensionBlock(
   elementName: string,
   parentRootType: MetadataType | undefined,
-  isPrimaryDimension: boolean
+  isPrimaryDimension: boolean,
+  formatRank?: number
 ): Record<string, unknown> {
   const uuid = generateSimpleUuid();
   let props: Record<string, unknown>;
@@ -171,7 +176,7 @@ export function buildDesignerDimensionBlock(
       break;
     case MetadataType.InformationRegister:
     default:
-      props = buildInformationRegisterDimensionProperties(elementName, isPrimaryDimension);
+      props = buildInformationRegisterDimensionProperties(elementName, isPrimaryDimension, formatRank);
       break;
   }
   return {

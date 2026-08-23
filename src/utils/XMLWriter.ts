@@ -25,6 +25,10 @@ import { getDefaultPropertiesForRootTag } from '../constants/metadataDefaultValu
 import { MetadataType } from '../models/treeNode';
 import { injectInternalInfoIntoMetadataXml } from './xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './xml/metaDataObjectRootNormalizer';
+import {
+  requireDocumentWriteFormatProfile,
+  requireWriteFormatProfile,
+} from './format/formatRank';
 
 export type { WriteNestedElementOptions };
 export { ROOT_TAGS_WITHOUT_CHILDOBJECTS } from './xml/xmlChildObjectsService';
@@ -210,6 +214,7 @@ export class XMLWriter {
       Logger.error(`Failed to read file for writing: ${filePath}`, readError);
       throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${msg}`);
     }
+    requireDocumentWriteFormatProfile(xmlContent);
 
     let parsed: unknown;
     try {
@@ -254,13 +259,15 @@ export class XMLWriter {
     parentObjectName?: string
   ): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
+    const profile = requireDocumentWriteFormatProfile(xmlContent);
     const updated = addNestedElementInStructure(
       parsed,
       elementType,
       elementName,
       minimalProperties ?? {},
       parentRootType,
-      parentObjectName
+      parentObjectName,
+      profile.rank
     );
     await this.saveParsedWithBackup(filePath, xmlContent, updated, `Added ${elementType} '${elementName}' to ${filePath}`);
   }
@@ -277,12 +284,14 @@ export class XMLWriter {
     parentObjectName: string
   ): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
+    const profile = requireDocumentWriteFormatProfile(xmlContent);
     const updated = addAttributeToTabularSectionInParsed(
       parsed,
       tabularSectionName,
       columnName,
       parentRootType,
-      parentObjectName
+      parentObjectName,
+      profile.rank
     );
     await this.saveParsedWithBackup(
       filePath,
@@ -302,6 +311,7 @@ export class XMLWriter {
     columnName: string
   ): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
+    requireDocumentWriteFormatProfile(xmlContent);
     const updated = removeAttributeFromTabularSectionInParsed(parsed, tabularSectionName, columnName);
     await this.saveParsedWithBackup(
       filePath,
@@ -322,6 +332,7 @@ export class XMLWriter {
     newColumnName: string
   ): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
+    requireDocumentWriteFormatProfile(xmlContent);
     const updated = duplicateAttributeInTabularSectionInParsed(
       parsed,
       tabularSectionName,
@@ -350,6 +361,7 @@ export class XMLWriter {
     required = false
   ): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
+    requireDocumentWriteFormatProfile(xmlContent);
     const state = { changed: false };
     const updated = removeNestedElementInStructure(parsed, elementType, elementName, state);
     if (required && !state.changed) {
@@ -368,6 +380,7 @@ export class XMLWriter {
    */
   static async addDesignerFormReferenceToOwnerMetadata(filePath: string, formName: string): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
+    requireDocumentWriteFormatProfile(xmlContent);
     const state = { changed: false };
     const updated = addDesignerFormReferenceInParsed(parsed, formName, state);
     if (!state.changed) {
@@ -387,6 +400,7 @@ export class XMLWriter {
    */
   static async removeDesignerFormFromOwnerMetadata(filePath: string, formName: string): Promise<void> {
     const { xmlContent, parsed } = await this.readUtf8AndParse(filePath);
+    requireDocumentWriteFormatProfile(xmlContent);
     const state = { changed: false };
     const updated = removeDesignerFormFromOwnerInParsed(parsed, formName, state);
     if (!state.changed) {
@@ -460,8 +474,9 @@ export class XMLWriter {
     filePath: string,
     rootTag: string,
     elementName: string,
-    targetVersion?: string
+    targetVersion: string
   ): Promise<void> {
+    const profile = requireWriteFormatProfile(targetVersion);
     const uuid = this.generateSimpleUuid();
     const defaultProps = getDefaultPropertiesForRootTag(rootTag);
     const defaultPropsLines = this.formatDefaultPropertiesAsXml(defaultProps);
@@ -482,7 +497,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
 </MetaDataObject>
 `;
     content = injectInternalInfoIntoMetadataXml(content, rootTag, elementName);
-    content = normalizeMetaDataObjectRoot(content, targetVersion);
+    content = normalizeMetaDataObjectRoot(content, profile.version);
     await fs.promises.writeFile(filePath, content, 'utf-8');
     Logger.info(`Created minimal ${rootTag} file ${filePath}`);
   }
@@ -702,6 +717,7 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
       Logger.error(`Failed to read file for writing: ${filePath}`, readError);
       throw new XmlReadError(`Unable to read file for updating: ${filePath}. ${msg}`);
     }
+    requireDocumentWriteFormatProfile(xmlContent);
 
     let xmlString: string;
     try {

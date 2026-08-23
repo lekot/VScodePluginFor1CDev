@@ -72,7 +72,8 @@ export function buildMinimalNestedElement(
   elementName: string,
   minimalProperties: Record<string, unknown>,
   parentRootType?: MetadataType,
-  parentObjectName?: string
+  parentObjectName?: string,
+  formatRank?: number
 ): Record<string, unknown> {
   const cleanProps = { ...minimalProperties };
   const primaryDimension =
@@ -86,7 +87,7 @@ export function buildMinimalNestedElement(
     return buildDesignerEnumValueBlock(elementName);
   }
   if (elementType === 'Dimension') {
-    return buildDesignerDimensionBlock(elementName, parentRootType, primaryDimension);
+    return buildDesignerDimensionBlock(elementName, parentRootType, primaryDimension, formatRank);
   }
   if (elementType === 'Resource') {
     return buildDesignerResourceBlock(elementName, parentRootType, parentObjectName);
@@ -474,7 +475,8 @@ export function addNestedElementInStructure(
   elementName: string,
   minimalProperties: Record<string, unknown>,
   parentRootType?: MetadataType,
-  parentObjectName?: string
+  parentObjectName?: string,
+  formatRank?: number
 ): unknown {
   const usesRootMetadataChildObjects =
     elementType === 'Attribute' ||
@@ -488,7 +490,8 @@ export function addNestedElementInStructure(
     elementName,
     minimalProperties,
     parentRootType,
-    parentObjectName
+    parentObjectName,
+    formatRank
   );
 
   // Special handling for ChildObjects elements: only add to the root metadata object's ChildObjects,

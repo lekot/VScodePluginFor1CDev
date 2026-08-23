@@ -323,7 +323,7 @@ suite('XMLWriter', () => {
 
     test('creates Catalog with default properties', async () => {
       const catalogPath = path.join(tmpDir, 'TestCatalog.xml');
-      await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'TestCatalog');
+      await XMLWriter.createMinimalElementFile(catalogPath, 'Catalog', 'TestCatalog', '2.20');
       assert.ok(fs.existsSync(catalogPath));
       const properties = await XMLWriter.readProperties(catalogPath);
       assert.strictEqual(properties.Name, 'TestCatalog');
@@ -335,7 +335,7 @@ suite('XMLWriter', () => {
 
     test('creates Document with default properties', async () => {
       const docPath = path.join(tmpDir, 'TestDocument.xml');
-      await XMLWriter.createMinimalElementFile(docPath, 'Document', 'TestDocument');
+      await XMLWriter.createMinimalElementFile(docPath, 'Document', 'TestDocument', '2.20');
       assert.ok(fs.existsSync(docPath));
       const properties = await XMLWriter.readProperties(docPath);
       assert.strictEqual(properties.Name, 'TestDocument');
@@ -345,7 +345,7 @@ suite('XMLWriter', () => {
 
     test('creates CommonModule without ChildObjects (1C Configurator leaf shape)', async () => {
       const cmPath = path.join(tmpDir, 'TestCommonModule.xml');
-      await XMLWriter.createMinimalElementFile(cmPath, 'CommonModule', 'TestCommonModule');
+      await XMLWriter.createMinimalElementFile(cmPath, 'CommonModule', 'TestCommonModule', '2.20');
       assert.ok(fs.existsSync(cmPath));
       const raw = await fs.promises.readFile(cmPath, 'utf-8');
       assert.ok(!raw.includes('<ChildObjects'), 'CommonModule must not emit ChildObjects');
@@ -355,7 +355,7 @@ suite('XMLWriter', () => {
 
     test('creates Role without ChildObjects (EDT / Configurator readable shape)', async () => {
       const rolePath = path.join(tmpDir, 'TestRole.xml');
-      await XMLWriter.createMinimalElementFile(rolePath, 'Role', 'TestRole');
+      await XMLWriter.createMinimalElementFile(rolePath, 'Role', 'TestRole', '2.20');
       assert.ok(fs.existsSync(rolePath));
       const raw = await fs.promises.readFile(rolePath, 'utf-8');
       assert.ok(!raw.includes('<ChildObjects'), 'Role must not emit ChildObjects');
@@ -365,7 +365,7 @@ suite('XMLWriter', () => {
 
     test('creates SessionParameter without ChildObjects (docs/1c-config-objects-spec.md)', async () => {
       const p = path.join(tmpDir, 'TestSessionParameter.xml');
-      await XMLWriter.createMinimalElementFile(p, 'SessionParameter', 'Параметр1');
+      await XMLWriter.createMinimalElementFile(p, 'SessionParameter', 'Параметр1', '2.20');
       const raw = await fs.promises.readFile(p, 'utf-8');
       assert.ok(!raw.includes('<ChildObjects'), 'SessionParameter must not emit ChildObjects');
     });
@@ -574,7 +574,7 @@ suite('XMLWriter', () => {
 
     test('escapes special XML characters in element name', async () => {
       const p = path.join(tmpDir, 'SpecialName.xml');
-      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'Test&Name<>');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'Test&Name<>', '2.20');
       const raw = await fs.promises.readFile(p, 'utf-8');
       assert.ok(raw.includes('Test&amp;Name&lt;&gt;'), 'Ampersand and angle brackets must be escaped');
       assert.ok(!raw.includes('<Name>Test&Name'), 'Unescaped & must not appear inside <Name>');
@@ -582,28 +582,28 @@ suite('XMLWriter', () => {
 
     test('handles Unicode (Cyrillic) element name', async () => {
       const p = path.join(tmpDir, 'CyrillicCatalog.xml');
-      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'ТестовыйКаталог');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'ТестовыйКаталог', '2.20');
       const properties = await XMLWriter.readProperties(p);
       assert.strictEqual(properties.Name, 'ТестовыйКаталог');
     });
 
     test('created file has valid XML declaration', async () => {
       const p = path.join(tmpDir, 'XmlDeclTest.xml');
-      await XMLWriter.createMinimalElementFile(p, 'Document', 'DocTest');
+      await XMLWriter.createMinimalElementFile(p, 'Document', 'DocTest', '2.20');
       const raw = await fs.promises.readFile(p, 'utf-8');
       assert.ok(raw.startsWith('<?xml version="1.0"'), 'File must start with XML declaration');
     });
 
     test('created Catalog file contains ChildObjects', async () => {
       const p = path.join(tmpDir, 'WithChildObjects.xml');
-      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'WithChildren');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'WithChildren', '2.20');
       const raw = await fs.promises.readFile(p, 'utf-8');
       assert.ok(raw.includes('<ChildObjects'), 'Catalog must emit ChildObjects');
     });
 
     test('created file uuid is embedded in root tag', async () => {
       const p = path.join(tmpDir, 'UuidTest.xml');
-      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'UuidTest');
+      await XMLWriter.createMinimalElementFile(p, 'Catalog', 'UuidTest', '2.20');
       const raw = await fs.promises.readFile(p, 'utf-8');
       assert.match(raw, /uuid="[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i);
     });
@@ -802,7 +802,11 @@ suite('XMLWriter', () => {
       // (lines 519-523) and the outer re-wrap path (lines 535-541)
       const badXmlPath = path.join(tmpDir, 'bad-nested.xml');
       // XML with a malformed attribute value (unclosed quote) — triggers parse error
-      fs.writeFileSync(badXmlPath, '<root attr="val</root>', 'utf-8');
+      fs.writeFileSync(
+        badXmlPath,
+        '<MetaDataObject version="2.20"><Catalog attr="val</Catalog></MetaDataObject>',
+        'utf-8'
+      );
 
       await assert.rejects(
         () => XMLWriter.writeNestedElementProperties(
