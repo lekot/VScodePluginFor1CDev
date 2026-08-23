@@ -48,14 +48,40 @@ export interface CfeCreateProjectOutcome {
   readonly recoveryJournalPath?: string;
 }
 
+/** Identifies exactly one root object in the main configuration to borrow. */
+export interface CfeBorrowObjectRequest {
+  readonly extensionConfigurationId: ConfigurationId | string;
+  /** Root metadata path in the form `Catalog.Products`. Mutually exclusive with sourceUuid. */
+  readonly sourceDotPath?: string;
+  /** UUID of a root metadata object in the linked main configuration. Mutually exclusive with sourceDotPath. */
+  readonly sourceUuid?: string;
+}
+
+export interface CfeBorrowObjectOutcome {
+  readonly status: 'borrowed' | 'already-borrowed';
+  readonly type: string;
+  readonly name: string;
+  readonly sourceUuid: string;
+  /** Extension-relative Designer path, never an absolute workspace path. */
+  readonly objectPath: string;
+  readonly localUuid: string;
+}
+
+export type CfeProjectErrorCode =
+  | 'CFE_PROJECT_NOT_FOUND'
+  | 'CFE_RELATION_AMBIGUOUS'
+  | 'CFE_UNSUPPORTED_FORMAT'
+  | 'CFE_SOURCE_CHANGED'
+  | 'CFE_SOURCE_OBJECT_NOT_FOUND'
+  | 'CFE_OWNERSHIP_INVALID'
+  | 'CFE_ADOPTED_OPERATION_REQUIRED'
+  | 'CFE_DEPENDENCY_UNSUPPORTED'
+  | 'CFE_VALIDATION_FAILED'
+  | 'CFE_OUTCOME_UNKNOWN';
+
 export class CfeProjectError extends Error {
   constructor(
-    readonly code:
-      | 'CFE_PROJECT_NOT_FOUND'
-      | 'CFE_RELATION_AMBIGUOUS'
-      | 'CFE_UNSUPPORTED_FORMAT'
-      | 'CFE_VALIDATION_FAILED'
-      | 'CFE_OUTCOME_UNKNOWN',
+    readonly code: CfeProjectErrorCode,
     message: string,
   ) {
     super(message);

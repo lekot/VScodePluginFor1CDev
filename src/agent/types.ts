@@ -105,6 +105,19 @@ export interface ObjectInfo {
     type: string;
     name: string;
     filePath: string;
+    /** Present only when the selected configuration is a CFE project. */
+    ownership?: 'own' | 'adopted';
+    /** UUID of the linked base object; present for adopted CFE objects only. */
+    sourceUuid?: string;
+}
+
+/** Read result for metadata properties, optionally enriched by CFE ownership. */
+export interface GetPropertiesResult {
+    properties: Record<string, unknown>;
+    /** Present only when the selected configuration is a CFE project. */
+    ownership?: 'own' | 'adopted';
+    /** UUID of the linked base object; present for adopted CFE objects only. */
+    sourceUuid?: string;
 }
 
 export interface ResolvedAgentPath {

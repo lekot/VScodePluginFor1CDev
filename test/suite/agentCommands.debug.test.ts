@@ -82,8 +82,8 @@ suite('registerAgentCommands — debug commands registration', () => {
         const after = ctx.subscriptions.length;
         // 12 CRUD + 2 type + 15 debug + 2 binding + 1 deploy + 4 agent deploy ops + 4 command interface + 4 predefined cot ops
         // + listConfigurations + (5 forms commands + 1 formsOutputChannel) + 4 skd commands + 7 xdto commands + 6 support commands + 2 external processor commands
-        // + 4 CFE project commands
-        assert.strictEqual(after - before, 74, `Ожидалось 74 подписки, получено ${after - before}`);
+        // + 5 CFE project commands
+        assert.strictEqual(after - before, 75, `Ожидалось 75 подписок, получено ${after - before}`);
     });
 
     test('debug-команды не регистрируются в package.json contributes (только programmatic)', () => {

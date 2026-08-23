@@ -20,7 +20,7 @@ interface PackageManifest {
   readonly capabilities?: { readonly virtualWorkspaces?: { readonly supported?: boolean } };
   readonly contributes: {
     readonly views: { readonly explorer: unknown };
-    readonly commands: ReadonlyArray<{ readonly command: string }>;
+    readonly commands: ReadonlyArray<{ readonly command: string; readonly title?: string; readonly category?: string }>;
     readonly menus: {
       readonly commandPalette: ReadonlyArray<{ readonly command: string; readonly when?: string }>;
       readonly 'view/item/context': unknown;
@@ -90,9 +90,20 @@ suite('extension manifest contracts', () => {
         .filter((command: string) => command.startsWith('1c-metadata-tree.agent.')),
     );
 
-    assert.strictEqual(registered.size, 73, 'Update the documented Agent API count intentionally.');
-    assert.strictEqual(contributed.size, 73, 'Manifest must contribute exactly the documented Agent API.');
+    assert.strictEqual(registered.size, 74, 'Update the documented Agent API count intentionally.');
+    assert.strictEqual(contributed.size, 74, 'Manifest must contribute exactly the documented Agent API.');
     assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
+  });
+
+  test('contributes the CFE borrow Agent command with its stable title', () => {
+    const command = readPackageJson().contributes.commands.find(
+      (entry) => entry.command === '1c-metadata-tree.agent.cfe.borrowObject',
+    );
+    assert.deepStrictEqual(command, {
+      command: '1c-metadata-tree.agent.cfe.borrowObject',
+      title: 'Agent: Заимствовать объект в CFE',
+      category: 'CDT 41 Agent',
+    });
   });
 
   test('shows CFE project creation only for a base configuration root', () => {

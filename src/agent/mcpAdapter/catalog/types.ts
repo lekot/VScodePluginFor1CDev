@@ -29,6 +29,14 @@ export const WRITE_CLOSED: McpToolAnnotations = {
   openWorldHint: false,
 };
 
+/** A closed-world write whose repeated identical request is safe and converges. */
+export const WRITE_CLOSED_IDEMPOTENT: McpToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
 export const READ_OPEN: McpToolAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,

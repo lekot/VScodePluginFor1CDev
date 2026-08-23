@@ -21,6 +21,13 @@ import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { MetadataType } from '../models/treeNode';
 import { validateElementName } from '../utils/elementNameValidator';
 import { assertPathWithinRoot } from '../services/configurationSession/pathBoundary';
+import {
+    assertCfeGenericCreateAllowed,
+    assertCfeGenericMutationAllowed,
+    CfeFilesystemMutationPolicyResolver,
+} from '../extensionSupport/cfeProject/mutationPolicy';
+import { CfeOwnershipError, type CfeObjectIdentity } from '../extensionSupport/cfeProject/ownership';
+import { getMetadataTypeDescriptorByRootTag } from '../constants/metadataTypeDescriptors';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import type { MutationExpectation, MutationPlan, MutationStep } from '../services/configurationSession/mutationPlan';
 
@@ -37,6 +44,7 @@ import type {
     GetYamlParams,
     ListObjectsParams,
     ObjectInfo,
+    GetPropertiesResult,
     GetPropertiesParams,
     AddAttributeParams,
     AddTabularSectionParams,
@@ -59,6 +67,16 @@ const configParser = new XMLParser({
     textNodeName: '#text',
 });
 
+const cfeReadPolicyResolver = new CfeFilesystemMutationPolicyResolver();
+
+function mutationFailure(error: unknown): AgentResult<never> {
+    return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof CfeOwnershipError ? { code: error.code } : {}),
+    };
+}
+
 // ─── AgentOperations ────────────────────────────────────────────────────────
 
 export class AgentOperations {
@@ -78,6 +96,7 @@ export class AgentOperations {
             throw new Error('Parameter name is required and cannot be empty.');
         }
         const trimmedName = name.trim();
+        await assertCfeGenericCreateAllowed(this.configRootPath, trimmedName, { isRootObjectCreate: true });
         const typeValidation = validateElementName(type, []);
         if (typeValidation) { throw new Error(`Invalid type "${type}": ${typeValidation}`); }
         const rules = !TEMPLATE_ONLY_TYPES.has(type) ? rulesRegistry.get(type) : undefined;
@@ -142,6 +161,7 @@ export class AgentOperations {
     /** Builds the serializable multi-file delete plan without applying filesystem effects. */
     async planDeleteObject(params: DeleteObjectParams): Promise<MutationPlan<AgentResult>> {
         const { rootTag, objectName, filePath } = await this.resolveContainedAgentPath(params.path);
+        await assertCfeGenericMutationAllowed(filePath, 'delete');
         const fileExpected = await expectationForPath(filePath);
         if (fileExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
         const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ?? `${rootTag}s`;
@@ -184,6 +204,7 @@ export class AgentOperations {
             );
         }
         const { rootTag, objectName, filePath } = resolved;
+        await assertCfeGenericMutationAllowed(filePath, 'rename');
         const sourceExpected = await expectationForPath(filePath);
         if (sourceExpected.state !== 'file') { throw new Error(`Object file not found: ${filePath}`); }
         const folderName = MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ?? `${rootTag}s`;
@@ -251,6 +272,7 @@ export class AgentOperations {
                 return { success: false, error: 'Параметр name обязателен и не может быть пустым.' };
             }
             const trimmedName = name.trim();
+            await assertCfeGenericCreateAllowed(this.configRootPath, trimmedName, { isRootObjectCreate: true });
             const typeValidation = validateElementName(type, []);
             if (typeValidation) {
                 return { success: false, error: `Некорректный type "${type}": ${typeValidation}` };
@@ -332,10 +354,7 @@ export class AgentOperations {
 
             return { success: true, data: { filePath: newFilePath } };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -386,10 +405,7 @@ export class AgentOperations {
 
             return { success: true, data: { yaml } };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -397,7 +413,7 @@ export class AgentOperations {
     // getProperties
     // ─────────────────────────────────────────────────────────────────────────
 
-    async getProperties(params: GetPropertiesParams): Promise<AgentResult<{ properties: Record<string, unknown> }>> {
+    async getProperties(params: GetPropertiesParams): Promise<AgentResult<GetPropertiesResult>> {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
@@ -414,12 +430,10 @@ export class AgentOperations {
             } else {
                 properties = await XMLWriter.readProperties(filePath);
             }
-            return { success: true, data: { properties } };
+            const cfeFields = await readCfeOwnershipForRead(this.configRootPath, filePath);
+            return { success: true, data: { properties, ...cfeFields } };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -454,6 +468,7 @@ export class AgentOperations {
                 return { success: true, data: { objects: [] } };
             }
 
+            const cfePolicy = await cfeReadPolicyResolver.resolve(this.configRootPath);
             const filterType = params.type;
             const normalizedQuery = params.query?.trim().toLocaleLowerCase();
             const objects: ObjectInfo[] = [];
@@ -472,18 +487,18 @@ export class AgentOperations {
                         continue;
                     }
 
-                    const typeFolderName = `${tagName}s`;
+                    const typeFolderName = getMetadataTypeDescriptorByRootTag(tagName)?.designerFolder ?? `${tagName}s`;
                     const filePath = path.join(this.configRootPath, typeFolderName, `${objectName}.xml`);
-                    objects.push({ type: tagName, name: objectName, filePath });
+                    const cfeFields = cfePolicy
+                        ? ownershipFields(await cfeReadPolicyResolver.resolveObjectIdentity(cfePolicy, filePath))
+                        : {};
+                    objects.push({ type: tagName, name: objectName, filePath, ...cfeFields });
                 }
             }
 
             return { success: true, data: { objects } };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -495,6 +510,7 @@ export class AgentOperations {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
+            await assertCfeGenericMutationAllowed(filePath, 'delete');
 
             try {
                 await fs.promises.access(filePath);
@@ -515,10 +531,7 @@ export class AgentOperations {
 
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -535,6 +548,7 @@ export class AgentOperations {
 
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
+            await assertCfeGenericMutationAllowed(filePath, 'delete');
 
             try {
                 await fs.promises.access(filePath);
@@ -545,10 +559,7 @@ export class AgentOperations {
             await XMLWriter.removeNestedElement(filePath, 'TabularSection', resolved.nestedName!);
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -560,6 +571,7 @@ export class AgentOperations {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { rootTag, objectName, filePath } = resolved;
+            await assertCfeGenericMutationAllowed(filePath, 'delete');
 
             const folderName =
                 MetadataTypeMapper.getDesignerFolderIdForMetadataType(rootTag as MetadataType) ??
@@ -586,10 +598,7 @@ export class AgentOperations {
 
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -601,6 +610,7 @@ export class AgentOperations {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { rootTag, objectName, filePath } = resolved;
+            await assertCfeGenericMutationAllowed(filePath, 'rename');
 
             try {
                 await fs.promises.access(filePath);
@@ -653,10 +663,7 @@ export class AgentOperations {
 
             return { success: true, data: { filePath: newFilePath } };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -668,6 +675,10 @@ export class AgentOperations {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath, rootTag, objectName } = resolved;
+            await assertCfeGenericCreateAllowed(filePath, params.name, {
+                isRootObjectCreate: false,
+                ownerMetadataXmlPath: filePath,
+            });
 
             try {
                 await fs.promises.access(filePath);
@@ -685,10 +696,7 @@ export class AgentOperations {
             await XMLWriter.addNestedElement(filePath, 'Attribute', params.name.trim(), {}, rootTag as MetadataType, objectName);
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -700,6 +708,10 @@ export class AgentOperations {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath, rootTag, objectName } = resolved;
+            await assertCfeGenericCreateAllowed(filePath, params.name, {
+                isRootObjectCreate: false,
+                ownerMetadataXmlPath: filePath,
+            });
 
             try {
                 await fs.promises.access(filePath);
@@ -717,10 +729,7 @@ export class AgentOperations {
             await XMLWriter.addNestedElement(filePath, 'TabularSection', params.name.trim(), {}, rootTag as MetadataType, objectName);
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -739,6 +748,10 @@ export class AgentOperations {
             }
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath, rootTag, objectName, nestedName } = resolved;
+            await assertCfeGenericCreateAllowed(filePath, params.name, {
+                isRootObjectCreate: false,
+                ownerMetadataXmlPath: filePath,
+            });
 
             try {
                 await fs.promises.access(filePath);
@@ -756,10 +769,7 @@ export class AgentOperations {
             await XMLWriter.addAttributeToTabularSection(filePath, nestedName!, params.name.trim(), rootTag as MetadataType, objectName);
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -771,6 +781,7 @@ export class AgentOperations {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
+            await assertCfeGenericMutationAllowed(filePath, 'update');
 
             try {
                 await fs.promises.access(filePath);
@@ -791,10 +802,7 @@ export class AgentOperations {
             }
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -896,6 +904,7 @@ export class AgentOperations {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { filePath } = resolved;
+            await assertCfeGenericMutationAllowed(filePath, 'update');
 
             try {
                 await fs.promises.access(filePath);
@@ -964,10 +973,7 @@ export class AgentOperations {
 
             return { success: true };
         } catch (err) {
-            return {
-                success: false,
-                error: err instanceof Error ? err.message : String(err),
-            };
+            return mutationFailure(err);
         }
     }
 
@@ -976,6 +982,23 @@ export class AgentOperations {
         await assertPathWithinRoot(this.configRootPath, resolved.filePath);
         return resolved;
     }
+}
+
+async function readCfeOwnershipForRead(
+    configurationRoot: string,
+    metadataXmlPath: string,
+): Promise<Pick<ObjectInfo, 'ownership' | 'sourceUuid'>> {
+    const policy = await cfeReadPolicyResolver.resolve(configurationRoot);
+    return policy
+        ? ownershipFields(await cfeReadPolicyResolver.resolveObjectIdentity(policy, metadataXmlPath))
+        : {};
+}
+
+function ownershipFields(identity: CfeObjectIdentity): Pick<ObjectInfo, 'ownership' | 'sourceUuid'> {
+    return {
+        ownership: identity.ownership,
+        ...(identity.sourceUuid ? { sourceUuid: identity.sourceUuid } : {}),
+    };
 }
 
 // ─── Хелпер: извлечь ChildObjects из распарсенного Configuration.xml ────────

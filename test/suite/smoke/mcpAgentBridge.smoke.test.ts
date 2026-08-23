@@ -65,7 +65,7 @@ suite('Smoke: production MCP Agent Bridge', () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      assert.strictEqual(listed.tools.length, 73);
+      assert.strictEqual(listed.tools.length, 74);
       assert.deepStrictEqual(
         listed.tools.map((tool) => tool.name),
         MCP_TOOL_CATALOG.map((tool) => tool.name),

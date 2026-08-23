@@ -13,6 +13,7 @@ import { validateProperties } from './propertiesValidation';
 import type { WebviewMessage, ExtensionMessage } from './propertiesWebviewTypes';
 import { CONTENT_EDITOR_COMMANDS } from './propertiesWebviewContent';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { assertCfeGenericMutationAllowed } from '../extensionSupport/cfeProject/mutationPolicy';
 
 /**
  * Context passed to all message handlers — replaces class `this`.
@@ -528,6 +529,7 @@ export async function saveProperties(
   if (!targetFilePath) {
     throw new Error('Cannot save properties: no file path associated with this element');
   }
+  await assertCfeGenericMutationAllowed(targetFilePath, 'update');
 
   try {
     // Import XMLWriter dynamically to avoid circular dependencies

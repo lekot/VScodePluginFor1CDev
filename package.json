@@ -573,6 +573,11 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.cfe.borrowObject",
+        "title": "Agent: Заимствовать объект в CFE",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.createObject",
         "title": "Agent: Создать объект метаданных",
         "category": "CDT 41 Agent"
@@ -1518,7 +1523,7 @@
         },
         {
           "command": "1c-metadata-tree.borrowToExtension",
-          "when": "view == 1c-metadata-tree && viewItem =~ /^(Catalog|Document|Enum|Report|DataProcessor|InformationRegister|AccumulationRegister|CommonModule|Role|Subsystem|CommonForm|CommonTemplate|CommonPicture|CommonCommand|ExchangePlan|Constant|ChartOfCharacteristicTypes|ChartOfAccounts|AccountingRegister|ChartOfCalculationTypes|CalculationRegister|BusinessProcess|Task|DocumentJournal|FilterCriterion|SettingsStorage|FunctionalOption|ScheduledJob)$/",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^(Catalog|Document|Enum|CommonModule)$/",
           "group": "3_extension@0"
         },
         {

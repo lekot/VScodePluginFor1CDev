@@ -97,6 +97,13 @@ export const agentPath = z.string().refine((value) => isAgentPath(value), {
 export const rootObjectPath = z.string().refine((value) => isAgentPath(value, new Set([2])), {
   message: 'must be a valid RootTag.ObjectName path',
 });
+export const cfeSourceUuid = z.string().trim().regex(
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  'must be a non-zero UUID',
+).refine(
+  (value) => value.toLocaleLowerCase() !== '00000000-0000-0000-0000-000000000000',
+  { message: 'must be a non-zero UUID' },
+);
 export const attributePath = z.string().refine((value) => isAgentPath(value, new Set([4, 6])), {
   message: 'must be a valid 4- or 6-segment Agent API path',
 });

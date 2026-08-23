@@ -6,14 +6,22 @@ import { borrowObjectToExtension } from './borrowObjectCommand';
 import { navigateToMainObject, showRelatedObjects } from './extensionNavigator';
 import { showInterceptors } from './codeInterceptNavigator';
 import { Logger } from '../utils/logger';
+import type { WorkspaceRegistry } from '../services/configurationSession/WorkspaceRegistry';
+
+export interface RegisterExtensionCommandsOptions {
+  readonly context: vscode.ExtensionContext;
+  readonly state: ExtensionState;
+  readonly getConfigurationRegistry: () => Promise<WorkspaceRegistry>;
+  readonly refreshTree: () => Promise<void>;
+}
 
 /**
  * Register all extension-support commands (borrow, navigate, intercept).
  */
 export function registerExtensionCommands(
-  context: vscode.ExtensionContext,
-  state: ExtensionState
+  options: RegisterExtensionCommandsOptions,
 ): void {
+  const { context, state } = options;
   const borrowCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.borrowToExtension',
     async (node?: TreeNode) => {
@@ -23,7 +31,11 @@ export function registerExtensionCommands(
         return;
       }
       try {
-        await borrowObjectToExtension(target, state);
+        await borrowObjectToExtension(target, {
+          state,
+          getConfigurationRegistry: options.getConfigurationRegistry,
+          refreshTree: options.refreshTree,
+        });
       } catch (err) {
         Logger.error('borrowToExtension failed', err);
         vscode.window.showErrorMessage(
