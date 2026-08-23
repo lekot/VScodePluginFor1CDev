@@ -11,6 +11,7 @@ import { SKD_TOOLS } from './catalog/skdTools';
 import { XDTO_TOOLS } from './catalog/xdtoTools';
 import { SUPPORT_TOOLS } from './catalog/supportTools';
 import { EXTERNAL_PROCESSOR_MCP_TOOLS } from './catalog/externalProcessorTools';
+import { CFE_PROJECT_TOOLS } from './catalog/cfeProjectTools';
 import type { McpToolDefinition } from './catalog/types';
 
 export type { McpToolDefinition } from './catalog/types';
@@ -26,6 +27,7 @@ export const MCP_TOOL_CATALOG: readonly McpToolDefinition[] = [
   ...XDTO_TOOLS,
   ...SUPPORT_TOOLS,
   ...EXTERNAL_PROCESSOR_MCP_TOOLS,
+  ...CFE_PROJECT_TOOLS,
 ];
 
 export type AgentCommandExecutor = (

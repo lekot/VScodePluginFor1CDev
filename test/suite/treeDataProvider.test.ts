@@ -61,7 +61,7 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.ok(provider);
   });
 
-  test('support configuration overlay preserves exact root context and original icon', () => {
+  test('support configuration overlay preserves base root context tokens and original icon', () => {
     const configPath = path.resolve('support-config');
     const rootNode: TreeNode = {
       id: 'root',
@@ -84,7 +84,9 @@ suite('MetadataTreeDataProvider Test Suite', () => {
 
     const item = provider.getTreeItem(rootNode);
 
-    assert.strictEqual(item.contextValue, 'Configuration');
+    const contextTokens = item.contextValue?.split(/\s+/) ?? [];
+    assert.ok(contextTokens.includes('Configuration'));
+    assert.ok(contextTokens.includes('cfeBaseConfiguration'));
     assert.ok(item.iconPath instanceof vscode.ThemeIcon);
     assert.notStrictEqual((item.iconPath as vscode.ThemeIcon).id, 'lock');
     assert.ok(!String(item.description).includes('🔒'));

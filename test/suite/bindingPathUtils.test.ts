@@ -50,6 +50,24 @@ suite('bindingPathUtils', () => {
     );
   });
 
+  test('detectIbcmdExtensionNameFromConfigRelativePath reads Designer ConfigurationExtensions layout', () => {
+    assert.strictEqual(
+      detectIbcmdExtensionNameFromConfigRelativePath(
+        'ConfigurationExtensions/Продажи/Configuration.xml',
+      ),
+      'Продажи',
+    );
+  });
+
+  test('detectIbcmdExtensionNameFromConfigRelativePath is case-insensitive for ConfigurationExtensions token', () => {
+    assert.strictEqual(
+      detectIbcmdExtensionNameFromConfigRelativePath(
+        'x/CONFIGURATIONEXTENSIONS/SalesPatch/Catalogs/Goods.xml',
+      ),
+      'SalesPatch',
+    );
+  });
+
   test('detectIbcmdExtensionNameFromConfigRelativePath returns undefined without Extensions segment', () => {
     assert.strictEqual(detectIbcmdExtensionNameFromConfigRelativePath('src/Configuration.xml'), undefined);
   });

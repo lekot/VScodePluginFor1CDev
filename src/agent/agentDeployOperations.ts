@@ -19,6 +19,7 @@ import { MetadataType, type TreeNode } from '../models/treeNode';
 import { detectChangedConfigFiles, type IncrementalChangeDetectorDeps } from '../services/ibcmd/incrementalChangeDetector';
 import { runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
 import type { AgentResult, ConfigurationScopedParams } from './types';
+import { findBinding } from './agentBindingResolver';
 
 export interface AgentDeployOperationsDeps {
     bindingManager: BindingManager;
@@ -118,23 +119,7 @@ export class AgentDeployOperations {
         const allBindings = await this.deps.bindingManager.listAll();
         const localBindings = allBindings.filter((b) => b.workspaceFolder === workspaceFolder!.name);
 
-        const isWin = process.platform === 'win32';
-        const norm = (p: string): string => {
-            const r = path.resolve(p);
-            return isWin ? r.toLowerCase() : r;
-        };
-
-        const configResolved = norm(resolvedConfigPath);
-        let matchedBinding: (typeof localBindings)[number] | undefined;
-        for (const b of localBindings) {
-            const resolved = resolveConfigurationXmlDirectory(workspaceFolder!.uri.fsPath, b.configRelativePath);
-            if (!resolved.ok) { continue; }
-            const src = norm(resolved.sourceDir);
-            if (configResolved === src || configResolved.startsWith(src + path.sep)) {
-                matchedBinding = b;
-                break;
-            }
-        }
+        const matchedBinding = findBinding(resolvedConfigPath, localBindings);
 
         // 4. Validate binding
         if (!matchedBinding) {
@@ -491,6 +476,7 @@ export class AgentDeployOperations {
                         configDumpInfoPath,
                         storage: this.deps.infobaseStorage,
                         token: cts.token,
+                        ibcmdExtensionName: ctx.data!.binding.ibcmdExtensionName,
                     });
 
                 return {

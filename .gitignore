@@ -36,6 +36,8 @@ docs/features/*
 docs/features/agent-api/*
 !docs/features/agent-api/agent-skill.md
 !docs/features/configuration-compare-merge.md
+!docs/features/cfe-lifecycle/
+!docs/features/cfe-lifecycle/*.md
 !docs/features/diagnostics/
 docs/features/diagnostics/*
 !docs/features/diagnostics/diagnostics-summary-field-dictionary.md

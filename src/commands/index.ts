@@ -15,6 +15,7 @@ import {
   registerUtilityCommandsTrailing,
 } from './utilityCommands';
 import { registerExtensionCommands } from '../extensionSupport/extensionCommands';
+import { registerCfeProjectCommands } from '../extensionSupport/cfeProject/cfeProjectCommands';
 import { registerAgentCommands } from '../agent/agentCommands';
 import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
 import { activateAgentBridge } from '../agent/agentBridgeActivation';
@@ -112,6 +113,12 @@ export async function registerAllCommands({
   context.subscriptions.push(
     configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
   );
+  registerCfeProjectCommands({
+    context,
+    state,
+    getConfigurationRegistry,
+    refreshTree: lifecycle.loadMetadataTree,
+  });
   configureSupportServices({
     context,
     state,
@@ -155,6 +162,7 @@ export async function registerAllCommands({
       const facade = state.supportComposition?.facade;
       return facade ? { facade } : undefined;
     },
+    lifecycle.loadMetadataTree,
   );
 
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code

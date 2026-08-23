@@ -84,7 +84,8 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
 
     // WOW §2D: context for deploy commands (viewItem when in package.json).
     if (element.type === MetadataType.Configuration) {
-      let cv = 'Configuration';
+      // Keep a stable root kind token so UI commands never appear on a CFE root.
+      let cv = props?.extensionPurpose ? 'Configuration cfeExtensionConfiguration' : 'Configuration cfeBaseConfiguration';
       if (bindingDeco && bindingDeco.boundCount > 0) {
         cv += ' bindingBound';
         // Design §12.5: suffix driven by mass deployment flag, not by count.
