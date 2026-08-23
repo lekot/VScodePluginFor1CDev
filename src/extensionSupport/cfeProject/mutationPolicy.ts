@@ -30,7 +30,7 @@ export class CfeFilesystemMutationPolicyResolver {
   async resolve(targetPath: string): Promise<CfeFilesystemMutationPolicy | undefined> {
     const absoluteTarget = path.resolve(targetPath);
     let cursor = await initialDirectory(absoluteTarget);
-    while (true) {
+    for (;;) {
       const configurationPath = path.join(cursor, CONFIGURATION_XML);
       if (await exists(configurationPath)) {
         const context = await readCfeContext(configurationPath);
