@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { registerUtilityCommandsLeading } from '../../src/commands/utilityCommands';
+import type { ExtensionState } from '../../src/state/extensionState';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 const TEST_COMMAND_IDS = [
@@ -12,6 +13,21 @@ const TEST_COMMAND_IDS = [
   '1c-metadata-tree.diagnoseRevealForTest',
   '1c-metadata-tree.getPropertiesOpenStateForTest',
 ] as const;
+
+interface PackageManifest {
+  readonly main: string;
+  readonly activationEvents: readonly string[];
+  readonly capabilities?: { readonly virtualWorkspaces?: { readonly supported?: boolean } };
+  readonly contributes: {
+    readonly views: { readonly explorer: unknown };
+    readonly commands: ReadonlyArray<{ readonly command: string }>;
+    readonly menus: {
+      readonly commandPalette: ReadonlyArray<{ readonly command: string; readonly when?: string }>;
+      readonly 'view/item/context': unknown;
+      readonly 'explorer/context': unknown;
+    };
+  };
+}
 
 suite('extension manifest contracts', () => {
   test('activates for 1C workspace markers and the explicit BSL debug resolver', () => {
@@ -74,9 +90,24 @@ suite('extension manifest contracts', () => {
         .filter((command: string) => command.startsWith('1c-metadata-tree.agent.')),
     );
 
-    assert.strictEqual(registered.size, 69, 'Update the documented Agent API count intentionally.');
-    assert.strictEqual(contributed.size, 69, 'Manifest must contribute exactly the documented Agent API.');
+    assert.strictEqual(registered.size, 73, 'Update the documented Agent API count intentionally.');
+    assert.strictEqual(contributed.size, 73, 'Manifest must contribute exactly the documented Agent API.');
     assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
+  });
+
+  test('shows CFE project creation only for a base configuration root', () => {
+    const explorer = readPackageJson().contributes.menus['view/item/context'] as Array<{
+      command: string;
+      when?: string;
+    }>;
+    assert.deepStrictEqual(
+      explorer.find((entry) => entry.command === '1c-metadata-tree.cfe.createProject'),
+      {
+        command: '1c-metadata-tree.cfe.createProject',
+        when: 'view == 1c-metadata-tree && viewItem =~ /(^|\\s)cfeBaseConfiguration(\\s|$)/',
+        group: '3_extension@-1',
+      },
+    );
   });
 
   test('declares EPF/ERF UI and hidden Agent commands with exact Explorer routing', () => {
@@ -163,14 +194,14 @@ suite('extension manifest contracts', () => {
 
 function registerLeadingCommands(extensionMode: vscode.ExtensionMode): void {
   registerUtilityCommandsLeading({
-    state: {} as any,
+    state: {} as ExtensionState,
     loadMetadataTree: async () => undefined,
     extensionContext: { extensionMode } as vscode.ExtensionContext,
   });
 }
 
-function readPackageJson(): any {
-  return JSON.parse(fs.readFileSync(path.join(repositoryRoot(), 'package.json'), 'utf-8'));
+function readPackageJson(): PackageManifest {
+  return JSON.parse(fs.readFileSync(path.join(repositoryRoot(), 'package.json'), 'utf-8')) as PackageManifest;
 }
 
 function repositoryRoot(): string {
@@ -180,6 +211,7 @@ function repositoryRoot(): string {
 function registeredAgentCommandIds(root: string): Set<string> {
   const registrySources = [
     path.join(root, 'src', 'agent', 'agentCommands.ts'),
+    path.join(root, 'src', 'agent', 'agentCfeProjectOperations.ts'),
     path.join(root, 'src', 'agent', 'agentSupportOperations.ts'),
   ];
   return new Set(registrySources.flatMap((sourcePath) => {

@@ -17,19 +17,19 @@ export function isSafeConfigRelativePath(relativePath: string): boolean {
 }
 
 /**
- * Имя расширения из пути вида `.../Extensions/<Имя>/.../Configuration.xml` (WOW Phase 4 #64).
+ * Имя расширения из пути EDT `.../Extensions/<Имя>/.../Configuration.xml`
+ * или Designer `.../ConfigurationExtensions/<Имя>/.../Configuration.xml`.
  */
 export function detectIbcmdExtensionNameFromConfigRelativePath(configRelativePath: string): string | undefined {
   const norm = configRelativePath.replace(/\\/g, '/');
-  const lower = norm.toLowerCase();
-  const token = '/extensions/';
-  const idx = lower.indexOf(token);
-  if (idx < 0) {
-    return undefined;
-  }
-  const after = norm.slice(idx + token.length);
-  const seg = after.split('/').find((s) => s.trim().length > 0)?.trim();
-  return seg || undefined;
+  const segments = norm.split('/');
+  const containerIndex = segments.findIndex((segment) => {
+    const lower = segment.trim().toLowerCase();
+    return lower === 'extensions' || lower === 'configurationextensions';
+  });
+  if (containerIndex < 0) { return undefined; }
+  const extensionName = segments.slice(containerIndex + 1).find((segment) => segment.trim().length > 0)?.trim();
+  return extensionName || undefined;
 }
 
 /**

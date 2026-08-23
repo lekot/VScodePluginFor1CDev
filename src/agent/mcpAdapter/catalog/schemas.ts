@@ -119,6 +119,24 @@ export const metadataType = z.string().refine(
 
 export const configurationScopeShape = { configurationId } as const;
 
+export const cfeConfigurationId = trimmedNonEmptyString;
+export const cfeNamePrefix = z.string().refine(
+  (value) => value.trim().length === 0 || validateElementName(value.trim(), []) === null,
+  { message: 'must be empty or a valid 1C metadata identifier' },
+);
+export const cfeCompatibilityMode = z.string().refine(
+  (value) => value === 'DontUse' || /^Version8_3_\d{1,2}$/.test(value),
+  { message: 'must be DontUse or Version8_3_N' },
+);
+/** Pure pre-dispatch counterpart of the service's workspace-relative path boundary. */
+export const cfeTargetPath = z.string().refine((value) => {
+  const target = value.trim();
+  return Boolean(target)
+    && !target.includes('\0')
+    && !/^(?:[\\/]|[A-Za-z]:)/.test(target)
+    && !target.split(/[\\/]/).some((segment) => segment === '..');
+}, { message: 'must be a workspace-relative path without traversal' });
+
 export const pathInput = z.strictObject({
   ...configurationScopeShape,
   path: agentPath,

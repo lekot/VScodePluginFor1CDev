@@ -493,6 +493,11 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.cfe.createProject",
+        "title": "Создать проект расширения конфигурации",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.navigateToMainObject",
         "title": "Перейти к объекту конфигурации",
         "category": "CDT 41"
@@ -545,6 +550,26 @@
       {
         "command": "1c-metadata-tree.agent.listConfigurations",
         "title": "Agent: Список открытых конфигураций",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.cfe.listProjects",
+        "title": "Agent: Список CFE-проектов",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.cfe.getContext",
+        "title": "Agent: Контекст CFE-проекта",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.cfe.validate",
+        "title": "Agent: Проверить CFE-проекты",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.cfe.createProject",
+        "title": "Agent: Создать CFE-проект",
         "category": "CDT 41 Agent"
       },
       {
@@ -1495,6 +1520,11 @@
           "command": "1c-metadata-tree.borrowToExtension",
           "when": "view == 1c-metadata-tree && viewItem =~ /^(Catalog|Document|Enum|Report|DataProcessor|InformationRegister|AccumulationRegister|CommonModule|Role|Subsystem|CommonForm|CommonTemplate|CommonPicture|CommonCommand|ExchangePlan|Constant|ChartOfCharacteristicTypes|ChartOfAccounts|AccountingRegister|ChartOfCalculationTypes|CalculationRegister|BusinessProcess|Task|DocumentJournal|FilterCriterion|SettingsStorage|FunctionalOption|ScheduledJob)$/",
           "group": "3_extension@0"
+        },
+        {
+          "command": "1c-metadata-tree.cfe.createProject",
+          "when": "view == 1c-metadata-tree && viewItem =~ /(^|\\s)cfeBaseConfiguration(\\s|$)/",
+          "group": "3_extension@-1"
         },
         {
           "command": "1c-metadata-tree.navigateToMainObject",

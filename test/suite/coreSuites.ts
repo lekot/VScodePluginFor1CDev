@@ -150,6 +150,7 @@ export const coreSuiteFiles: string[] = [
   'suite/typeFormatterAndFilterState.test.js',
   'suite/configurationXmlUpdater.test.js',
   'suite/configurationSession.test.js',
+  'suite/cfeProject.test.js',
   'suite/atomicFileStorage.test.js',
   'suite/mutationPlan.test.js',
   'suite/bslModuleParser.test.js',

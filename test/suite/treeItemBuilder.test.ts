@@ -39,22 +39,29 @@ function makeDeco(boundCount: number, massDeployment: boolean): ConfigurationBin
 }
 
 suite('buildTreeItem (#80 — bindingBound context value)', () => {
-  test('Configuration with boundCount>0, massDeployment:false → contextValue = "Configuration bindingBound deployOne"', () => {
+  test('base Configuration with boundCount>0, massDeployment:false has a stable base context token', () => {
     const node = makeNode({ type: MetadataType.Configuration });
     const item = buildTreeItem(node, makeOptions({ bindingDeco: makeDeco(1, false) }));
-    assert.strictEqual(item.contextValue, 'Configuration bindingBound deployOne');
+    assert.strictEqual(item.contextValue, 'Configuration cfeBaseConfiguration bindingBound deployOne');
   });
 
   test('Configuration with boundCount>0, massDeployment:true → contextValue = "Configuration bindingBound deployMany"', () => {
     const node = makeNode({ type: MetadataType.Configuration });
     const item = buildTreeItem(node, makeOptions({ bindingDeco: makeDeco(2, true) }));
-    assert.strictEqual(item.contextValue, 'Configuration bindingBound deployMany');
+    assert.strictEqual(item.contextValue, 'Configuration cfeBaseConfiguration bindingBound deployMany');
   });
 
-  test('Configuration without bindingDeco → contextValue = "Configuration"', () => {
+  test('base Configuration without bindingDeco has the base context token', () => {
     const node = makeNode({ type: MetadataType.Configuration });
     const item = buildTreeItem(node, makeOptions({}));
-    assert.strictEqual(item.contextValue, 'Configuration');
+    assert.strictEqual(item.contextValue, 'Configuration cfeBaseConfiguration');
+  });
+
+  test('CFE Configuration has no base context token', () => {
+    const node = makeNode({ type: MetadataType.Configuration, properties: { extensionPurpose: 'Customization' } });
+    const item = buildTreeItem(node, makeOptions({}));
+    assert.strictEqual(item.contextValue, 'Configuration cfeExtensionConfiguration');
+    assert.ok(!item.contextValue?.includes('cfeBaseConfiguration'));
   });
 
   test('Catalog (child node) with bindingDeco.boundCount>0 → contextValue = "Catalog bindingBound"', () => {

@@ -51,7 +51,7 @@ function signal(aborted = false): AbortSignal {
 suite('MCP adapter: tool contract', () => {
   test('registerMcpTools preserves every catalog schema and annotation object', () => {
     const tools = captureRegisteredTools(async () => ({ success: true }));
-    assert.strictEqual(tools.length, 69);
+    assert.strictEqual(tools.length, 73);
     assert.deepStrictEqual(
       tools.map(({ name, config }) => ({ name, annotations: config.annotations })),
       MCP_TOOL_CATALOG.map(({ name, annotations }) => ({ name, annotations })),
@@ -86,6 +86,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     });
     const cases: ReadonlyArray<readonly [string, Record<string, unknown>, string]> = [
       ['cdt_list_objects', { type: 'Catalog', query: 'good' }, '1c-metadata-tree.agent.listObjects'],
+      ['cdt_cfe_list_projects', { configurationId: 'cfg' }, '1c-metadata-tree.agent.cfe.listProjects'],
       ['cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],
       ['cdt_debug_stop', { sessionId: 's1' }, '1c-metadata-tree.agent.debug.stop'],
       ['cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],

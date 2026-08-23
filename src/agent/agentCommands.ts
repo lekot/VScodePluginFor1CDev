@@ -103,6 +103,14 @@ import {
     AgentSupportOperations,
     type AgentSupportOperationsDeps,
 } from './agentSupportOperations';
+import {
+    AGENT_CFE_COMMAND_IDS,
+    AgentCfeProjectOperations,
+    type AgentCfeCreateProjectParams,
+    type AgentCfeGetContextParams,
+    type AgentCfeListProjectsParams,
+    type AgentCfeValidateParams,
+} from './agentCfeProjectOperations';
 
 /**
  * Регистрирует Agent API команды.
@@ -123,6 +131,8 @@ export function registerAgentCommands(
     getDebugDeps?: () => AgentDebugOperationsDeps | undefined,
     getDeployDeps?: () => AgentDeployOperationsDeps | undefined,
     getSupportDeps?: () => AgentSupportOperationsDeps | undefined,
+    /** Optional lifecycle hook used by CFE creation after registry discovery succeeds. */
+    refreshCfeLifecycle?: () => Promise<void>,
 ): void {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
@@ -245,6 +255,32 @@ export function registerAgentCommands(
                 ? { success: true, data: { configurations: registry.list() } }
                 : { success: true, data: { configurations: [] } };
         },
+    );
+
+    // ─── CFE project lifecycle ─────────────────────────────────────────────
+
+    const cfeOperations = new AgentCfeProjectOperations(
+        getConfigurationRegistry,
+        async () => {
+            await getConfigurationRegistry();
+            await refreshCfeLifecycle?.();
+        },
+    );
+    const cfeListProjectsCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.listProjects,
+        async (params: AgentCfeListProjectsParams = {}) => cfeOperations.listProjects(params),
+    );
+    const cfeGetContextCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.getContext,
+        async (params: AgentCfeGetContextParams) => cfeOperations.getContext(params),
+    );
+    const cfeValidateCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.validate,
+        async (params: AgentCfeValidateParams = {}) => cfeOperations.validate(params),
+    );
+    const cfeCreateProjectCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.createProject,
+        async (params: AgentCfeCreateProjectParams) => cfeOperations.createProject(params),
     );
 
     // ─── 1c-metadata-tree.agent.createObject ─────────────────────────────────
@@ -979,6 +1015,7 @@ export function registerAgentCommands(
 
     context.subscriptions.push(
         listConfigurationsCommand,
+        cfeListProjectsCommand, cfeGetContextCommand, cfeValidateCommand, cfeCreateProjectCommand,
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,

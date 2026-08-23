@@ -1,7 +1,7 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **69** runtime-команд Agent API для программного
-управления метаданными, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
+Расширение CDT 41 для VS Code предоставляет **73** runtime-команды Agent API для программного
+управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
 
@@ -46,11 +46,12 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-MCP публикует полный Agent API: **69 tools для 69 runtime-команд**.
+MCP публикует полный Agent API: **73 tools для 73 runtime-команд**.
 
 | Домен | MCP tools |
 |---|---|
 | Configuration/CRUD (13) | `cdt_list_configurations`, `cdt_create_object`, `cdt_get_yaml`, `cdt_list_objects`, `cdt_get_properties`, `cdt_add_attribute`, `cdt_add_tabular_section`, `cdt_add_tabular_section_column`, `cdt_delete_attribute`, `cdt_delete_tabular_section`, `cdt_delete_object`, `cdt_rename_object`, `cdt_set_properties` |
+| CFE project lifecycle (4) | `cdt_cfe_list_projects`, `cdt_cfe_get_context`, `cdt_cfe_validate`, `cdt_cfe_create_project` |
 | Debug (15) | `cdt_debug_start`, `cdt_debug_stop`, `cdt_debug_set_breakpoint`, `cdt_debug_clear_breakpoints`, `cdt_debug_set_exception_filter`, `cdt_debug_wait_for_stop`, `cdt_debug_get_stack_trace`, `cdt_debug_get_scopes`, `cdt_debug_get_variables`, `cdt_debug_evaluate`, `cdt_debug_continue`, `cdt_debug_step_over`, `cdt_debug_step_in`, `cdt_debug_step_out`, `cdt_debug_start_from_binding` |
 | Bindings/deploy (7) | `cdt_resolve_binding`, `cdt_list_bindings`, `cdt_deploy`, `cdt_deploy_selected_objects`, `cdt_deploy_changed_files`, `cdt_pull_selected_objects`, `cdt_export_status` |
 | Support (6) | `cdt_support_get_status`, `cdt_support_set_object_mode`, `cdt_support_enable_object_rules`, `cdt_support_sync`, `cdt_support_verify`, `cdt_support_get_last_run` |
@@ -63,6 +64,15 @@ MCP публикует полный Agent API: **69 tools для 69 runtime-ко
 Имена и inputs соответствуют описанным ниже Agent-командам: например, `cdt_debug_get_variables` вызывает `1c-metadata-tree.agent.debug.getVariables`, а `cdt_xdto_export_xsd` — `1c-metadata-tree.agent.xdto.exportXsd`. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Каждый tool вызывает ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копию в text content. Input objects строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
+
+### CFE project lifecycle
+
+`cfe.listProjects`, `cfe.getContext` и `cfe.validate` читают устойчивые связи из
+`.vscode/cfe-projects.json`. `cfe.createProject` принимает `baseConfigurationId`, имя расширения,
+назначение, префикс и режим совместимости; необязательный `target` допускается только как путь
+внутри workspace без абсолютных путей и переходов `..`. Ответы содержат JSON-safe DTO: идентификаторы
+конфигураций и метаданные связи, но не сессии VS Code и не абсолютные пути. Создание обновляет
+discovery конфигураций и дерево метаданных.
 
 ### Доверие и опасные операции
 

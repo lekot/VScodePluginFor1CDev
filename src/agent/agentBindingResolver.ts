@@ -20,6 +20,7 @@ export interface ResolvedBinding {
     configPath: string;
     configRelativePath: string;
     workspaceFolder: string;
+    ibcmdExtensionName?: string;
     infobase: {
         id: string;
         name: string;
@@ -34,6 +35,7 @@ export interface ResolvedBinding {
 export interface BindingListItem {
     configRelativePath: string;
     workspaceFolder: string;
+    ibcmdExtensionName?: string;
     infobaseCount: number;
     infobases: Array<{
         id: string;
@@ -111,6 +113,7 @@ export async function resolveBindingCommand(
             configPath: absoluteConfigPath,
             configRelativePath: matched.configRelativePath,
             workspaceFolder: matched.workspaceFolder,
+            ...(matched.ibcmdExtensionName ? { ibcmdExtensionName: matched.ibcmdExtensionName } : {}),
             infobase,
         },
     };
@@ -135,6 +138,7 @@ export async function listBindingsCommand(
         return {
             configRelativePath: b.configRelativePath,
             workspaceFolder: b.workspaceFolder,
+            ...(b.ibcmdExtensionName ? { ibcmdExtensionName: b.ibcmdExtensionName } : {}),
             infobaseCount: infobases.length,
             infobases,
         };
@@ -145,41 +149,77 @@ export async function listBindingsCommand(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function findBinding(query: string, bindings: ConfigurationBinding[]): ConfigurationBinding | undefined {
+export function findBinding(query: string, bindings: ConfigurationBinding[]): ConfigurationBinding | undefined {
     const isWin = process.platform === 'win32';
     const norm = (p: string): string => {
-        const r = p.replace(/\\/g, '/');
+        const r = p.replace(/\\/g, '/').replace(/\/+$/, '');
         return isWin ? r.toLowerCase() : r;
     };
     const q = norm(query);
+    const extensionRoot = findExtensionRoot(q);
+    const candidates = bindings.flatMap((binding) => {
+        const relativeConfigPath = norm(binding.configRelativePath);
+        const relativeRoot = configRoot(relativeConfigPath);
+        const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+            (folder) => folder.name === binding.workspaceFolder,
+        );
+        const absoluteConfigPath = workspaceFolder
+            ? norm(path.join(workspaceFolder.uri.fsPath, binding.configRelativePath))
+            : undefined;
+        const absoluteRoot = absoluteConfigPath ? configRoot(absoluteConfigPath) : undefined;
+        const match = matchBindingPath(q, relativeConfigPath, relativeRoot, absoluteConfigPath, absoluteRoot);
+        if (match === undefined) { return []; }
 
-    // Strategy 1: exact match by full or relative path
-    for (const b of bindings) {
-        const rel = norm(b.configRelativePath);
-        if (rel === q) {
-            return b;
+        const bindingRoots = [relativeRoot, absoluteRoot].filter(
+            (root): root is string => root !== undefined,
+        );
+        if (extensionRoot && !bindingRoots.some((root) => isSameOrDescendant(root, extensionRoot))) {
+            return [];
         }
-    }
+        return [{ binding, match, specificity: (absoluteRoot ?? relativeRoot).length }];
+    });
 
-    // Strategy 2: query is a substring of configRelativePath (e.g. "FormatSamples/uh")
-    for (const b of bindings) {
-        const rel = norm(b.configRelativePath);
-        if (rel.includes(q + '/') || rel.endsWith(q)) {
-            return b;
-        }
-    }
+    candidates.sort((left, right) => right.match - left.match || right.specificity - left.specificity);
+    return candidates[0]?.binding;
+}
 
-    // Strategy 3: fuzzy match by fixture directory name
-    // "uh" matches "FormatSamples/uh/Configuration.xml"
-    // "empty_conf" matches "FormatSamples/empty_conf/Configuration.xml"
-    for (const b of bindings) {
-        const fixtureName = norm(extractFixtureName(b.configRelativePath));
-        if (fixtureName === q || fixtureName.includes(q)) {
-            return b;
-        }
-    }
+function matchBindingPath(
+    query: string,
+    relativeConfigPath: string,
+    relativeRoot: string,
+    absoluteConfigPath: string | undefined,
+    absoluteRoot: string | undefined,
+): number | undefined {
+    const configPaths = [relativeConfigPath, absoluteConfigPath].filter((value): value is string => value !== undefined);
+    if (configPaths.some((configPath) => query === configPath)) { return 3; }
 
-    return undefined;
+    const roots = [relativeRoot, absoluteRoot].filter((value): value is string => value !== undefined && value.length > 0);
+    if (roots.some((root) => query === root)) { return 2; }
+    if (roots.some((root) => isSameOrDescendant(query, root))) { return 1; }
+
+    const fixtureName = extractFixtureName(relativeConfigPath);
+    return fixtureName === query || fixtureName.includes(query) ? 0 : undefined;
+}
+
+function configRoot(configPath: string): string {
+    const slash = configPath.lastIndexOf('/');
+    return slash < 0 ? '' : configPath.slice(0, slash);
+}
+
+function isSameOrDescendant(candidate: string, root: string): boolean {
+    return candidate === root || candidate.startsWith(`${root}/`);
+}
+
+function findExtensionRoot(configPath: string): string | undefined {
+    const segments = configPath.split('/');
+    const containerIndex = segments.findIndex(
+        (segment) => {
+            const lower = segment.toLowerCase();
+            return lower === 'extensions' || lower === 'configurationextensions';
+        },
+    );
+    if (containerIndex < 0 || !segments[containerIndex + 1]) { return undefined; }
+    return segments.slice(0, containerIndex + 2).join('/');
 }
 
 /** Extract fixture directory name from configRelativePath. */

@@ -98,6 +98,11 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
 
   tool('cdt_dump_external_processor', 'dumpExternalProcessor', 'writeOpen'),
   tool('cdt_build_external_processor', 'buildExternalProcessor', 'writeOpen'),
+
+  tool('cdt_cfe_list_projects', 'cfe.listProjects', 'readClosed'),
+  tool('cdt_cfe_get_context', 'cfe.getContext', 'readClosed'),
+  tool('cdt_cfe_validate', 'cfe.validate', 'readClosed'),
+  tool('cdt_cfe_create_project', 'cfe.createProject', 'writeClosed'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
@@ -110,6 +115,13 @@ const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<stri
 
 const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_list_configurations: {},
+  cdt_cfe_list_projects: { configurationId: 'cfg' },
+  cdt_cfe_get_context: { configurationId: 'cfg' },
+  cdt_cfe_validate: { configurationId: 'cfg' },
+  cdt_cfe_create_project: {
+    baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization',
+    namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24', target: 'extensions/Extension', includeDefaultRole: true,
+  },
   cdt_create_object: { configurationId: 'cfg', type: 'Catalog', name: 'Goods', synonym: 'Goods', properties: { nested: { enabled: true }, values: [1, null] } },
   cdt_get_yaml: { configurationId: 'cfg', path: 'Catalog.Goods' },
   cdt_list_objects: { configurationId: 'cfg', type: 'Catalog', query: 'good' },
@@ -219,6 +231,11 @@ interface InvalidRefinementCase {
 }
 
 const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
+  { label: 'CFE create rejects an invalid extension identifier', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Bad-Name', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24' } },
+  { label: 'CFE create rejects an invalid name prefix', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Bad-Name', compatibilityMode: 'Version8_3_24' } },
+  { label: 'CFE create rejects an invalid compatibility mode', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_2_24' } },
+  { label: 'CFE create rejects an absolute target before dispatch', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24', target: 'C:/outside' } },
+  { label: 'CFE create rejects a traversal target before dispatch', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24', target: 'extensions/../outside' } },
   { label: 'createObject empty type', tool: 'cdt_create_object', input: { type: '', name: 'Goods' } },
   { label: 'createObject empty name', tool: 'cdt_create_object', input: { type: 'Catalog', name: '' } },
   { label: 'createObject invalid type identifier', tool: 'cdt_create_object', input: { type: 'Bad-Type', name: 'Goods' } },
@@ -359,10 +376,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('catalog has the exact 69 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 69, 'test oracle must enumerate all 69 tools');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 69);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 69);
+  test('catalog has the exact 73 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 73, 'test oracle must enumerate all 73 tools');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 73);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 73);
 
     assert.deepStrictEqual(
       MCP_TOOL_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -405,8 +422,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 69);
-    assert.strictEqual(new Set(registered).size, 69);
+    assert.strictEqual(registered.length, 73);
+    assert.strictEqual(new Set(registered).size, 73);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -419,7 +436,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 69 valid fixtures pass and every root schema rejects an extra property', () => {
+  test('all 73 valid fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
