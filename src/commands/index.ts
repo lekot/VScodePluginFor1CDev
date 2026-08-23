@@ -66,7 +66,6 @@ export async function registerAllCommands({
     extensionContext: context,
   };
   registerExternalProcessorCommands(context);
-  registerExtensionCommands(context, state);
 
   const configurationRegistry = new WorkspaceRegistry(
     path.join(context.globalStorageUri.fsPath, 'configuration-identities.v1.json'),
@@ -114,6 +113,12 @@ export async function registerAllCommands({
     configureConfigurationMutationGateway(runConfigurationMutation, runConfigurationPlan),
   );
   registerCfeProjectCommands({
+    context,
+    state,
+    getConfigurationRegistry,
+    refreshTree: lifecycle.loadMetadataTree,
+  });
+  registerExtensionCommands({
     context,
     state,
     getConfigurationRegistry,

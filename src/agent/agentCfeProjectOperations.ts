@@ -1,6 +1,13 @@
 import * as path from 'path';
 import type { WorkspaceRegistryError } from '../services/configurationSession/WorkspaceRegistry';
-import { CfeProjectError, CfeProjectServiceFactory, type CfeCreateProjectRequest, type CfeProjectContext } from '../extensionSupport/cfeProject';
+import {
+  CfeProjectError,
+  CfeProjectServiceFactory,
+  type CfeBorrowObjectOutcome,
+  type CfeBorrowObjectRequest,
+  type CfeCreateProjectRequest,
+  type CfeProjectContext,
+} from '../extensionSupport/cfeProject';
 import type { AgentResult, ConfigurationScopedParams } from './types';
 
 export const AGENT_CFE_COMMAND_IDS = {
@@ -8,12 +15,15 @@ export const AGENT_CFE_COMMAND_IDS = {
   getContext: '1c-metadata-tree.agent.cfe.getContext',
   validate: '1c-metadata-tree.agent.cfe.validate',
   createProject: '1c-metadata-tree.agent.cfe.createProject',
+  borrowObject: '1c-metadata-tree.agent.cfe.borrowObject',
 } as const;
 
 export type AgentCfeListProjectsParams = ConfigurationScopedParams;
 export type AgentCfeGetContextParams = Required<Pick<ConfigurationScopedParams, 'configurationId'>>;
 export type AgentCfeValidateParams = ConfigurationScopedParams;
 export interface AgentCfeCreateProjectParams extends CfeCreateProjectRequest {}
+export interface AgentCfeBorrowObjectParams extends CfeBorrowObjectRequest {}
+export type AgentCfeBorrowObjectOutcome = CfeBorrowObjectOutcome;
 
 /** JSON-safe public representation. ConfigurationSession never crosses the Agent boundary. */
 export interface AgentCfeProjectDto {
@@ -76,6 +86,16 @@ export class AgentCfeProjectOperations {
           : {}),
         ...(outcome.context ? { context: toDto(outcome.context) } : {}),
       };
+    }, 'write');
+  }
+
+  async borrowObject(params: AgentCfeBorrowObjectParams): Promise<AgentResult<AgentCfeBorrowObjectOutcome>> {
+    return this.run(params.extensionConfigurationId, async (service) => {
+      const outcome = await service.borrowObject(params);
+      // Borrow mutates only the already discovered extension session, but the tree
+      // snapshot is external to that session and must be refreshed for Agent and UI parity.
+      await this.refreshWorkspace().catch(() => undefined);
+      return outcome;
     }, 'write');
   }
 

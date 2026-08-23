@@ -106,6 +106,7 @@ import {
 import {
     AGENT_CFE_COMMAND_IDS,
     AgentCfeProjectOperations,
+    type AgentCfeBorrowObjectParams,
     type AgentCfeCreateProjectParams,
     type AgentCfeGetContextParams,
     type AgentCfeListProjectsParams,
@@ -281,6 +282,10 @@ export function registerAgentCommands(
     const cfeCreateProjectCommand = vscode.commands.registerCommand(
         AGENT_CFE_COMMAND_IDS.createProject,
         async (params: AgentCfeCreateProjectParams) => cfeOperations.createProject(params),
+    );
+    const cfeBorrowObjectCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.borrowObject,
+        async (params: AgentCfeBorrowObjectParams) => cfeOperations.borrowObject(params),
     );
 
     // ─── 1c-metadata-tree.agent.createObject ─────────────────────────────────
@@ -1015,7 +1020,7 @@ export function registerAgentCommands(
 
     context.subscriptions.push(
         listConfigurationsCommand,
-        cfeListProjectsCommand, cfeGetContextCommand, cfeValidateCommand, cfeCreateProjectCommand,
+        cfeListProjectsCommand, cfeGetContextCommand, cfeValidateCommand, cfeCreateProjectCommand, cfeBorrowObjectCommand,
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,

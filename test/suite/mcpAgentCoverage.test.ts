@@ -5,7 +5,7 @@ import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
 import { MCP_TOOL_CATALOG } from '../../src/agent/mcpAdapter/toolCatalog';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
-type AnnotationKind = 'readClosed' | 'writeClosed' | 'readOpen' | 'writeOpen' | 'verifyOpen';
+type AnnotationKind = 'readClosed' | 'writeClosed' | 'writeClosedIdempotent' | 'readOpen' | 'writeOpen' | 'verifyOpen';
 
 interface ExpectedTool {
   readonly name: string;
@@ -103,11 +103,13 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_cfe_get_context', 'cfe.getContext', 'readClosed'),
   tool('cdt_cfe_validate', 'cfe.validate', 'readClosed'),
   tool('cdt_cfe_create_project', 'cfe.createProject', 'writeClosed'),
+  tool('cdt_cfe_borrow_object', 'cfe.borrowObject', 'writeClosedIdempotent'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
   readClosed: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   writeClosed: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  writeClosedIdempotent: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   readOpen: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   writeOpen: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   verifyOpen: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -121,6 +123,9 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_cfe_create_project: {
     baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization',
     namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24', target: 'extensions/Extension', includeDefaultRole: true,
+  },
+  cdt_cfe_borrow_object: {
+    extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods',
   },
   cdt_create_object: { configurationId: 'cfg', type: 'Catalog', name: 'Goods', synonym: 'Goods', properties: { nested: { enabled: true }, values: [1, null] } },
   cdt_get_yaml: { configurationId: 'cfg', path: 'Catalog.Goods' },
@@ -236,6 +241,10 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'CFE create rejects an invalid compatibility mode', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_2_24' } },
   { label: 'CFE create rejects an absolute target before dispatch', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24', target: 'C:/outside' } },
   { label: 'CFE create rejects a traversal target before dispatch', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24', target: 'extensions/../outside' } },
+  { label: 'CFE borrow requires exactly one source', tool: 'cdt_cfe_borrow_object', input: { extensionConfigurationId: 'cfg' } },
+  { label: 'CFE borrow rejects two sources', tool: 'cdt_cfe_borrow_object', input: { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods', sourceUuid: '11111111-1111-4111-8111-111111111111' } },
+  { label: 'CFE borrow rejects a malformed source path', tool: 'cdt_cfe_borrow_object', input: { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Bad-Name' } },
+  { label: 'CFE borrow rejects a zero source UUID', tool: 'cdt_cfe_borrow_object', input: { extensionConfigurationId: 'cfg', sourceUuid: '00000000-0000-0000-0000-000000000000' } },
   { label: 'createObject empty type', tool: 'cdt_create_object', input: { type: '', name: 'Goods' } },
   { label: 'createObject empty name', tool: 'cdt_create_object', input: { type: 'Catalog', name: '' } },
   { label: 'createObject invalid type identifier', tool: 'cdt_create_object', input: { type: 'Bad-Type', name: 'Goods' } },
@@ -376,10 +385,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('catalog has the exact 73 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 73, 'test oracle must enumerate all 73 tools');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 73);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 73);
+  test('catalog has the exact 74 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 74, 'test oracle must enumerate all 74 tools');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 74);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 74);
 
     assert.deepStrictEqual(
       MCP_TOOL_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -422,8 +431,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 73);
-    assert.strictEqual(new Set(registered).size, 73);
+    assert.strictEqual(registered.length, 74);
+    assert.strictEqual(new Set(registered).size, 74);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -436,7 +445,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 73 valid fixtures pass and every root schema rejects an extra property', () => {
+  test('all 74 valid fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

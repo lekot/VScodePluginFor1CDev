@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **73** runtime-команды Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **74** runtime-команды Agent API для программного
 управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,12 +46,12 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-MCP публикует полный Agent API: **73 tools для 73 runtime-команд**.
+MCP публикует полный Agent API: **74 tools для 74 runtime-команд**.
 
 | Домен | MCP tools |
 |---|---|
 | Configuration/CRUD (13) | `cdt_list_configurations`, `cdt_create_object`, `cdt_get_yaml`, `cdt_list_objects`, `cdt_get_properties`, `cdt_add_attribute`, `cdt_add_tabular_section`, `cdt_add_tabular_section_column`, `cdt_delete_attribute`, `cdt_delete_tabular_section`, `cdt_delete_object`, `cdt_rename_object`, `cdt_set_properties` |
-| CFE project lifecycle (4) | `cdt_cfe_list_projects`, `cdt_cfe_get_context`, `cdt_cfe_validate`, `cdt_cfe_create_project` |
+| CFE project lifecycle (5) | `cdt_cfe_list_projects`, `cdt_cfe_get_context`, `cdt_cfe_validate`, `cdt_cfe_create_project`, `cdt_cfe_borrow_object` |
 | Debug (15) | `cdt_debug_start`, `cdt_debug_stop`, `cdt_debug_set_breakpoint`, `cdt_debug_clear_breakpoints`, `cdt_debug_set_exception_filter`, `cdt_debug_wait_for_stop`, `cdt_debug_get_stack_trace`, `cdt_debug_get_scopes`, `cdt_debug_get_variables`, `cdt_debug_evaluate`, `cdt_debug_continue`, `cdt_debug_step_over`, `cdt_debug_step_in`, `cdt_debug_step_out`, `cdt_debug_start_from_binding` |
 | Bindings/deploy (7) | `cdt_resolve_binding`, `cdt_list_bindings`, `cdt_deploy`, `cdt_deploy_selected_objects`, `cdt_deploy_changed_files`, `cdt_pull_selected_objects`, `cdt_export_status` |
 | Support (6) | `cdt_support_get_status`, `cdt_support_set_object_mode`, `cdt_support_enable_object_rules`, `cdt_support_sync`, `cdt_support_verify`, `cdt_support_get_last_run` |
@@ -70,9 +70,13 @@ MCP публикует полный Agent API: **73 tools для 73 runtime-ко
 `cfe.listProjects`, `cfe.getContext` и `cfe.validate` читают устойчивые связи из
 `.vscode/cfe-projects.json`. `cfe.createProject` принимает `baseConfigurationId`, имя расширения,
 назначение, префикс и режим совместимости; необязательный `target` допускается только как путь
-внутри workspace без абсолютных путей и переходов `..`. Ответы содержат JSON-safe DTO: идентификаторы
-конфигураций и метаданные связи, но не сессии VS Code и не абсолютные пути. Создание обновляет
-discovery конфигураций и дерево метаданных.
+внутри workspace без абсолютных путей и переходов `..`. `cfe.borrowObject` принимает
+`extensionConfigurationId` и ровно один источник: `sourceDotPath` (`Type.Name`) либо `sourceUuid`.
+Заимствование идемпотентно по UUID, выполняется только из связанной основной конфигурации и пока
+поддерживает Catalog, Document, Enum и CommonModule; неподтверждённые замыкания зависимостей
+отклоняются с `CFE_DEPENDENCY_UNSUPPORTED`. Ответы содержат JSON-safe DTO: идентификаторы
+конфигураций и метаданные связи, но не сессии VS Code и не абсолютные пути. Создание и заимствование
+обновляют discovery конфигураций и дерево метаданных.
 
 ### Доверие и опасные операции
 
@@ -274,7 +278,9 @@ uuid: a1b2c3d4-...
 }
 ```
 
-Возвращает: `{ properties: Record<string, unknown> }`.
+Возвращает: `{ properties: Record<string, unknown>, ownership?, sourceUuid? }`. В основной
+конфигурации поля CFE отсутствуют; в CFE `ownership` равен `own` либо `adopted`, а `sourceUuid`
+присутствует только для заимствованного объекта.
 
 #### `1c-metadata-tree.agent.listObjects`
 
@@ -286,7 +292,9 @@ uuid: a1b2c3d4-...
 }
 ```
 
-Без `type` — все объекты. Возвращает: `{ objects: [{ type, name, filePath }] }`.
+Без `type` — все объекты. Возвращает: `{ objects: [{ type, name, filePath, ownership?, sourceUuid? }] }`.
+Поля CFE добавляются только при чтении расширения конфигурации и позволяют выбрать допустимую
+специализированную операцию до мутации.
 
 ---
 

@@ -32,6 +32,11 @@ import {
   assertNoSymlinkSegments,
   assertPathWithinRoot,
 } from './configurationSession/pathBoundary';
+import {
+  assertCfeGenericCreateAllowed,
+  assertCfeGenericDuplicateAllowed,
+  assertCfeGenericMutationAllowed,
+} from '../extensionSupport/cfeProject/mutationPolicy';
 import { CONFIGURATION_XML, FORM_XML } from '../constants/fileNames';
 import { injectInternalInfoIntoMetadataXml } from '../utils/xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from '../utils/xml/metaDataObjectRootNormalizer';
@@ -646,6 +651,14 @@ export async function createElement(
   newName: string
 ): Promise<void> {
   const name = validateCreateName(newName, parentNode);
+  const owner = resolveTopLevelMetadataObject(parentNode);
+  const ownerMetadataXmlPath = owner?.filePath?.toLocaleLowerCase().endsWith('.xml')
+    ? owner.filePath
+    : undefined;
+  await assertCfeGenericCreateAllowed(ownerMetadataXmlPath ?? parentNode.filePath ?? '', name, {
+    isRootObjectCreate: isRootObjectCreateInTypeFolder(parentNode),
+    ownerMetadataXmlPath,
+  });
   const parent = parentNode.parent;
 
   for (const { matches, handle } of CREATE_ELEMENT_CASES) {
@@ -702,6 +715,11 @@ export async function createForm(parentNode: TreeNode, formName: string): Promis
   if (!formsPath) {
     throw new Error('Папка форм: не задан путь к каталогу Forms.');
   }
+  const formOwner = parentNode.parent;
+  await assertCfeGenericCreateAllowed(formsPath, name, {
+    isRootObjectCreate: false,
+    ownerMetadataXmlPath: formOwner?.filePath,
+  });
   const configRootPath = await findConfigurationRootDir(formsPath);
   const targetVersion = await resolveProjectFormatVersion(configRootPath);
   let formsStat: fs.Stats | undefined;
@@ -782,6 +800,7 @@ export async function duplicateElement(node: TreeNode, newName: string): Promise
   } catch {
     throw new Error('Файл элемента не найден.');
   }
+  await assertCfeGenericDuplicateAllowed(filePath, name);
 
   if (node.type === MetadataType.Attribute || node.type === MetadataType.TabularSection) {
     const parentFilePath = node.parentFilePath || (parent as TreeNode).filePath;
@@ -1117,6 +1136,7 @@ export async function planDuplicateRootElement(
   const name = newName.trim();
   const validation = validateElementName(name, getSiblingNames(parent));
   if (validation) { throw new Error(validation); }
+  await assertCfeGenericDuplicateAllowed(filePath, name);
   const sourceExpected = await mutationExpectation(filePath);
   if (sourceExpected.state !== 'file') { throw new Error(`Metadata object file was not found: ${filePath}`); }
 
@@ -1203,6 +1223,7 @@ export async function planRenameRootElement(
     getSiblingNames(parent).filter((sibling) => sibling.toLocaleLowerCase() !== node.name.toLocaleLowerCase()),
   );
   if (validation) { throw new Error(validation); }
+  await assertCfeGenericMutationAllowed(filePath, 'rename');
   const sourceExpected = await mutationExpectation(filePath);
   if (sourceExpected.state !== 'file') { throw new Error(`Metadata object file was not found: ${filePath}`); }
   const newFilePath = path.join(typeFolderPath, `${name}.xml`);
@@ -1320,6 +1341,7 @@ export async function deleteElement(
   if (!filePath) {
     throw new Error('Файл элемента не найден.');
   }
+  await assertCfeGenericMutationAllowed(filePath, 'delete');
 
   const r6NestedType =
     node.type === MetadataType.EnumValue ? 'EnumValue'
@@ -1540,6 +1562,7 @@ export async function renameElement(
   } catch {
     throw new Error('Файл элемента не найден.');
   }
+  await assertCfeGenericMutationAllowed(filePath, 'rename');
 
   if (node.type === MetadataType.Attribute || node.type === MetadataType.TabularSection) {
     const parentFilePath = node.parentFilePath || (parent as TreeNode).filePath;

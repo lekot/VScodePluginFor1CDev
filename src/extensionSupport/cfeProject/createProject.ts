@@ -5,8 +5,16 @@ import { assertNoSymlinkSegments, assertPathWithinRoot, validateWorkspaceRelativ
 import { validateElementName } from '../../utils/elementNameValidator';
 import type { WorkspaceRegistry } from '../../services/configurationSession/WorkspaceRegistry';
 import { CfeProjectManifestStorage } from './manifest';
+import { CfeBorrowService } from './borrowObject';
 import { CfeProjectRegistry } from './registry';
-import { CfeProjectError, type CfeCreateProjectOutcome, type CfeCreateProjectRequest, type CfeProjectManifestRecord } from './types';
+import {
+  CfeProjectError,
+  type CfeBorrowObjectOutcome,
+  type CfeBorrowObjectRequest,
+  type CfeCreateProjectOutcome,
+  type CfeCreateProjectRequest,
+  type CfeProjectManifestRecord,
+} from './types';
 
 const SUPPORTED_FORMATS = new Set(['2.17', '2.18', '2.19', '2.20', '2.21']);
 const CONTAINED_OBJECT_CLASS_IDS = [
@@ -32,6 +40,7 @@ export interface CfeProjectServiceOptions {
 /** Application boundary for the first CFE vertical: scaffold plus durable relation. */
 export class CfeProjectService {
   readonly projects: CfeProjectRegistry;
+  readonly borrow: CfeBorrowService;
 
   constructor(
     readonly workspaceRoot: string,
@@ -39,12 +48,16 @@ export class CfeProjectService {
     private readonly options: CfeProjectServiceOptions = {},
   ) {
     this.projects = new CfeProjectRegistry(workspaceRoot, workspaceRegistry, options.manifestStorage);
+    this.borrow = new CfeBorrowService(this.projects);
   }
 
   async listProjects() { return this.projects.list(); }
   async getContext(baseConfigurationId: string) { return this.projects.getByBase(baseConfigurationId); }
   async getContextByExtension(extensionConfigurationId: string) { return this.projects.getByExtension(extensionConfigurationId); }
   async validate(): Promise<void> { await this.projects.list(); }
+  async borrowObject(request: CfeBorrowObjectRequest): Promise<CfeBorrowObjectOutcome> {
+    return this.borrow.borrowObject(request);
+  }
 
   async createProject(request: CfeCreateProjectRequest): Promise<CfeCreateProjectOutcome> {
     const baseSession = this.workspaceRegistry.require(request.baseConfigurationId);

@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import type { McpToolDefinition } from './types';
-import { READ_CLOSED, WRITE_CLOSED } from './types';
+import { READ_CLOSED, WRITE_CLOSED, WRITE_CLOSED_IDEMPOTENT } from './types';
 import {
   cfeCompatibilityMode,
   cfeConfigurationId,
   cfeNamePrefix,
+  cfeSourceUuid,
   cfeTargetPath,
   configurationScopeShape,
+  rootObjectPath,
   trimmedElementName,
 } from './schemas';
 
@@ -22,6 +24,14 @@ const cfeCreateProjectInput = z.strictObject({
   target: cfeTargetPath.optional(),
   includeDefaultRole: z.boolean().optional(),
 });
+const cfeBorrowObjectInput = z.strictObject({
+  extensionConfigurationId: cfeConfigurationId,
+  sourceDotPath: rootObjectPath.optional(),
+  sourceUuid: cfeSourceUuid.optional(),
+}).refine(
+  (value) => (value.sourceDotPath === undefined) !== (value.sourceUuid === undefined),
+  { message: 'must provide exactly one of sourceDotPath or sourceUuid' },
+);
 
 export const CFE_PROJECT_TOOLS: readonly McpToolDefinition[] = [
   {
@@ -51,5 +61,12 @@ export const CFE_PROJECT_TOOLS: readonly McpToolDefinition[] = [
     command: '1c-metadata-tree.agent.cfe.createProject',
     inputSchema: cfeCreateProjectInput,
     annotations: WRITE_CLOSED,
+  },
+  {
+    name: 'cdt_cfe_borrow_object',
+    description: 'Borrow one supported root object from the linked base configuration into a CFE project.',
+    command: '1c-metadata-tree.agent.cfe.borrowObject',
+    inputSchema: cfeBorrowObjectInput,
+    annotations: WRITE_CLOSED_IDEMPOTENT,
   },
 ];
