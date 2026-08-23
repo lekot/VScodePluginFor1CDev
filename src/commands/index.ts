@@ -44,6 +44,7 @@ import type { DeploySupportContext } from '../bindings/deployService';
 import { normalizeConfigRelativePath } from '../bindings/bindingPathUtils';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { Logger } from '../utils/logger';
+import { registerConfigurationRepositoryCommands } from './configurationRepositoryCommands';
 
 export type RegisterAllCommandsArgs = {
   context: vscode.ExtensionContext;
@@ -180,6 +181,7 @@ export async function registerAllCommands({
       loadMetadataTree: lifecycle.loadMetadataTree,
       invalidateTreeCacheOnly: lifecycle.invalidateTreeCacheOnly,
     }),
+    ...registerConfigurationRepositoryCommands(state),
   ];
 }
 

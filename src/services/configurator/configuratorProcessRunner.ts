@@ -21,6 +21,8 @@ interface ConfiguratorProcessOutcomeBase {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   combinedLog: string;
+  /** Whether the Designer /Out file was successfully read after process exit. */
+  outputFileReadable?: boolean;
   logTruncated: boolean;
   termination?: ProcessTreeTerminationOutcome;
   diagnostic: {
@@ -96,6 +98,7 @@ export async function runConfiguratorProcess(
       exitCode: null,
       signal: null,
       combinedLog: '',
+      outputFileReadable: false,
       logTruncated: false,
       diagnostic,
     };
@@ -117,6 +120,7 @@ export async function runConfiguratorProcess(
       exitCode: null,
       signal: null,
       combinedLog: '',
+      outputFileReadable: false,
       logTruncated: false,
       diagnostic,
     };
@@ -186,6 +190,7 @@ export async function runConfiguratorProcess(
     exitCode: raw.exitCode,
     signal: raw.signal,
     combinedLog,
+    outputFileReadable: outputReadError === undefined,
     logTruncated: raw.logTruncated || retained.truncated,
     ...(raw.termination ? { termination: raw.termination } : {}),
     diagnostic,
@@ -341,7 +346,8 @@ function redactBatchSecrets(log: string, executionArgs: readonly string[]): stri
 function batchSecrets(executionArgs: readonly string[]): string[] {
   const secrets: string[] = [];
   for (let index = 0; index < executionArgs.length - 1; index += 1) {
-    if (executionArgs[index].toLocaleLowerCase() === '/p' && executionArgs[index + 1]) {
+    const flag = executionArgs[index].toLocaleLowerCase();
+    if ((flag === '/p' || flag === '/configurationrepositoryp') && executionArgs[index + 1]) {
       secrets.push(executionArgs[index + 1]);
     }
   }

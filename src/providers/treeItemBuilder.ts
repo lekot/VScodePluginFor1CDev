@@ -11,6 +11,7 @@ import type {
 } from '../support/supportTreeDecorations';
 import { getIconForType } from './treeIconMapper';
 import { Logger } from '../utils/logger';
+import type { RepositoryTreeDecoration } from '../services/configurationRepository/repositoryTreeDecorations';
 
 export interface TreeItemBuildOptions {
   /** Whether this node has (or may have) children. */
@@ -29,6 +30,8 @@ export interface TreeItemBuildOptions {
   configDirPath: string | null;
   /** Already-resolved support overlay. Building a tree item never loads support state. */
   supportDecoration?: SupportTreeDecoration;
+  /** Already-resolved last-known configuration repository overlay. */
+  repositoryDecoration?: RepositoryTreeDecoration;
 }
 
 /**
@@ -110,6 +113,12 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
         options.supportDecoration.contextTokens
       );
     }
+    if (options.repositoryDecoration) {
+      treeItem.contextValue = appendContextTokens(
+        treeItem.contextValue,
+        options.repositoryDecoration.contextTokens,
+      );
+    }
 
     // Set tooltip: name, type, path (additional_req.md п.14)
     const synonym = element.properties.synonym as string | undefined;
@@ -147,6 +156,9 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
         tooltipText += `\n${options.supportDecoration.syncHealth.tooltip}`;
       }
     }
+    if (options.repositoryDecoration) {
+      tooltipText += `\n\n${options.repositoryDecoration.tooltip}`;
+    }
     treeItem.tooltip = tooltipText;
 
     // Set description (shown next to the label); для Configuration — бейдж числа привязок (§2C)
@@ -182,6 +194,13 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
         descParts.push(`синхронизация: ${options.supportDecoration.syncHealth.state}`);
       }
     }
+    if (options.repositoryDecoration?.kind === 'configuration') {
+      descParts.push(`Хранилище: ${options.repositoryDecoration.state === 'connected'
+        ? 'подключено'
+        : options.repositoryDecoration.state === 'disconnected' ? 'отключено' : 'неизвестно'}`);
+    } else if (options.repositoryDecoration?.lockState === 'heldByCurrentCredentials') {
+      descParts.push('🔒 хранилище');
+    }
 
     if (descParts.length > 0) {
       treeItem.description = descParts.join(' · ');
@@ -199,6 +218,9 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
       && options.supportDecoration.iconIntent === 'lock'
     ) {
       treeItem.iconPath = new vscode.ThemeIcon(options.supportDecoration.iconIntent);
+    }
+    if (options.repositoryDecoration?.iconIntent === 'lock') {
+      treeItem.iconPath = new vscode.ThemeIcon(options.repositoryDecoration.iconIntent);
     }
 
     // BSL module nodes: open module on click (creates file if virtual)

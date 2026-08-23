@@ -68,6 +68,8 @@ suite-report-core.json
 /CLAUDE.md
 /claude-telegram.bat
 /.vscode/infobase-bindings.json
+/.vscode/configuration-repository-bindings.json
+/.vscode/configuration-repository-state.json
 /FormatSamples/uh/
 /FormatSamples/uh1/
 scripts/va-features/va.epf

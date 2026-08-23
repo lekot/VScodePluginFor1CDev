@@ -429,6 +429,48 @@
         "icon": "$(link)"
       },
       {
+        "command": "1c-metadata-tree.repository.connect",
+        "title": "Хранилище: подключить…",
+        "category": "CDT 41",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "1c-metadata-tree.repository.disconnect",
+        "title": "Хранилище: отключить",
+        "category": "CDT 41",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "1c-metadata-tree.repository.lock",
+        "title": "Хранилище: захватить объект",
+        "category": "CDT 41",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "1c-metadata-tree.repository.unlock",
+        "title": "Хранилище: снять захват",
+        "category": "CDT 41",
+        "icon": "$(unlock)"
+      },
+      {
+        "command": "1c-metadata-tree.repository.commit",
+        "title": "Хранилище: поместить изменения…",
+        "category": "CDT 41",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "1c-metadata-tree.repository.updateObject",
+        "title": "Хранилище: обновить объект",
+        "category": "CDT 41",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "1c-metadata-tree.repository.updateConfiguration",
+        "title": "Хранилище: обновить конфигурацию",
+        "category": "CDT 41",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "1c-metadata-tree.config.deploy",
         "title": "Раскатать в базу…",
         "category": "CDT 41",
@@ -1113,6 +1155,41 @@
           "command": "1c-metadata-tree.bindings.openDialogForConfiguration",
           "when": "view == 1c-metadata-tree && viewItem =~ /Extension extensionBindingRoot/",
           "group": "infobase@0"
+        },
+        {
+          "command": "1c-metadata-tree.repository.connect",
+          "when": "view == 1c-metadata-tree && viewItem =~ /^(Configuration|Extension extensionBindingRoot)/",
+          "group": "repository@0"
+        },
+        {
+          "command": "1c-metadata-tree.repository.disconnect",
+          "when": "view == 1c-metadata-tree && viewItem =~ /repositoryConfiguration/",
+          "group": "repository@1"
+        },
+        {
+          "command": "1c-metadata-tree.repository.lock",
+          "when": "view == 1c-metadata-tree && viewItem =~ /repositoryObject/",
+          "group": "repository@2"
+        },
+        {
+          "command": "1c-metadata-tree.repository.unlock",
+          "when": "view == 1c-metadata-tree && viewItem =~ /repositoryObject/",
+          "group": "repository@3"
+        },
+        {
+          "command": "1c-metadata-tree.repository.commit",
+          "when": "view == 1c-metadata-tree && viewItem =~ /repositoryObject/",
+          "group": "repository@4"
+        },
+        {
+          "command": "1c-metadata-tree.repository.updateObject",
+          "when": "view == 1c-metadata-tree && viewItem =~ /repositoryObject/",
+          "group": "repository@5"
+        },
+        {
+          "command": "1c-metadata-tree.repository.updateConfiguration",
+          "when": "view == 1c-metadata-tree && viewItem =~ /repositoryConfiguration/",
+          "group": "repository@6"
         },
         {
           "command": "1c-metadata-tree.config.deploy",

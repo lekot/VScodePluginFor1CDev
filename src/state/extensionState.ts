@@ -22,6 +22,8 @@ import type { SupportServiceComposition } from '../support/supportServiceComposi
 import type { SupportStateCache } from '../support/supportStateCache';
 import type { SupportStateWatcher } from '../support/supportStateWatcher';
 import type { SupportRootRegistrationLifecycle } from '../support/supportRootRegistrationLifecycle';
+import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
+import type { RepositoryStateProjection } from '../services/configurationRepository/repositoryTreeDecorations';
 
 /**
  * Holds extension-wide mutable references (providers, tree view, reload coordinator).
@@ -56,6 +58,8 @@ export class ExtensionState {
   private _supportStateCache: SupportStateCache | null = null;
   private _supportStateWatcher: SupportStateWatcher | null = null;
   private _supportRootRegistrationLifecycle: SupportRootRegistrationLifecycle | null = null;
+  private _configurationRepositoryService: ConfigurationRepositoryService | null = null;
+  private _configurationRepositoryProjection: RepositoryStateProjection | null = null;
 
   // ── Getters ───────────────────────────────────────────────────────────────
 
@@ -90,6 +94,8 @@ export class ExtensionState {
   get supportRootRegistrationLifecycle(): SupportRootRegistrationLifecycle | null {
     return this._supportRootRegistrationLifecycle;
   }
+  get configurationRepositoryService(): ConfigurationRepositoryService | null { return this._configurationRepositoryService; }
+  get configurationRepositoryProjection(): RepositoryStateProjection | null { return this._configurationRepositoryProjection; }
 
   // ── Setters ───────────────────────────────────────────────────────────────
 
@@ -122,6 +128,8 @@ export class ExtensionState {
   set supportRootRegistrationLifecycle(v: SupportRootRegistrationLifecycle | null) {
     this._supportRootRegistrationLifecycle = v;
   }
+  set configurationRepositoryService(v: ConfigurationRepositoryService | null) { this._configurationRepositoryService = v; }
+  set configurationRepositoryProjection(v: RepositoryStateProjection | null) { this._configurationRepositoryProjection = v; }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -149,6 +157,9 @@ export class ExtensionState {
     this._supportStateCache?.clear();
     this._supportStateCache = null;
     await supportCompositionDisposal;
+    this._configurationRepositoryService = null;
+    this._configurationRepositoryProjection?.clear();
+    this._configurationRepositoryProjection = null;
     this._treeDataProvider?.dispose();
     this._treeDataProvider = null;
     this._reloadCoordinator?.dispose();

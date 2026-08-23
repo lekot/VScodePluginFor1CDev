@@ -42,6 +42,11 @@ import {
   resolveSupportTreeDecoration,
   type SupportTreeDecoration,
 } from '../support/supportTreeDecorations';
+import {
+  resolveRepositoryTreeDecoration,
+  type RepositoryStateReader,
+  type RepositoryTreeDecoration,
+} from '../services/configurationRepository/repositoryTreeDecorations';
 
 /** R6 placeholders under object XML — reload via loadElementChildren after mutations (see invalidateLoadedChildren). */
 const R6_LAZY_SECTION_IDS = new Set(['Attributes', 'TabularSections', 'Forms', 'Commands', 'Templates', 'Dimensions', 'Resources', 'EnumValues', 'PredefinedData']);
@@ -79,6 +84,11 @@ export type SupportRootRegistrationCallback = (
   configRoots: readonly string[]
 ) => void;
 
+export type RepositoryDecorationResolver = (
+  node: TreeNode,
+  reader: RepositoryStateReader | undefined,
+) => RepositoryTreeDecoration | undefined;
+
 /**
  * Tree Data Provider for VS Code Tree View
  */
@@ -105,6 +115,8 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private supportStateCache: SupportStateCacheReader | undefined;
   private supportDecorationResolver: SupportDecorationResolver = resolveSupportTreeDecoration;
   private supportRootRegistrationCallback: SupportRootRegistrationCallback | undefined;
+  private repositoryStateReader: RepositoryStateReader | undefined;
+  private repositoryDecorationResolver: RepositoryDecorationResolver = resolveRepositoryTreeDecoration;
 
   constructor() {
     Logger.info('MetadataTreeDataProvider initialized');
@@ -136,6 +148,16 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   ): void {
     this.supportRootRegistrationCallback = callback;
     this.notifySupportRootsChanged();
+  }
+
+  setRepositoryStateReader(reader: RepositoryStateReader | undefined): void {
+    this.repositoryStateReader = reader;
+    this.refresh();
+  }
+
+  setRepositoryDecorationResolver(resolver: RepositoryDecorationResolver | undefined): void {
+    this.repositoryDecorationResolver = resolver ?? resolveRepositoryTreeDecoration;
+    this.refresh();
   }
 
   private lookupConfigurationBindingDecorationForRoot(root: TreeNode): ConfigurationBindingDecoration | undefined {
@@ -1054,6 +1076,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     const isExtBindingRoot = this.isExtensionInfobaseBindingRoot(element);
     const q = this.filter.rawSearchQuery.trim();
     const supportDecoration = this.lookupSupportDecoration(element);
+    const repositoryDecoration = this.repositoryDecorationResolver(element, this.repositoryStateReader);
 
     return buildTreeItem(element, {
       hasChildren,
@@ -1064,6 +1087,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       nodeMatchesSearch: !!(q && this.filter.nodeMatchesSearch(element, q)),
       configDirPath: element.type === MetadataType.Configuration ? this.getConfigPathForNode(element) : null,
       ...(supportDecoration === undefined ? {} : { supportDecoration }),
+      ...(repositoryDecoration === undefined ? {} : { repositoryDecoration }),
     });
   }
 

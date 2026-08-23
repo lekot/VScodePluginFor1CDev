@@ -14,6 +14,7 @@ export const coreSuiteFiles: string[] = [
   'suite/configuratorBatchArgs.test.js',
   'suite/configuratorSupportApplicator.test.js',
   'suite/configuratorProcessRunner.test.js',
+  'suite/configurationRepository.test.js',
   'suite/supportSyncCoordinator.test.js',
   'suite/supportPayloadCache.test.js',
   'suite/supportRunJournal.test.js',

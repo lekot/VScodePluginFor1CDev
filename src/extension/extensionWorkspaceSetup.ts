@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ExtensionState } from '../state/extensionState';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
 import { PropertiesProvider } from '../providers/propertiesProvider';
@@ -27,6 +28,16 @@ import { XdtoPackageEditorProvider } from '../xdtoPackageEditor';
 import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
 import { registerLazyWorkspaceOrchestrator } from './lazyWorkspaceOrchestrator';
 import { registerMetadataWorkspaceFolderLifecycle } from './metadataWorkspaceFolders';
+import { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
+import {
+  RepositoryBindingStore,
+  RepositorySecretStore,
+  RepositoryStateStore,
+} from '../services/configurationRepository/repositoryStores';
+import {
+  RepositoryStateProjection,
+  resolveRepositoryTreeDecoration,
+} from '../services/configurationRepository/repositoryTreeDecorations';
 
 /** Empty-catalog hint (WOW design UC-01 / plan §1C). */
 async function syncInfobaseTreeViewMessage(state: ExtensionState): Promise<void> {
@@ -204,6 +215,58 @@ function registerReloadCoordinator(
   });
 }
 
+/** Configures phase-1 Configuration Repository services and the synchronous tree projection. */
+async function configureConfigurationRepositoryServices(
+  context: vscode.ExtensionContext,
+  state: ExtensionState,
+  lifecycle: MetadataTreeLifecycle,
+): Promise<void> {
+  const storage = state.infobaseStorage;
+  const provider = state.treeDataProvider;
+  if (!storage || !provider) {
+    throw new Error('Configuration Repository requires initialized tree and infobase services.');
+  }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const repositoryStorageRoot = workspaceRoot
+    ? path.join(workspaceRoot, '.vscode')
+    : context.globalStorageUri.fsPath;
+  const projection = new RepositoryStateProjection();
+  const bindingStore = new RepositoryBindingStore(
+    path.join(repositoryStorageRoot, 'configuration-repository-bindings.json'),
+  );
+  const stateStore = new RepositoryStateStore(
+    path.join(repositoryStorageRoot, 'configuration-repository-state.json'),
+  );
+  const service = new ConfigurationRepositoryService({
+    bindingStore,
+    secretStore: new RepositorySecretStore(context.secrets),
+    stateStore,
+    infobaseStorage: storage,
+    stateProjection: projection,
+    onStateChanged: () => provider.refresh(),
+    reloadConfiguration: lifecycle.invalidateCacheAndReload,
+  });
+  state.configurationRepositoryProjection = projection;
+  state.configurationRepositoryService = service;
+  provider.setRepositoryStateReader(projection);
+  provider.setRepositoryDecorationResolver(resolveRepositoryTreeDecoration);
+
+  // Hydrate only the last-known projection; no Designer call is made here.
+  try {
+    for (const stored of await bindingStore.list()) {
+      const target = {
+        configRoot: stored.configRoot,
+        configKind: stored.configKind,
+        ...(stored.extensionName ? { extensionName: stored.extensionName } : {}),
+        key: stored.targetKey,
+      } as const;
+      projection.set(target.key, await stateStore.get(target));
+    }
+  } catch (error) {
+    Logger.warn('Configuration Repository projection hydration failed', error);
+  }
+}
+
 /**
  * Orchestrates workspace registration: tree view, providers, reload coordinator,
  * editor providers, infobase features, commands, git handlers.
@@ -229,6 +292,7 @@ export async function registerExtensionWorkspace(
   registerReloadCoordinator(context, state, trackedLifecycle);
   registerEditorProviders(context, state);
   registerInfobaseFeatures(context, state);
+  await configureConfigurationRepositoryServices(context, state, trackedLifecycle);
 
   const commandDisposables = await registerAllCommands({ context, state, lifecycle: trackedLifecycle });
   context.subscriptions.push(...commandDisposables);
