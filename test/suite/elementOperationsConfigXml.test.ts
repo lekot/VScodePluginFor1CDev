@@ -55,7 +55,7 @@ suite('elementOperations Configuration.xml integration', () => {
 
   const BASE_CONFIG_XML = (childObjects: string) =>
     `<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
   <Configuration uuid="42bff091-dd0b-4592-a67f-70c38db7993f">
     <Properties><Name>TestConfig</Name></Properties>
     <ChildObjects>
