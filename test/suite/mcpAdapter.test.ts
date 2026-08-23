@@ -51,7 +51,7 @@ function signal(aborted = false): AbortSignal {
 suite('MCP adapter: tool contract', () => {
   test('registerMcpTools preserves every catalog schema and annotation object', () => {
     const tools = captureRegisteredTools(async () => ({ success: true }));
-    assert.strictEqual(tools.length, 74);
+    assert.strictEqual(tools.length, 78);
     assert.deepStrictEqual(
       tools.map(({ name, config }) => ({ name, annotations: config.annotations })),
       MCP_TOOL_CATALOG.map(({ name, annotations }) => ({ name, annotations })),

@@ -5,6 +5,12 @@ import {
   CfeProjectServiceFactory,
   type CfeBorrowObjectOutcome,
   type CfeBorrowObjectRequest,
+  type CfeBorrowFormRequest,
+  type CfeCreateInterceptorOutcome,
+  type CfeCreateInterceptorRequest,
+  type CfeCreateOwnFormRequest,
+  type CfeExtendFormRequest,
+  type CfeFormMutationOutcome,
   type CfeCreateProjectRequest,
   type CfeProjectContext,
 } from '../extensionSupport/cfeProject';
@@ -16,6 +22,10 @@ export const AGENT_CFE_COMMAND_IDS = {
   validate: '1c-metadata-tree.agent.cfe.validate',
   createProject: '1c-metadata-tree.agent.cfe.createProject',
   borrowObject: '1c-metadata-tree.agent.cfe.borrowObject',
+  createInterceptor: '1c-metadata-tree.agent.cfe.createInterceptor',
+  createOwnForm: '1c-metadata-tree.agent.cfe.createOwnForm',
+  borrowForm: '1c-metadata-tree.agent.cfe.borrowForm',
+  extendForm: '1c-metadata-tree.agent.cfe.extendForm',
 } as const;
 
 export type AgentCfeListProjectsParams = ConfigurationScopedParams;
@@ -24,6 +34,12 @@ export type AgentCfeValidateParams = ConfigurationScopedParams;
 export interface AgentCfeCreateProjectParams extends CfeCreateProjectRequest {}
 export interface AgentCfeBorrowObjectParams extends CfeBorrowObjectRequest {}
 export type AgentCfeBorrowObjectOutcome = CfeBorrowObjectOutcome;
+export interface AgentCfeCreateInterceptorParams extends CfeCreateInterceptorRequest {}
+export interface AgentCfeCreateOwnFormParams extends CfeCreateOwnFormRequest {}
+export interface AgentCfeBorrowFormParams extends CfeBorrowFormRequest {}
+export interface AgentCfeExtendFormParams extends CfeExtendFormRequest {}
+export type AgentCfeCreateInterceptorOutcome = CfeCreateInterceptorOutcome;
+export type AgentCfeFormMutationOutcome = CfeFormMutationOutcome;
 
 /** JSON-safe public representation. ConfigurationSession never crosses the Agent boundary. */
 export interface AgentCfeProjectDto {
@@ -99,6 +115,38 @@ export class AgentCfeProjectOperations {
     }, 'write');
   }
 
+  async createInterceptor(params: AgentCfeCreateInterceptorParams): Promise<AgentResult<AgentCfeCreateInterceptorOutcome>> {
+    return this.run(params.extensionConfigurationId, async (service) => {
+      const outcome = await service.createInterceptor(params);
+      await this.refreshWorkspace().catch(() => undefined);
+      return outcome;
+    }, 'write');
+  }
+
+  async createOwnForm(params: AgentCfeCreateOwnFormParams): Promise<AgentResult<AgentCfeFormMutationOutcome>> {
+    return this.run(params.extensionConfigurationId, async (service) => {
+      const outcome = await service.createOwnForm(params);
+      await this.refreshWorkspace().catch(() => undefined);
+      return outcome;
+    }, 'write');
+  }
+
+  async borrowForm(params: AgentCfeBorrowFormParams): Promise<AgentResult<AgentCfeFormMutationOutcome>> {
+    return this.run(params.extensionConfigurationId, async (service) => {
+      const outcome = await service.borrowForm(params);
+      await this.refreshWorkspace().catch(() => undefined);
+      return outcome;
+    }, 'write');
+  }
+
+  async extendForm(params: AgentCfeExtendFormParams): Promise<AgentResult<AgentCfeFormMutationOutcome>> {
+    return this.run(params.extensionConfigurationId, async (service) => {
+      const outcome = await service.extendForm(params);
+      await this.refreshWorkspace().catch(() => undefined);
+      return outcome;
+    }, 'write');
+  }
+
   private async run<T>(
     configurationId: string | undefined,
     operation: (service: import('../extensionSupport/cfeProject').CfeProjectService) => Promise<T>,
@@ -121,11 +169,17 @@ export class AgentCfeProjectOperations {
     } catch (error) {
       return {
         success: false,
-        code: error instanceof CfeProjectError || isRegistryError(error) ? error.code : 'CFE_OPERATION_FAILED',
+        code: isCfeError(error) || isRegistryError(error) ? error.code : 'CFE_OPERATION_FAILED',
         error: error instanceof Error ? error.message : String(error),
       };
     }
   }
+}
+
+function isCfeError(error: unknown): error is { readonly code: string } {
+  return error instanceof CfeProjectError
+    || Boolean(error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      && error.code.startsWith('CFE_'));
 }
 
 /** Never expose an absolute workspace path through the Agent/MCP boundary. */

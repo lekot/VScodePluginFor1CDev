@@ -29,6 +29,7 @@ import { getWebviewHtml } from './formWebviewHtml';
 import { getFormEditorTitle, loadFormModel, openModuleInEditor, saveFormModel } from './formFileIo';
 import { Logger } from '../utils/logger';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
+import { assertGenericFormMutationAllowed } from './cfeAdoptedFormGuard';
 export { moveNodeInModel } from './formTreeOperations'; // backward compat
 
 /** Custom document whose lifetime is owned by VS Code, not by a webview panel. */
@@ -254,6 +255,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     if (!model) {
       throw new Error('Нет данных формы для сохранения.');
     }
+    await assertGenericFormMutationAllowed(document.uri.fsPath);
     await runConfigurationMutation(document.uri.fsPath, 'ui.form.save', async () => {
       try {
         await saveFormModel(document.uri.fsPath, model);
@@ -296,6 +298,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     if (!model) {
       throw new Error('Нет данных формы для сохранения.');
     }
+    await assertGenericFormMutationAllowed(document.uri.fsPath);
     const transaction = this.pendingModuleTransactions.get(key);
     const destinationModulePath = transaction
       ? getDestinationModulePath(document.uri.fsPath, destination.fsPath, transaction.modulePath)
@@ -449,9 +452,11 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       eventName: payload.eventName,
     };
     const executor = this.messageExecutors.get(payload.docUri);
-    const operation = executor
-      ? executor({ type: 'createEventHandler', ...msg })
-      : handleCreateEventHandlerMsg(ctx, msg);
+    const operation = assertGenericFormMutationAllowed(ctx.document.uri.fsPath).then(() => (
+      executor
+        ? executor({ type: 'createEventHandler', ...msg })
+        : handleCreateEventHandlerMsg(ctx, msg)
+    ));
     operation.then(() => {
       // Re-emit selection so Properties panel refreshes with updated events
       const model = this.documentModel.get(payload.docUri);

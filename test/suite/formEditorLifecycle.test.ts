@@ -153,6 +153,93 @@ suite('FormEditorProvider editable document lifecycle', () => {
     }
   });
 
+  test('fails closed for generic save of an adopted CFE form', async () => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-adopted-cfe-'));
+    try {
+      const formXmlPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List', 'Ext', 'Form.xml');
+      const metadataPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List.xml');
+      await fs.promises.mkdir(path.dirname(formXmlPath), { recursive: true });
+      await fs.promises.writeFile(metadataPath, `<?xml version="1.0"?><MetaDataObject version="2.20"><Form uuid="11111111-1111-4111-8111-111111111111"><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>List</Name><ExtendedConfigurationObject>22222222-2222-4222-8222-222222222222</ExtendedConfigurationObject><FormType>Managed</FormType></Properties></Form></MetaDataObject>`, 'utf8');
+      const provider = new FormEditorProvider();
+      const document = await provider.openCustomDocument(vscode.Uri.file(formXmlPath));
+      (provider as any).documentModel.set(document.uri.toString(), makeModel());
+      const view = makePanel();
+      await provider.resolveCustomEditor(document, view.panel);
+
+      await assert.rejects(
+        () => provider.saveCustomDocument(document, cancellation),
+        (error: { code?: string }) => error.code === 'CFE_ADOPTED_OPERATION_REQUIRED',
+      );
+      assert.strictEqual(fs.existsSync(formXmlPath), false, 'generic editor must not write adopted Form.xml');
+      await view.receive({
+        type: 'createEventHandler', elementId: 'field-1', elementName: 'Field1', tag: 'InputField', eventName: 'OnChange',
+      });
+      assert.strictEqual(
+        fs.existsSync(path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List', 'Ext', 'Form', 'Module.bsl')),
+        false,
+        'generic editor must not write a handler into adopted Module.bsl',
+      );
+
+      view.dispose();
+      document.dispose();
+      provider.dispose();
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed for malformed metadata that explicitly marks an adopted CFE form', async () => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-malformed-adopted-cfe-'));
+    try {
+      const formXmlPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List', 'Ext', 'Form.xml');
+      const metadataPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List.xml');
+      await fs.promises.mkdir(path.dirname(formXmlPath), { recursive: true });
+      await fs.promises.writeFile(metadataPath, '<MetaDataObject><Form><Properties><ObjectBelonging>Adopted</ObjectBelonging>', 'utf8');
+      const provider = new FormEditorProvider();
+      const document = await provider.openCustomDocument(vscode.Uri.file(formXmlPath));
+      (provider as any).documentModel.set(document.uri.toString(), makeModel());
+      const view = makePanel();
+      await provider.resolveCustomEditor(document, view.panel);
+
+      await assert.rejects(
+        () => provider.saveCustomDocument(document, cancellation),
+        (error: { code?: string }) => error.code === 'CFE_ADOPTED_OPERATION_REQUIRED',
+      );
+      await view.receive({
+        type: 'createEventHandler', elementId: 'field-1', elementName: 'Field1', tag: 'InputField', eventName: 'OnChange',
+      });
+      assert.strictEqual(fs.existsSync(formXmlPath), false);
+      assert.strictEqual(fs.existsSync(path.join(path.dirname(formXmlPath), 'Form', 'Module.bsl')), false);
+
+      view.dispose();
+      document.dispose();
+      provider.dispose();
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps generic save compatible with malformed metadata without adopted ownership', async () => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-malformed-own-'));
+    try {
+      const formXmlPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List', 'Ext', 'Form.xml');
+      const metadataPath = path.join(tempDir, 'Catalogs', 'Products', 'Forms', 'List.xml');
+      await fs.promises.mkdir(path.dirname(formXmlPath), { recursive: true });
+      await fs.promises.writeFile(metadataPath, '<MetaDataObject><Form><Properties><Name>List</Name>', 'utf8');
+      const provider = new FormEditorProvider();
+      const document = await provider.openCustomDocument(vscode.Uri.file(formXmlPath));
+      (provider as any).documentModel.set(document.uri.toString(), makeModel());
+
+      await provider.saveCustomDocument(document, cancellation);
+      assert.strictEqual(fs.existsSync(formXmlPath), true);
+
+      document.dispose();
+      provider.dispose();
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('revert rejects malformed disk state and preserves the dirty in-memory model', async () => {
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-revert-error-'));
     try {

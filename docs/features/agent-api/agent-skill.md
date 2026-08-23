@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **74** runtime-команды Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **78** runtime-команд Agent API для программного
 управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,12 +46,12 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-MCP публикует полный Agent API: **74 tools для 74 runtime-команд**.
+MCP публикует полный Agent API: **78 tools для 78 runtime-команд**.
 
 | Домен | MCP tools |
 |---|---|
 | Configuration/CRUD (13) | `cdt_list_configurations`, `cdt_create_object`, `cdt_get_yaml`, `cdt_list_objects`, `cdt_get_properties`, `cdt_add_attribute`, `cdt_add_tabular_section`, `cdt_add_tabular_section_column`, `cdt_delete_attribute`, `cdt_delete_tabular_section`, `cdt_delete_object`, `cdt_rename_object`, `cdt_set_properties` |
-| CFE project lifecycle (5) | `cdt_cfe_list_projects`, `cdt_cfe_get_context`, `cdt_cfe_validate`, `cdt_cfe_create_project`, `cdt_cfe_borrow_object` |
+| CFE project lifecycle (9) | `cdt_cfe_list_projects`, `cdt_cfe_get_context`, `cdt_cfe_validate`, `cdt_cfe_create_project`, `cdt_cfe_borrow_object`, `cdt_cfe_create_interceptor`, `cdt_cfe_create_own_form`, `cdt_cfe_borrow_form`, `cdt_cfe_extend_form` |
 | Debug (15) | `cdt_debug_start`, `cdt_debug_stop`, `cdt_debug_set_breakpoint`, `cdt_debug_clear_breakpoints`, `cdt_debug_set_exception_filter`, `cdt_debug_wait_for_stop`, `cdt_debug_get_stack_trace`, `cdt_debug_get_scopes`, `cdt_debug_get_variables`, `cdt_debug_evaluate`, `cdt_debug_continue`, `cdt_debug_step_over`, `cdt_debug_step_in`, `cdt_debug_step_out`, `cdt_debug_start_from_binding` |
 | Bindings/deploy (7) | `cdt_resolve_binding`, `cdt_list_bindings`, `cdt_deploy`, `cdt_deploy_selected_objects`, `cdt_deploy_changed_files`, `cdt_pull_selected_objects`, `cdt_export_status` |
 | Support (6) | `cdt_support_get_status`, `cdt_support_set_object_mode`, `cdt_support_enable_object_rules`, `cdt_support_sync`, `cdt_support_verify`, `cdt_support_get_last_run` |
@@ -74,9 +74,35 @@ MCP публикует полный Agent API: **74 tools для 74 runtime-ко
 `extensionConfigurationId` и ровно один источник: `sourceDotPath` (`Type.Name`) либо `sourceUuid`.
 Заимствование идемпотентно по UUID, выполняется только из связанной основной конфигурации и пока
 поддерживает Catalog, Document, Enum и CommonModule; неподтверждённые замыкания зависимостей
-отклоняются с `CFE_DEPENDENCY_UNSUPPORTED`. Ответы содержат JSON-safe DTO: идентификаторы
-конфигураций и метаданные связи, но не сессии VS Code и не абсолютные пути. Создание и заимствование
-обновляют discovery конфигураций и дерево метаданных.
+отклоняются с `CFE_DEPENDENCY_UNSUPPORTED`.
+
+`cfe.createInterceptor` принимает UUID уже заимствованного объекта, `moduleKind` из
+`Module|ObjectModule|ManagerModule|RecordSetModule|ValueManagerModule`, имя метода и kind
+`before|after|instead|changeAndValidate`. Module kind сверяется с типом объекта; `before`/`after`
+для функций запрещены. Для `changeAndValidate` обязателен SHA-256 `expectedSourceHash`
+канонического текста исходного метода. Результат содержит `created|already-exists`, имя
+перехватчика, source hash и относительный module path; конфликт пользовательского тела даёт
+`CFE_INTERCEPTOR_CONFLICT`, drift — `CFE_SOURCE_CHANGED`.
+
+`cfe.createOwnForm` создаёт managed-форму у существующего CFE `Catalog`/`Document` по
+`ownerDotPath`; имя должно соответствовать NamePrefix. `cfe.borrowForm` принимает UUID уже
+заимствованного владельца и ровно один selector `sourceFormUuid|sourceFormName`; результат
+`borrowed|already-borrowed` содержит относительные metadata/form/module paths. Владелец и его
+зависимости никогда не заимствуются автоматически.
+
+`cfe.extendForm` принимает UUID заимствованной формы, SHA-256 `expectedFormHash` исходного
+`Ext/Form.xml` и непустой список аддитивных операций: `addAttribute`, `addCommand`, `addElement`,
+`setFormEvent`, `setElementEvent`, `addCommandAction`. Допустимые `callType` —
+`Before|After|Override`; новые visual elements — `UsualGroup|InputField|Button`. BaseForm не
+удаляется и не перезаписывается, идентичное повторное изменение возвращает `unchanged`.
+
+Для всех form-операций closure fail-closed: Catalog, Document, Enum/EnumValue, CommonPicture и
+StyleItem должны быть уже заимствованы и совпадать с объектом основной конфигурации. Неизвестная
+metadata reference, отсутствующая или незаимствованная зависимость возвращает
+`CFE_DEPENDENCY_UNSUPPORTED` до записи. Обычный Form editor не сохраняет и не создаёт handlers
+для заимствованной формы — используйте `cfe.extendForm` (`CFE_ADOPTED_OPERATION_REQUIRED`).
+Ответы содержат JSON-safe DTO: идентификаторы конфигураций и метаданные связи, но не сессии VS Code
+и не абсолютные пути. Создание и заимствование обновляют discovery конфигураций и дерево метаданных.
 
 ### Доверие и опасные операции
 

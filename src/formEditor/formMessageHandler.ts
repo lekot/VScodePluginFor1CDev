@@ -32,6 +32,7 @@ import { generateHandlerName } from './formEventCatalog';
 import { createHandlerInModule } from './formEventHandlerCreator';
 import { parseBslModuleProcedures } from './bslModuleParser';
 import { getFormPaths } from './formPaths';
+import { assertGenericFormMutationAllowed } from './cfeAdoptedFormGuard';
 import { FORM_ROOT_ID } from './formTreeOperations';
 import { getAddElementWizardConfigPayload } from './formAddElementWizardConfig';
 import {
@@ -1065,6 +1066,7 @@ export async function handleCreateEventHandler(
   const handlerName = generateHandlerName(elementName, eventName, isFormLevel);
 
   try {
+    await assertGenericFormMutationAllowed(ctx.document.uri.fsPath);
     const modulePath = getFormPaths(ctx.document.uri.fsPath).modulePath;
     await runConfigurationMutation(modulePath, 'ui.form.createEventHandler', async () => {
     const procedures = await parseBslModuleProcedures(modulePath);
