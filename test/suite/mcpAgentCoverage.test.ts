@@ -104,6 +104,10 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_cfe_validate', 'cfe.validate', 'readClosed'),
   tool('cdt_cfe_create_project', 'cfe.createProject', 'writeClosed'),
   tool('cdt_cfe_borrow_object', 'cfe.borrowObject', 'writeClosedIdempotent'),
+  tool('cdt_cfe_create_interceptor', 'cfe.createInterceptor', 'writeClosedIdempotent'),
+  tool('cdt_cfe_create_own_form', 'cfe.createOwnForm', 'writeClosedIdempotent'),
+  tool('cdt_cfe_borrow_form', 'cfe.borrowForm', 'writeClosedIdempotent'),
+  tool('cdt_cfe_extend_form', 'cfe.extendForm', 'writeClosedIdempotent'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
@@ -126,6 +130,22 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   },
   cdt_cfe_borrow_object: {
     extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods',
+  },
+  cdt_cfe_create_interceptor: {
+    extensionConfigurationId: 'cfg', targetSourceUuid: '11111111-1111-4111-8111-111111111111',
+    moduleKind: 'ObjectModule', methodName: 'OnWrite', kind: 'before',
+  },
+  cdt_cfe_create_own_form: {
+    extensionConfigurationId: 'cfg', ownerDotPath: 'Catalog.Goods', formName: 'Ext_Form', formType: 'Managed',
+  },
+  cdt_cfe_borrow_form: {
+    extensionConfigurationId: 'cfg', ownerSourceUuid: '11111111-1111-4111-8111-111111111111',
+    sourceFormUuid: '22222222-2222-4222-8222-222222222222',
+  },
+  cdt_cfe_extend_form: {
+    extensionConfigurationId: 'cfg', sourceFormUuid: '22222222-2222-4222-8222-222222222222',
+    expectedFormHash: 'a'.repeat(64),
+    operations: [{ kind: 'addAttribute', name: 'Ext_Value', type: { typeName: 'xs:string' } }],
   },
   cdt_create_object: { configurationId: 'cfg', type: 'Catalog', name: 'Goods', synonym: 'Goods', properties: { nested: { enabled: true }, values: [1, null] } },
   cdt_get_yaml: { configurationId: 'cfg', path: 'Catalog.Goods' },
@@ -245,6 +265,9 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'CFE borrow rejects two sources', tool: 'cdt_cfe_borrow_object', input: { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods', sourceUuid: '11111111-1111-4111-8111-111111111111' } },
   { label: 'CFE borrow rejects a malformed source path', tool: 'cdt_cfe_borrow_object', input: { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Bad-Name' } },
   { label: 'CFE borrow rejects a zero source UUID', tool: 'cdt_cfe_borrow_object', input: { extensionConfigurationId: 'cfg', sourceUuid: '00000000-0000-0000-0000-000000000000' } },
+  { label: 'CFE interceptor requires hash for changeAndValidate', tool: 'cdt_cfe_create_interceptor', input: { extensionConfigurationId: 'cfg', targetSourceUuid: '11111111-1111-4111-8111-111111111111', moduleKind: 'ObjectModule', methodName: 'OnWrite', kind: 'changeAndValidate' } },
+  { label: 'CFE borrowed form requires exactly one source', tool: 'cdt_cfe_borrow_form', input: { extensionConfigurationId: 'cfg', ownerSourceUuid: '11111111-1111-4111-8111-111111111111' } },
+  { label: 'CFE extension requires non-empty operations', tool: 'cdt_cfe_extend_form', input: { extensionConfigurationId: 'cfg', sourceFormUuid: '22222222-2222-4222-8222-222222222222', expectedFormHash: 'a'.repeat(64), operations: [] } },
   { label: 'createObject empty type', tool: 'cdt_create_object', input: { type: '', name: 'Goods' } },
   { label: 'createObject empty name', tool: 'cdt_create_object', input: { type: 'Catalog', name: '' } },
   { label: 'createObject invalid type identifier', tool: 'cdt_create_object', input: { type: 'Bad-Type', name: 'Goods' } },
@@ -385,10 +408,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('catalog has the exact 74 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 74, 'test oracle must enumerate all 74 tools');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 74);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 74);
+  test('catalog has the exact 78 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 78, 'test oracle must enumerate all 78 tools');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 78);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 78);
 
     assert.deepStrictEqual(
       MCP_TOOL_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -431,8 +454,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 74);
-    assert.strictEqual(new Set(registered).size, 74);
+    assert.strictEqual(registered.length, 78);
+    assert.strictEqual(new Set(registered).size, 78);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -445,7 +468,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 74 valid fixtures pass and every root schema rejects an extra property', () => {
+  test('all 78 valid fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

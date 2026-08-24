@@ -107,7 +107,11 @@ import {
     AGENT_CFE_COMMAND_IDS,
     AgentCfeProjectOperations,
     type AgentCfeBorrowObjectParams,
+    type AgentCfeBorrowFormParams,
+    type AgentCfeCreateInterceptorParams,
+    type AgentCfeCreateOwnFormParams,
     type AgentCfeCreateProjectParams,
+    type AgentCfeExtendFormParams,
     type AgentCfeGetContextParams,
     type AgentCfeListProjectsParams,
     type AgentCfeValidateParams,
@@ -286,6 +290,22 @@ export function registerAgentCommands(
     const cfeBorrowObjectCommand = vscode.commands.registerCommand(
         AGENT_CFE_COMMAND_IDS.borrowObject,
         async (params: AgentCfeBorrowObjectParams) => cfeOperations.borrowObject(params),
+    );
+    const cfeCreateInterceptorCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.createInterceptor,
+        async (params: AgentCfeCreateInterceptorParams) => cfeOperations.createInterceptor(params),
+    );
+    const cfeCreateOwnFormCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.createOwnForm,
+        async (params: AgentCfeCreateOwnFormParams) => cfeOperations.createOwnForm(params),
+    );
+    const cfeBorrowFormCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.borrowForm,
+        async (params: AgentCfeBorrowFormParams) => cfeOperations.borrowForm(params),
+    );
+    const cfeExtendFormCommand = vscode.commands.registerCommand(
+        AGENT_CFE_COMMAND_IDS.extendForm,
+        async (params: AgentCfeExtendFormParams) => cfeOperations.extendForm(params),
     );
 
     // ─── 1c-metadata-tree.agent.createObject ─────────────────────────────────
@@ -1021,6 +1041,7 @@ export function registerAgentCommands(
     context.subscriptions.push(
         listConfigurationsCommand,
         cfeListProjectsCommand, cfeGetContextCommand, cfeValidateCommand, cfeCreateProjectCommand, cfeBorrowObjectCommand,
+        cfeCreateInterceptorCommand, cfeCreateOwnFormCommand, cfeBorrowFormCommand, cfeExtendFormCommand,
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,

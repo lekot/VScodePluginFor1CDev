@@ -4,7 +4,7 @@
 
 Дать стандартному MCP-клиенту полный доступ к существующему Agent API расширения без дублирования предметной логики. MCP является новым транспортом над теми же VS Code Agent-командами: каждый tool валидирует input и вызывает ровно одну команду через `vscode.commands.executeCommand`. Legacy Agent Bridge `/command` остаётся совместимым.
 
-Нормативная граница каталога — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. В текущей версии она регистрирует 74 Agent-команды, и MCP публикует их все в отношении 1:1.
+Нормативная граница каталога — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. В текущей версии она регистрирует 78 Agent-команд, и MCP публикует их все в отношении 1:1.
 
 Четыре UI-команды расширения не являются Agent API, не возвращают `AgentResult` и находятся вне scope:
 
@@ -44,6 +44,10 @@
 | `cdt_cfe_validate` | `1c-metadata-tree.agent.cfe.validate` | T/F/T/F |
 | `cdt_cfe_create_project` | `1c-metadata-tree.agent.cfe.createProject` | F/T/F/F |
 | `cdt_cfe_borrow_object` | `1c-metadata-tree.agent.cfe.borrowObject` | F/T/T/F |
+| `cdt_cfe_create_interceptor` | `1c-metadata-tree.agent.cfe.createInterceptor` | F/T/T/F |
+| `cdt_cfe_create_own_form` | `1c-metadata-tree.agent.cfe.createOwnForm` | F/T/T/F |
+| `cdt_cfe_borrow_form` | `1c-metadata-tree.agent.cfe.borrowForm` | F/T/T/F |
+| `cdt_cfe_extend_form` | `1c-metadata-tree.agent.cfe.extendForm` | F/T/T/F |
 
 ### Debug
 
@@ -260,7 +264,7 @@ Stop: запрет новых запросов → закрытие MCP sessions
 ## Критерии приёмки
 
 1. Official SDK client проходит `initialize → tools/list → tools/call → DELETE session` по discovery URL и Bearer token.
-2. `tools/list` содержит ровно 74 уникальных tools и ровно 74 уникальных Agent command mappings.
+2. `tools/list` содержит ровно 78 уникальных tools и ровно 78 уникальных Agent command mappings.
 3. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
 4. Четыре перечисленные UI-команды отсутствуют в MCP catalog.
 5. Для каждого tool проверены имя, command id, strict schema, refinements и статические annotations.

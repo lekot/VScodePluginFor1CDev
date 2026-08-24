@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.18">
+  <AutoTitle>false</AutoTitle>
+<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"><Autofill>true</Autofill><ChildItems><Button name="BaseButton" id="4"><CommandName>Form.Command.BaseCommand</CommandName></Button></ChildItems></AutoCommandBar>
+  <ChildItems><UsualGroup name="BaseGroup" id="1"><ChildItems><InputField name="BaseField" id="2"><DataPath>Object.Description</DataPath><Events><Event name="OnChange">BaseHandler</Event></Events></InputField><InputField name="DeepField" id="3"><TypeLink><xr:DataPath>Items.Table</xr:DataPath></TypeLink></InputField></ChildItems></UsualGroup></ChildItems>
+  <Attributes><Attribute name="Object" id="7"><MainAttribute>true</MainAttribute><Type><v8:Type>cfg:CatalogObject.Products</v8:Type></Type></Attribute></Attributes>
+  <Commands><Command name="BaseCommand" id="9"><Action>BaseAction</Action></Command></Commands>
+</Form>

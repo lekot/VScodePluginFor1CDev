@@ -47,7 +47,42 @@ export function registerCfeProjectCommands(options: RegisterCfeProjectCommandsOp
       }
     },
   );
-  options.context.subscriptions.push(command);
+  const runExtensionOperation = async <T extends { readonly extensionConfigurationId: string }>(
+    request: T,
+    operation: (service: import('.').CfeProjectService, value: T) => Promise<unknown>,
+  ): Promise<unknown> => {
+    const registry = await options.getConfigurationRegistry();
+    const result = await operation(
+      new CfeProjectServiceFactory(registry, { refreshWorkspace: options.refreshTree })
+        .forConfiguration(request.extensionConfigurationId),
+      request,
+    );
+    await options.refreshTree();
+    return result;
+  };
+  // Programmatic UI adapters: commands own no XML/BSL logic and are intentionally
+  // separate from the Agent namespace used by MCP.
+  const createInterceptor = vscode.commands.registerCommand(
+    '1c-metadata-tree.cfe.createInterceptor',
+    (request: import('./interceptorTypes').CfeCreateInterceptorRequest) =>
+      runExtensionOperation(request, (service, value) => service.createInterceptor(value)),
+  );
+  const createOwnForm = vscode.commands.registerCommand(
+    '1c-metadata-tree.cfe.createOwnForm',
+    (request: import('./formTypes').CfeCreateOwnFormRequest) =>
+      runExtensionOperation(request, (service, value) => service.createOwnForm(value)),
+  );
+  const borrowForm = vscode.commands.registerCommand(
+    '1c-metadata-tree.cfe.borrowForm',
+    (request: import('./formTypes').CfeBorrowFormRequest) =>
+      runExtensionOperation(request, (service, value) => service.borrowForm(value)),
+  );
+  const extendForm = vscode.commands.registerCommand(
+    '1c-metadata-tree.cfe.extendForm',
+    (request: import('./formTypes').CfeExtendFormRequest) =>
+      runExtensionOperation(request, (service, value) => service.extendForm(value)),
+  );
+  options.context.subscriptions.push(command, createInterceptor, createOwnForm, borrowForm, extendForm);
 }
 
 function isBaseConfigurationRoot(node: TreeNode | undefined): node is TreeNode {

@@ -578,6 +578,26 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.cfe.createInterceptor",
+        "title": "Agent: Создать перехватчик CFE",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.cfe.createOwnForm",
+        "title": "Agent: Создать собственную форму CFE",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.cfe.borrowForm",
+        "title": "Agent: Заимствовать форму CFE",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.cfe.extendForm",
+        "title": "Agent: Расширить заимствованную форму CFE",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.createObject",
         "title": "Agent: Создать объект метаданных",
         "category": "CDT 41 Agent"

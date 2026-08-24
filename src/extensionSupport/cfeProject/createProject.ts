@@ -6,6 +6,8 @@ import { validateElementName } from '../../utils/elementNameValidator';
 import type { WorkspaceRegistry } from '../../services/configurationSession/WorkspaceRegistry';
 import { CfeProjectManifestStorage } from './manifest';
 import { CfeBorrowService } from './borrowObject';
+import { CfeFormService } from './formService';
+import { CfeInterceptorService } from './interceptorService';
 import { CfeProjectRegistry } from './registry';
 import {
   CfeProjectError,
@@ -41,6 +43,8 @@ export interface CfeProjectServiceOptions {
 export class CfeProjectService {
   readonly projects: CfeProjectRegistry;
   readonly borrow: CfeBorrowService;
+  readonly forms: CfeFormService;
+  readonly interceptors: CfeInterceptorService;
 
   constructor(
     readonly workspaceRoot: string,
@@ -49,6 +53,8 @@ export class CfeProjectService {
   ) {
     this.projects = new CfeProjectRegistry(workspaceRoot, workspaceRegistry, options.manifestStorage);
     this.borrow = new CfeBorrowService(this.projects);
+    this.forms = new CfeFormService(this.projects);
+    this.interceptors = new CfeInterceptorService(this.projects);
   }
 
   async listProjects() { return this.projects.list(); }
@@ -57,6 +63,18 @@ export class CfeProjectService {
   async validate(): Promise<void> { await this.projects.list(); }
   async borrowObject(request: CfeBorrowObjectRequest): Promise<CfeBorrowObjectOutcome> {
     return this.borrow.borrowObject(request);
+  }
+  async createInterceptor(request: import('./interceptorTypes').CfeCreateInterceptorRequest) {
+    return this.interceptors.createInterceptor(request);
+  }
+  async createOwnForm(request: import('./formTypes').CfeCreateOwnFormRequest) {
+    return this.forms.createOwnForm(request);
+  }
+  async borrowForm(request: import('./formTypes').CfeBorrowFormRequest) {
+    return this.forms.borrowForm(request);
+  }
+  async extendForm(request: import('./formTypes').CfeExtendFormRequest) {
+    return this.forms.extendForm(request);
   }
 
   async createProject(request: CfeCreateProjectRequest): Promise<CfeCreateProjectOutcome> {
