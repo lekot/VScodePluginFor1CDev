@@ -19,6 +19,12 @@ VS Code расширение для визуализации и редактир
 
 А также: Отладка из VSCode, визуальный редактор типов,  таблица состава ролей, фильтр по подсистемам, визуальный редактор форм (прототип, идёт работа)
 
+<img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />
+<img width="1092" height="450" alt="image" src="https://github.com/user-attachments/assets/755d5a95-4088-4567-89ba-8d6ffe38d670" />
+<img width="1159" height="885" alt="image" src="https://github.com/user-attachments/assets/7f608dee-7a6d-46a9-aac8-f86e52e55433" />
+<img width="1490" height="757" alt="image" src="https://github.com/user-attachments/assets/ebca534a-d37c-4c88-8b1b-826525a743c4" />
+<img width="1462" height="671" alt="image" src="https://github.com/user-attachments/assets/e2f9194f-9593-4f86-a364-829c2c922410" />
+
 ### Agent API (для AI-агентов)
 
 CDT 41 предоставляет **78** runtime-команд Agent API для программного управления метаданными, CFE-проектами, поддержкой конфигурации, EPF/ERF, отладкой, формами, СКД и XDTO-пакетами 1С. Основной способ подключения — встроенный Streamable HTTP MCP endpoint; команды также доступны через `vscode.commands.executeCommand`, а legacy HTTP bridge сохранён только для совместимости. AI-агент (Claude Code, Copilot, MCP-клиент) может:
@@ -67,12 +73,6 @@ Bearer разрешает локальному MCP-клиенту весь Agent
 Legacy endpoint `/command` остаётся доступен для совместимости, но MCP-клиентам рекомендуется стандартное подключение через `mcp.url`.
 
 Чего нет: конструктора запроса (есть внешние в режиме предприятия), просмотра СКД, правки макетов и много чего еще нет. Включайся в разработку - будет
-<img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />
-<img width="1092" height="450" alt="image" src="https://github.com/user-attachments/assets/755d5a95-4088-4567-89ba-8d6ffe38d670" />
-<img width="1159" height="885" alt="image" src="https://github.com/user-attachments/assets/7f608dee-7a6d-46a9-aac8-f86e52e55433" />
-<img width="1490" height="757" alt="image" src="https://github.com/user-attachments/assets/ebca534a-d37c-4c88-8b1b-826525a743c4" />
-<img width="1462" height="671" alt="image" src="https://github.com/user-attachments/assets/e2f9194f-9593-4f86-a364-829c2c922410" />
-
 
 
 
