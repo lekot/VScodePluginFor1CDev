@@ -1513,5 +1513,45 @@ suite('SDBL Formatter & BSL Serializer', () => {
       const params = extractParameters(pkg);
       assert.deepStrictEqual(params, ['Другой', 'Парам'].sort((a, b) => a.localeCompare(b)));
     });
+
+    test('R11: extracts parameters from PERIODS clause in totals', () => {
+      const sql = `
+        ВЫБРАТЬ Номенклатура, Сумма ИЗ Документ.Продажи
+        ИТОГИ СУММА(Сумма) ПО Период ПЕРИОДАМИ(ДЕНЬ, &ДатаНач, &ДатаКон)
+      `;
+      const pkg = parseSdbl(sql);
+      const params = extractParameters(pkg);
+      assert.deepStrictEqual(params, ['ДатаКон', 'ДатаНач']);
+    });
+
+    test('R4: formats asterisk when fields array is empty', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          },
+        ],
+      };
+      const formatted = formatSdbl(pkg);
+      assert.ok(formatted.includes('ВЫБРАТЬ\n\t*'));
+    });
+
+    test('R5: formats raw string expression in orderBy', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Поле1' } }],
+            from: [{ source: { type: 'Table', name: 'Таб' } }],
+            orderBy: [{ expression: 'Таб.Поле1' as any, direction: 'Desc' }],
+          },
+        ],
+      };
+      const formatted = formatSdbl(pkg);
+      assert.ok(formatted.includes('УПОРЯДОЧИТЬ ПО\n\tТаб.Поле1 УБЫВ'));
+    });
   });
 });
+

@@ -35,6 +35,9 @@ export interface QueryBuilderMessageContext {
   initialDocumentVersion?: number;
   expectedText?: string;
   expectedStatementText?: string;
+  surroundingPrefix?: string;
+  surroundingSuffix?: string;
+  occurrenceIndex?: number;
 }
 
 export interface QueryBuilderInboundMessage {
@@ -116,17 +119,91 @@ export async function handleQueryBuilderMessage(
             const currentText = context.editor.document.getText(targetVscodeRange);
             if (expectedText !== undefined && currentText !== expectedText) {
               const fullText = context.editor.document.getText();
-              const foundOffset = expectedText.length > 0 ? fullText.indexOf(expectedText) : -1;
-              if (foundOffset !== -1) {
-                const newStart = context.editor.document.positionAt(foundOffset);
-                const newEnd = context.editor.document.positionAt(foundOffset + expectedText.length);
-                targetVscodeRange = new vscode.Range(newStart, newEnd);
-              } else {
+              if (!expectedText) {
                 void vscode.window.showErrorMessage(
                   'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
                 );
                 return;
               }
+
+              // Find all occurrences of expectedText in fullText
+              const occurrences: number[] = [];
+              let searchFrom = 0;
+              while (searchFrom <= fullText.length - expectedText.length) {
+                const idx = fullText.indexOf(expectedText, searchFrom);
+                if (idx === -1) {break;}
+                occurrences.push(idx);
+                searchFrom = idx + 1;
+              }
+
+              if (occurrences.length === 0) {
+                void vscode.window.showErrorMessage(
+                  'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+                );
+                return;
+              }
+
+              let foundOffset = -1;
+              if (occurrences.length === 1) {
+                foundOffset = occurrences[0];
+              } else {
+                // Multiple occurrences exist! Match by surrounding prefix/suffix and original position
+                const originalOffset = activeRange.startOffset;
+                const prefix = context.surroundingPrefix ?? '';
+                const suffix = context.surroundingSuffix ?? '';
+
+                let bestScore = -1;
+                let bestOffset = -1;
+                let tieCount = 0;
+
+                for (let i = 0; i < occurrences.length; i++) {
+                  const off = occurrences[i];
+                  let score = 0;
+                  if (prefix.length > 0) {
+                    const actualPrefix = fullText.slice(Math.max(0, off - prefix.length), off);
+                    if (actualPrefix === prefix) {
+                      score += 100;
+                    } else if (prefix.endsWith(actualPrefix) || actualPrefix.endsWith(prefix)) {
+                      score += 30;
+                    }
+                  }
+                  if (suffix.length > 0) {
+                    const actualSuffix = fullText.slice(off + expectedText.length, off + expectedText.length + suffix.length);
+                    if (actualSuffix === suffix) {
+                      score += 100;
+                    } else if (suffix.startsWith(actualSuffix) || actualSuffix.startsWith(suffix)) {
+                      score += 30;
+                    }
+                  }
+                  if (context.occurrenceIndex !== undefined && i === context.occurrenceIndex) {
+                    score += 50;
+                  }
+
+                  const distance = Math.abs(off - originalOffset);
+                  score += Math.max(0, 20 - Math.floor(distance / 50));
+
+                  if (score > bestScore) {
+                    bestScore = score;
+                    bestOffset = off;
+                    tieCount = 1;
+                  } else if (score === bestScore) {
+                    tieCount++;
+                  }
+                }
+
+                if (bestOffset !== -1 && tieCount === 1) {
+                  foundOffset = bestOffset;
+                } else {
+                  void vscode.window.showErrorMessage(
+                    'Документ содержит несколько похожих запросов и был изменен. Сохранение отменено во избежание неоднозначной замены.'
+                  );
+                  return;
+                }
+              }
+
+              const newStart = context.editor.document.positionAt(foundOffset);
+              const newEnd = context.editor.document.positionAt(foundOffset + expectedText.length);
+              targetVscodeRange = new vscode.Range(newStart, newEnd);
             }
           }
 

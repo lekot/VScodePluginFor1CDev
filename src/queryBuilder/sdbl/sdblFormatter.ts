@@ -84,6 +84,8 @@ function formatSelect(
       const comma = i < stmt.fields.length - 1 ? ',' : '';
       lines.push(`${indent}${exprStr}${aliasStr}${comma}`);
     }
+  } else {
+    lines.push(`${indent}*`);
   }
 
   // 3. INTO / ПОМЕСТИТЬ
@@ -225,7 +227,12 @@ function formatSelect(
   }
 
   // 11. TOTALS / ИТОГИ
-  if (stmt.totals) {
+  if (
+    stmt.totals &&
+    (stmt.totals.overall ||
+      (stmt.totals.fields && stmt.totals.fields.length > 0) ||
+      (stmt.totals.by && stmt.totals.by.length > 0))
+  ) {
     lines.push(...formatTotals(stmt.totals, indent, newline));
   }
 
@@ -285,6 +292,13 @@ function formatTotals(
   indent: string,
   newline: string
 ): string[] {
+  const hasFields = Boolean(totals.fields && totals.fields.length > 0);
+  const hasBy = Boolean(totals.by && totals.by.length > 0);
+  const hasOverall = Boolean(totals.overall);
+  if (!hasFields && !hasBy && !hasOverall) {
+    return [];
+  }
+
   const lines: string[] = ['ИТОГИ'];
 
   if (totals.fields && totals.fields.length > 0) {
@@ -458,10 +472,16 @@ function getOperatorPrecedence(expr: ExpressionNode): number {
  * Formats an expression node into a string.
  */
 export function formatExpression(
-  expr: ExpressionNode,
+  expr: ExpressionNode | string,
   indent = DEFAULT_INDENT,
   newline = DEFAULT_NEWLINE
 ): string {
+  if (typeof expr === 'string') {
+    return expr;
+  }
+  if (!expr || typeof expr !== 'object') {
+    return '';
+  }
   return formatSubExpression(expr, 0, indent, newline);
 }
 
@@ -469,11 +489,17 @@ export function formatExpression(
  * Formats a sub-expression, adding parentheses if its precedence is lower than parentPrecedence.
  */
 function formatSubExpression(
-  expr: ExpressionNode,
+  expr: ExpressionNode | string,
   parentPrecedence: number,
   indent: string,
   newline: string
 ): string {
+  if (typeof expr === 'string') {
+    return expr;
+  }
+  if (!expr || typeof expr !== 'object') {
+    return '';
+  }
   const currentPrecedence = getOperatorPrecedence(expr);
   const formatted = formatExpressionCore(expr, indent, newline);
 
@@ -707,8 +733,15 @@ export function formatToBslLiteral(
 export function extractParameters(pkg: QueryPackage): string[] {
   const params = new Set<string>();
 
-  function collectFromExpr(expr: ExpressionNode | undefined) {
+  function collectFromExpr(expr: ExpressionNode | string | undefined) {
     if (!expr) {return;}
+    if (typeof expr === 'string') {
+      const matches = expr.matchAll(/&([a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_]*)/g);
+      for (const m of matches) {
+        params.add(m[1]);
+      }
+      return;
+    }
     switch (expr.type) {
       case 'Parameter':
         params.add(expr.name);
@@ -751,6 +784,11 @@ export function extractParameters(pkg: QueryPackage): string[] {
         collectFromExpr(expr.pattern);
         if (expr.escape) {collectFromExpr(expr.escape);}
         break;
+      case 'RawExpression':
+        if (expr.raw) {
+          collectFromExpr(expr.raw);
+        }
+        break;
     }
   }
 
@@ -766,9 +804,7 @@ export function extractParameters(pkg: QueryPackage): string[] {
   function collectFromSelect(stmt: SelectStatement) {
     if (!stmt) {return;}
     stmt.fields?.forEach((f) => {
-      if (typeof f.expression !== 'string') {
-        collectFromExpr(f.expression);
-      }
+      collectFromExpr(f.expression);
     });
 
     stmt.from?.forEach((fc) => {
@@ -786,7 +822,15 @@ export function extractParameters(pkg: QueryPackage): string[] {
     stmt.orderBy?.forEach((o) => collectFromExpr(o.expression));
     if (stmt.totals) {
       stmt.totals.fields?.forEach((f) => collectFromExpr(f.expression));
-      stmt.totals.by?.forEach((b) => collectFromExpr(b.expression));
+      stmt.totals.by?.forEach((b) => {
+        collectFromExpr(b.expression);
+        if (b.periodDefinition?.from) {
+          collectFromExpr(b.periodDefinition.from);
+        }
+        if (b.periodDefinition?.to) {
+          collectFromExpr(b.periodDefinition.to);
+        }
+      });
     }
   }
 

@@ -37,6 +37,7 @@ export class QueryBuilderProvider {
     }
 
     const doc = targetEditor.document;
+    const initialDocumentVersion = doc.version;
     const documentText = doc.getText();
     const cursorOffset = doc.offsetAt(targetEditor.selection.active);
     const selectionRange = targetEditor.selection.isEmpty
@@ -132,6 +133,38 @@ export class QueryBuilderProvider {
       extracted = extractBslQuery(documentText, cursorOffset, selectionRange);
     }
 
+    const expectedText = documentText.slice(
+      extracted.replaceRange.startOffset,
+      extracted.replaceRange.endOffset
+    );
+    const expectedStatementText = extracted.statementRange
+      ? documentText.slice(
+          extracted.statementRange.startOffset,
+          extracted.statementRange.endOffset
+        )
+      : undefined;
+
+    const isWithProcessingEarly = mode === 'withProcessing' && !!extracted.statementRange;
+    const activeRangeEarly = isWithProcessingEarly ? extracted.statementRange! : extracted.replaceRange;
+    const targetExpectedText = isWithProcessingEarly ? (expectedStatementText ?? expectedText) : expectedText;
+
+    let occurrenceIndex = 0;
+    if (targetExpectedText.length > 0) {
+      let idx = -1;
+      while ((idx = documentText.indexOf(targetExpectedText, idx + 1)) !== -1 && idx < activeRangeEarly.startOffset) {
+        occurrenceIndex++;
+      }
+    }
+
+    const surroundingPrefix = documentText.slice(
+      Math.max(0, activeRangeEarly.startOffset - 60),
+      activeRangeEarly.startOffset
+    );
+    const surroundingSuffix = documentText.slice(
+      activeRangeEarly.endOffset,
+      Math.min(documentText.length, activeRangeEarly.endOffset + 60)
+    );
+
     let ast: QueryPackage;
     if (extracted.isNewQuery || !extracted.sdblText || extracted.sdblText.trim().length === 0) {
       ast = {
@@ -197,33 +230,6 @@ export class QueryBuilderProvider {
       });
     }
 
-    const replaceRangeVscode = new vscode.Range(
-      new vscode.Position(
-        Math.max(0, extracted.replaceRange.startLine - 1),
-        Math.max(0, extracted.replaceRange.startColumn - 1)
-      ),
-      new vscode.Position(
-        Math.max(0, extracted.replaceRange.endLine - 1),
-        Math.max(0, extracted.replaceRange.endColumn - 1)
-      )
-    );
-    const expectedText = targetEditor.document.getText(replaceRangeVscode);
-
-    let expectedStatementText: string | undefined;
-    if (extracted.statementRange) {
-      const stmtRangeVscode = new vscode.Range(
-        new vscode.Position(
-          Math.max(0, extracted.statementRange.startLine - 1),
-          Math.max(0, extracted.statementRange.startColumn - 1)
-        ),
-        new vscode.Position(
-          Math.max(0, extracted.statementRange.endLine - 1),
-          Math.max(0, extracted.statementRange.endColumn - 1)
-        )
-      );
-      expectedStatementText = targetEditor.document.getText(stmtRangeVscode);
-    }
-
     const messageContext: QueryBuilderMessageContext = {
       panel: this.panel,
       editor: targetEditor,
@@ -236,9 +242,12 @@ export class QueryBuilderProvider {
       metadataProvider,
       treeProvider: this.state?.treeDataProvider ?? null,
       isSdblDocument,
-      initialDocumentVersion: targetEditor.document.version,
+      initialDocumentVersion,
       expectedText,
       expectedStatementText,
+      surroundingPrefix,
+      surroundingSuffix,
+      occurrenceIndex,
     };
 
     this.messageHandler = new QueryBuilderMessageHandler(messageContext);

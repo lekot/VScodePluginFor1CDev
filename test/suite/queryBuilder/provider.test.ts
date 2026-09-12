@@ -132,6 +132,9 @@ suite('QueryBuilder Provider & Message Handler', () => {
         get version() {
           return version;
         },
+        set version(v: number) {
+          version = v;
+        },
         languageId,
         fileName,
         uri: vscode.Uri.file(fileName),
@@ -682,6 +685,66 @@ suite('QueryBuilder Provider & Message Handler', () => {
       assert.strictEqual(editor.getFullText(), modifiedCode, 'Original document must not be overwritten');
     });
 
+    test('R7: duplicate identical queries relocation matches the second occurrence using surrounding context', async () => {
+      const mock = createMockPanel();
+      const initialCode = [
+        'Запрос1 = Новый Запрос;',
+        'Запрос1.Текст = "ВЫБРАТЬ 1";',
+        'Запрос2 = Новый Запрос;',
+        'Запрос2.Текст = "ВЫБРАТЬ 1";',
+      ].join('\n');
+
+      // Now document has shifted because of a header comment
+      const shiftedCode = '// Новая строка вверху\n' + initialCode;
+      const editor = createMockEditor(shiftedCode, undefined, { version: 2 });
+
+      const ast: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Поле2' } }],
+            from: [{ source: { type: 'Table', name: 'Таб' } }],
+          },
+        ],
+      };
+
+      // Second query was opened
+      const secondOccurLit = 'Запрос2.Текст = "ВЫБРАТЬ 1";';
+      const litOffsetInInitial = initialCode.indexOf(secondOccurLit) + 'Запрос2.Текст = '.length;
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: litOffsetInInitial,
+          endOffset: litOffsetInInitial + '"ВЫБРАТЬ 1"'.length,
+          startLine: 4,
+          startColumn: 17,
+          endLine: 4,
+          endColumn: 28,
+        },
+        initialDocumentVersion: 1,
+        expectedText: '"ВЫБРАТЬ 1"',
+        surroundingPrefix: 'Запрос2.Текст = ',
+        surroundingSuffix: ';',
+        occurrenceIndex: 1,
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast }, context);
+      assert.strictEqual(mock.isDisposed(), true);
+      assert.strictEqual(errorMessage, undefined);
+
+      const resulting = editor.getFullText();
+      // First occurrence must remain untouched
+      assert.ok(resulting.includes('Запрос1.Текст = "ВЫБРАТЬ 1";'), 'First query must remain untouched');
+      // Second occurrence must be replaced with the new query
+      assert.ok(!resulting.includes('Запрос2.Текст = "ВЫБРАТЬ 1";'), 'Second query must be replaced');
+      assert.ok(resulting.includes('Запрос2.Текст = "ВЫБРАТЬ'), 'Second query must have new text');
+    });
+
     test('QueryBuilderMessageHandler class forwards messages to handler function', async () => {
       const mock = createMockPanel();
       const context: QueryBuilderMessageContext = {
@@ -736,6 +799,34 @@ suite('QueryBuilder Provider & Message Handler', () => {
         warningMessage,
         'Откройте модуль 1С или файл запроса для запуска конструктора.'
       );
+    });
+
+    test('R8: captures document version and expected text synchronously before async metadata load', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const code = 'Запрос.Текст = "ВЫБРАТЬ 1";';
+      const editor = createMockEditor(code, undefined, { version: 5 });
+      editor.selection = {
+        active: new vscode.Position(0, 20),
+        start: new vscode.Position(0, 20),
+        end: new vscode.Position(0, 20),
+        isEmpty: true,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor);
+
+      // Simulate a change in document text/version that happened while user was editing in webview
+      (editor.document as any).version = 6;
+      (editor as any)._text = '// Comment\n' + code;
+
+      // Save without error because expectedText was captured synchronously on open and relocates safely
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+      await mockPanel.simulateMessage({ command: 'save', ast });
+      assert.strictEqual(errorMessage, undefined);
     });
 
     test('initializes empty SelectStatement on empty document or new query', async () => {

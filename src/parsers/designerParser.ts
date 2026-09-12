@@ -4,7 +4,7 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
-import { convertStringBooleans } from '../utils/xmlPropertyUtils';
+import { convertStringBooleans, extractV8String } from '../utils/xmlPropertyUtils';
 import {
   findChildObjects,
   extractAttributes,
@@ -294,6 +294,10 @@ export class DesignerParser {
 
     if (xmlContent) {
       await this.applyXmlDerivedChildren(container, xmlContent, xmlPath, elementName);
+      if (element) {
+        const extracted = this.extractPropertiesFromElement(xmlContent);
+        element.properties = { ...element.properties, ...extracted };
+      }
     }
 
     const typeDir = path.join(configPath, typeName);
@@ -1514,66 +1518,82 @@ export class DesignerParser {
    * @returns Properties object
    */
   private static extractPropertiesFromElement(xmlContent: Record<string, unknown>): Record<string, unknown> {
-      const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = {};
+    if (!xmlContent || typeof xmlContent !== 'object') {
+      return result;
+    }
 
-      // Find the root element (Catalog, Document, CommonModule, etc.)
+    const root = (xmlContent.MetaDataObject && typeof xmlContent.MetaDataObject === 'object'
+      ? xmlContent.MetaDataObject
+      : xmlContent) as Record<string, unknown>;
+
+    let holder: Record<string, unknown> | null = null;
+    if (root.Properties && typeof root.Properties === 'object') {
+      holder = root;
+    } else {
+      for (const [key, val] of Object.entries(root)) {
+        if (key === '@_' || key.startsWith('#') || !val || typeof val !== 'object') {
+          continue;
+        }
+        const childObj = val as Record<string, unknown>;
+        if (childObj.Properties && typeof childObj.Properties === 'object') {
+          holder = childObj;
+          break;
+        }
+      }
+    }
+
+    if (!holder) {
       for (const [key, value] of Object.entries(xmlContent)) {
         if (key === '@_' || key.startsWith('#')) {
           continue;
         }
-
         if (typeof value === 'object' && value !== null) {
           const element = value as Record<string, unknown>;
-          const properties = element.Properties as Record<string, unknown>;
-
-          if (properties) {
-            for (const [propKey, propValue] of Object.entries(properties)) {
-              if (propKey === '@_' || propKey.startsWith('#')) {
-                continue;
-              }
-
-              // Handle different value types
-              if (typeof propValue === 'boolean' || typeof propValue === 'number') {
-                // Direct boolean or number values
-                result[propKey] = propValue;
-              } else if (typeof propValue === 'string') {
-                // Direct string values
-                result[propKey] = propValue;
-              } else if (typeof propValue === 'object' && propValue !== null) {
-                const obj = propValue as Record<string, unknown>;
-
-                // Check for v8:item structure (localized strings like Synonym)
-                if (obj['v8:item']) {
-                  const items = obj['v8:item'];
-                  if (Array.isArray(items) && items.length > 0) {
-                    const firstItem = items[0];
-                    if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
-                      result[propKey] = (firstItem as Record<string, unknown>)['v8:content'];
-                    }
-                  }
-                } else if ('v8:Type' in obj) {
-                  // Store raw type object so the type editor can open (serialize to XML).
-                  // Properties panel formats for display via TypeParser.parseFromObject + TypeFormatter.
-                  result[propKey] = obj;
-                } else if (obj.item) {
-                  // Simple item wrapper
-                  result[propKey] = obj.item;
-                } else {
-                  // Complex object - store as-is
-                  result[propKey] = propValue;
-                }
-              } else {
-                // Other types (null, undefined, etc.)
-                result[propKey] = propValue;
-              }
-            }
+          if (element.Properties && typeof element.Properties === 'object') {
+            holder = element;
+            break;
           }
         }
       }
-
-      // Convert string "false"/"true" values to boolean primitives
-      return convertStringBooleans(result);
     }
+
+    if (holder) {
+      const rawUuid = holder['@_uuid'] ?? holder.uuid ?? (root as Record<string, unknown>)['@_uuid'];
+      if (rawUuid !== undefined && rawUuid !== null) {
+        result.uuid = String(rawUuid);
+      }
+
+      const properties = holder.Properties as Record<string, unknown>;
+      for (const [propKey, propValue] of Object.entries(properties)) {
+        if (propKey === '@_' || propKey.startsWith('#')) {
+          continue;
+        }
+
+        if (typeof propValue === 'boolean' || typeof propValue === 'number') {
+          result[propKey] = propValue;
+        } else if (typeof propValue === 'string') {
+          result[propKey] = propValue;
+        } else if (typeof propValue === 'object' && propValue !== null) {
+          const obj = propValue as Record<string, unknown>;
+          const v8Str = extractV8String(obj);
+          if (v8Str !== undefined) {
+            result[propKey] = v8Str;
+          } else if ('v8:Type' in obj) {
+            result[propKey] = obj;
+          } else if (obj.item !== undefined) {
+            result[propKey] = obj.item;
+          } else {
+            result[propKey] = propValue;
+          }
+        } else {
+          result[propKey] = propValue;
+        }
+      }
+    }
+
+    return convertStringBooleans(result);
+  }
 
   private static buildTabularColumnNodesFromTsBlock(
     ts: Record<string, unknown>,

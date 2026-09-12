@@ -1249,6 +1249,21 @@
             const WB_START = '(?<=^|[^a-zA-Z0-9а-яА-ЯёЁ_])';
             const WB_END = '(?=$|[^a-zA-Z0-9а-яА-ЯёЁ_])';
 
+            const aggTypeToRu = {
+                'Sum': 'СУММА',
+                'Count': 'КОЛИЧЕСТВО',
+                'Min': 'МИНИМУМ',
+                'Max': 'МАКСИМУМ',
+                'Avg': 'СРЕДНЕЕ'
+            };
+            const ruToAggType = {
+                'СУММА': 'Sum',
+                'КОЛИЧЕСТВО': 'Count',
+                'МИНИМУМ': 'Min',
+                'МАКСИМУМ': 'Max',
+                'СРЕДНЕЕ': 'Avg'
+            };
+
             function getOperatorPrecedence(expr) {
                 if (!expr || typeof expr !== 'object') return 100;
                 switch (expr.type) {
@@ -1590,28 +1605,45 @@
                 }
 
                 // TOTALS
-                if (stmt.totals) {
+                const hasTotalsFields = stmt.totals && stmt.totals.fields && stmt.totals.fields.length > 0;
+                const hasTotalsBy = stmt.totals && stmt.totals.by && stmt.totals.by.length > 0;
+                const hasTotalsOverall = stmt.totals && Boolean(stmt.totals.overall);
+
+                if (stmt.totals && (hasTotalsFields || hasTotalsBy || hasTotalsOverall)) {
                     let totLine = 'ИТОГИ';
-                    if (stmt.totals.fields && stmt.totals.fields.length > 0) {
+                    if (hasTotalsFields) {
                         const fStr = stmt.totals.fields.map(function(tf) {
                             return getExpressionString(tf.expression) + (tf.alias ? ' КАК ' + tf.alias : '');
                         }).join(', ');
                         totLine += ' ' + fStr;
                     }
                     totLine += ' ПО';
-                    if (stmt.totals.overall) {
+                    if (hasTotalsOverall) {
                         totLine += ' ОБЩИЕ';
                     }
                     lines.push(totLine);
 
-                    if (stmt.totals.by && stmt.totals.by.length > 0) {
+                    if (hasTotalsBy) {
                         stmt.totals.by.forEach(function(byItem, idx) {
                             const comma = idx < stmt.totals.by.length - 1 ? ',' : '';
                             let opts = '';
                             if (byItem.hierarchy) {
                                 opts += (byItem.hierarchyType === 'OnlyHierarchy' ? ' ТОЛЬКО ИЕРАРХИЯ' : ' ИЕРАРХИЯ');
                             }
-                            if (byItem.periods) opts += ' ПЕРИОДАМИ';
+                            if (byItem.periodDefinition) {
+                                const def = byItem.periodDefinition;
+                                const pType = def.periodType || '';
+                                const fromStr = def.from ? getExpressionString(def.from) : '';
+                                const toStr = def.to ? getExpressionString(def.to) : '';
+                                let paramsStr = pType;
+                                if (fromStr || toStr) {
+                                    paramsStr += ', ' + fromStr;
+                                    if (toStr) paramsStr += ', ' + toStr;
+                                }
+                                opts += paramsStr ? ' ПЕРИОДАМИ(' + paramsStr + ')' : ' ПЕРИОДАМИ';
+                            } else if (byItem.periods) {
+                                opts += ' ПЕРИОДАМИ';
+                            }
                             lines.push('\t' + getExpressionString(byItem.expression) + opts + comma);
                         });
                     }
@@ -1783,21 +1815,102 @@
                 };
             }
 
+            function cleanEmptyTotals(q) {
+                if (!q || !q.totals) return;
+                const hasFields = q.totals.fields && q.totals.fields.length > 0;
+                const hasBy = q.totals.by && q.totals.by.length > 0;
+                const hasOverall = Boolean(q.totals.overall);
+                if (!hasFields && !hasBy && !hasOverall) {
+                    delete q.totals;
+                }
+            }
+
             function conditionsToTree(condList) {
                 if (!condList || condList.length === 0) return undefined;
-                let tree = conditionToNode(condList[0]);
-                for (let i = 1; i < condList.length; i++) {
-                    const c = condList[i];
-                    const op = (c.op || 'И').toUpperCase();
-                    const astOp = (op === 'ИЛИ' || op === 'OR') ? 'OR' : 'AND';
-                    tree = {
-                        type: 'BinaryOp',
-                        operator: astOp,
-                        left: tree,
-                        right: conditionToNode(c)
-                    };
+                if (condList.length === 1 && !condList[0].openParen && !condList[0].closeParen) {
+                    return conditionToNode(condList[0]);
                 }
-                return tree;
+
+                const tokens = [];
+                for (let i = 0; i < condList.length; i++) {
+                    const c = condList[i];
+                    if (i > 0) {
+                        const op = (c.op || 'И').toUpperCase();
+                        const astOp = (op === 'ИЛИ' || op === 'OR') ? 'OR' : 'AND';
+                        tokens.push({ type: 'Op', op: astOp });
+                    }
+                    if (c.openParen) {
+                        for (let p = 0; p < c.openParen.length; p++) {
+                            if (c.openParen[p] === '(') {
+                                tokens.push({ type: 'ParenOpen' });
+                            }
+                        }
+                    }
+                    tokens.push({ type: 'Node', node: conditionToNode(c) });
+                    if (c.closeParen) {
+                        for (let p = 0; p < c.closeParen.length; p++) {
+                            if (c.closeParen[p] === ')') {
+                                tokens.push({ type: 'ParenClose' });
+                            }
+                        }
+                    }
+                }
+
+                let pos = 0;
+
+                function parseExpression() {
+                    return parseOr();
+                }
+
+                function parseOr() {
+                    let left = parseAnd();
+                    while (pos < tokens.length && tokens[pos].type === 'Op' && tokens[pos].op === 'OR') {
+                        pos++;
+                        const right = parseAnd();
+                        left = {
+                            type: 'BinaryOp',
+                            operator: 'OR',
+                            left: left,
+                            right: right
+                        };
+                    }
+                    return left;
+                }
+
+                function parseAnd() {
+                    let left = parsePrimary();
+                    while (pos < tokens.length && tokens[pos].type === 'Op' && tokens[pos].op === 'AND') {
+                        pos++;
+                        const right = parsePrimary();
+                        left = {
+                            type: 'BinaryOp',
+                            operator: 'AND',
+                            left: left,
+                            right: right
+                        };
+                    }
+                    return left;
+                }
+
+                function parsePrimary() {
+                    if (pos < tokens.length && tokens[pos].type === 'ParenOpen') {
+                        pos++;
+                        const expr = parseExpression();
+                        if (pos < tokens.length && tokens[pos].type === 'ParenClose') {
+                            pos++;
+                        }
+                        return expr;
+                    }
+                    if (pos < tokens.length && tokens[pos].type === 'Node') {
+                        const node = tokens[pos].node;
+                        pos++;
+                        return node;
+                    }
+                    return null;
+                }
+
+                const tree = parseExpression();
+                return tree || conditionToNode(condList[0]);
             }
 
             function syncConditionsToAst(q) {
@@ -1872,15 +1985,21 @@
                 return { op: currentOp, field: getExpressionString(node), cmp: '=', value: '' };
             }
 
-            function flattenConditionNode(node, currentOp) {
+            function flattenConditionNode(node, currentOp, parentOp) {
                 if (!node) return [];
                 if (node.type === 'BinaryOp') {
                     const op = (node.operator || '').toUpperCase();
                     if (op === 'AND' || op === 'И' || op === 'OR' || op === 'ИЛИ') {
-                        const nextOp = (op === 'OR' || op === 'ИЛИ') ? 'ИЛИ' : 'И';
-                        const leftItems = flattenConditionNode(node.left, currentOp);
-                        const rightItems = flattenConditionNode(node.right, nextOp);
-                        return leftItems.concat(rightItems);
+                        const canonicalOp = (op === 'OR' || op === 'ИЛИ') ? 'OR' : 'AND';
+                        const nextOp = (canonicalOp === 'OR') ? 'ИЛИ' : 'И';
+                        const leftItems = flattenConditionNode(node.left, currentOp, canonicalOp);
+                        const rightItems = flattenConditionNode(node.right, nextOp, canonicalOp);
+                        const items = leftItems.concat(rightItems);
+                        if (parentOp === 'AND' && canonicalOp === 'OR' && items.length > 0) {
+                            items[0].openParen = (items[0].openParen || '') + '(';
+                            items[items.length - 1].closeParen = (items[items.length - 1].closeParen || '') + ')';
+                        }
+                        return items;
                     }
                 }
                 const res = unpackConditionNode(node, currentOp);
@@ -2109,7 +2228,14 @@
                     const fieldTokens = splitTopLevel(sContent, ',');
                     fieldTokens.forEach(function(ft) {
                         const trimmed = ft.trim();
-                        if (!trimmed || trimmed === '*') return;
+                        if (!trimmed) return;
+                        if (trimmed === '*') {
+                            stmt.fields.push({
+                                expression: { type: 'Identifier', name: '*' },
+                                raw: '*'
+                            });
+                            return;
+                        }
                         const aliasRe = new RegExp(WB_START + '(?:КАК|AS)\\s+([a-zA-Z0-9а-яА-ЯёЁ_]+)$', 'i');
                         const aliasMatch = trimmed.match(aliasRe);
                         if (aliasMatch) {
@@ -2240,7 +2366,7 @@
                             dir = 'Asc';
                             expr = trimmed.replace(ascRe, '').trim();
                         }
-                        return { expression: expr, direction: dir };
+                        return { expression: parseExpressionOrRaw(expr), direction: dir };
                     }).filter(function(o) { return o.expression; });
                 }
 
@@ -2272,11 +2398,11 @@
                             const aliasM = trimmed.match(aliasRe);
                             if (aliasM) {
                                 stmt.totals.fields.push({
-                                    expression: trimmed.substring(0, aliasM.index).trim(),
+                                    expression: parseExpressionOrRaw(trimmed.substring(0, aliasM.index).trim()),
                                     alias: aliasM[1].trim()
                                 });
                             } else {
-                                stmt.totals.fields.push({ expression: trimmed });
+                                stmt.totals.fields.push({ expression: parseExpressionOrRaw(trimmed) });
                             }
                         });
                     }
@@ -2288,11 +2414,12 @@
                             if (!trimmed) return;
                             const onlyHierRe = new RegExp(WB_START + '(?:ТОЛЬКО\\s+ИЕРАРХИЯ|ONLY\\s+HIERARCHY)' + WB_END, 'i');
                             const hierRe = new RegExp(WB_START + '(?:ИЕРАРХИЯ|HIERARCHY)' + WB_END, 'i');
-                            const perRe = new RegExp(WB_START + '(?:ПЕРИОДАМИ|PERIODS)' + WB_END, 'i');
+                            const perRe = new RegExp(WB_START + '(?:ПЕРИОДАМИ|PERIODS)(?:\\s*\\(([^)]*)\\))?' + WB_END, 'i');
 
                             let isOnlyHier = false;
                             let isHier = false;
                             let isPer = false;
+                            let periodDef = undefined;
 
                             if (onlyHierRe.test(trimmed)) {
                                 isOnlyHier = true;
@@ -2302,19 +2429,30 @@
                                 isHier = true;
                                 trimmed = trimmed.replace(hierRe, '').trim();
                             }
-                            if (perRe.test(trimmed)) {
+                            const perMatch = trimmed.match(perRe);
+                            if (perMatch) {
                                 isPer = true;
+                                if (perMatch[1] && perMatch[1].trim()) {
+                                    const perArgs = splitTopLevel(perMatch[1].trim(), ',').map(function(a) { return a.trim(); });
+                                    periodDef = {
+                                        periodType: perArgs[0] || '',
+                                        from: perArgs[1] ? parseExpressionOrRaw(perArgs[1]) : undefined,
+                                        to: perArgs[2] ? parseExpressionOrRaw(perArgs[2]) : undefined
+                                    };
+                                }
                                 trimmed = trimmed.replace(perRe, '').trim();
                             }
 
                             stmt.totals.by.push({
-                                expression: trimmed,
+                                expression: parseExpressionOrRaw(trimmed),
                                 hierarchy: isHier,
                                 hierarchyType: isOnlyHier ? 'OnlyHierarchy' : 'All',
-                                periods: isPer
+                                periods: isPer,
+                                periodDefinition: periodDef
                             });
                         });
                     }
+                    cleanEmptyTotals(stmt);
                 }
 
                 return stmt;
@@ -2934,21 +3072,6 @@
                     return isAggregateExpression(getExpressionString(f.expression));
                 });
 
-                const aggTypeToRu = {
-                    'Sum': 'СУММА',
-                    'Count': 'КОЛИЧЕСТВО',
-                    'Min': 'МИНИМУМ',
-                    'Max': 'МАКСИМУМ',
-                    'Avg': 'СРЕДНЕЕ'
-                };
-                const ruToAggType = {
-                    'СУММА': 'Sum',
-                    'КОЛИЧЕСТВО': 'Count',
-                    'МИНИМУМ': 'Min',
-                    'МАКСИМУМ': 'Max',
-                    'СРЕДНЕЕ': 'Avg'
-                };
-
                 aggregateFields.forEach(function(af, idx) {
                     const tr = document.createElement('tr');
 
@@ -3494,11 +3617,11 @@
                 elements.tbodyTotalsGroups.innerHTML = '';
                 if (q.type === 'DropTable') return;
 
-                if (!q.totals) q.totals = { fields: [], by: [], overall: false };
-                elements.checkTotalsOverall.checked = Boolean(q.totals.overall);
+                cleanEmptyTotals(q);
+                elements.checkTotalsOverall.checked = Boolean(q.totals && q.totals.overall);
 
                 // Fields
-                (q.totals.fields || []).forEach(function(tf, idx) {
+                (q.totals && q.totals.fields ? q.totals.fields : []).forEach(function(tf, idx) {
                     const tr = document.createElement('tr');
 
                     const tdExpr = document.createElement('td');
@@ -3579,7 +3702,10 @@
                     btnDel.className = 'secondary icon-btn danger';
                     btnDel.textContent = '✕';
                     btnDel.addEventListener('click', function() {
-                        q.totals.fields.splice(idx, 1);
+                        if (q.totals && q.totals.fields) {
+                            q.totals.fields.splice(idx, 1);
+                            cleanEmptyTotals(q);
+                        }
                         renderTab9();
                         notifyChange();
                     });
@@ -3590,7 +3716,7 @@
                 });
 
                 // Groups
-                (q.totals.by || []).forEach(function(tb, idx) {
+                (q.totals && q.totals.by ? q.totals.by : []).forEach(function(tb, idx) {
                     const tr = document.createElement('tr');
 
                     const tdExpr = document.createElement('td');
@@ -3662,7 +3788,10 @@
                     btnDel.className = 'secondary icon-btn danger';
                     btnDel.textContent = '✕';
                     btnDel.addEventListener('click', function() {
-                        q.totals.by.splice(idx, 1);
+                        if (q.totals && q.totals.by) {
+                            q.totals.by.splice(idx, 1);
+                            cleanEmptyTotals(q);
+                        }
                         renderTab9();
                         notifyChange();
                     });
@@ -3974,6 +4103,7 @@
                 state.ast.queries.forEach(function(q) {
                     if (q.type !== 'DropTable') {
                         syncConditionsToAst(q);
+                        cleanEmptyTotals(q);
                     }
                 });
 
@@ -4180,8 +4310,15 @@
             // Tab 9 Totals Actions
             elements.checkTotalsOverall.addEventListener('change', function() {
                 const q = getActiveQuery();
-                if (!q.totals) q.totals = { fields: [], by: [] };
-                q.totals.overall = elements.checkTotalsOverall.checked;
+                if (elements.checkTotalsOverall.checked) {
+                    if (!q.totals) q.totals = { fields: [], by: [], overall: true };
+                    q.totals.overall = true;
+                } else {
+                    if (q.totals) {
+                        q.totals.overall = false;
+                        cleanEmptyTotals(q);
+                    }
+                }
                 notifyChange();
             });
 

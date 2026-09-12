@@ -60,7 +60,14 @@ export function generateBslQueryWithProcessing(
 
   // 4. Result iteration
   const queryHasTotals = pkg.queries.some(
-    (q) => q.type === 'Select' && Boolean(q.totals)
+    (q) =>
+      q.type === 'Select' &&
+      Boolean(
+        q.totals &&
+          (q.totals.overall ||
+            (q.totals.fields && q.totals.fields.length > 0) ||
+            (q.totals.by && q.totals.by.length > 0))
+      )
   );
 
   if (queryHasTotals) {

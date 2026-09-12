@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as path from 'path';
 import {
   QueryMetadataNode,
   TempTableDefinition,
@@ -8,6 +9,7 @@ import { getStandardAttributes } from '../../../src/queryBuilder/metadata/standa
 import { getVirtualTables } from '../../../src/queryBuilder/metadata/virtualTablesCatalog';
 import { QueryMetadataProvider } from '../../../src/queryBuilder/metadata/queryMetadataProvider';
 import { MetadataType, TreeNode, TreeNodeProperties } from '../../../src/models/treeNode';
+import { DesignerParser } from '../../../src/parsers/designerParser';
 
 suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
   suite('1. Standard Attributes Catalog (getStandardAttributes)', () => {
@@ -1293,5 +1295,76 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
       assert.strictEqual(orderF.dataType, 'Number');
     });
   });
+
+  suite('6. Designer XML Fixture Parsing (R9, R10)', () => {
+    test('Designer XML: TestCatalog1 omits Родитель and ЭтоГруппа when Hierarchical is false (R9)', async () => {
+      const fixtureDir = path.resolve(__dirname, '../../../../test/fixtures/designer-config');
+      const rootNode = await DesignerParser.parse(fixtureDir);
+
+      const provider = new QueryMetadataProvider();
+      const mockTreeProvider = {
+        getRootNodes: () => [rootNode],
+        getChildren: async (element?: TreeNode) => {
+          if (!element || element === rootNode) {
+            return rootNode.children ?? [];
+          }
+          return element.children ?? [];
+        },
+      } as any;
+
+      const tree = await provider.buildTreeFromProvider(mockTreeProvider);
+      const catCat = tree.find((c: QueryMetadataNode) => c.id === 'Catalogs');
+      assert.ok(catCat, 'Catalogs category must exist');
+
+      const testCat1 = catCat.children?.find((t: QueryMetadataNode) => t.name === 'TestCatalog1');
+      assert.ok(testCat1, 'TestCatalog1 must exist in tree');
+
+      const fieldNames = (testCat1.children ?? []).map((f: QueryMetadataNode) => f.name);
+      assert.ok(fieldNames.includes('Ссылка'), 'Must have Ссылка');
+      assert.ok(fieldNames.includes('Код'), 'Must have Код');
+      assert.strictEqual(fieldNames.includes('Родитель'), false, 'Non-hierarchical TestCatalog1 must NOT have Родитель');
+      assert.strictEqual(fieldNames.includes('ЭтоГруппа'), false, 'Non-hierarchical TestCatalog1 must NOT have ЭтоГруппа');
+    });
+
+    test('Designer XML: extracts localized synonyms for catalog and attributes (R10)', async () => {
+      const fixtureDir = path.resolve(__dirname, '../../../../test/fixtures/designer-config');
+      const rootNode = await DesignerParser.parse(fixtureDir);
+
+      const provider = new QueryMetadataProvider();
+      const mockTreeProvider = {
+        getRootNodes: () => [rootNode],
+        getChildren: async (element?: TreeNode) => {
+          if (!element || element === rootNode) {
+            return rootNode.children ?? [];
+          }
+          return element.children ?? [];
+        },
+      } as any;
+
+      const tree = await provider.buildTreeFromProvider(mockTreeProvider);
+      const catCat = tree.find((c: QueryMetadataNode) => c.id === 'Catalogs');
+
+      // TestCatalogWithAttribute has synonym: "Test Catalog With Attribute"
+      const catWithAttr = catCat?.children?.find((t: QueryMetadataNode) => t.name === 'TestCatalogWithAttribute');
+      assert.ok(catWithAttr, 'TestCatalogWithAttribute must exist');
+      assert.strictEqual(catWithAttr.synonym, 'Test Catalog With Attribute');
+      assert.strictEqual(catWithAttr.label, 'Test Catalog With Attribute');
+
+      // StringAttribute has synonym: "String Attribute"
+      const strAttr = catWithAttr.children?.find((f: QueryMetadataNode) => f.name === 'StringAttribute');
+      assert.ok(strAttr, 'StringAttribute must exist');
+      assert.strictEqual(strAttr.synonym, 'String Attribute');
+      assert.strictEqual(strAttr.label, 'String Attribute');
+
+      // TestCatalog1 has NewAttribute with multi-item Synonym
+      const testCat1 = catCat?.children?.find((t: QueryMetadataNode) => t.name === 'TestCatalog1');
+      assert.ok(testCat1);
+      assert.strictEqual(testCat1.synonym, 'Test Catalog 1');
+      const newAttr = testCat1.children?.find((f: QueryMetadataNode) => f.name === 'NewAttribute');
+      assert.ok(newAttr, 'NewAttribute must exist');
+      assert.strictEqual(newAttr.synonym, 'NewAttribute');
+    });
+  });
 });
+
 

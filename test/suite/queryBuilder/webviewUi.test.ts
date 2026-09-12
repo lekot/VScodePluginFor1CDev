@@ -741,5 +741,128 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
       assert.strictEqual(q.from[1].joins.length, 0, 'Join must be removed from q.from[1]');
     });
+
+    test('R1: query without totals does not create phantom empty totals upon render or save', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: { type: 'Identifier', name: 'Поле1' }, alias: 'Поле1' }];
+      q.from = [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }];
+      delete q.totals;
+
+      env.window.renderTab9();
+      assert.strictEqual(q.totals, undefined, 'renderTab9 must not initialize empty q.totals');
+
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'Save message must be sent');
+      assert.strictEqual(saveMsg.ast.queries[0].totals, undefined, 'Saved query must not have phantom totals');
+    });
+
+    test('R2: opening query with aggregate totals executes without ReferenceError', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: { type: 'Identifier', name: 'Количество' }, alias: 'Количество' }];
+      q.from = [{ source: { type: 'Table', name: 'Таблица' } }];
+      q.totals = {
+        fields: [
+          {
+            expression: {
+              type: 'Aggregate',
+              aggregateType: 'Sum',
+              expression: { type: 'Identifier', name: 'Количество' },
+            },
+          },
+        ],
+        by: [{ expression: { type: 'Identifier', name: 'Период' } }],
+        overall: true,
+      };
+
+      assert.doesNotThrow(() => {
+        env.window.renderTab9();
+      });
+    });
+
+    test('R3: preserves parenthesis grouping across round-trip in conditions editor', () => {
+      const env = createWebviewEnvironment();
+      const tree = {
+        type: 'BinaryOp',
+        operator: 'И',
+        left: {
+          type: 'BinaryOp',
+          operator: '=',
+          left: { type: 'Identifier', name: 'A' },
+          right: { type: 'Literal', value: 1, raw: '1' },
+        },
+        right: {
+          type: 'BinaryOp',
+          operator: 'ИЛИ',
+          left: {
+            type: 'BinaryOp',
+            operator: '=',
+            left: { type: 'Identifier', name: 'B' },
+            right: { type: 'Literal', value: 2, raw: '2' },
+          },
+          right: {
+            type: 'BinaryOp',
+            operator: '=',
+            left: { type: 'Identifier', name: 'C' },
+            right: { type: 'Literal', value: 3, raw: '3' },
+          },
+        },
+      };
+
+      const condList = env.window.flattenConditionNode(tree);
+      assert.strictEqual(condList.length, 3);
+      assert.strictEqual(condList[1].openParen, '(');
+      assert.strictEqual(condList[2].closeParen, ')');
+
+      const reconstructed = env.window.conditionsToTree(condList);
+      assert.ok(reconstructed, 'Reconstructed tree must exist');
+      assert.strictEqual(reconstructed.operator, 'AND');
+      assert.strictEqual(reconstructed.right.operator, 'OR');
+    });
+
+    test('R4: text tab parses and preserves SELECT *', () => {
+      const env = createWebviewEnvironment();
+      const text = 'ВЫБРАТЬ * ИЗ Справочник.Номенклатура КАК Ном';
+      const pkg = env.window.parseSdblClient(text);
+      const parsed = pkg.queries[0];
+      assert.strictEqual(parsed.fields.length, 1);
+      assert.strictEqual(parsed.fields[0].raw, '*');
+
+      const formatted = env.window.formatSdblQuery(parsed);
+      assert.ok(formatted.includes('ВЫБРАТЬ\n\t*'));
+    });
+
+    test('R5: text tab preserves field expression in ORDER BY', () => {
+      const env = createWebviewEnvironment();
+      const text = 'ВЫБРАТЬ Поле1 ИЗ Таблица УПОРЯДОЧИТЬ ПО Таблица.Поле1 УБЫВ';
+      const pkg = env.window.parseSdblClient(text);
+      const parsed = pkg.queries[0];
+      assert.strictEqual(parsed.orderBy.length, 1);
+      assert.strictEqual(parsed.orderBy[0].direction, 'Desc');
+
+      const formatted = env.window.formatSdblQuery(parsed);
+      assert.ok(formatted.includes('Таблица.Поле1 УБЫВ'));
+    });
+
+    test('R12: text tab parses and formats PERIODS arguments in TOTALS', () => {
+      const env = createWebviewEnvironment();
+      const text = 'ВЫБРАТЬ Поле1 ИЗ Таблица ИТОГИ СУММА(Поле1) ПО Период ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)';
+      const pkg = env.window.parseSdblClient(text);
+      const parsed = pkg.queries[0];
+      assert.ok(parsed.totals);
+      assert.strictEqual(parsed.totals.by.length, 1);
+      const periodDef = parsed.totals.by[0].periodDefinition;
+      assert.ok(periodDef, 'periodDefinition must be parsed');
+      assert.strictEqual(periodDef.periodType, 'ДЕНЬ');
+      assert.strictEqual(env.window.getExpressionString(periodDef.from), '&Нач');
+      assert.strictEqual(env.window.getExpressionString(periodDef.to), '&Кон');
+
+      const formatted = env.window.formatSdblQuery(parsed);
+      assert.ok(formatted.includes('ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)'));
+    });
   });
 });
+
+

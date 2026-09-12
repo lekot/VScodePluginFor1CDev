@@ -1,3 +1,4 @@
+import { extractV8String } from '../../utils/xmlPropertyUtils';
 import { MetadataType, TreeNode } from '../../models/treeNode';
 import { MetadataTreeDataProvider } from '../../providers/treeDataProvider';
 import {
@@ -146,32 +147,16 @@ function isTabularSectionsContainer(node: TreeNode): boolean {
 }
 
 function extractSynonym(node: TreeNode): string | undefined {
+  const props = node.properties as Record<string, unknown> | undefined;
+  const innerProps = (props?.Properties ?? props) as Record<string, unknown> | undefined;
   const raw =
-    (node.properties as Record<string, unknown> | undefined)?.Synonym ??
-    (node.properties as Record<string, unknown> | undefined)?.synonym ??
+    innerProps?.Synonym ??
+    innerProps?.synonym ??
+    props?.Synonym ??
+    props?.synonym ??
     (node as unknown as { synonym?: unknown }).synonym;
 
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    return trimmed || undefined;
-  }
-
-  if (raw && typeof raw === 'object') {
-    const obj = raw as Record<string, unknown>;
-    if (typeof obj.ru === 'string' && obj.ru.trim()) {
-      return obj.ru.trim();
-    }
-    if (typeof obj.content === 'string' && obj.content.trim()) {
-      return obj.content.trim();
-    }
-    for (const val of Object.values(obj)) {
-      if (typeof val === 'string' && val.trim()) {
-        return val.trim();
-      }
-    }
-  }
-
-  return undefined;
+  return extractV8String(raw);
 }
 
 function normalizeSingleTypeString(str: string): string {
@@ -475,18 +460,25 @@ export class QueryMetadataProvider {
     let hasOwner: boolean | undefined;
     let isPeriodic: boolean | undefined;
     let accumulationRegisterType: string | undefined;
-    const props = (node.properties as Record<string, unknown> | undefined) || {};
+        const props = (node.properties as Record<string, unknown> | undefined) || {};
+    const innerProps = ((props.Properties as Record<string, unknown> | undefined) || props);
 
     if (catConfig.metadataType === MetadataType.Catalog) {
       const rawHierarchical =
+        innerProps.Hierarchical ??
+        innerProps.isHierarchical ??
+        innerProps.hierarchical ??
         props.Hierarchical ??
         props.isHierarchical ??
         props.hierarchical;
       if (rawHierarchical !== undefined) {
-        isHierarchical = rawHierarchical !== false && rawHierarchical !== 'false';
+        isHierarchical = rawHierarchical !== false && String(rawHierarchical).trim().toLowerCase() !== 'false';
       }
 
       const rawOwners =
+        innerProps.Owners ??
+        innerProps.owners ??
+        innerProps.hasOwner ??
         props.Owners ??
         props.owners ??
         props.hasOwner;

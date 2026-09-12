@@ -490,5 +490,50 @@ suite('BSL Query Extractor & Templates', () => {
       assert.strictEqual(result.isNewQuery, false);
       assert.strictEqual(result.statementRange, undefined);
     });
+
+    test('R6: supports multiline constructor closing ) and ;', () => {
+      const code = [
+        'Запрос = Новый Запрос(',
+        '    "ВЫБРАТЬ 1 КАК Поле"',
+        ');',
+      ].join('\n');
+
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.ok(result.statementRange, 'statementRange should be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+      assert.strictEqual(result.statementRange?.endLine, 3);
+    });
+
+    test('R6: leaves statementRange undefined for Return statement (Возврат Новый Запрос)', () => {
+      const code = 'Возврат Новый Запрос("ВЫБРАТЬ 1 КАК Поле");';
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.statementRange, undefined, 'Must not replace Return statement');
+    });
+
+    test('R6: leaves statementRange undefined for compound object access (Объект.Запрос.Текст = ...)', () => {
+      const code = 'Объект.Запрос.Текст = "ВЫБРАТЬ 1 КАК Поле";';
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.statementRange, undefined, 'Must not replace compound object access');
+    });
+
+    test('R6: leaves statementRange undefined for string concatenation assignment (+ Дополнение)', () => {
+      const code = 'Запрос.Текст = "ВЫБРАТЬ 1 КАК Поле" + Дополнение;';
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.statementRange, undefined, 'Must not replace when expression is concatenated');
+    });
   });
 });
+

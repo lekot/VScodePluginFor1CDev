@@ -214,34 +214,52 @@ export function findStatementRange(
   const suffix = documentText.slice(literalEnd);
 
   // Case 1: Constructor call Новый Запрос(...) or New Query(...)
+  // Must be a standalone statement, preceded by line boundary or ';' (with optional indentation):
   // e.g. "Запрос = Новый Запрос(" or "Новый Запрос("
+  // If preceded by "Возврат " or within an expression, statement replacement is unsafe.
   const constructorMatch = prefix.match(
-    /(?:([\p{L}_][\p{L}\p{N}_]*)\s*=\s*)?(?:Новый\s+Запрос|New\s+Query)\s*\(\s*$/iu
+    /(?:^|[\r\n;])[ \t]*(?:([\p{L}_][\p{L}\p{N}_]*)\s*=\s*)?(?:Новый\s+Запрос|New\s+Query)\s*\(\s*$/iu
   );
   if (constructorMatch) {
-    const startOffset = literalStart - constructorMatch[0].length;
-    // Suffix should look for closing ')' and optional ';'
-    const closingMatch = suffix.match(/^[ \t]*\)(?:[ \t]*;)?/);
-    const endOffset = closingMatch ? literalEnd + closingMatch[0].length : literalEnd;
+    // Suffix must close the call: ')' and optional ';' (allowing multiline whitespace before ')')
+    const closingMatch = suffix.match(/^\s*\)\s*(?:;[ \t]*(?:\/\/[^\r\n]*)?)?/);
+    if (!closingMatch) {
+      return undefined;
+    }
+    const matchStr = constructorMatch[0];
+    const leadingBoundaryMatch = matchStr.match(/^[\r\n;][ \t]*/);
+    const leadingOffset = leadingBoundaryMatch ? leadingBoundaryMatch[0].length : 0;
+    const startOffset = literalStart - matchStr.length + leadingOffset;
+    const endOffset = literalEnd + closingMatch[0].length;
     return { startOffset, endOffset };
   }
 
   // Case 2: Assignment to property or variable:
-  // e.g. "Запрос.Текст =" or "ТекстЗапроса =" or "q.Text ="
+  // e.g. "Запрос.Текст =" or "ТекстЗапроса ="
+  // Must be a standalone statement preceded by line boundary or ';'
+  // Must be a simple identifier or simple property access ("Запрос.Текст"),
+  // NOT a compound property access like "Объект.Запрос.Текст ="!
   const assignMatch = prefix.match(
-    /(?:^|[^\p{L}\p{N}_])((?:[\p{L}_][\p{L}\p{N}_]*\s*\.\s*(?:Текст|Text))|[\p{L}_][\p{L}\p{N}_]*)\s*=\s*$/iu
+    /(?:^|[\r\n;])[ \t]*((?:([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*(?:Текст|Text))|([\p{L}_][\p{L}\p{N}_]*))\s*=\s*$/iu
   );
   if (assignMatch) {
-    const matchedText = assignMatch[1];
-    const indexInPrefix = prefix.lastIndexOf(matchedText);
-    if (indexInPrefix !== -1) {
-      let startOffset = indexInPrefix;
+    // Suffix must be a simple statement termination ';'
+    // If it has concatenation '+ Дополнение;' or anything else, return undefined!
+    const semiMatch = suffix.match(/^[ \t]*;[ \t]*(?:\/\/[^\r\n]*)?/);
+    if (!semiMatch) {
+      return undefined;
+    }
 
-      // Extract base variable name, e.g. "Запрос" from "Запрос.Текст" or "ТекстЗапроса"
-      const dotIdx = matchedText.indexOf('.');
-      const varName = dotIdx !== -1 ? matchedText.slice(0, dotIdx).trim() : matchedText.trim();
+    const matchStr = assignMatch[0];
+    const leadingBoundaryMatch = matchStr.match(/^[\r\n;][ \t]*/);
+    const leadingOffset = leadingBoundaryMatch ? leadingBoundaryMatch[0].length : 0;
+    let startOffset = literalStart - matchStr.length + leadingOffset;
 
-      // Check if `varName = Новый Запрос;` (or New Query;) immediately precedes this assignment
+    // Extract base variable name, e.g. "Запрос" from "Запрос.Текст"
+    const varName = (assignMatch[2] || assignMatch[3] || '').trim();
+
+    // Check if `varName = Новый Запрос;` (or New Query;) immediately precedes this assignment
+    if (varName) {
       const beforeAssign = documentText.slice(0, startOffset);
       const prevConstructorRegex = new RegExp(
         `(?:^|\\r?\\n)[ \\t]*(${escapeRegExp(varName)}\\s*=\\s*(?:Новый\\s+Запрос|New\\s+Query)\\s*;)(?:[ \\t]*(?:\\/\\/[^\\r\\n]*)?\\r?\\n[ \\t]*)*$`,
@@ -254,13 +272,10 @@ export function findStatementRange(
           startOffset = prevInitIdx;
         }
       }
-
-      // Suffix should consume trailing optional whitespace and ';'
-      const semiMatch = suffix.match(/^[ \t]*;/);
-      const endOffset = semiMatch ? literalEnd + semiMatch[0].length : literalEnd;
-
-      return { startOffset, endOffset };
     }
+
+    const endOffset = literalEnd + semiMatch[0].length;
+    return { startOffset, endOffset };
   }
 
   return undefined;
