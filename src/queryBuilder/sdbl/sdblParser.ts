@@ -294,13 +294,35 @@ class SdblParser {
     return { expression, alias };
   }
 
+  private isNonAliasKeyword(tok: SdblToken): boolean {
+    if (tok.type === TokenType.Keyword) {
+      const kw = tok.value as SdblKeyword;
+      return (
+        kw === SdblKeyword.On ||
+        kw === SdblKeyword.By ||
+        kw === SdblKeyword.Join ||
+        kw === SdblKeyword.Left ||
+        kw === SdblKeyword.Right ||
+        kw === SdblKeyword.Full ||
+        kw === SdblKeyword.Inner ||
+        kw === SdblKeyword.Outer ||
+        kw === SdblKeyword.As
+      );
+    }
+    const rawUpper = tok.raw.toUpperCase();
+    return rawUpper === 'ПО' || rawUpper === 'ON' || rawUpper === 'BY';
+  }
+
   private isPotentialAlias(): boolean {
     const tok = this.peek();
     if (!tok) {return false;}
     if (tok.type !== TokenType.Identifier && tok.type !== TokenType.Keyword) {
       return false;
     }
-    return !this.isSectionKeyword(tok);
+    if (this.isSectionKeyword(tok) || this.isJoinStart() || this.isNonAliasKeyword(tok)) {
+      return false;
+    }
+    return true;
   }
 
   // --- FROM AND JOINS ---
@@ -337,7 +359,7 @@ class SdblParser {
     if (tok.type !== TokenType.Identifier && tok.type !== TokenType.Keyword) {
       return false;
     }
-    if (this.isJoinStart() || this.isSectionKeyword(tok)) {
+    if (this.isJoinStart() || this.isSectionKeyword(tok) || this.isNonAliasKeyword(tok)) {
       return false;
     }
     return true;

@@ -1364,6 +1364,66 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
       assert.ok(newAttr, 'NewAttribute must exist');
       assert.strictEqual(newAttr.synonym, 'NewAttribute');
     });
+
+    test('Designer XML: extracts object synonym when properties are lazy-loaded during getChildren (Finding 6)', async () => {
+      const rootNode: TreeNode = {
+        id: 'Configuration',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        children: [
+          {
+            id: 'Catalogs',
+            name: 'Catalogs',
+            type: MetadataType.Catalog,
+            properties: {},
+            children: [
+              {
+                id: 'Catalog.LazyCatalog',
+                name: 'LazyCatalog',
+                type: MetadataType.Catalog,
+                // properties are intentionally empty at index-level before getChildren!
+                properties: {},
+              } as TreeNode,
+            ],
+          } as TreeNode,
+        ],
+      } as TreeNode;
+
+      const provider = new QueryMetadataProvider();
+      const mockTreeProvider = {
+        getRootNodes: () => [rootNode],
+        getChildren: async (element?: TreeNode) => {
+          if (!element || element === rootNode) {
+            return rootNode.children ?? [];
+          }
+          if (element.name === 'Catalogs') {
+            return element.children ?? [];
+          }
+          if (element.name === 'LazyCatalog') {
+            // Simulate lazy loading: properties loaded when children are requested
+            element.properties = {
+              Synonym: {
+                item: {
+                  lang: 'ru',
+                  content: 'Ленивый Справочник',
+                },
+              },
+            } as any;
+            return [];
+          }
+          return [];
+        },
+      } as any;
+
+      const tree = await provider.buildTreeFromProvider(mockTreeProvider);
+      const catCat = tree.find((c: QueryMetadataNode) => c.id === 'Catalogs');
+      const lazyCat = catCat?.children?.find((t: QueryMetadataNode) => t.name === 'LazyCatalog');
+
+      assert.ok(lazyCat, 'LazyCatalog must exist in tree');
+      assert.strictEqual(lazyCat.synonym, 'Ленивый Справочник', 'Must extract synonym after lazy properties load');
+      assert.strictEqual(lazyCat.label, 'Ленивый Справочник', 'Label must use extracted synonym');
+    });
   });
 });
 

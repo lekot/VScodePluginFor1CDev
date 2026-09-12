@@ -324,6 +324,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       document: any;
       state: any;
       elements: any;
+      tabButtons: any[];
       sentMessages: any[];
       postMessageToWebview: (msg: any) => void;
     }
@@ -424,6 +425,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         document: mockDocument,
         state: sandbox.window.state,
         elements: sandbox.window.elements,
+        tabButtons,
         sentMessages,
         postMessageToWebview,
       };
@@ -861,6 +863,140 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
       const formatted = env.window.formatSdblQuery(parsed);
       assert.ok(formatted.includes('ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)'));
+    });
+
+    test('Finding 3: text tab with totals without aggregate fields puts by-item into totals.by (not totals.fields)', () => {
+      const env = createWebviewEnvironment();
+      const text = 'ВЫБРАТЬ A ИЗ T ИТОГИ ПО A ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)';
+      const pkg = env.window.parseSdblClient(text);
+      const parsed = pkg.queries[0];
+
+      assert.ok(parsed.totals, 'totals must exist');
+      assert.strictEqual(parsed.totals.fields.length, 0, 'totals.fields must be empty when no aggregates');
+      assert.strictEqual(parsed.totals.by.length, 1, 'totals.by must contain 1 group item');
+      assert.strictEqual(env.window.getExpressionString(parsed.totals.by[0].expression), 'A');
+      assert.strictEqual(parsed.totals.by[0].periods, true);
+      assert.strictEqual(parsed.totals.by[0].periodDefinition?.periodType, 'ДЕНЬ');
+
+      const formatted = env.window.formatSdblQuery(parsed);
+      assert.ok(
+        formatted.includes('ПО') && formatted.includes('A ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)'),
+        'Formatted text must have ПО with A'
+      );
+    });
+
+    test('Finding 3: English TOTALS BY A without aggregates puts by-item into totals.by', () => {
+      const env = createWebviewEnvironment();
+      const text = 'SELECT A FROM T TOTALS BY A';
+      const pkg = env.window.parseSdblClient(text);
+      const parsed = pkg.queries[0];
+
+      assert.ok(parsed.totals);
+      assert.strictEqual(parsed.totals.fields.length, 0);
+      assert.strictEqual(parsed.totals.by.length, 1);
+      assert.strictEqual(env.window.getExpressionString(parsed.totals.by[0].expression), 'A');
+    });
+
+    test('Finding 5: client parser extracts balanced parenthesis arguments in ПЕРИОДАМИ with nested functions', () => {
+      const env = createWebviewEnvironment();
+      const text = 'ВЫБРАТЬ Период ИЗ T ИТОГИ СУММА(A) ПО Период ПЕРИОДАМИ(ДЕНЬ, НАЧАЛОПЕРИОДА(&Дата, ДЕНЬ), &Кон)';
+      const pkg = env.window.parseSdblClient(text);
+      const parsed = pkg.queries[0];
+
+      assert.ok(parsed.totals);
+      assert.strictEqual(parsed.totals.by.length, 1);
+      const byItem = parsed.totals.by[0];
+      assert.strictEqual(
+        env.window.getExpressionString(byItem.expression),
+        'Период',
+        'Expression must be Период, not corrupted by trailing parenthesis'
+      );
+      assert.strictEqual(byItem.periods, true);
+      assert.ok(byItem.periodDefinition);
+      assert.strictEqual(byItem.periodDefinition.periodType, 'ДЕНЬ');
+      assert.strictEqual(
+        env.window.getExpressionString(byItem.periodDefinition.from),
+        'НАЧАЛОПЕРИОДА(&Дата, ДЕНЬ)',
+        'From expression must retain closing parenthesis'
+      );
+      assert.strictEqual(
+        env.window.getExpressionString(byItem.periodDefinition.to),
+        '&Кон',
+        'To expression must be parsed'
+      );
+
+      const formatted = env.window.formatSdblQuery(parsed);
+      assert.ok(
+        formatted.includes('ПЕРИОДАМИ(ДЕНЬ, НАЧАЛОПЕРИОДА(&Дата, ДЕНЬ), &Кон)'),
+        'Formatted query must retain balanced parameters'
+      );
+    });
+
+    test('Finding 7: unchecking periods checkbox deletes periodDefinition and removes periods from formatted query', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: { type: 'Identifier', name: 'A' }, alias: 'A' }];
+      q.from = [{ source: { type: 'Table', name: 'T' } }];
+      q.totals = {
+        fields: [],
+        by: [
+          {
+            expression: { type: 'Identifier', name: 'Период' },
+            periods: true,
+            periodDefinition: {
+              periodType: 'ДЕНЬ',
+              from: { type: 'Parameter', name: 'Нач' },
+              to: { type: 'Parameter', name: 'Кон' },
+            },
+          },
+        ],
+      };
+
+      env.window.renderTab9();
+
+      // Find the checkbox for periods in tbodyTotalsGroups
+      const rows = env.elements.tbodyTotalsGroups.children;
+      assert.strictEqual(rows.length, 1);
+      const checkboxes = rows[0].querySelectorAll('input[type="checkbox"]');
+      assert.strictEqual(checkboxes.length, 2);
+      const chPer = checkboxes[1];
+      assert.strictEqual(chPer.checked, true, 'Periods checkbox must initially be checked');
+
+      // Uncheck it
+      chPer.checked = false;
+      chPer.dispatchEvent({ type: 'change', target: chPer });
+
+      assert.strictEqual(q.totals.by[0].periods, false, 'tb.periods must be false');
+      assert.strictEqual(q.totals.by[0].periodDefinition, undefined, 'tb.periodDefinition must be deleted');
+
+      const formatted = env.window.formatSdblQuery(q);
+      assert.ok(!formatted.includes('ПЕРИОДАМИ'), 'Formatted query must NOT contain ПЕРИОДАМИ');
+    });
+
+    test('Finding 8: parse error on text tab blocks save button and posts 0 save messages', () => {
+      const env = createWebviewEnvironment();
+
+      // Switch active tab to tab-query-text
+      env.tabButtons.forEach((b: any) => {
+        b.className = 'tab-btn';
+      });
+      const textTabBtn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-query-text');
+      assert.ok(textTabBtn);
+      textTabBtn.className = 'tab-btn active';
+
+      // Set invalid text in editor
+      env.elements.sdblTextEditor.value = 'НЕВАЛИДНЫЙ ТЕКСТ БЕЗ ВЫБРАТЬ';
+
+      // Click save button
+      env.elements.btnSave.click();
+
+      // Verify no save message was sent
+      const saveMessages = env.sentMessages.filter((m: any) => m.command === 'save');
+      assert.strictEqual(saveMessages.length, 0, 'No save message must be posted on parse error');
+
+      // Verify error message is shown
+      assert.strictEqual(env.elements.textParseError.style.display, 'flex');
+      assert.ok(env.elements.textParseError.textContent.includes('Ошибка парсинга SDBL'));
     });
   });
 });

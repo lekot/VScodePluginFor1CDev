@@ -330,7 +330,7 @@ function formatTotals(
           bStr += ' ИЕРАРХИЯ';
         }
       }
-      if (item.periodDefinition) {
+      if (item.periods !== false && item.periodDefinition) {
         const def = item.periodDefinition;
         const pType = def.periodType ?? '';
         const fromStr = def.from ? formatExpression(def.from, indent, newline) : '';

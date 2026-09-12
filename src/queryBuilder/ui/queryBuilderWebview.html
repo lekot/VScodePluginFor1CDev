@@ -1630,7 +1630,7 @@
                             if (byItem.hierarchy) {
                                 opts += (byItem.hierarchyType === 'OnlyHierarchy' ? ' ТОЛЬКО ИЕРАРХИЯ' : ' ИЕРАРХИЯ');
                             }
-                            if (byItem.periodDefinition) {
+                            if (byItem.periods && byItem.periodDefinition) {
                                 const def = byItem.periodDefinition;
                                 const pType = def.periodType || '';
                                 const fromStr = def.from ? getExpressionString(def.from) : '';
@@ -2154,7 +2154,6 @@
                     'ИНДЕКСИРОВАТЬ\\s+ПО', 'INDEX\\s+BY',
                     'СГРУППИРОВАТЬ\\s+ПО', 'GROUP\\s+BY',
                     'УПОРЯДОЧИТЬ\\s+ПО', 'ORDER\\s+BY',
-                    'ИТОГИ\\s+ПО', 'TOTALS\\s+BY',
                     'АВТОУПОРЯДОЧИВАНИЕ', 'AUTOORDER',
                     'ВЫБРАТЬ', 'SELECT',
                     'ПОМЕСТИТЬ', 'INTO',
@@ -2414,7 +2413,6 @@
                             if (!trimmed) return;
                             const onlyHierRe = new RegExp(WB_START + '(?:ТОЛЬКО\\s+ИЕРАРХИЯ|ONLY\\s+HIERARCHY)' + WB_END, 'i');
                             const hierRe = new RegExp(WB_START + '(?:ИЕРАРХИЯ|HIERARCHY)' + WB_END, 'i');
-                            const perRe = new RegExp(WB_START + '(?:ПЕРИОДАМИ|PERIODS)(?:\\s*\\(([^)]*)\\))?' + WB_END, 'i');
 
                             let isOnlyHier = false;
                             let isHier = false;
@@ -2429,18 +2427,52 @@
                                 isHier = true;
                                 trimmed = trimmed.replace(hierRe, '').trim();
                             }
-                            const perMatch = trimmed.match(perRe);
+
+                            const perWordRe = new RegExp(WB_START + '(?:ПЕРИОДАМИ|PERIODS)' + WB_END, 'i');
+                            const perMatch = trimmed.match(perWordRe);
                             if (perMatch) {
                                 isPer = true;
-                                if (perMatch[1] && perMatch[1].trim()) {
-                                    const perArgs = splitTopLevel(perMatch[1].trim(), ',').map(function(a) { return a.trim(); });
-                                    periodDef = {
-                                        periodType: perArgs[0] || '',
-                                        from: perArgs[1] ? parseExpressionOrRaw(perArgs[1]) : undefined,
-                                        to: perArgs[2] ? parseExpressionOrRaw(perArgs[2]) : undefined
-                                    };
+                                const kwStart = perMatch.index;
+                                const kwEnd = kwStart + perMatch[0].length;
+                                let afterKw = kwEnd;
+                                while (afterKw < trimmed.length && (trimmed[afterKw] === ' ' || trimmed[afterKw] === '\t')) {
+                                    afterKw++;
                                 }
-                                trimmed = trimmed.replace(perRe, '').trim();
+                                if (afterKw < trimmed.length && trimmed[afterKw] === '(') {
+                                    let depth = 1;
+                                    let inQuote = false;
+                                    let closeIdx = -1;
+                                    for (let i = afterKw + 1; i < trimmed.length; i++) {
+                                        const ch = trimmed[i];
+                                        if (ch === '"') {
+                                            inQuote = !inQuote;
+                                        } else if (!inQuote && (ch === '(' || ch === '[')) {
+                                            depth++;
+                                        } else if (!inQuote && (ch === ')' || ch === ']')) {
+                                            depth--;
+                                            if (depth === 0) {
+                                                closeIdx = i;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (closeIdx !== -1) {
+                                        const argsStr = trimmed.substring(afterKw + 1, closeIdx).trim();
+                                        if (argsStr) {
+                                            const perArgs = splitTopLevel(argsStr, ',').map(function(a) { return a.trim(); });
+                                            periodDef = {
+                                                periodType: perArgs[0] || '',
+                                                from: perArgs[1] ? parseExpressionOrRaw(perArgs[1]) : undefined,
+                                                to: perArgs[2] ? parseExpressionOrRaw(perArgs[2]) : undefined
+                                            };
+                                        }
+                                        trimmed = (trimmed.substring(0, kwStart) + ' ' + trimmed.substring(closeIdx + 1)).trim();
+                                    } else {
+                                        trimmed = (trimmed.substring(0, kwStart) + ' ' + trimmed.substring(kwEnd)).trim();
+                                    }
+                                } else {
+                                    trimmed = (trimmed.substring(0, kwStart) + ' ' + trimmed.substring(kwEnd)).trim();
+                                }
                             }
 
                             stmt.totals.by.push({
@@ -3750,6 +3782,9 @@
                     chPer.checked = Boolean(tb.periods);
                     chPer.addEventListener('change', function() {
                         tb.periods = chPer.checked;
+                        if (!chPer.checked) {
+                            delete tb.periodDefinition;
+                        }
                         notifyChange();
                     });
                     tdPer.appendChild(chPer);
@@ -4097,7 +4132,10 @@
                 // If on text tab, apply text first
                 const activeBtn = document.querySelector('.tab-btn.active');
                 if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text') {
-                    applyTextEditorChanges();
+                    const success = applyTextEditorChanges();
+                    if (!success) {
+                        return;
+                    }
                 }
 
                 state.ast.queries.forEach(function(q) {
@@ -4385,10 +4423,12 @@
                     elements.editorSyncStatus.textContent = 'Применено';
                     renderAll();
                     notifyChange();
+                    return true;
                 } catch (err) {
                     elements.textParseError.style.display = 'flex';
                     elements.textParseError.textContent = 'Ошибка парсинга SDBL: ' + (err.message || String(err));
                     elements.editorSyncStatus.textContent = 'Ошибка';
+                    return false;
                 }
             }
 

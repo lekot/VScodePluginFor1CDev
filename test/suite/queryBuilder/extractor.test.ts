@@ -534,6 +534,15 @@ suite('BSL Query Extractor & Templates', () => {
       assert.strictEqual(result.isNewQuery, false);
       assert.strictEqual(result.statementRange, undefined, 'Must not replace when expression is concatenated');
     });
+
+    test('Finding 1: leaves statementRange undefined for chained member calls (.Выполнить())', () => {
+      const code = 'Запрос = Новый Запрос("ВЫБРАТЬ 1 КАК Поле").Выполнить();';
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.statementRange, undefined, 'Must not replace statement when followed by method call');
+    });
   });
 });
 

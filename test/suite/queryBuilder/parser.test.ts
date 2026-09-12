@@ -649,4 +649,56 @@ suite('SDBL Parser', () => {
       assert.strictEqual((select.fields[0].expression as LiteralNode).value, 1);
     });
   });
+
+  suite('17. Rejection of ON/BY/JOIN as implicit aliases (Finding 4)', () => {
+    test('ИТОГИ СУММА(A) ПО A does not treat ПО as alias', () => {
+      const sql = 'ВЫБРАТЬ A ИЗ T ИТОГИ СУММА(A) ПО A';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.ok(select.totals);
+      assert.strictEqual(select.totals.fields?.length, 1);
+      assert.strictEqual(select.totals.fields[0].alias, undefined, 'Aggregate field must not have alias ПО');
+      assert.strictEqual(select.totals.by.length, 1);
+      assert.strictEqual((select.totals.by[0].expression as IdentifierNode).name, 'A');
+    });
+
+    test('ЛЕВОЕ СОЕДИНЕНИЕ U ПО T.A = U.A does not treat ПО as table alias', () => {
+      const sql = 'ВЫБРАТЬ T.A ИЗ T КАК T ЛЕВОЕ СОЕДИНЕНИЕ U ПО T.A = U.A';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.ok(select.from);
+      const joins = select.from[0].joins;
+      assert.ok(joins);
+      assert.strictEqual(joins.length, 1);
+      assert.strictEqual((joins[0].source as TableSource).name, 'U');
+      assert.strictEqual(joins[0].alias, undefined, 'Join table source must not have alias ПО');
+    });
+
+    test('English TOTALS SUM(A) BY A does not treat BY as alias', () => {
+      const sql = 'SELECT A FROM T TOTALS SUM(A) BY A';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.ok(select.totals);
+      assert.strictEqual(select.totals.fields?.length, 1);
+      assert.strictEqual(select.totals.fields[0].alias, undefined, 'Aggregate field must not have alias BY');
+      assert.strictEqual(select.totals.by.length, 1);
+      assert.strictEqual((select.totals.by[0].expression as IdentifierNode).name, 'A');
+    });
+
+    test('English LEFT JOIN U ON T.A = U.A does not treat ON as table alias', () => {
+      const sql = 'SELECT T.A FROM T AS T LEFT JOIN U ON T.A = U.A';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.ok(select.from);
+      const joins = select.from[0].joins;
+      assert.ok(joins);
+      assert.strictEqual(joins.length, 1);
+      assert.strictEqual((joins[0].source as TableSource).name, 'U');
+      assert.strictEqual(joins[0].alias, undefined, 'Join table source must not have alias ON');
+    });
+  });
 });

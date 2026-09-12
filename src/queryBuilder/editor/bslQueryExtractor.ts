@@ -222,7 +222,8 @@ export function findStatementRange(
   );
   if (constructorMatch) {
     // Suffix must close the call: ')' and optional ';' (allowing multiline whitespace before ')')
-    const closingMatch = suffix.match(/^\s*\)\s*(?:;[ \t]*(?:\/\/[^\r\n]*)?)?/);
+    // Must NOT be followed by method calls (e.g. .Выполнить()), operators, etc.
+    const closingMatch = suffix.match(/^\s*\)[ \t]*(?:;[ \t]*)?(?:\/\/[^\r\n]*)?(?=\r?\n|$)/);
     if (!closingMatch) {
       return undefined;
     }

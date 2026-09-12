@@ -745,6 +745,221 @@ suite('QueryBuilder Provider & Message Handler', () => {
       assert.ok(resulting.includes('Запрос2.Текст = "ВЫБРАТЬ'), 'Second query must have new text');
     });
 
+    test('Finding 1: withProcessing save on Return statement aborts save and leaves document intact', async () => {
+      const mock = createMockPanel();
+      const code = 'Возврат Новый Запрос("ВЫБРАТЬ 1");';
+      const editor = createMockEditor(code);
+
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+
+      const litStart = code.indexOf('"');
+      const litEnd = code.lastIndexOf('"') + 1;
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'withProcessing',
+        replaceRange: {
+          startOffset: litStart,
+          endOffset: litEnd,
+          startLine: 1,
+          startColumn: litStart + 1,
+          endLine: 1,
+          endColumn: litEnd + 1,
+        },
+        statementRange: undefined, // Unsafe for withProcessing replacement
+        expectedText: '"ВЫБРАТЬ 1"',
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast, mode: 'withProcessing' }, context);
+      assert.strictEqual(mock.isDisposed(), false, 'Panel must not be disposed');
+      assert.strictEqual(
+        errorMessage,
+        'Невозможно сгенерировать обработку результата запроса: исходный запрос находится внутри сложного выражения или оператора Возврат. Сохранение отменено.'
+      );
+      assert.strictEqual(editor.getFullText(), code, 'Document must remain completely untouched');
+    });
+
+    test('Finding 1: withProcessing save on concatenated assignment aborts save and leaves document intact', async () => {
+      const mock = createMockPanel();
+      const code = 'Запрос.Текст = "ВЫБРАТЬ 1" + Дополнение;';
+      const editor = createMockEditor(code);
+
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+
+      const litStart = code.indexOf('"');
+      const litEnd = code.lastIndexOf('"') + 1;
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'withProcessing',
+        replaceRange: {
+          startOffset: litStart,
+          endOffset: litEnd,
+          startLine: 1,
+          startColumn: litStart + 1,
+          endLine: 1,
+          endColumn: litEnd + 1,
+        },
+        statementRange: undefined,
+        expectedText: '"ВЫБРАТЬ 1"',
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast, mode: 'withProcessing' }, context);
+      assert.strictEqual(mock.isDisposed(), false);
+      assert.strictEqual(
+        errorMessage,
+        'Невозможно сгенерировать обработку результата запроса: исходный запрос находится внутри сложного выражения или оператора Возврат. Сохранение отменено.'
+      );
+      assert.strictEqual(editor.getFullText(), code);
+    });
+
+    test('Finding 1: withProcessing save on compound property access aborts save and leaves document intact', async () => {
+      const mock = createMockPanel();
+      const code = 'Объект.Запрос.Текст = "ВЫБРАТЬ 1";';
+      const editor = createMockEditor(code);
+
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+
+      const litStart = code.indexOf('"');
+      const litEnd = code.lastIndexOf('"') + 1;
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'withProcessing',
+        replaceRange: {
+          startOffset: litStart,
+          endOffset: litEnd,
+          startLine: 1,
+          startColumn: litStart + 1,
+          endLine: 1,
+          endColumn: litEnd + 1,
+        },
+        statementRange: undefined,
+        expectedText: '"ВЫБРАТЬ 1"',
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast, mode: 'withProcessing' }, context);
+      assert.strictEqual(mock.isDisposed(), false);
+      assert.strictEqual(
+        errorMessage,
+        'Невозможно сгенерировать обработку результата запроса: исходный запрос находится внутри сложного выражения или оператора Возврат. Сохранение отменено.'
+      );
+      assert.strictEqual(editor.getFullText(), code);
+    });
+
+    test('Finding 1: withProcessing save on chained .Выполнить() call aborts save and leaves document intact', async () => {
+      const mock = createMockPanel();
+      const code = 'Запрос = Новый Запрос("ВЫБРАТЬ 1").Выполнить();';
+      const editor = createMockEditor(code);
+
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+
+      const litStart = code.indexOf('"');
+      const litEnd = code.lastIndexOf('"') + 1;
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'withProcessing',
+        replaceRange: {
+          startOffset: litStart,
+          endOffset: litEnd,
+          startLine: 1,
+          startColumn: litStart + 1,
+          endLine: 1,
+          endColumn: litEnd + 1,
+        },
+        statementRange: undefined,
+        expectedText: '"ВЫБРАТЬ 1"',
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast, mode: 'withProcessing' }, context);
+      assert.strictEqual(mock.isDisposed(), false);
+      assert.strictEqual(
+        errorMessage,
+        'Невозможно сгенерировать обработку результата запроса: исходный запрос находится внутри сложного выражения или оператора Возврат. Сохранение отменено.'
+      );
+      assert.strictEqual(editor.getFullText(), code);
+    });
+
+    test('Finding 2: deleting selected second query and leaving only first does NOT overwrite first query', async () => {
+      const mock = createMockPanel();
+      const originalCode = [
+        'Первый.Текст = "ВЫБРАТЬ 1";',
+        'Второй.Текст = "ВЫБРАТЬ 1";',
+      ].join('\n');
+
+      // Second query was opened: occurrenceIndex 1, prefix "Второй.Текст = "
+      const secondOccurOffset = originalCode.indexOf('Второй.Текст = "ВЫБРАТЬ 1"') + 'Второй.Текст = '.length;
+
+      // While panel is open, second query is deleted and top comment is added:
+      const modifiedCode = [
+        '// Новый комментарий',
+        'Первый.Текст = "ВЫБРАТЬ 1";',
+      ].join('\n');
+
+      const editor = createMockEditor(modifiedCode, undefined, { version: 2 });
+
+      const ast: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' } }],
+            from: [],
+          },
+        ],
+      };
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: secondOccurOffset,
+          endOffset: secondOccurOffset + '"ВЫБРАТЬ 1"'.length,
+          startLine: 2,
+          startColumn: 16,
+          endLine: 2,
+          endColumn: 27,
+        },
+        initialDocumentVersion: 1,
+        expectedText: '"ВЫБРАТЬ 1"',
+        surroundingPrefix: 'Второй.Текст = ',
+        surroundingSuffix: ';',
+        occurrenceIndex: 1,
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast }, context);
+
+      assert.strictEqual(mock.isDisposed(), false, 'Panel must not be disposed when query was deleted');
+      assert.strictEqual(
+        errorMessage,
+        'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+      );
+      assert.strictEqual(editor.getFullText(), modifiedCode, 'First query must remain untouched');
+    });
+
     test('QueryBuilderMessageHandler class forwards messages to handler function', async () => {
       const mock = createMockPanel();
       const context: QueryBuilderMessageContext = {

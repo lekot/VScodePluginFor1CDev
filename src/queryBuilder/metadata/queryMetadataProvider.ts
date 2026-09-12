@@ -359,8 +359,8 @@ export class QueryMetadataProvider {
 
     // Check if node is a category folder (e.g. Catalogs, Documents)
     const catConfig =
-      CONFIG_BY_ID.get(node.id.toLowerCase()) ||
-      CONFIG_BY_ID.get(node.name.toLowerCase()) ||
+      (node.id ? CONFIG_BY_ID.get(node.id.toLowerCase()) : undefined) ||
+      (node.name ? CONFIG_BY_ID.get(node.name.toLowerCase()) : undefined) ||
       CONFIG_BY_TYPE.get(node.type);
 
     if (catConfig) {
@@ -401,9 +401,10 @@ export class QueryMetadataProvider {
   ): Promise<QueryMetadataNode> {
     const tableId = `${catConfig.metadataType}.${node.name}`;
     const tableFullName = `${catConfig.singularRussian}.${node.name}`;
-    const synonym = extractSynonym(node);
 
     const rawChildren = await this.safeGetChildren(provider, node);
+    // In lazy loading, safeGetChildren triggers loadChildrenForElement which populates node.properties (including Synonym)
+    const synonym = extractSynonym(node);
 
     const dims: QueryMetadataNode[] = [];
     const resources: QueryMetadataNode[] = [];
@@ -578,9 +579,9 @@ export class QueryMetadataProvider {
   ): Promise<QueryMetadataNode> {
     const tsId = `${parentTableId}.${node.name}`;
     const tsFullName = `${parentTableFullName}.${node.name}`;
-    const synonym = extractSynonym(node);
 
     const rawChildren = await this.safeGetChildren(provider, node);
+    const synonym = extractSynonym(node);
     const customAttrs: QueryMetadataNode[] = [];
 
     for (const child of rawChildren) {
