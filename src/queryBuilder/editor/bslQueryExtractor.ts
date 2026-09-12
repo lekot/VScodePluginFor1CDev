@@ -14,6 +14,14 @@ export interface ExtractedQueryInfo {
     endLine: number;
     endColumn: number;
   };
+  statementRange?: {
+    startOffset: number;
+    endOffset: number;
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+  };
   isNewQuery: boolean;
   variableName?: string; // e.g. "Запрос" if detected from `Запрос.Текст = ...`
 }
@@ -186,6 +194,78 @@ export function detectVariableName(prefix: string): string | undefined {
   return undefined;
 }
 
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Calculates the statement range enclosing a BSL query string literal:
+ * - If inside `[Variable = ] Новый Запрос("...")`, spans from `[Variable = ] Новый Запрос(` to `);`.
+ * - If in assignment `Variable.Текст = "..."` or `Variable = "..."`:
+ *   Spans from the start of assignment (or preceding `Variable = Новый Запрос;` if present)
+ *   up to the trailing semicolon `;`.
+ */
+export function findStatementRange(
+  documentText: string,
+  literalStart: number,
+  literalEnd: number
+): { startOffset: number; endOffset: number } | undefined {
+  const prefix = documentText.slice(0, literalStart);
+  const suffix = documentText.slice(literalEnd);
+
+  // Case 1: Constructor call Новый Запрос(...) or New Query(...)
+  // e.g. "Запрос = Новый Запрос(" or "Новый Запрос("
+  const constructorMatch = prefix.match(
+    /(?:([\p{L}_][\p{L}\p{N}_]*)\s*=\s*)?(?:Новый\s+Запрос|New\s+Query)\s*\(\s*$/iu
+  );
+  if (constructorMatch) {
+    const startOffset = literalStart - constructorMatch[0].length;
+    // Suffix should look for closing ')' and optional ';'
+    const closingMatch = suffix.match(/^[ \t]*\)(?:[ \t]*;)?/);
+    const endOffset = closingMatch ? literalEnd + closingMatch[0].length : literalEnd;
+    return { startOffset, endOffset };
+  }
+
+  // Case 2: Assignment to property or variable:
+  // e.g. "Запрос.Текст =" or "ТекстЗапроса =" or "q.Text ="
+  const assignMatch = prefix.match(
+    /(?:^|[^\p{L}\p{N}_])((?:[\p{L}_][\p{L}\p{N}_]*\s*\.\s*(?:Текст|Text))|[\p{L}_][\p{L}\p{N}_]*)\s*=\s*$/iu
+  );
+  if (assignMatch) {
+    const matchedText = assignMatch[1];
+    const indexInPrefix = prefix.lastIndexOf(matchedText);
+    if (indexInPrefix !== -1) {
+      let startOffset = indexInPrefix;
+
+      // Extract base variable name, e.g. "Запрос" from "Запрос.Текст" or "ТекстЗапроса"
+      const dotIdx = matchedText.indexOf('.');
+      const varName = dotIdx !== -1 ? matchedText.slice(0, dotIdx).trim() : matchedText.trim();
+
+      // Check if `varName = Новый Запрос;` (or New Query;) immediately precedes this assignment
+      const beforeAssign = documentText.slice(0, startOffset);
+      const prevConstructorRegex = new RegExp(
+        `(?:^|\\r?\\n)[ \\t]*(${escapeRegExp(varName)}\\s*=\\s*(?:Новый\\s+Запрос|New\\s+Query)\\s*;)(?:[ \\t]*(?:\\/\\/[^\\r\\n]*)?\\r?\\n[ \\t]*)*$`,
+        'iu'
+      );
+      const prevMatch = beforeAssign.match(prevConstructorRegex);
+      if (prevMatch && prevMatch.index !== undefined) {
+        const prevInitIdx = beforeAssign.lastIndexOf(prevMatch[1]);
+        if (prevInitIdx !== -1) {
+          startOffset = prevInitIdx;
+        }
+      }
+
+      // Suffix should consume trailing optional whitespace and ';'
+      const semiMatch = suffix.match(/^[ \t]*;/);
+      const endOffset = semiMatch ? literalEnd + semiMatch[0].length : literalEnd;
+
+      return { startOffset, endOffset };
+    }
+  }
+
+  return undefined;
+}
+
 /**
  * Extracts BSL query information from document text based on cursor or selection.
  */
@@ -217,6 +297,20 @@ export function extractBslQuery(
           const startPos = offsetToPosition(documentText, selStart);
           const endPos = offsetToPosition(documentText, selEnd);
           const varName = detectVariableName(documentText.slice(0, selStart));
+          const stmtOffsets = findStatementRange(documentText, selStart, selEnd);
+          let statementRange: ExtractedQueryInfo['statementRange'];
+          if (stmtOffsets) {
+            const sPos = offsetToPosition(documentText, stmtOffsets.startOffset);
+            const ePos = offsetToPosition(documentText, stmtOffsets.endOffset);
+            statementRange = {
+              startOffset: stmtOffsets.startOffset,
+              endOffset: stmtOffsets.endOffset,
+              startLine: sPos.line,
+              startColumn: sPos.column,
+              endLine: ePos.line,
+              endColumn: ePos.column,
+            };
+          }
 
           return {
             rawBslText: rawSelected,
@@ -229,6 +323,7 @@ export function extractBslQuery(
               endLine: endPos.line,
               endColumn: endPos.column,
             },
+            ...(statementRange ? { statementRange } : {}),
             isNewQuery: false,
             ...(varName ? { variableName: varName } : {}),
           };
@@ -248,6 +343,20 @@ export function extractBslQuery(
     const startPos = offsetToPosition(documentText, matchedLiteral.start);
     const endPos = offsetToPosition(documentText, matchedLiteral.end);
     const varName = detectVariableName(documentText.slice(0, matchedLiteral.start));
+    const stmtOffsets = findStatementRange(documentText, matchedLiteral.start, matchedLiteral.end);
+    let statementRange: ExtractedQueryInfo['statementRange'];
+    if (stmtOffsets) {
+      const sPos = offsetToPosition(documentText, stmtOffsets.startOffset);
+      const ePos = offsetToPosition(documentText, stmtOffsets.endOffset);
+      statementRange = {
+        startOffset: stmtOffsets.startOffset,
+        endOffset: stmtOffsets.endOffset,
+        startLine: sPos.line,
+        startColumn: sPos.column,
+        endLine: ePos.line,
+        endColumn: ePos.column,
+      };
+    }
 
     return {
       rawBslText: matchedLiteral.rawText,
@@ -260,6 +369,7 @@ export function extractBslQuery(
         endLine: endPos.line,
         endColumn: endPos.column,
       },
+      ...(statementRange ? { statementRange } : {}),
       isNewQuery: false,
       ...(varName ? { variableName: varName } : {}),
     };

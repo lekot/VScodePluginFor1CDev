@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { ExtensionState } from '../state/extensionState';
 import { QueryPackage } from './sdbl/sdblAst';
 import { parseSdbl } from './sdbl/sdblParser';
-import { extractBslQuery } from './editor/bslQueryExtractor';
+import { extractBslQuery, offsetToPosition } from './editor/bslQueryExtractor';
 import { QueryMetadataProvider } from './metadata/queryMetadataProvider';
 import { QueryMetadataNode } from './metadata/queryMetadataTypes';
 import {
@@ -16,6 +16,7 @@ import { Logger } from '../utils/logger';
 export class QueryBuilderProvider {
   private panel: vscode.WebviewPanel | undefined;
   private messageHandler: QueryBuilderMessageHandler | undefined;
+  private messageSubscription?: vscode.Disposable;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -35,16 +36,101 @@ export class QueryBuilderProvider {
       return undefined;
     }
 
-    const documentText = targetEditor.document.getText();
-    const cursorOffset = targetEditor.document.offsetAt(targetEditor.selection.active);
+    const doc = targetEditor.document;
+    const documentText = doc.getText();
+    const cursorOffset = doc.offsetAt(targetEditor.selection.active);
     const selectionRange = targetEditor.selection.isEmpty
       ? undefined
       : {
-          start: targetEditor.document.offsetAt(targetEditor.selection.start),
-          end: targetEditor.document.offsetAt(targetEditor.selection.end),
+          start: doc.offsetAt(targetEditor.selection.start),
+          end: doc.offsetAt(targetEditor.selection.end),
         };
 
-    const extracted = extractBslQuery(documentText, cursorOffset, selectionRange);
+    const fileName = doc.fileName || doc.uri?.fsPath || doc.uri?.path || '';
+    const isSdblDocument =
+      doc.languageId === 'sdbl' || /\.(sdbl|query)$/i.test(fileName);
+
+    let extracted: {
+      rawBslText: string;
+      sdblText: string;
+      replaceRange: {
+        startOffset: number;
+        endOffset: number;
+        startLine: number;
+        startColumn: number;
+        endLine: number;
+        endColumn: number;
+      };
+      statementRange?: {
+        startOffset: number;
+        endOffset: number;
+        startLine: number;
+        startColumn: number;
+        endLine: number;
+        endColumn: number;
+      };
+      isNewQuery: boolean;
+      variableName?: string;
+    };
+
+    if (isSdblDocument) {
+      if (selectionRange && selectionRange.start !== selectionRange.end) {
+        const selStart = Math.min(selectionRange.start, selectionRange.end);
+        const selEnd = Math.max(selectionRange.start, selectionRange.end);
+        const selectedText = documentText.slice(selStart, selEnd);
+        const sPos = offsetToPosition(documentText, selStart);
+        const ePos = offsetToPosition(documentText, selEnd);
+        extracted = {
+          rawBslText: selectedText,
+          sdblText: selectedText,
+          replaceRange: {
+            startOffset: selStart,
+            endOffset: selEnd,
+            startLine: sPos.line,
+            startColumn: sPos.column,
+            endLine: ePos.line,
+            endColumn: ePos.column,
+          },
+          isNewQuery: selectedText.trim().length === 0,
+        };
+      } else {
+        const trimmed = documentText.trim();
+        if (trimmed.length > 0) {
+          const sPos = offsetToPosition(documentText, 0);
+          const ePos = offsetToPosition(documentText, documentText.length);
+          extracted = {
+            rawBslText: documentText,
+            sdblText: documentText,
+            replaceRange: {
+              startOffset: 0,
+              endOffset: documentText.length,
+              startLine: sPos.line,
+              startColumn: sPos.column,
+              endLine: ePos.line,
+              endColumn: ePos.column,
+            },
+            isNewQuery: false,
+          };
+        } else {
+          const cPos = offsetToPosition(documentText, cursorOffset);
+          extracted = {
+            rawBslText: '',
+            sdblText: '',
+            replaceRange: {
+              startOffset: cursorOffset,
+              endOffset: cursorOffset,
+              startLine: cPos.line,
+              startColumn: cPos.column,
+              endLine: cPos.line,
+              endColumn: cPos.column,
+            },
+            isNewQuery: true,
+          };
+        }
+      }
+    } else {
+      extracted = extractBslQuery(documentText, cursorOffset, selectionRange);
+    }
 
     let ast: QueryPackage;
     if (extracted.isNewQuery || !extracted.sdblText || extracted.sdblText.trim().length === 0) {
@@ -61,16 +147,12 @@ export class QueryBuilderProvider {
       try {
         ast = parseSdbl(extracted.sdblText);
       } catch (err) {
-        Logger.warn('Failed to parse extracted SDBL query, starting with empty query', err);
-        ast = {
-          queries: [
-            {
-              type: 'Select',
-              fields: [],
-              from: [],
-            },
-          ],
-        };
+        const errorMsg = (err as Error)?.message ?? String(err);
+        Logger.warn('Failed to parse extracted SDBL query', err);
+        void vscode.window.showErrorMessage(
+          'Ошибка синтаксиса запроса: ' + errorMsg + '. Открытие конструктора отменено.'
+        );
+        return undefined;
       }
     }
 
@@ -108,9 +190,38 @@ export class QueryBuilderProvider {
       );
 
       this.panel.onDidDispose(() => {
+        this.messageSubscription?.dispose();
         this.panel = undefined;
         this.messageHandler = undefined;
+        this.messageSubscription = undefined;
       });
+    }
+
+    const replaceRangeVscode = new vscode.Range(
+      new vscode.Position(
+        Math.max(0, extracted.replaceRange.startLine - 1),
+        Math.max(0, extracted.replaceRange.startColumn - 1)
+      ),
+      new vscode.Position(
+        Math.max(0, extracted.replaceRange.endLine - 1),
+        Math.max(0, extracted.replaceRange.endColumn - 1)
+      )
+    );
+    const expectedText = targetEditor.document.getText(replaceRangeVscode);
+
+    let expectedStatementText: string | undefined;
+    if (extracted.statementRange) {
+      const stmtRangeVscode = new vscode.Range(
+        new vscode.Position(
+          Math.max(0, extracted.statementRange.startLine - 1),
+          Math.max(0, extracted.statementRange.startColumn - 1)
+        ),
+        new vscode.Position(
+          Math.max(0, extracted.statementRange.endLine - 1),
+          Math.max(0, extracted.statementRange.endColumn - 1)
+        )
+      );
+      expectedStatementText = targetEditor.document.getText(stmtRangeVscode);
     }
 
     const messageContext: QueryBuilderMessageContext = {
@@ -120,14 +231,20 @@ export class QueryBuilderProvider {
       metadata,
       mode,
       replaceRange: extracted.replaceRange,
+      statementRange: extracted.statementRange,
       variableName: extracted.variableName,
       metadataProvider,
       treeProvider: this.state?.treeDataProvider ?? null,
+      isSdblDocument,
+      initialDocumentVersion: targetEditor.document.version,
+      expectedText,
+      expectedStatementText,
     };
 
     this.messageHandler = new QueryBuilderMessageHandler(messageContext);
 
-    this.panel.webview.onDidReceiveMessage((message: unknown) => {
+    this.messageSubscription?.dispose();
+    this.messageSubscription = this.panel.webview.onDidReceiveMessage((message: unknown) => {
       void this.messageHandler?.handleMessage(message);
     });
 

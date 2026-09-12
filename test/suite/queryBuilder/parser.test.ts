@@ -103,6 +103,44 @@ suite('SDBL Parser', () => {
       assert.strictEqual(select.into, 'TempTable');
       assert.deepStrictEqual(select.indexBy, ['Id', 'Name']);
     });
+
+    test('parses canonical position of ИНДЕКСИРОВАТЬ ПО after FROM, WHERE, GROUP BY, HAVING', () => {
+      const sql = `
+        ВЫБРАТЬ
+          Код,
+          Наименование
+        ПОМЕСТИТЬ ВТТовары
+        ИЗ
+          Справочник.Номенклатура
+        ГДЕ
+          Код > 100
+        СГРУППИРОВАТЬ ПО
+          Код,
+          Наименование
+        ИМЕЮЩИЕ
+          КОЛИЧЕСТВО(Код) > 1
+        ИНДЕКСИРОВАТЬ ПО
+          Код,
+          Наименование
+      `;
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.strictEqual(select.into, 'ВТТовары');
+      assert.deepStrictEqual(select.indexBy, ['Код', 'Наименование']);
+      assert.ok(select.where);
+      assert.ok(select.groupBy);
+      assert.ok(select.having);
+    });
+
+    test('parses canonical position of INDEX BY after FROM in English', () => {
+      const sql = 'SELECT Id, Name INTO TempTable FROM Catalog.Items WHERE Id > 100 INDEX BY Id, Name';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.strictEqual(select.into, 'TempTable');
+      assert.deepStrictEqual(select.indexBy, ['Id', 'Name']);
+    });
   });
 
   suite('4. Drop Table (УНИЧТОЖИТЬ / DROP)', () => {
@@ -504,6 +542,65 @@ suite('SDBL Parser', () => {
 
       assert.strictEqual((select.totals.by[1].expression as IdentifierNode).name, 'Период');
       assert.strictEqual(select.totals.by[1].periods, true);
+    });
+
+    test('parses TOTALS with ТОЛЬКО ИЕРАРХИЯ and ПЕРИОДАМИ(ДЕНЬ,,) (P2.20)', () => {
+      const sql = `
+        ВЫБРАТЬ
+          Номенклатура,
+          Период,
+          Сумма
+        ИЗ
+          Регистр.Продажи
+        ИТОГИ
+          СУММА(Сумма)
+        ПО
+          Номенклатура ТОЛЬКО ИЕРАРХИЯ,
+          Период ПЕРИОДАМИ(ДЕНЬ,,)
+      `;
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.ok(select.totals);
+      assert.strictEqual(select.totals.by.length, 2);
+
+      const byItem0 = select.totals.by[0];
+      assert.strictEqual((byItem0.expression as IdentifierNode).name, 'Номенклатура');
+      assert.strictEqual(byItem0.hierarchy, true);
+      assert.strictEqual(byItem0.hierarchyType, 'OnlyHierarchy');
+
+      const byItem1 = select.totals.by[1];
+      assert.strictEqual((byItem1.expression as IdentifierNode).name, 'Период');
+      assert.strictEqual(byItem1.period, true);
+      assert.ok(byItem1.periodDefinition);
+      assert.strictEqual(byItem1.periodDefinition.periodType, 'ДЕНЬ');
+      assert.strictEqual(byItem1.periodDefinition.from, undefined);
+      assert.strictEqual(byItem1.periodDefinition.to, undefined);
+    });
+
+    test('parses ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон) with parameters (P2.20)', () => {
+      const sql = 'ВЫБРАТЬ Поле ИЗ Таб ИТОГИ ПО Период ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.ok(select.totals);
+      assert.strictEqual(select.totals.by.length, 1);
+      const def = select.totals.by[0].periodDefinition;
+      assert.ok(def);
+      assert.strictEqual(def.periodType, 'ДЕНЬ');
+      assert.strictEqual((def.from as ParameterNode)?.name, 'Нач');
+      assert.strictEqual((def.to as ParameterNode)?.name, 'Кон');
+    });
+
+    test('parses English ONLY HIERARCHY and PERIODS(DAY, &Start, &End) (P2.20)', () => {
+      const sql = 'SELECT Item FROM Items TOTALS BY Item ONLY HIERARCHY, Period PERIODS(DAY, &Start, &End)';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.ok(select.totals);
+      assert.strictEqual(select.totals.by.length, 2);
+      assert.strictEqual(select.totals.by[0].hierarchyType, 'OnlyHierarchy');
+      assert.strictEqual(select.totals.by[1].periodDefinition?.periodType, 'DAY');
     });
   });
 

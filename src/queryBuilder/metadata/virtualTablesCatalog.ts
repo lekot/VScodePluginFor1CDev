@@ -87,12 +87,18 @@ function cloneFieldsWithParent(
   });
 }
 
+export interface VirtualTableOptions {
+  isPeriodic?: boolean;
+  registerTypeKind?: string;
+}
+
 export function getVirtualTables(
   registerType: string,
   registerName: string,
   dimensions: QueryMetadataNode[] = [],
   resources: QueryMetadataNode[] = [],
-  attributes: QueryMetadataNode[] = []
+  attributes: QueryMetadataNode[] = [],
+  options?: VirtualTableOptions
 ): QueryMetadataNode[] {
   const regInfo = resolveRegisterType(registerType);
   if (!regInfo) {
@@ -128,6 +134,9 @@ export function getVirtualTables(
   }
 
   if (canonicalType === 'InformationRegister') {
+    if (options?.isPeriodic === false) {
+      return [];
+    }
     const sliceParams: VirtualTableParamDefinition[] = [
       { name: 'Период', description: 'Момент времени на который получается срез' },
       { name: 'Условие', description: 'Условие отбора записей' },
@@ -145,7 +154,11 @@ export function getVirtualTables(
       createVt('СрезПоследних', sliceParams, makeSliceFields)
     );
   } else if (canonicalType === 'AccumulationRegister') {
-    // 1. Остатки
+    const regKind = options?.registerTypeKind?.trim().toLowerCase();
+    const isTurnoversOnly = regKind === 'turnovers' || regKind === 'обороты';
+
+    if (!isTurnoversOnly) {
+      // 1. Остатки
     const balancesParams: VirtualTableParamDefinition[] = [
       { name: 'Период', description: 'Момент времени на который рассчитываются остатки' },
       { name: 'Условие', description: 'Условие отбора записей' },
@@ -156,6 +169,7 @@ export function getVirtualTables(
         ...cloneFieldsWithParent(resources, vtId, vtFullName, 'Остаток'),
       ])
     );
+    }
 
     // 2. Обороты
     const turnoversParams: VirtualTableParamDefinition[] = [
@@ -174,7 +188,8 @@ export function getVirtualTables(
       ])
     );
 
-    // 3. ОстаткиИОбороты
+    if (!isTurnoversOnly) {
+      // 3. ОстаткиИОбороты
     const boParams: VirtualTableParamDefinition[] = [
       { name: 'НачалоПериода', description: 'Начало периода формирования' },
       { name: 'КонецПериода', description: 'Конец периода формирования' },
@@ -203,6 +218,7 @@ export function getVirtualTables(
         ];
       })
     );
+    }
   } else if (canonicalType === 'AccountingRegister') {
     // 1. Остатки
     const acctBalancesParams: VirtualTableParamDefinition[] = [

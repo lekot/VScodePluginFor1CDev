@@ -2,6 +2,7 @@ import { QueryMetadataNode } from './queryMetadataTypes';
 
 export interface StandardAttributeOptions {
   isHierarchical?: boolean;
+  hasOwner?: boolean;
   isPeriodic?: boolean;
   parentId?: string;
   parentFullName?: string;
@@ -9,6 +10,7 @@ export interface StandardAttributeOptions {
 
 const ATTRIBUTE_DATA_TYPES: Record<string, string> = {
   Ссылка: 'Ref',
+  Порядок: 'Number',
   ПометкаУдаления: 'Boolean',
   Предопределенный: 'Boolean',
   Код: 'String',
@@ -75,6 +77,12 @@ function normalizeMetadataType(type: string): string {
     case 'регистрыбухгалтерии':
       return 'AccountingRegister';
 
+    case 'enum':
+    case 'enums':
+    case 'перечисление':
+    case 'перечисления':
+      return 'Enum';
+
     case 'tabularsection':
     case 'tabularsections':
     case 'табличнаячасть':
@@ -92,6 +100,7 @@ export function getStandardAttributes(
 ): QueryMetadataNode[] {
   const normalized = normalizeMetadataType(metadataType);
   const isHierarchical = options?.isHierarchical ?? true;
+  const hasOwner = options?.hasOwner ?? true;
   const isPeriodic = options?.isPeriodic ?? true;
 
   let attributeNames: string[] = [];
@@ -105,7 +114,7 @@ export function getStandardAttributes(
         'Код',
         'Наименование',
         ...(isHierarchical ? ['Родитель'] : []),
-        'Владелец',
+        ...(hasOwner ? ['Владелец'] : []),
         ...(isHierarchical ? ['ЭтоГруппа'] : []),
       ];
       break;
@@ -151,6 +160,10 @@ export function getStandardAttributes(
 
     case 'AccountingRegister':
       attributeNames = ['Период', 'Регистратор', 'НомерСтроки', 'Активность', 'СчетДт', 'СчетКт'];
+      break;
+
+    case 'Enum':
+      attributeNames = ['Ссылка', 'Порядок'];
       break;
 
     case 'TabularSection':

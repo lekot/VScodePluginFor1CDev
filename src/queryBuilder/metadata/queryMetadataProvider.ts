@@ -91,6 +91,167 @@ const CONFIG_BY_ID = new Map<string, CategoryConfig>(
   CATEGORY_CONFIGS.map((c) => [c.id.toLowerCase(), c])
 );
 
+function isAttributesContainer(node: TreeNode): boolean {
+  const name = node.name?.toLowerCase();
+  const id = node.id?.toLowerCase();
+  const type = String(node.type).toLowerCase();
+  return (
+    name === 'attributes' ||
+    name === 'реквизиты' ||
+    type === 'attributesfolder' ||
+    id === 'attributes' ||
+    id.endsWith('.attributes')
+  );
+}
+
+function isDimensionsContainer(node: TreeNode): boolean {
+  const name = node.name?.toLowerCase();
+  const id = node.id?.toLowerCase();
+  const type = String(node.type).toLowerCase();
+  return (
+    name === 'dimensions' ||
+    name === 'измерения' ||
+    type === 'dimensionsfolder' ||
+    id === 'dimensions' ||
+    id.endsWith('.dimensions')
+  );
+}
+
+function isResourcesContainer(node: TreeNode): boolean {
+  const name = node.name?.toLowerCase();
+  const id = node.id?.toLowerCase();
+  const type = String(node.type).toLowerCase();
+  return (
+    name === 'resources' ||
+    name === 'ресурсы' ||
+    type === 'resourcesfolder' ||
+    id === 'resources' ||
+    id.endsWith('.resources')
+  );
+}
+
+function isTabularSectionsContainer(node: TreeNode): boolean {
+  const name = node.name?.toLowerCase();
+  const id = node.id?.toLowerCase();
+  const type = String(node.type).toLowerCase();
+  return (
+    name === 'tabularsections' ||
+    name === 'tabular sections' ||
+    name === 'табличные части' ||
+    name === 'табличныечасти' ||
+    type === 'tabularsectionsfolder' ||
+    id === 'tabularsections' ||
+    id.endsWith('.tabularsections')
+  );
+}
+
+function extractSynonym(node: TreeNode): string | undefined {
+  const raw =
+    (node.properties as Record<string, unknown> | undefined)?.Synonym ??
+    (node.properties as Record<string, unknown> | undefined)?.synonym ??
+    (node as unknown as { synonym?: unknown }).synonym;
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    return trimmed || undefined;
+  }
+
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    if (typeof obj.ru === 'string' && obj.ru.trim()) {
+      return obj.ru.trim();
+    }
+    if (typeof obj.content === 'string' && obj.content.trim()) {
+      return obj.content.trim();
+    }
+    for (const val of Object.values(obj)) {
+      if (typeof val === 'string' && val.trim()) {
+        return val.trim();
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeSingleTypeString(str: string): string {
+  const trimmed = str.trim();
+
+  switch (trimmed) {
+    case 'xs:string':
+      return 'Строка';
+    case 'xs:decimal':
+    case 'xs:int':
+    case 'xs:integer':
+      return 'Число';
+    case 'xs:boolean':
+      return 'Булево';
+    case 'xs:dateTime':
+    case 'xs:date':
+    case 'xs:time':
+      return 'Дата';
+  }
+
+  const refMatch = trimmed.match(/^(?:cfg:)?([A-Za-z]+Ref)\.(.+)$/);
+  if (refMatch) {
+    const [, kind, name] = refMatch;
+    const prefixMap: Record<string, string> = {
+      CatalogRef: 'СправочникСсылка',
+      DocumentRef: 'ДокументСсылка',
+      EnumRef: 'ПеречислениеСсылка',
+      ChartOfCharacteristicTypesRef: 'ПланВидовХарактеристикСсылка',
+      ChartOfAccountsRef: 'ПланСчетовСсылка',
+      ChartOfCalculationTypesRef: 'ПланВидовРасчетаСсылка',
+      BusinessProcessRef: 'БизнесПроцессСсылка',
+      TaskRef: 'ЗадачаСсылка',
+      ExchangePlanRef: 'ПланОбменаСсылка',
+    };
+    if (prefixMap[kind]) {
+      return `${prefixMap[kind]}.${name}`;
+    }
+  }
+
+  return trimmed;
+}
+
+function normalizeDataType(raw: unknown): string {
+  if (raw === null || raw === undefined) {
+    return 'String';
+  }
+
+  if (typeof raw === 'string') {
+    return normalizeSingleTypeString(raw) || 'String';
+  }
+
+  if (Array.isArray(raw)) {
+    const items = raw.map((item) => normalizeDataType(item)).filter(Boolean);
+    return items.join(', ') || 'String';
+  }
+
+  if (typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    const inner =
+      obj['v8:Type'] ??
+      obj['#text'] ??
+      obj.content ??
+      obj.Type ??
+      obj.type ??
+      obj.name;
+
+    if (inner !== undefined && inner !== raw) {
+      return normalizeDataType(inner);
+    }
+
+    for (const val of Object.values(obj)) {
+      if (typeof val === 'string' && val.trim()) {
+        return normalizeSingleTypeString(val);
+      }
+    }
+  }
+
+  return 'String';
+}
+
 export class QueryMetadataProvider {
   /**
    * Returns top-level metadata categories (Catalogs, Documents, Registers, etc.)
@@ -255,7 +416,7 @@ export class QueryMetadataProvider {
   ): Promise<QueryMetadataNode> {
     const tableId = `${catConfig.metadataType}.${node.name}`;
     const tableFullName = `${catConfig.singularRussian}.${node.name}`;
-    const synonym = node.properties?.synonym;
+    const synonym = extractSynonym(node);
 
     const rawChildren = await this.safeGetChildren(provider, node);
 
@@ -265,20 +426,105 @@ export class QueryMetadataProvider {
     const tabularSections: QueryMetadataNode[] = [];
 
     for (const child of rawChildren) {
-      if (child.type === MetadataType.Dimension) {
-        dims.push(this.makeFieldNode(tableId, tableFullName, child));
-      } else if (child.type === MetadataType.Resource) {
-        resources.push(this.makeFieldNode(tableId, tableFullName, child));
-      } else if (child.type === MetadataType.Attribute) {
-        customAttrs.push(this.makeFieldNode(tableId, tableFullName, child));
-      } else if (child.type === MetadataType.TabularSection) {
-        const tsNode = await this.buildTabularSectionNode(
-          child,
-          tableId,
-          tableFullName,
-          provider
-        );
-        tabularSections.push(tsNode);
+      if (isAttributesContainer(child)) {
+        const subChildren = await this.safeGetChildren(provider, child);
+        for (const sub of subChildren) {
+          customAttrs.push(this.makeFieldNode(tableId, tableFullName, sub));
+        }
+      } else if (isDimensionsContainer(child)) {
+        const subChildren = await this.safeGetChildren(provider, child);
+        for (const sub of subChildren) {
+          dims.push(this.makeFieldNode(tableId, tableFullName, sub));
+        }
+      } else if (isResourcesContainer(child)) {
+        const subChildren = await this.safeGetChildren(provider, child);
+        for (const sub of subChildren) {
+          resources.push(this.makeFieldNode(tableId, tableFullName, sub));
+        }
+      } else if (isTabularSectionsContainer(child)) {
+        const subChildren = await this.safeGetChildren(provider, child);
+        for (const sub of subChildren) {
+          const tsNode = await this.buildTabularSectionNode(
+            sub,
+            tableId,
+            tableFullName,
+            provider
+          );
+          tabularSections.push(tsNode);
+        }
+      } else {
+        if (child.type === MetadataType.Dimension) {
+          dims.push(this.makeFieldNode(tableId, tableFullName, child));
+        } else if (child.type === MetadataType.Resource) {
+          resources.push(this.makeFieldNode(tableId, tableFullName, child));
+        } else if (child.type === MetadataType.Attribute) {
+          customAttrs.push(this.makeFieldNode(tableId, tableFullName, child));
+        } else if (child.type === MetadataType.TabularSection) {
+          const tsNode = await this.buildTabularSectionNode(
+            child,
+            tableId,
+            tableFullName,
+            provider
+          );
+          tabularSections.push(tsNode);
+        }
+      }
+    }
+
+    let isHierarchical: boolean | undefined;
+    let hasOwner: boolean | undefined;
+    let isPeriodic: boolean | undefined;
+    let accumulationRegisterType: string | undefined;
+    const props = (node.properties as Record<string, unknown> | undefined) || {};
+
+    if (catConfig.metadataType === MetadataType.Catalog) {
+      const rawHierarchical =
+        props.Hierarchical ??
+        props.isHierarchical ??
+        props.hierarchical;
+      if (rawHierarchical !== undefined) {
+        isHierarchical = rawHierarchical !== false && rawHierarchical !== 'false';
+      }
+
+      const rawOwners =
+        props.Owners ??
+        props.owners ??
+        props.hasOwner;
+      if (rawOwners !== undefined) {
+        if (typeof rawOwners === 'boolean') {
+          hasOwner = rawOwners;
+        } else if (typeof rawOwners === 'string') {
+          hasOwner = rawOwners.trim().length > 0 && rawOwners.trim().toLowerCase() !== 'false';
+        } else if (Array.isArray(rawOwners)) {
+          hasOwner = rawOwners.length > 0;
+        } else if (typeof rawOwners === 'object' && rawOwners !== null) {
+          hasOwner = Object.keys(rawOwners).length > 0;
+        } else {
+          hasOwner = false;
+        }
+      } else {
+        hasOwner = false;
+      }
+    } else if (catConfig.metadataType === MetadataType.InformationRegister) {
+      const rawPeriodicity =
+        props.InformationRegisterPeriodicity ??
+        props.Periodicity ??
+        props.periodicity ??
+        props.isPeriodic;
+      if (rawPeriodicity !== undefined) {
+        const str = String(rawPeriodicity).trim().toLowerCase();
+        if (rawPeriodicity === false || str === 'false' || str === 'nonperiodic' || str === 'непериодический') {
+          isPeriodic = false;
+        } else {
+          isPeriodic = true;
+        }
+      }
+    } else if (catConfig.metadataType === MetadataType.AccumulationRegister) {
+      const rawType =
+        props.RegisterType ??
+        props.registerType;
+      if (rawType !== undefined) {
+        accumulationRegisterType = String(rawType).trim();
       }
     }
 
@@ -286,6 +532,9 @@ export class QueryMetadataProvider {
     const stdAttrs = getStandardAttributes(catConfig.metadataType, {
       parentId: tableId,
       parentFullName: tableFullName,
+      isHierarchical,
+      hasOwner,
+      isPeriodic,
     });
 
     const fields: QueryMetadataNode[] = [
@@ -308,7 +557,11 @@ export class QueryMetadataProvider {
         node.name,
         dims,
         resources,
-        customAttrs
+        customAttrs,
+        {
+          isPeriodic,
+          registerTypeKind: accumulationRegisterType,
+        }
       );
       fields.push(...vts);
     }
@@ -333,13 +586,18 @@ export class QueryMetadataProvider {
   ): Promise<QueryMetadataNode> {
     const tsId = `${parentTableId}.${node.name}`;
     const tsFullName = `${parentTableFullName}.${node.name}`;
-    const synonym = node.properties?.synonym;
+    const synonym = extractSynonym(node);
 
     const rawChildren = await this.safeGetChildren(provider, node);
     const customAttrs: QueryMetadataNode[] = [];
 
     for (const child of rawChildren) {
-      if (child.type === MetadataType.Attribute) {
+      if (isAttributesContainer(child)) {
+        const subChildren = await this.safeGetChildren(provider, child);
+        for (const sub of subChildren) {
+          customAttrs.push(this.makeFieldNode(tsId, tsFullName, sub));
+        }
+      } else if (child.type === MetadataType.Attribute) {
         customAttrs.push(this.makeFieldNode(tsId, tsFullName, child));
       }
     }
@@ -369,8 +627,8 @@ export class QueryMetadataProvider {
     node: TreeNode
   ): QueryMetadataNode {
     const rawType = node.properties?.Type ?? node.properties?.['v8:Type'];
-    const dataType = typeof rawType === 'string' ? rawType : 'String';
-    const synonym = node.properties?.synonym;
+    const dataType = normalizeDataType(rawType);
+    const synonym = extractSynonym(node);
 
     return {
       id: `${parentId}.${node.name}`,

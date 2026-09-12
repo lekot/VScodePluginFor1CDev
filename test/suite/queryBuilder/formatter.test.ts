@@ -166,7 +166,7 @@ suite('SDBL Formatter & BSL Serializer', () => {
   });
 
   suite('3. formatSdbl: Temp Tables and Indexes (ПОМЕСТИТЬ, ИНДЕКСИРОВАТЬ ПО)', () => {
-    test('formats ПОМЕСТИТЬ with ИНДЕКСИРОВАТЬ ПО', () => {
+    test('formats ПОМЕСТИТЬ with ИНДЕКСИРОВАТЬ ПО in canonical position after FROM', () => {
       const pkg: QueryPackage = {
         queries: [
           {
@@ -189,11 +189,56 @@ suite('SDBL Formatter & BSL Serializer', () => {
         '\tКод,',
         '\tНаименование',
         'ПОМЕСТИТЬ ВТТовары',
+        'ИЗ',
+        '\tСправочник.Номенклатура',
         'ИНДЕКСИРОВАТЬ ПО',
         '\tКод,',
         '\tНаименование',
+      ].join('\n');
+
+      assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
+    test('formats ИНДЕКСИРОВАТЬ ПО after WHERE, GROUP BY, and HAVING', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            into: 'ВТТовары',
+            fields: [{ expression: { type: 'Identifier', name: 'Код' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+            where: {
+              type: 'BinaryOp',
+              operator: '>',
+              left: { type: 'Identifier', name: 'Код' },
+              right: { type: 'Literal', valueType: 'number', value: 10, raw: '10' },
+            },
+            groupBy: [{ type: 'Identifier', name: 'Код' }],
+            having: {
+              type: 'BinaryOp',
+              operator: '>',
+              left: { type: 'Identifier', name: 'Код' },
+              right: { type: 'Literal', valueType: 'number', value: 0, raw: '0' },
+            },
+            indexBy: ['Код'],
+          },
+        ],
+      };
+
+      const expected = [
+        'ВЫБРАТЬ',
+        '\tКод',
+        'ПОМЕСТИТЬ ВТТовары',
         'ИЗ',
         '\tСправочник.Номенклатура',
+        'ГДЕ',
+        '\tКод > 10',
+        'СГРУППИРОВАТЬ ПО',
+        '\tКод',
+        'ИМЕЮЩИЕ',
+        '\tКод > 0',
+        'ИНДЕКСИРОВАТЬ ПО',
+        '\tКод',
       ].join('\n');
 
       assert.strictEqual(formatSdbl(pkg), expected);
@@ -536,6 +581,186 @@ suite('SDBL Formatter & BSL Serializer', () => {
       assert.strictEqual(formatSdbl(pkg), expected);
     });
 
+    test('preserves parentheses in WHERE with mixed AND and OR: A = 1 AND (B = 2 OR C = 3) (P1.5)', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Поле' } }],
+            from: [{ source: { type: 'Table', name: 'Таблица' } }],
+            where: {
+              type: 'BinaryOp',
+              operator: 'AND',
+              left: {
+                type: 'BinaryOp',
+                operator: '=',
+                left: { type: 'Identifier', name: 'A' },
+                right: { type: 'Literal', valueType: 'number', value: 1, raw: '1' },
+              },
+              right: {
+                type: 'BinaryOp',
+                operator: 'OR',
+                left: {
+                  type: 'BinaryOp',
+                  operator: '=',
+                  left: { type: 'Identifier', name: 'B' },
+                  right: { type: 'Literal', valueType: 'number', value: 2, raw: '2' },
+                },
+                right: {
+                  type: 'BinaryOp',
+                  operator: '=',
+                  left: { type: 'Identifier', name: 'C' },
+                  right: { type: 'Literal', valueType: 'number', value: 3, raw: '3' },
+                },
+              },
+            },
+          },
+        ],
+      };
+
+      const expected = [
+        'ВЫБРАТЬ',
+        '\tПоле',
+        'ИЗ',
+        '\tТаблица',
+        'ГДЕ',
+        '\tA = 1',
+        '\tИ (B = 2 ИЛИ C = 3)',
+      ].join('\n');
+
+      assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
+    test('preserves parentheses when OR is first condition in AND chain: (A = 1 OR B = 2) AND C = 3 (P1.5)', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Поле' } }],
+            from: [{ source: { type: 'Table', name: 'Таблица' } }],
+            where: {
+              type: 'BinaryOp',
+              operator: 'AND',
+              left: {
+                type: 'BinaryOp',
+                operator: 'OR',
+                left: {
+                  type: 'BinaryOp',
+                  operator: '=',
+                  left: { type: 'Identifier', name: 'A' },
+                  right: { type: 'Literal', valueType: 'number', value: 1, raw: '1' },
+                },
+                right: {
+                  type: 'BinaryOp',
+                  operator: '=',
+                  left: { type: 'Identifier', name: 'B' },
+                  right: { type: 'Literal', valueType: 'number', value: 2, raw: '2' },
+                },
+              },
+              right: {
+                type: 'BinaryOp',
+                operator: '=',
+                left: { type: 'Identifier', name: 'C' },
+                right: { type: 'Literal', valueType: 'number', value: 3, raw: '3' },
+              },
+            },
+          },
+        ],
+      };
+
+      const expected = [
+        'ВЫБРАТЬ',
+        '\tПоле',
+        'ИЗ',
+        '\tТаблица',
+        'ГДЕ',
+        '\t(A = 1 ИЛИ B = 2)',
+        '\tИ C = 3',
+      ].join('\n');
+
+      assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
+    test('preserves parentheses in HAVING with mixed AND and OR (P1.5)', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Поле' } }],
+            from: [{ source: { type: 'Table', name: 'Таблица' } }],
+            having: {
+              type: 'BinaryOp',
+              operator: 'AND',
+              left: {
+                type: 'BinaryOp',
+                operator: '>',
+                left: {
+                  type: 'Aggregate',
+                  aggregateType: 'Sum',
+                  expression: { type: 'Identifier', name: 'A' },
+                },
+                right: { type: 'Literal', valueType: 'number', value: 0, raw: '0' },
+              },
+              right: {
+                type: 'BinaryOp',
+                operator: 'OR',
+                left: {
+                  type: 'BinaryOp',
+                  operator: '>',
+                  left: {
+                    type: 'Aggregate',
+                    aggregateType: 'Sum',
+                    expression: { type: 'Identifier', name: 'B' },
+                  },
+                  right: { type: 'Literal', valueType: 'number', value: 0, raw: '0' },
+                },
+                right: {
+                  type: 'BinaryOp',
+                  operator: '>',
+                  left: {
+                    type: 'Aggregate',
+                    aggregateType: 'Sum',
+                    expression: { type: 'Identifier', name: 'C' },
+                  },
+                  right: { type: 'Literal', valueType: 'number', value: 0, raw: '0' },
+                },
+              },
+            },
+          },
+        ],
+      };
+
+      const expected = [
+        'ВЫБРАТЬ',
+        '\tПоле',
+        'ИЗ',
+        '\tТаблица',
+        'ИМЕЮЩИЕ',
+        '\tСУММА(A) > 0',
+        '\tИ (СУММА(B) > 0 ИЛИ СУММА(C) > 0)',
+      ].join('\n');
+
+      assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
+    test('round-trips mixed AND and OR preserving precedence and parentheses (P1.5)', () => {
+      const sql = 'ВЫБРАТЬ Поле ИЗ Таблица ГДЕ A = 1 И (B = 2 ИЛИ C = 3)';
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      assert.ok(formatted.includes('A = 1'));
+      assert.ok(formatted.includes('И (B = 2 ИЛИ C = 3)'));
+
+      const reparsed = parseSdbl(formatted);
+      const sel = reparsed.queries[0] as SelectStatement;
+      assert.ok(sel.where);
+      assert.strictEqual(sel.where.type, 'BinaryOp');
+      const whereOp = sel.where as BinaryOpNode;
+      assert.strictEqual(whereOp.operator, 'AND');
+      assert.strictEqual(whereOp.right.type, 'BinaryOp');
+      assert.strictEqual((whereOp.right as BinaryOpNode).operator, 'OR');
+    });
+
     test('formats HAVING clause with aggregates and line break', () => {
       const pkg: QueryPackage = {
         queries: [
@@ -806,6 +1031,42 @@ suite('SDBL Formatter & BSL Serializer', () => {
       };
       assert.strictEqual(formatExpression(castFunc), 'ВЫРАЗИТЬ(Поле КАК Число(10, 2))');
     });
+
+    test('preserves precision of large numbers via raw representation (P1.7)', () => {
+      const largeNumNode: LiteralNode = {
+        type: 'Literal',
+        valueType: 'number',
+        value: Number('12345678901234567890'),
+        raw: '12345678901234567890',
+      };
+      assert.strictEqual(formatExpression(largeNumNode), '12345678901234567890');
+    });
+
+    test('preserves trailing zeros and exact format of decimal fractions via raw (P1.7)', () => {
+      const decimalNode1: LiteralNode = {
+        type: 'Literal',
+        valueType: 'number',
+        value: 12.345,
+        raw: '12.345000',
+      };
+      assert.strictEqual(formatExpression(decimalNode1), '12.345000');
+
+      const decimalNode2: LiteralNode = {
+        type: 'Literal',
+        valueType: 'number',
+        value: 0.0001,
+        raw: '0.000100',
+      };
+      assert.strictEqual(formatExpression(decimalNode2), '0.000100');
+    });
+
+    test('round-trips large numbers and exact decimal fractions without precision loss (P1.7)', () => {
+      const sql = 'ВЫБРАТЬ 12345678901234567890 КАК БольшоеЧисло, 0.000100 КАК Дробь ИЗ Таблица';
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+      assert.ok(formatted.includes('12345678901234567890 КАК БольшоеЧисло'));
+      assert.ok(formatted.includes('0.000100 КАК Дробь'));
+    });
   });
 
   suite('10. formatSdbl: CASE WHEN / ВЫБОР КОГДА', () => {
@@ -1020,6 +1281,103 @@ suite('SDBL Formatter & BSL Serializer', () => {
       ].join('\n');
 
       assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
+    test('formats TOTALS with ТОЛЬКО ИЕРАРХИЯ and ПЕРИОДАМИ(ДЕНЬ,,) (P2.20)', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [
+              { expression: { type: 'Identifier', name: 'Номенклатура' } },
+              { expression: { type: 'Identifier', name: 'Период' } },
+            ],
+            from: [{ source: { type: 'Table', name: 'Регистр.Продажи' } }],
+            totals: {
+              by: [
+                {
+                  expression: { type: 'Identifier', name: 'Номенклатура' },
+                  hierarchy: true,
+                  hierarchyType: 'OnlyHierarchy',
+                },
+                {
+                  expression: { type: 'Identifier', name: 'Период' },
+                  period: true,
+                  periodDefinition: {
+                    periodType: 'ДЕНЬ',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+
+      const expected = [
+        'ВЫБРАТЬ',
+        '\tНоменклатура,',
+        '\tПериод',
+        'ИЗ',
+        '\tРегистр.Продажи',
+        'ИТОГИ',
+        'ПО',
+        '\tНоменклатура ТОЛЬКО ИЕРАРХИЯ,',
+        '\tПериод ПЕРИОДАМИ(ДЕНЬ,,)',
+      ].join('\n');
+
+      assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
+    test('formats TOTALS with ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон) with parameters (P2.20)', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Период' } }],
+            from: [{ source: { type: 'Table', name: 'Таб' } }],
+            totals: {
+              by: [
+                {
+                  expression: { type: 'Identifier', name: 'Период' },
+                  period: true,
+                  periodDefinition: {
+                    periodType: 'ДЕНЬ',
+                    from: { type: 'Parameter', name: 'Нач' },
+                    to: { type: 'Parameter', name: 'Кон' },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+
+      const expected = [
+        'ВЫБРАТЬ',
+        '\tПериод',
+        'ИЗ',
+        '\tТаб',
+        'ИТОГИ',
+        'ПО',
+        '\tПериод ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)',
+      ].join('\n');
+
+      assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
+    test('round-trips totals with ТОЛЬКО ИЕРАРХИЯ and ПЕРИОДАМИ(ДЕНЬ,,) (P2.20)', () => {
+      const sql = 'ВЫБРАТЬ Номенклатура, Период ИЗ Регистр.Продажи ИТОГИ ПО Номенклатура ТОЛЬКО ИЕРАРХИЯ, Период ПЕРИОДАМИ(ДЕНЬ,,)';
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      assert.ok(formatted.includes('ТОЛЬКО ИЕРАРХИЯ'));
+      assert.ok(formatted.includes('ПЕРИОДАМИ(ДЕНЬ,,)'));
+
+      const reparsed = parseSdbl(formatted);
+      const sel = reparsed.queries[0] as SelectStatement;
+      assert.ok(sel.totals);
+      assert.strictEqual(sel.totals.by[0].hierarchyType, 'OnlyHierarchy');
+      assert.strictEqual(sel.totals.by[1].periodDefinition?.periodType, 'ДЕНЬ');
     });
   });
 

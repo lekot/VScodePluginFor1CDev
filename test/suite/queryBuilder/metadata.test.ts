@@ -7,7 +7,7 @@ import {
 import { getStandardAttributes } from '../../../src/queryBuilder/metadata/standardAttributesCatalog';
 import { getVirtualTables } from '../../../src/queryBuilder/metadata/virtualTablesCatalog';
 import { QueryMetadataProvider } from '../../../src/queryBuilder/metadata/queryMetadataProvider';
-import { MetadataType, TreeNode } from '../../../src/models/treeNode';
+import { MetadataType, TreeNode, TreeNodeProperties } from '../../../src/models/treeNode';
 
 suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
   suite('1. Standard Attributes Catalog (getStandardAttributes)', () => {
@@ -42,6 +42,32 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
         'Код',
         'Наименование',
         'Владелец',
+      ]);
+    });
+
+    test('Catalog: respects hasOwner = false by excluding Владелец', () => {
+      const attrs = getStandardAttributes('Catalog', { hasOwner: false });
+      const names = attrs.map((a: QueryMetadataNode) => a.name);
+      assert.deepStrictEqual(names, [
+        'Ссылка',
+        'ПометкаУдаления',
+        'Предопределенный',
+        'Код',
+        'Наименование',
+        'Родитель',
+        'ЭтоГруппа',
+      ]);
+    });
+
+    test('Catalog: respects isHierarchical = false and hasOwner = false', () => {
+      const attrs = getStandardAttributes('Catalog', { isHierarchical: false, hasOwner: false });
+      const names = attrs.map((a: QueryMetadataNode) => a.name);
+      assert.deepStrictEqual(names, [
+        'Ссылка',
+        'ПометкаУдаления',
+        'Предопределенный',
+        'Код',
+        'Наименование',
       ]);
     });
 
@@ -130,6 +156,22 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
       const attrs = getStandardAttributes('TabularSection');
       const names = attrs.map((a: QueryMetadataNode) => a.name);
       assert.deepStrictEqual(names, ['НомерСтроки', 'Ссылка']);
+    });
+
+    test('Enum: returns standard attributes Ссылка and Порядок', () => {
+      const attrs = getStandardAttributes('Enum');
+      const names = attrs.map((a: QueryMetadataNode) => a.name);
+      assert.deepStrictEqual(names, ['Ссылка', 'Порядок']);
+      const refField = attrs.find((a: QueryMetadataNode) => a.name === 'Ссылка');
+      const orderField = attrs.find((a: QueryMetadataNode) => a.name === 'Порядок');
+      assert.strictEqual(refField?.dataType, 'Ref');
+      assert.strictEqual(orderField?.dataType, 'Number');
+    });
+
+    test('Enum: supports Russian name Перечисление', () => {
+      const attrs = getStandardAttributes('Перечисление');
+      const names = attrs.map((a: QueryMetadataNode) => a.name);
+      assert.deepStrictEqual(names, ['Ссылка', 'Порядок']);
     });
 
     test('supports Russian names for metadata types (Справочник, Документ, etc.)', () => {
@@ -371,6 +413,31 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
       const dtKtFields = (dtKt.children ?? []).map((f: QueryMetadataNode) => f.name);
       assert.ok(dtKtFields.includes('СчетДт'));
       assert.ok(dtKtFields.includes('СчетКт'));
+    });
+
+    test('AccumulationRegister: turnovers only generates solely Обороты virtual table', () => {
+      const vts = getVirtualTables(
+        'AccumulationRegister',
+        'Продажи',
+        dummyDims,
+        dummyResources,
+        dummyAttrs,
+        { registerTypeKind: 'Turnovers' }
+      );
+      assert.strictEqual(vts.length, 1);
+      assert.strictEqual(vts[0].name, 'Продажи.Обороты');
+    });
+
+    test('InformationRegister: non-periodic generates no virtual tables', () => {
+      const vts = getVirtualTables(
+        'InformationRegister',
+        'КурсыВалют',
+        dummyDims,
+        dummyResources,
+        dummyAttrs,
+        { isPeriodic: false }
+      );
+      assert.strictEqual(vts.length, 0);
     });
 
     test('returns empty array for non-register types (Catalog, Document, etc.)', () => {
@@ -636,6 +703,594 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
       assert.ok(vtNames.includes('ОстаткиНоменклатуры.Остатки'));
       assert.ok(vtNames.includes('ОстаткиНоменклатуры.Обороты'));
       assert.ok(vtNames.includes('ОстаткиНоменклатуры.ОстаткиИОбороты'));
+    });
+  });
+
+  suite('5. Group 3 Improvements (P1.6, P2.18, P2.19)', () => {
+    let provider: QueryMetadataProvider;
+
+    setup(() => {
+      provider = new QueryMetadataProvider();
+    });
+
+    test('P1.6: unpacks container folders (Attributes, Dimensions, Resources, TabularSections) and does not treat them as fields', async () => {
+      // Mock realistic CDT tree with folder containers
+      const configRoot: TreeNode = {
+        id: 'Configuration.App',
+        name: 'App',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      const catalogsFolder: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+
+      const nomCatalog: TreeNode = {
+        id: 'Catalogs.Товары',
+        name: 'Товары',
+        type: MetadataType.Catalog,
+        properties: { synonym: 'Справочник товаров' },
+      };
+
+      const attrsContainer: TreeNode = {
+        id: 'Attributes',
+        name: 'Attributes',
+        type: MetadataType.Attribute,
+        properties: {},
+      };
+
+      const attrArtikul: TreeNode = {
+        id: 'Attributes.Артикул',
+        name: 'Артикул',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'xs:string' } },
+      };
+
+      const attrBarcode: TreeNode = {
+        id: 'Attributes.Штрихкод',
+        name: 'Штрихкод',
+        type: MetadataType.Attribute,
+        properties: { Type: 'xs:string' },
+      };
+
+      const tsContainer: TreeNode = {
+        id: 'TabularSections',
+        name: 'Tabular Sections',
+        type: MetadataType.TabularSection,
+        properties: {},
+      };
+
+      const tsSklad: TreeNode = {
+        id: 'TabularSections.Состав',
+        name: 'Состав',
+        type: MetadataType.TabularSection,
+        properties: { synonym: 'Состав комплекта' },
+      };
+
+      const tsAttrsContainer: TreeNode = {
+        id: 'TabularSections.Состав.Attributes',
+        name: 'Attributes',
+        type: MetadataType.Attribute,
+        properties: {},
+      };
+
+      const tsAttrMaterial: TreeNode = {
+        id: 'TabularSections.Состав.Attributes.Материал',
+        name: 'Материал',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'cfg:CatalogRef.Номенклатура' } },
+      };
+
+      const tsAttrQuantity: TreeNode = {
+        id: 'TabularSections.Состав.Attributes.Количество',
+        name: 'Количество',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'xs:decimal' } },
+      };
+
+      // Accumulation register with Dimensions and Resources containers
+      const accFolder: TreeNode = {
+        id: 'AccumulationRegisters',
+        name: 'AccumulationRegisters',
+        type: MetadataType.AccumulationRegister,
+        properties: {},
+      };
+
+      const accReg: TreeNode = {
+        id: 'AccumulationRegisters.Остатки',
+        name: 'Остатки',
+        type: MetadataType.AccumulationRegister,
+        properties: {},
+      };
+
+      const dimsContainer: TreeNode = {
+        id: 'Dimensions',
+        name: 'Dimensions',
+        type: MetadataType.Dimension,
+        properties: {},
+      };
+
+      const dimSklad: TreeNode = {
+        id: 'Dimensions.Склад',
+        name: 'Склад',
+        type: MetadataType.Dimension,
+        properties: { Type: { 'v8:Type': 'cfg:CatalogRef.Склады' } },
+      };
+
+      const resContainer: TreeNode = {
+        id: 'Resources',
+        name: 'Resources',
+        type: MetadataType.Resource,
+        properties: {},
+      };
+
+      const resKol: TreeNode = {
+        id: 'Resources.Количество',
+        name: 'Количество',
+        type: MetadataType.Resource,
+        properties: { Type: { 'v8:Type': 'xs:decimal' } },
+      };
+
+      const mockProvider: any = {
+        getRootNodes: () => [configRoot],
+        getChildren: (node?: TreeNode) => {
+          if (!node || node === configRoot) {
+            return Promise.resolve([catalogsFolder, accFolder]);
+          }
+          if (node === catalogsFolder) {
+            return Promise.resolve([nomCatalog]);
+          }
+          if (node === nomCatalog) {
+            return Promise.resolve([attrsContainer, tsContainer]);
+          }
+          if (node === attrsContainer) {
+            return Promise.resolve([attrArtikul, attrBarcode]);
+          }
+          if (node === tsContainer) {
+            return Promise.resolve([tsSklad]);
+          }
+          if (node === tsSklad) {
+            return Promise.resolve([tsAttrsContainer]);
+          }
+          if (node === tsAttrsContainer) {
+            return Promise.resolve([tsAttrMaterial, tsAttrQuantity]);
+          }
+          if (node === accFolder) {
+            return Promise.resolve([accReg]);
+          }
+          if (node === accReg) {
+            return Promise.resolve([dimsContainer, resContainer]);
+          }
+          if (node === dimsContainer) {
+            return Promise.resolve([dimSklad]);
+          }
+          if (node === resContainer) {
+            return Promise.resolve([resKol]);
+          }
+          return Promise.resolve([]);
+        },
+      };
+
+      const tree = await provider.buildTreeFromProvider(mockProvider);
+
+      // Verify Catalog "Товары"
+      const catCategory = tree.find((c: QueryMetadataNode) => c.id === 'Catalogs');
+      assert.ok(catCategory);
+      const tovaryTable = catCategory.children?.find((t: QueryMetadataNode) => t.name === 'Товары');
+      assert.ok(tovaryTable);
+
+      const tableFields = tovaryTable.children ?? [];
+      const fieldNames = tableFields.map((f: QueryMetadataNode) => f.name);
+
+      // Containers must NOT be present as fields
+      assert.strictEqual(fieldNames.includes('Attributes'), false, 'Attributes container must not be a field');
+      assert.strictEqual(fieldNames.includes('TabularSections'), false, 'TabularSections container must not be a field');
+      assert.strictEqual(fieldNames.includes('Tabular Sections'), false, 'Tabular Sections container must not be a field');
+
+      // Unpacked attributes must be present
+      assert.ok(fieldNames.includes('Артикул'), 'Unpacked Артикул must be present');
+      assert.ok(fieldNames.includes('Штрихкод'), 'Unpacked Штрихкод must be present');
+
+      // TabularSection "Состав" must be present as a tabularSection node
+      const tsNode = tableFields.find((f: QueryMetadataNode) => f.name === 'Состав' && f.nodeType === 'tabularSection');
+      assert.ok(tsNode, 'TabularSection Состав must be present');
+      assert.strictEqual(tsNode.synonym, 'Состав комплекта');
+
+      const tsFields = tsNode.children ?? [];
+      const tsFieldNames = tsFields.map((f: QueryMetadataNode) => f.name);
+      assert.strictEqual(tsFieldNames.includes('Attributes'), false, 'Attributes inside TS must not be a field');
+      assert.ok(tsFieldNames.includes('НомерСтроки'), 'TS standard attr НомерСтроки must be present');
+      assert.ok(tsFieldNames.includes('Ссылка'), 'TS standard attr Ссылка must be present');
+      assert.ok(tsFieldNames.includes('Материал'), 'TS unpacked column Материал must be present');
+      assert.ok(tsFieldNames.includes('Количество'), 'TS unpacked column Количество must be present');
+
+      // Verify AccumulationRegister
+      const regCategory = tree.find((c: QueryMetadataNode) => c.id === 'AccumulationRegisters');
+      assert.ok(regCategory);
+      const regTable = regCategory.children?.find((t: QueryMetadataNode) => t.name === 'Остатки');
+      assert.ok(regTable);
+
+      const regFields = regTable.children ?? [];
+      const regFieldNames = regFields.map((f: QueryMetadataNode) => f.name);
+      assert.strictEqual(regFieldNames.includes('Dimensions'), false);
+      assert.strictEqual(regFieldNames.includes('Resources'), false);
+      assert.ok(regFieldNames.includes('Склад'));
+      assert.ok(regFieldNames.includes('Количество'));
+
+      // Virtual tables must use the unpacked dimensions and resources
+      const balVt = regCategory.children?.find((v: QueryMetadataNode) => v.name === 'Остатки.Остатки');
+      assert.ok(balVt);
+      const balFieldNames = (balVt.children ?? []).map((f: QueryMetadataNode) => f.name);
+      assert.ok(balFieldNames.includes('Склад'));
+      assert.ok(balFieldNames.includes('КоличествоОстаток'));
+    });
+
+    test('P2.18: reads synonym from object { ru: ... }, { content: ... }, Synonym, and synonym', async () => {
+      const configRoot: TreeNode = {
+        id: 'Configuration.App',
+        name: 'App',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      const catFolder: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+
+      // Synonym as { ru: 'Контрагенты', en: 'Counterparties' }
+      const cat1: TreeNode = {
+        id: 'Catalogs.Контрагенты',
+        name: 'Контрагенты',
+        type: MetadataType.Catalog,
+        properties: {
+          synonym: { ru: 'Контрагенты компании', en: 'Company Counterparties' } as any,
+        },
+      };
+
+      // Synonym via PascalCase Synonym property with { content: 'Договоры' }
+      const cat2: TreeNode = {
+        id: 'Catalogs.Договоры',
+        name: 'Договоры',
+        type: MetadataType.Catalog,
+        properties: {
+          Synonym: { content: 'Договоры контрагентов' } as any,
+        },
+      };
+
+      // Synonym directly on node.synonym
+      const cat3: TreeNode = {
+        id: 'Catalogs.Склады',
+        name: 'Склады',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+      (cat3 as any).synonym = 'Места хранения';
+
+      const attrField: TreeNode = {
+        id: 'Catalogs.Контрагенты.ИНН',
+        name: 'ИНН',
+        type: MetadataType.Attribute,
+        properties: {
+          Synonym: { ru: 'Идентификационный номер' } as any,
+          Type: { 'v8:Type': 'xs:string' },
+        },
+      };
+
+      const mockProvider: any = {
+        getRootNodes: () => [configRoot],
+        getChildren: (node?: TreeNode) => {
+          if (!node || node === configRoot) {
+            return Promise.resolve([catFolder]);
+          }
+          if (node === catFolder) {
+            return Promise.resolve([cat1, cat2, cat3]);
+          }
+          if (node === cat1) {
+            return Promise.resolve([attrField]);
+          }
+          return Promise.resolve([]);
+        },
+      };
+
+      const tree = await provider.buildTreeFromProvider(mockProvider);
+      const catCategory = tree.find((c: QueryMetadataNode) => c.id === 'Catalogs');
+      assert.ok(catCategory);
+
+      const t1 = catCategory.children?.find((t: QueryMetadataNode) => t.name === 'Контрагенты');
+      assert.strictEqual(t1?.synonym, 'Контрагенты компании');
+      assert.strictEqual(t1?.label, 'Контрагенты компании');
+
+      const t2 = catCategory.children?.find((t: QueryMetadataNode) => t.name === 'Договоры');
+      assert.strictEqual(t2?.synonym, 'Договоры контрагентов');
+      assert.strictEqual(t2?.label, 'Договоры контрагентов');
+
+      const t3 = catCategory.children?.find((t: QueryMetadataNode) => t.name === 'Склады');
+      assert.strictEqual(t3?.synonym, 'Места хранения');
+      assert.strictEqual(t3?.label, 'Места хранения');
+
+      const inn = t1?.children?.find((f: QueryMetadataNode) => f.name === 'ИНН');
+      assert.strictEqual(inn?.synonym, 'Идентификационный номер');
+      assert.strictEqual(inn?.label, 'Идентификационный номер');
+    });
+
+    test('P2.18: normalizes data types from { v8:Type: ... }, arrays, and raw XML strings', async () => {
+      const configRoot: TreeNode = {
+        id: 'Configuration.App',
+        name: 'App',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      const docFolder: TreeNode = {
+        id: 'Documents',
+        name: 'Documents',
+        type: MetadataType.Document,
+        properties: {},
+      };
+
+      const doc: TreeNode = {
+        id: 'Documents.Заказ',
+        name: 'Заказ',
+        type: MetadataType.Document,
+        properties: {},
+      };
+
+      const fString: TreeNode = {
+        id: 'Documents.Заказ.СтроковоеПоле',
+        name: 'СтроковоеПоле',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'xs:string' } },
+      };
+
+      const fNumber: TreeNode = {
+        id: 'Documents.Заказ.ЧисловоеПоле',
+        name: 'ЧисловоеПоле',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'xs:decimal' } },
+      };
+
+      const fBool: TreeNode = {
+        id: 'Documents.Заказ.БулевоПоле',
+        name: 'БулевоПоле',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'xs:boolean' } },
+      };
+
+      const fDate: TreeNode = {
+        id: 'Documents.Заказ.ДатаПоле',
+        name: 'ДатаПоле',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'xs:dateTime' } },
+      };
+
+      const fCatalogRef: TreeNode = {
+        id: 'Documents.Заказ.Клиент',
+        name: 'Клиент',
+        type: MetadataType.Attribute,
+        properties: { Type: { 'v8:Type': 'cfg:CatalogRef.Контрагенты' } },
+      };
+
+      const fDocRef: TreeNode = {
+        id: 'Documents.Заказ.Основание',
+        name: 'Основание',
+        type: MetadataType.Attribute,
+        properties: { Type: 'cfg:DocumentRef.СчетНаОплату' },
+      };
+
+      const fCompound: TreeNode = {
+        id: 'Documents.Заказ.Составной',
+        name: 'Составной',
+        type: MetadataType.Attribute,
+        properties: { Type: ['xs:string', 'cfg:CatalogRef.Товары'] },
+      };
+
+      const fPlain: TreeNode = {
+        id: 'Documents.Заказ.Обычное',
+        name: 'Обычное',
+        type: MetadataType.Attribute,
+        properties: { Type: 'CustomTypeName' },
+      };
+
+      const mockProvider: any = {
+        getRootNodes: () => [configRoot],
+        getChildren: (node?: TreeNode) => {
+          if (!node || node === configRoot) {
+            return Promise.resolve([docFolder]);
+          }
+          if (node === docFolder) {
+            return Promise.resolve([doc]);
+          }
+          if (node === doc) {
+            return Promise.resolve([fString, fNumber, fBool, fDate, fCatalogRef, fDocRef, fCompound, fPlain]);
+          }
+          return Promise.resolve([]);
+        },
+      };
+
+      const tree = await provider.buildTreeFromProvider(mockProvider);
+      const docCat = tree.find((c: QueryMetadataNode) => c.id === 'Documents');
+      const docTable = docCat?.children?.find((t: QueryMetadataNode) => t.name === 'Заказ');
+      const fields = docTable?.children ?? [];
+
+      const getDataType = (name: string) => fields.find((f: QueryMetadataNode) => f.name === name)?.dataType;
+
+      assert.strictEqual(getDataType('СтроковоеПоле'), 'Строка');
+      assert.strictEqual(getDataType('ЧисловоеПоле'), 'Число');
+      assert.strictEqual(getDataType('БулевоПоле'), 'Булево');
+      assert.strictEqual(getDataType('ДатаПоле'), 'Дата');
+      assert.strictEqual(getDataType('Клиент'), 'СправочникСсылка.Контрагенты');
+      assert.strictEqual(getDataType('Основание'), 'ДокументСсылка.СчетНаОплату');
+      assert.strictEqual(getDataType('Составной'), 'Строка, СправочникСсылка.Товары');
+      assert.strictEqual(getDataType('Обычное'), 'CustomTypeName');
+    });
+
+    test('P2.19: respects object properties (Hierarchical, Owners, Periodicity, RegisterType, Enum)', async () => {
+      const configRoot: TreeNode = {
+        id: 'Configuration.App',
+        name: 'App',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      const catFolder: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+
+      // 1. Non-hierarchical catalog without owners
+      const nonHierCat: TreeNode = {
+        id: 'Catalogs.Валюты',
+        name: 'Валюты',
+        type: MetadataType.Catalog,
+        properties: {
+          Hierarchical: false,
+          Owners: [],
+        } as unknown as TreeNodeProperties,
+      };
+
+      // 2. Hierarchical catalog with owners
+      const hierCatWithOwner: TreeNode = {
+        id: 'Catalogs.Договоры',
+        name: 'Договоры',
+        type: MetadataType.Catalog,
+        properties: {
+          Hierarchical: true,
+          Owners: ['Catalog.Контрагенты'],
+        } as unknown as TreeNodeProperties,
+      };
+
+      // 3. Non-periodic information register
+      const irFolder: TreeNode = {
+        id: 'InformationRegisters',
+        name: 'InformationRegisters',
+        type: MetadataType.InformationRegister,
+        properties: {},
+      };
+
+      const nonPeriodicIr: TreeNode = {
+        id: 'InformationRegisters.Штрихкоды',
+        name: 'Штрихкоды',
+        type: MetadataType.InformationRegister,
+        properties: {
+          InformationRegisterPeriodicity: 'Nonperiodic',
+        } as unknown as TreeNodeProperties,
+      };
+
+      // 4. Accumulation register of type Turnovers
+      const arFolder: TreeNode = {
+        id: 'AccumulationRegisters',
+        name: 'AccumulationRegisters',
+        type: MetadataType.AccumulationRegister,
+        properties: {},
+      };
+
+      const turnoversAr: TreeNode = {
+        id: 'AccumulationRegisters.Продажи',
+        name: 'Продажи',
+        type: MetadataType.AccumulationRegister,
+        properties: {
+          RegisterType: 'Turnovers',
+        } as unknown as TreeNodeProperties,
+      };
+
+      // 5. Enum
+      const enumFolder: TreeNode = {
+        id: 'Enums',
+        name: 'Enums',
+        type: MetadataType.Enum,
+        properties: {},
+      };
+
+      const testEnum: TreeNode = {
+        id: 'Enums.СтатусыЗаказов',
+        name: 'СтатусыЗаказов',
+        type: MetadataType.Enum,
+        properties: { synonym: 'Статусы заказов' },
+      };
+
+      const mockProvider: any = {
+        getRootNodes: () => [configRoot],
+        getChildren: (node?: TreeNode) => {
+          if (!node || node === configRoot) {
+            return Promise.resolve([catFolder, irFolder, arFolder, enumFolder]);
+          }
+          if (node === catFolder) {
+            return Promise.resolve([nonHierCat, hierCatWithOwner]);
+          }
+          if (node === irFolder) {
+            return Promise.resolve([nonPeriodicIr]);
+          }
+          if (node === arFolder) {
+            return Promise.resolve([turnoversAr]);
+          }
+          if (node === enumFolder) {
+            return Promise.resolve([testEnum]);
+          }
+          return Promise.resolve([]);
+        },
+      };
+
+      const tree = await provider.buildTreeFromProvider(mockProvider);
+
+      // Check Non-hierarchical catalog without owners:
+      // must NOT have 'Родитель', 'ЭтоГруппа', 'Владелец'
+      const catCat = tree.find((c: QueryMetadataNode) => c.id === 'Catalogs');
+      const valyuty = catCat?.children?.find((t: QueryMetadataNode) => t.name === 'Валюты');
+      const valyutyFieldNames = (valyuty?.children ?? []).map((f: QueryMetadataNode) => f.name);
+      assert.ok(valyutyFieldNames.includes('Ссылка'));
+      assert.ok(valyutyFieldNames.includes('Код'));
+      assert.strictEqual(valyutyFieldNames.includes('Родитель'), false, 'Non-hierarchical must not have Родитель');
+      assert.strictEqual(valyutyFieldNames.includes('ЭтоГруппа'), false, 'Non-hierarchical must not have ЭтоГруппа');
+      assert.strictEqual(valyutyFieldNames.includes('Владелец'), false, 'Catalog without owners must not have Владелец');
+
+      // Check Hierarchical catalog with owners:
+      // must have 'Родитель', 'ЭтоГруппа', 'Владелец'
+      const dogovory = catCat?.children?.find((t: QueryMetadataNode) => t.name === 'Договоры');
+      const dogovoryFieldNames = (dogovory?.children ?? []).map((f: QueryMetadataNode) => f.name);
+      assert.ok(dogovoryFieldNames.includes('Родитель'));
+      assert.ok(dogovoryFieldNames.includes('ЭтоГруппа'));
+      assert.ok(dogovoryFieldNames.includes('Владелец'));
+
+      // Check Non-periodic information register:
+      // must NOT have 'Период', and must NOT generate СрезПервых / СрезПоследних
+      const irCat = tree.find((c: QueryMetadataNode) => c.id === 'InformationRegisters');
+      const barcodeTable = irCat?.children?.find((t: QueryMetadataNode) => t.name === 'Штрихкоды');
+      const barcodeFieldNames = (barcodeTable?.children ?? []).map((f: QueryMetadataNode) => f.name);
+      assert.strictEqual(barcodeFieldNames.includes('Период'), false, 'Non-periodic IR must not have Период');
+      const irVts = (irCat?.children ?? []).filter((t: QueryMetadataNode) => t.nodeType === 'virtualTable');
+      assert.strictEqual(irVts.length, 0, 'Non-periodic IR must not generate virtual tables');
+
+      // Check Accumulation register of type Turnovers:
+      // must generate ONLY .Обороты, no .Остатки and no .ОстаткиИОбороты
+      const arCat = tree.find((c: QueryMetadataNode) => c.id === 'AccumulationRegisters');
+      const arVts = (arCat?.children ?? []).filter((t: QueryMetadataNode) => t.nodeType === 'virtualTable');
+      assert.strictEqual(arVts.length, 1);
+      assert.strictEqual(arVts[0].name, 'Продажи.Обороты');
+
+      // Check Enum:
+      // must have Ссылка (Ref) and Порядок (Number)
+      const enumCat = tree.find((c: QueryMetadataNode) => c.id === 'Enums');
+      const enumTable = enumCat?.children?.find((t: QueryMetadataNode) => t.name === 'СтатусыЗаказов');
+      assert.ok(enumTable);
+      assert.strictEqual(enumTable.fullName, 'Перечисление.СтатусыЗаказов');
+      assert.strictEqual(enumTable.synonym, 'Статусы заказов');
+      const enumFields = enumTable.children ?? [];
+      assert.strictEqual(enumFields.length, 2);
+      const refF = enumFields.find((f: QueryMetadataNode) => f.name === 'Ссылка');
+      const orderF = enumFields.find((f: QueryMetadataNode) => f.name === 'Порядок');
+      assert.ok(refF);
+      assert.strictEqual(refF.dataType, 'Ref');
+      assert.ok(orderF);
+      assert.strictEqual(orderF.dataType, 'Number');
     });
   });
 });

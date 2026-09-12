@@ -12,15 +12,22 @@ import { QueryMetadataNode } from '../../../src/queryBuilder/metadata/queryMetad
 
 suite('QueryBuilder Provider & Message Handler', () => {
   let warningMessage: string | undefined;
+  let errorMessage: string | undefined;
   let statusBarMessage: string | undefined;
   const originalShowWarningMessage = vscode.window.showWarningMessage;
+  const originalShowErrorMessage = vscode.window.showErrorMessage;
   const originalSetStatusBarMessage = (vscode.window as any).setStatusBarMessage;
 
   setup(() => {
     warningMessage = undefined;
+    errorMessage = undefined;
     statusBarMessage = undefined;
     (vscode.window as any).showWarningMessage = async (msg: string) => {
       warningMessage = msg;
+      return undefined;
+    };
+    (vscode.window as any).showErrorMessage = async (msg: string) => {
+      errorMessage = msg;
       return undefined;
     };
     (vscode.window as any).setStatusBarMessage = (msg: string) => {
@@ -31,6 +38,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
 
   teardown(() => {
     (vscode.window as any).showWarningMessage = originalShowWarningMessage;
+    (vscode.window as any).showErrorMessage = originalShowErrorMessage;
     (vscode.window as any).setStatusBarMessage = originalSetStatusBarMessage;
   });
 
@@ -38,6 +46,8 @@ suite('QueryBuilder Provider & Message Handler', () => {
     const postedMessages: any[] = [];
     let disposed = false;
     let messageListener: ((msg: any) => void) | undefined;
+    let disposeListener: (() => void) | undefined;
+    let receiveMessageDisposed = false;
 
     return {
       panel: {
@@ -52,47 +62,89 @@ suite('QueryBuilder Provider & Message Handler', () => {
           },
           onDidReceiveMessage: (listener: (msg: any) => void) => {
             messageListener = listener;
-            return { dispose: () => undefined };
+            return {
+              dispose: () => {
+                receiveMessageDisposed = true;
+                if (messageListener === listener) {
+                  messageListener = undefined;
+                }
+              },
+            };
           },
         },
         reveal: () => undefined,
         dispose: () => {
           disposed = true;
+          disposeListener?.();
         },
-        onDidDispose: (_listener: () => void) => {
+        onDidDispose: (listener: () => void) => {
+          disposeListener = listener;
           return { dispose: () => undefined };
         },
       } as unknown as vscode.WebviewPanel,
       postedMessages,
       isDisposed: () => disposed,
+      isReceiveMessageDisposed: () => receiveMessageDisposed,
       simulateMessage: (msg: any) => messageListener?.(msg),
+      simulateDispose: () => {
+        disposed = true;
+        disposeListener?.();
+      },
     };
   }
 
-  function createMockEditor(docText: string, replaceRangeCallback?: (range: vscode.Range, text: string) => void) {
-    const lines = docText.split('\n');
+  function createMockEditor(
+    initialText: string,
+    replaceRangeCallback?: (range: vscode.Range, text: string) => void,
+    options?: { languageId?: string; fileName?: string; version?: number }
+  ) {
+    let docText = initialText;
+    let version = options?.version ?? 1;
+    const languageId = options?.languageId ?? 'bsl';
+    const fileName = options?.fileName ?? 'module.bsl';
+
+    const getLines = () => docText.split('\n');
+
+    const offsetAt = (pos: vscode.Position) => {
+      const lines = getLines();
+      let offset = 0;
+      for (let l = 0; l < pos.line && l < lines.length; l++) {
+        offset += lines[l].length + 1;
+      }
+      return offset + pos.character;
+    };
+
+    const positionAt = (offset: number) => {
+      const lines = getLines();
+      let cur = 0;
+      for (let l = 0; l < lines.length; l++) {
+        const lineLen = lines[l].length + 1;
+        if (cur + lineLen > offset || l === lines.length - 1) {
+          return new vscode.Position(l, Math.max(0, offset - cur));
+        }
+        cur += lineLen;
+      }
+      return new vscode.Position(0, 0);
+    };
 
     return {
       document: {
-        getText: () => docText,
-        positionAt: (offset: number) => {
-          let cur = 0;
-          for (let l = 0; l < lines.length; l++) {
-            const lineLen = lines[l].length + 1;
-            if (cur + lineLen > offset || l === lines.length - 1) {
-              return new vscode.Position(l, offset - cur);
-            }
-            cur += lineLen;
-          }
-          return new vscode.Position(0, 0);
+        get version() {
+          return version;
         },
-        offsetAt: (pos: vscode.Position) => {
-          let offset = 0;
-          for (let l = 0; l < pos.line && l < lines.length; l++) {
-            offset += lines[l].length + 1;
+        languageId,
+        fileName,
+        uri: vscode.Uri.file(fileName),
+        getText: (range?: vscode.Range) => {
+          if (!range) {
+            return docText;
           }
-          return offset + pos.character;
+          const start = offsetAt(range.start);
+          const end = offsetAt(range.end);
+          return docText.slice(start, end);
         },
+        positionAt,
+        offsetAt,
       },
       selection: {
         active: new vscode.Position(0, 0),
@@ -104,12 +156,26 @@ suite('QueryBuilder Provider & Message Handler', () => {
         const editBuilder = {
           replace: (range: vscode.Range, text: string) => {
             replaceRangeCallback?.(range, text);
+            const start = offsetAt(range.start);
+            const end = offsetAt(range.end);
+            docText = docText.slice(0, start) + text + docText.slice(end);
           },
         };
         callback(editBuilder);
         return true;
       },
-    } as unknown as vscode.TextEditor;
+      getFullText: () => docText,
+      setDocumentText: (newText: string) => {
+        docText = newText;
+      },
+      setVersion: (v: number) => {
+        version = v;
+      },
+    } as unknown as vscode.TextEditor & {
+      getFullText: () => string;
+      setDocumentText: (newText: string) => void;
+      setVersion: (v: number) => void;
+    };
   }
 
   suite('handleQueryBuilderMessage', () => {
@@ -410,6 +476,212 @@ suite('QueryBuilder Provider & Message Handler', () => {
       });
     });
 
+    test('saves withProcessing mode using statementRange to completely replace assignment without duplicating Запрос.Текст = Запрос = Новый Запрос', async () => {
+      const mock = createMockPanel();
+      const initialCode = [
+        'Процедура Выполнить()',
+        '\tЗапрос.Текст = "ВЫБРАТЬ 1 КАК Цифра";',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      const editor = createMockEditor(initialCode);
+      const litStart = initialCode.indexOf('"ВЫБРАТЬ');
+      const litEnd = initialCode.indexOf(';') - 1;
+      const stmtStart = initialCode.indexOf('Запрос.Текст');
+      const stmtEnd = initialCode.indexOf(';') + 1;
+
+      const ast: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 1, raw: '1' }, alias: 'Цифра' }],
+            from: [],
+          },
+        ],
+      };
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'withProcessing',
+        replaceRange: {
+          startOffset: litStart,
+          endOffset: litEnd,
+          startLine: 2,
+          startColumn: 18,
+          endLine: 2,
+          endColumn: 38,
+        },
+        statementRange: {
+          startOffset: stmtStart,
+          endOffset: stmtEnd,
+          startLine: 2,
+          startColumn: 2,
+          endLine: 2,
+          endColumn: 39,
+        },
+        variableName: 'Запрос',
+        expectedText: initialCode.slice(litStart, litEnd),
+        expectedStatementText: initialCode.slice(stmtStart, stmtEnd),
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast }, context);
+
+      assert.strictEqual(mock.isDisposed(), true);
+      const resultingCode = editor.getFullText();
+      assert.ok(!resultingCode.includes('Запрос.Текст = Запрос = Новый Запрос'), 'Must NOT duplicate assignment');
+      assert.ok(resultingCode.includes('Запрос = Новый Запрос;'), 'Must contain query initialization');
+      assert.ok(resultingCode.includes('Запрос.Текст ='), 'Must contain text assignment');
+    });
+
+    test('saves query in pure SDBL format when isSdblDocument is true', async () => {
+      const mock = createMockPanel();
+      let replacedText = '';
+      const editor = createMockEditor('ВЫБРАТЬ 1', (_range, text) => {
+        replacedText = text;
+      }, { languageId: 'sdbl', fileName: 'test.sdbl' });
+
+      const ast: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' }, alias: 'Ссылка' }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          },
+        ],
+      };
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'simple',
+        isSdblDocument: true,
+        replaceRange: {
+          startOffset: 0,
+          endOffset: 9,
+          startLine: 1,
+          startColumn: 1,
+          endLine: 1,
+          endColumn: 10,
+        },
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast }, context);
+
+      assert.strictEqual(mock.isDisposed(), true);
+      assert.ok(replacedText.startsWith('ВЫБРАТЬ'), 'Must start directly with ВЫБРАТЬ');
+      assert.ok(!replacedText.startsWith('"'), 'Must not start with quote');
+      assert.ok(!replacedText.includes('|'), 'Must not contain pipe continuation');
+      assert.ok(!replacedText.includes('Новый Запрос'), 'Must not contain BSL constructor');
+    });
+
+    test('protection against document version mismatch: saves normally if expectedText is at targetRange', async () => {
+      const mock = createMockPanel();
+      const code = 'Запрос.Текст = "ВЫБРАТЬ 1";';
+      const editor = createMockEditor(code, undefined, { version: 2 });
+
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: code.indexOf('"'),
+          endOffset: code.lastIndexOf('"') + 1,
+          startLine: 1,
+          startColumn: code.indexOf('"') + 1,
+          endLine: 1,
+          endColumn: code.lastIndexOf('"') + 2,
+        },
+        initialDocumentVersion: 1,
+        expectedText: '"ВЫБРАТЬ 1"',
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast }, context);
+      assert.strictEqual(mock.isDisposed(), true);
+      assert.strictEqual(errorMessage, undefined);
+    });
+
+    test('protection against document version mismatch: relocates expectedText elsewhere in document and saves', async () => {
+      const mock = createMockPanel();
+      const oldCode = 'Запрос.Текст = "ВЫБРАТЬ 1";';
+      const newCode = '// Добавленный комментарий в начале\n' + oldCode;
+      const editor = createMockEditor(newCode, undefined, { version: 2 });
+
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: oldCode.indexOf('"'),
+          endOffset: oldCode.lastIndexOf('"') + 1,
+          startLine: 1,
+          startColumn: oldCode.indexOf('"') + 1,
+          endLine: 1,
+          endColumn: oldCode.lastIndexOf('"') + 2,
+        },
+        initialDocumentVersion: 1,
+        expectedText: '"ВЫБРАТЬ 1"',
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast }, context);
+      assert.strictEqual(mock.isDisposed(), true);
+      assert.strictEqual(errorMessage, undefined);
+      assert.ok(editor.getFullText().includes('// Добавленный комментарий в начале'));
+    });
+
+    test('protection against document version mismatch: cancels save and shows error if expectedText not found', async () => {
+      const mock = createMockPanel();
+      const initialCode = 'Запрос.Текст = "ВЫБРАТЬ 1";';
+      const modifiedCode = '// Полностью переписанный файл\nСообщить("Привет");';
+      const editor = createMockEditor(modifiedCode, undefined, { version: 2 });
+
+      const ast: QueryPackage = {
+        queries: [{ type: 'Select', fields: [], from: [] }],
+      };
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor,
+        ast,
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: 0,
+          endOffset: initialCode.length,
+          startLine: 1,
+          startColumn: 1,
+          endLine: 1,
+          endColumn: initialCode.length + 1,
+        },
+        initialDocumentVersion: 1,
+        expectedText: initialCode,
+      };
+
+      await handleQueryBuilderMessage({ command: 'save', ast }, context);
+      assert.strictEqual(mock.isDisposed(), false, 'Panel must not be disposed when save canceled');
+      assert.strictEqual(
+        errorMessage,
+        'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+      );
+      assert.strictEqual(editor.getFullText(), modifiedCode, 'Original document must not be overwritten');
+    });
+
     test('QueryBuilderMessageHandler class forwards messages to handler function', async () => {
       const mock = createMockPanel();
       const context: QueryBuilderMessageContext = {
@@ -567,6 +839,90 @@ suite('QueryBuilder Provider & Message Handler', () => {
       await provider.open(editor);
       assert.strictEqual(createCallCount, 1, 'Should not create a second panel');
       assert.strictEqual(revealed, true, 'Should reveal existing panel');
+    });
+
+    test('opens SDBL document (.sdbl or languageId === "sdbl") as pure SDBL and sets isSdblDocument flag', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const sdblCode = 'ВЫБРАТЬ Ссылка КАК Товар ИЗ Справочник.Номенклатура';
+      const editor = createMockEditor(sdblCode, undefined, { languageId: 'sdbl', fileName: 'test.sdbl' });
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const panel = await provider.open(editor, 'simple');
+
+      assert.strictEqual(panel, mockPanel.panel);
+      mockPanel.simulateMessage({ command: 'ready' });
+
+      assert.strictEqual(mockPanel.postedMessages.length, 1);
+      const initMsg = mockPanel.postedMessages[0];
+      assert.strictEqual(initMsg.command, 'init');
+      assert.strictEqual(initMsg.ast.queries.length, 1);
+      assert.strictEqual(initMsg.ast.queries[0].fields[0].alias, 'Товар');
+    });
+
+    test('re-opening panel disposes previous message subscription and prevents duplicate message handling', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      let editCount = 0;
+      const editor = createMockEditor('Запрос.Текст = "ВЫБРАТЬ 1";', () => {
+        editCount++;
+      });
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor);
+      // Second open call
+      await provider.open(editor);
+
+      // Now send save message once
+      mockPanel.simulateMessage({
+        command: 'save',
+        ast: { queries: [{ type: 'Select', fields: [], from: [] }] },
+      });
+
+      assert.strictEqual(editCount, 1, 'Save should execute exactly once, not duplicated');
+    });
+
+    test('panel onDidDispose disposes message subscription and resets internal state', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const editor = createMockEditor('');
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor);
+
+      assert.strictEqual(mockPanel.isReceiveMessageDisposed(), false);
+      mockPanel.simulateDispose();
+      assert.strictEqual(mockPanel.isReceiveMessageDisposed(), true, 'Subscription should be disposed');
+    });
+
+    test('shows error message and cancels opening when query has SDBL syntax error', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const invalidCode = 'Запрос.Текст = "ВЫБРАТЬ ,,, СИНТАКСИЧЕСКАЯ_ОШИБКА";';
+      const editor = createMockEditor(invalidCode);
+      editor.selection = {
+        active: new vscode.Position(0, 20),
+        start: new vscode.Position(0, 20),
+        end: new vscode.Position(0, 20),
+        isEmpty: true,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      const panel = await provider.open(editor);
+
+      assert.strictEqual(panel, undefined, 'Provider should return undefined on syntax error');
+      assert.ok(errorMessage, 'Error message should have been displayed');
+      assert.ok(
+        errorMessage.startsWith('Ошибка синтаксиса запроса: '),
+        `Expected error message starting with syntax error prefix, got: ${errorMessage}`
+      );
+      assert.ok(
+        errorMessage.endsWith('. Открытие конструктора отменено.'),
+        `Expected error message ending with cancellation suffix, got: ${errorMessage}`
+      );
     });
   });
 

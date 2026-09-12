@@ -179,6 +179,12 @@ class SdblParser {
       having = this.parseExpression();
     }
 
+    // INDEX BY / ИНДЕКСИРОВАТЬ ПО (canonical position: after FROM, WHERE, GROUP BY, HAVING)
+    if (!indexBy && this.matchKeyword(SdblKeyword.Index)) {
+      this.matchOnOrBy();
+      indexBy = this.parseIndexFields();
+    }
+
     // UNIONS / ОБЪЕДИНИТЬ [ВСЕ]
     let unions: UnionClause[] | undefined = undefined;
     if (allowUnions) {
@@ -242,20 +248,20 @@ class SdblParser {
       type: 'Select',
       fields,
     };
-    if (distinct !== undefined) selectStmt.distinct = distinct;
-    if (allowed !== undefined) selectStmt.allowed = allowed;
-    if (top !== undefined) selectStmt.top = top;
-    if (forUpdate !== undefined) selectStmt.forUpdate = forUpdate;
-    if (autoOrder !== undefined) selectStmt.autoOrder = autoOrder;
-    if (into !== undefined) selectStmt.into = into;
-    if (indexBy !== undefined) selectStmt.indexBy = indexBy;
-    if (from !== undefined) selectStmt.from = from;
-    if (where !== undefined) selectStmt.where = where;
-    if (groupBy !== undefined) selectStmt.groupBy = groupBy;
-    if (having !== undefined) selectStmt.having = having;
-    if (unions !== undefined) selectStmt.unions = unions;
-    if (orderBy !== undefined) selectStmt.orderBy = orderBy;
-    if (totals !== undefined) selectStmt.totals = totals;
+    if (distinct !== undefined) {selectStmt.distinct = distinct;}
+    if (allowed !== undefined) {selectStmt.allowed = allowed;}
+    if (top !== undefined) {selectStmt.top = top;}
+    if (forUpdate !== undefined) {selectStmt.forUpdate = forUpdate;}
+    if (autoOrder !== undefined) {selectStmt.autoOrder = autoOrder;}
+    if (into !== undefined) {selectStmt.into = into;}
+    if (indexBy !== undefined) {selectStmt.indexBy = indexBy;}
+    if (from !== undefined) {selectStmt.from = from;}
+    if (where !== undefined) {selectStmt.where = where;}
+    if (groupBy !== undefined) {selectStmt.groupBy = groupBy;}
+    if (having !== undefined) {selectStmt.having = having;}
+    if (unions !== undefined) {selectStmt.unions = unions;}
+    if (orderBy !== undefined) {selectStmt.orderBy = orderBy;}
+    if (totals !== undefined) {selectStmt.totals = totals;}
 
     return selectStmt;
   }
@@ -290,7 +296,7 @@ class SdblParser {
 
   private isPotentialAlias(): boolean {
     const tok = this.peek();
-    if (!tok) return false;
+    if (!tok) {return false;}
     if (tok.type !== TokenType.Identifier && tok.type !== TokenType.Keyword) {
       return false;
     }
@@ -327,7 +333,7 @@ class SdblParser {
 
   private isPotentialFromAlias(): boolean {
     const tok = this.peek();
-    if (!tok) return false;
+    if (!tok) {return false;}
     if (tok.type !== TokenType.Identifier && tok.type !== TokenType.Keyword) {
       return false;
     }
@@ -420,7 +426,7 @@ class SdblParser {
 
   private isJoinStart(): boolean {
     const tok = this.peek();
-    if (!tok || tok.type !== TokenType.Keyword) return false;
+    if (!tok || tok.type !== TokenType.Keyword) {return false;}
     const kw = tok.value as SdblKeyword;
     return (
       kw === SdblKeyword.Left ||
@@ -509,27 +515,74 @@ class SdblParser {
 
       const expr = this.parseExpression();
       let hierarchy: boolean | undefined = undefined;
+      let hierarchyType: 'All' | 'OnlyHierarchy' | undefined = undefined;
+      let period: boolean | undefined = undefined;
       let periods: boolean | undefined = undefined;
+      let periodDefinition:
+        | {
+            periodType?: string;
+            from?: ExpressionNode;
+            to?: ExpressionNode;
+          }
+        | undefined = undefined;
 
       while (!this.isAtEnd()) {
-        if (this.matchKeyword(SdblKeyword.Hierarchy)) {
-          hierarchy = true;
-        } else if (this.matchKeyword(SdblKeyword.Only)) {
+        if (this.matchKeyword(SdblKeyword.Only)) {
           if (this.matchKeyword(SdblKeyword.Hierarchy)) {
             hierarchy = true;
+            hierarchyType = 'OnlyHierarchy';
           }
+        } else if (this.matchKeyword(SdblKeyword.Hierarchy)) {
+          hierarchy = true;
+          hierarchyType = 'All';
         } else {
           const nextRaw = this.peek()?.raw.toUpperCase();
           if (nextRaw === 'ПЕРИОДАМИ' || nextRaw === 'PERIODS') {
-            periods = true;
             this.advance();
+            period = true;
+            periods = true;
+            if (this.matchSymbol('(')) {
+              let periodType: string | undefined = undefined;
+              let from: ExpressionNode | undefined = undefined;
+              let to: ExpressionNode | undefined = undefined;
+
+              if (!this.checkSymbol(',') && !this.checkSymbol(')')) {
+                periodType = this.consumeIdentifierOrKeyword();
+              }
+
+              if (this.matchSymbol(',')) {
+                if (!this.checkSymbol(',') && !this.checkSymbol(')')) {
+                  from = this.parseExpression();
+                }
+
+                if (this.matchSymbol(',')) {
+                  if (!this.checkSymbol(')')) {
+                    to = this.parseExpression();
+                  }
+                }
+              }
+
+              this.consumeSymbol(')', "Expected ')' after PERIODS parameters");
+              periodDefinition = {
+                periodType,
+                from,
+                to,
+              };
+            }
           } else {
             break;
           }
         }
       }
 
-      by.push({ expression: expr, hierarchy, periods });
+      by.push({
+        expression: expr,
+        hierarchy,
+        hierarchyType,
+        period,
+        periods,
+        periodDefinition,
+      });
     } while (this.matchSymbol(','));
 
     return {
@@ -1000,11 +1053,12 @@ class SdblParser {
   // --- HELPER UTILITIES ---
 
   private isSectionKeyword(tok: SdblToken | undefined): boolean {
-    if (!tok || tok.type !== TokenType.Keyword) return false;
+    if (!tok || tok.type !== TokenType.Keyword) {return false;}
     const kw = tok.value as SdblKeyword;
     return (
       kw === SdblKeyword.From ||
       kw === SdblKeyword.Into ||
+      kw === SdblKeyword.Index ||
       kw === SdblKeyword.Where ||
       kw === SdblKeyword.Group ||
       kw === SdblKeyword.Having ||
@@ -1048,8 +1102,8 @@ class SdblParser {
 
   private check(type: TokenType, value?: string): boolean {
     const tok = this.peek();
-    if (!tok || tok.type !== type) return false;
-    if (value !== undefined) return tok.value === value;
+    if (!tok || tok.type !== type) {return false;}
+    if (value !== undefined) {return tok.value === value;}
     return true;
   }
 
@@ -1076,7 +1130,7 @@ class SdblParser {
 
   private checkSymbol(sym: string): boolean {
     const tok = this.peek();
-    if (!tok) return false;
+    if (!tok) {return false;}
     return (
       (tok.type === TokenType.Symbol || tok.type === TokenType.Operator) &&
       tok.value === sym

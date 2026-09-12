@@ -406,4 +406,89 @@ suite('BSL Query Extractor & Templates', () => {
       assert.ok(code.includes('  // Обработка строки результата'));
     });
   });
+
+  suite('8. statementRange calculation (P1.3)', () => {
+    test('calculates statementRange for Запрос.Текст = "..."', () => {
+      const code = 'Запрос.Текст = "ВЫБРАТЬ 1 КАК Поле";';
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.ok(result.statementRange, 'statementRange should be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+      assert.strictEqual(result.statementRange?.startLine, 1);
+      assert.strictEqual(result.statementRange?.startColumn, 1);
+      assert.strictEqual(result.statementRange?.endLine, 1);
+      assert.strictEqual(result.statementRange?.endColumn, code.length + 1);
+    });
+
+    test('calculates statementRange when Запрос = Новый Запрос; precedes Запрос.Текст = "..."', () => {
+      const code = [
+        'Запрос = Новый Запрос;',
+        'Запрос.Текст = "ВЫБРАТЬ 1 КАК Поле";',
+      ].join('\n');
+
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.ok(result.statementRange, 'statementRange should be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+      assert.strictEqual(result.statementRange?.startLine, 1);
+      assert.strictEqual(result.statementRange?.startColumn, 1);
+      assert.strictEqual(result.statementRange?.endLine, 2);
+      assert.strictEqual(
+        result.statementRange?.endColumn,
+        'Запрос.Текст = "ВЫБРАТЬ 1 КАК Поле";'.length + 1
+      );
+    });
+
+    test('calculates statementRange for Запрос = Новый Запрос("...") constructor', () => {
+      const code = 'Запрос = Новый Запрос("ВЫБРАТЬ 1 КАК Поле");';
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.ok(result.statementRange, 'statementRange should be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+      assert.strictEqual(result.statementRange?.startLine, 1);
+      assert.strictEqual(result.statementRange?.startColumn, 1);
+      assert.strictEqual(result.statementRange?.endLine, 1);
+      assert.strictEqual(result.statementRange?.endColumn, code.length + 1);
+    });
+
+    test('calculates statementRange for standalone Новый Запрос("...") constructor without assignment', () => {
+      const code = 'Новый Запрос("ВЫБРАТЬ 1 КАК Поле");';
+      const cursorOffset = code.indexOf('Поле');
+      const result = extractBslQuery(code, cursorOffset);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.ok(result.statementRange, 'statementRange should be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+    });
+
+    test('calculates statementRange when selecting query literal inside assignment', () => {
+      const code = 'Запрос.Текст = "ВЫБРАТЬ 1 КАК Поле";';
+      const litStart = code.indexOf('"ВЫБРАТЬ');
+      const litEnd = code.lastIndexOf('"') + 1;
+      const result = extractBslQuery(code, litStart, { start: litStart, end: litEnd });
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.ok(result.statementRange, 'statementRange should be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+    });
+
+    test('leaves statementRange undefined for standalone query literal without assignment', () => {
+      const code = '"ВЫБРАТЬ 1 КАК Поле"';
+      const result = extractBslQuery(code, 5);
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.statementRange, undefined);
+    });
+  });
 });

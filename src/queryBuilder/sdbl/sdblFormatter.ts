@@ -86,16 +86,9 @@ function formatSelect(
     }
   }
 
-  // 3. INTO / ПОМЕСТИТЬ and INDEX BY / ИНДЕКСИРОВАТЬ ПО
+  // 3. INTO / ПОМЕСТИТЬ
   if (stmt.into) {
     lines.push(`ПОМЕСТИТЬ ${stmt.into}`);
-    if (stmt.indexBy && stmt.indexBy.length > 0) {
-      lines.push('ИНДЕКСИРОВАТЬ ПО');
-      for (let i = 0; i < stmt.indexBy.length; i++) {
-        const comma = i < stmt.indexBy.length - 1 ? ',' : '';
-        lines.push(`${indent}${stmt.indexBy[i]}${comma}`);
-      }
-    }
   }
 
   // 4. FROM / ИЗ and JOINS
@@ -138,8 +131,16 @@ function formatSelect(
   if (stmt.where) {
     lines.push('ГДЕ');
     const conditions = flattenConditions(stmt.where);
+    const isAndChain = conditions.some((c) => c.op === 'И');
     for (const cond of conditions) {
-      const condExprStr = formatExpression(cond.expr, indent, newline);
+      let condExprStr = formatExpression(cond.expr, indent, newline);
+      if (
+        isAndChain &&
+        cond.expr.type === 'BinaryOp' &&
+        isOrOp(cond.expr.operator)
+      ) {
+        condExprStr = `(${condExprStr})`;
+      }
       if (cond.op) {
         lines.push(`${indent}${cond.op} ${condExprStr}`);
       } else {
@@ -163,13 +164,30 @@ function formatSelect(
   if (stmt.having) {
     lines.push('ИМЕЮЩИЕ');
     const conditions = flattenConditions(stmt.having);
+    const isAndChain = conditions.some((c) => c.op === 'И');
     for (const cond of conditions) {
-      const condExprStr = formatExpression(cond.expr, indent, newline);
+      let condExprStr = formatExpression(cond.expr, indent, newline);
+      if (
+        isAndChain &&
+        cond.expr.type === 'BinaryOp' &&
+        isOrOp(cond.expr.operator)
+      ) {
+        condExprStr = `(${condExprStr})`;
+      }
       if (cond.op) {
         lines.push(`${indent}${cond.op} ${condExprStr}`);
       } else {
         lines.push(`${indent}${condExprStr}`);
       }
+    }
+  }
+
+  // INDEX BY / ИНДЕКСИРОВАТЬ ПО (after FROM, WHERE, GROUP BY, HAVING)
+  if (stmt.indexBy && stmt.indexBy.length > 0) {
+    lines.push('ИНДЕКСИРОВАТЬ ПО');
+    for (let i = 0; i < stmt.indexBy.length; i++) {
+      const comma = i < stmt.indexBy.length - 1 ? ',' : '';
+      lines.push(`${indent}${stmt.indexBy[i]}${comma}`);
     }
   }
 
@@ -292,9 +310,28 @@ function formatTotals(
     for (const item of totals.by) {
       let bStr = formatExpression(item.expression, indent, newline);
       if (item.hierarchy) {
-        bStr += ' ИЕРАРХИЯ';
+        if (item.hierarchyType === 'OnlyHierarchy') {
+          bStr += ' ТОЛЬКО ИЕРАРХИЯ';
+        } else {
+          bStr += ' ИЕРАРХИЯ';
+        }
       }
-      if (item.periods) {
+      if (item.periodDefinition) {
+        const def = item.periodDefinition;
+        const pType = def.periodType ?? '';
+        const fromStr = def.from ? formatExpression(def.from, indent, newline) : '';
+        const toStr = def.to ? formatExpression(def.to, indent, newline) : '';
+
+        let paramsStr = pType;
+        if (toStr) {
+          paramsStr += `, ${fromStr ? fromStr + ', ' : ','}${toStr}`;
+        } else if (fromStr) {
+          paramsStr += `, ${fromStr},`;
+        } else {
+          paramsStr += ',,';
+        }
+        bStr += ` ПЕРИОДАМИ(${paramsStr})`;
+      } else if (item.periods || item.period) {
         bStr += ' ПЕРИОДАМИ';
       }
       byItems.push(bStr);
@@ -317,19 +354,39 @@ interface FlatCondition {
   expr: ExpressionNode;
 }
 
-function flattenConditions(node: ExpressionNode): FlatCondition[] {
+function isOrOp(op: string): boolean {
+  const u = op.toUpperCase();
+  return u === 'OR' || u === 'ИЛИ';
+}
+
+function isAndOp(op: string): boolean {
+  const u = op.toUpperCase();
+  return u === 'AND' || u === 'И';
+}
+
+function flattenConditions(
+  node: ExpressionNode,
+  parentOp?: string
+): FlatCondition[] {
   if (
     node.type === 'BinaryOp' &&
-    (node.operator === 'AND' || node.operator === 'OR')
+    (isAndOp(node.operator) || isOrOp(node.operator))
   ) {
-    const leftItems = flattenConditions(node.left);
-    const rightOp: 'И' | 'ИЛИ' = node.operator === 'AND' ? 'И' : 'ИЛИ';
+    // Do not flatten OR if inside AND!
+    if (parentOp && isAndOp(parentOp) && isOrOp(node.operator)) {
+      return [{ expr: node }];
+    }
+
+    const currentOp = node.operator;
+    const leftItems = flattenConditions(node.left, currentOp);
+    const rightOp: 'И' | 'ИЛИ' = isAndOp(currentOp) ? 'И' : 'ИЛИ';
 
     if (
       node.right.type === 'BinaryOp' &&
-      node.right.operator === node.operator
+      ((isAndOp(currentOp) && isAndOp(node.right.operator)) ||
+        (isOrOp(currentOp) && isOrOp(node.right.operator)))
     ) {
-      const rightItems = flattenConditions(node.right);
+      const rightItems = flattenConditions(node.right, currentOp);
       return [
         ...leftItems,
         { op: rightOp, expr: rightItems[0].expr },
@@ -361,8 +418,12 @@ function getOperatorPrecedence(expr: ExpressionNode): number {
       return expr.operator === 'NOT' ? 40 : 80;
     case 'BinaryOp': {
       const op = expr.operator.toUpperCase();
-      if (op === '*' || op === '/') return 70;
-      if (op === '+' || op === '-') return 60;
+      if (op === '*' || op === '/') {
+        return 70;
+      }
+      if (op === '+' || op === '-') {
+        return 60;
+      }
       if (
         op === '=' ||
         op === '<>' ||
@@ -376,8 +437,12 @@ function getOperatorPrecedence(expr: ExpressionNode): number {
       ) {
         return 50;
       }
-      if (op === 'AND') return 30;
-      if (op === 'OR') return 20;
+      if (op === 'AND' || op === 'И') {
+        return 30;
+      }
+      if (op === 'OR' || op === 'ИЛИ') {
+        return 20;
+      }
       return 50;
     }
     case 'In':
@@ -439,12 +504,19 @@ function formatExpressionCore(
     case 'Literal': {
       switch (expr.valueType) {
         case 'number':
+          if (expr.raw) {
+            return expr.raw;
+          }
           return String(expr.value);
         case 'boolean':
           return expr.value ? 'ИСТИНА' : 'ЛОЖЬ';
         case 'null':
-          if (expr.raw === '') return '';
-          if (expr.value === undefined) return 'НЕОПРЕДЕЛЕНО';
+          if (expr.raw === '') {
+            return '';
+          }
+          if (expr.value === undefined) {
+            return 'НЕОПРЕДЕЛЕНО';
+          }
           return 'NULL';
         case 'string':
           if (
@@ -456,7 +528,9 @@ function formatExpressionCore(
           }
           return `"${String(expr.value ?? '').replace(/"/g, '""')}"`;
         case 'date':
-          if (expr.raw) return expr.raw;
+          if (expr.raw) {
+            return expr.raw;
+          }
           return String(expr.value);
         default:
           return expr.raw ?? String(expr.value);
@@ -529,20 +603,23 @@ function formatExpressionCore(
         const rightStr = formatSubExpression(expr.right, 50, indent, newline);
         return `${leftStr} ССЫЛКА ${rightStr}`;
       }
-      if (op === 'AND') {
+      if (op === 'AND' || op === 'И') {
         const leftStr = formatSubExpression(expr.left, 30, indent, newline);
         const rightStr = formatSubExpression(expr.right, 31, indent, newline);
         return `${leftStr} И ${rightStr}`;
       }
-      if (op === 'OR') {
+      if (op === 'OR' || op === 'ИЛИ') {
         const leftStr = formatSubExpression(expr.left, 20, indent, newline);
         const rightStr = formatSubExpression(expr.right, 21, indent, newline);
         return `${leftStr} ИЛИ ${rightStr}`;
       }
 
       let prec = 50;
-      if (expr.operator === '*' || expr.operator === '/') prec = 70;
-      else if (expr.operator === '+' || expr.operator === '-') prec = 60;
+      if (expr.operator === '*' || expr.operator === '/') {
+        prec = 70;
+      } else if (expr.operator === '+' || expr.operator === '-') {
+        prec = 60;
+      }
 
       const leftStr = formatSubExpression(expr.left, prec, indent, newline);
       const rightStr = formatSubExpression(expr.right, prec + 1, indent, newline);
@@ -631,7 +708,7 @@ export function extractParameters(pkg: QueryPackage): string[] {
   const params = new Set<string>();
 
   function collectFromExpr(expr: ExpressionNode | undefined) {
-    if (!expr) return;
+    if (!expr) {return;}
     switch (expr.type) {
       case 'Parameter':
         params.add(expr.name);
@@ -654,7 +731,7 @@ export function extractParameters(pkg: QueryPackage): string[] {
           collectFromExpr(c.when);
           collectFromExpr(c.then);
         });
-        if (expr.else) collectFromExpr(expr.else);
+        if (expr.else) {collectFromExpr(expr.else);}
         break;
       case 'In':
         collectFromExpr(expr.expression);
@@ -672,13 +749,13 @@ export function extractParameters(pkg: QueryPackage): string[] {
       case 'Like':
         collectFromExpr(expr.expression);
         collectFromExpr(expr.pattern);
-        if (expr.escape) collectFromExpr(expr.escape);
+        if (expr.escape) {collectFromExpr(expr.escape);}
         break;
     }
   }
 
   function collectFromTableSource(source: TableOrSubquery | undefined) {
-    if (!source) return;
+    if (!source) {return;}
     if (source.type === 'Table' && source.params) {
       source.params.forEach(collectFromExpr);
     } else if (source.type === 'Subquery' && source.query) {
@@ -687,7 +764,7 @@ export function extractParameters(pkg: QueryPackage): string[] {
   }
 
   function collectFromSelect(stmt: SelectStatement) {
-    if (!stmt) return;
+    if (!stmt) {return;}
     stmt.fields?.forEach((f) => {
       if (typeof f.expression !== 'string') {
         collectFromExpr(f.expression);
@@ -702,9 +779,9 @@ export function extractParameters(pkg: QueryPackage): string[] {
       });
     });
 
-    if (stmt.where) collectFromExpr(stmt.where);
+    if (stmt.where) {collectFromExpr(stmt.where);}
     stmt.groupBy?.forEach(collectFromExpr);
-    if (stmt.having) collectFromExpr(stmt.having);
+    if (stmt.having) {collectFromExpr(stmt.having);}
     stmt.unions?.forEach((u) => collectFromSelect(u.statement));
     stmt.orderBy?.forEach((o) => collectFromExpr(o.expression));
     if (stmt.totals) {

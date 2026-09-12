@@ -64,7 +64,14 @@ export interface TotalsField {
 export interface TotalsGroupItem {
   expression: ExpressionNode;
   hierarchy?: boolean;
+  hierarchyType?: 'All' | 'OnlyHierarchy'; // 'All' для ИЕРАРХИЯ, 'OnlyHierarchy' для ТОЛЬКО ИЕРАРХИЯ
+  period?: boolean;
   periods?: boolean;
+  periodDefinition?: {
+    periodType?: string; // например ДЕНЬ, МЕСЯЦ
+    from?: ExpressionNode;
+    to?: ExpressionNode;
+  };
   overall?: boolean;
 }
 
@@ -108,7 +115,7 @@ export interface CompoundIdentifierNode {
 export interface LiteralNode {
   type: 'Literal';
   valueType: 'string' | 'number' | 'boolean' | 'null' | 'date';
-  value: any;
+  value: string | number | boolean | null | undefined;
   raw: string;
 }
 

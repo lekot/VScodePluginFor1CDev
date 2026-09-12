@@ -7,6 +7,7 @@ import {
   generateBslQueryWithProcessing,
   generateBslSimpleQuery,
 } from './editor/queryCodeTemplates';
+import { formatSdbl } from './sdbl/sdblFormatter';
 import { Logger } from '../utils/logger';
 
 export interface QueryBuilderReplaceRange {
@@ -25,10 +26,15 @@ export interface QueryBuilderMessageContext {
   metadata: QueryMetadataNode[];
   mode: 'simple' | 'withProcessing';
   replaceRange: QueryBuilderReplaceRange;
+  statementRange?: QueryBuilderReplaceRange;
   variableName?: string;
   metadataProvider?: QueryMetadataProvider;
   treeProvider?: MetadataTreeDataProvider | null;
   onAstUpdated?: (ast: QueryPackage) => void;
+  isSdblDocument?: boolean;
+  initialDocumentVersion?: number;
+  expectedText?: string;
+  expectedStatementText?: string;
 }
 
 export interface QueryBuilderInboundMessage {
@@ -76,7 +82,9 @@ export async function handleQueryBuilderMessage(
         const targetMode = msg.mode || context.mode;
 
         let generatedCode: string;
-        if (targetMode === 'withProcessing') {
+        if (context.isSdblDocument) {
+          generatedCode = formatSdbl(targetAst);
+        } else if (targetMode === 'withProcessing') {
           generatedCode = generateBslQueryWithProcessing(targetAst, {
             variableName: context.variableName,
           });
@@ -85,18 +93,45 @@ export async function handleQueryBuilderMessage(
         }
 
         if (context.editor) {
+          const isWithProcessing = targetMode === 'withProcessing' && !!context.statementRange;
+          const activeRange = isWithProcessing ? context.statementRange! : context.replaceRange;
+          const expectedText = isWithProcessing
+            ? (context.expectedStatementText ?? context.expectedText)
+            : context.expectedText;
+
           const startPos = new vscode.Position(
-            Math.max(0, context.replaceRange.startLine - 1),
-            Math.max(0, context.replaceRange.startColumn - 1)
+            Math.max(0, activeRange.startLine - 1),
+            Math.max(0, activeRange.startColumn - 1)
           );
           const endPos = new vscode.Position(
-            Math.max(0, context.replaceRange.endLine - 1),
-            Math.max(0, context.replaceRange.endColumn - 1)
+            Math.max(0, activeRange.endLine - 1),
+            Math.max(0, activeRange.endColumn - 1)
           );
-          const range = new vscode.Range(startPos, endPos);
+          let targetVscodeRange = new vscode.Range(startPos, endPos);
+
+          if (
+            context.initialDocumentVersion !== undefined &&
+            context.editor.document.version !== context.initialDocumentVersion
+          ) {
+            const currentText = context.editor.document.getText(targetVscodeRange);
+            if (expectedText !== undefined && currentText !== expectedText) {
+              const fullText = context.editor.document.getText();
+              const foundOffset = expectedText.length > 0 ? fullText.indexOf(expectedText) : -1;
+              if (foundOffset !== -1) {
+                const newStart = context.editor.document.positionAt(foundOffset);
+                const newEnd = context.editor.document.positionAt(foundOffset + expectedText.length);
+                targetVscodeRange = new vscode.Range(newStart, newEnd);
+              } else {
+                void vscode.window.showErrorMessage(
+                  'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+                );
+                return;
+              }
+            }
+          }
 
           const success = await context.editor.edit((editBuilder) => {
-            editBuilder.replace(range, generatedCode);
+            editBuilder.replace(targetVscodeRange, generatedCode);
           });
 
           if (success) {

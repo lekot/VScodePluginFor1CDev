@@ -993,6 +993,7 @@
                                 <tr>
                                     <th>Поле / Выражение</th>
                                     <th style="width: 130px;">Функция</th>
+                                    <th style="width: 85px; text-align: center;">Различные</th>
                                     <th>Псевдоним</th>
                                     <th style="width: 36px;">✕</th>
                                 </tr>
@@ -1245,25 +1246,201 @@
                 return state.ast.queries[state.activeQueryIndex];
             }
 
+            const WB_START = '(?<=^|[^a-zA-Z0-9а-яА-ЯёЁ_])';
+            const WB_END = '(?=$|[^a-zA-Z0-9а-яА-ЯёЁ_])';
+
+            function getOperatorPrecedence(expr) {
+                if (!expr || typeof expr !== 'object') return 100;
+                switch (expr.type) {
+                    case 'UnaryOp':
+                        return (expr.operator && (expr.operator.toUpperCase() === 'NOT' || expr.operator.toUpperCase() === 'НЕ')) ? 40 : 80;
+                    case 'BinaryOp': {
+                        const op = (expr.operator || '').toUpperCase();
+                        if (op === '*' || op === '/') return 70;
+                        if (op === '+' || op === '-') return 60;
+                        if (op === '=' || op === '<>' || op === '<' || op === '>' || op === '<=' || op === '>=' ||
+                            op === 'REFS' || op === 'ССЫЛКА' || op === 'IS NULL' || op === 'IS NOT NULL') return 50;
+                        if (op === 'AND' || op === 'И') return 30;
+                        if (op === 'OR' || op === 'ИЛИ') return 20;
+                        return 50;
+                    }
+                    case 'In':
+                    case 'Between':
+                    case 'Like':
+                        return 50;
+                    default:
+                        return 100;
+                }
+            }
+
+            function formatSubExpr(expr, parentPrecedence) {
+                const currentPrecedence = getOperatorPrecedence(expr);
+                const str = getExpressionString(expr);
+                if (currentPrecedence < parentPrecedence) {
+                    return '(' + str + ')';
+                }
+                return str;
+            }
+
             function getExpressionString(expr) {
                 if (!expr) return '';
                 if (typeof expr === 'string') return expr;
-                if (expr.raw) return expr.raw;
-                if (expr.type === 'Identifier') return expr.name || '';
-                if (expr.type === 'CompoundIdentifier') return (expr.parts || []).join('.');
-                if (expr.type === 'Parameter') return '&' + expr.name;
-                if (expr.type === 'Aggregate') {
-                    const sub = getExpressionString(expr.expression);
-                    const dist = expr.distinct ? 'РАЗЛИЧНЫЕ ' : '';
-                    return (expr.aggregateType || 'СУММА') + '(' + dist + sub + ')';
+                if (expr.raw !== undefined && expr.raw !== null && expr.raw !== '') return expr.raw;
+
+                switch (expr.type) {
+                    case 'Identifier':
+                        return expr.name || '';
+
+                    case 'CompoundIdentifier':
+                        return (expr.parts || []).join('.');
+
+                    case 'Parameter':
+                        return '&' + (expr.name || '');
+
+                    case 'Literal': {
+                        switch (expr.valueType) {
+                            case 'number':
+                                return expr.raw !== undefined ? expr.raw : String(expr.value);
+                            case 'boolean':
+                                return expr.value ? 'ИСТИНА' : 'ЛОЖЬ';
+                            case 'null':
+                                if (expr.raw === '') return '';
+                                if (expr.value === undefined) return 'НЕОПРЕДЕЛЕНО';
+                                return 'NULL';
+                            case 'string':
+                                if (typeof expr.raw === 'string' && expr.raw.startsWith('"') && expr.raw.endsWith('"')) {
+                                    return expr.raw;
+                                }
+                                return '"' + String(expr.value ?? '').replace(/"/g, '""') + '"';
+                            case 'date':
+                                return expr.raw || String(expr.value);
+                            default:
+                                return expr.raw !== undefined ? expr.raw : String(expr.value ?? '');
+                        }
+                    }
+
+                    case 'FunctionCall': {
+                        const upper = (expr.name || '').toUpperCase();
+                        if (upper === 'ВЫРАЗИТЬ' || upper === 'CAST') {
+                            const valStr = getExpressionString(expr.args ? expr.args[0] : '');
+                            const typeStr = getExpressionString(expr.args ? expr.args[1] : '');
+                            return 'ВЫРАЗИТЬ(' + valStr + ' КАК ' + typeStr + ')';
+                        }
+                        const argsStr = (expr.args || []).map(function(arg) {
+                            return getExpressionString(arg);
+                        }).join(', ');
+                        return (expr.name || '') + '(' + argsStr + ')';
+                    }
+
+                    case 'Aggregate': {
+                        const aggMap = {
+                            Sum: 'СУММА', Count: 'КОЛИЧЕСТВО', Avg: 'СРЕДНЕЕ', Min: 'МИНИМУМ', Max: 'МАКСИМУМ',
+                            SUM: 'СУММА', COUNT: 'КОЛИЧЕСТВО', AVG: 'СРЕДНЕЕ', MIN: 'МИНИМУМ', MAX: 'МАКСИМУМ',
+                            СУММА: 'СУММА', КОЛИЧЕСТВО: 'КОЛИЧЕСТВО', СРЕДНЕЕ: 'СРЕДНЕЕ', МИНИМУМ: 'МИНИМУМ', МАКСИМУМ: 'МАКСИМУМ'
+                        };
+                        const aggName = aggMap[expr.aggregateType] || expr.aggregateType || 'СУММА';
+                        const dist = expr.distinct ? 'РАЗЛИЧНЫЕ ' : '';
+                        const inner = getExpressionString(expr.expression);
+                        return aggName + '(' + dist + inner + ')';
+                    }
+
+                    case 'CaseWhen': {
+                        const casesStr = (expr.cases || []).map(function(c) {
+                            const whenStr = getExpressionString(c.when);
+                            const thenStr = getExpressionString(c.then);
+                            return 'КОГДА ' + whenStr + ' ТОГДА ' + thenStr;
+                        }).join(' ');
+                        const elseStr = expr.else ? ' ИНАЧЕ ' + getExpressionString(expr.else) : '';
+                        return 'ВЫБОР ' + casesStr + elseStr + ' КОНЕЦ';
+                    }
+
+                    case 'BinaryOp': {
+                        const op = (expr.operator || '').toUpperCase();
+                        if (op === 'IS NULL') {
+                            return formatSubExpr(expr.left, 50) + ' ЕСТЬ NULL';
+                        }
+                        if (op === 'IS NOT NULL') {
+                            return formatSubExpr(expr.left, 50) + ' ЕСТЬ НЕ NULL';
+                        }
+                        if (op === 'REFS' || op === 'ССЫЛКА') {
+                            return formatSubExpr(expr.left, 50) + ' ССЫЛКА ' + formatSubExpr(expr.right, 50);
+                        }
+                        if (op === 'AND' || op === 'И') {
+                            return formatSubExpr(expr.left, 30) + ' И ' + formatSubExpr(expr.right, 31);
+                        }
+                        if (op === 'OR' || op === 'ИЛИ') {
+                            return formatSubExpr(expr.left, 20) + ' ИЛИ ' + formatSubExpr(expr.right, 21);
+                        }
+
+                        let prec = 50;
+                        if (expr.operator === '*' || expr.operator === '/') {
+                            prec = 70;
+                        } else if (expr.operator === '+' || expr.operator === '-') {
+                            prec = 60;
+                        }
+                        return formatSubExpr(expr.left, prec) + ' ' + expr.operator + ' ' + formatSubExpr(expr.right, prec + 1);
+                    }
+
+                    case 'UnaryOp': {
+                        const op = (expr.operator || '').toUpperCase();
+                        if (op === 'NOT' || op === 'НЕ') {
+                            return 'НЕ ' + formatSubExpr(expr.operand, 40);
+                        }
+                        return (expr.operator || '') + formatSubExpr(expr.operand, 80);
+                    }
+
+                    case 'In': {
+                        const leftStr = formatSubExpr(expr.expression, 50);
+                        const notStr = expr.not ? 'НЕ ' : '';
+                        const hierStr = expr.inHierarchy ? 'В ИЕРАРХИИ' : 'В';
+                        let valuesStr = '';
+                        if (Array.isArray(expr.values)) {
+                            valuesStr = expr.values.map(function(v) { return getExpressionString(v); }).join(', ');
+                        } else if (expr.values && typeof expr.values === 'object') {
+                            valuesStr = formatSdblQuery(expr.values);
+                        } else if (typeof expr.values === 'string') {
+                            valuesStr = expr.values;
+                        }
+                        valuesStr = valuesStr.trim();
+                        if (valuesStr.startsWith('(') && valuesStr.endsWith(')')) {
+                            return leftStr + ' ' + notStr + hierStr + ' ' + valuesStr;
+                        }
+                        return leftStr + ' ' + notStr + hierStr + ' (' + valuesStr + ')';
+                    }
+
+                    case 'Between': {
+                        const leftStr = formatSubExpr(expr.expression, 50);
+                        const notStr = expr.not ? 'НЕ ' : '';
+                        const fromStr = getExpressionString(expr.from);
+                        const toStr = getExpressionString(expr.to);
+                        return leftStr + ' ' + notStr + 'МЕЖДУ ' + fromStr + ' И ' + toStr;
+                    }
+
+                    case 'Like': {
+                        const leftStr = formatSubExpr(expr.expression, 50);
+                        const notStr = expr.not ? 'НЕ ' : '';
+                        const patStr = getExpressionString(expr.pattern);
+                        const escStr = expr.escape ? ' СПЕЦСИМВОЛ ' + getExpressionString(expr.escape) : '';
+                        return leftStr + ' ' + notStr + 'ПОДОБНО ' + patStr + escStr;
+                    }
+
+                    case 'RawExpression':
+                        return expr.raw || '';
+
+                    default:
+                        return String(expr.value !== undefined ? expr.value : (expr.name || ''));
                 }
-                return String(expr.value || expr.name || '');
             }
 
             function isAggregateExpression(str) {
                 if (!str) return false;
+                if (typeof str === 'object') {
+                    if (str.type === 'Aggregate') return true;
+                    str = getExpressionString(str);
+                }
                 const upper = String(str).toUpperCase();
-                return /\b(СУММА|КОЛИЧЕСТВО|МИНИМУМ|МАКСИМУМ|СРЕДНЕЕ|SUM|COUNT|AVG|MIN|MAX)\b/.test(upper);
+                const aggRe = new RegExp(WB_START + '(СУММА|КОЛИЧЕСТВО|МИНИМУМ|МАКСИМУМ|СРЕДНЕЕ|SUM|COUNT|AVG|MIN|MAX)' + WB_END);
+                return aggRe.test(upper);
             }
 
             function getFieldDisplayName(field) {
@@ -1356,15 +1533,15 @@
                 }
 
                 // WHERE
-                if (stmt.whereConditions && stmt.whereConditions.length > 0) {
+                if (stmt.where) {
+                    lines.push('ГДЕ');
+                    lines.push('\t' + getExpressionString(stmt.where));
+                } else if (stmt.whereConditions && stmt.whereConditions.length > 0) {
                     lines.push('ГДЕ');
                     stmt.whereConditions.forEach(function(cond, idx) {
                         const prefix = idx === 0 ? '\t' : '\t' + (cond.op || 'И') + ' ';
-                        lines.push(prefix + cond.field + ' ' + cond.cmp + ' ' + cond.value);
+                        lines.push(prefix + cond.field + ' ' + cond.cmp + (cond.value ? ' ' + cond.value : ''));
                     });
-                } else if (stmt.where) {
-                    lines.push('ГДЕ');
-                    lines.push('\t' + getExpressionString(stmt.where));
                 }
 
                 // GROUP BY
@@ -1377,15 +1554,15 @@
                 }
 
                 // HAVING
-                if (stmt.havingConditions && stmt.havingConditions.length > 0) {
+                if (stmt.having) {
+                    lines.push('ИМЕЮЩИЕ');
+                    lines.push('\t' + getExpressionString(stmt.having));
+                } else if (stmt.havingConditions && stmt.havingConditions.length > 0) {
                     lines.push('ИМЕЮЩИЕ');
                     stmt.havingConditions.forEach(function(cond, idx) {
                         const prefix = idx === 0 ? '\t' : '\t' + (cond.op || 'И') + ' ';
-                        lines.push(prefix + cond.field + ' ' + cond.cmp + ' ' + cond.value);
+                        lines.push(prefix + cond.field + ' ' + cond.cmp + (cond.value ? ' ' + cond.value : ''));
                     });
-                } else if (stmt.having) {
-                    lines.push('ИМЕЮЩИЕ');
-                    lines.push('\t' + getExpressionString(stmt.having));
                 }
 
                 // UNIONS
@@ -1431,7 +1608,9 @@
                         stmt.totals.by.forEach(function(byItem, idx) {
                             const comma = idx < stmt.totals.by.length - 1 ? ',' : '';
                             let opts = '';
-                            if (byItem.hierarchy) opts += ' ИЕРАРХИЯ';
+                            if (byItem.hierarchy) {
+                                opts += (byItem.hierarchyType === 'OnlyHierarchy' ? ' ТОЛЬКО ИЕРАРХИЯ' : ' ИЕРАРХИЯ');
+                            }
                             if (byItem.periods) opts += ' ПЕРИОДАМИ';
                             lines.push('\t' + getExpressionString(byItem.expression) + opts + comma);
                         });
@@ -1448,32 +1627,394 @@
                 }).join('\n;\n\n');
             }
 
+            function splitTopLevel(text, delimiterChar) {
+                if (!text || typeof text !== 'string') return [];
+                const parts = [];
+                let depth = 0;
+                let inQuote = false;
+                let cur = '';
+                for (let i = 0; i < text.length; i++) {
+                    const ch = text[i];
+                    if (ch === '"') {
+                        inQuote = !inQuote;
+                        cur += ch;
+                    } else if (!inQuote && (ch === '(' || ch === '[')) {
+                        depth++;
+                        cur += ch;
+                    } else if (!inQuote && (ch === ')' || ch === ']')) {
+                        if (depth > 0) depth--;
+                        cur += ch;
+                    } else if (!inQuote && depth === 0 && ch === delimiterChar) {
+                        parts.push(cur.trim());
+                        cur = '';
+                    } else {
+                        cur += ch;
+                    }
+                }
+                parts.push(cur.trim());
+                return parts;
+            }
+
+            function parseExpressionOrRaw(str) {
+                if (!str) return { type: 'RawExpression', raw: '' };
+                const trimmed = str.trim();
+                if (!trimmed) return { type: 'RawExpression', raw: '' };
+
+                if (trimmed.startsWith('&')) {
+                    return { type: 'Parameter', name: trimmed.substring(1).trim() };
+                }
+                if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+                    return { type: 'Literal', valueType: 'number', value: Number(trimmed), raw: trimmed };
+                }
+                if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+                    return { type: 'Literal', valueType: 'string', value: trimmed.slice(1, -1).replace(/""/g, '"'), raw: trimmed };
+                }
+                if (trimmed.toUpperCase() === 'NULL') {
+                    return { type: 'Literal', valueType: 'null', value: null, raw: 'NULL' };
+                }
+                if (trimmed.toUpperCase() === 'НЕОПРЕДЕЛЕНО' || trimmed.toUpperCase() === 'UNDEFINED') {
+                    return { type: 'Literal', valueType: 'null', value: undefined, raw: 'НЕОПРЕДЕЛЕНО' };
+                }
+                if (trimmed.toUpperCase() === 'ИСТИНА' || trimmed.toUpperCase() === 'TRUE') {
+                    return { type: 'Literal', valueType: 'boolean', value: true, raw: 'ИСТИНА' };
+                }
+                if (trimmed.toUpperCase() === 'ЛОЖЬ' || trimmed.toUpperCase() === 'FALSE') {
+                    return { type: 'Literal', valueType: 'boolean', value: false, raw: 'ЛОЖЬ' };
+                }
+                if (/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Z0-9а-яА-ЯёЁ_]*(\.[a-zA-Zа-яА-ЯёЁ_][a-zA-Z0-9а-яА-ЯёЁ_]*)+$/.test(trimmed)) {
+                    return { type: 'CompoundIdentifier', parts: trimmed.split('.') };
+                }
+                if (/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Z0-9а-яА-ЯёЁ_]*$/.test(trimmed)) {
+                    return { type: 'Identifier', name: trimmed };
+                }
+
+                // Check for aggregate
+                const aggMatch = trimmed.match(/^(СУММА|КОЛИЧЕСТВО|МИНИМУМ|МАКСИМУМ|СРЕДНЕЕ|SUM|COUNT|MIN|MAX|AVG)\s*\((.*)\)$/i);
+                if (aggMatch) {
+                    const fn = aggMatch[1].toUpperCase();
+                    const astMap = {
+                        'СУММА': 'Sum', 'КОЛИЧЕСТВО': 'Count', 'МИНИМУМ': 'Min', 'МАКСИМУМ': 'Max', 'СРЕДНЕЕ': 'Avg',
+                        'SUM': 'Sum', 'COUNT': 'Count', 'MIN': 'Min', 'MAX': 'Max', 'AVG': 'Avg'
+                    };
+                    let inner = aggMatch[2].trim();
+                    let dist = false;
+                    const distMatch = inner.match(/^(РАЗЛИЧНЫЕ|DISTINCT)\s+(.*)$/i);
+                    if (distMatch) {
+                        dist = true;
+                        inner = distMatch[2].trim();
+                    }
+                    return {
+                        type: 'Aggregate',
+                        aggregateType: astMap[fn] || 'Sum',
+                        distinct: dist || undefined,
+                        expression: parseExpressionOrRaw(inner)
+                    };
+                }
+
+                return { type: 'RawExpression', raw: trimmed };
+            }
+
+            function conditionToNode(cond) {
+                const cmp = (cond.cmp || '=').trim();
+                const cmpUpper = cmp.toUpperCase();
+
+                if (cmp === 'ЕСТЬ NULL' || cmpUpper === 'IS NULL') {
+                    return {
+                        type: 'BinaryOp',
+                        operator: 'IS NULL',
+                        left: parseExpressionOrRaw(cond.field),
+                        right: { type: 'Literal', valueType: 'null', value: null, raw: 'NULL' }
+                    };
+                }
+                if (cmp === 'ЕСТЬ НЕ NULL' || cmpUpper === 'IS NOT NULL') {
+                    return {
+                        type: 'BinaryOp',
+                        operator: 'IS NOT NULL',
+                        left: parseExpressionOrRaw(cond.field),
+                        right: { type: 'Literal', valueType: 'null', value: null, raw: 'NULL' }
+                    };
+                }
+                if (cmp.indexOf('В') !== -1 || cmpUpper.indexOf('IN') !== -1) {
+                    const isNot = cmp.indexOf('НЕ') !== -1 || cmpUpper.indexOf('NOT') !== -1;
+                    const isHier = cmp.indexOf('ИЕРАРХИИ') !== -1 || cmpUpper.indexOf('HIERARCHY') !== -1;
+                    let v = (cond.value || '').trim();
+                    if (v.startsWith('(') && v.endsWith(')')) {
+                        v = v.slice(1, -1).trim();
+                    }
+                    const parts = splitTopLevel(v, ',');
+                    const vals = parts.map(function(p) { return parseExpressionOrRaw(p); });
+                    return {
+                        type: 'In',
+                        expression: parseExpressionOrRaw(cond.field),
+                        not: isNot || undefined,
+                        inHierarchy: isHier || undefined,
+                        values: vals.length > 0 ? vals : [parseExpressionOrRaw(v)]
+                    };
+                }
+                if (cmp.indexOf('МЕЖДУ') !== -1 || cmpUpper.indexOf('BETWEEN') !== -1) {
+                    const isNot = cmp.indexOf('НЕ') !== -1 || cmpUpper.indexOf('NOT') !== -1;
+                    const v = (cond.value || '').trim();
+                    const andMatch = v.split(/\s+(?:И|AND)\s+/i);
+                    const fromStr = andMatch[0] || '';
+                    const toStr = andMatch.length > 1 ? andMatch.slice(1).join(' И ') : '';
+                    return {
+                        type: 'Between',
+                        expression: parseExpressionOrRaw(cond.field),
+                        not: isNot || undefined,
+                        from: parseExpressionOrRaw(fromStr),
+                        to: parseExpressionOrRaw(toStr)
+                    };
+                }
+                if (cmp.indexOf('ПОДОБНО') !== -1 || cmpUpper.indexOf('LIKE') !== -1) {
+                    const isNot = cmp.indexOf('НЕ') !== -1 || cmpUpper.indexOf('NOT') !== -1;
+                    return {
+                        type: 'Like',
+                        expression: parseExpressionOrRaw(cond.field),
+                        not: isNot || undefined,
+                        pattern: parseExpressionOrRaw(cond.value)
+                    };
+                }
+
+                return {
+                    type: 'BinaryOp',
+                    operator: cmp,
+                    left: parseExpressionOrRaw(cond.field),
+                    right: parseExpressionOrRaw(cond.value)
+                };
+            }
+
+            function conditionsToTree(condList) {
+                if (!condList || condList.length === 0) return undefined;
+                let tree = conditionToNode(condList[0]);
+                for (let i = 1; i < condList.length; i++) {
+                    const c = condList[i];
+                    const op = (c.op || 'И').toUpperCase();
+                    const astOp = (op === 'ИЛИ' || op === 'OR') ? 'OR' : 'AND';
+                    tree = {
+                        type: 'BinaryOp',
+                        operator: astOp,
+                        left: tree,
+                        right: conditionToNode(c)
+                    };
+                }
+                return tree;
+            }
+
+            function syncConditionsToAst(q) {
+                if (!q || q.type === 'DropTable') return;
+                const whereList = [];
+                const havingList = [];
+
+                const allConditions = (q.whereConditions || []).concat(q.havingConditions || []);
+                allConditions.forEach(function(c) {
+                    if (isAggregateExpression(c.field) || isAggregateExpression(c.value)) {
+                        havingList.push(c);
+                    } else {
+                        whereList.push(c);
+                    }
+                });
+
+                q.whereConditions = whereList;
+                q.havingConditions = havingList;
+                q.where = conditionsToTree(whereList);
+                q.having = conditionsToTree(havingList);
+            }
+
+            function unpackConditionNode(node, currentOp) {
+                if (!node) return null;
+                if (node.type === 'BinaryOp') {
+                    const op = (node.operator || '').toUpperCase();
+                    if (op === 'IS NULL') {
+                        return { op: currentOp, field: getExpressionString(node.left), cmp: 'ЕСТЬ NULL', value: '' };
+                    }
+                    if (op === 'IS NOT NULL') {
+                        return { op: currentOp, field: getExpressionString(node.left), cmp: 'ЕСТЬ НЕ NULL', value: '' };
+                    }
+                    if (op === 'REFS' || op === 'ССЫЛКА') {
+                        return { op: currentOp, field: getExpressionString(node.left), cmp: 'ССЫЛКА', value: getExpressionString(node.right) };
+                    }
+                    if (op === '=' || op === '<>' || op === '<' || op === '>' || op === '<=' || op === '>=') {
+                        return { op: currentOp, field: getExpressionString(node.left), cmp: node.operator, value: getExpressionString(node.right) };
+                    }
+                    return { op: currentOp, field: getExpressionString(node), cmp: '=', value: '' };
+                }
+                if (node.type === 'In') {
+                    const f = getExpressionString(node.expression);
+                    const cmpStr = (node.not ? 'НЕ ' : '') + (node.inHierarchy ? 'В ИЕРАРХИИ' : 'В');
+                    let valStr = '';
+                    if (Array.isArray(node.values)) {
+                        valStr = node.values.map(getExpressionString).join(', ');
+                    } else {
+                        valStr = getExpressionString(node.values);
+                    }
+                    return { op: currentOp, field: f, cmp: cmpStr, value: valStr };
+                }
+                if (node.type === 'Between') {
+                    const f = getExpressionString(node.expression);
+                    const cmpStr = node.not ? 'НЕ МЕЖДУ' : 'МЕЖДУ';
+                    const valStr = getExpressionString(node.from) + ' И ' + getExpressionString(node.to);
+                    return { op: currentOp, field: f, cmp: cmpStr, value: valStr };
+                }
+                if (node.type === 'Like') {
+                    const f = getExpressionString(node.expression);
+                    const cmpStr = node.not ? 'НЕ ПОДОБНО' : 'ПОДОБНО';
+                    const valStr = getExpressionString(node.pattern);
+                    return { op: currentOp, field: f, cmp: cmpStr, value: valStr };
+                }
+                if (node.type === 'RawExpression') {
+                    const list = parseConditionList(node.raw);
+                    if (list.length > 0) {
+                        list[0].op = currentOp;
+                        return list;
+                    }
+                    return { op: currentOp, field: node.raw, cmp: '=', value: '' };
+                }
+                return { op: currentOp, field: getExpressionString(node), cmp: '=', value: '' };
+            }
+
+            function flattenConditionNode(node, currentOp) {
+                if (!node) return [];
+                if (node.type === 'BinaryOp') {
+                    const op = (node.operator || '').toUpperCase();
+                    if (op === 'AND' || op === 'И' || op === 'OR' || op === 'ИЛИ') {
+                        const nextOp = (op === 'OR' || op === 'ИЛИ') ? 'ИЛИ' : 'И';
+                        const leftItems = flattenConditionNode(node.left, currentOp);
+                        const rightItems = flattenConditionNode(node.right, nextOp);
+                        return leftItems.concat(rightItems);
+                    }
+                }
+                const res = unpackConditionNode(node, currentOp);
+                if (Array.isArray(res)) return res;
+                if (res) return [res];
+                return [];
+            }
+
+            function findTableMetadataNode(name, nodes) {
+                if (!name) return null;
+                const searchNodes = nodes || state.metadataTree;
+                if (!searchNodes || !Array.isArray(searchNodes)) return null;
+
+                const upperName = name.toUpperCase();
+                for (let i = 0; i < searchNodes.length; i++) {
+                    const n = searchNodes[i];
+                    if ((n.fullName && n.fullName.toUpperCase() === upperName) ||
+                        (n.name && n.name.toUpperCase() === upperName) ||
+                        (n.id && n.id.toUpperCase() === upperName)) {
+                        return n;
+                    }
+                    if (n.children && n.children.length > 0) {
+                        const found = findTableMetadataNode(name, n.children);
+                        if (found) return found;
+                    }
+                }
+                return null;
+            }
+
+            function isTableVirtual(source) {
+                if (!source) return false;
+                if (source.isVirtual === true) return true;
+                if (source.params && source.params.length > 0) return true;
+                const node = findTableMetadataNode(source.name);
+                if (node) {
+                    if (node.isVirtual === true || node.nodeType === 'virtualTable' || (node.params && node.params.length > 0)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
             // ── SDBL Lightweight Client Parser ──
             function parseSdblClient(text) {
-                const cleaned = text.trim();
+                const cleaned = (text || '').trim();
                 if (!cleaned) {
                     return { queries: [{ type: 'Select', fields: [], from: [] }] };
                 }
 
-                const statements = cleaned.split(/;\s*(?=(?:[^"]*"[^"]*")*[^"]*$)/);
-                const queries = [];
+                const statements = splitTopLevel(cleaned, ';').filter(function(s) { return Boolean(s.trim()); });
+                if (statements.length === 0) {
+                    return { queries: [{ type: 'Select', fields: [], from: [] }] };
+                }
 
+                const queries = [];
                 for (let i = 0; i < statements.length; i++) {
                     const rawStmt = statements[i].trim();
                     if (!rawStmt) continue;
 
-                    if (/^УНИЧТОЖИТЬ\s+/i.test(rawStmt)) {
-                        const tblName = rawStmt.replace(/^УНИЧТОЖИТЬ\s+/i, '').trim();
+                    const dropRegex = new RegExp('^' + WB_START + '(УНИЧТОЖИТЬ|DROP)' + WB_END + '\\s+', 'i');
+                    if (dropRegex.test(rawStmt)) {
+                        const tblName = rawStmt.replace(dropRegex, '').trim();
                         queries.push({ type: 'DropTable', tableName: tblName });
                     } else {
-                        queries.push(parseSingleSelect(rawStmt));
+                        queries.push(parseSingleSelectWithUnions(rawStmt));
                     }
                 }
 
-                return { queries: queries.length > 0 ? queries : [{ type: 'Select', fields: [], from: [] }] };
+                if (queries.length === 0) {
+                    throw new Error('Некорректный синтаксис: не удалось разобрать запрос');
+                }
+
+                return { queries: queries };
             }
 
-            function parseSingleSelect(queryText) {
+            function splitUnions(text) {
+                const unionRegex = new RegExp(WB_START + '(ОБЪЕДИНИТЬ\\s+ВСЕ|UNION\\s+ALL|ОБЪЕДИНИТЬ|UNION)' + WB_END, 'gi');
+                const matches = [];
+                let m;
+                while ((m = unionRegex.exec(text)) !== null) {
+                    let d = 0;
+                    let q = false;
+                    for (let i = 0; i < m.index; i++) {
+                        const ch = text[i];
+                        if (ch === '"') q = !q;
+                        else if (!q && (ch === '(' || ch === '[')) d++;
+                        else if (!q && (ch === ')' || ch === ']')) { if (d > 0) d--; }
+                    }
+                    if (d === 0 && !q) {
+                        matches.push({ index: m.index, length: m[0].length, kw: m[1].toUpperCase() });
+                    }
+                }
+
+                if (matches.length === 0) {
+                    return [{ type: 'main', text: text }];
+                }
+
+                const parts = [];
+                parts.push({ type: 'main', text: text.substring(0, matches[0].index) });
+
+                for (let i = 0; i < matches.length; i++) {
+                    const kw = matches[i].kw;
+                    const uType = (kw.indexOf('ВСЕ') !== -1 || kw.indexOf('ALL') !== -1) ? 'UnionAll' : 'Union';
+                    const start = matches[i].index + matches[i].length;
+                    const end = (i < matches.length - 1) ? matches[i + 1].index : text.length;
+                    parts.push({
+                        type: 'union',
+                        unionType: uType,
+                        text: text.substring(start, end)
+                    });
+                }
+
+                return parts;
+            }
+
+            function parseSingleSelectWithUnions(queryText) {
+                const unionParts = splitUnions(queryText);
+                const mainStmt = parseSingleSelectCore(unionParts[0].text);
+
+                if (unionParts.length > 1) {
+                    mainStmt.unions = [];
+                    for (let i = 1; i < unionParts.length; i++) {
+                        const uStmt = parseSingleSelectCore(unionParts[i].text);
+                        mainStmt.unions.push({
+                            unionType: unionParts[i].unionType,
+                            statement: uStmt
+                        });
+                    }
+                }
+
+                return mainStmt;
+            }
+
+            function parseSingleSelectCore(queryText) {
                 const stmt = {
                     type: 'Select',
                     fields: [],
@@ -1485,54 +2026,97 @@
                     orderBy: []
                 };
 
-                // Section splitter using keywords
-                const keywords = [
-                    'ВЫБРАТЬ', 'ПОМЕСТИТЬ', 'ИНДЕКСИРОВАТЬ ПО', 'ИЗ', 'ГДЕ', 
-                    'СГРУППИРОВАТЬ ПО', 'ИМЕЮЩИЕ', 'ОБЪЕДИНИТЬ ВСЕ', 'ОБЪЕДИНИТЬ', 
-                    'УПОРЯДОЧИТЬ ПО', 'АВТОУПОРЯДОЧИВАНИЕ', 'ИТОГИ'
+                const selectKwRegex = new RegExp(WB_START + '(ВЫБРАТЬ|SELECT)' + WB_END, 'i');
+                if (!selectKwRegex.test(queryText)) {
+                    throw new Error('Некорректный синтаксис: отсутствует ключевое слово ВЫБРАТЬ / SELECT');
+                }
+
+                const kwPatterns = [
+                    'ИНДЕКСИРОВАТЬ\\s+ПО', 'INDEX\\s+BY',
+                    'СГРУППИРОВАТЬ\\s+ПО', 'GROUP\\s+BY',
+                    'УПОРЯДОЧИТЬ\\s+ПО', 'ORDER\\s+BY',
+                    'ИТОГИ\\s+ПО', 'TOTALS\\s+BY',
+                    'АВТОУПОРЯДОЧИВАНИЕ', 'AUTOORDER',
+                    'ВЫБРАТЬ', 'SELECT',
+                    'ПОМЕСТИТЬ', 'INTO',
+                    'ИЗ', 'FROM',
+                    'ГДЕ', 'WHERE',
+                    'ИМЕЮЩИЕ', 'HAVING',
+                    'ИТОГИ', 'TOTALS'
                 ];
 
-                const regexPattern = new RegExp('\\b(' + keywords.join('|') + ')\\b', 'gi');
+                const regexPattern = new RegExp(WB_START + '(' + kwPatterns.join('|') + ')' + WB_END, 'gi');
                 const matches = [];
                 let m;
+
                 while ((m = regexPattern.exec(queryText)) !== null) {
-                    matches.push({ keyword: m[1].toUpperCase(), index: m.index });
+                    let d = 0;
+                    let q = false;
+                    for (let i = 0; i < m.index; i++) {
+                        const ch = queryText[i];
+                        if (ch === '"') q = !q;
+                        else if (!q && (ch === '(' || ch === '[')) d++;
+                        else if (!q && (ch === ')' || ch === ']')) { if (d > 0) d--; }
+                    }
+                    if (d === 0 && !q) {
+                        matches.push({ keyword: m[1].toUpperCase(), rawKw: m[1], index: m.index, length: m[0].length });
+                    }
                 }
+
+                const canonicalKw = function(kw) {
+                    const normalized = kw.replace(/\s+/g, ' ');
+                    if (normalized === 'ВЫБРАТЬ' || normalized === 'SELECT') return 'SELECT';
+                    if (normalized === 'ПОМЕСТИТЬ' || normalized === 'INTO') return 'INTO';
+                    if (normalized === 'ИНДЕКСИРОВАТЬ ПО' || normalized === 'INDEX BY') return 'INDEX BY';
+                    if (normalized === 'ИЗ' || normalized === 'FROM') return 'FROM';
+                    if (normalized === 'ГДЕ' || normalized === 'WHERE') return 'WHERE';
+                    if (normalized === 'СГРУППИРОВАТЬ ПО' || normalized === 'GROUP BY') return 'GROUP BY';
+                    if (normalized === 'ИМЕЮЩИЕ' || normalized === 'HAVING') return 'HAVING';
+                    if (normalized === 'УПОРЯДОЧИТЬ ПО' || normalized === 'ORDER BY') return 'ORDER BY';
+                    if (normalized === 'АВТОУПОРЯДОЧИВАНИЕ' || normalized === 'AUTOORDER') return 'AUTOORDER';
+                    if (normalized === 'ИТОГИ ПО' || normalized === 'TOTALS BY' || normalized === 'ИТОГИ' || normalized === 'TOTALS') return 'TOTALS';
+                    return normalized;
+                };
 
                 const sections = {};
                 for (let i = 0; i < matches.length; i++) {
-                    const kw = matches[i].keyword;
-                    const start = matches[i].index + matches[i].keyword.length;
-                    const end = i < matches.length - 1 ? matches[i + 1].index : queryText.length;
+                    const kw = canonicalKw(matches[i].keyword);
+                    const start = matches[i].index + matches[i].length;
+                    const end = (i < matches.length - 1) ? matches[i + 1].index : queryText.length;
                     sections[kw] = queryText.substring(start, end).trim();
                 }
 
-                // SELECT
-                if (sections['ВЫБРАТЬ']) {
-                    let sContent = sections['ВЫБРАТЬ'];
-                    if (/\bРАЗРЕШЕННЫЕ\b/i.test(sContent)) {
+                // 1. SELECT
+                if (sections['SELECT'] !== undefined) {
+                    let sContent = sections['SELECT'];
+                    const allowRe = new RegExp(WB_START + '(РАЗРЕШЕННЫЕ|ALLOWED)' + WB_END, 'i');
+                    if (allowRe.test(sContent)) {
                         stmt.allowed = true;
-                        sContent = sContent.replace(/\bРАЗРЕШЕННЫЕ\b/i, '');
+                        sContent = sContent.replace(allowRe, '').trim();
                     }
-                    if (/\bРАЗЛИЧНЫЕ\b/i.test(sContent)) {
+                    const distRe = new RegExp(WB_START + '(РАЗЛИЧНЫЕ|DISTINCT)' + WB_END, 'i');
+                    if (distRe.test(sContent)) {
                         stmt.distinct = true;
-                        sContent = sContent.replace(/\bРАЗЛИЧНЫЕ\b/i, '');
+                        sContent = sContent.replace(distRe, '').trim();
                     }
-                    const topMatch = sContent.match(/\bПЕРВЫЕ\s+(\d+)\b/i);
+                    const topRe = new RegExp(WB_START + '(?:ПЕРВЫЕ|TOP)\\s+(\\d+)' + WB_END, 'i');
+                    const topMatch = sContent.match(topRe);
                     if (topMatch) {
                         stmt.top = parseInt(topMatch[1], 10);
-                        sContent = sContent.replace(/\bПЕРВЫЕ\s+\d+\b/i, '');
+                        sContent = sContent.replace(topRe, '').trim();
                     }
 
-                    const fieldTokens = sContent.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+                    const fieldTokens = splitTopLevel(sContent, ',');
                     fieldTokens.forEach(function(ft) {
                         const trimmed = ft.trim();
-                        if (!trimmed) return;
-                        const aliasMatch = trimmed.match(/^(.*?)\s+КАК\s+([A-Za-zА-Яа-я0-9_]+)$/i);
+                        if (!trimmed || trimmed === '*') return;
+                        const aliasRe = new RegExp(WB_START + '(?:КАК|AS)\\s+([a-zA-Z0-9а-яА-ЯёЁ_]+)$', 'i');
+                        const aliasMatch = trimmed.match(aliasRe);
                         if (aliasMatch) {
+                            const exprPart = trimmed.substring(0, aliasMatch.index).trim();
                             stmt.fields.push({
-                                expression: aliasMatch[1].trim(),
-                                alias: aliasMatch[2].trim()
+                                expression: exprPart,
+                                alias: aliasMatch[1].trim()
                             });
                         } else {
                             stmt.fields.push({ expression: trimmed });
@@ -1540,120 +2124,194 @@
                     });
                 }
 
-                // INTO (ПОМЕСТИТЬ)
-                if (sections['ПОМЕСТИТЬ']) {
-                    stmt.into = sections['ПОМЕСТИТЬ'].trim().split(/\s+/)[0];
+                if (stmt.fields.length === 0 && (!sections['SELECT'] || !sections['SELECT'].includes('*'))) {
+                    throw new Error('Не указаны поля в секции ВЫБРАТЬ');
                 }
 
-                // INDEX BY (ИНДЕКСИРОВАТЬ ПО)
-                if (sections['ИНДЕКСИРОВАТЬ ПО']) {
-                    const idxParts = sections['ИНДЕКСИРОВАТЬ ПО'].split(',');
-                    stmt.indexBy = idxParts.map(function(s) { return s.trim(); }).filter(Boolean);
+                // 2. INTO
+                if (sections['INTO']) {
+                    stmt.into = sections['INTO'].trim().split(/\s+/)[0];
                 }
 
-                // FROM (ИЗ)
-                if (sections['ИЗ']) {
-                    const fromContent = sections['ИЗ'];
-                    // Check joins
-                    const joinRegex = /\b(ЛЕВОЕ\s+СОЕДИНЕНИЕ|ПРАВОЕ\s+СОЕДИНЕНИЕ|ПОЛНОЕ\s+СОЕДИНЕНИЕ|ВНУТРЕННЕЕ\s+СОЕДИНЕНИЕ)\b/i;
-                    const parts = fromContent.split(joinRegex);
-                    
-                    const firstTableStr = parts[0].trim();
-                    const fromClause = parseTableRef(firstTableStr);
-                    fromClause.joins = [];
+                // 3. INDEX BY
+                if (sections['INDEX BY']) {
+                    stmt.indexBy = splitTopLevel(sections['INDEX BY'], ',').map(function(s) { return s.trim(); }).filter(Boolean);
+                }
 
-                    for (let j = 1; j < parts.length; j += 2) {
-                        const jKw = parts[j].toUpperCase();
-                        const jBody = (parts[j + 1] || '').trim();
-                        let jType = 'Inner';
-                        if (jKw.indexOf('ЛЕВОЕ') !== -1) jType = 'Left';
-                        else if (jKw.indexOf('ПРАВОЕ') !== -1) jType = 'Right';
-                        else if (jKw.indexOf('ПОЛНОЕ') !== -1) jType = 'Full';
+                // 4. FROM
+                if (sections['FROM']) {
+                    const fromContent = sections['FROM'];
+                    const joinRegex = new RegExp(WB_START + '(ЛЕВОЕ\\s+СОЕДИНЕНИЕ|LEFT\\s+(?:OUTER\\s+)?JOIN|ПРАВОЕ\\s+СОЕДИНЕНИЕ|RIGHT\\s+(?:OUTER\\s+)?JOIN|ПОЛНОЕ\\s+СОЕДИНЕНИЕ|FULL\\s+(?:OUTER\\s+)?JOIN|ВНУТРЕННЕЕ\\s+СОЕДИНЕНИЕ|INNER\\s+JOIN|СОЕДИНЕНИЕ|JOIN)' + WB_END, 'gi');
 
-                        const onSplit = jBody.split(/\bПО\b/i);
-                        const tableRefStr = onSplit[0].trim();
-                        const onConditionStr = onSplit.length > 1 ? onSplit.slice(1).join(' ПО ').trim() : '';
-
-                        const jTable = parseTableRef(tableRefStr);
-                        fromClause.joins.push({
-                            joinType: jType,
-                            source: jTable.source,
-                            alias: jTable.alias,
-                            on: { type: 'RawExpression', raw: onConditionStr }
-                        });
+                    const joinMatches = [];
+                    let jm;
+                    while ((jm = joinRegex.exec(fromContent)) !== null) {
+                        let d = 0;
+                        let q = false;
+                        for (let i = 0; i < jm.index; i++) {
+                            const ch = fromContent[i];
+                            if (ch === '"') q = !q;
+                            else if (!q && (ch === '(' || ch === '[')) d++;
+                            else if (!q && (ch === ')' || ch === ']')) { if (d > 0) d--; }
+                        }
+                        if (d === 0 && !q) {
+                            joinMatches.push({ kw: jm[1].toUpperCase(), index: jm.index, length: jm[0].length });
+                        }
                     }
 
-                    stmt.from.push(fromClause);
+                    if (joinMatches.length === 0) {
+                        const fromParts = splitTopLevel(fromContent, ',');
+                        fromParts.forEach(function(fp) {
+                            if (fp.trim()) {
+                                const tr = parseTableRef(fp.trim());
+                                tr.joins = [];
+                                stmt.from.push(tr);
+                            }
+                        });
+                    } else {
+                        const firstTableStr = fromContent.substring(0, joinMatches[0].index).trim();
+                        const fromClause = parseTableRef(firstTableStr);
+                        fromClause.joins = [];
+
+                        for (let j = 0; j < joinMatches.length; j++) {
+                            const jKw = joinMatches[j].kw;
+                            let jType = 'Inner';
+                            if (jKw.indexOf('ЛЕВОЕ') !== -1 || jKw.indexOf('LEFT') !== -1) jType = 'Left';
+                            else if (jKw.indexOf('ПРАВОЕ') !== -1 || jKw.indexOf('RIGHT') !== -1) jType = 'Right';
+                            else if (jKw.indexOf('ПОЛНОЕ') !== -1 || jKw.indexOf('FULL') !== -1) jType = 'Full';
+
+                            const start = joinMatches[j].index + joinMatches[j].length;
+                            const end = (j < joinMatches.length - 1) ? joinMatches[j + 1].index : fromContent.length;
+                            const jBody = fromContent.substring(start, end).trim();
+
+                            const onRe = new RegExp(WB_START + '(?:ПО|ON)' + WB_END, 'i');
+                            const onMatch = jBody.match(onRe);
+                            let tableRefStr = jBody;
+                            let onConditionStr = '';
+                            if (onMatch) {
+                                tableRefStr = jBody.substring(0, onMatch.index).trim();
+                                onConditionStr = jBody.substring(onMatch.index + onMatch[0].length).trim();
+                            }
+
+                            const jTable = parseTableRef(tableRefStr);
+                            fromClause.joins.push({
+                                joinType: jType,
+                                source: jTable.source,
+                                alias: jTable.alias,
+                                on: { type: 'RawExpression', raw: onConditionStr }
+                            });
+                        }
+
+                        stmt.from.push(fromClause);
+                    }
                 }
 
-                // WHERE (ГДЕ)
-                if (sections['ГДЕ']) {
-                    stmt.whereConditions = parseConditionList(sections['ГДЕ']);
+                // 5. WHERE
+                if (sections['WHERE']) {
+                    stmt.whereConditions = parseConditionList(sections['WHERE']);
+                    stmt.where = conditionsToTree(stmt.whereConditions);
                 }
 
-                // GROUP BY (СГРУППИРОВАТЬ ПО)
-                if (sections['СГРУППИРОВАТЬ ПО']) {
-                    stmt.groupBy = sections['СГРУППИРОВАТЬ ПО'].split(',').map(function(s) {
+                // 6. GROUP BY
+                if (sections['GROUP BY']) {
+                    stmt.groupBy = splitTopLevel(sections['GROUP BY'], ',').map(function(s) {
                         return { type: 'RawExpression', raw: s.trim() };
                     }).filter(function(e) { return e.raw; });
                 }
 
-                // HAVING (ИМЕЮЩИЕ)
-                if (sections['ИМЕЮЩИЕ']) {
-                    stmt.havingConditions = parseConditionList(sections['ИМЕЮЩИЕ']);
+                // 7. HAVING
+                if (sections['HAVING']) {
+                    stmt.havingConditions = parseConditionList(sections['HAVING']);
+                    stmt.having = conditionsToTree(stmt.havingConditions);
                 }
 
-                // ORDER BY (УПОРЯДОЧИТЬ ПО)
-                if (sections['УПОРЯДОЧИТЬ ПО']) {
-                    stmt.orderBy = sections['УПОРЯДОЧИТЬ ПО'].split(',').map(function(s) {
+                // 8. ORDER BY
+                if (sections['ORDER BY']) {
+                    stmt.orderBy = splitTopLevel(sections['ORDER BY'], ',').map(function(s) {
                         const trimmed = s.trim();
                         let dir = 'Asc';
                         let expr = trimmed;
-                        if (/\bУБЫВ\b/i.test(trimmed)) {
+                        const descRe = new RegExp(WB_START + '(?:УБЫВ|DESC)' + WB_END, 'i');
+                        const ascRe = new RegExp(WB_START + '(?:ВОЗР|ASC)' + WB_END, 'i');
+                        if (descRe.test(trimmed)) {
                             dir = 'Desc';
-                            expr = trimmed.replace(/\bУБЫВ\b/i, '').trim();
-                        } else if (/\bВОЗР\b/i.test(trimmed)) {
+                            expr = trimmed.replace(descRe, '').trim();
+                        } else if (ascRe.test(trimmed)) {
                             dir = 'Asc';
-                            expr = trimmed.replace(/\bВОЗР\b/i, '').trim();
+                            expr = trimmed.replace(ascRe, '').trim();
                         }
                         return { expression: expr, direction: dir };
                     }).filter(function(o) { return o.expression; });
                 }
 
-                if (sections['АВТОУПОРЯДОЧИВАНИЕ'] !== undefined) {
+                if (sections['AUTOORDER'] !== undefined) {
                     stmt.autoOrder = true;
                 }
 
-                // TOTALS (ИТОГИ)
-                if (sections['ИТОГИ']) {
-                    const tContent = sections['ИТОГИ'];
-                    stmt.totals = { fields: [], by: [], overall: /\bОБЩИЕ\b/i.test(tContent) };
-                    const bySplit = tContent.split(/\bПО\b/i);
-                    const fieldsPart = bySplit[0].replace(/\bОБЩИЕ\b/i, '').trim();
+                // 9. TOTALS
+                if (sections['TOTALS']) {
+                    const tContent = sections['TOTALS'];
+                    const overallRe = new RegExp(WB_START + '(?:ОБЩИЕ|OVERALL)' + WB_END, 'i');
+                    stmt.totals = { fields: [], by: [], overall: overallRe.test(tContent) };
+
+                    const byRe = new RegExp(WB_START + '(?:ПО|BY)' + WB_END, 'i');
+                    const byMatch = tContent.match(byRe);
+                    let fieldsPart = tContent;
+                    let byPart = '';
+                    if (byMatch) {
+                        fieldsPart = tContent.substring(0, byMatch.index).trim();
+                        byPart = tContent.substring(byMatch.index + byMatch[0].length).trim();
+                    }
+
+                    fieldsPart = fieldsPart.replace(overallRe, '').trim();
                     if (fieldsPart) {
-                        fieldsPart.split(',').forEach(function(f) {
+                        splitTopLevel(fieldsPart, ',').forEach(function(f) {
                             const trimmed = f.trim();
                             if (!trimmed) return;
-                            const aliasM = trimmed.match(/^(.*?)\s+КАК\s+([A-Za-zА-Яа-я0-9_]+)$/i);
+                            const aliasRe = new RegExp(WB_START + '(?:КАК|AS)\\s+([a-zA-Z0-9а-яА-ЯёЁ_]+)$', 'i');
+                            const aliasM = trimmed.match(aliasRe);
                             if (aliasM) {
-                                stmt.totals.fields.push({ expression: aliasM[1].trim(), alias: aliasM[2].trim() });
+                                stmt.totals.fields.push({
+                                    expression: trimmed.substring(0, aliasM.index).trim(),
+                                    alias: aliasM[1].trim()
+                                });
                             } else {
                                 stmt.totals.fields.push({ expression: trimmed });
                             }
                         });
                     }
-                    if (bySplit.length > 1) {
-                        const byPart = bySplit[1].replace(/\bОБЩИЕ\b/i, '').trim();
-                        byPart.split(',').forEach(function(b) {
+
+                    byPart = byPart.replace(overallRe, '').trim();
+                    if (byPart) {
+                        splitTopLevel(byPart, ',').forEach(function(b) {
                             let trimmed = b.trim();
                             if (!trimmed) return;
-                            const hier = /\bИЕРАРХИЯ\b/i.test(trimmed);
-                            const per = /\bПЕРИОДАМИ\b/i.test(trimmed);
-                            trimmed = trimmed.replace(/\b(ИЕРАРХИЯ|ПЕРИОДАМИ)\b/gi, '').trim();
+                            const onlyHierRe = new RegExp(WB_START + '(?:ТОЛЬКО\\s+ИЕРАРХИЯ|ONLY\\s+HIERARCHY)' + WB_END, 'i');
+                            const hierRe = new RegExp(WB_START + '(?:ИЕРАРХИЯ|HIERARCHY)' + WB_END, 'i');
+                            const perRe = new RegExp(WB_START + '(?:ПЕРИОДАМИ|PERIODS)' + WB_END, 'i');
+
+                            let isOnlyHier = false;
+                            let isHier = false;
+                            let isPer = false;
+
+                            if (onlyHierRe.test(trimmed)) {
+                                isOnlyHier = true;
+                                isHier = true;
+                                trimmed = trimmed.replace(onlyHierRe, '').trim();
+                            } else if (hierRe.test(trimmed)) {
+                                isHier = true;
+                                trimmed = trimmed.replace(hierRe, '').trim();
+                            }
+                            if (perRe.test(trimmed)) {
+                                isPer = true;
+                                trimmed = trimmed.replace(perRe, '').trim();
+                            }
+
                             stmt.totals.by.push({
                                 expression: trimmed,
-                                hierarchy: hier,
-                                periods: per
+                                hierarchy: isHier,
+                                hierarchyType: isOnlyHier ? 'OnlyHierarchy' : 'All',
+                                periods: isPer
                             });
                         });
                     }
@@ -1663,18 +2321,19 @@
             }
 
             function parseTableRef(str) {
-                const aliasMatch = str.match(/^(.*?)\s+КАК\s+([A-Za-zА-Яа-я0-9_]+)$/i);
+                const aliasRe = new RegExp(WB_START + '(?:КАК|AS)\\s+([a-zA-Z0-9а-яА-ЯёЁ_]+)$', 'i');
+                const aliasMatch = str.match(aliasRe);
                 let full = str;
                 let alias = undefined;
                 if (aliasMatch) {
-                    full = aliasMatch[1].trim();
-                    alias = aliasMatch[2].trim();
+                    full = str.substring(0, aliasMatch.index).trim();
+                    alias = aliasMatch[1].trim();
                 }
 
                 const paramMatch = full.match(/^([^(]+)\((.*)\)$/);
                 if (paramMatch) {
                     const tName = paramMatch[1].trim();
-                    const pList = paramMatch[2].split(',').map(function(p) {
+                    const pList = splitTopLevel(paramMatch[2], ',').map(function(p) {
                         return { type: 'RawExpression', raw: p.trim() };
                     });
                     return {
@@ -1691,29 +2350,69 @@
 
             function parseConditionList(str) {
                 const result = [];
-                const regex = /\b(И|ИЛИ)\b/gi;
-                const tokens = str.split(regex);
+                const linkRegex = new RegExp(WB_START + '(И|AND|ИЛИ|OR)' + WB_END, 'gi');
 
-                let currentOp = 'И';
-                for (let i = 0; i < tokens.length; i++) {
-                    const part = tokens[i].trim();
-                    if (!part) continue;
-                    if (part.toUpperCase() === 'И' || part.toUpperCase() === 'ИЛИ') {
-                        currentOp = part.toUpperCase();
-                        continue;
+                const linkMatches = [];
+                let lm;
+                while ((lm = linkRegex.exec(str)) !== null) {
+                    let d = 0;
+                    let q = false;
+                    for (let i = 0; i < lm.index; i++) {
+                        const ch = str[i];
+                        if (ch === '"') q = !q;
+                        else if (!q && (ch === '(' || ch === '[')) d++;
+                        else if (!q && (ch === ')' || ch === ']')) { if (d > 0) d--; }
                     }
-
-                    // Parse expression comparison value
-                    const opMatch = part.match(/\s*(=|<>|<=|>=|<|>|\bВ\s+ИЕРАРХИИ\b|\bНЕ\s+В\s+ИЕРАРХИИ\b|\bНЕ\s+В\b|\bВ\b|\bНЕ\s+МЕЖДУ\b|\bМЕЖДУ\b|\bНЕ\s+ПОДОБНО\b|\bПОДОБНО\b|\bЕСТЬ\s+НЕ\s+NULL\b|\bЕСТЬ\s+NULL\b)\s*/i);
-                    if (opMatch) {
-                        const cmp = opMatch[1].trim();
-                        const field = part.substring(0, opMatch.index).trim();
-                        const val = part.substring(opMatch.index + opMatch[0].length).trim();
-                        result.push({ op: currentOp, field: field, cmp: cmp, value: val });
-                    } else {
-                        result.push({ op: currentOp, field: part, cmp: '=', value: '' });
+                    if (d === 0 && !q) {
+                        linkMatches.push({ op: lm[1].toUpperCase(), index: lm.index, length: lm[0].length });
                     }
                 }
+
+                const parts = [];
+                if (linkMatches.length === 0) {
+                    parts.push({ op: 'И', text: str.trim() });
+                } else {
+                    parts.push({ op: 'И', text: str.substring(0, linkMatches[0].index).trim() });
+                    for (let i = 0; i < linkMatches.length; i++) {
+                        const rawOp = linkMatches[i].op;
+                        const op = (rawOp === 'ИЛИ' || rawOp === 'OR') ? 'ИЛИ' : 'И';
+                        const start = linkMatches[i].index + linkMatches[i].length;
+                        const end = (i < linkMatches.length - 1) ? linkMatches[i + 1].index : str.length;
+                        parts.push({ op: op, text: str.substring(start, end).trim() });
+                    }
+                }
+
+                parts.forEach(function(item) {
+                    const text = item.text;
+                    if (!text) return;
+
+                    const cmpOpPatterns = [
+                        'В\\s+ИЕРАРХИИ', 'IN\\s+HIERARCHY',
+                        'НЕ\\s+В\\s+ИЕРАРХИИ', 'NOT\\s+IN\\s+HIERARCHY',
+                        'НЕ\\s+В', 'NOT\\s+IN',
+                        'НЕ\\s+МЕЖДУ', 'NOT\\s+BETWEEN',
+                        'МЕЖДУ', 'BETWEEN',
+                        'НЕ\\s+ПОДОБНО', 'NOT\\s+LIKE',
+                        'ПОДОБНО', 'LIKE',
+                        'ЕСТЬ\\s+НЕ\\s+NULL', 'IS\\s+NOT\\s+NULL',
+                        'ЕСТЬ\\s+NULL', 'IS\\s+NULL',
+                        'В', 'IN',
+                        '<>', '<=', '>=', '=', '<', '>'
+                    ];
+
+                    const cmpRegex = new RegExp(WB_START + '(' + cmpOpPatterns.join('|') + ')' + WB_END, 'i');
+                    const opMatch = text.match(cmpRegex);
+
+                    if (opMatch) {
+                        const rawCmp = opMatch[1].trim();
+                        const field = text.substring(0, opMatch.index).trim();
+                        const val = text.substring(opMatch.index + opMatch[0].length).trim();
+                        result.push({ op: item.op, field: field, cmp: rawCmp, value: val });
+                    } else {
+                        result.push({ op: item.op, field: text, cmp: '=', value: '' });
+                    }
+                });
+
                 return result;
             }
 
@@ -1871,7 +2570,7 @@
                     let isVirtual = false;
                     if (fc.source) {
                         tableName = fc.source.name || '';
-                        isVirtual = fc.source.params && fc.source.params.length > 0;
+                        isVirtual = isTableVirtual(fc.source);
                     }
 
                     // Col 1: Table name
@@ -1897,14 +2596,17 @@
                     const tdActions = document.createElement('td');
                     tdActions.style.textAlign = 'center';
 
-                    const btnParams = document.createElement('button');
-                    btnParams.className = 'secondary icon-btn';
-                    btnParams.textContent = 'Параметры...';
-                    btnParams.title = 'Настроить параметры виртуальной таблицы';
-                    btnParams.style.marginRight = '4px';
-                    btnParams.addEventListener('click', function() {
-                        openVirtualTableParamsModal(idx);
-                    });
+                    if (isVirtual) {
+                        const btnParams = document.createElement('button');
+                        btnParams.className = 'secondary icon-btn';
+                        btnParams.textContent = 'Параметры...';
+                        btnParams.title = 'Настроить параметры виртуальной таблицы';
+                        btnParams.style.marginRight = '4px';
+                        btnParams.addEventListener('click', function() {
+                            openVirtualTableParamsModal(idx);
+                        });
+                        tdActions.appendChild(btnParams);
+                    }
 
                     const btnDel = document.createElement('button');
                     btnDel.className = 'secondary icon-btn danger';
@@ -1917,7 +2619,6 @@
                         notifyChange();
                     });
 
-                    tdActions.appendChild(btnParams);
                     tdActions.appendChild(btnDel);
                     tr.appendChild(tdActions);
 
@@ -1954,7 +2655,17 @@
                     inputAlias.value = f.alias || '';
                     inputAlias.style.width = '100%';
                     inputAlias.addEventListener('change', function() {
-                        f.alias = inputAlias.value.trim() || undefined;
+                        const oldName = getFieldDisplayName(f);
+                        const newAlias = inputAlias.value.trim() || undefined;
+                        f.alias = newAlias;
+                        const newName = getFieldDisplayName(f);
+                        if (q.indexBy && q.indexBy.length > 0 && oldName !== newName) {
+                            const idxInIndex = q.indexBy.indexOf(oldName);
+                            if (idxInIndex !== -1) {
+                                q.indexBy[idxInIndex] = newName;
+                            }
+                        }
+                        renderTab8();
                         notifyChange();
                     });
                     tdAlias.appendChild(inputAlias);
@@ -1997,7 +2708,14 @@
                     btnDel.className = 'secondary icon-btn danger';
                     btnDel.textContent = '✕';
                     btnDel.addEventListener('click', function() {
+                        const fieldName = getFieldDisplayName(f);
                         q.fields.splice(idx, 1);
+                        if (q.indexBy && q.indexBy.length > 0) {
+                            const idxInIndex = q.indexBy.indexOf(fieldName);
+                            if (idxInIndex !== -1) {
+                                q.indexBy.splice(idxInIndex, 1);
+                            }
+                        }
                         renderSelectedFields();
                         renderTab8();
                         notifyChange();
@@ -2086,9 +2804,21 @@
 
                     // T2
                     const tdT2 = document.createElement('td');
-                    const selT2 = createDropdown(tables, jn.source && jn.source.name ? jn.source.name : tables[1] || tables[0]);
+                    let currentT2 = jn.alias || (jn.source && jn.source.name) || tables[1] || tables[0];
+                    if (tables.indexOf(currentT2) === -1 && jn.source && jn.source.name && tables.indexOf(jn.source.name) !== -1) {
+                        currentT2 = jn.source.name;
+                    }
+                    const selT2 = createDropdown(tables, currentT2);
                     selT2.addEventListener('change', function() {
-                        jn.source = { type: 'Table', name: selT2.value };
+                        const matchingFc = q.from.find(function(f) {
+                            return (f.alias && f.alias === selT2.value) || (f.source && f.source.name === selT2.value);
+                        });
+                        if (matchingFc && matchingFc.source) {
+                            jn.source = JSON.parse(JSON.stringify(matchingFc.source));
+                            jn.alias = matchingFc.alias;
+                        } else {
+                            jn.source = { type: 'Table', name: selT2.value };
+                        }
                         notifyChange();
                     });
                     tdT2.appendChild(selT2);
@@ -2115,11 +2845,16 @@
                     btnDel.className = 'secondary icon-btn danger';
                     btnDel.textContent = '✕';
                     btnDel.addEventListener('click', function() {
-                        if (q.from[0] && q.from[0].joins) {
-                            q.from[0].joins.splice(idx, 1);
-                            renderTab2();
-                            notifyChange();
-                        }
+                        q.from.forEach(function(fc) {
+                            if (fc.joins) {
+                                const jIdx = fc.joins.indexOf(jn);
+                                if (jIdx !== -1) {
+                                    fc.joins.splice(jIdx, 1);
+                                }
+                            }
+                        });
+                        renderTab2();
+                        notifyChange();
                     });
                     tdDel.appendChild(btnDel);
                     tr.appendChild(tdDel);
@@ -2199,6 +2934,21 @@
                     return isAggregateExpression(getExpressionString(f.expression));
                 });
 
+                const aggTypeToRu = {
+                    'Sum': 'СУММА',
+                    'Count': 'КОЛИЧЕСТВО',
+                    'Min': 'МИНИМУМ',
+                    'Max': 'МАКСИМУМ',
+                    'Avg': 'СРЕДНЕЕ'
+                };
+                const ruToAggType = {
+                    'СУММА': 'Sum',
+                    'КОЛИЧЕСТВО': 'Count',
+                    'МИНИМУМ': 'Min',
+                    'МАКСИМУМ': 'Max',
+                    'СРЕДНЕЕ': 'Avg'
+                };
+
                 aggregateFields.forEach(function(af, idx) {
                     const tr = document.createElement('tr');
 
@@ -2214,8 +2964,30 @@
                     tdExpr.appendChild(inputExpr);
                     tr.appendChild(tdExpr);
 
+                    const currentFn = (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate')
+                        ? (aggTypeToRu[af.expression.aggregateType] || 'СУММА')
+                        : 'СУММА';
+                    const isDistinct = (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate')
+                        ? Boolean(af.expression.distinct)
+                        : false;
+
                     const tdFn = document.createElement('td');
-                    const selFn = createDropdown(['СУММА', 'КОЛИЧЕСТВО', 'МИНИМУМ', 'МАКСИМУМ', 'СРЕДНЕЕ'], 'СУММА');
+                    const selFn = createDropdown(['СУММА', 'КОЛИЧЕСТВО', 'МИНИМУМ', 'МАКСИМУМ', 'СРЕДНЕЕ'], currentFn);
+                    selFn.addEventListener('change', function() {
+                        const newType = ruToAggType[selFn.value] || 'Sum';
+                        if (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate') {
+                            af.expression.aggregateType = newType;
+                        } else {
+                            af.expression = {
+                                type: 'Aggregate',
+                                aggregateType: newType,
+                                distinct: chDist.checked,
+                                expression: parseExpressionOrRaw(getExpressionString(af.expression))
+                            };
+                        }
+                        inputExpr.value = getExpressionString(af.expression);
+                        notifyChange();
+                    });
                     tdFn.appendChild(selFn);
                     tr.appendChild(tdFn);
 
@@ -2223,6 +2995,21 @@
                     tdDist.style.textAlign = 'center';
                     const chDist = document.createElement('input');
                     chDist.type = 'checkbox';
+                    chDist.checked = isDistinct;
+                    chDist.addEventListener('change', function() {
+                        if (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate') {
+                            af.expression.distinct = chDist.checked;
+                        } else {
+                            af.expression = {
+                                type: 'Aggregate',
+                                aggregateType: ruToAggType[selFn.value] || 'Sum',
+                                distinct: chDist.checked,
+                                expression: parseExpressionOrRaw(getExpressionString(af.expression))
+                            };
+                        }
+                        inputExpr.value = getExpressionString(af.expression);
+                        notifyChange();
+                    });
                     tdDist.appendChild(chDist);
                     tr.appendChild(tdDist);
 
@@ -2264,6 +3051,13 @@
                 elements.tbodyConditions.innerHTML = '';
                 if (q.type === 'DropTable') return;
 
+                if ((!q.whereConditions || q.whereConditions.length === 0) && q.where) {
+                    q.whereConditions = flattenConditionNode(q.where, 'И');
+                }
+                if ((!q.havingConditions || q.havingConditions.length === 0) && q.having) {
+                    q.havingConditions = flattenConditionNode(q.having, 'И');
+                }
+
                 const conditions = [];
                 if (q.whereConditions) {
                     q.whereConditions.forEach(function(c) { conditions.push(c); });
@@ -2281,6 +3075,7 @@
                         const selOp = createDropdown(['И', 'ИЛИ'], cond.op || 'И');
                         selOp.addEventListener('change', function() {
                             cond.op = selOp.value;
+                            syncConditionsToAst(q);
                             notifyChange();
                         });
                         tdOp.appendChild(selOp);
@@ -2300,6 +3095,7 @@
                     inputField.addEventListener('input', function() {
                         cond.field = inputField.value;
                         updateRouteBadge();
+                        syncConditionsToAst(q);
                         notifyChange();
                     });
                     tdField.appendChild(inputField);
@@ -2317,6 +3113,7 @@
                     ], cond.cmp || '=');
                     selCmp.addEventListener('change', function() {
                         cond.cmp = selCmp.value;
+                        syncConditionsToAst(q);
                         notifyChange();
                     });
                     tdCmp.appendChild(selCmp);
@@ -2332,6 +3129,7 @@
                     inputVal.addEventListener('input', function() {
                         cond.value = inputVal.value;
                         updateRouteBadge();
+                        syncConditionsToAst(q);
                         notifyChange();
                     });
                     tdVal.appendChild(inputVal);
@@ -2379,6 +3177,7 @@
 
                     // Delete
                     const tdDel = document.createElement('td');
+                    tdDel.style.textAlign = 'center';
                     const btnDel = document.createElement('button');
                     btnDel.className = 'secondary icon-btn danger';
                     btnDel.textContent = '✕';
@@ -2404,6 +3203,7 @@
                         q.whereConditions.push(c);
                     }
                 });
+                syncConditionsToAst(q);
                 renderTab4();
                 notifyChange();
             }
@@ -2713,10 +3513,54 @@
                     tdExpr.appendChild(inputExpr);
                     tr.appendChild(tdExpr);
 
+                    const currentFn = (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate')
+                        ? (aggTypeToRu[tf.expression.aggregateType] || 'СУММА')
+                        : 'СУММА';
+                    const isDistinct = (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate')
+                        ? Boolean(tf.expression.distinct)
+                        : false;
+
                     const tdFn = document.createElement('td');
-                    const selFn = createDropdown(['СУММА', 'КОЛИЧЕСТВО', 'МИНИМУМ', 'МАКСИМУМ', 'СРЕДНЕЕ'], 'СУММА');
+                    const selFn = createDropdown(['СУММА', 'КОЛИЧЕСТВО', 'МИНИМУМ', 'МАКСИМУМ', 'СРЕДНЕЕ'], currentFn);
+                    selFn.addEventListener('change', function() {
+                        const newType = ruToAggType[selFn.value] || 'Sum';
+                        if (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate') {
+                            tf.expression.aggregateType = newType;
+                        } else {
+                            tf.expression = {
+                                type: 'Aggregate',
+                                aggregateType: newType,
+                                distinct: chDist.checked,
+                                expression: parseExpressionOrRaw(getExpressionString(tf.expression))
+                            };
+                        }
+                        inputExpr.value = getExpressionString(tf.expression);
+                        notifyChange();
+                    });
                     tdFn.appendChild(selFn);
                     tr.appendChild(tdFn);
+
+                    const tdDist = document.createElement('td');
+                    tdDist.style.textAlign = 'center';
+                    const chDist = document.createElement('input');
+                    chDist.type = 'checkbox';
+                    chDist.checked = isDistinct;
+                    chDist.addEventListener('change', function() {
+                        if (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate') {
+                            tf.expression.distinct = chDist.checked;
+                        } else {
+                            tf.expression = {
+                                type: 'Aggregate',
+                                aggregateType: ruToAggType[selFn.value] || 'Sum',
+                                distinct: chDist.checked,
+                                expression: parseExpressionOrRaw(getExpressionString(tf.expression))
+                            };
+                        }
+                        inputExpr.value = getExpressionString(tf.expression);
+                        notifyChange();
+                    });
+                    tdDist.appendChild(chDist);
+                    tr.appendChild(tdDist);
 
                     const tdAlias = document.createElement('td');
                     const inputAlias = document.createElement('input');
@@ -2931,18 +3775,30 @@
                 elements.modalVtTitle.textContent = 'Параметры: ' + tableName;
                 elements.tbodyVtParams.innerHTML = '';
 
-                // Default standard parameters for virtual tables
-                const defaultParams = [
-                    { name: 'Период', desc: 'Дата или граница среза' },
-                    { name: 'Условие', desc: 'Условие отбора записей' },
-                    { name: 'НачалоПериода', desc: 'Дата начала периода' },
-                    { name: 'КонецПериода', desc: 'Дата конца периода' },
-                    { name: 'Периодичность', desc: 'Периодичность формирования' }
-                ];
+                // Try to get params from metadataTree
+                const metaNode = findTableMetadataNode(tableName);
+                let paramsToUse = [];
+                if (metaNode && metaNode.params && metaNode.params.length > 0) {
+                    paramsToUse = metaNode.params.map(function(p) {
+                        return {
+                            name: p.name || p.label || 'Параметр',
+                            desc: p.description || p.desc || ''
+                        };
+                    });
+                } else {
+                    // Fallback default parameters for virtual tables
+                    paramsToUse = [
+                        { name: 'Период', desc: 'Дата или граница среза' },
+                        { name: 'Условие', desc: 'Условие отбора записей' },
+                        { name: 'НачалоПериода', desc: 'Дата начала периода' },
+                        { name: 'КонецПериода', desc: 'Дата конца периода' },
+                        { name: 'Периодичность', desc: 'Периодичность формирования' }
+                    ];
+                }
 
                 const currentParams = fc.source && fc.source.params ? fc.source.params : [];
 
-                defaultParams.forEach(function(dp, idx) {
+                paramsToUse.forEach(function(dp, idx) {
                     const tr = document.createElement('tr');
                     const tdName = document.createElement('td');
                     tdName.innerHTML = '<strong>' + dp.name + '</strong><br><span style="font-size:11px;color:var(--vscode-descriptionForeground);">' + dp.desc + '</span>';
@@ -2975,14 +3831,24 @@
                 if (!fc || !fc.source) return;
 
                 const inputs = elements.tbodyVtParams.querySelectorAll('input');
-                const params = [];
-                inputs.forEach(function(inp) {
-                    if (inp.value.trim()) {
-                        params.push({ type: 'RawExpression', raw: inp.value.trim() });
+                let lastNonEmptyIdx = -1;
+                for (let i = inputs.length - 1; i >= 0; i--) {
+                    if (inputs[i].value.trim()) {
+                        lastNonEmptyIdx = i;
+                        break;
                     }
-                });
+                }
 
-                fc.source.params = params.length > 0 ? params : undefined;
+                if (lastNonEmptyIdx === -1) {
+                    fc.source.params = undefined;
+                } else {
+                    const params = [];
+                    for (let i = 0; i <= lastNonEmptyIdx; i++) {
+                        params.push({ type: 'RawExpression', raw: inputs[i].value.trim() });
+                    }
+                    fc.source.params = params;
+                }
+
                 closeVirtualTableParamsModal();
                 renderFromTables();
                 notifyChange();
@@ -2993,14 +3859,19 @@
             elements.tabBtns.forEach(function(btn) {
                 btn.addEventListener('click', function() {
                     const targetId = btn.getAttribute('data-tab');
-                    
+                    const activeBtn = document.querySelector('.tab-btn.active');
+
+                    // If clicking the currently active tab, return early to avoid re-rendering and overwriting user edits!
+                    if (activeBtn && activeBtn.getAttribute('data-tab') === targetId) {
+                        return;
+                    }
+
                     // If switching TO query-text, format text from current AST
                     if (targetId === 'tab-query-text') {
                         renderTab11();
                     }
 
                     // If switching FROM query-text, parse text back to AST
-                    const activeBtn = document.querySelector('.tab-btn.active');
                     if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text' && targetId !== 'tab-query-text') {
                         applyTextEditorChanges();
                     }
@@ -3065,13 +3936,32 @@
                 notifyChange();
             });
 
+            function formatQueryText() {
+                const text = elements.sdblTextEditor.value;
+                try {
+                    const parsed = parseSdblClient(text);
+                    state.ast = parsed;
+                    elements.sdblTextEditor.value = formatPackageSdbl(state.ast);
+                    elements.textParseError.style.display = 'none';
+                    elements.textParseError.textContent = '';
+                    elements.editorSyncStatus.textContent = 'Отформатировано';
+                    notifyChange();
+                } catch (err) {
+                    elements.textParseError.style.display = 'flex';
+                    elements.textParseError.textContent = 'Ошибка парсинга: ' + (err.message || String(err));
+                    elements.editorSyncStatus.textContent = 'Ошибка';
+                }
+            }
+
             // Header Actions
             elements.btnFormatText.addEventListener('click', function() {
-                // Switch to text tab and format
-                elements.tabBtns.forEach(function(b) {
-                    if (b.getAttribute('data-tab') === 'tab-query-text') b.click();
-                });
-                renderTab11();
+                const activeBtn = document.querySelector('.tab-btn.active');
+                if (!activeBtn || activeBtn.getAttribute('data-tab') !== 'tab-query-text') {
+                    elements.tabBtns.forEach(function(b) {
+                        if (b.getAttribute('data-tab') === 'tab-query-text') b.click();
+                    });
+                }
+                formatQueryText();
             });
 
             elements.btnSave.addEventListener('click', function() {
@@ -3080,6 +3970,12 @@
                 if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text') {
                     applyTextEditorChanges();
                 }
+
+                state.ast.queries.forEach(function(q) {
+                    if (q.type !== 'DropTable') {
+                        syncConditionsToAst(q);
+                    }
+                });
 
                 vscode.postMessage({
                     command: 'save',
@@ -3409,6 +4305,44 @@
                         break;
                 }
             });
+
+            // Export functions and objects to window for testing and external access
+            window.parseSdblClient = parseSdblClient;
+            window.getExpressionString = getExpressionString;
+            window.isAggregateExpression = isAggregateExpression;
+            window.formatSdblQuery = formatSdblQuery;
+            window.formatPackageSdbl = formatPackageSdbl;
+            window.formatQueryText = formatQueryText;
+            window.getActiveQuery = getActiveQuery;
+            window.state = state;
+            window.elements = elements;
+            window.renderAll = renderAll;
+            window.renderTab1 = renderTab1;
+            window.renderTab2 = renderTab2;
+            window.renderTab3 = renderTab3;
+            window.renderTab4 = renderTab4;
+            window.renderTab5 = renderTab5;
+            window.renderTab6 = renderTab6;
+            window.renderTab7 = renderTab7;
+            window.renderTab8 = renderTab8;
+            window.renderTab9 = renderTab9;
+            window.renderTab10 = renderTab10;
+            window.renderTab11 = renderTab11;
+            window.renderSelectedFields = renderSelectedFields;
+            window.renderFromTables = renderFromTables;
+            window.renderMetadataTree = renderMetadataTree;
+            window.openVirtualTableParamsModal = openVirtualTableParamsModal;
+            window.saveVirtualTableParamsModal = saveVirtualTableParamsModal;
+            window.closeVirtualTableParamsModal = closeVirtualTableParamsModal;
+            window.syncConditionsToAst = syncConditionsToAst;
+            window.syncBackConditions = syncBackConditions;
+            window.flattenConditionNode = flattenConditionNode;
+            window.unpackConditionNode = unpackConditionNode;
+            window.conditionToNode = conditionToNode;
+            window.conditionsToTree = conditionsToTree;
+            window.isTableVirtual = isTableVirtual;
+            window.findTableMetadataNode = findTableMetadataNode;
+            window.getFieldDisplayName = getFieldDisplayName;
 
             // Initial render & ready handshake
             renderAll();
