@@ -202,6 +202,16 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.queryBuilder",
+        "title": "Конструктор запроса…",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.queryBuilderWithProcessing",
+        "title": "Конструктор запроса с обработкой результата…",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.createForm",
         "title": "Создать форму",
         "category": "CDT 41"
@@ -1160,6 +1170,16 @@
       ],
       "editor/context": [
         {
+          "command": "1c-metadata-tree.queryBuilder",
+          "when": "editorTextFocus && (resourceLangId == bsl || resourceLangId == sdbl)",
+          "group": "1_query_builder@1"
+        },
+        {
+          "command": "1c-metadata-tree.queryBuilderWithProcessing",
+          "when": "editorTextFocus && (resourceLangId == bsl || resourceLangId == sdbl)",
+          "group": "1_query_builder@2"
+        },
+        {
           "command": "1c-metadata-tree.validateCurrentXml",
           "when": "resourceExtname == .xml",
           "group": "navigation@20"
@@ -1654,6 +1674,12 @@
       }
     },
     "keybindings": [
+      {
+        "command": "1c-metadata-tree.queryBuilder",
+        "key": "ctrl+alt+q",
+        "mac": "cmd+alt+q",
+        "when": "editorTextFocus && (resourceLangId == bsl || resourceLangId == sdbl)"
+      },
       {
         "command": "1c-metadata-tree.openPanel",
         "key": "ctrl+alt+1",

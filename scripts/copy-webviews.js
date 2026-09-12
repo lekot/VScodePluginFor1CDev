@@ -8,6 +8,7 @@ const sources = [
   'src/xdtoPackageEditor/xdtoPackageWebview.html',
   'src/xdtoPackageCompare/xdtoPackageCompareWebview.html',
   'src/compareMerge/configCompareWebview.html',
+  'src/queryBuilder/ui/queryBuilderWebview.html',
 ];
 
 const outDirs = ['dist', 'out/src'];
