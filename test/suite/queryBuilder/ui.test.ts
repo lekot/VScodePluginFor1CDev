@@ -1,6 +1,8 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { parseSdbl } from '../../../src/queryBuilder/sdbl/sdblParser';
+import { formatSdbl } from '../../../src/queryBuilder/sdbl/sdblFormatter';
 
 suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
   const rootDir = path.resolve(__dirname, '../../../..');
@@ -1367,6 +1369,97 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
         formatted.includes('ПО (А.Код = Б.Код ИЛИ А.Ссылка = Б.Ссылка) И Б.Активен = ИСТИНА'),
         `Formatted text should wrap OR in parens: ${formatted}`
       );
+    });
+
+    test('Rereview 6dee115 P2: renaming table alias updates references inside CASE WHEN / ВЫБОР ... КОНЕЦ and composite nodes', () => {
+      const initialSdbl = [
+        'ВЫБРАТЬ',
+        '\tВЫБОР КОГДА Т.Код = "1" ТОГДА Т.Ссылка ИНАЧЕ NULL КОНЕЦ КАК Значение',
+        'ИЗ',
+        '\tСправочник.Т КАК Т',
+      ].join('\n');
+
+      const parsedPkg = parseSdbl(initialSdbl);
+      const env = createWebviewEnvironment();
+
+      // 1. Simulate extension host init message
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      // 2. Locate alias input on Tab 1 and change 'Т' -> 'Новое'
+      const tbodyFrom = env.elements.tbodyFromTables;
+      assert.ok(tbodyFrom, 'tbodyFromTables must exist');
+      const inputAlias = tbodyFrom.querySelector('input[type="text"]');
+      assert.ok(inputAlias, 'input for alias must exist');
+      assert.strictEqual(inputAlias.value, 'Т');
+
+      inputAlias.value = 'Новое';
+      inputAlias.dispatchEvent({ type: 'change' });
+
+      // 3. Save query
+      env.elements.btnSave.click();
+
+      // 4. Capture save message and format with backend formatSdbl
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'save command must be sent');
+      assert.ok(saveMsg.ast, 'save message must contain ast');
+
+      const formatted = formatSdbl(saveMsg.ast);
+
+      // 5. Verification:
+      // References inside CASE WHEN must be updated to Новое
+      assert.ok(formatted.includes('Новое.Код'), `Formatted SDBL should contain Новое.Код: ${formatted}`);
+      assert.ok(formatted.includes('Новое.Ссылка'), `Formatted SDBL should contain Новое.Ссылка: ${formatted}`);
+      assert.ok(!formatted.includes('Т.Код'), `Formatted SDBL should NOT contain old Т.Код: ${formatted}`);
+      assert.ok(!formatted.includes('Т.Ссылка'), `Formatted SDBL should NOT contain old Т.Ссылка: ${formatted}`);
+      // Literals "1" and NULL must remain untouched
+      assert.ok(formatted.includes('"1"'), `Literal "1" must be preserved: ${formatted}`);
+      assert.ok(formatted.includes('NULL'), `Literal NULL must be preserved: ${formatted}`);
+      // FROM clause must have new alias
+      assert.ok(formatted.includes('Справочник.Т КАК Новое'), `FROM must have new alias: ${formatted}`);
+    });
+
+    test('Rereview 6dee115: renaming table alias updates references inside In, Between, Like, and FunctionCall expressions', () => {
+      const initialSdbl = [
+        'ВЫБРАТЬ',
+        '\tПОДСТРОКА(Т.Наименование, 1, 10) КАК Подстрока,',
+        '\tВЫБОР КОГДА Т.Статус В (&Список) И Т.Сумма МЕЖДУ 100 И 500 ТОГДА Т.ПометкаУдаления ИНАЧЕ ЛОЖЬ КОНЕЦ КАК Флаг',
+        'ИЗ',
+        '\tСправочник.Т КАК Т',
+      ].join('\n');
+
+      const parsedPkg = parseSdbl(initialSdbl);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      const inputAlias = env.elements.tbodyFromTables.querySelector('input[type="text"]');
+      assert.ok(inputAlias);
+      inputAlias.value = 'Новое';
+      inputAlias.dispatchEvent({ type: 'change' });
+
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg);
+
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(formatted.includes('ПОДСТРОКА(Новое.Наименование, 1, 10)'), `Expected function call updated: ${formatted}`);
+      assert.ok(formatted.includes('Новое.Статус В (&Список)'), `Expected In expr updated: ${formatted}`);
+      assert.ok(formatted.includes('Новое.Сумма МЕЖДУ 100 И 500'), `Expected Between expr updated: ${formatted}`);
+      assert.ok(formatted.includes('ТОГДА Новое.ПометкаУдаления'), `Expected then expr updated: ${formatted}`);
+      assert.ok(!formatted.includes('Т.Наименование'));
+      assert.ok(!formatted.includes('Т.Статус'));
+      assert.ok(!formatted.includes('Т.Сумма'));
+      assert.ok(!formatted.includes('Т.ПометкаУдаления'));
     });
   });
 });

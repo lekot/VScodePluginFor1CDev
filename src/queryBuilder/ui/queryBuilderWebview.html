@@ -1893,8 +1893,8 @@
                 }
 
                 function replaceAliasInExpr(expr) {
-                    if (!expr) return;
-                    if (expr.type === 'Literal') {
+                    if (!expr || typeof expr !== 'object') return;
+                    if (expr.type === 'Literal' || expr.type === 'Parameter') {
                         return;
                     }
                     if (expr.type === 'CompoundIdentifier' && expr.parts && expr.parts.length > 0) {
@@ -1912,9 +1912,32 @@
                         replaceAliasInExpr(expr.right);
                     } else if (expr.type === 'UnaryOp') {
                         replaceAliasInExpr(expr.operand);
-                    } else if (expr.type === 'Aggregate' || expr.type === 'FunctionCall') {
+                    } else if (expr.type === 'Aggregate') {
                         if (expr.expression) replaceAliasInExpr(expr.expression);
-                        if (expr.args) expr.args.forEach(replaceAliasInExpr);
+                    } else if (expr.type === 'FunctionCall') {
+                        if (expr.expression) replaceAliasInExpr(expr.expression);
+                        if (expr.args && Array.isArray(expr.args)) expr.args.forEach(replaceAliasInExpr);
+                    } else if (expr.type === 'CaseWhen') {
+                        if (expr.cases && Array.isArray(expr.cases)) {
+                            expr.cases.forEach(function(c) {
+                                if (c.when) replaceAliasInExpr(c.when);
+                                if (c.then) replaceAliasInExpr(c.then);
+                            });
+                        }
+                        if (expr.else) replaceAliasInExpr(expr.else);
+                    } else if (expr.type === 'In') {
+                        if (expr.expression) replaceAliasInExpr(expr.expression);
+                        if (Array.isArray(expr.values)) {
+                            expr.values.forEach(replaceAliasInExpr);
+                        }
+                    } else if (expr.type === 'Between') {
+                        if (expr.expression) replaceAliasInExpr(expr.expression);
+                        if (expr.from) replaceAliasInExpr(expr.from);
+                        if (expr.to) replaceAliasInExpr(expr.to);
+                    } else if (expr.type === 'Like') {
+                        if (expr.expression) replaceAliasInExpr(expr.expression);
+                        if (expr.pattern) replaceAliasInExpr(expr.pattern);
+                        if (expr.escape) replaceAliasInExpr(expr.escape);
                     }
                 }
 
@@ -1932,6 +1955,9 @@
                     } else {
                         replaceAliasInExpr(f.expression);
                     }
+                    if (f.raw && typeof f.raw === 'string') {
+                        f.raw = replaceAliasInStr(f.raw);
+                    }
                 });
 
                 // 2. Joins
@@ -1941,8 +1967,15 @@
                             if (jn.alias === oldAlias) jn.alias = newAlias;
                             if (jn.t1 === oldAlias) jn.t1 = newAlias;
                             if (jn.t2 === oldAlias) jn.t2 = newAlias;
-                            replaceAliasInExpr(jn.on);
+                            if (typeof jn.on === 'string') {
+                                jn.on = replaceAliasInStr(jn.on);
+                            } else {
+                                replaceAliasInExpr(jn.on);
+                            }
                         });
+                    }
+                    if (fc.source && fc.source.type === 'Table' && Array.isArray(fc.source.params)) {
+                        fc.source.params.forEach(replaceAliasInExpr);
                     }
                 });
 
