@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   handleQueryBuilderMessage,
@@ -1668,8 +1669,8 @@ suite('QueryBuilder Provider & Message Handler', () => {
     });
 
     test('Finding 4: getTargetRootNode selects most specific nested root among configRoots', () => {
-      const outerRootPath = 'C:\\ws';
-      const nestedRootPath = 'C:\\ws\\ConfigurationExtensions\\Patch';
+      const outerRootPath = path.resolve('/ws');
+      const nestedRootPath = path.resolve('/ws/ConfigurationExtensions/Patch');
 
       const outerRootNode = {
         name: 'OuterConfig',
@@ -1698,7 +1699,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
         document: {
           uri: {
             scheme: 'file',
-            fsPath: 'C:\\ws\\ConfigurationExtensions\\Patch\\Documents\\Doc1.bsl',
+            fsPath: path.resolve('/ws/ConfigurationExtensions/Patch/Documents/Doc1.bsl'),
           },
         },
       } as any;
