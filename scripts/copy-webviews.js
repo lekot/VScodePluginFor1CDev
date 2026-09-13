@@ -1,5 +1,8 @@
 const fs = require('fs');
 const path = require('path');
+const { bundleQueryBuilderVisitor } = require('./bundle-query-builder-visitor');
+
+bundleQueryBuilderVisitor();
 
 const sources = [
   'src/rolesEditor/rolesEditorWebview.html',

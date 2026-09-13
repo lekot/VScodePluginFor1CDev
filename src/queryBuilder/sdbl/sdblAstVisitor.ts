@@ -44,6 +44,9 @@ export function traverseExpression(expr: ExpressionNode, visitor: ExpressionVisi
       break;
 
     case 'FunctionCall':
+      if ((expr as { expression?: ExpressionNode }).expression) {
+        traverseExpression((expr as { expression?: ExpressionNode }).expression!, visitor);
+      }
       if (expr.args && Array.isArray(expr.args)) {
         for (const arg of expr.args) {
           traverseExpression(arg, visitor);
@@ -164,11 +167,16 @@ export function transformExpression(
       return current;
 
     case 'FunctionCall': {
+      const targetExpr = (current as { expression?: ExpressionNode }).expression;
+      const newExpression = targetExpr
+        ? transformExpression(targetExpr, transformer)
+        : undefined;
       const newArgs = current.args
         ? current.args.map((a) => transformExpression(a, transformer))
         : [];
       return {
         ...current,
+        ...(newExpression ? { expression: newExpression } : {}),
         args: newArgs,
       };
     }
