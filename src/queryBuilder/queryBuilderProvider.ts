@@ -12,6 +12,7 @@ import {
   QueryBuilderMessageContext,
   getEnclosingScope,
 } from './queryBuilderMessageHandler';
+import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 
 export class QueryBuilderProvider {
@@ -195,15 +196,23 @@ export class QueryBuilderProvider {
       }
     }
 
+    const { targetRoot, targetConfigPath } = this.getTargetRootNode(targetEditor);
     const metadataProvider = new QueryMetadataProvider();
-    let metadata: QueryMetadataNode[] = [];
-    try {
-      metadata = await metadataProvider.buildTreeFromProvider(
-        this.state?.treeDataProvider ?? null
-      );
-    } catch (err) {
-      Logger.warn('Failed to build metadata tree for query builder', err);
-      metadata = metadataProvider.getMetadataCategories();
+    const cachedTree = metadataProvider.getCachedTree(targetConfigPath);
+
+    let metadata: QueryMetadataNode[];
+    if (cachedTree) {
+      metadata = cachedTree;
+    } else {
+      try {
+        metadata = metadataProvider.buildShallowTree(
+          this.state?.treeDataProvider ?? null,
+          targetRoot
+        );
+      } catch (err) {
+        Logger.warn('Failed to build shallow metadata tree for query builder', err);
+        metadata = metadataProvider.getMetadataCategories();
+      }
     }
 
     const title = 'Конструктор запроса' + (extracted.isNewQuery ? ' (новый)' : '');
@@ -247,6 +256,7 @@ export class QueryBuilderProvider {
       variableName: extracted.variableName,
       metadataProvider,
       treeProvider: this.state?.treeDataProvider ?? null,
+      targetRoot,
       isSdblDocument,
       initialDocumentVersion,
       expectedText,
@@ -267,7 +277,82 @@ export class QueryBuilderProvider {
 
     this.panel.webview.html = this.getHtmlContent();
 
+    if (!cachedTree && targetConfigPath) {
+      void this.warmupMetadata(metadataProvider, targetRoot, targetConfigPath);
+    }
+
     return this.panel;
+  }
+
+  private getTargetRootNode(targetEditor?: vscode.TextEditor): {
+    targetRoot: TreeNode | null;
+    targetConfigPath: string;
+  } {
+    const treeProvider = this.state?.treeDataProvider;
+    if (!treeProvider) {
+      return { targetRoot: null, targetConfigPath: '' };
+    }
+
+    const allRoots = treeProvider.getRootNodes() ?? [];
+    const configRoots = treeProvider.getConfigRootPaths() ?? [];
+
+    let matchedConfigPath = '';
+    if (targetEditor && targetEditor.document.uri.scheme === 'file') {
+      const filePath = targetEditor.document.uri.fsPath;
+      for (const rootPath of configRoots) {
+        const rel = path.relative(path.normalize(rootPath), path.normalize(filePath));
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+          matchedConfigPath = rootPath;
+          break;
+        }
+      }
+    }
+
+    if (matchedConfigPath) {
+      const matchedRoot = allRoots.find((r) => {
+        const rPath = treeProvider.getSupportConfigRootForNode(r);
+        return (
+          rPath &&
+          path.normalize(rPath).toLowerCase() === path.normalize(matchedConfigPath).toLowerCase()
+        );
+      });
+      if (matchedRoot) {
+        return { targetRoot: matchedRoot, targetConfigPath: matchedConfigPath };
+      }
+    }
+
+    const firstConfigRoot =
+      allRoots.find((r) => r.type === MetadataType.Configuration) ??
+      allRoots[0] ??
+      null;
+    const firstConfigPath = firstConfigRoot
+      ? treeProvider.getSupportConfigRootForNode(firstConfigRoot) ?? ''
+      : '';
+    return { targetRoot: firstConfigRoot, targetConfigPath: firstConfigPath };
+  }
+
+  private async warmupMetadata(
+    metadataProvider: QueryMetadataProvider,
+    targetRoot: TreeNode | null,
+    configPath: string
+  ): Promise<void> {
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const fullTree = await metadataProvider.buildTreeFromProvider(
+        this.state?.treeDataProvider ?? null,
+        targetRoot
+      );
+      metadataProvider.setCachedTree(configPath, fullTree);
+      if (this.panel) {
+        this.messageHandler?.updateMetadata(fullTree);
+        await this.panel.webview.postMessage({
+          command: 'updateMetadata',
+          metadata: fullTree,
+        });
+      }
+    } catch (err) {
+      Logger.warn('[QueryBuilderProvider] Background metadata warmup error', err);
+    }
   }
 
   private resolveWebviewHtmlPath(): string {

@@ -238,6 +238,149 @@ function normalizeDataType(raw: unknown): string {
 }
 
 export class QueryMetadataProvider {
+  private static cachedTrees: Map<string, QueryMetadataNode[]> = new Map();
+
+  public static clearCache(): void {
+    QueryMetadataProvider.cachedTrees.clear();
+  }
+
+  public getCachedTree(configPath: string = ''): QueryMetadataNode[] | undefined {
+    return QueryMetadataProvider.cachedTrees.get(configPath);
+  }
+
+  public setCachedTree(configPath: string = '', tree: QueryMetadataNode[]): void {
+    QueryMetadataProvider.cachedTrees.set(configPath, tree);
+  }
+
+  buildShallowTree(
+    treeProvider?: MetadataTreeDataProvider | null,
+    targetRootOrTempTables?: TreeNode | TempTableDefinition[] | null,
+    tempTables?: TempTableDefinition[]
+  ): QueryMetadataNode[] {
+    let targetRoot: TreeNode | null = null;
+    let actualTempTables = tempTables;
+    if (Array.isArray(targetRootOrTempTables)) {
+      actualTempTables = targetRootOrTempTables;
+    } else if (targetRootOrTempTables) {
+      targetRoot = targetRootOrTempTables;
+    }
+
+    if (!treeProvider || typeof treeProvider.getRootNodes !== 'function') {
+      return this.getMetadataCategories(actualTempTables);
+    }
+
+    const categories = this.getMetadataCategories(actualTempTables);
+    const categoryMap = new Map<string, QueryMetadataNode>();
+    for (const cat of categories) {
+      categoryMap.set(cat.id, cat);
+    }
+
+    const rootNodes = treeProvider.getRootNodes();
+    if (!rootNodes || rootNodes.length === 0) {
+      return categories;
+    }
+
+    const rootToTraverse =
+      targetRoot ??
+      rootNodes.find((r) => r.type === MetadataType.Configuration) ??
+      rootNodes[0];
+
+    if (rootToTraverse) {
+      this.traverseNodeForShallowCategories(rootToTraverse, categoryMap);
+    }
+
+    return categories;
+  }
+
+  private traverseNodeForShallowCategories(
+    node: TreeNode,
+    categoryMap: Map<string, QueryMetadataNode>
+  ): void {
+    if (
+      node.type === MetadataType.Configuration ||
+      node.type === MetadataType.ConfigurationPackage
+    ) {
+      const children = node.children || [];
+      for (const child of children) {
+        this.traverseNodeForShallowCategories(child, categoryMap);
+      }
+      return;
+    }
+
+    const catConfig =
+      (node.id ? CONFIG_BY_ID.get(node.id.toLowerCase()) : undefined) ||
+      (node.name ? CONFIG_BY_ID.get(node.name.toLowerCase()) : undefined) ||
+      CONFIG_BY_TYPE.get(node.type);
+
+    if (catConfig) {
+      const targetCategory = categoryMap.get(catConfig.id);
+      if (!targetCategory) {
+        return;
+      }
+
+      const children = node.children || [];
+      for (const child of children) {
+        if (child.type === catConfig.metadataType) {
+          const tableNode = this.buildShallowTableNode(child, catConfig);
+          targetCategory.children = targetCategory.children || [];
+          targetCategory.children.push(tableNode);
+
+          if (
+            catConfig.metadataType === MetadataType.InformationRegister ||
+            catConfig.metadataType === MetadataType.AccumulationRegister ||
+            catConfig.metadataType === MetadataType.AccountingRegister
+          ) {
+            const vts = (tableNode.children || []).filter(
+              (c) => c.nodeType === 'virtualTable'
+            );
+            targetCategory.children.push(...vts);
+          }
+        }
+      }
+    }
+  }
+
+  private buildShallowTableNode(
+    node: TreeNode,
+    catConfig: CategoryConfig
+  ): QueryMetadataNode {
+    const tableId = `${catConfig.metadataType}.${node.name}`;
+    const tableFullName = `${catConfig.singularRussian}.${node.name}`;
+    const synonym = extractSynonym(node);
+
+    const stdAttrs = getStandardAttributes(catConfig.metadataType, {
+      parentId: tableId,
+      parentFullName: tableFullName,
+    });
+
+    const isRegister =
+      catConfig.metadataType === MetadataType.InformationRegister ||
+      catConfig.metadataType === MetadataType.AccumulationRegister ||
+      catConfig.metadataType === MetadataType.AccountingRegister;
+
+    let vts: QueryMetadataNode[] = [];
+    if (isRegister) {
+      vts = getVirtualTables(
+        catConfig.metadataType,
+        node.name,
+        [],
+        [],
+        []
+      );
+    }
+
+    return {
+      id: tableId,
+      name: node.name,
+      fullName: tableFullName,
+      label: synonym ? `${node.name} (${synonym})` : node.name,
+      synonym,
+      nodeType: 'table',
+      hasChildren: true,
+      children: [...stdAttrs, ...vts],
+    };
+  }
+
   /**
    * Returns top-level metadata categories (Catalogs, Documents, Registers, etc.)
    * and optionally the TempTables category when tempTables are defined.
@@ -304,29 +447,103 @@ export class QueryMetadataProvider {
    */
   async buildTreeFromProvider(
     treeProvider?: MetadataTreeDataProvider | null,
+    targetRootOrTempTables?: TreeNode | TempTableDefinition[] | null,
     tempTables?: TempTableDefinition[]
   ): Promise<QueryMetadataNode[]> {
+    let targetRoot: TreeNode | null = null;
+    let actualTempTables = tempTables;
+    if (Array.isArray(targetRootOrTempTables)) {
+      actualTempTables = targetRootOrTempTables;
+    } else if (targetRootOrTempTables) {
+      targetRoot = targetRootOrTempTables;
+    }
+
     if (!treeProvider || typeof treeProvider.getRootNodes !== 'function') {
-      return this.getMetadataCategories(tempTables);
+      return this.getMetadataCategories(actualTempTables);
     }
 
-    const rootNodes = treeProvider.getRootNodes();
-    if (!rootNodes || rootNodes.length === 0) {
-      return this.getMetadataCategories(tempTables);
-    }
-
-    const categories = this.getMetadataCategories(tempTables);
+    const categories = this.getMetadataCategories(actualTempTables);
     const categoryMap = new Map<string, QueryMetadataNode>();
     for (const cat of categories) {
       categoryMap.set(cat.id, cat);
     }
 
-    // Traverse root nodes to find category folders or direct metadata objects
-    for (const root of rootNodes) {
-      await this.traverseNodeForCategories(root, treeProvider, categoryMap);
+    const rootNodes = treeProvider.getRootNodes();
+    if (!rootNodes || rootNodes.length === 0) {
+      return categories;
+    }
+
+    const rootToTraverse =
+      targetRoot ??
+      rootNodes.find((r) => r.type === MetadataType.Configuration) ??
+      rootNodes[0];
+
+    if (rootToTraverse) {
+      await this.traverseNodeForCategories(rootToTraverse, treeProvider, categoryMap);
     }
 
     return categories;
+  }
+
+  /**
+   * Loads detailed attributes (custom attributes, tabular sections) for a single table on-demand.
+   */
+  async loadTableAttributes(
+    treeProvider: MetadataTreeDataProvider,
+    targetRoot: TreeNode | null,
+    tableId: string
+  ): Promise<QueryMetadataNode[]> {
+    const parts = tableId.split('.');
+    if (parts.length < 2) {
+      return [];
+    }
+    const metaTypeStr = parts[0];
+    const tableName = parts.slice(1).join('.');
+    const catConfig = CONFIG_BY_TYPE.get(metaTypeStr as MetadataType);
+    if (!catConfig) {
+      return [];
+    }
+
+    const allRoots = treeProvider.getRootNodes() || [];
+    const root =
+      targetRoot ??
+      allRoots.find((r) => r.type === MetadataType.Configuration) ??
+      allRoots[0];
+    if (!root) {
+      return [];
+    }
+
+    let objectNode: TreeNode | undefined;
+    const findInNode = async (n: TreeNode): Promise<void> => {
+      if (objectNode) {
+        return;
+      }
+      if (n.name === tableName && (n.type === catConfig.metadataType || !catConfig.metadataType)) {
+        objectNode = n;
+        return;
+      }
+      const children = await this.safeGetChildren(treeProvider, n);
+      for (const child of children) {
+        if (objectNode) {
+          return;
+        }
+        if (child.name === tableName && child.type === catConfig.metadataType) {
+          objectNode = child;
+          return;
+        }
+        if (child.children && child.children.length > 0) {
+          await findInNode(child);
+        }
+      }
+    };
+
+    await findInNode(root);
+    if (!objectNode) {
+      return [];
+    }
+
+    const built = await this.buildTableNode(objectNode, catConfig, treeProvider);
+    return built.children || [];
   }
 
   private async safeGetChildren(
@@ -389,6 +606,9 @@ export class QueryMetadataProvider {
             );
             targetCategory.children.push(...vts);
           }
+
+          // Cooperative yield to keep event loop responsive
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
       }
     }

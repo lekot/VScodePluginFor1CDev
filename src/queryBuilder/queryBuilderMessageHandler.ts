@@ -3,6 +3,7 @@ import { QueryPackage } from './sdbl/sdblAst';
 import { QueryMetadataNode } from './metadata/queryMetadataTypes';
 import { QueryMetadataProvider } from './metadata/queryMetadataProvider';
 import { MetadataTreeDataProvider } from '../providers/treeDataProvider';
+import { TreeNode } from '../models/treeNode';
 import {
   generateBslQueryWithProcessing,
   generateBslSimpleQuery,
@@ -30,6 +31,7 @@ export interface QueryBuilderMessageContext {
   variableName?: string;
   metadataProvider?: QueryMetadataProvider;
   treeProvider?: MetadataTreeDataProvider | null;
+  targetRoot?: TreeNode | null;
   onAstUpdated?: (ast: QueryPackage) => void;
   isSdblDocument?: boolean;
   initialDocumentVersion?: number;
@@ -393,13 +395,36 @@ export async function handleQueryBuilderMessage(
       case 'requestMetadata': {
         if (context.metadataProvider) {
           const updated = await context.metadataProvider.buildTreeFromProvider(
-            context.treeProvider
+            context.treeProvider,
+            context.targetRoot
           );
           context.metadata = updated;
           await context.panel.webview.postMessage({
             command: 'updateMetadata',
             metadata: updated,
           });
+        }
+        break;
+      }
+
+      case 'loadTableAttributes': {
+        const tableId = msg.tableId as string | undefined;
+        if (!tableId || !context.metadataProvider || !context.treeProvider) {
+          break;
+        }
+        try {
+          const attributes = await context.metadataProvider.loadTableAttributes(
+            context.treeProvider,
+            context.targetRoot ?? null,
+            tableId
+          );
+          await context.panel.webview.postMessage({
+            command: 'tableAttributesLoaded',
+            tableId,
+            children: attributes,
+          });
+        } catch (err) {
+          Logger.warn('Failed to load table attributes on-demand', err);
         }
         break;
       }
@@ -415,6 +440,10 @@ export async function handleQueryBuilderMessage(
 
 export class QueryBuilderMessageHandler {
   constructor(public readonly context: QueryBuilderMessageContext) {}
+
+  public updateMetadata(metadata: QueryMetadataNode[]): void {
+    this.context.metadata = metadata;
+  }
 
   public async handleMessage(message: unknown): Promise<void> {
     await handleQueryBuilderMessage(message, this.context);

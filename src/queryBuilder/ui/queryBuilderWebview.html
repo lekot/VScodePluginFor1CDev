@@ -2630,9 +2630,22 @@
 
             // Tab 1: Tables & Fields
             function renderTab1() {
-                renderMetadataTree();
+                if (!elements.metadataTree.children || elements.metadataTree.children.length === 0) {
+                    renderMetadataTree();
+                }
                 renderFromTables();
                 renderSelectedFields();
+            }
+
+            function checkHasMatchingDescendant(node, filter) {
+                if (!node.children || node.children.length === 0) return false;
+                for (let i = 0; i < node.children.length; i++) {
+                    const ch = node.children[i];
+                    const label = ch.label || ch.name || ch.id || '';
+                    if (label.toLowerCase().indexOf(filter) !== -1) return true;
+                    if (checkHasMatchingDescendant(ch, filter)) return true;
+                }
+                return false;
             }
 
             function renderMetadataTree() {
@@ -2659,31 +2672,29 @@
             }
 
             function renderTreeNode(node, filter) {
-                const label = node.label || node.name || node.id;
+                const label = node.label || node.name || node.id || '';
                 const matchesSelf = !filter || label.toLowerCase().indexOf(filter) !== -1;
+                const hasChildren = (node.children && node.children.length > 0) || Boolean(node.hasChildren);
 
-                let renderedChildren = [];
-                if (node.children && node.children.length > 0) {
-                    node.children.forEach(function(ch) {
-                        const childEl = renderTreeNode(ch, filter);
-                        if (childEl) renderedChildren.push(childEl);
-                    });
-                }
-
-                if (!matchesSelf && renderedChildren.length === 0) {
-                    return null;
+                if (filter && !matchesSelf) {
+                    const hasMatchingDescendant = checkHasMatchingDescendant(node, filter);
+                    if (!hasMatchingDescendant) {
+                        return null;
+                    }
                 }
 
                 const wrapper = document.createElement('div');
                 wrapper.className = 'tree-node';
+                wrapper.setAttribute('data-node-id', node.id || node.name);
 
                 const row = document.createElement('div');
                 row.className = 'tree-row';
 
-                const hasChildren = renderedChildren.length > 0 || node.hasChildren;
                 const toggle = document.createElement('span');
                 toggle.className = 'tree-toggle';
-                toggle.textContent = hasChildren ? '▼' : '•';
+
+                const isExpanded = filter ? true : Boolean(state.expandedNodes && state.expandedNodes[node.id]);
+                toggle.textContent = hasChildren ? (isExpanded ? '▼' : '▶') : '•';
 
                 const icon = document.createElement('span');
                 icon.className = 'tree-icon';
@@ -2700,14 +2711,48 @@
 
                 const childrenDiv = document.createElement('div');
                 childrenDiv.className = 'tree-children';
-                renderedChildren.forEach(function(c) { childrenDiv.appendChild(c); });
+                childrenDiv.style.display = isExpanded ? 'flex' : 'none';
                 wrapper.appendChild(childrenDiv);
+
+                let childrenRendered = false;
+                function populateChildren() {
+                    if (childrenRendered) return;
+                    childrenRendered = true;
+                    childrenDiv.innerHTML = '';
+                    if (node.children && node.children.length > 0) {
+                        node.children.forEach(function(ch) {
+                            const childEl = renderTreeNode(ch, filter);
+                            if (childEl) childrenDiv.appendChild(childEl);
+                        });
+                    } else if (node.nodeType === 'table') {
+                        vscode.postMessage({
+                            command: 'loadTableAttributes',
+                            tableId: node.id,
+                            tableName: node.name,
+                            fullName: node.fullName
+                        });
+                    }
+                }
+
+                if (isExpanded) {
+                    populateChildren();
+                }
 
                 toggle.addEventListener('click', function(e) {
                     e.stopPropagation();
-                    const isCollapsed = childrenDiv.style.display === 'none';
-                    childrenDiv.style.display = isCollapsed ? 'flex' : 'none';
-                    toggle.textContent = isCollapsed ? '▼' : '▶';
+                    if (!hasChildren) return;
+                    state.expandedNodes = state.expandedNodes || {};
+                    const currentlyOpen = childrenDiv.style.display !== 'none';
+                    if (currentlyOpen) {
+                        childrenDiv.style.display = 'none';
+                        toggle.textContent = '▶';
+                        state.expandedNodes[node.id] = false;
+                    } else {
+                        populateChildren();
+                        childrenDiv.style.display = 'flex';
+                        toggle.textContent = '▼';
+                        state.expandedNodes[node.id] = true;
+                    }
                 });
 
                 row.addEventListener('dblclick', function() {
@@ -4465,6 +4510,42 @@
                 return sel;
             }
 
+            function mergeTableAttributes(tableId, children) {
+                function findAndSet(nodes) {
+                    for (let i = 0; i < nodes.length; i++) {
+                        const n = nodes[i];
+                        if (n.id === tableId) {
+                            n.children = children;
+                            n.hasChildren = children.length > 0;
+                            return n;
+                        }
+                        if (n.children && n.children.length > 0) {
+                            const found = findAndSet(n.children);
+                            if (found) return found;
+                        }
+                    }
+                    return null;
+                }
+                const found = findAndSet(state.metadataTree);
+                if (found) {
+                    const nodeEl = document.querySelector('[data-node-id="' + CSS.escape(tableId) + '"]');
+                    if (nodeEl) {
+                        const childrenDiv = nodeEl.querySelector('.tree-children');
+                        if (childrenDiv) {
+                            childrenDiv.innerHTML = '';
+                            const query = (elements.metadataSearch.value || '').trim().toLowerCase();
+                            children.forEach(function(ch) {
+                                const childEl = renderTreeNode(ch, query);
+                                if (childEl) childrenDiv.appendChild(childEl);
+                            });
+                            childrenDiv.style.display = 'flex';
+                            const toggle = nodeEl.querySelector('.tree-toggle');
+                            if (toggle) toggle.textContent = children.length > 0 ? '▼' : '•';
+                        }
+                    }
+                }
+            }
+
             // ── Inbound Message Handling ──
             window.addEventListener('message', function(event) {
                 const msg = event.data;
@@ -4482,6 +4563,11 @@
                         if (msg.metadata) {
                             state.metadataTree = msg.metadata;
                             renderMetadataTree();
+                        }
+                        break;
+                    case 'tableAttributesLoaded':
+                        if (msg.tableId && msg.children) {
+                            mergeTableAttributes(msg.tableId, msg.children);
                         }
                         break;
                 }
