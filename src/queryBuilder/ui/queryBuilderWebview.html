@@ -1630,7 +1630,8 @@
                             if (byItem.hierarchy) {
                                 opts += (byItem.hierarchyType === 'OnlyHierarchy' ? ' ТОЛЬКО ИЕРАРХИЯ' : ' ИЕРАРХИЯ');
                             }
-                            if (byItem.periods && byItem.periodDefinition) {
+                            const hasPeriods = byItem.periods !== false && Boolean(byItem.periods || byItem.period);
+                            if (hasPeriods && byItem.periodDefinition) {
                                 const def = byItem.periodDefinition;
                                 const pType = def.periodType || '';
                                 const fromStr = def.from ? getExpressionString(def.from) : '';
@@ -1641,7 +1642,7 @@
                                     if (toStr) paramsStr += ', ' + toStr;
                                 }
                                 opts += paramsStr ? ' ПЕРИОДАМИ(' + paramsStr + ')' : ' ПЕРИОДАМИ';
-                            } else if (byItem.periods) {
+                            } else if (hasPeriods) {
                                 opts += ' ПЕРИОДАМИ';
                             }
                             lines.push('\t' + getExpressionString(byItem.expression) + opts + comma);
@@ -3779,11 +3780,14 @@
                     tdPer.style.textAlign = 'center';
                     const chPer = document.createElement('input');
                     chPer.type = 'checkbox';
-                    chPer.checked = Boolean(tb.periods);
+                    chPer.checked = Boolean(tb.periods !== false && (tb.periods || tb.period));
                     chPer.addEventListener('change', function() {
                         tb.periods = chPer.checked;
+                        tb.period = chPer.checked;
                         if (!chPer.checked) {
                             delete tb.periodDefinition;
+                            delete tb.period;
+                            tb.periods = false;
                         }
                         notifyChange();
                     });

@@ -1,6 +1,8 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { parseSdbl } from '../../../src/queryBuilder/sdbl/sdblParser';
+import { formatSdbl } from '../../../src/queryBuilder/sdbl/sdblFormatter';
 
 suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
   const rootDir = path.resolve(__dirname, '../../../..');
@@ -998,7 +1000,54 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       assert.strictEqual(env.elements.textParseError.style.display, 'flex');
       assert.ok(env.elements.textParseError.textContent.includes('Ошибка парсинга SDBL'));
     });
+
+    test('Finding 3 (Review 64ca628): unchecking periods on real parsed AST leaves NO ПЕРИОДАМИ in production formatter', () => {
+      const realParsed = parseSdbl('ВЫБРАТЬ A ИЗ T ИТОГИ ПО A ПЕРИОДАМИ(ДЕНЬ, &Нач, &Кон)');
+      const sel = realParsed.queries[0] as any;
+      assert.strictEqual(sel.totals?.by[0].period, true, 'Real parser sets period: true');
+      assert.strictEqual(sel.totals?.by[0].periods, true, 'Real parser sets periods: true');
+
+      const env = createWebviewEnvironment();
+      // Initialize with real parsed AST
+      env.postMessageToWebview({ command: 'init', ast: realParsed, metadata: [] });
+      env.window.renderTab9();
+
+      const rows = env.elements.tbodyTotalsGroups.children;
+      assert.strictEqual(rows.length, 1);
+      const checkboxes = rows[0].querySelectorAll('input[type="checkbox"]');
+      const chPer = checkboxes[1];
+      assert.strictEqual(chPer.checked, true, 'Periods checkbox must be checked initially');
+
+      // Uncheck it
+      chPer.checked = false;
+      chPer.dispatchEvent({ type: 'change', target: chPer });
+
+      const q = env.window.getActiveQuery();
+      assert.strictEqual(q.totals.by[0].periods, false, 'periods must be false');
+      assert.strictEqual(q.totals.by[0].period, undefined, 'period must be deleted');
+      assert.strictEqual(q.totals.by[0].periodDefinition, undefined, 'periodDefinition must be undefined');
+
+      // Click save button and verify saved AST formatted with production backend formatSdbl
+      env.elements.btnSave.click();
+      const saveMessages = env.sentMessages.filter((m: any) => m.command === 'save');
+      assert.strictEqual(saveMessages.length, 1, 'Save message must be sent');
+      const savedPkg = saveMessages[0].ast;
+      const backendFormatted = formatSdbl(savedPkg);
+      assert.ok(!backendFormatted.includes('ПЕРИОДАМИ'), 'Backend production formatSdbl must NOT contain ПЕРИОДАМИ');
+
+      // Now re-check periods checkbox
+      chPer.checked = true;
+      chPer.dispatchEvent({ type: 'change', target: chPer });
+      assert.strictEqual(q.totals.by[0].periods, true, 'periods must be true after recheck');
+
+      env.elements.btnSave.click();
+      const saveMessages2 = env.sentMessages.filter((m: any) => m.command === 'save');
+      assert.strictEqual(saveMessages2.length, 2);
+      const recheckedFormatted = formatSdbl(saveMessages2[1].ast);
+      assert.ok(recheckedFormatted.includes('ПЕРИОДАМИ'), 'Rechecking periods must restore ПЕРИОДАМИ in production formatter');
+    });
   });
 });
+
 
 

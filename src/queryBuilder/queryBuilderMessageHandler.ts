@@ -38,6 +38,32 @@ export interface QueryBuilderMessageContext {
   surroundingPrefix?: string;
   surroundingSuffix?: string;
   occurrenceIndex?: number;
+  initialOccurrenceCount?: number;
+  enclosingScope?: string;
+}
+
+/**
+ * Detects the enclosing BSL procedure or function name for a given offset in documentText.
+ * Returns the procedure/function name if offset is inside a procedure/function, or undefined if at module level.
+ */
+export function getEnclosingScope(documentText: string, offset: number): string | undefined {
+  const textBefore = documentText.slice(0, offset);
+  const procRegex = /(?:^|\r?\n)[ \t]*(?:Процедура|Функция|Procedure|Function)\s+([A-Za-zА-Яа-я0-9_]+)/gi;
+  let lastMatch: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null = null;
+  while ((m = procRegex.exec(textBefore)) !== null) {
+    lastMatch = m;
+  }
+  if (!lastMatch) {
+    return undefined;
+  }
+  const scopeName = lastMatch[1];
+  const afterHeader = textBefore.slice(lastMatch.index + lastMatch[0].length);
+  const endRegex = /(?:^|\r?\n)[ \t]*(?:КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)/i;
+  if (endRegex.test(afterHeader)) {
+    return undefined;
+  }
+  return scopeName;
 }
 
 export interface QueryBuilderInboundMessage {
@@ -87,8 +113,9 @@ export async function handleQueryBuilderMessage(
         // Finding 1: If withProcessing mode is requested on an existing query without statementRange,
         // it cannot safely replace the statement (e.g. inside Возврат, concatenation, compound property, or chained calls).
         // Abort save to prevent BSL code corruption!
+        // NOTE (Finding 2): For pure SDBL documents, statementRange is not expected and formatSdbl is used.
         const isExistingQuery = context.replaceRange.startOffset !== context.replaceRange.endOffset;
-        if (targetMode === 'withProcessing' && isExistingQuery && !context.statementRange) {
+        if (!context.isSdblDocument && targetMode === 'withProcessing' && isExistingQuery && !context.statementRange) {
           void vscode.window.showErrorMessage(
             'Невозможно сгенерировать обработку результата запроса: исходный запрос находится внутри сложного выражения или оператора Возврат. Сохранение отменено.'
           );
@@ -107,7 +134,7 @@ export async function handleQueryBuilderMessage(
         }
 
         if (context.editor) {
-          const isWithProcessing = targetMode === 'withProcessing' && !!context.statementRange;
+          const isWithProcessing = !context.isSdblDocument && targetMode === 'withProcessing' && !!context.statementRange;
           const activeRange = isWithProcessing ? context.statementRange! : context.replaceRange;
           const expectedText = isWithProcessing
             ? (context.expectedStatementText ?? context.expectedText)
@@ -143,7 +170,11 @@ export async function handleQueryBuilderMessage(
             );
             const currentPrefixLine = getImmediatePrefixLine(currentPrefix);
 
+            const currentScope = getEnclosingScope(fullText, currentOffset);
+            const isScopeValid = context.enclosingScope === undefined || currentScope === context.enclosingScope;
+
             const isContextValid =
+              isScopeValid &&
               currentText === expectedText &&
               (expectedPrefixLine.length === 0 ||
                 currentPrefixLine === expectedPrefixLine ||
@@ -175,7 +206,7 @@ export async function handleQueryBuilderMessage(
                 return;
               }
 
-              // Evaluate candidate occurrences against context prefix/suffix and original position
+              // Evaluate candidate occurrences against context prefix/suffix, enclosing scope, and original position
               const suffix = context.surroundingSuffix ?? '';
               const originalOffset = activeRange.startOffset;
 
@@ -185,6 +216,17 @@ export async function handleQueryBuilderMessage(
 
               for (let i = 0; i < occurrences.length; i++) {
                 const off = occurrences[i];
+
+                // 1. Enclosing scope validation:
+                // If the target query was inside a procedure or function, any candidate
+                // in a different procedure or function must be disqualified immediately.
+                if (context.enclosingScope !== undefined) {
+                  const candidateScope = getEnclosingScope(fullText, off);
+                  if (candidateScope !== context.enclosingScope) {
+                    continue;
+                  }
+                }
+
                 let score = 0;
                 let contextMatched = false;
 
@@ -194,17 +236,19 @@ export async function handleQueryBuilderMessage(
                   if (actualPrefix === prefix) {
                     score += 100;
                     contextMatched = true;
+                  } else if (prefix.endsWith(actualPrefix) || actualPrefix.endsWith(prefix)) {
+                    score += 50;
+                    contextMatched = true;
                   } else if (
                     expectedPrefixLine.length > 0 &&
                     (actualPrefixLine === expectedPrefixLine ||
                       actualPrefixLine.endsWith(expectedPrefixLine) ||
                       expectedPrefixLine.endsWith(actualPrefixLine))
                   ) {
-                    score += 60;
-                    contextMatched = true;
-                  } else if (prefix.endsWith(actualPrefix) || actualPrefix.endsWith(prefix)) {
-                    score += 30;
-                    contextMatched = true;
+                    score += 20;
+                    if (context.initialOccurrenceCount === undefined || context.initialOccurrenceCount <= 1) {
+                      contextMatched = true;
+                    }
                   }
 
                   // If expectedPrefixLine is non-empty and actualPrefixLine contradicts it completely,
@@ -236,6 +280,15 @@ export async function handleQueryBuilderMessage(
 
                 if (context.occurrenceIndex !== undefined && i === context.occurrenceIndex) {
                   score += 50;
+                }
+
+                // If multiple occurrences initially existed, do not accept unprovable matches:
+                if (
+                  context.initialOccurrenceCount !== undefined &&
+                  context.initialOccurrenceCount > 1 &&
+                  !contextMatched
+                ) {
+                  continue;
                 }
 
                 // If occurrence was explicitly not the first, but only 1 occurrence remains and context didn't match:

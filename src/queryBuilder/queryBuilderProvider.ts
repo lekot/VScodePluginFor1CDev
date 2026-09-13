@@ -10,6 +10,7 @@ import { QueryMetadataNode } from './metadata/queryMetadataTypes';
 import {
   QueryBuilderMessageHandler,
   QueryBuilderMessageContext,
+  getEnclosingScope,
 } from './queryBuilderMessageHandler';
 import { Logger } from '../utils/logger';
 
@@ -149,21 +150,26 @@ export class QueryBuilderProvider {
     const targetExpectedText = isWithProcessingEarly ? (expectedStatementText ?? expectedText) : expectedText;
 
     let occurrenceIndex = 0;
+    let initialOccurrenceCount = 0;
     if (targetExpectedText.length > 0) {
       let idx = -1;
-      while ((idx = documentText.indexOf(targetExpectedText, idx + 1)) !== -1 && idx < activeRangeEarly.startOffset) {
-        occurrenceIndex++;
+      while ((idx = documentText.indexOf(targetExpectedText, idx + 1)) !== -1) {
+        if (idx < activeRangeEarly.startOffset) {
+          occurrenceIndex++;
+        }
+        initialOccurrenceCount++;
       }
     }
 
     const surroundingPrefix = documentText.slice(
-      Math.max(0, activeRangeEarly.startOffset - 60),
+      Math.max(0, activeRangeEarly.startOffset - 200),
       activeRangeEarly.startOffset
     );
     const surroundingSuffix = documentText.slice(
       activeRangeEarly.endOffset,
-      Math.min(documentText.length, activeRangeEarly.endOffset + 60)
+      Math.min(documentText.length, activeRangeEarly.endOffset + 200)
     );
+    const enclosingScope = getEnclosingScope(documentText, activeRangeEarly.startOffset);
 
     let ast: QueryPackage;
     if (extracted.isNewQuery || !extracted.sdblText || extracted.sdblText.trim().length === 0) {
@@ -248,6 +254,8 @@ export class QueryBuilderProvider {
       surroundingPrefix,
       surroundingSuffix,
       occurrenceIndex,
+      initialOccurrenceCount,
+      enclosingScope,
     };
 
     this.messageHandler = new QueryBuilderMessageHandler(messageContext);

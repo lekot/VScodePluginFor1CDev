@@ -330,7 +330,8 @@ function formatTotals(
           bStr += ' ИЕРАРХИЯ';
         }
       }
-      if (item.periods !== false && item.periodDefinition) {
+      const hasPeriods = item.periods !== false && Boolean(item.periods || item.period);
+      if (hasPeriods && item.periodDefinition) {
         const def = item.periodDefinition;
         const pType = def.periodType ?? '';
         const fromStr = def.from ? formatExpression(def.from, indent, newline) : '';
@@ -345,7 +346,7 @@ function formatTotals(
           paramsStr += ',,';
         }
         bStr += ` ПЕРИОДАМИ(${paramsStr})`;
-      } else if (item.periods || item.period) {
+      } else if (hasPeriods) {
         bStr += ' ПЕРИОДАМИ';
       }
       byItems.push(bStr);

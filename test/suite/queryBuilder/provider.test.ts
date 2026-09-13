@@ -4,6 +4,7 @@ import {
   handleQueryBuilderMessage,
   QueryBuilderMessageHandler,
   QueryBuilderMessageContext,
+  getEnclosingScope,
 } from '../../../src/queryBuilder/queryBuilderMessageHandler';
 import { QueryBuilderProvider } from '../../../src/queryBuilder/queryBuilderProvider';
 import { registerQueryBuilderCommands } from '../../../src/queryBuilder/queryBuilderCommands';
@@ -174,10 +175,15 @@ suite('QueryBuilder Provider & Message Handler', () => {
       setVersion: (v: number) => {
         version = v;
       },
+      updateContent: (newText: string, newVersion?: number) => {
+        docText = newText;
+        version = newVersion ?? version + 1;
+      },
     } as unknown as vscode.TextEditor & {
       getFullText: () => string;
       setDocumentText: (newText: string) => void;
       setVersion: (v: number) => void;
+      updateContent: (newText: string, newVersion?: number) => void;
     };
   }
 
@@ -1229,6 +1235,242 @@ suite('QueryBuilder Provider & Message Handler', () => {
         errorMessage.endsWith('. Открытие конструктора отменено.'),
         `Expected error message ending with cancellation suffix, got: ${errorMessage}`
       );
+    });
+
+    test('getEnclosingScope correctly detects BSL procedure and function boundaries', () => {
+      const bslCode = [
+        '// Модуль',
+        'Процедура Первая(Парам1)',
+        '    Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+        '',
+        'Функция Вторая(Парам2) Экспорт',
+        '    Запрос.Текст = "ВЫБРАТЬ 2";',
+        'КонецФункции',
+        '',
+        'Procedure ThirdProc(Arg1)',
+        '    Query.Text = "SELECT 3";',
+        'EndProcedure',
+        '',
+        '// Конец модуля',
+      ].join('\n');
+
+      // Inside Первая
+      const pos1 = bslCode.indexOf('ВЫБРАТЬ 1');
+      assert.strictEqual(getEnclosingScope(bslCode, pos1), 'Первая');
+
+      // Inside Вторая
+      const pos2 = bslCode.indexOf('ВЫБРАТЬ 2');
+      assert.strictEqual(getEnclosingScope(bslCode, pos2), 'Вторая');
+
+      // Inside ThirdProc
+      const pos3 = bslCode.indexOf('SELECT 3');
+      assert.strictEqual(getEnclosingScope(bslCode, pos3), 'ThirdProc');
+
+      // At end of module (outside any procedure)
+      const posEnd = bslCode.indexOf('// Конец модуля');
+      assert.strictEqual(getEnclosingScope(bslCode, posEnd), undefined);
+
+      // At beginning of module
+      assert.strictEqual(getEnclosingScope(bslCode, 0), undefined);
+    });
+
+    test('Finding 1 (Review 64ca628): deleting second procedure with same variable name aborts save and preserves first procedure', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const initialCode = [
+        'Процедура Первая()',
+        'Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+        '',
+        'Процедура Вторая()',
+        'Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      const editor = createMockEditor(initialCode);
+      // Place cursor on "ВЫБРАТЬ 1" in Вторая()
+      const secondLitOffset = initialCode.lastIndexOf('"ВЫБРАТЬ 1"');
+      const startPos = editor.document.positionAt(secondLitOffset + 2);
+      editor.selection = {
+        active: startPos,
+        start: startPos,
+        end: startPos,
+        isEmpty: true,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      // While panel is open, delete Вторая() and add top comment
+      const modifiedCode = [
+        '// Добавленный комментарий',
+        'Процедура Первая()',
+        'Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      editor.updateContent(modifiedCode, 2);
+
+      // Try to save modification
+      const modifiedAst: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' } }],
+            from: [],
+          },
+        ],
+      };
+
+      await mockPanel.simulateMessage({ command: 'save', ast: modifiedAst });
+
+      assert.strictEqual(mockPanel.isDisposed(), false, 'Panel must not be disposed on canceled save');
+      assert.strictEqual(
+        errorMessage,
+        'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+      );
+      assert.strictEqual(editor.getFullText(), modifiedCode, 'First procedure must remain completely untouched');
+    });
+
+    test('Finding 1 (Review 64ca628): shifting second procedure down correctly updates it and leaves first intact', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const initialCode = [
+        'Процедура Первая()',
+        'Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+        '',
+        'Процедура Вторая()',
+        'Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      const editor = createMockEditor(initialCode);
+      // Place cursor on "ВЫБРАТЬ 1" in Вторая()
+      const secondLitOffset = initialCode.lastIndexOf('"ВЫБРАТЬ 1"');
+      const startPos = editor.document.positionAt(secondLitOffset + 2);
+      editor.selection = {
+        active: startPos,
+        start: startPos,
+        end: startPos,
+        isEmpty: true,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      // While panel is open, shift Вторая() down by inserting lines
+      const shiftedCode = [
+        '// Новая строка 1',
+        '// Новая строка 2',
+        'Процедура Первая()',
+        'Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+        '',
+        '// Комментарий над второй',
+        'Процедура Вторая()',
+        'Запрос.Текст = "ВЫБРАТЬ 1";',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      editor.updateContent(shiftedCode, 2);
+
+      // Save modification to "ВЫБРАТЬ 2"
+      const modifiedAst: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' } }],
+            from: [],
+          },
+        ],
+      };
+
+      await mockPanel.simulateMessage({ command: 'save', ast: modifiedAst });
+
+      assert.strictEqual(mockPanel.isDisposed(), true, 'Panel must be disposed after successful save');
+      assert.strictEqual(errorMessage, undefined, 'No error message should be shown on successful save');
+
+      const result = editor.getFullText();
+      // First procedure must still contain "ВЫБРАТЬ 1"
+      assert.ok(
+        result.includes('Процедура Первая()\nЗапрос.Текст = "ВЫБРАТЬ 1";'),
+        'First procedure must remain untouched with ВЫБРАТЬ 1'
+      );
+      // Second procedure must have updated to "ВЫБРАТЬ 2"
+      assert.ok(
+        result.includes('Процедура Вторая()\nЗапрос.Текст = "ВЫБРАТЬ 2";') ||
+          result.includes('Процедура Вторая()\nЗапрос.Текст = "ВЫБРАТЬ\n|\t2";'),
+        'Second procedure must be updated with ВЫБРАТЬ 2'
+      );
+    });
+
+    test('Finding 2 (Review 64ca628): withProcessing mode on existing .sdbl document saves pure SDBL and does not trigger statementRange guard', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const sdblCode = 'ВЫБРАТЬ 1';
+      const editor = createMockEditor(sdblCode, undefined, { languageId: 'sdbl', fileName: 'query.sdbl' });
+      editor.selection = {
+        active: new vscode.Position(0, 0),
+        start: new vscode.Position(0, 0),
+        end: new vscode.Position(0, 9),
+        isEmpty: false,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'withProcessing');
+
+      const modifiedAst: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' } }],
+            from: [],
+          },
+        ],
+      };
+
+      await mockPanel.simulateMessage({ command: 'save', ast: modifiedAst, mode: 'withProcessing' });
+
+      assert.strictEqual(mockPanel.isDisposed(), true, 'Panel must be disposed on save');
+      assert.strictEqual(errorMessage, undefined, 'No statementRange error should be triggered on .sdbl');
+
+      const result = editor.getFullText();
+      assert.ok(result.includes('ВЫБРАТЬ\n\t2') || result.includes('ВЫБРАТЬ'), 'Result must be SDBL');
+      assert.strictEqual(result.includes('|'), false, 'Pure SDBL must NOT contain BSL pipes');
+      assert.strictEqual(result.includes('"'), false, 'Pure SDBL must NOT contain BSL quotes');
+    });
+
+    test('Finding 2 (Review 64ca628): simple mode on existing .sdbl document saves pure SDBL without error', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const sdblCode = 'ВЫБРАТЬ 1';
+      const editor = createMockEditor(sdblCode, undefined, { languageId: 'sdbl', fileName: 'query.sdbl' });
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      const modifiedAst: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 3, raw: '3' } }],
+            from: [],
+          },
+        ],
+      };
+
+      await mockPanel.simulateMessage({ command: 'save', ast: modifiedAst, mode: 'simple' });
+
+      assert.strictEqual(mockPanel.isDisposed(), true);
+      assert.strictEqual(errorMessage, undefined);
+      const result = editor.getFullText();
+      assert.ok(!result.includes('|') && !result.includes('"'), 'Pure SDBL must not have quotes or pipes');
     });
   });
 
