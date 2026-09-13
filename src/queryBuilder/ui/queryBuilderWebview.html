@@ -1758,10 +1758,72 @@
                 }
             }
 
+            // ── Universal AST Expression Visitor ──
+            function traverseAstExpr(expr, visitor) {
+                if (!expr || typeof expr !== 'object') return;
+                if (visitor && visitor.enter) visitor.enter(expr);
+                switch (expr.type) {
+                    case 'Identifier':
+                    case 'CompoundIdentifier':
+                    case 'Literal':
+                    case 'Parameter':
+                    case 'RawExpression':
+                        break;
+                    case 'FunctionCall':
+                        if (expr.expression) traverseAstExpr(expr.expression, visitor);
+                        if (Array.isArray(expr.args)) {
+                            expr.args.forEach(function(arg) { traverseAstExpr(arg, visitor); });
+                        }
+                        break;
+                    case 'Aggregate':
+                        if (expr.expression) traverseAstExpr(expr.expression, visitor);
+                        break;
+                    case 'CaseWhen':
+                        if (Array.isArray(expr.cases)) {
+                            expr.cases.forEach(function(c) {
+                                if (c.when) traverseAstExpr(c.when, visitor);
+                                if (c.then) traverseAstExpr(c.then, visitor);
+                            });
+                        }
+                        if (expr.else) traverseAstExpr(expr.else, visitor);
+                        break;
+                    case 'BinaryOp':
+                        if (expr.left) traverseAstExpr(expr.left, visitor);
+                        if (expr.right) traverseAstExpr(expr.right, visitor);
+                        break;
+                    case 'UnaryOp':
+                        if (expr.operand) traverseAstExpr(expr.operand, visitor);
+                        break;
+                    case 'In':
+                        if (expr.expression) traverseAstExpr(expr.expression, visitor);
+                        if (Array.isArray(expr.values)) {
+                            expr.values.forEach(function(v) { traverseAstExpr(v, visitor); });
+                        }
+                        break;
+                    case 'Between':
+                        if (expr.expression) traverseAstExpr(expr.expression, visitor);
+                        if (expr.from) traverseAstExpr(expr.from, visitor);
+                        if (expr.to) traverseAstExpr(expr.to, visitor);
+                        break;
+                    case 'Like':
+                        if (expr.expression) traverseAstExpr(expr.expression, visitor);
+                        if (expr.pattern) traverseAstExpr(expr.pattern, visitor);
+                        if (expr.escape) traverseAstExpr(expr.escape, visitor);
+                        break;
+                }
+                if (visitor && visitor.leave) visitor.leave(expr);
+            }
+
             function isAggregateExpression(str) {
                 if (!str) return false;
                 if (typeof str === 'object') {
-                    if (str.type === 'Aggregate') return true;
+                    let hasAgg = false;
+                    traverseAstExpr(str, {
+                        enter: function(node) {
+                            if (node.type === 'Aggregate') hasAgg = true;
+                        }
+                    });
+                    if (hasAgg) return true;
                     str = getExpressionString(str);
                 }
                 const upper = String(str).toUpperCase();
@@ -1894,51 +1956,21 @@
 
                 function replaceAliasInExpr(expr) {
                     if (!expr || typeof expr !== 'object') return;
-                    if (expr.type === 'Literal' || expr.type === 'Parameter') {
-                        return;
-                    }
-                    if (expr.type === 'CompoundIdentifier' && expr.parts && expr.parts.length > 0) {
-                        if (expr.parts[0] === oldAlias) {
-                            expr.parts[0] = newAlias;
+                    traverseAstExpr(expr, {
+                        enter: function(node) {
+                            if (node.type === 'CompoundIdentifier' && node.parts && node.parts.length > 0) {
+                                if (node.parts[0] === oldAlias) {
+                                    node.parts[0] = newAlias;
+                                }
+                            } else if (node.type === 'Identifier') {
+                                if (node.name === oldAlias) {
+                                    node.name = newAlias;
+                                }
+                            } else if (node.type === 'RawExpression') {
+                                node.raw = replaceAliasInStr(node.raw);
+                            }
                         }
-                    } else if (expr.type === 'Identifier') {
-                        if (expr.name === oldAlias) {
-                            expr.name = newAlias;
-                        }
-                    } else if (expr.type === 'RawExpression') {
-                        expr.raw = replaceAliasInStr(expr.raw);
-                    } else if (expr.type === 'BinaryOp') {
-                        replaceAliasInExpr(expr.left);
-                        replaceAliasInExpr(expr.right);
-                    } else if (expr.type === 'UnaryOp') {
-                        replaceAliasInExpr(expr.operand);
-                    } else if (expr.type === 'Aggregate') {
-                        if (expr.expression) replaceAliasInExpr(expr.expression);
-                    } else if (expr.type === 'FunctionCall') {
-                        if (expr.expression) replaceAliasInExpr(expr.expression);
-                        if (expr.args && Array.isArray(expr.args)) expr.args.forEach(replaceAliasInExpr);
-                    } else if (expr.type === 'CaseWhen') {
-                        if (expr.cases && Array.isArray(expr.cases)) {
-                            expr.cases.forEach(function(c) {
-                                if (c.when) replaceAliasInExpr(c.when);
-                                if (c.then) replaceAliasInExpr(c.then);
-                            });
-                        }
-                        if (expr.else) replaceAliasInExpr(expr.else);
-                    } else if (expr.type === 'In') {
-                        if (expr.expression) replaceAliasInExpr(expr.expression);
-                        if (Array.isArray(expr.values)) {
-                            expr.values.forEach(replaceAliasInExpr);
-                        }
-                    } else if (expr.type === 'Between') {
-                        if (expr.expression) replaceAliasInExpr(expr.expression);
-                        if (expr.from) replaceAliasInExpr(expr.from);
-                        if (expr.to) replaceAliasInExpr(expr.to);
-                    } else if (expr.type === 'Like') {
-                        if (expr.expression) replaceAliasInExpr(expr.expression);
-                        if (expr.pattern) replaceAliasInExpr(expr.pattern);
-                        if (expr.escape) replaceAliasInExpr(expr.escape);
-                    }
+                    });
                 }
 
                 // 0. From table aliases

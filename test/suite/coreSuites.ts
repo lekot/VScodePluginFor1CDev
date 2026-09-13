@@ -258,6 +258,7 @@ export const coreSuiteFiles: string[] = [
   'suite/queryBuilder/webviewUi.test.js',
   'suite/queryBuilder/ui.test.js',
   'suite/queryBuilder/provider.test.js',
+  'suite/queryBuilder/astVisitor.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

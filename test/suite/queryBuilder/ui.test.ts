@@ -1461,5 +1461,44 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.ok(!formatted.includes('Т.Сумма'));
       assert.ok(!formatted.includes('Т.ПометкаУдаления'));
     });
+
+    test('Refactoring: deeply nested expressions with unary operators, LIKE ESCAPE, and aggregates in CASE WHEN rename reliably', () => {
+      const initialSdbl = [
+        'ВЫБРАТЬ',
+        '\tВЫБОР КОГДА -Т.Сумма < 0 И Т.Описание ПОДОБНО "%Т.Код%" СПЕЦСИМВОЛ "\\" ТОГДА СУММА(Т.Количество) ИНАЧЕ 0 КОНЕЦ КАК Итог',
+        'ИЗ',
+        '\tСправочник.Т КАК Т',
+      ].join('\n');
+
+      const parsedPkg = parseSdbl(initialSdbl);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      const inputAlias = env.elements.tbodyFromTables.querySelector('input[type="text"]');
+      assert.ok(inputAlias);
+      inputAlias.value = 'Компания';
+      inputAlias.dispatchEvent({ type: 'change' });
+
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg);
+
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(formatted.includes('Компания.Сумма'), `Expected updated Компания.Сумма: ${formatted}`);
+      assert.ok(formatted.includes('Компания.Описание'), `Expected updated Компания.Описание: ${formatted}`);
+      assert.ok(formatted.includes('Компания.Количество'), `Expected updated Компания.Количество: ${formatted}`);
+      assert.ok(formatted.includes('"%Т.Код%"'), `Expected string literal preserved: ${formatted}`);
+      assert.ok(formatted.includes('"\\"'), `Expected escape literal preserved: ${formatted}`);
+      assert.ok(!formatted.includes('Т.Сумма'));
+      assert.ok(!formatted.includes('Т.Описание'));
+      assert.ok(!formatted.includes('Т.Количество'));
+    });
   });
 });
+

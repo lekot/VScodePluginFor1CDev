@@ -7,6 +7,7 @@ import {
   TotalsClause,
   ExpressionNode,
 } from './sdblAst';
+import { traverseExpression } from './sdblAstVisitor';
 
 export interface SdblFormatOptions {
   indent?: string;
@@ -905,54 +906,21 @@ export function extractParameters(pkg: QueryPackage): string[] {
       }
       return;
     }
-    switch (expr.type) {
-      case 'Parameter':
-        params.add(expr.name);
-        break;
-      case 'BinaryOp':
-        collectFromExpr(expr.left);
-        collectFromExpr(expr.right);
-        break;
-      case 'UnaryOp':
-        collectFromExpr(expr.operand);
-        break;
-      case 'FunctionCall':
-        expr.args.forEach(collectFromExpr);
-        break;
-      case 'Aggregate':
-        collectFromExpr(expr.expression);
-        break;
-      case 'CaseWhen':
-        expr.cases.forEach((c) => {
-          collectFromExpr(c.when);
-          collectFromExpr(c.then);
-        });
-        if (expr.else) {collectFromExpr(expr.else);}
-        break;
-      case 'In':
-        collectFromExpr(expr.expression);
-        if (Array.isArray(expr.values)) {
-          expr.values.forEach(collectFromExpr);
-        } else {
-          collectFromSelect(expr.values);
+
+    traverseExpression(expr, {
+      enter: (node) => {
+        if (node.type === 'Parameter' && node.name) {
+          params.add(node.name);
+        } else if (node.type === 'RawExpression' && node.raw) {
+          const matches = node.raw.matchAll(/&([a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_]*)/g);
+          for (const m of matches) {
+            params.add(m[1]);
+          }
+        } else if (node.type === 'In' && !Array.isArray(node.values)) {
+          collectFromSelect(node.values);
         }
-        break;
-      case 'Between':
-        collectFromExpr(expr.expression);
-        collectFromExpr(expr.from);
-        collectFromExpr(expr.to);
-        break;
-      case 'Like':
-        collectFromExpr(expr.expression);
-        collectFromExpr(expr.pattern);
-        if (expr.escape) {collectFromExpr(expr.escape);}
-        break;
-      case 'RawExpression':
-        if (expr.raw) {
-          collectFromExpr(expr.raw);
-        }
-        break;
-    }
+      },
+    });
   }
 
   function collectFromTableSource(source: TableOrSubquery | undefined) {
