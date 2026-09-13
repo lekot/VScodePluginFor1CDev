@@ -1472,6 +1472,198 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const result = editor.getFullText();
       assert.ok(!result.includes('|') && !result.includes('"'), 'Pure SDBL must not have quotes or pipes');
     });
+
+    test('Finding 1 (Review b7588c5): deleting query in Else branch within single procedure aborts save and preserves Then branch', async () => {
+      let editCalled = false;
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const initialCode = [
+        'Процедура Выполнить()',
+        '    Если ПервыйРежим Тогда',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    Иначе',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    КонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      const editor = createMockEditor(initialCode, () => {
+        editCalled = true;
+      });
+      // Place cursor on second literal in Else branch
+      const secondLitOffset = initialCode.lastIndexOf('"ВЫБРАТЬ 1"');
+      const startPos = editor.document.positionAt(secondLitOffset + 2);
+      editor.selection = {
+        active: startPos,
+        start: startPos,
+        end: startPos,
+        isEmpty: true,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      // While panel is open, delete Else branch and bump document version
+      const modifiedCode = [
+        'Процедура Выполнить()',
+        '    Если ПервыйРежим Тогда',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    КонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      editor.updateContent(modifiedCode, 2);
+
+      const modifiedAst: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' } }],
+            from: [],
+          },
+        ],
+      };
+
+      await mockPanel.simulateMessage({ command: 'save', ast: modifiedAst });
+
+      assert.strictEqual(editCalled, false, 'editor.edit must not be called when target query was deleted');
+      assert.strictEqual(mockPanel.isDisposed(), false, 'Panel must not be disposed on canceled save');
+      assert.ok(errorMessage, 'Error message must be shown');
+      assert.strictEqual(editor.getFullText(), modifiedCode, 'Then branch must remain completely untouched');
+    });
+
+    test('Finding 1 (Review b7588c5): shifting If-Else branches down within single procedure updates Else branch and preserves Then branch', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const initialCode = [
+        'Процедура Выполнить()',
+        '    Если ПервыйРежим Тогда',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    Иначе',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    КонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      const editor = createMockEditor(initialCode);
+      // Place cursor on second literal in Else branch
+      const secondLitOffset = initialCode.lastIndexOf('"ВЫБРАТЬ 1"');
+      const startPos = editor.document.positionAt(secondLitOffset + 2);
+      editor.selection = {
+        active: startPos,
+        start: startPos,
+        end: startPos,
+        isEmpty: true,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      // While panel is open, shift procedure contents down with comments
+      const shiftedCode = [
+        '// Комментарий в начале файла',
+        'Процедура Выполнить()',
+        '    // Комментарий внутри процедуры',
+        '    Если ПервыйРежим Тогда',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    Иначе',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    КонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      editor.updateContent(shiftedCode, 2);
+
+      const modifiedAst: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' } }],
+            from: [],
+          },
+        ],
+      };
+
+      await mockPanel.simulateMessage({ command: 'save', ast: modifiedAst });
+
+      assert.strictEqual(mockPanel.isDisposed(), true, 'Panel must be disposed after successful save');
+      assert.strictEqual(errorMessage, undefined, 'No error message should be shown on successful save');
+
+      const result = editor.getFullText();
+      // Then branch must still contain "ВЫБРАТЬ 1"
+      assert.ok(
+        result.includes('Если ПервыйРежим Тогда\n        Запрос.Текст = "ВЫБРАТЬ 1";'),
+        'Then branch must remain untouched with ВЫБРАТЬ 1'
+      );
+      // Else branch must be updated to "ВЫБРАТЬ 2"
+      assert.ok(
+        result.includes('Иначе\n        Запрос.Текст = "ВЫБРАТЬ\n|\t2";') ||
+          result.includes('Иначе\n        Запрос.Текст = "ВЫБРАТЬ 2";'),
+        'Else branch must be updated with ВЫБРАТЬ 2'
+      );
+    });
+
+    test('Finding 1 (Review b7588c5): deleting query in Then branch within single procedure aborts save and preserves Else branch', async () => {
+      let editCalled = false;
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const initialCode = [
+        'Процедура Выполнить()',
+        '    Если ПервыйРежим Тогда',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    Иначе',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    КонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      const editor = createMockEditor(initialCode, () => {
+        editCalled = true;
+      });
+      // Place cursor on first literal in Then branch
+      const firstLitOffset = initialCode.indexOf('"ВЫБРАТЬ 1"');
+      const startPos = editor.document.positionAt(firstLitOffset + 2);
+      editor.selection = {
+        active: startPos,
+        start: startPos,
+        end: startPos,
+        isEmpty: true,
+      } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      // While panel is open, delete Then branch and bump document version
+      const modifiedCode = [
+        'Процедура Выполнить()',
+        '    Если Не ПервыйРежим Тогда',
+        '        Запрос.Текст = "ВЫБРАТЬ 1";',
+        '    КонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\n');
+
+      editor.updateContent(modifiedCode, 2);
+
+      const modifiedAst: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' } }],
+            from: [],
+          },
+        ],
+      };
+
+      await mockPanel.simulateMessage({ command: 'save', ast: modifiedAst });
+
+      assert.strictEqual(editCalled, false, 'editor.edit must not be called when target query was deleted');
+      assert.strictEqual(mockPanel.isDisposed(), false, 'Panel must not be disposed on canceled save');
+      assert.ok(errorMessage, 'Error message must be shown');
+      assert.strictEqual(editor.getFullText(), modifiedCode, 'Remaining branch must remain completely untouched');
+    });
   });
 
   suite('registerQueryBuilderCommands', () => {

@@ -173,7 +173,10 @@ export async function handleQueryBuilderMessage(
             const currentScope = getEnclosingScope(fullText, currentOffset);
             const isScopeValid = context.enclosingScope === undefined || currentScope === context.enclosingScope;
 
-            const isContextValid =
+            // Only allow the fast in-place check if there was at most ONE occurrence in the document originally.
+            // When multiple identical queries existed, a shifted or different occurrence could occupy this range.
+            const canUseFastPath =
+              (context.initialOccurrenceCount === undefined || context.initialOccurrenceCount <= 1) &&
               isScopeValid &&
               currentText === expectedText &&
               (expectedPrefixLine.length === 0 ||
@@ -181,7 +184,7 @@ export async function handleQueryBuilderMessage(
                 currentPrefixLine.endsWith(expectedPrefixLine) ||
                 expectedPrefixLine.endsWith(currentPrefixLine));
 
-            if (!isContextValid) {
+            if (!canUseFastPath) {
               if (!expectedText) {
                 void vscode.window.showErrorMessage(
                   'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
@@ -194,7 +197,9 @@ export async function handleQueryBuilderMessage(
               let searchFrom = 0;
               while (searchFrom <= fullText.length - expectedText.length) {
                 const idx = fullText.indexOf(expectedText, searchFrom);
-                if (idx === -1) {break;}
+                if (idx === -1) {
+                  break;
+                }
                 occurrences.push(idx);
                 searchFrom = idx + 1;
               }
@@ -202,6 +207,36 @@ export async function handleQueryBuilderMessage(
               if (occurrences.length === 0) {
                 void vscode.window.showErrorMessage(
                   'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+                );
+                return;
+              }
+
+              // If multiple identical queries existed when builder was opened, and the count of occurrences changed,
+              // at least one identical query was added or deleted. It is impossible to reliably determine whether
+              // the selected query was deleted or survived. Abort save to prevent overwriting another query!
+              if (
+                context.initialOccurrenceCount !== undefined &&
+                context.initialOccurrenceCount > 1 &&
+                occurrences.length !== context.initialOccurrenceCount
+              ) {
+                void vscode.window.showErrorMessage(
+                  occurrences.length > 1
+                    ? 'Документ содержит несколько похожих запросов и был изменен. Сохранение отменено во избежание неоднозначной замены.'
+                    : 'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+                );
+                return;
+              }
+
+              // If our occurrence was not the first (occurrenceIndex > 0), but the document now has fewer occurrences:
+              if (
+                context.occurrenceIndex !== undefined &&
+                context.occurrenceIndex > 0 &&
+                occurrences.length <= context.occurrenceIndex
+              ) {
+                void vscode.window.showErrorMessage(
+                  occurrences.length > 1
+                    ? 'Документ содержит несколько похожих запросов и был изменен. Сохранение отменено во избежание неоднозначной замены.'
+                    : 'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
                 );
                 return;
               }
@@ -217,7 +252,17 @@ export async function handleQueryBuilderMessage(
               for (let i = 0; i < occurrences.length; i++) {
                 const off = occurrences[i];
 
-                // 1. Enclosing scope validation:
+                // 1. When multiple identical queries exist, only the candidate matching the exact occurrence index can be our query:
+                if (
+                  context.initialOccurrenceCount !== undefined &&
+                  context.initialOccurrenceCount > 1 &&
+                  context.occurrenceIndex !== undefined &&
+                  i !== context.occurrenceIndex
+                ) {
+                  continue;
+                }
+
+                // 2. Enclosing scope validation:
                 // If the target query was inside a procedure or function, any candidate
                 // in a different procedure or function must be disqualified immediately.
                 if (context.enclosingScope !== undefined) {
@@ -246,9 +291,7 @@ export async function handleQueryBuilderMessage(
                       expectedPrefixLine.endsWith(actualPrefixLine))
                   ) {
                     score += 20;
-                    if (context.initialOccurrenceCount === undefined || context.initialOccurrenceCount <= 1) {
-                      contextMatched = true;
-                    }
+                    contextMatched = true;
                   }
 
                   // If expectedPrefixLine is non-empty and actualPrefixLine contradicts it completely,
@@ -271,10 +314,8 @@ export async function handleQueryBuilderMessage(
                   );
                   if (actualSuffix === suffix) {
                     score += 100;
-                    contextMatched = true;
                   } else if (suffix.startsWith(actualSuffix) || actualSuffix.startsWith(suffix)) {
                     score += 30;
-                    contextMatched = true;
                   }
                 }
 
