@@ -1101,18 +1101,31 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.strictEqual(env.elements.checkForUpdate.checked, true);
     });
 
-    test('Finding 12: radioTypeInsert sets intoType append and radioTypeInto sets create', () => {
+    test('Finding 12 / Rereview 1: query type radios support canonical types (select, into, drop) without unsupported insert', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
 
-      env.elements.radioTypeInsert.checked = true;
-      env.elements.radioTypeInsert.dispatchEvent({ type: 'change' });
-      assert.strictEqual(q.intoType, 'append');
-      assert.ok(q.into);
-
+      // Switch to INTO (Create temp table)
       env.elements.radioTypeInto.checked = true;
       env.elements.radioTypeInto.dispatchEvent({ type: 'change' });
-      assert.strictEqual(q.intoType, 'create');
+      assert.strictEqual(q.type, 'Select');
+      assert.strictEqual(q.into, 'ВТ_Данные');
+      assert.strictEqual(env.elements.inputInto.disabled, false);
+
+      // Switch to DROP (Drop temp table)
+      env.elements.radioTypeDrop.checked = true;
+      env.elements.radioTypeDrop.dispatchEvent({ type: 'change' });
+      assert.strictEqual(q.type, 'DropTable');
+      assert.strictEqual(q.tableName, 'ВТ_Данные');
+      assert.strictEqual(env.elements.inputInto.disabled, false);
+
+      // Switch to SELECT (Standard query)
+      env.elements.radioTypeSelect.checked = true;
+      env.elements.radioTypeSelect.dispatchEvent({ type: 'change' });
+      assert.strictEqual(q.type, 'Select');
+      assert.strictEqual(q.into, undefined);
+      assert.strictEqual(q.tableName, undefined);
+      assert.strictEqual(env.elements.inputInto.disabled, true);
     });
 
     test('Finding 13: switching to into or drop table deletes q.totals', () => {
@@ -1248,6 +1261,112 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       const savedAst = saveMsg.ast;
       assert.strictEqual(savedAst.queries[0].fields.length, 2);
       assert.strictEqual(savedAst.queries[0].unions[0].statement.fields.length, 2);
+    });
+
+    test('Rereview Finding 2: renaming table alias preserves string literals in conditions and expressions', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.from = [
+        {
+          source: { type: 'Table', name: 'Справочник.Т' },
+          alias: 'Т',
+        },
+      ];
+      q.fields = [
+        {
+          expression: 'Т.Ссылка',
+          alias: 'Ссылка',
+        },
+      ];
+      q.whereConditions = [
+        {
+          op: 'И',
+          field: 'Т.Код',
+          cmp: '=',
+          value: '"Т.Код"',
+        },
+        {
+          op: 'И',
+          field: 'Т.Наименование',
+          cmp: '=',
+          value: '"Значение с ""Т.Код"" внутри"',
+        },
+      ];
+
+      env.window.renameTableAliasInQuery(q, 'Т', 'Новое');
+
+      assert.strictEqual(q.from[0].alias, 'Новое');
+      assert.strictEqual(q.fields[0].expression, 'Новое.Ссылка');
+      assert.strictEqual(q.whereConditions[0].field, 'Новое.Код');
+      assert.strictEqual(q.whereConditions[0].value, '"Т.Код"', 'String literal must be preserved byte-for-byte');
+      assert.strictEqual(q.whereConditions[1].field, 'Новое.Наименование');
+      assert.strictEqual(q.whereConditions[1].value, '"Значение с ""Т.Код"" внутри"', 'Literal with escaped quotes must be preserved');
+    });
+
+    test('Rereview Finding 3: getTableFieldsFromMetadata prioritizes exact fullName/id over short name across different categories', () => {
+      const env = createWebviewEnvironment();
+      env.state.metadataTree = [
+        {
+          id: 'Catalog.Товары',
+          name: 'Товары',
+          fullName: 'Справочник.Товары',
+          nodeType: 'table',
+          children: [
+            { id: 'Catalog.Товары.Ref', name: 'Ссылка', fullName: 'Ссылка', nodeType: 'field' },
+            { id: 'Catalog.Товары.Code', name: 'Код', fullName: 'Код', nodeType: 'field' },
+          ],
+        },
+        {
+          id: 'Document.Товары',
+          name: 'Товары',
+          fullName: 'Документ.Товары',
+          nodeType: 'table',
+          children: [
+            { id: 'Document.Товары.Date', name: 'Дата', fullName: 'Дата', nodeType: 'field' },
+            { id: 'Document.Товары.Number', name: 'Номер', fullName: 'Номер', nodeType: 'field' },
+          ],
+        },
+      ];
+
+      // Query Document.Товары with alias Товары
+      const docFields = env.window.getTableFieldsFromMetadata('Товары', 'Документ.Товары');
+      assert.deepStrictEqual([...docFields], ['Дата', 'Номер'], 'Must return fields of Document.Товары, not Catalog.Товары');
+
+      // Query Catalog.Товары with alias Товары
+      const catFields = env.window.getTableFieldsFromMetadata('Товары', 'Справочник.Товары');
+      assert.deepStrictEqual([...catFields], ['Ссылка', 'Код'], 'Must return fields of Catalog.Товары');
+    });
+
+    test('Rereview Finding 4: UI formatSdblQuery preserves parentheses around OR in combined JOIN conditions', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.from = [
+        {
+          source: { type: 'Table', name: 'Справочник.А' },
+          alias: 'А',
+          joins: [
+            {
+              joinType: 'Left',
+              source: { type: 'Table', name: 'Справочник.Б' },
+              alias: 'Б',
+              on: 'А.Код = Б.Код ИЛИ А.Ссылка = Б.Ссылка',
+            },
+            {
+              joinType: 'Left',
+              source: { type: 'Table', name: 'Справочник.Б' },
+              alias: 'Б',
+              on: 'Б.Активен = ИСТИНА',
+            },
+          ],
+        },
+      ];
+      q.fields = [{ expression: 'А.Код', alias: 'Код' }];
+
+      const formatted = env.window.formatSdblQuery(q);
+      assert.ok(
+        formatted.includes('ПО (А.Код = Б.Код ИЛИ А.Ссылка = Б.Ссылка) И Б.Активен = ИСТИНА'),
+        `Formatted text should wrap OR in parens: ${formatted}`
+      );
     });
   });
 });

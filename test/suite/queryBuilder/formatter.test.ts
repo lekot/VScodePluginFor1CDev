@@ -512,6 +512,61 @@ suite('SDBL Formatter & BSL Serializer', () => {
         );
       }
     });
+
+    test('Rereview Finding 4: grouped joins wrap conditions with OR in parentheses', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'CompoundIdentifier', parts: ['А', 'Код'] } }],
+            from: [
+              {
+                source: { type: 'Table', name: 'Справочник.А' },
+                alias: 'А',
+                joins: [
+                  {
+                    joinType: 'Left',
+                    source: { type: 'Table', name: 'Справочник.Б' },
+                    alias: 'Б',
+                    on: {
+                      type: 'BinaryOp',
+                      operator: 'ИЛИ',
+                      left: {
+                        type: 'BinaryOp',
+                        operator: '=',
+                        left: { type: 'CompoundIdentifier', parts: ['А', 'Код'] },
+                        right: { type: 'CompoundIdentifier', parts: ['Б', 'Код'] },
+                      },
+                      right: {
+                        type: 'BinaryOp',
+                        operator: '=',
+                        left: { type: 'CompoundIdentifier', parts: ['А', 'Ссылка'] },
+                        right: { type: 'CompoundIdentifier', parts: ['Б', 'Ссылка'] },
+                      },
+                    },
+                  },
+                  {
+                    joinType: 'Left',
+                    source: { type: 'Table', name: 'Справочник.Б' },
+                    alias: 'Б',
+                    on: {
+                      type: 'BinaryOp',
+                      operator: '=',
+                      left: { type: 'CompoundIdentifier', parts: ['Б', 'Активен'] },
+                      right: { type: 'Literal', valueType: 'boolean', value: true, raw: 'ИСТИНА' },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const formatted = formatSdbl(pkg);
+      const expectedJoin = 'ПО (А.Код = Б.Код ИЛИ А.Ссылка = Б.Ссылка) И Б.Активен = ИСТИНА';
+      assert.ok(formatted.includes(expectedJoin), `Expected formatted query to include: "${expectedJoin}", got:\n${formatted}`);
+    });
   });
 
   suite('8. formatSdbl: Conditions in WHERE and HAVING (AND, OR, NOT, IN, BETWEEN, LIKE, IS NULL)', () => {

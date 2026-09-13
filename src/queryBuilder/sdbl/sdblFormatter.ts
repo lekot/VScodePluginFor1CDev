@@ -189,7 +189,7 @@ function formatSelect(
           joinKw: string;
           joinSrc: string;
           joinAlias: string;
-          conditions: string[];
+          conditions: { str: string; expr?: ExpressionNode }[];
         }
         const groupedJoins: GroupedJoin[] = [];
 
@@ -206,13 +206,13 @@ function formatSelect(
               g.joinAlias === joinAlias
           );
           if (existing) {
-            existing.conditions.push(condStr);
+            existing.conditions.push({ str: condStr, expr: join.on });
           } else {
             groupedJoins.push({
               joinKw,
               joinSrc,
               joinAlias,
-              conditions: [condStr],
+              conditions: [{ str: condStr, expr: join.on }],
             });
           }
         }
@@ -223,9 +223,14 @@ function formatSelect(
           const joinComma =
             isLastJoin && i < stmt.from.length - 1 ? ',' : '';
 
+          const combinedConditions =
+            g.conditions.length > 1
+              ? g.conditions.map(wrapConditionIfOr).join(' И ')
+              : g.conditions[0].str;
+
           lines.push(`${indent}${indent}${g.joinKw} ${g.joinSrc}${g.joinAlias}`);
           lines.push(
-            `${indent}${indent}ПО ${g.conditions.join(' И ')}${joinComma}`
+            `${indent}${indent}ПО ${combinedConditions}${joinComma}`
           );
         }
       }
@@ -485,6 +490,55 @@ function isOrOp(op: string): boolean {
 function isAndOp(op: string): boolean {
   const u = op.toUpperCase();
   return u === 'AND' || u === 'И';
+}
+
+function wrapConditionIfOr(cond: { str: string; expr?: ExpressionNode }): string {
+  const trimmed = cond.str.trim();
+  if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+    let depth = 0;
+    let balanced = true;
+    for (let i = 0; i < trimmed.length - 1; i++) {
+      if (trimmed[i] === '(') {
+        depth++;
+      } else if (trimmed[i] === ')') {
+        depth--;
+      }
+      if (depth === 0) {
+        balanced = false;
+        break;
+      }
+    }
+    if (balanced) {
+      return trimmed;
+    }
+  }
+  if (cond.expr && cond.expr.type === 'BinaryOp' && isOrOp(cond.expr.operator)) {
+    return `(${trimmed})`;
+  }
+  let d = 0;
+  let inQuote = false;
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch === '"') {
+      if (inQuote && i + 1 < trimmed.length && trimmed[i + 1] === '"') {
+        i++;
+      } else {
+        inQuote = !inQuote;
+      }
+    } else if (!inQuote) {
+      if (ch === '(') {
+        d++;
+      } else if (ch === ')') {
+        d--;
+      } else if (d === 0) {
+        const rest = trimmed.substring(i);
+        if (/^(?:ИЛИ|OR)(?:$|[^a-zA-Z0-9а-яА-ЯёЁ_])/i.test(rest)) {
+          return `(${trimmed})`;
+        }
+      }
+    }
+  }
+  return trimmed;
 }
 
 function flattenConditions(

@@ -947,10 +947,6 @@
                         <span>Создание временной таблицы (ПОМЕСТИТЬ)</span>
                     </label>
                     <label class="radio-label">
-                        <input type="radio" name="query-type-radio" id="radio-type-insert" value="insert" />
-                        <span>Добавление во временную таблицу</span>
-                    </label>
-                    <label class="radio-label">
                         <input type="radio" name="query-type-radio" id="radio-type-drop" value="drop" />
                         <span>Уничтожение временной таблицы (УНИЧТОЖИТЬ)</span>
                     </label>
@@ -1425,7 +1421,6 @@
                 // Tab 5
                 radioTypeSelect: document.getElementById('radio-type-select'),
                 radioTypeInto: document.getElementById('radio-type-into'),
-                radioTypeInsert: document.getElementById('radio-type-insert'),
                 radioTypeDrop: document.getElementById('radio-type-drop'),
                 checkTopEnabled: document.getElementById('check-top-enabled'),
                 inputTop: document.getElementById('input-top'),
@@ -1777,35 +1772,62 @@
 
             function getTableFieldsFromMetadata(tableAlias, sourceName) {
                 const foundFields = [];
-                const searchNames = [];
-                if (sourceName) {
-                    searchNames.push(sourceName.toLowerCase());
-                    const withoutPref = getTableAliasWithoutPrefix(sourceName);
-                    if (withoutPref) searchNames.push(withoutPref.toLowerCase());
-                }
-                if (tableAlias) searchNames.push(tableAlias.toLowerCase());
+                const normSource = (sourceName || '').trim().toLowerCase();
+                const withoutPref = normSource ? getTableAliasWithoutPrefix(normSource).toLowerCase() : '';
+                const normAlias = (tableAlias || '').trim().toLowerCase();
 
-                function searchInTree(nodes) {
+                function findNode(nodes, predicate) {
                     if (!nodes || nodes.length === 0) return null;
                     for (let i = 0; i < nodes.length; i++) {
                         const n = nodes[i];
-                        const nName = (n.name || '').toLowerCase();
-                        const nFull = (n.fullName || '').toLowerCase();
-                        const nId = (n.id || '').toLowerCase();
                         if (n.nodeType === 'table' || n.nodeType === 'virtualTable' || n.nodeType === 'tempTable') {
-                            if (searchNames.indexOf(nName) !== -1 || searchNames.indexOf(nFull) !== -1 || searchNames.indexOf(nId) !== -1) {
-                                return n;
-                            }
+                            if (predicate(n)) return n;
                         }
                         if (n.children && n.children.length > 0) {
-                            const res = searchInTree(n.children);
+                            const res = findNode(n.children, predicate);
                             if (res) return res;
                         }
                     }
                     return null;
                 }
 
-                const tableNode = searchInTree(state.metadataTree);
+                let tableNode = null;
+                // Pass 1: exact match by fullName or id against sourceName
+                if (normSource) {
+                    tableNode = findNode(state.metadataTree, function(n) {
+                        const nFull = (n.fullName || '').toLowerCase();
+                        const nId = (n.id || '').toLowerCase();
+                        return nFull === normSource || nId === normSource;
+                    });
+                }
+                // Pass 2: if sourceName contains a dot (e.g. "Документ.Товары" or "Catalog.Товары"), match category and name
+                if (!tableNode && normSource && normSource.indexOf('.') !== -1) {
+                    const dotIdx = normSource.indexOf('.');
+                    const catPart = normSource.substring(0, dotIdx);
+                    const namePart = normSource.substring(dotIdx + 1);
+                    tableNode = findNode(state.metadataTree, function(n) {
+                        const nFull = (n.fullName || '').toLowerCase();
+                        const nId = (n.id || '').toLowerCase();
+                        const nName = (n.name || '').toLowerCase();
+                        return (nFull.indexOf(catPart) !== -1 || nId.indexOf(catPart) !== -1) &&
+                               (nName === namePart || nFull === normSource);
+                    });
+                }
+                // Pass 3: match by name without prefix (e.g. "Товары")
+                if (!tableNode && withoutPref) {
+                    tableNode = findNode(state.metadataTree, function(n) {
+                        return (n.name || '').toLowerCase() === withoutPref;
+                    });
+                }
+                // Pass 4: match by alias as fallback
+                if (!tableNode && normAlias) {
+                    tableNode = findNode(state.metadataTree, function(n) {
+                        const nName = (n.name || '').toLowerCase();
+                        const nFull = (n.fullName || '').toLowerCase();
+                        return nName === normAlias || nFull === normAlias;
+                    });
+                }
+
                 if (tableNode && tableNode.children && tableNode.children.length > 0) {
                     tableNode.children.forEach(function(ch) {
                         if (ch.nodeType === 'field') {
@@ -1841,11 +1863,40 @@
                 function replaceAliasInStr(str) {
                     if (!str || typeof str !== 'string') return str;
                     const re = new RegExp('(^|[^a-zA-Z0-9а-яА-ЯёЁ_])' + oldAlias + '(?=\\.[a-zA-Z0-9а-яА-ЯёЁ_])', 'g');
-                    return str.replace(re, '$1' + newAlias);
+                    let result = '';
+                    let i = 0;
+                    while (i < str.length) {
+                        if (str[i] === '"') {
+                            let j = i + 1;
+                            while (j < str.length) {
+                                if (str[j] === '"') {
+                                    if (j + 1 < str.length && str[j + 1] === '"') {
+                                        j += 2;
+                                    } else {
+                                        j++;
+                                        break;
+                                    }
+                                } else {
+                                    j++;
+                                }
+                            }
+                            result += str.substring(i, j);
+                            i = j;
+                        } else {
+                            let nextQuote = str.indexOf('"', i);
+                            let segment = nextQuote === -1 ? str.substring(i) : str.substring(i, nextQuote);
+                            result += segment.replace(re, '$1' + newAlias);
+                            i = nextQuote === -1 ? str.length : nextQuote;
+                        }
+                    }
+                    return result;
                 }
 
                 function replaceAliasInExpr(expr) {
                     if (!expr) return;
+                    if (expr.type === 'Literal') {
+                        return;
+                    }
                     if (expr.type === 'CompoundIdentifier' && expr.parts && expr.parts.length > 0) {
                         if (expr.parts[0] === oldAlias) {
                             expr.parts[0] = newAlias;
@@ -1866,6 +1917,13 @@
                         if (expr.args) expr.args.forEach(replaceAliasInExpr);
                     }
                 }
+
+                // 0. From table aliases
+                (q.from || []).forEach(function(fc) {
+                    if (fc.alias === oldAlias) {
+                        fc.alias = newAlias;
+                    }
+                });
 
                 // 1. Fields
                 (q.fields || []).forEach(function(f) {
@@ -1919,6 +1977,45 @@
                 const expr = getExpressionString(field.expression);
                 const parts = expr.split('.');
                 return parts[parts.length - 1] || expr || 'Поле';
+            }
+
+            function wrapConditionIfOr(condStr) {
+                const trimmed = (condStr || '').trim();
+                if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+                    let depth = 0;
+                    let balanced = true;
+                    for (let i = 0; i < trimmed.length - 1; i++) {
+                        if (trimmed[i] === '(') depth++;
+                        else if (trimmed[i] === ')') depth--;
+                        if (depth === 0) {
+                            balanced = false;
+                            break;
+                        }
+                    }
+                    if (balanced) return trimmed;
+                }
+                let d = 0;
+                let inQuote = false;
+                for (let i = 0; i < trimmed.length; i++) {
+                    const ch = trimmed[i];
+                    if (ch === '"') {
+                        if (inQuote && i + 1 < trimmed.length && trimmed[i + 1] === '"') {
+                            i++;
+                        } else {
+                            inQuote = !inQuote;
+                        }
+                    } else if (!inQuote) {
+                        if (ch === '(') d++;
+                        else if (ch === ')') d--;
+                        else if (d === 0) {
+                            const rest = trimmed.substring(i);
+                            if (/^(?:ИЛИ|OR)(?:$|[^a-zA-Z0-9а-яА-ЯёЁ_])/i.test(rest)) {
+                                return '(' + trimmed + ')';
+                            }
+                        }
+                    }
+                }
+                return trimmed;
             }
 
             // ── SDBL Formatter ──
@@ -2016,7 +2113,9 @@
                             });
 
                             groupedJoins.forEach(function(g, jIdx) {
-                                const onCombined = g.conditions.join(' И ');
+                                const onCombined = g.conditions.length > 1
+                                    ? g.conditions.map(wrapConditionIfOr).join(' И ')
+                                    : g.conditions[0];
                                 const jComma = (jIdx === groupedJoins.length - 1 && fIdx < stmt.from.length - 1) ? ',' : '';
                                 lines.push('\t\t' + g.typeStr + ' ' + g.srcStr + g.aliasStr);
                                 lines.push('\t\tПО ' + onCombined + jComma);
@@ -4298,11 +4397,7 @@
                     elements.inputInto.disabled = false;
                     elements.inputInto.value = q.tableName || '';
                 } else if (q.into) {
-                    if (q.intoType === 'append') {
-                        if (elements.radioTypeInsert) elements.radioTypeInsert.checked = true;
-                    } else {
-                        if (elements.radioTypeInto) elements.radioTypeInto.checked = true;
-                    }
+                    if (elements.radioTypeInto) elements.radioTypeInto.checked = true;
                     elements.inputInto.disabled = false;
                     elements.inputInto.value = q.into;
                 } else {
@@ -5851,7 +5946,6 @@
                     const q = getActiveQuery();
                     q.type = 'Select';
                     delete q.into;
-                    delete q.intoType;
                     delete q.tableName;
                     elements.inputInto.disabled = true;
                     elements.inputInto.value = '';
@@ -5863,20 +5957,6 @@
                 elements.radioTypeInto.addEventListener('change', function() {
                     const q = getActiveQuery();
                     q.type = 'Select';
-                    q.intoType = 'create';
-                    delete q.totals;
-                    elements.inputInto.disabled = false;
-                    if (!q.into) q.into = elements.inputInto.value.trim() || 'ВТ_Данные';
-                    elements.inputInto.value = q.into;
-                    updateTotalsTabVisibility();
-                    notifyChange();
-                });
-            }
-            if (elements.radioTypeInsert) {
-                elements.radioTypeInsert.addEventListener('change', function() {
-                    const q = getActiveQuery();
-                    q.type = 'Select';
-                    q.intoType = 'append';
                     delete q.totals;
                     elements.inputInto.disabled = false;
                     if (!q.into) q.into = elements.inputInto.value.trim() || 'ВТ_Данные';
@@ -5889,7 +5969,6 @@
                 elements.radioTypeDrop.addEventListener('change', function() {
                     const q = getActiveQuery();
                     q.type = 'DropTable';
-                    delete q.intoType;
                     delete q.totals;
                     elements.inputInto.disabled = false;
                     q.tableName = elements.inputInto.value.trim() || 'ВТ_Данные';
@@ -6006,7 +6085,6 @@
                     q.into = elements.inputInto.value.trim() || undefined;
                     if (q.into) {
                         delete q.totals;
-                        if (!q.intoType) q.intoType = 'create';
                     }
                 }
                 updateTotalsTabVisibility();
@@ -6481,6 +6559,8 @@
             window.addOrderField = addOrderField;
             window.addTotalGroupField = addTotalGroupField;
             window.addTotalValueField = addTotalValueField;
+            window.renameTableAliasInQuery = renameTableAliasInQuery;
+            window.getTableFieldsFromMetadata = getTableFieldsFromMetadata;
 
             // Initial render & ready handshake
             renderAll();
