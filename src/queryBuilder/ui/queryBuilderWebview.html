@@ -1924,7 +1924,7 @@
 
                 function replaceAliasInStr(str) {
                     if (!str || typeof str !== 'string') return str;
-                    const re = new RegExp('(^|[^a-zA-Z0-9а-яА-ЯёЁ_])' + oldAlias + '(?=\\.[a-zA-Z0-9а-яА-ЯёЁ_])', 'g');
+                    const re = new RegExp('(^|[^a-zA-Z0-9а-яА-ЯёЁ_&\\.])' + oldAlias + '(?=\\.[a-zA-Z0-9а-яА-ЯёЁ_\\*])', 'g');
                     let result = '';
                     let i = 0;
                     while (i < str.length) {

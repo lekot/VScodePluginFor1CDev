@@ -1,4 +1,9 @@
-import { ExpressionNode } from './sdblAst';
+import {
+  ExpressionNode,
+  QueryPackage,
+  SelectStatement,
+  TableOrSubquery,
+} from './sdblAst';
 
 /**
  * Visitor interface for observing or collecting information from AST expressions.
@@ -6,6 +11,7 @@ import { ExpressionNode } from './sdblAst';
 export interface ExpressionVisitor {
   enter?(node: ExpressionNode): void;
   leave?(node: ExpressionNode): void;
+  enterSubquery?(stmt: SelectStatement): void;
 }
 
 /**
@@ -89,6 +95,12 @@ export function traverseExpression(expr: ExpressionNode, visitor: ExpressionVisi
         for (const val of expr.values) {
           traverseExpression(val, visitor);
         }
+      } else if (
+        expr.values &&
+        typeof expr.values === 'object' &&
+        (expr.values as SelectStatement).type === 'Select'
+      ) {
+        visitor.enterSubquery?.(expr.values as SelectStatement);
       }
       break;
 
@@ -303,14 +315,28 @@ export function replaceAliasInRawString(raw: string, oldAlias: string, newAlias:
     }
 
     if (!inString) {
+      const isParam = i > 0 && raw[i - 1] === '&';
+      const isSubProperty = i > 0 && raw[i - 1] === '.';
+      const isWordStart = i === 0 || /[^a-zA-Z0-9_а-яА-ЯёЁ]/.test(raw[i - 1]);
+      const nextIdx = i + oldAlias.length;
+      const isQualifier =
+        nextIdx < raw.length &&
+        raw[nextIdx] === '.' &&
+        (nextIdx + 1 >= raw.length || /[a-zA-Z0-9_а-яА-ЯёЁ*]/.test(raw[nextIdx + 1]));
+      const isExactWord =
+        nextIdx >= raw.length || /[^a-zA-Z0-9_а-яА-ЯёЁ]/.test(raw[nextIdx]);
+
       if (
-        (i === 0 || /[^a-zA-Z0-9_а-яА-ЯёЁ]/.test(raw[i - 1])) &&
-        raw.substring(i, i + oldAlias.length) === oldAlias &&
-        (i + oldAlias.length >= raw.length || /[^a-zA-Z0-9_а-яА-ЯёЁ]/.test(raw[i + oldAlias.length]))
+        !isParam &&
+        !isSubProperty &&
+        isWordStart &&
+        raw.substring(i, nextIdx) === oldAlias
       ) {
-        result += newAlias;
-        i += oldAlias.length;
-        continue;
+        if (isQualifier || (isExactWord && i === 0 && nextIdx === raw.length)) {
+          result += newAlias;
+          i = nextIdx;
+          continue;
+        }
       }
     }
 
@@ -319,6 +345,138 @@ export function replaceAliasInRawString(raw: string, oldAlias: string, newAlias:
   }
 
   return result;
+}
+
+/**
+ * Extracts unique parameter names from a raw SDBL expression string, ignoring string literals.
+ */
+export function extractParametersFromRawString(raw: string): string[] {
+  if (!raw || typeof raw !== 'string') {
+    return [];
+  }
+
+  const result = new Set<string>();
+  let inString = false;
+  let i = 0;
+
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch === '"') {
+      if (inString && i + 1 < raw.length && raw[i + 1] === '"') {
+        i += 2;
+        continue;
+      }
+      inString = !inString;
+      i++;
+      continue;
+    }
+
+    if (!inString && ch === '&') {
+      let j = i + 1;
+      while (j < raw.length && /[a-zA-Z0-9_а-яА-ЯёЁ]/.test(raw[j])) {
+        j++;
+      }
+      if (j > i + 1) {
+        result.add(raw.substring(i + 1, j));
+        i = j;
+        continue;
+      }
+    }
+
+    i++;
+  }
+
+  return Array.from(result);
+}
+
+/**
+ * Traverses all expressions contained within a TableSource or SubquerySource.
+ */
+export function traverseTableSource(
+  source: TableOrSubquery | undefined,
+  visitor: ExpressionVisitor
+): void {
+  if (!source) {
+    return;
+  }
+  if (source.type === 'Table' && source.params) {
+    for (const param of source.params) {
+      traverseExpression(param, visitor);
+    }
+  } else if (source.type === 'Subquery' && source.query) {
+    visitor.enterSubquery?.(source.query);
+    traverseSelectStatement(source.query, visitor);
+  }
+}
+
+/**
+ * Traverses all expressions and subqueries contained within a SelectStatement.
+ */
+export function traverseSelectStatement(
+  stmt: SelectStatement,
+  visitor: ExpressionVisitor
+): void {
+  if (!stmt || typeof stmt !== 'object') {
+    return;
+  }
+
+  stmt.fields?.forEach((f) => {
+    if (typeof f.expression !== 'string') {
+      traverseExpression(f.expression, visitor);
+    } else if (f.raw) {
+      visitor.enter?.({ type: 'RawExpression', raw: f.raw });
+    }
+  });
+
+  stmt.from?.forEach((fc) => {
+    traverseTableSource(fc.source, visitor);
+    fc.joins?.forEach((j) => {
+      traverseTableSource(j.source, visitor);
+      if (j.on) {
+        traverseExpression(j.on, visitor);
+      }
+    });
+  });
+
+  if (stmt.where) {
+    traverseExpression(stmt.where, visitor);
+  }
+
+  stmt.groupBy?.forEach((g) => traverseExpression(g, visitor));
+
+  if (stmt.having) {
+    traverseExpression(stmt.having, visitor);
+  }
+
+  stmt.unions?.forEach((u) => {
+    visitor.enterSubquery?.(u.statement);
+    traverseSelectStatement(u.statement, visitor);
+  });
+
+  stmt.orderBy?.forEach((o) => {
+    if (o.expression) {
+      traverseExpression(o.expression, visitor);
+    }
+  });
+
+  if (stmt.totals) {
+    stmt.totals.fields?.forEach((f) => {
+      if (f.expression) {
+        traverseExpression(f.expression, visitor);
+      }
+    });
+    stmt.totals.by?.forEach((b) => {
+      if (b.expression) {
+        traverseExpression(b.expression, visitor);
+      }
+      if (b.periodDefinition?.from) {
+        traverseExpression(b.periodDefinition.from, visitor);
+      }
+      if (b.periodDefinition?.to) {
+        traverseExpression(b.periodDefinition.to, visitor);
+      }
+    });
+  }
 }
 
 /**
@@ -338,15 +496,56 @@ export function isAggregateExpression(expr: ExpressionNode): boolean {
 
 /**
  * Extracts all unique query parameter names (without '&') from an expression AST, sorted alphabetically.
+ * Handles ParameterNode, RawExpressionNode (excluding string literals), and subqueries in InNode.
  */
 export function extractParametersFromExpression(expr: ExpressionNode): string[] {
   const params = new Set<string>();
-  traverseExpression(expr, {
+
+  const visitor: ExpressionVisitor = {
     enter: (node) => {
       if (node.type === 'Parameter' && node.name) {
         params.add(node.name);
+      } else if (node.type === 'RawExpression' && node.raw) {
+        for (const p of extractParametersFromRawString(node.raw)) {
+          params.add(p);
+        }
       }
     },
-  });
-  return Array.from(params).sort();
+    enterSubquery: (subquery) => {
+      traverseSelectStatement(subquery, visitor);
+    },
+  };
+
+  traverseExpression(expr, visitor);
+  return Array.from(params).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Extracts all unique query parameter names from an entire QueryPackage, sorted alphabetically.
+ */
+export function extractParametersFromPackage(pkg: QueryPackage): string[] {
+  const params = new Set<string>();
+
+  const visitor: ExpressionVisitor = {
+    enter: (node) => {
+      if (node.type === 'Parameter' && node.name) {
+        params.add(node.name);
+      } else if (node.type === 'RawExpression' && node.raw) {
+        for (const p of extractParametersFromRawString(node.raw)) {
+          params.add(p);
+        }
+      }
+    },
+    enterSubquery: (subquery) => {
+      traverseSelectStatement(subquery, visitor);
+    },
+  };
+
+  for (const q of pkg.queries) {
+    if (q.type === 'Select') {
+      traverseSelectStatement(q, visitor);
+    }
+  }
+
+  return Array.from(params).sort((a, b) => a.localeCompare(b));
 }

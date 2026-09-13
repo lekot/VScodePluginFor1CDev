@@ -13,15 +13,18 @@ import {
   InNode,
   BetweenNode,
   LikeNode,
-  RawExpressionNode,
+  SelectStatement,
 } from '../../../src/queryBuilder/sdbl/sdblAst';
 import {
   traverseExpression,
   transformExpression,
   replaceAliasInExpression,
+  replaceAliasInRawString,
   isAggregateExpression,
   extractParametersFromExpression,
 } from '../../../src/queryBuilder/sdbl/sdblAstVisitor';
+import { parseSdbl } from '../../../src/queryBuilder/sdbl/sdblParser';
+import { extractParameters } from '../../../src/queryBuilder/sdbl/sdblFormatter';
 
 suite('SDBL AST Visitor & Expression Transformers', () => {
   test('traverseExpression visits all 13 AST node types without omission', () => {
@@ -346,5 +349,152 @@ suite('SDBL AST Visitor & Expression Transformers', () => {
       'Organization',
       'Warehouse',
     ]);
+  });
+
+  test('Finding 1 (cafa34d): replaceAliasInRawString preserves parameter names and string literals', () => {
+    // 1. Example from review: table alias matching parameter name exactly
+    const rawReview = 'Т.Код = &Т И Т.Родитель.Код = "Т.Код"';
+    const replacedReview = replaceAliasInRawString(rawReview, 'Т', 'Новое');
+    assert.strictEqual(
+      replacedReview,
+      'Новое.Код = &Т И Новое.Родитель.Код = "Т.Код"',
+      'Parameter &Т and string literal "Т.Код" must be preserved, only table prefix replaced'
+    );
+
+    // 2. Broad edge cases:
+    // 2a. Multiple parameters &Т with operators, compound paths, and star
+    const rawComplex = 'Т.Поле.Подполе = &Т + &Т И Т.* = ИСТИНА И Т.Сумма > &Т';
+    const replacedComplex = replaceAliasInRawString(rawComplex, 'Т', 'NewT');
+    assert.strictEqual(
+      replacedComplex,
+      'NewT.Поле.Подполе = &Т + &Т И NewT.* = ИСТИНА И NewT.Сумма > &Т',
+      'Parameters must never be renamed, compound paths and star must be renamed'
+    );
+
+    // 2b. Escaped quotes inside string literals
+    const rawQuotes = 'Т.Наим = """Т.Код""" И Т.Комментарий = "Строка с &Т внутри"';
+    const replacedQuotes = replaceAliasInRawString(rawQuotes, 'Т', 'NewT');
+    assert.strictEqual(
+      replacedQuotes,
+      'NewT.Наим = """Т.Код""" И NewT.Комментарий = "Строка с &Т внутри"',
+      'String literals with escaped quotes must be completely preserved'
+    );
+
+    // 2c. Sub-property access with dot before alias (e.g. A.Т.Код, where Т is property not table alias)
+    const rawProperty = 'Документ.Т.Код = Т.Код';
+    const replacedProperty = replaceAliasInRawString(rawProperty, 'Т', 'NewT');
+    assert.strictEqual(
+      replacedProperty,
+      'Документ.Т.Код = NewT.Код',
+      'Sub-property preceded by dot must not be treated as table alias'
+    );
+
+    // 2d. Parity between structured AST and RawExpression
+    const structuredExpr: ExpressionNode = {
+      type: 'BinaryOp',
+      operator: '=',
+      left: { type: 'CompoundIdentifier', parts: ['Т', 'Код'] },
+      right: { type: 'Parameter', name: 'Т' },
+    };
+    const updatedStructured = replaceAliasInExpression(structuredExpr, 'Т', 'NewT');
+    assert.deepStrictEqual(
+      updatedStructured,
+      {
+        type: 'BinaryOp',
+        operator: '=',
+        left: { type: 'CompoundIdentifier', parts: ['NewT', 'Код'] },
+        right: { type: 'Parameter', name: 'Т' },
+      },
+      'Structured AST preserves ParameterNode unchanged'
+    );
+
+    const rawExpr: ExpressionNode = {
+      type: 'RawExpression',
+      raw: 'Т.Код = &Т',
+    };
+    const updatedRaw = replaceAliasInExpression(rawExpr, 'Т', 'NewT');
+    assert.deepStrictEqual(
+      updatedRaw,
+      {
+        type: 'RawExpression',
+        raw: 'NewT.Код = &Т',
+      },
+      'RawExpression preserves &Т identically to structured AST'
+    );
+  });
+
+  test('Finding 2 (cafa34d): extractParametersFromExpression collects parameters from subqueries and RawExpression', () => {
+    // 1. Example from review: In with subquery
+    const queryWithSubquery = 'ВЫБРАТЬ A ИЗ T ГДЕ A В (ВЫБРАТЬ B ИЗ U ГДЕ B = &Парам)';
+    const pkg = parseSdbl(queryWithSubquery);
+    const select = pkg.queries[0] as SelectStatement;
+    assert.ok(select.where, 'where clause must exist');
+
+    const paramsFromExpr = extractParametersFromExpression(select.where);
+    assert.deepStrictEqual(
+      paramsFromExpr,
+      ['Парам'],
+      'extractParametersFromExpression must collect parameters from subquery inside InNode'
+    );
+
+    // Parity with production extractParameters(pkg)
+    const paramsFromPkg = extractParameters(pkg);
+    assert.deepStrictEqual(paramsFromExpr, paramsFromPkg, 'Collector parity on subquery in WHERE');
+
+    // 2. Broad edge cases:
+    // 2a. Deeply nested subquery with virtual tables, joins, and multiple parameters
+    const complexNestedQuery = `
+      ВЫБРАТЬ Док.Ссылка
+      ИЗ Документ.Заказ КАК Док
+      ГДЕ Док.Номенклатура В (
+        ВЫБРАТЬ Ост.Номенклатура
+        ИЗ РегистрНакопления.ОстаткиТоваров.Остатки(&Период, Организация = &Организация) КАК Ост
+        ЛЕВОЕ СОЕДИНЕНИЕ Справочник.Склады КАК Склады
+          ПО Склады.Ссылка = Ост.Склад И Склады.Код = &КодСклада
+        ГДЕ Ост.Количество > &МинКоличество
+          ИЛИ Ост.Номенклатура В (
+            ВЫБРАТЬ Цены.Номенклатура
+            ИЗ РегистрСведений.Цены.СрезПоследних(&ДатаЦен, ВидЦены = &ВидЦены) КАК Цены
+            ГДЕ Цены.Цена > &МинЦена
+          )
+      )
+    `;
+    const complexPkg = parseSdbl(complexNestedQuery);
+    const complexSelect = complexPkg.queries[0] as SelectStatement;
+    assert.ok(complexSelect.where);
+
+    const complexExprParams = extractParametersFromExpression(complexSelect.where);
+    assert.deepStrictEqual(complexExprParams, [
+      'ВидЦены',
+      'ДатаЦен',
+      'КодСклада',
+      'МинКоличество',
+      'МинЦена',
+      'Организация',
+      'Период',
+    ]);
+    assert.deepStrictEqual(
+      complexExprParams,
+      extractParameters(complexPkg),
+      'Collector parity on deep nested subquery with multiple sources and joins'
+    );
+
+    // 2b. RawExpression with parameters
+    const rawExprWithParams: ExpressionNode = {
+      type: 'RawExpression',
+      raw: 'Сумма >= &МинСумма И Валюта = &ВалютаУчета И Описание = "Текст без &ПараметраВКавычках"',
+    };
+    const rawParams = extractParametersFromExpression(rawExprWithParams);
+    assert.deepStrictEqual(rawParams, ['ВалютаУчета', 'МинСумма']);
+
+    // 2c. Verify that aggregate in subquery does NOT make outer expression aggregate
+    const subqueryWithAgg = parseSdbl('ВЫБРАТЬ A ИЗ T ГДЕ A В (ВЫБРАТЬ СУММА(B) ИЗ U)');
+    const subqueryWhere = (subqueryWithAgg.queries[0] as SelectStatement).where;
+    assert.ok(subqueryWhere);
+    assert.strictEqual(
+      isAggregateExpression(subqueryWhere),
+      false,
+      'Aggregate inside subquery must not make outer WHERE expression aggregate'
+    );
   });
 });

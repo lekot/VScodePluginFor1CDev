@@ -7,7 +7,7 @@ import {
   TotalsClause,
   ExpressionNode,
 } from './sdblAst';
-import { traverseExpression } from './sdblAstVisitor';
+import { extractParametersFromPackage } from './sdblAstVisitor';
 
 export interface SdblFormatOptions {
   indent?: string;
@@ -895,81 +895,5 @@ export function formatToBslLiteral(
  * Traverses all AST nodes and extracts unique, sorted query parameter names (without '&').
  */
 export function extractParameters(pkg: QueryPackage): string[] {
-  const params = new Set<string>();
-
-  function collectFromExpr(expr: ExpressionNode | string | undefined) {
-    if (!expr) {return;}
-    if (typeof expr === 'string') {
-      const matches = expr.matchAll(/&([a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_]*)/g);
-      for (const m of matches) {
-        params.add(m[1]);
-      }
-      return;
-    }
-
-    traverseExpression(expr, {
-      enter: (node) => {
-        if (node.type === 'Parameter' && node.name) {
-          params.add(node.name);
-        } else if (node.type === 'RawExpression' && node.raw) {
-          const matches = node.raw.matchAll(/&([a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_]*)/g);
-          for (const m of matches) {
-            params.add(m[1]);
-          }
-        } else if (node.type === 'In' && !Array.isArray(node.values)) {
-          collectFromSelect(node.values);
-        }
-      },
-    });
-  }
-
-  function collectFromTableSource(source: TableOrSubquery | undefined) {
-    if (!source) {return;}
-    if (source.type === 'Table' && source.params) {
-      source.params.forEach(collectFromExpr);
-    } else if (source.type === 'Subquery' && source.query) {
-      collectFromSelect(source.query);
-    }
-  }
-
-  function collectFromSelect(stmt: SelectStatement) {
-    if (!stmt) {return;}
-    stmt.fields?.forEach((f) => {
-      collectFromExpr(f.expression);
-    });
-
-    stmt.from?.forEach((fc) => {
-      collectFromTableSource(fc.source);
-      fc.joins?.forEach((j) => {
-        collectFromTableSource(j.source);
-        collectFromExpr(j.on);
-      });
-    });
-
-    if (stmt.where) {collectFromExpr(stmt.where);}
-    stmt.groupBy?.forEach(collectFromExpr);
-    if (stmt.having) {collectFromExpr(stmt.having);}
-    stmt.unions?.forEach((u) => collectFromSelect(u.statement));
-    stmt.orderBy?.forEach((o) => collectFromExpr(o.expression));
-    if (stmt.totals) {
-      stmt.totals.fields?.forEach((f) => collectFromExpr(f.expression));
-      stmt.totals.by?.forEach((b) => {
-        collectFromExpr(b.expression);
-        if (b.periodDefinition?.from) {
-          collectFromExpr(b.periodDefinition.from);
-        }
-        if (b.periodDefinition?.to) {
-          collectFromExpr(b.periodDefinition.to);
-        }
-      });
-    }
-  }
-
-  for (const q of pkg.queries) {
-    if (q.type === 'Select') {
-      collectFromSelect(q);
-    }
-  }
-
-  return Array.from(params).sort((a, b) => a.localeCompare(b));
+  return extractParametersFromPackage(pkg);
 }
