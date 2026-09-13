@@ -380,6 +380,7 @@ export class QueryMetadataProvider {
       nodeType: 'table',
       hasChildren: true,
       children: [...stdAttrs, ...vts],
+      attributesLoaded: false,
     };
   }
 
@@ -536,7 +537,14 @@ export class QueryMetadataProvider {
           objectNode = child;
           return;
         }
-        if (child.children && child.children.length > 0) {
+        if (
+          child.type === MetadataType.Configuration ||
+          child.type === catConfig.metadataType ||
+          !child.type ||
+          child.properties?._lazy ||
+          (child as { _lazy?: boolean })._lazy ||
+          (child.children && child.children.length > 0)
+        ) {
           await findInNode(child);
         }
       }
@@ -795,6 +803,7 @@ export class QueryMetadataProvider {
       nodeType: 'table',
       hasChildren: fields.length > 0,
       children: fields,
+      attributesLoaded: true,
     };
   }
 

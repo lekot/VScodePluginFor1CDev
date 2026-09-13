@@ -27,6 +27,7 @@ export interface QueryMetadataNode {
   parentTableFullName?: string; // "Справочник.Номенклатура"
   parentTableName?: string;     // "Номенклатура"
   fieldName?: string;           // "Код", "Ссылка"
+  attributesLoaded?: boolean;
 }
 
 export interface TempTableDefinition {

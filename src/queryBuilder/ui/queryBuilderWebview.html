@@ -1365,6 +1365,7 @@
                 selectedForUpdateAvailableIndex: -1,
                 selectedForUpdateSelectedIndex: -1,
                 selectedUnionIndex: 0,
+                activeUnionIndex: 0,
                 selectedOrderFieldIndex: -1,
                 selectedTotalsFieldIndex: -1
             };
@@ -1515,7 +1516,7 @@
             };
 
             // ── Helpers ──
-            function getActiveQuery() {
+            function getRootActiveQuery() {
                 if (!state.ast.queries || state.ast.queries.length === 0) {
                     state.ast.queries = [{ type: 'Select', fields: [], from: [] }];
                     state.activeQueryIndex = 0;
@@ -1524,6 +1525,14 @@
                     state.activeQueryIndex = 0;
                 }
                 return state.ast.queries[state.activeQueryIndex];
+            }
+
+            function getActiveQuery() {
+                const rootQuery = getRootActiveQuery();
+                if (state.activeUnionIndex > 0 && rootQuery.unions && rootQuery.unions[state.activeUnionIndex - 1]) {
+                    return rootQuery.unions[state.activeUnionIndex - 1].statement;
+                }
+                return rootQuery;
             }
 
             const WB_START = '(?<=^|[^a-zA-Z0-9а-яА-ЯёЁ_])';
@@ -1551,9 +1560,9 @@
                 let base = name.split('(')[0].trim();
                 if (METADATA_PREFIX_REGEX.test(base)) {
                     base = base.replace(METADATA_PREFIX_REGEX, '');
-                } else if (base.indexOf('.') !== -1) {
-                    const parts = base.split('.');
-                    base = parts[parts.length - 1];
+                }
+                if (base.indexOf('.') !== -1) {
+                    base = base.split('.').join('');
                 }
                 return base;
             }
@@ -1761,8 +1770,148 @@
                     str = getExpressionString(str);
                 }
                 const upper = String(str).toUpperCase();
-                const aggRe = new RegExp(WB_START + '(СУММА|КОЛИЧЕСТВО|МИНИМУМ|МАКСИМУМ|СРЕДНЕЕ|SUM|COUNT|AVG|MIN|MAX)' + WB_END);
+                // Aggregate functions in SDBL must be a call with parentheses and NOT preceded by a member access dot (e.g. not Т.Сумма)
+                const aggRe = /(?:^|[^a-zA-Z0-9а-яА-ЯёЁ_.])(СУММА|КОЛИЧЕСТВО|МИНИМУМ|МАКСИМУМ|СРЕДНЕЕ|SUM|COUNT|AVG|MIN|MAX)\s*\(/i;
                 return aggRe.test(upper);
+            }
+
+            function getTableFieldsFromMetadata(tableAlias, sourceName) {
+                const foundFields = [];
+                const searchNames = [];
+                if (sourceName) {
+                    searchNames.push(sourceName.toLowerCase());
+                    const withoutPref = getTableAliasWithoutPrefix(sourceName);
+                    if (withoutPref) searchNames.push(withoutPref.toLowerCase());
+                }
+                if (tableAlias) searchNames.push(tableAlias.toLowerCase());
+
+                function searchInTree(nodes) {
+                    if (!nodes || nodes.length === 0) return null;
+                    for (let i = 0; i < nodes.length; i++) {
+                        const n = nodes[i];
+                        const nName = (n.name || '').toLowerCase();
+                        const nFull = (n.fullName || '').toLowerCase();
+                        const nId = (n.id || '').toLowerCase();
+                        if (n.nodeType === 'table' || n.nodeType === 'virtualTable' || n.nodeType === 'tempTable') {
+                            if (searchNames.indexOf(nName) !== -1 || searchNames.indexOf(nFull) !== -1 || searchNames.indexOf(nId) !== -1) {
+                                return n;
+                            }
+                        }
+                        if (n.children && n.children.length > 0) {
+                            const res = searchInTree(n.children);
+                            if (res) return res;
+                        }
+                    }
+                    return null;
+                }
+
+                const tableNode = searchInTree(state.metadataTree);
+                if (tableNode && tableNode.children && tableNode.children.length > 0) {
+                    tableNode.children.forEach(function(ch) {
+                        if (ch.nodeType === 'field') {
+                            foundFields.push(ch.name);
+                        }
+                    });
+                }
+
+                if (foundFields.length > 0) {
+                    return foundFields;
+                }
+
+                // Category-specific fallbacks if metadata tree children are not loaded yet
+                const lowerSrc = (sourceName || '').toLowerCase();
+                if (lowerSrc.indexOf('справочник') !== -1 || lowerSrc.indexOf('catalog') !== -1) {
+                    return ['Ссылка', 'ПометкаУдаления', 'Предопределенный', 'Код', 'Наименование'];
+                }
+                if (lowerSrc.indexOf('документ') !== -1 || lowerSrc.indexOf('document') !== -1) {
+                    return ['Ссылка', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
+                }
+                if (lowerSrc.indexOf('регистрсведений') !== -1 || lowerSrc.indexOf('informationregister') !== -1) {
+                    return ['Период', 'Регистратор', 'НомерСтроки', 'Активность'];
+                }
+                if (lowerSrc.indexOf('регистрнакопления') !== -1 || lowerSrc.indexOf('accumulationregister') !== -1) {
+                    return ['Период', 'Регистратор', 'НомерСтроки', 'Активность', 'ВидДвижения'];
+                }
+                return ['Ссылка', 'Код', 'Наименование'];
+            }
+
+            function renameTableAliasInQuery(q, oldAlias, newAlias) {
+                if (!oldAlias || !newAlias || oldAlias === newAlias || !q) return;
+
+                function replaceAliasInStr(str) {
+                    if (!str || typeof str !== 'string') return str;
+                    const re = new RegExp('(^|[^a-zA-Z0-9а-яА-ЯёЁ_])' + oldAlias + '(?=\\.[a-zA-Z0-9а-яА-ЯёЁ_])', 'g');
+                    return str.replace(re, '$1' + newAlias);
+                }
+
+                function replaceAliasInExpr(expr) {
+                    if (!expr) return;
+                    if (expr.type === 'CompoundIdentifier' && expr.parts && expr.parts.length > 0) {
+                        if (expr.parts[0] === oldAlias) {
+                            expr.parts[0] = newAlias;
+                        }
+                    } else if (expr.type === 'Identifier') {
+                        if (expr.name === oldAlias) {
+                            expr.name = newAlias;
+                        }
+                    } else if (expr.type === 'RawExpression') {
+                        expr.raw = replaceAliasInStr(expr.raw);
+                    } else if (expr.type === 'BinaryOp') {
+                        replaceAliasInExpr(expr.left);
+                        replaceAliasInExpr(expr.right);
+                    } else if (expr.type === 'UnaryOp') {
+                        replaceAliasInExpr(expr.operand);
+                    } else if (expr.type === 'Aggregate' || expr.type === 'FunctionCall') {
+                        if (expr.expression) replaceAliasInExpr(expr.expression);
+                        if (expr.args) expr.args.forEach(replaceAliasInExpr);
+                    }
+                }
+
+                // 1. Fields
+                (q.fields || []).forEach(function(f) {
+                    if (typeof f.expression === 'string') {
+                        f.expression = replaceAliasInStr(f.expression);
+                    } else {
+                        replaceAliasInExpr(f.expression);
+                    }
+                });
+
+                // 2. Joins
+                (q.from || []).forEach(function(fc) {
+                    if (fc.joins) {
+                        fc.joins.forEach(function(jn) {
+                            if (jn.alias === oldAlias) jn.alias = newAlias;
+                            if (jn.t1 === oldAlias) jn.t1 = newAlias;
+                            if (jn.t2 === oldAlias) jn.t2 = newAlias;
+                            replaceAliasInExpr(jn.on);
+                        });
+                    }
+                });
+
+                // 3. Conditions
+                ['whereConditions', 'havingConditions'].forEach(function(prop) {
+                    (q[prop] || []).forEach(function(c) {
+                        c.field = replaceAliasInStr(c.field);
+                        c.value = replaceAliasInStr(c.value);
+                    });
+                });
+                if (q.where) replaceAliasInExpr(q.where);
+                if (q.having) replaceAliasInExpr(q.having);
+
+                // 4. GroupBy, OrderBy, Totals
+                (q.groupBy || []).forEach(replaceAliasInExpr);
+                (q.orderBy || []).forEach(function(ob) { replaceAliasInExpr(ob.expression); });
+                if (q.totals) {
+                    (q.totals.fields || []).forEach(function(tf) { replaceAliasInExpr(tf.expression); });
+                    (q.totals.by || []).forEach(function(tb) { replaceAliasInExpr(tb.expression); });
+                }
+
+                // 5. ForUpdate tables
+                if (q.forUpdateTables && Array.isArray(q.forUpdateTables)) {
+                    q.forUpdateTables = q.forUpdateTables.map(function(t) {
+                        return t === oldAlias ? newAlias : t;
+                    });
+                }
             }
 
             function getFieldDisplayName(field) {
@@ -1776,6 +1925,10 @@
             function formatSdblQuery(stmt) {
                 if (stmt.type === 'DropTable') {
                     return 'УНИЧТОЖИТЬ ' + (stmt.tableName || '');
+                }
+
+                if (stmt.unions && stmt.unions.length > 0) {
+                    normalizeUnionColumns(stmt);
                 }
 
                 const lines = [];
@@ -1934,7 +2087,7 @@
                 const hasTotalsBy = stmt.totals && stmt.totals.by && stmt.totals.by.length > 0;
                 const hasTotalsOverall = stmt.totals && Boolean(stmt.totals.overall);
 
-                if (stmt.totals && (hasTotalsFields || hasTotalsBy || hasTotalsOverall)) {
+                if (!stmt.into && stmt.totals && (hasTotalsFields || hasTotalsBy || hasTotalsOverall)) {
                     let totLine = 'ИТОГИ';
                     if (hasTotalsFields) {
                         const fStr = stmt.totals.fields.map(function(tf) {
@@ -2495,7 +2648,8 @@
                     'ИЗ', 'FROM',
                     'ГДЕ', 'WHERE',
                     'ИМЕЮЩИЕ', 'HAVING',
-                    'ИТОГИ', 'TOTALS'
+                    'ИТОГИ', 'TOTALS',
+                    'ДЛЯ\\s+ИЗМЕНЕНИЯ', 'FOR\\s+UPDATE'
                 ];
 
                 const regexPattern = new RegExp(WB_START + '(' + kwPatterns.join('|') + ')' + WB_END, 'gi');
@@ -2528,6 +2682,7 @@
                     if (normalized === 'УПОРЯДОЧИТЬ ПО' || normalized === 'ORDER BY') return 'ORDER BY';
                     if (normalized === 'АВТОУПОРЯДОЧИВАНИЕ' || normalized === 'AUTOORDER') return 'AUTOORDER';
                     if (normalized === 'ИТОГИ ПО' || normalized === 'TOTALS BY' || normalized === 'ИТОГИ' || normalized === 'TOTALS') return 'TOTALS';
+                    if (normalized === 'ДЛЯ ИЗМЕНЕНИЯ' || normalized === 'FOR UPDATE') return 'FOR UPDATE';
                     return normalized;
                 };
 
@@ -2822,6 +2977,17 @@
                     cleanEmptyTotals(stmt);
                 }
 
+                // 12. FOR UPDATE / ДЛЯ ИЗМЕНЕНИЯ
+                if (sections['FOR UPDATE'] !== undefined) {
+                    stmt.forUpdate = true;
+                    const fuContent = sections['FOR UPDATE'].trim();
+                    if (fuContent) {
+                        stmt.forUpdateTables = fuContent.split(',').map(function(t) { return t.trim(); }).filter(Boolean);
+                    } else {
+                        stmt.forUpdateTables = [];
+                    }
+                }
+
                 return stmt;
             }
 
@@ -2964,9 +3130,7 @@
 
             // Tab 1: Tables & Fields
             function renderTab1() {
-                if (!elements.metadataTree.children || elements.metadataTree.children.length === 0) {
-                    renderMetadataTree();
-                }
+                renderMetadataTree();
                 renderFromTables();
                 renderSelectedFields();
             }
@@ -3006,15 +3170,11 @@
             }
 
             function renderTreeNode(node, filter) {
-                const label = node.label || node.name || node.id || '';
-                const matchesSelf = !filter || label.toLowerCase().indexOf(filter) !== -1;
-                const hasChildren = (node.children && node.children.length > 0) || Boolean(node.hasChildren);
-
-                if (filter && !matchesSelf) {
-                    const hasMatchingDescendant = checkHasMatchingDescendant(node, filter);
-                    if (!hasMatchingDescendant) {
-                        return null;
-                    }
+                if (filter) {
+                    const label = node.label || node.name || node.id || '';
+                    const matchesSelf = label.toLowerCase().indexOf(filter) !== -1;
+                    const matchesChild = checkHasMatchingDescendant(node, filter);
+                    if (!matchesSelf && !matchesChild) return null;
                 }
 
                 const wrapper = document.createElement('div');
@@ -3026,9 +3186,10 @@
 
                 const toggle = document.createElement('span');
                 toggle.className = 'tree-toggle';
-
-                const isExpanded = filter ? true : Boolean(state.expandedNodes && state.expandedNodes[node.id]);
-                toggle.textContent = hasChildren ? (isExpanded ? '▼' : '▶') : '•';
+                const hasChildren = Boolean(node.hasChildren || (node.children && node.children.length > 0));
+                let isExpanded = Boolean(state.expandedNodes && state.expandedNodes[node.id]);
+                if (filter && hasChildren) isExpanded = true;
+                toggle.textContent = hasChildren ? (isExpanded ? '▼' : '▶') : ' ';
 
                 const icon = document.createElement('span');
                 icon.className = 'tree-icon';
@@ -3036,7 +3197,7 @@
 
                 const labelEl = document.createElement('span');
                 labelEl.className = 'tree-label';
-                labelEl.textContent = label;
+                labelEl.textContent = node.label || node.name || node.id;
 
                 row.appendChild(toggle);
                 row.appendChild(icon);
@@ -3058,7 +3219,8 @@
                             const childEl = renderTreeNode(ch, filter);
                             if (childEl) childrenDiv.appendChild(childEl);
                         });
-                    } else if (node.nodeType === 'table') {
+                    }
+                    if (node.nodeType === 'table' && !node.attributesLoaded) {
                         vscode.postMessage({
                             command: 'loadTableAttributes',
                             tableId: node.id,
@@ -3152,7 +3314,14 @@
                     inputAlias.placeholder = 'Алиас';
                     inputAlias.style.width = '100%';
                     inputAlias.addEventListener('change', function() {
-                        fc.alias = inputAlias.value.trim() || undefined;
+                        const oldAlias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                        const newAlias = inputAlias.value.trim() || undefined;
+                        if (oldAlias && newAlias && oldAlias !== newAlias) {
+                            renameTableAliasInQuery(q, oldAlias, newAlias);
+                        }
+                        fc.alias = newAlias;
+                        renderSelectedFields();
+                        renderTab2();
                         notifyChange();
                     });
                     tdAlias.appendChild(inputAlias);
@@ -3876,9 +4045,9 @@
                     });
                     (q.from || []).forEach(function(fc) {
                         const alias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
-                        const commonFields = ['Ссылка', 'Код', 'Наименование', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
-                        commonFields.forEach(function(cf) {
-                            const str = alias ? (alias + '.' + cf) : cf;
+                        const fields = getTableFieldsFromMetadata(alias, fc.source && fc.source.name);
+                        fields.forEach(function(fName) {
+                            const str = alias ? (alias + '.' + fName) : fName;
                             if (fieldsForConditions.indexOf(str) === -1) fieldsForConditions.push(str);
                         });
                     });
@@ -4129,7 +4298,11 @@
                     elements.inputInto.disabled = false;
                     elements.inputInto.value = q.tableName || '';
                 } else if (q.into) {
-                    if (elements.radioTypeInto) elements.radioTypeInto.checked = true;
+                    if (q.intoType === 'append') {
+                        if (elements.radioTypeInsert) elements.radioTypeInsert.checked = true;
+                    } else {
+                        if (elements.radioTypeInto) elements.radioTypeInto.checked = true;
+                    }
                     elements.inputInto.disabled = false;
                     elements.inputInto.value = q.into;
                 } else {
@@ -4207,8 +4380,63 @@
             }
 
             // Tab 6: Unions
+            function normalizeUnionColumns(q) {
+                if (!q || !q.unions || q.unions.length === 0 || q.type === 'DropTable') return;
+
+                if (!q.fields) q.fields = [];
+
+                let maxCols = q.fields.length;
+                q.unions.forEach(function(u) {
+                    if (u.statement && u.statement.fields && u.statement.fields.length > maxCols) {
+                        maxCols = u.statement.fields.length;
+                    }
+                });
+
+                if (maxCols === 0) return;
+
+                const colAliases = [];
+                for (let colIdx = 0; colIdx < maxCols; colIdx++) {
+                    let alias = '';
+                    if (q.fields[colIdx]) {
+                        alias = q.fields[colIdx].alias || getExpressionString(q.fields[colIdx].expression);
+                    }
+                    if (!alias || alias === 'NULL') {
+                        for (let uIdx = 0; uIdx < q.unions.length; uIdx++) {
+                            const uFields = q.unions[uIdx].statement && q.unions[uIdx].statement.fields;
+                            if (uFields && uFields[colIdx]) {
+                                alias = uFields[colIdx].alias || getExpressionString(uFields[colIdx].expression);
+                                if (alias && alias !== 'NULL') break;
+                            }
+                        }
+                    }
+                    if (!alias || alias === 'NULL') {
+                        alias = 'Поле' + (colIdx + 1);
+                    }
+                    colAliases.push(alias);
+                }
+
+                while (q.fields.length < maxCols) {
+                    const colIdx = q.fields.length;
+                    q.fields.push({
+                        expression: { type: 'Literal', value: null, raw: 'NULL' },
+                        alias: colAliases[colIdx]
+                    });
+                }
+
+                q.unions.forEach(function(u) {
+                    if (!u.statement) u.statement = { type: 'Select', fields: [], from: [] };
+                    if (!u.statement.fields) u.statement.fields = [];
+                    while (u.statement.fields.length < maxCols) {
+                        u.statement.fields.push({
+                            expression: { type: 'Literal', value: null, raw: 'NULL' },
+                            alias: undefined
+                        });
+                    }
+                });
+            }
+
             function renderTab6() {
-                const q = getActiveQuery();
+                const q = getRootActiveQuery();
                 elements.tbodyUnions.innerHTML = '';
                 if (elements.tbodyUnionsList) elements.tbodyUnionsList.innerHTML = '';
                 if (elements.theadUnionsFields) elements.theadUnionsFields.innerHTML = '';
@@ -4224,7 +4452,9 @@
                     trMainList.innerHTML = '<td>1</td><td>Основной запрос</td><td style="text-align:center;">—</td>';
                     trMainList.addEventListener('click', function() {
                         state.selectedUnionIndex = 0;
+                        state.activeUnionIndex = 0;
                         renderTab6();
+                        renderTab1();
                     });
                     elements.tbodyUnionsList.appendChild(trMainList);
                 }
@@ -4264,7 +4494,9 @@
                         trList.addEventListener('click', function(e) {
                             if (e.target !== chDistinct) {
                                 state.selectedUnionIndex = uIdx;
+                                state.activeUnionIndex = uIdx;
                                 renderTab6();
+                                renderTab1();
                             }
                         });
                         elements.tbodyUnionsList.appendChild(trList);
@@ -4308,74 +4540,80 @@
                     elements.theadUnionsFields.appendChild(trHead);
                 }
 
-                const allAliases = [];
-                (q.fields || []).forEach(function(f) {
-                    const a = f.alias || getExpressionString(f.expression);
-                    if (a && allAliases.indexOf(a) === -1) allAliases.push(a);
-                });
+                let maxCols = (q.fields || []).length;
                 q.unions.forEach(function(u) {
-                    if (u.statement && u.statement.fields) {
-                        u.statement.fields.forEach(function(f) {
-                            const a = f.alias || getExpressionString(f.expression);
-                            if (a && allAliases.indexOf(a) === -1) allAliases.push(a);
-                        });
+                    if (u.statement && u.statement.fields && u.statement.fields.length > maxCols) {
+                        maxCols = u.statement.fields.length;
                     }
                 });
 
-                allAliases.forEach(function(aliasName) {
+                for (let colIdx = 0; colIdx < maxCols; colIdx++) {
                     const trF = document.createElement('tr');
+                    const mainF = (q.fields && q.fields[colIdx]) ? q.fields[colIdx] : null;
+                    let colAlias = mainF ? (mainF.alias || getExpressionString(mainF.expression)) : ('Колонка ' + (colIdx + 1));
 
+                    // Column 1: Alias input
                     const tdA = document.createElement('td');
                     tdA.style.fontWeight = '600';
-                    tdA.textContent = aliasName;
+                    const inputAlias = document.createElement('input');
+                    inputAlias.type = 'text';
+                    inputAlias.style.width = '100%';
+                    inputAlias.value = colAlias;
+                    inputAlias.placeholder = 'Псевдоним';
+                    inputAlias.addEventListener('change', function() {
+                        const newAliasVal = inputAlias.value.trim();
+                        if (mainF) {
+                            mainF.alias = newAliasVal || undefined;
+                        }
+                        notifyChange();
+                    });
+                    tdA.appendChild(inputAlias);
                     trF.appendChild(tdA);
 
+                    // Column 2: Main query field
                     const tdMainField = document.createElement('td');
-                    const mainField = (q.fields || []).find(function(f) {
-                        return (f.alias || getExpressionString(f.expression)) === aliasName;
-                    });
                     const inputMain = document.createElement('input');
                     inputMain.type = 'text';
                     inputMain.style.width = '100%';
-                    inputMain.value = mainField ? getExpressionString(mainField.expression) : 'NULL';
+                    inputMain.value = mainF ? getExpressionString(mainF.expression) : '';
+                    inputMain.placeholder = 'NULL';
                     inputMain.addEventListener('change', function() {
-                        if (mainField) {
-                            mainField.expression = parseExpressionOrRaw(inputMain.value.trim());
-                        } else {
-                            if (!q.fields) q.fields = [];
+                        const val = inputMain.value.trim();
+                        if (!q.fields) q.fields = [];
+                        while (q.fields.length <= colIdx) {
                             q.fields.push({
-                                expression: parseExpressionOrRaw(inputMain.value.trim()),
-                                alias: aliasName
+                                expression: { type: 'Literal', value: null, raw: 'NULL' },
+                                alias: undefined
                             });
                         }
+                        q.fields[colIdx].expression = parseExpressionOrRaw(val || 'NULL');
+                        renderSelectedFields();
                         notifyChange();
                     });
                     tdMainField.appendChild(inputMain);
                     trF.appendChild(tdMainField);
 
+                    // Union query columns
                     q.unions.forEach(function(u) {
                         const tdU = document.createElement('td');
-                        if (!u.statement) u.statement = { type: 'Select', fields: [], from: [] };
-                        if (!u.statement.fields) u.statement.fields = [];
-
-                        let uField = u.statement.fields.find(function(f) {
-                            return (f.alias || getExpressionString(f.expression)) === aliasName;
-                        });
-
-                        if (!uField) {
-                            uField = {
-                                expression: { type: 'Literal', value: null, raw: 'NULL' },
-                                alias: aliasName
-                            };
-                            u.statement.fields.push(uField);
-                        }
+                        const uFields = (u.statement && u.statement.fields) ? u.statement.fields : [];
+                        const uField = uFields[colIdx] || null;
 
                         const inputU = document.createElement('input');
                         inputU.type = 'text';
                         inputU.style.width = '100%';
-                        inputU.value = getExpressionString(uField.expression);
+                        inputU.value = uField ? getExpressionString(uField.expression) : '';
+                        inputU.placeholder = 'NULL';
                         inputU.addEventListener('change', function() {
-                            uField.expression = parseExpressionOrRaw(inputU.value.trim());
+                            const val = inputU.value.trim();
+                            if (!u.statement) u.statement = { type: 'Select', fields: [], from: [] };
+                            if (!u.statement.fields) u.statement.fields = [];
+                            while (u.statement.fields.length <= colIdx) {
+                                u.statement.fields.push({
+                                    expression: { type: 'Literal', value: null, raw: 'NULL' }
+                                });
+                            }
+                            u.statement.fields[colIdx].expression = parseExpressionOrRaw(val || 'NULL');
                             notifyChange();
                         });
                         tdU.appendChild(inputU);
@@ -4383,11 +4621,11 @@
                     });
 
                     elements.tbodyUnionsFields.appendChild(trF);
-                });
+                }
             }
 
             function addUnionQuery(unionType) {
-                const q = getActiveQuery();
+                const q = getRootActiveQuery();
                 if (q.type === 'DropTable') return;
                 if (!q.unions) q.unions = [];
                 const fieldsCopy = (q.fields || []).map(function(f) {
@@ -4396,39 +4634,44 @@
                         alias: f.alias
                     };
                 });
+                const fromCopy = JSON.parse(JSON.stringify(q.from || []));
                 q.unions.push({
                     unionType: unionType || 'UnionAll',
                     name: 'Объединение ' + (q.unions.length + 1),
                     statement: {
                         type: 'Select',
                         fields: fieldsCopy,
-                        from: []
+                        from: fromCopy
                     }
                 });
                 state.selectedUnionIndex = q.unions.length;
+                state.activeUnionIndex = q.unions.length;
                 renderTab6();
+                renderTab1();
                 notifyChange();
             }
 
             function copyUnionQuery(idx) {
-                const q = getActiveQuery();
+                const q = getRootActiveQuery();
                 if (!q || !q.unions || idx < 0 || idx >= q.unions.length) return;
                 const cloned = JSON.parse(JSON.stringify(q.unions[idx]));
                 cloned.name = (cloned.name || ('Объединение ' + (idx + 1))) + ' (копия)';
                 q.unions.splice(idx + 1, 0, cloned);
                 state.selectedUnionIndex = idx + 2;
+                state.activeUnionIndex = idx + 2;
                 renderTab6();
+                renderTab1();
                 notifyChange();
             }
 
             function deleteUnionQuery(idx) {
-                const q = getActiveQuery();
+                const q = getRootActiveQuery();
                 if (!q || !q.unions || idx < 0 || idx >= q.unions.length) return;
                 q.unions.splice(idx, 1);
-                if (state.selectedUnionIndex > q.unions.length) {
-                    state.selectedUnionIndex = q.unions.length;
-                }
+                state.selectedUnionIndex = 0;
+                state.activeUnionIndex = 0;
                 renderTab6();
+                renderTab1();
                 notifyChange();
             }
 
@@ -4481,14 +4724,14 @@
                         chDiv.className = 'tree-children';
                         chDiv.style.display = 'flex';
 
-                        const sampleFields = ['Ссылка', 'Код', 'Наименование', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
-                        sampleFields.forEach(function(sf) {
+                        const tblFields = getTableFieldsFromMetadata(tblName, fc.source && fc.source.name);
+                        tblFields.forEach(function(sf) {
                             const fRow = document.createElement('div');
                             fRow.className = 'tree-row';
                             fRow.style.paddingLeft = '18px';
                             fRow.innerHTML = '<span class="tree-icon">🔹</span><span class="tree-label">' + sf + '</span>';
                             fRow.addEventListener('dblclick', function() {
-                                addOrderField(tblName + '.' + sf);
+                                addOrderField(tblName ? (tblName + '.' + sf) : sf);
                             });
                             chDiv.appendChild(fRow);
                         });
@@ -5231,9 +5474,37 @@
                     const targetPane = document.getElementById(targetId);
                     if (targetPane) targetPane.classList.add('active');
 
-                    // If switched to indexes, re-render Tab 8
-                    if (targetId === 'tab-indexes') {
-                        renderTab8();
+                    switch (targetId) {
+                        case 'tab-tables-fields':
+                            renderTab1();
+                            break;
+                        case 'tab-joins':
+                            renderTab2();
+                            break;
+                        case 'tab-grouping':
+                            renderTab3();
+                            break;
+                        case 'tab-conditions':
+                            renderTab4();
+                            break;
+                        case 'tab-extra':
+                            renderTab5();
+                            break;
+                        case 'tab-unions':
+                            renderTab6();
+                            break;
+                        case 'tab-order':
+                            renderTab7();
+                            break;
+                        case 'tab-indexes':
+                            renderTab8();
+                            break;
+                        case 'tab-totals':
+                            renderTab9();
+                            break;
+                        case 'tab-package':
+                            renderTab10();
+                            break;
                     }
                 });
             });
@@ -5241,6 +5512,8 @@
             // Package Query Selector & Actions
             elements.packageSelect.addEventListener('change', function() {
                 state.activeQueryIndex = parseInt(elements.packageSelect.value, 10);
+                state.activeUnionIndex = 0;
+                state.selectedUnionIndex = 0;
                 renderAll();
             });
 
@@ -5251,6 +5524,8 @@
                     from: []
                 });
                 state.activeQueryIndex = state.ast.queries.length - 1;
+                state.activeUnionIndex = 0;
+                state.selectedUnionIndex = 0;
                 renderAll();
                 notifyChange();
             });
@@ -5261,6 +5536,8 @@
                 if (state.activeQueryIndex >= state.ast.queries.length) {
                     state.activeQueryIndex = state.ast.queries.length - 1;
                 }
+                state.activeUnionIndex = 0;
+                state.selectedUnionIndex = 0;
                 renderAll();
                 notifyChange();
             });
@@ -5271,6 +5548,8 @@
                 state.ast.queries[state.activeQueryIndex] = state.ast.queries[state.activeQueryIndex - 1];
                 state.ast.queries[state.activeQueryIndex - 1] = temp;
                 state.activeQueryIndex--;
+                state.activeUnionIndex = 0;
+                state.selectedUnionIndex = 0;
                 renderAll();
                 notifyChange();
             });
@@ -5281,6 +5560,8 @@
                 state.ast.queries[state.activeQueryIndex] = state.ast.queries[state.activeQueryIndex + 1];
                 state.ast.queries[state.activeQueryIndex + 1] = temp;
                 state.activeQueryIndex++;
+                state.activeUnionIndex = 0;
+                state.selectedUnionIndex = 0;
                 renderAll();
                 notifyChange();
             });
@@ -5327,6 +5608,7 @@
                     if (q.type !== 'DropTable') {
                         syncConditionsToAst(q);
                         cleanEmptyTotals(q);
+                        normalizeUnionColumns(q);
                     }
                 });
 
@@ -5537,9 +5819,9 @@
                     });
                     (q.from || []).forEach(function(fc) {
                         const alias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
-                        const commonFields = ['Ссылка', 'Код', 'Наименование', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
-                        commonFields.forEach(function(cf) {
-                            const str = alias ? (alias + '.' + cf) : cf;
+                        const fields = getTableFieldsFromMetadata(alias, fc.source && fc.source.name);
+                        fields.forEach(function(fName) {
+                            const str = alias ? (alias + '.' + fName) : fName;
                             if (fieldsForConditions.indexOf(str) === -1) fieldsForConditions.push(str);
                         });
                     });
@@ -5569,6 +5851,7 @@
                     const q = getActiveQuery();
                     q.type = 'Select';
                     delete q.into;
+                    delete q.intoType;
                     delete q.tableName;
                     elements.inputInto.disabled = true;
                     elements.inputInto.value = '';
@@ -5580,6 +5863,8 @@
                 elements.radioTypeInto.addEventListener('change', function() {
                     const q = getActiveQuery();
                     q.type = 'Select';
+                    q.intoType = 'create';
+                    delete q.totals;
                     elements.inputInto.disabled = false;
                     if (!q.into) q.into = elements.inputInto.value.trim() || 'ВТ_Данные';
                     elements.inputInto.value = q.into;
@@ -5591,6 +5876,8 @@
                 elements.radioTypeInsert.addEventListener('change', function() {
                     const q = getActiveQuery();
                     q.type = 'Select';
+                    q.intoType = 'append';
+                    delete q.totals;
                     elements.inputInto.disabled = false;
                     if (!q.into) q.into = elements.inputInto.value.trim() || 'ВТ_Данные';
                     elements.inputInto.value = q.into;
@@ -5602,6 +5889,8 @@
                 elements.radioTypeDrop.addEventListener('change', function() {
                     const q = getActiveQuery();
                     q.type = 'DropTable';
+                    delete q.intoType;
+                    delete q.totals;
                     elements.inputInto.disabled = false;
                     q.tableName = elements.inputInto.value.trim() || 'ВТ_Данные';
                     elements.inputInto.value = q.tableName;
@@ -5712,8 +6001,13 @@
                 const q = getActiveQuery();
                 if (q.type === 'DropTable') {
                     q.tableName = elements.inputInto.value.trim() || undefined;
+                    delete q.totals;
                 } else {
                     q.into = elements.inputInto.value.trim() || undefined;
+                    if (q.into) {
+                        delete q.totals;
+                        if (!q.intoType) q.intoType = 'create';
+                    }
                 }
                 updateTotalsTabVisibility();
                 renderHeaderPackage();
@@ -5743,28 +6037,32 @@
             }
             if (elements.btnUnionUp) {
                 elements.btnUnionUp.addEventListener('click', function() {
-                    const q = getActiveQuery();
+                    const q = getRootActiveQuery();
                     if (q.unions && state.selectedUnionIndex > 1) {
                         const idx = state.selectedUnionIndex - 1;
                         const tmp = q.unions[idx];
                         q.unions[idx] = q.unions[idx - 1];
                         q.unions[idx - 1] = tmp;
                         state.selectedUnionIndex--;
+                        state.activeUnionIndex = state.selectedUnionIndex;
                         renderTab6();
+                        renderTab1();
                         notifyChange();
                     }
                 });
             }
             if (elements.btnUnionDown) {
                 elements.btnUnionDown.addEventListener('click', function() {
-                    const q = getActiveQuery();
+                    const q = getRootActiveQuery();
                     if (q.unions && state.selectedUnionIndex > 0 && state.selectedUnionIndex < q.unions.length) {
                         const idx = state.selectedUnionIndex - 1;
                         const tmp = q.unions[idx];
                         q.unions[idx] = q.unions[idx + 1];
                         q.unions[idx + 1] = tmp;
                         state.selectedUnionIndex++;
+                        state.activeUnionIndex = state.selectedUnionIndex;
                         renderTab6();
+                        renderTab1();
                         notifyChange();
                     }
                 });
@@ -6179,6 +6477,7 @@
             window.addUnionQuery = addUnionQuery;
             window.copyUnionQuery = copyUnionQuery;
             window.deleteUnionQuery = deleteUnionQuery;
+            window.normalizeUnionColumns = normalizeUnionColumns;
             window.addOrderField = addOrderField;
             window.addTotalGroupField = addTotalGroupField;
             window.addTotalValueField = addTotalValueField;

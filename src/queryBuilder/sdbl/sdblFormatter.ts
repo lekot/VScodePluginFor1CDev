@@ -50,6 +50,81 @@ function formatDropTable(stmt: DropTableStatement): string {
 }
 
 /**
+ * Normalizes UNION column counts across the main query and all union branches
+ * to ensure positional alignment and an equal number of columns.
+ */
+export function normalizeUnionColumns(stmt: SelectStatement): void {
+  if (!stmt.unions || stmt.unions.length === 0) {
+    return;
+  }
+  let maxCols = stmt.fields ? stmt.fields.length : 0;
+  for (const u of stmt.unions) {
+    if (u.statement && u.statement.fields && u.statement.fields.length > maxCols) {
+      maxCols = u.statement.fields.length;
+    }
+  }
+  if (maxCols === 0) {
+    return;
+  }
+  if (!stmt.fields) {
+    stmt.fields = [];
+  }
+
+  const colAliases: string[] = [];
+  for (let colIdx = 0; colIdx < maxCols; colIdx++) {
+    let alias = '';
+    if (stmt.fields[colIdx]) {
+      alias =
+        stmt.fields[colIdx].alias ||
+        (typeof stmt.fields[colIdx].expression === 'string'
+          ? (stmt.fields[colIdx].expression as string)
+          : formatExpression(stmt.fields[colIdx].expression as ExpressionNode));
+    }
+    if (!alias || alias === 'NULL') {
+      for (const u of stmt.unions) {
+        const uFields = u.statement && u.statement.fields;
+        if (uFields && uFields[colIdx]) {
+          alias =
+            uFields[colIdx].alias ||
+            (typeof uFields[colIdx].expression === 'string'
+              ? (uFields[colIdx].expression as string)
+              : formatExpression(uFields[colIdx].expression as ExpressionNode));
+          if (alias && alias !== 'NULL') {
+            break;
+          }
+        }
+      }
+    }
+    if (!alias || alias === 'NULL') {
+      alias = `Поле${colIdx + 1}`;
+    }
+    colAliases.push(alias);
+  }
+
+  while (stmt.fields.length < maxCols) {
+    const colIdx = stmt.fields.length;
+    stmt.fields.push({
+      expression: { type: 'Literal', valueType: 'null', value: null, raw: 'NULL' },
+      alias: colAliases[colIdx],
+    });
+  }
+
+  for (const u of stmt.unions) {
+    if (!u.statement) {
+      u.statement = { type: 'Select', fields: [], from: [] };
+    }
+    if (!u.statement.fields) {
+      u.statement.fields = [];
+    }
+    while (u.statement.fields.length < maxCols) {
+      u.statement.fields.push({
+        expression: { type: 'Literal', valueType: 'null', value: null, raw: 'NULL' },
+      });
+    }
+  }
+}
+
+/**
  * Formats a SelectStatement (ВЫБРАТЬ ...).
  */
 function formatSelect(
@@ -57,6 +132,9 @@ function formatSelect(
   indent: string,
   newline: string
 ): string {
+  if (stmt.unions && stmt.unions.length > 0) {
+    normalizeUnionColumns(stmt);
+  }
   const lines: string[] = [];
 
   // 1. SELECT header with modifiers
@@ -107,22 +185,47 @@ function formatSelect(
       lines.push(`${indent}${srcStr}${aliasStr}${fromComma}`);
 
       if (fromClause.joins && fromClause.joins.length > 0) {
-        for (let j = 0; j < fromClause.joins.length; j++) {
-          const join = fromClause.joins[j];
+        interface GroupedJoin {
+          joinKw: string;
+          joinSrc: string;
+          joinAlias: string;
+          conditions: string[];
+        }
+        const groupedJoins: GroupedJoin[] = [];
+
+        for (const join of fromClause.joins) {
           const joinKw = getJoinKeyword(join.joinType);
           const joinSrc = formatTableOrSubquery(join.source, indent, newline);
           const joinAlias = join.alias ? ` КАК ${join.alias}` : '';
-          const isLastJoin = j === fromClause.joins.length - 1;
+          const condStr = formatExpression(join.on, indent, newline);
+
+          const existing = groupedJoins.find(
+            (g) =>
+              g.joinKw === joinKw &&
+              g.joinSrc === joinSrc &&
+              g.joinAlias === joinAlias
+          );
+          if (existing) {
+            existing.conditions.push(condStr);
+          } else {
+            groupedJoins.push({
+              joinKw,
+              joinSrc,
+              joinAlias,
+              conditions: [condStr],
+            });
+          }
+        }
+
+        for (let j = 0; j < groupedJoins.length; j++) {
+          const g = groupedJoins[j];
+          const isLastJoin = j === groupedJoins.length - 1;
           const joinComma =
             isLastJoin && i < stmt.from.length - 1 ? ',' : '';
 
-          lines.push(`${indent}${indent}${joinKw} ${joinSrc}${joinAlias}`);
+          lines.push(`${indent}${indent}${g.joinKw} ${g.joinSrc}${g.joinAlias}`);
           lines.push(
-            `${indent}${indent}ПО ${formatExpression(
-              join.on,
-              indent,
-              newline
-            )}${joinComma}`
+            `${indent}${indent}ПО ${g.conditions.join(' И ')}${joinComma}`
           );
         }
       }
@@ -228,6 +331,7 @@ function formatSelect(
 
   // 11. TOTALS / ИТОГИ
   if (
+    !stmt.into &&
     stmt.totals &&
     (stmt.totals.overall ||
       (stmt.totals.fields && stmt.totals.fields.length > 0) ||

@@ -743,7 +743,7 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.strictEqual(q.unions.length, 1);
     });
 
-    test('Union correspondence auto-fills NULL for missing fields in union branches', () => {
+    test('Finding 1: Union correspondence preserves AST without mutating branches on render', () => {
       const env = createWebviewEnvironment();
       const q = env.window.getActiveQuery();
       q.fields = [
@@ -758,19 +758,20 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
           statement: {
             type: 'Select',
             from: [],
-            fields: [{ expression: { type: 'ColumnRef', column: 'T2.FieldA' }, alias: 'FieldA' }],
+            fields: [{ expression: 'T2.FieldA', alias: 'FieldA' }],
           },
         },
       ];
 
       env.window.renderTab6();
 
-      // Check that FieldB in union statement was auto-filled with NULL
+      // Check that renderTab6 did NOT mutate union statement fields
       const uFields = q.unions[0].statement.fields;
-      assert.strictEqual(uFields.length, 2);
-      const fieldBInUnion = uFields.find((f: any) => f.alias === 'FieldB');
-      assert.ok(fieldBInUnion);
-      assert.strictEqual(fieldBInUnion.expression.raw, 'NULL');
+      assert.strictEqual(uFields.length, 1, 'AST fields in union must NOT be mutated on render');
+
+      // Check that UI rendered 2 positional column rows
+      const rows = env.elements.tbodyUnionsFields.children;
+      assert.strictEqual(rows.length, 2, 'UI must display 2 positional rows');
     });
 
     test('Union list checkbox toggles between Union and UnionAll', () => {
@@ -933,6 +934,320 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       env.elements.checkTotalsOverall.checked = false;
       env.elements.checkTotalsOverall.dispatchEvent({ type: 'change' });
       assert.strictEqual(Boolean(q.totals && q.totals.overall), false);
+    });
+  });
+
+  suite('Review 15050dc Findings Verification', () => {
+    test('Finding 2: Т.Сумма is not classified as aggregate and condition routes to WHERE', () => {
+      const env = createWebviewEnvironment();
+      const isAgg = env.window.isAggregateExpression;
+      assert.strictEqual(isAgg('Т.Сумма'), false);
+      assert.strictEqual(isAgg('Т.Сумма > 0'), false);
+      assert.strictEqual(isAgg('Т.Количество'), false);
+      assert.strictEqual(isAgg('СУММА(Т.Сумма)'), true);
+      assert.strictEqual(isAgg('КОЛИЧЕСТВО(РАЗЛИЧНЫЕ Т.Номенклатура)'), true);
+      assert.strictEqual(isAgg('МИНИМУМ(Цена)'), true);
+      assert.strictEqual(isAgg('МАКСИМУМ(Цена)'), true);
+      assert.strictEqual(isAgg('СРЕДНЕЕ(Цена)'), true);
+
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: 'Т.Сумма', alias: 'Сумма' }];
+      q.from = [{ source: { type: 'Table', name: 'Документ.Продажа' }, alias: 'Т' }];
+      env.window.addConditionFromField('Т.Сумма');
+      assert.strictEqual(q.whereConditions.length, 1, 'Condition on Т.Сумма must be in whereConditions');
+      assert.strictEqual(q.havingConditions ? q.havingConditions.length : 0, 0, 'Must NOT be in havingConditions');
+    });
+
+    test('Finding 5: renderTab1 re-renders metadata tree unconditionally even if DOM already has children', () => {
+      const env = createWebviewEnvironment();
+      // Initially populate tree with dummy node
+      env.state.metadataTree = [{ id: 'stub', name: 'Stub', nodeType: 'category', children: [] }];
+      env.window.renderTab1();
+      assert.ok(env.elements.metadataTree.children.length > 0);
+
+      // Now set real metadata tree and call renderTab1
+      env.state.metadataTree = [
+        { id: 'cat1', name: 'Справочники', nodeType: 'category', children: [{ id: 'ref1', name: 'Товары', nodeType: 'table' }] }
+      ];
+      env.window.renderTab1();
+      const labels = env.elements.metadataTree.querySelectorAll('.tree-label').map((c: any) => c.textContent).join(' ');
+      assert.ok(labels.includes('Справочники'), 'Metadata tree must be re-rendered with new categories');
+    });
+
+    test('Finding 6: Tab 4 and Tab 7 use getTableFieldsFromMetadata without phantom attributes', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.from = [{ source: { type: 'Table', name: 'Справочник.Товары' }, alias: 'Товары' }];
+
+      env.window.renderTab4();
+      // For Catalog, conditions list should not have Проведен or Дата
+      const condList = env.elements.conditionsFieldsList;
+      assert.ok(condList);
+      const condTexts = condList.children.map((c: any) => c.textContent || '');
+      assert.ok(condTexts.some((t: string) => t.includes('Товары.Ссылка')));
+      assert.ok(!condTexts.some((t: string) => t.includes('Товары.Проведен')), 'Catalog should NOT contain Проведен');
+
+      env.window.renderTab7();
+      const orderTree = env.elements.orderAllFieldsTree;
+      assert.ok(orderTree);
+      const orderRows = orderTree.querySelectorAll('.tree-row');
+      const orderHtml = orderRows.map((c: any) => c.innerHTML || c.textContent || '').join(' ');
+      assert.ok(orderHtml.includes('Товары.Ссылка') || orderHtml.includes('Ссылка'));
+      assert.ok(!orderHtml.includes('Проведен'), 'Order tree for Catalog should NOT contain Проведен');
+    });
+
+    test('Finding 7: switching tabs re-renders destination tab with fresh state', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: 'Товары.Ссылка', alias: 'Ссылка' }];
+
+      // Render Tab 3 Grouping
+      env.window.renderTab3();
+      assert.strictEqual(env.elements.badgeGroupingFieldsCount.textContent, '1');
+
+      // Add a field on Tab 1
+      q.fields.push({ expression: 'Товары.Код', alias: 'Код' });
+
+      // Click on Tab 3 button
+      const tabBtnGrouping = env.tabButtons.find((b) => b.getAttribute('data-tab') === 'tab-grouping');
+      assert.ok(tabBtnGrouping);
+      tabBtnGrouping.click();
+
+      // Badge and available fields should be updated to 2
+      assert.strictEqual(env.elements.badgeGroupingFieldsCount.textContent, '2');
+    });
+
+    test('Finding 8: renaming table alias updates references in fields and joins', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: 'Товары.Ссылка', alias: 'Ссылка' }];
+      q.from = [{ source: { type: 'Table', name: 'Справочник.Товары' }, alias: 'Товары' }];
+      q.whereConditions = [{ op: '', field: 'Товары.ПометкаУдаления', cmp: '=', value: 'ЛОЖЬ' }];
+
+      env.window.renderFromTables();
+      const inputAlias = env.elements.tbodyFromTables.querySelector('input[type="text"]');
+      assert.ok(inputAlias);
+      inputAlias.value = 'Т';
+      inputAlias.dispatchEvent({ type: 'change' });
+
+      assert.strictEqual(q.from[0].alias, 'Т');
+      assert.strictEqual(env.window.getExpressionString(q.fields[0].expression), 'Т.Ссылка');
+      assert.strictEqual(q.whereConditions[0].field, 'Т.ПометкаУдаления');
+    });
+
+    test('Finding 9: getTableAliasWithoutPrefix strips dots from virtual tables and tabular sections', () => {
+      const env = createWebviewEnvironment();
+      const strip = env.window.getTableAliasWithoutPrefix;
+
+      assert.strictEqual(strip('РегистрНакопления.Продажи.Обороты'), 'ПродажиОбороты');
+      assert.strictEqual(strip('Справочник.Номенклатура.Состав'), 'НоменклатураСостав');
+      assert.strictEqual(strip('Документ.Заказ.Товары'), 'ЗаказТовары');
+      assert.ok(!strip('РегистрНакопления.Продажи.Обороты').includes('.'), 'Alias must not contain dot');
+    });
+
+    test('Finding 10: formatSdblQuery combines multiple joins for same table with И', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: 'A.Ссылка', alias: 'Ссылка' }];
+      q.from = [
+        {
+          source: { type: 'Table', name: 'Справочник.A' },
+          alias: 'A',
+          joins: [
+            {
+              joinType: 'Left',
+              source: { type: 'Table', name: 'Справочник.B' },
+              alias: 'B',
+              on: {
+                type: 'BinaryOp',
+                operator: '=',
+                left: { type: 'CompoundIdentifier', parts: ['A', 'Ref'] },
+                right: { type: 'CompoundIdentifier', parts: ['B', 'Ref'] },
+              },
+            },
+            {
+              joinType: 'Left',
+              source: { type: 'Table', name: 'Справочник.B' },
+              alias: 'B',
+              on: {
+                type: 'BinaryOp',
+                operator: '=',
+                left: { type: 'CompoundIdentifier', parts: ['A', 'Date'] },
+                right: { type: 'CompoundIdentifier', parts: ['B', 'Date'] },
+              },
+            },
+          ],
+        },
+      ];
+
+      const formatted = env.window.formatSdblQuery(q);
+      const joinOccurrences = (formatted.match(/ЛЕВОЕ СОЕДИНЕНИЕ/g) || []).length;
+      assert.strictEqual(joinOccurrences, 1, 'Should produce only 1 JOIN clause');
+      assert.ok(formatted.includes(' И '), 'Multiple join conditions must be grouped with И');
+    });
+
+    test('Finding 11: text tab parses ДЛЯ ИЗМЕНЕНИЯ and preserves forUpdate in AST and UI', () => {
+      const env = createWebviewEnvironment();
+      const parseSdbl = env.window.parseSdblClient;
+      const query = 'ВЫБРАТЬ Т.Ссылка ИЗ Справочник.Товары КАК Т ДЛЯ ИЗМЕНЕНИЯ Т';
+      const ast = parseSdbl(query);
+
+      assert.strictEqual(ast.queries[0].forUpdate, true);
+      assert.strictEqual(ast.queries[0].forUpdateTables?.[0], 'Т');
+      assert.strictEqual(ast.queries[0].forUpdateTables?.length, 1);
+
+      env.state.ast = ast;
+      env.window.renderTab5();
+      assert.strictEqual(env.elements.checkForUpdate.checked, true);
+    });
+
+    test('Finding 12: radioTypeInsert sets intoType append and radioTypeInto sets create', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+
+      env.elements.radioTypeInsert.checked = true;
+      env.elements.radioTypeInsert.dispatchEvent({ type: 'change' });
+      assert.strictEqual(q.intoType, 'append');
+      assert.ok(q.into);
+
+      env.elements.radioTypeInto.checked = true;
+      env.elements.radioTypeInto.dispatchEvent({ type: 'change' });
+      assert.strictEqual(q.intoType, 'create');
+    });
+
+    test('Finding 13: switching to into or drop table deletes q.totals', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.totals = {
+        fields: [{ expression: { type: 'Aggregate', aggregateType: 'Sum', expression: { type: 'Identifier', name: 'Сумма' } } }],
+        by: [{ expression: { type: 'Identifier', name: 'Организация' } }],
+      };
+
+      env.elements.radioTypeInto.checked = true;
+      env.elements.radioTypeInto.dispatchEvent({ type: 'change' });
+      assert.strictEqual(q.totals, undefined, 'Totals must be cleared when into is selected');
+
+      q.totals = { by: [] };
+      env.elements.radioTypeDrop.checked = true;
+      env.elements.radioTypeDrop.dispatchEvent({ type: 'change' });
+      assert.strictEqual(q.totals, undefined, 'Totals must be cleared when drop is selected');
+    });
+
+    test('Finding 16: addUnionQuery copies q.from and row click switches activeUnionIndex', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.from = [{ source: { type: 'Table', name: 'Справочник.Товары' }, alias: 'Товары' }];
+      q.fields = [{ expression: 'Товары.Ссылка', alias: 'Ссылка' }];
+
+      env.window.addUnionQuery('UnionAll');
+      assert.strictEqual(q.unions.length, 1);
+      assert.strictEqual(q.unions[0].statement.from.length, 1, 'Union branch must copy from sources');
+      assert.strictEqual(q.unions[0].statement.from[0].source.name, 'Справочник.Товары');
+
+      // Active query index is switched to union
+      assert.strictEqual(env.state.activeUnionIndex, 1);
+      const unionQ = env.window.getActiveQuery();
+      assert.strictEqual(unionQ, q.unions[0].statement, 'getActiveQuery must return union statement');
+
+      // Clicking main query row in unions list switches activeUnionIndex back to 0
+      const mainRow = env.elements.tbodyUnionsList.children[0];
+      assert.ok(mainRow);
+      mainRow.dispatchEvent({ type: 'click' });
+      assert.strictEqual(env.state.activeUnionIndex, 0);
+      assert.strictEqual(env.window.getActiveQuery(), q);
+    });
+
+    test('Finding 1 (Review refinement): normalizeUnionColumns ensures positional alignment and equal column counts', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+
+      // Case 1: Main has 1 col, Union has 2 cols
+      q.fields = [{ expression: '1', alias: 'А' }];
+      q.unions = [
+        {
+          unionType: 'UnionAll',
+          name: 'Объединение 1',
+          statement: {
+            type: 'Select',
+            fields: [
+              { expression: '2', alias: 'Б' },
+              { expression: '3', alias: 'В' },
+            ],
+            from: [],
+          },
+        },
+      ];
+
+      env.window.normalizeUnionColumns(q);
+
+      // Main must be padded to 2 columns, Union retains 2 columns
+      assert.strictEqual(q.fields.length, 2, 'Main query must have 2 columns');
+      assert.strictEqual(q.unions[0].statement.fields.length, 2, 'Union query must have 2 columns');
+      // Position 0: 1 КАК А and 2
+      assert.strictEqual(env.window.getExpressionString(q.fields[0].expression), '1');
+      assert.strictEqual(q.fields[0].alias, 'А');
+      assert.strictEqual(env.window.getExpressionString(q.unions[0].statement.fields[0].expression), '2');
+      // Position 1: NULL КАК В and 3
+      assert.strictEqual(env.window.getExpressionString(q.fields[1].expression), 'NULL');
+      assert.strictEqual(q.fields[1].alias, 'В');
+      assert.strictEqual(env.window.getExpressionString(q.unions[0].statement.fields[1].expression), '3');
+
+      // Case 2: Main has 2 cols, Union has 1 col
+      const q2 = env.window.getActiveQuery();
+      q2.fields = [
+        { expression: '1', alias: 'А' },
+        { expression: '2', alias: 'Б' },
+      ];
+      q2.unions = [
+        {
+          unionType: 'UnionAll',
+          name: 'Объединение 1',
+          statement: {
+            type: 'Select',
+            fields: [{ expression: '3', alias: 'В' }],
+            from: [],
+          },
+        },
+      ];
+
+      env.window.normalizeUnionColumns(q2);
+      assert.strictEqual(q2.fields.length, 2);
+      assert.strictEqual(q2.unions[0].statement.fields.length, 2);
+      assert.strictEqual(env.window.getExpressionString(q2.unions[0].statement.fields[0].expression), '3');
+      assert.strictEqual(env.window.getExpressionString(q2.unions[0].statement.fields[1].expression), 'NULL');
+    });
+
+    test('Finding 1 (Review refinement): saving normalizes union columns and formats positional SDBL', () => {
+      const env = createWebviewEnvironment();
+      const q = env.window.getActiveQuery();
+      q.fields = [{ expression: '1', alias: 'А' }];
+      q.unions = [
+        {
+          unionType: 'UnionAll',
+          name: 'Объединение 1',
+          statement: {
+            type: 'Select',
+            fields: [
+              { expression: '2', alias: 'Б' },
+              { expression: '3', alias: 'В' },
+            ],
+            from: [],
+          },
+        },
+      ];
+
+      // Format query text directly
+      const formatted = env.window.formatSdblQuery(q);
+      assert.ok(formatted.includes('1 КАК А,\n\tNULL КАК В') || formatted.includes('1 КАК А,\r\n\tNULL КАК В'));
+      assert.ok(formatted.includes('2 КАК Б,\n\t3 КАК В') || formatted.includes('2 КАК Б,\r\n\t3 КАК В'));
+
+      // Click save button and verify sent message AST is normalized
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'Save message must be sent');
+      const savedAst = saveMsg.ast;
+      assert.strictEqual(savedAst.queries[0].fields.length, 2);
+      assert.strictEqual(savedAst.queries[0].unions[0].statement.fields.length, 2);
     });
   });
 });

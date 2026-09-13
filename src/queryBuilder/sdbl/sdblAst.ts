@@ -90,6 +90,7 @@ export interface SelectStatement {
   forUpdateTables?: string[];
   autoOrder?: boolean;
   into?: string;
+  intoType?: 'create' | 'append';
   indexBy?: string[];
   fields: SelectedField[];
   from?: FromClause[];

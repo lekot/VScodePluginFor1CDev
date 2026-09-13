@@ -10,6 +10,8 @@ import { QueryBuilderProvider } from '../../../src/queryBuilder/queryBuilderProv
 import { registerQueryBuilderCommands } from '../../../src/queryBuilder/queryBuilderCommands';
 import { QueryPackage } from '../../../src/queryBuilder/sdbl/sdblAst';
 import { QueryMetadataNode } from '../../../src/queryBuilder/metadata/queryMetadataTypes';
+import { MetadataType } from '../../../src/models/treeNode';
+import { QueryMetadataProvider } from '../../../src/queryBuilder/metadata/queryMetadataProvider';
 
 suite('QueryBuilder Provider & Message Handler', () => {
   let warningMessage: string | undefined;
@@ -1663,6 +1665,115 @@ suite('QueryBuilder Provider & Message Handler', () => {
       assert.strictEqual(mockPanel.isDisposed(), false, 'Panel must not be disposed on canceled save');
       assert.ok(errorMessage, 'Error message must be shown');
       assert.strictEqual(editor.getFullText(), modifiedCode, 'Remaining branch must remain completely untouched');
+    });
+
+    test('Finding 4: getTargetRootNode selects most specific nested root among configRoots', () => {
+      const outerRootPath = 'C:\\ws';
+      const nestedRootPath = 'C:\\ws\\ConfigurationExtensions\\Patch';
+
+      const outerRootNode = {
+        name: 'OuterConfig',
+        type: MetadataType.Configuration,
+      } as any;
+
+      const nestedRootNode = {
+        name: 'PatchConfig',
+        type: MetadataType.Configuration,
+      } as any;
+
+      const mockTreeProvider = {
+        getRootNodes: () => [outerRootNode, nestedRootNode],
+        getConfigRootPaths: () => [outerRootPath, nestedRootPath],
+        getSupportConfigRootForNode: (node: any) =>
+          node === nestedRootNode ? nestedRootPath : outerRootPath,
+        onDidChangeTreeData: new vscode.EventEmitter<any>().event,
+      };
+
+      const provider = new QueryBuilderProvider(fakeContext, {
+        treeDataProvider: mockTreeProvider,
+      } as any);
+
+      // File inside nested patch
+      const patchFileEditor = {
+        document: {
+          uri: {
+            scheme: 'file',
+            fsPath: 'C:\\ws\\ConfigurationExtensions\\Patch\\Documents\\Doc1.bsl',
+          },
+        },
+      } as any;
+
+      const targetNested = (provider as any).getTargetRootNode(patchFileEditor);
+      assert.strictEqual(
+        targetNested.targetConfigPath,
+        nestedRootPath,
+        'Should match nested patch root'
+      );
+      assert.strictEqual(
+        targetNested.targetRoot,
+        nestedRootNode,
+        'Should return nested patch root node'
+      );
+
+      // Also verify reverse order of configRoots
+      mockTreeProvider.getConfigRootPaths = () => [nestedRootPath, outerRootPath];
+      const targetNestedRev = (provider as any).getTargetRootNode(patchFileEditor);
+      assert.strictEqual(
+        targetNestedRev.targetConfigPath,
+        nestedRootPath,
+        'Should match nested patch root regardless of configRoots order'
+      );
+    });
+
+    test('Finding 3: race condition between concurrent open calls applies metadata only from latest generation', async () => {
+      const mockPanelA = createMockPanel();
+      const mockPanelB = createMockPanel();
+
+      let callCount = 0;
+      (vscode.window as any).createWebviewPanel = () => {
+        callCount++;
+        return callCount === 1 ? mockPanelA.panel : mockPanelB.panel;
+      };
+
+      const editorA = createMockEditor('Запрос = "ВЫБРАТЬ 1";');
+      const editorB = createMockEditor('Запрос = "ВЫБРАТЬ 2";');
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+
+      const openAPromise = provider.open(editorA);
+      const openBPromise = provider.open(editorB);
+
+      await Promise.all([openAPromise, openBPromise]);
+
+      assert.strictEqual((provider as any).openGeneration, 2);
+    });
+
+    test('Finding 15: treeDataProvider onDidChangeTreeData invalidates metadata cache', () => {
+      const emitter = new vscode.EventEmitter<any>();
+      let clearCacheCalled = false;
+      const originalClearCache = QueryMetadataProvider.clearCache;
+      QueryMetadataProvider.clearCache = () => {
+        clearCacheCalled = true;
+      };
+
+      try {
+        const mockTreeProvider = {
+          getRootNodes: () => [],
+          getConfigRootPaths: () => [],
+          getSupportConfigRootForNode: () => '',
+          onDidChangeTreeData: emitter.event,
+        };
+
+        const provider = new QueryBuilderProvider(fakeContext, {
+          treeDataProvider: mockTreeProvider,
+        } as any);
+
+        assert.ok(provider);
+        emitter.fire(undefined);
+        assert.strictEqual(clearCacheCalled, true, 'QueryMetadataProvider.clearCache must be called on tree data change');
+      } finally {
+        QueryMetadataProvider.clearCache = originalClearCache;
+      }
     });
   });
 

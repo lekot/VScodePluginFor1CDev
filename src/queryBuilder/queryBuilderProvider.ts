@@ -19,11 +19,22 @@ export class QueryBuilderProvider {
   private panel: vscode.WebviewPanel | undefined;
   private messageHandler: QueryBuilderMessageHandler | undefined;
   private messageSubscription?: vscode.Disposable;
+  private openGeneration = 0;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly state: ExtensionState
-  ) {}
+  ) {
+    const treeProvider = this.state?.treeDataProvider as { onDidChangeTreeData?: vscode.Event<unknown> } | undefined;
+    if (treeProvider?.onDidChangeTreeData) {
+      const sub = treeProvider.onDidChangeTreeData(() => {
+        QueryMetadataProvider.clearCache();
+      });
+      if (this.context?.subscriptions) {
+        this.context.subscriptions.push(sub);
+      }
+    }
+  }
 
   public async open(
     editor?: vscode.TextEditor,
@@ -277,8 +288,16 @@ export class QueryBuilderProvider {
 
     this.panel.webview.html = this.getHtmlContent();
 
+    const currentGeneration = ++this.openGeneration;
     if (!cachedTree && targetConfigPath) {
-      void this.warmupMetadata(metadataProvider, targetRoot, targetConfigPath);
+      void this.warmupMetadata(
+        metadataProvider,
+        targetRoot,
+        targetConfigPath,
+        currentGeneration,
+        this.panel,
+        this.messageHandler
+      );
     }
 
     return this.panel;
@@ -297,13 +316,17 @@ export class QueryBuilderProvider {
     const configRoots = treeProvider.getConfigRootPaths() ?? [];
 
     let matchedConfigPath = '';
+    let bestLength = -1;
     if (targetEditor && targetEditor.document.uri.scheme === 'file') {
       const filePath = targetEditor.document.uri.fsPath;
       for (const rootPath of configRoots) {
-        const rel = path.relative(path.normalize(rootPath), path.normalize(filePath));
+        const normRoot = path.normalize(rootPath);
+        const rel = path.relative(normRoot, path.normalize(filePath));
         if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
-          matchedConfigPath = rootPath;
-          break;
+          if (normRoot.length > bestLength) {
+            bestLength = normRoot.length;
+            matchedConfigPath = rootPath;
+          }
         }
       }
     }
@@ -334,7 +357,10 @@ export class QueryBuilderProvider {
   private async warmupMetadata(
     metadataProvider: QueryMetadataProvider,
     targetRoot: TreeNode | null,
-    configPath: string
+    configPath: string,
+    generation: number,
+    targetPanel: vscode.WebviewPanel | undefined,
+    targetHandler: QueryBuilderMessageHandler | undefined
   ): Promise<void> {
     try {
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -343,7 +369,12 @@ export class QueryBuilderProvider {
         targetRoot
       );
       metadataProvider.setCachedTree(configPath, fullTree);
-      if (this.panel) {
+      if (
+        generation === this.openGeneration &&
+        this.panel &&
+        this.panel === targetPanel &&
+        this.messageHandler === targetHandler
+      ) {
         this.messageHandler?.updateMetadata(fullTree);
         await this.panel.webview.postMessage({
           command: 'updateMetadata',

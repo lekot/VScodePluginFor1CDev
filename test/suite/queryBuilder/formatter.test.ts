@@ -5,6 +5,7 @@ import {
   formatExpression,
   formatToBslLiteral,
   extractParameters,
+  normalizeUnionColumns,
 } from '../../../src/queryBuilder/sdbl/sdblFormatter';
 import {
   QueryPackage,
@@ -1575,6 +1576,85 @@ suite('SDBL Formatter & BSL Serializer', () => {
       };
       const formatted = formatSdbl(pkg);
       assert.ok(formatted.includes('УПОРЯДОЧИТЬ ПО\n\tТаб.Поле1 УБЫВ'));
+    });
+  });
+
+  suite('16. normalizeUnionColumns: Positional alignment and equal column counts', () => {
+    test('does not modify queries when column counts are already equal', () => {
+      const stmt: SelectStatement = {
+        type: 'Select',
+        fields: [{ expression: { type: 'Literal', valueType: 'number', value: 1, raw: '1' }, alias: 'А' }],
+        unions: [
+          {
+            unionType: 'UnionAll',
+            statement: {
+              type: 'Select',
+              fields: [{ expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' }, alias: 'Б' }],
+            },
+          },
+        ],
+      };
+
+      normalizeUnionColumns(stmt);
+      assert.strictEqual(stmt.fields?.length, 1);
+      assert.strictEqual(stmt.unions?.[0].statement.fields?.length, 1);
+    });
+
+    test('pads main query with NULL when union branch has more columns', () => {
+      const stmt: SelectStatement = {
+        type: 'Select',
+        fields: [{ expression: { type: 'Literal', valueType: 'number', value: 1, raw: '1' }, alias: 'А' }],
+        unions: [
+          {
+            unionType: 'UnionAll',
+            statement: {
+              type: 'Select',
+              fields: [
+                { expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' }, alias: 'Б' },
+                { expression: { type: 'Literal', valueType: 'number', value: 3, raw: '3' }, alias: 'В' },
+              ],
+            },
+          },
+        ],
+      };
+
+      normalizeUnionColumns(stmt);
+      assert.strictEqual(stmt.fields?.length, 2);
+      assert.strictEqual(stmt.unions?.[0].statement.fields?.length, 2);
+      assert.strictEqual(stmt.fields?.[1].alias, 'В');
+      assert.strictEqual((stmt.fields?.[1].expression as LiteralNode).type, 'Literal');
+      assert.strictEqual((stmt.fields?.[1].expression as LiteralNode).raw, 'NULL');
+
+      // Test formatSdbl output
+      const pkg: QueryPackage = { queries: [stmt] };
+      const formatted = formatSdbl(pkg);
+      assert.ok(formatted.includes('ВЫБРАТЬ\n\t1 КАК А,\n\tNULL КАК В'));
+      assert.ok(formatted.includes('ВЫБРАТЬ\n\t2 КАК Б,\n\t3 КАК В'));
+    });
+
+    test('pads union branch with NULL when main query has more columns', () => {
+      const stmt: SelectStatement = {
+        type: 'Select',
+        fields: [
+          { expression: { type: 'Literal', valueType: 'number', value: 1, raw: '1' }, alias: 'А' },
+          { expression: { type: 'Literal', valueType: 'number', value: 2, raw: '2' }, alias: 'Б' },
+        ],
+        unions: [
+          {
+            unionType: 'UnionAll',
+            statement: {
+              type: 'Select',
+              fields: [{ expression: { type: 'Literal', valueType: 'number', value: 3, raw: '3' }, alias: 'В' }],
+            },
+          },
+        ],
+      };
+
+      normalizeUnionColumns(stmt);
+      assert.strictEqual(stmt.fields?.length, 2);
+      assert.strictEqual(stmt.unions?.[0].statement.fields?.length, 2);
+      assert.strictEqual((stmt.unions?.[0].statement.fields?.[1].expression as LiteralNode).type, 'Literal');
+      assert.strictEqual((stmt.unions?.[0].statement.fields?.[1].expression as LiteralNode).raw, 'NULL');
     });
   });
 });
