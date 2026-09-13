@@ -82,6 +82,24 @@ suite('SDBL Parser', () => {
       assert.strictEqual(select.distinct, true);
       assert.strictEqual(select.forUpdate, true);
     });
+
+    test('parses ДЛЯ ИЗМЕНЕНИЯ without tables', () => {
+      const sql = 'ВЫБРАТЬ * ИЗ Справочник.Товары КАК Товары ДЛЯ ИЗМЕНЕНИЯ';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.strictEqual(select.forUpdate, true);
+      assert.strictEqual(select.forUpdateTables, undefined);
+    });
+
+    test('parses ДЛЯ ИЗМЕНЕНИЯ with table list', () => {
+      const sql = 'ВЫБРАТЬ * ИЗ Справочник.Товары КАК Товары ДЛЯ ИЗМЕНЕНИЯ Товары, Склады';
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+
+      assert.strictEqual(select.forUpdate, true);
+      assert.deepStrictEqual(select.forUpdateTables, ['Товары', 'Склады']);
+    });
   });
 
   suite('3. Temp Tables and Indexes (ПОМЕСТИТЬ, ИНДЕКСИРОВАТЬ ПО)', () => {

@@ -256,6 +256,7 @@ export const coreSuiteFiles: string[] = [
   'suite/queryBuilder/extractor.test.js',
   'suite/queryBuilder/metadata.test.js',
   'suite/queryBuilder/webviewUi.test.js',
+  'suite/queryBuilder/ui.test.js',
   'suite/queryBuilder/provider.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []

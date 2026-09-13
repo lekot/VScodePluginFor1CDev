@@ -238,7 +238,11 @@ function formatSelect(
 
   // 12. FOR UPDATE / ДЛЯ ИЗМЕНЕНИЯ
   if (stmt.forUpdate) {
-    lines.push('ДЛЯ ИЗМЕНЕНИЯ');
+    if (stmt.forUpdateTables && stmt.forUpdateTables.length > 0) {
+      lines.push(`ДЛЯ ИЗМЕНЕНИЯ ${stmt.forUpdateTables.join(', ')}`);
+    } else {
+      lines.push('ДЛЯ ИЗМЕНЕНИЯ');
+    }
   }
 
   return lines.join(newline);

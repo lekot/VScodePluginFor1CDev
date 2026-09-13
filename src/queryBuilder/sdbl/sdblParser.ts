@@ -106,6 +106,7 @@ class SdblParser {
     let allowed: boolean | undefined = undefined;
     let top: number | undefined = undefined;
     let forUpdate: boolean | undefined = undefined;
+    let forUpdateTables: string[] | undefined = undefined;
     let autoOrder: boolean | undefined = undefined;
     let into: string | undefined = undefined;
     let indexBy: string[] | undefined = undefined;
@@ -242,6 +243,20 @@ class SdblParser {
     // Trailing FOR UPDATE / ДЛЯ ИЗМЕНЕНИЯ
     if (this.matchKeyword(SdblKeyword.ForUpdate)) {
       forUpdate = true;
+      if (this.isTableIdentifierStart()) {
+        const tableNames: string[] = [];
+        do {
+          tableNames.push(this.parseCompoundName());
+        } while (this.matchSymbol(','));
+        if (tableNames.length > 0) {
+          forUpdateTables = tableNames;
+        }
+      }
+    }
+
+    // Trailing AUTOORDER (if after FOR UPDATE)
+    if (this.matchKeyword(SdblKeyword.Autoorder)) {
+      autoOrder = true;
     }
 
     const selectStmt: SelectStatement = {
@@ -252,6 +267,9 @@ class SdblParser {
     if (allowed !== undefined) {selectStmt.allowed = allowed;}
     if (top !== undefined) {selectStmt.top = top;}
     if (forUpdate !== undefined) {selectStmt.forUpdate = forUpdate;}
+    if (forUpdateTables !== undefined && forUpdateTables.length > 0) {
+      selectStmt.forUpdateTables = forUpdateTables;
+    }
     if (autoOrder !== undefined) {selectStmt.autoOrder = autoOrder;}
     if (into !== undefined) {selectStmt.into = into;}
     if (indexBy !== undefined) {selectStmt.indexBy = indexBy;}
@@ -1092,6 +1110,20 @@ class SdblParser {
       kw === SdblKeyword.Select ||
       kw === SdblKeyword.Drop
     );
+  }
+
+  private isTableIdentifierStart(): boolean {
+    const tok = this.peek();
+    if (!tok) {
+      return false;
+    }
+    if (tok.type === TokenType.Identifier) {
+      return true;
+    }
+    if (tok.type === TokenType.Keyword && !this.isSectionKeyword(tok)) {
+      return true;
+    }
+    return false;
   }
 
   private matchOnOrBy(): boolean {

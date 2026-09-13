@@ -351,6 +351,8 @@ export class QueryMetadataProvider {
     const stdAttrs = getStandardAttributes(catConfig.metadataType, {
       parentId: tableId,
       parentFullName: tableFullName,
+      parentTableName: node.name,
+      parentTableFullName: tableFullName,
     });
 
     const isRegister =
@@ -427,6 +429,9 @@ export class QueryMetadataProvider {
         nodeType: 'field',
         dataType: f.dataType || 'String',
         isVirtual: false,
+        parentTableFullName: ttFullName,
+        parentTableName: tt.name,
+        fieldName: f.name,
       }));
 
       return {
@@ -635,17 +640,17 @@ export class QueryMetadataProvider {
       if (isAttributesContainer(child)) {
         const subChildren = await this.safeGetChildren(provider, child);
         for (const sub of subChildren) {
-          customAttrs.push(this.makeFieldNode(tableId, tableFullName, sub));
+          customAttrs.push(this.makeFieldNode(tableId, tableFullName, sub, node.name));
         }
       } else if (isDimensionsContainer(child)) {
         const subChildren = await this.safeGetChildren(provider, child);
         for (const sub of subChildren) {
-          dims.push(this.makeFieldNode(tableId, tableFullName, sub));
+          dims.push(this.makeFieldNode(tableId, tableFullName, sub, node.name));
         }
       } else if (isResourcesContainer(child)) {
         const subChildren = await this.safeGetChildren(provider, child);
         for (const sub of subChildren) {
-          resources.push(this.makeFieldNode(tableId, tableFullName, sub));
+          resources.push(this.makeFieldNode(tableId, tableFullName, sub, node.name));
         }
       } else if (isTabularSectionsContainer(child)) {
         const subChildren = await this.safeGetChildren(provider, child);
@@ -660,11 +665,11 @@ export class QueryMetadataProvider {
         }
       } else {
         if (child.type === MetadataType.Dimension) {
-          dims.push(this.makeFieldNode(tableId, tableFullName, child));
+          dims.push(this.makeFieldNode(tableId, tableFullName, child, node.name));
         } else if (child.type === MetadataType.Resource) {
-          resources.push(this.makeFieldNode(tableId, tableFullName, child));
+          resources.push(this.makeFieldNode(tableId, tableFullName, child, node.name));
         } else if (child.type === MetadataType.Attribute) {
-          customAttrs.push(this.makeFieldNode(tableId, tableFullName, child));
+          customAttrs.push(this.makeFieldNode(tableId, tableFullName, child, node.name));
         } else if (child.type === MetadataType.TabularSection) {
           const tsNode = await this.buildTabularSectionNode(
             child,
@@ -745,6 +750,8 @@ export class QueryMetadataProvider {
     const stdAttrs = getStandardAttributes(catConfig.metadataType, {
       parentId: tableId,
       parentFullName: tableFullName,
+      parentTableName: node.name,
+      parentTableFullName: tableFullName,
       isHierarchical,
       hasOwner,
       isPeriodic,
@@ -808,16 +815,18 @@ export class QueryMetadataProvider {
       if (isAttributesContainer(child)) {
         const subChildren = await this.safeGetChildren(provider, child);
         for (const sub of subChildren) {
-          customAttrs.push(this.makeFieldNode(tsId, tsFullName, sub));
+          customAttrs.push(this.makeFieldNode(tsId, tsFullName, sub, node.name));
         }
       } else if (child.type === MetadataType.Attribute) {
-        customAttrs.push(this.makeFieldNode(tsId, tsFullName, child));
+        customAttrs.push(this.makeFieldNode(tsId, tsFullName, child, node.name));
       }
     }
 
     const stdAttrs = getStandardAttributes('TabularSection', {
       parentId: tsId,
       parentFullName: tsFullName,
+      parentTableName: node.name,
+      parentTableFullName: tsFullName,
     });
 
     const fields = [...stdAttrs, ...customAttrs];
@@ -837,7 +846,8 @@ export class QueryMetadataProvider {
   private makeFieldNode(
     parentId: string,
     parentFullName: string,
-    node: TreeNode
+    node: TreeNode,
+    parentTableName?: string
   ): QueryMetadataNode {
     const rawType = node.properties?.Type ?? node.properties?.['v8:Type'];
     const dataType = normalizeDataType(rawType);
@@ -852,6 +862,11 @@ export class QueryMetadataProvider {
       nodeType: 'field',
       dataType,
       isVirtual: false,
+      parentTableFullName: parentFullName,
+      parentTableName:
+        parentTableName ??
+        (parentFullName ? parentFullName.split('.').pop() : undefined),
+      fieldName: node.name,
     };
   }
 }

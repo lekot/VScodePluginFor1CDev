@@ -54,7 +54,9 @@ function makeFieldNode(
   parentVtFullName: string,
   name: string,
   dataType = 'String',
-  label = name
+  label = name,
+  parentTableName?: string,
+  fieldName?: string
 ): QueryMetadataNode {
   return {
     id: `${parentVtId}.${name}`,
@@ -64,6 +66,11 @@ function makeFieldNode(
     nodeType: 'field',
     dataType,
     isVirtual: true,
+    parentTableFullName: parentVtFullName,
+    parentTableName:
+      parentTableName ??
+      (parentVtFullName ? parentVtFullName.split('.').slice(1).join('.') : undefined),
+    fieldName: fieldName ?? name,
   };
 }
 
@@ -71,7 +78,8 @@ function cloneFieldsWithParent(
   fields: QueryMetadataNode[],
   parentVtId: string,
   parentVtFullName: string,
-  suffix = ''
+  suffix = '',
+  parentTableName?: string
 ): QueryMetadataNode[] {
   return fields.map((f) => {
     const fieldName = `${f.name}${suffix}`;
@@ -83,6 +91,11 @@ function cloneFieldsWithParent(
       nodeType: 'field',
       dataType: f.dataType ?? 'String',
       isVirtual: true,
+      parentTableFullName: parentVtFullName,
+      parentTableName:
+        parentTableName ??
+        (parentVtFullName ? parentVtFullName.split('.').slice(1).join('.') : undefined),
+      fieldName,
     };
   });
 }

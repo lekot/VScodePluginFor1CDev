@@ -87,6 +87,7 @@ export interface SelectStatement {
   allowed?: boolean;
   top?: number;
   forUpdate?: boolean;
+  forUpdateTables?: string[];
   autoOrder?: boolean;
   into?: string;
   indexBy?: string[];

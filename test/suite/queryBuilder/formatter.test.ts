@@ -141,6 +141,30 @@ suite('SDBL Formatter & BSL Serializer', () => {
       assert.strictEqual(formatSdbl(pkg), expected);
     });
 
+    test('formats ДЛЯ ИЗМЕНЕНИЯ with specific tables list', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            forUpdate: true,
+            forUpdateTables: ['Таблица1', 'Таблица2'],
+            fields: [{ expression: { type: 'Identifier', name: 'Поле1' } }],
+            from: [{ source: { type: 'Table', name: 'Документ.Заказ' } }],
+          },
+        ],
+      };
+
+      const expected = [
+        'ВЫБРАТЬ',
+        '\tПоле1',
+        'ИЗ',
+        '\tДокумент.Заказ',
+        'ДЛЯ ИЗМЕНЕНИЯ Таблица1, Таблица2',
+      ].join('\n');
+
+      assert.strictEqual(formatSdbl(pkg), expected);
+    });
+
     test('formats standalone АВТОУПОРЯДОЧИВАНИЕ when autoOrder is true without explicit ORDER BY', () => {
       const pkg: QueryPackage = {
         queries: [

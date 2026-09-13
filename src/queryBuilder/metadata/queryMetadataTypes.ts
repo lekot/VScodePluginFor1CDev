@@ -24,6 +24,9 @@ export interface QueryMetadataNode {
   params?: VirtualTableParamDefinition[];
   children?: QueryMetadataNode[];
   hasChildren?: boolean;
+  parentTableFullName?: string; // "Справочник.Номенклатура"
+  parentTableName?: string;     // "Номенклатура"
+  fieldName?: string;           // "Код", "Ссылка"
 }
 
 export interface TempTableDefinition {

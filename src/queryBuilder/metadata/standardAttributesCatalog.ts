@@ -6,6 +6,8 @@ export interface StandardAttributeOptions {
   isPeriodic?: boolean;
   parentId?: string;
   parentFullName?: string;
+  parentTableName?: string;
+  parentTableFullName?: string;
 }
 
 const ATTRIBUTE_DATA_TYPES: Record<string, string> = {
@@ -178,6 +180,10 @@ export function getStandardAttributes(
   return attributeNames.map((name) => {
     const id = options?.parentId ? `${options.parentId}.${name}` : `${normalized}.${name}`;
     const fullName = options?.parentFullName ? `${options.parentFullName}.${name}` : name;
+    const parentTableFullName = options?.parentTableFullName ?? options?.parentFullName;
+    const parentTableName =
+      options?.parentTableName ??
+      (parentTableFullName ? parentTableFullName.split('.').pop() : undefined);
     return {
       id,
       name,
@@ -186,6 +192,9 @@ export function getStandardAttributes(
       nodeType: 'field',
       dataType: ATTRIBUTE_DATA_TYPES[name] ?? 'String',
       isVirtual: false,
+      parentTableFullName,
+      parentTableName,
+      fieldName: name,
     };
   });
 }

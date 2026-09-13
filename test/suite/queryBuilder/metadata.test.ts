@@ -706,6 +706,167 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
       assert.ok(vtNames.includes('ОстаткиНоменклатуры.Обороты'));
       assert.ok(vtNames.includes('ОстаткиНоменклатуры.ОстаткиИОбороты'));
     });
+
+    test('Task 1 (v0.60): populates parentTableFullName, parentTableName, and fieldName on all field nodes', async () => {
+      const catalogNode: TreeNode = {
+        id: 'Catalogs.Номенклатура',
+        name: 'Номенклатура',
+        type: MetadataType.Catalog,
+        properties: { synonym: 'Товары' },
+      };
+
+      const customAttr: TreeNode = {
+        id: 'Catalogs.Номенклатура.Attributes.Артикул',
+        name: 'Артикул',
+        type: MetadataType.Attribute,
+        properties: { Type: 'String' },
+      };
+
+      const tsAttr: TreeNode = {
+        id: 'Catalogs.Номенклатура.TabularSections.Состав.Attributes.Компонент',
+        name: 'Компонент',
+        type: MetadataType.Attribute,
+        properties: { Type: 'CatalogRef.Номенклатура' },
+      };
+
+      const tabularSectionNode: TreeNode = {
+        id: 'Catalogs.Номенклатура.TabularSections.Состав',
+        name: 'Состав',
+        type: MetadataType.TabularSection,
+        properties: {},
+      };
+
+      const regNode: TreeNode = {
+        id: 'AccumulationRegisters.ОстаткиНоменклатуры',
+        name: 'ОстаткиНоменклатуры',
+        type: MetadataType.AccumulationRegister,
+        properties: {},
+      };
+
+      const dimNode: TreeNode = {
+        id: 'AccumulationRegisters.ОстаткиНоменклатуры.Dimensions.Номенклатура',
+        name: 'Номенклатура',
+        type: MetadataType.Dimension,
+        properties: { Type: 'CatalogRef.Номенклатура' },
+      };
+
+      const resNode: TreeNode = {
+        id: 'AccumulationRegisters.ОстаткиНоменклатуры.Resources.Количество',
+        name: 'Количество',
+        type: MetadataType.Resource,
+        properties: { Type: 'Number' },
+      };
+
+      const catalogsFolder: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+
+      const regFolder: TreeNode = {
+        id: 'AccumulationRegisters',
+        name: 'AccumulationRegisters',
+        type: MetadataType.AccumulationRegister,
+        properties: {},
+      };
+
+      const configRoot: TreeNode = {
+        id: 'Configuration.TestConfig',
+        name: 'TestConfig',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      const mockProvider: any = {
+        getRootNodes: () => [configRoot],
+        getChildren: (node?: TreeNode) => {
+          if (!node || node === configRoot) {
+            return Promise.resolve([catalogsFolder, regFolder]);
+          }
+          if (node === catalogsFolder) {
+            return Promise.resolve([catalogNode]);
+          }
+          if (node === catalogNode) {
+            return Promise.resolve([customAttr, tabularSectionNode]);
+          }
+          if (node === tabularSectionNode) {
+            return Promise.resolve([tsAttr]);
+          }
+          if (node === regFolder) {
+            return Promise.resolve([regNode]);
+          }
+          if (node === regNode) {
+            return Promise.resolve([dimNode, resNode]);
+          }
+          return Promise.resolve([]);
+        },
+      };
+
+      const tree = await provider.buildTreeFromProvider(mockProvider);
+
+      // 1. Catalog standard attribute (Ссылка, Код)
+      const catCat = tree.find((c) => c.id === 'Catalogs')!;
+      const nomTable = catCat.children!.find((t) => t.name === 'Номенклатура')!;
+      const nomFields = nomTable.children!;
+
+      const refField = nomFields.find((f) => f.name === 'Ссылка')!;
+      assert.strictEqual(refField.parentTableFullName, 'Справочник.Номенклатура');
+      assert.strictEqual(refField.parentTableName, 'Номенклатура');
+      assert.strictEqual(refField.fieldName, 'Ссылка');
+
+      const codeField = nomFields.find((f) => f.name === 'Код')!;
+      assert.strictEqual(codeField.parentTableFullName, 'Справочник.Номенклатура');
+      assert.strictEqual(codeField.parentTableName, 'Номенклатура');
+      assert.strictEqual(codeField.fieldName, 'Код');
+
+      // 2. Custom attribute (Артикул)
+      const customField = nomFields.find((f) => f.name === 'Артикул')!;
+      assert.strictEqual(customField.parentTableFullName, 'Справочник.Номенклатура');
+      assert.strictEqual(customField.parentTableName, 'Номенклатура');
+      assert.strictEqual(customField.fieldName, 'Артикул');
+
+      // 3. Tabular section field (Компонент) and its standard attribute (НомерСтроки)
+      const tsNode = nomFields.find((f) => f.name === 'Состав')!;
+      const tsFields = tsNode.children!;
+      const compField = tsFields.find((f) => f.name === 'Компонент')!;
+      assert.strictEqual(compField.parentTableFullName, 'Справочник.Номенклатура.Состав');
+      assert.strictEqual(compField.parentTableName, 'Состав');
+      assert.strictEqual(compField.fieldName, 'Компонент');
+
+      const lineNoField = tsFields.find((f) => f.name === 'НомерСтроки')!;
+      assert.strictEqual(lineNoField.parentTableFullName, 'Справочник.Номенклатура.Состав');
+      assert.strictEqual(lineNoField.parentTableName, 'Состав');
+      assert.strictEqual(lineNoField.fieldName, 'НомерСтроки');
+
+      // 4. Register dimension and resource
+      const regCat = tree.find((c) => c.id === 'AccumulationRegisters')!;
+      const regTable = regCat.children!.find((t) => t.name === 'ОстаткиНоменклатуры')!;
+      const regFields = regTable.children!;
+
+      const dimField = regFields.find((f) => f.name === 'Номенклатура')!;
+      assert.strictEqual(dimField.parentTableFullName, 'РегистрНакопления.ОстаткиНоменклатуры');
+      assert.strictEqual(dimField.parentTableName, 'ОстаткиНоменклатуры');
+      assert.strictEqual(dimField.fieldName, 'Номенклатура');
+
+      const resField = regFields.find((f) => f.name === 'Количество')!;
+      assert.strictEqual(resField.parentTableFullName, 'РегистрНакопления.ОстаткиНоменклатуры');
+      assert.strictEqual(resField.parentTableName, 'ОстаткиНоменклатуры');
+      assert.strictEqual(resField.fieldName, 'Количество');
+
+      // 5. Virtual table fields
+      const balancesVt = regTable.children!.find((t) => t.name === 'ОстаткиНоменклатуры.Остатки')!;
+      const vtFields = balancesVt.children!;
+      const vtQtyField = vtFields.find((f) => f.name === 'КоличествоОстаток')!;
+      assert.strictEqual(vtQtyField.parentTableFullName, 'РегистрНакопления.ОстаткиНоменклатуры.Остатки');
+      assert.strictEqual(vtQtyField.parentTableName, 'ОстаткиНоменклатуры.Остатки');
+      assert.strictEqual(vtQtyField.fieldName, 'КоличествоОстаток');
+
+      const vtDimField = vtFields.find((f) => f.name === 'Номенклатура')!;
+      assert.strictEqual(vtDimField.parentTableFullName, 'РегистрНакопления.ОстаткиНоменклатуры.Остатки');
+      assert.strictEqual(vtDimField.parentTableName, 'ОстаткиНоменклатуры.Остатки');
+      assert.strictEqual(vtDimField.fieldName, 'Номенклатура');
+    });
   });
 
   suite('5. Group 3 Improvements (P1.6, P2.18, P2.19)', () => {

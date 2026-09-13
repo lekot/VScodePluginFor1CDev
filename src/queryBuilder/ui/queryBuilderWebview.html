@@ -445,6 +445,61 @@
             font-size: 13px;
         }
 
+        /* ── Unlinked Tables & Chips ── */
+        .unlinked-tables-container {
+            padding: 8px 12px;
+            background: var(--vscode-sideBar-background, #252526);
+            border: 1px solid var(--vscode-panel-border, #333333);
+            border-radius: 4px;
+            margin-bottom: 12px;
+        }
+
+        .unlinked-tables-list {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            min-height: 32px;
+            align-items: center;
+        }
+
+        .table-chip {
+            padding: 4px 10px;
+            background: var(--vscode-badge-background, #3a3d41);
+            color: var(--vscode-badge-foreground, #ffffff);
+            border-radius: 12px;
+            cursor: grab;
+            user-select: none;
+            font-size: 11px;
+            border: 1px solid transparent;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s ease;
+        }
+
+        .table-chip:hover {
+            border-color: var(--vscode-focusBorder, #007fd4);
+            background: #094771;
+        }
+
+        .table-chip.drag-over {
+            outline: 2px dashed #007fd4;
+            background: rgba(0, 122, 204, 0.3);
+        }
+
+        .radio-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            font-size: 13px;
+        }
+
+        .radio-label input[type="radio"] {
+            cursor: pointer;
+        }
+
         /* ── Extra Tab Form (Tab 5) ── */
         .form-grid {
             display: grid;
@@ -729,6 +784,12 @@
 
         <!-- 2. Связи -->
         <div id="tab-joins" class="tab-pane">
+            <div class="unlinked-tables-container" id="unlinked-tables-container">
+                <div style="font-weight: 600; font-size: 12px; margin-bottom: 6px;">Несвязанные таблицы (перетащите одну на другую для создания связи):</div>
+                <div class="unlinked-tables-list" id="unlinked-tables-list">
+                    <!-- Unlinked table chips -->
+                </div>
+            </div>
             <div class="table-toolbar">
                 <span style="font-weight: 600;">Связи между таблицами (СОЕДИНЕНИЕ ... ПО ...)</span>
                 <button id="btn-add-join" class="secondary">+ Добавить связь</button>
@@ -741,7 +802,7 @@
                             <th style="width: 20%;">Тип соединения</th>
                             <th style="width: 22%;">Таблица 2</th>
                             <th>Условие связи (ПО / ON)</th>
-                            <th style="width: 40px; text-align: center;">✕</th>
+                            <th style="width: 80px; text-align: center;">Действия</th>
                         </tr>
                     </thead>
                     <tbody id="tbody-joins">
@@ -753,53 +814,77 @@
 
         <!-- 3. Группировка -->
         <div id="tab-grouping" class="tab-pane">
-            <div style="display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; height: 100%;">
-                <!-- Left: Group by fields -->
-                <div class="column-box" style="background: transparent;">
-                    <div class="table-toolbar">
-                        <span style="font-weight: 600;">Поля группировки (СГРУППИРОВАТЬ ПО)</span>
-                        <div class="table-actions">
-                            <button id="btn-populate-groupby" class="secondary" title="Заполнить из неагрегатных полей">Заполнить</button>
-                            <button id="btn-add-groupby" class="secondary icon-btn">+</button>
-                        </div>
+            <div style="display: grid; grid-template-columns: 260px 1fr; gap: 14px; height: 100%; min-height: 0;">
+                <!-- Left: Available Fields (from q.fields) -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="column-title">
+                        <span>Поля</span>
+                        <span id="badge-grouping-fields-count" class="mode-badge">0</span>
                     </div>
-                    <div class="table-responsive">
-                        <table class="data-table" id="table-groupby">
-                            <thead>
-                                <tr>
-                                    <th>Поле / Выражение</th>
-                                    <th style="width: 80px; text-align: center;">Порядок</th>
-                                    <th style="width: 36px;">✕</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tbody-groupby">
-                                <!-- Group by rows -->
-                            </tbody>
-                        </table>
+                    <div id="grouping-available-fields" class="index-list">
+                        <!-- Selected fields listed here -->
                     </div>
                 </div>
 
-                <!-- Right: Aggregate fields -->
-                <div class="column-box" style="background: transparent;">
-                    <div class="table-toolbar">
-                        <span style="font-weight: 600;">Агрегатные функции</span>
-                        <button id="btn-add-aggregate" class="secondary icon-btn">+</button>
+                <!-- Right: Stacked Panels -->
+                <div style="display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0;">
+                    <!-- Right Top: Group By -->
+                    <div class="column-box" style="flex: 1; min-height: 0;">
+                        <div class="table-toolbar">
+                            <span style="font-weight: 600;">Поля группировки (СГРУППИРОВАТЬ ПО)</span>
+                            <div class="table-actions">
+                                <button id="btn-groupby-add" class="secondary icon-btn" title="Добавить выбранное">&gt;</button>
+                                <button id="btn-groupby-add-all" class="secondary icon-btn" title="Добавить все">&gt;&gt;</button>
+                                <button id="btn-groupby-remove" class="secondary icon-btn" title="Убрать выбранное">&lt;</button>
+                                <button id="btn-groupby-remove-all" class="secondary icon-btn" title="Очистить">&lt;&lt;</button>
+                                <button id="btn-populate-groupby" class="secondary" title="Заполнить из неагрегатных полей">Заполнить</button>
+                                <button id="btn-add-groupby" class="secondary icon-btn" title="Добавить вручную">+</button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-groupby">
+                                <thead>
+                                    <tr>
+                                        <th>Поле / Выражение</th>
+                                        <th style="width: 80px; text-align: center;">Порядок</th>
+                                        <th style="width: 36px;">✕</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-groupby">
+                                    <!-- Group by rows -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                    <div class="table-responsive">
-                        <table class="data-table" id="table-aggregates">
-                            <thead>
-                                <tr>
-                                    <th>Поле / Выражение</th>
-                                    <th style="width: 140px;">Функция</th>
-                                    <th style="width: 85px; text-align: center;">Различные</th>
-                                    <th>Псевдоним</th>
-                                    <th style="width: 36px;">✕</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tbody-aggregates">
-                                <!-- Aggregate rows -->
-                            </tbody>
-                        </table>
+
+                    <!-- Right Bottom: Aggregates -->
+                    <div class="column-box" style="flex: 1; min-height: 0;">
+                        <div class="table-toolbar">
+                            <span style="font-weight: 600;">Агрегатные функции</span>
+                            <div class="table-actions">
+                                <button id="btn-agg-add" class="secondary icon-btn" title="Добавить выбранное">&gt;</button>
+                                <button id="btn-agg-add-all" class="secondary icon-btn" title="Добавить все">&gt;&gt;</button>
+                                <button id="btn-agg-remove" class="secondary icon-btn" title="Убрать выбранное">&lt;</button>
+                                <button id="btn-agg-remove-all" class="secondary icon-btn" title="Очистить">&lt;&lt;</button>
+                                <button id="btn-add-aggregate" class="secondary icon-btn" title="Добавить вручную">+</button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-aggregates">
+                                <thead>
+                                    <tr>
+                                        <th>Поле / Выражение</th>
+                                        <th style="width: 140px;">Функция</th>
+                                        <th style="width: 85px; text-align: center;">Различные</th>
+                                        <th>Псевдоним</th>
+                                        <th style="width: 36px;">✕</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-aggregates">
+                                    <!-- Aggregate rows -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -807,129 +892,242 @@
 
         <!-- 4. Условия -->
         <div id="tab-conditions" class="tab-pane">
-            <div class="table-toolbar">
-                <span style="font-weight: 600;">Условия отбора (ГДЕ / ИМЕЮЩИЕ)</span>
-                <button id="btn-add-condition" class="secondary">+ Добавить условие</button>
-            </div>
-            <div class="table-responsive">
-                <table class="data-table" id="table-conditions">
-                    <thead>
-                        <tr>
-                            <th style="width: 70px;">Связка</th>
-                            <th style="width: 28%;">Поле / Выражение</th>
-                            <th style="width: 170px;">Вид сравнения</th>
-                            <th>Значение / Параметр</th>
-                            <th style="width: 90px; text-align: center;">Раздел</th>
-                            <th style="width: 80px; text-align: center;">Порядок</th>
-                            <th style="width: 36px;">✕</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tbody-conditions">
-                        <!-- Conditions rows -->
-                    </tbody>
-                </table>
+            <div style="display: grid; grid-template-columns: 260px 1fr; gap: 14px; height: 100%; min-height: 0;">
+                <!-- Left: Query Fields -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="column-title">
+                        <span>Поля запроса</span>
+                        <button id="btn-condition-add-field" class="secondary icon-btn" title="Добавить условие">&gt;</button>
+                    </div>
+                    <div id="conditions-fields-list" class="index-list">
+                        <!-- Fields list -->
+                    </div>
+                </div>
+
+                <!-- Right: Conditions Table -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="table-toolbar">
+                        <span style="font-weight: 600;">Условия отбора (ГДЕ / ИМЕЮЩИЕ)</span>
+                        <button id="btn-add-condition" class="secondary">+ Добавить условие</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="table-conditions">
+                            <thead>
+                                <tr>
+                                    <th style="width: 70px;">Связка</th>
+                                    <th style="width: 28%;">Поле / Выражение</th>
+                                    <th style="width: 170px;">Вид сравнения</th>
+                                    <th>Значение / Параметр</th>
+                                    <th style="width: 90px; text-align: center;">Раздел</th>
+                                    <th style="width: 80px; text-align: center;">Порядок</th>
+                                    <th style="width: 36px;">✕</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-conditions">
+                                <!-- Conditions rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- 5. Дополнительно -->
         <div id="tab-extra" class="tab-pane">
-            <div class="form-grid">
-                <span class="form-label">Количество первых записей (ПЕРВЫЕ):</span>
-                <input type="number" id="input-top" min="1" placeholder="Все записи" style="width: 180px;" />
+            <div style="display: flex; flex-direction: column; gap: 16px; max-width: 750px; overflow-y: auto;">
+                <!-- Блок «Тип запроса» -->
+                <div class="column-box" style="padding: 12px; gap: 8px;">
+                    <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">Тип запроса:</div>
+                    <label class="radio-label">
+                        <input type="radio" name="query-type-radio" id="radio-type-select" value="select" checked />
+                        <span>Выборка данных</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="query-type-radio" id="radio-type-into" value="into" />
+                        <span>Создание временной таблицы (ПОМЕСТИТЬ)</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="query-type-radio" id="radio-type-insert" value="insert" />
+                        <span>Добавление во временную таблицу</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="query-type-radio" id="radio-type-drop" value="drop" />
+                        <span>Уничтожение временной таблицы (УНИЧТОЖИТЬ)</span>
+                    </label>
+                    <div style="margin-top: 6px; display: flex; align-items: center; gap: 10px;">
+                        <span class="form-label" style="min-width: 200px;">Имя временной таблицы:</span>
+                        <input type="text" id="input-into" placeholder="Например: ВТ_ОстаткиТоваров" style="width: 280px;" disabled />
+                    </div>
+                </div>
 
-                <span class="form-label">Выбирать разрешенные:</span>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="check-allowed" />
-                    <span>РАЗРЕШЕННЫЕ</span>
-                </label>
+                <!-- Блок «Выборка записей» -->
+                <div class="column-box" style="padding: 12px; gap: 8px;">
+                    <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">Выборка записей:</div>
+                    <div style="display: flex; gap: 18px; align-items: center; flex-wrap: wrap;">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="check-top-enabled" />
+                            <span>Первые</span>
+                        </label>
+                        <input type="number" id="input-top" min="1" placeholder="Все записи" style="width: 120px;" disabled />
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="check-distinct" />
+                            <span>Без повторяющихся (РАЗЛИЧНЫЕ)</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="check-allowed" />
+                            <span>Разрешенные (РАЗРЕШЕННЫЕ)</span>
+                        </label>
+                        <label class="checkbox-label" style="display: none;">
+                            <input type="checkbox" id="check-auto-order" />
+                            <span>АВТОУПОРЯДОЧИВАНИЕ</span>
+                        </label>
+                    </div>
+                </div>
 
-                <span class="form-label">Без повторяющихся записей:</span>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="check-distinct" />
-                    <span>РАЗЛИЧНЫЕ</span>
-                </label>
-
-                <span class="form-label">Блокировка данных:</span>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="check-for-update" />
-                    <span>ДЛЯ ИЗМЕНЕНИЯ</span>
-                </label>
-
-                <span class="form-label">Автоматическое упорядочивание:</span>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="check-auto-order" />
-                    <span>АВТОУПОРЯДОЧИВАНИЕ</span>
-                </label>
-
-                <span class="form-label">Создать временную таблицу (ПОМЕСТИТЬ):</span>
-                <input type="text" id="input-into" placeholder="Например: ВТ_ОстаткиТоваров" style="width: 280px;" />
+                <!-- Блок «ДЛЯ ИЗМЕНЕНИЯ» -->
+                <div class="column-box" style="padding: 12px; gap: 10px;">
+                    <div style="font-weight: 600; font-size: 13px;">Блокировка данных:</div>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="check-for-update" />
+                        <span>Блокировать получаемые данные для последующего изменения</span>
+                    </label>
+                    <div id="for-update-selector-container" class="index-selector-container" style="height: 180px; display: none;">
+                        <!-- Left: Available FROM tables -->
+                        <div class="index-panel">
+                            <div class="index-panel-header">
+                                <span>Таблицы запроса</span>
+                            </div>
+                            <div id="forupdate-available-list" class="index-list"></div>
+                        </div>
+                        <!-- Center: Buttons -->
+                        <div class="index-buttons-block">
+                            <button id="btn-forupdate-add" class="secondary" title="Добавить выбранное">&gt;</button>
+                            <button id="btn-forupdate-add-all" class="secondary" title="Добавить все">&gt;&gt;</button>
+                            <button id="btn-forupdate-remove" class="secondary" title="Убрать выбранное">&lt;</button>
+                            <button id="btn-forupdate-remove-all" class="secondary" title="Убрать все">&lt;&lt;</button>
+                        </div>
+                        <!-- Right: Selected for update -->
+                        <div class="index-panel">
+                            <div class="index-panel-header">
+                                <span>Таблицы для изменения</span>
+                            </div>
+                            <div id="forupdate-selected-list" class="index-list"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- 6. Объединения / Псевдонимы -->
         <div id="tab-unions" class="tab-pane">
-            <div class="table-toolbar">
-                <span style="font-weight: 600;">Ветки объединения (ОБЪЕДИНИТЬ / ОБЪЕДИНИТЬ ВСЕ)</span>
-                <div class="table-actions">
-                    <button id="btn-add-union" class="secondary">+ ОБЪЕДИНИТЬ</button>
-                    <button id="btn-add-union-all" class="secondary">+ ОБЪЕДИНИТЬ ВСЕ</button>
+            <div style="display: grid; grid-template-columns: 320px 1fr; gap: 14px; height: 100%; min-height: 0;">
+                <!-- Left: Unions Queries -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="table-toolbar">
+                        <span style="font-weight: 600;">Запросы объединения</span>
+                        <div class="table-actions">
+                            <button id="btn-union-add" class="icon-btn" style="background:#28a745;" title="Добавить объединяемый запрос">+</button>
+                            <button id="btn-union-copy" class="secondary icon-btn" title="Копировать запрос">📋</button>
+                            <button id="btn-union-del" class="secondary icon-btn danger" title="Удалить запрос">✕</button>
+                            <button id="btn-union-up" class="secondary icon-btn" title="Переместить вверх">▲</button>
+                            <button id="btn-union-down" class="secondary icon-btn" title="Переместить вниз">▼</button>
+                        </div>
+                    </div>
+                    <!-- Hidden buttons for test compatibility if any -->
+                    <button id="btn-add-union" style="display:none;"></button>
+                    <button id="btn-add-union-all" style="display:none;"></button>
+                    <div class="table-responsive">
+                        <table class="data-table" id="table-unions-list">
+                            <thead>
+                                <tr>
+                                    <th>Имя</th>
+                                    <th style="width: 120px; text-align: center;">Без дубликатов</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-unions-list"></tbody>
+                        </table>
+                        <table class="data-table" id="table-unions" style="display:none;"><tbody id="tbody-unions"></tbody></table>
+                    </div>
                 </div>
-            </div>
-            <div class="table-responsive" style="max-height: 200px; flex: none;">
-                <table class="data-table" id="table-unions">
-                    <thead>
-                        <tr>
-                            <th style="width: 60px;">#</th>
-                            <th style="width: 180px;">Тип связи</th>
-                            <th>Описание запроса</th>
-                            <th style="width: 80px; text-align: center;">Действия</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tbody-unions">
-                        <!-- Union branches rows -->
-                    </tbody>
-                </table>
-            </div>
 
-            <div class="table-toolbar" style="margin-top: 10px;">
-                <span style="font-weight: 600;">Соответствие полей объединения</span>
-            </div>
-            <div class="table-responsive">
-                <table class="data-table" id="table-unions-fields">
-                    <thead>
-                        <tr>
-                            <th>Итоговый псевдоним</th>
-                            <th>Поле основного запроса</th>
-                            <th>Поле объединяемого запроса</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tbody-unions-fields">
-                        <!-- Fields correspondence -->
-                    </tbody>
-                </table>
+                <!-- Right: Fields correspondence -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="table-toolbar">
+                        <span style="font-weight: 600;">Соответствие полей и псевдонимы</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="table-unions-fields">
+                            <thead id="thead-unions-fields">
+                                <tr>
+                                    <th>Имя поля</th>
+                                    <th>Запрос 1</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-unions-fields">
+                                <!-- Fields correspondence rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- 7. Порядок -->
         <div id="tab-order" class="tab-pane">
-            <div class="table-toolbar">
-                <span style="font-weight: 600;">Порядок сортировки (УПОРЯДОЧИТЬ ПО)</span>
-                <button id="btn-add-order" class="secondary">+ Добавить поле сортировки</button>
+            <div style="display: grid; grid-template-columns: 280px 50px 1fr; gap: 12px; height: calc(100% - 40px); min-height: 0;">
+                <!-- Left: Fields & All fields tree -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="column-title">
+                        <span>Поля</span>
+                    </div>
+                    <div id="order-available-fields" class="index-list" style="flex: 1; max-height: 45%;">
+                        <!-- Selected fields -->
+                    </div>
+                    <div class="column-title" style="border-top: 1px solid var(--vscode-panel-border, #333333); margin-top: 4px;">
+                        <span>Все поля</span>
+                    </div>
+                    <div id="order-all-fields-tree" class="tree-container" style="flex: 1; overflow-y: auto;">
+                        <!-- Hierarchical tables and attributes -->
+                    </div>
+                </div>
+
+                <!-- Center buttons -->
+                <div class="index-buttons-block">
+                    <button id="btn-order-add" class="secondary" title="Добавить выбранное">&gt;</button>
+                    <button id="btn-order-add-all" class="secondary" title="Добавить все">&gt;&gt;</button>
+                    <button id="btn-order-remove" class="secondary" title="Убрать выбранное">&lt;</button>
+                    <button id="btn-order-remove-all" class="secondary" title="Убрать все">&lt;&lt;</button>
+                </div>
+
+                <!-- Right: Order Table -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="table-toolbar">
+                        <span style="font-weight: 600;">Поля порядка</span>
+                        <button id="btn-add-order" class="secondary icon-btn" title="Добавить">+</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="table-order">
+                            <thead>
+                                <tr>
+                                    <th>Поле / Выражение</th>
+                                    <th style="width: 200px;">Сортировка</th>
+                                    <th style="width: 80px; text-align: center;">Порядок</th>
+                                    <th style="width: 36px;">✕</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-order">
+                                <!-- Order rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
-            <div class="table-responsive">
-                <table class="data-table" id="table-order">
-                    <thead>
-                        <tr>
-                            <th>Поле / Выражение</th>
-                            <th style="width: 200px;">Направление сортировки</th>
-                            <th style="width: 80px; text-align: center;">Порядок</th>
-                            <th style="width: 36px;">✕</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tbody-order">
-                        <!-- Order by rows -->
-                    </tbody>
-                </table>
+            <!-- Bottom Auto-order checkbox -->
+            <div style="margin-top: 8px; display: flex; align-items: center;">
+                <label class="checkbox-label" style="font-weight: 600;">
+                    <input type="checkbox" id="check-auto-order-tab7" />
+                    <span>Автоупорядочивание</span>
+                </label>
             </div>
         </div>
 
@@ -973,59 +1171,85 @@
 
         <!-- 9. Итоги -->
         <div id="tab-totals" class="tab-pane">
-            <div class="table-toolbar">
-                <label class="checkbox-label" style="font-weight: 600;">
-                    <input type="checkbox" id="check-totals-overall" />
-                    <span>Общие итоги (ОБЩИЕ)</span>
-                </label>
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; height: 100%;">
-                <!-- Left: Totals Aggregates -->
-                <div class="column-box" style="background: transparent;">
-                    <div class="table-toolbar">
-                        <span style="font-weight: 600;">Поля итогов</span>
-                        <button id="btn-add-total-field" class="secondary icon-btn">+</button>
+            <div style="display: grid; grid-template-columns: 280px 1fr; gap: 14px; height: 100%; min-height: 0;">
+                <!-- Left: Fields -->
+                <div class="column-box" style="height: 100%; min-height: 0;">
+                    <div class="column-title">
+                        <span>Поля</span>
                     </div>
-                    <div class="table-responsive">
-                        <table class="data-table" id="table-totals-fields">
-                            <thead>
-                                <tr>
-                                    <th>Поле / Выражение</th>
-                                    <th style="width: 130px;">Функция</th>
-                                    <th style="width: 85px; text-align: center;">Различные</th>
-                                    <th>Псевдоним</th>
-                                    <th style="width: 36px;">✕</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tbody-totals-fields">
-                                <!-- Totals fields rows -->
-                            </tbody>
-                        </table>
+                    <div id="totals-available-fields" class="index-list">
+                        <!-- Fields from query and all fields -->
                     </div>
                 </div>
 
-                <!-- Right: Totals Grouping (ПО ...) -->
-                <div class="column-box" style="background: transparent;">
-                    <div class="table-toolbar">
-                        <span style="font-weight: 600;">Группировочные поля (ПО ...)</span>
-                        <button id="btn-add-total-group" class="secondary icon-btn">+</button>
+                <!-- Right: Top groups, Center overall, Bottom totals fields -->
+                <div style="display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0;">
+                    <!-- Right Top: Grouping Fields (ПО) -->
+                    <div class="column-box" style="flex: 1; min-height: 0;">
+                        <div class="table-toolbar">
+                            <span style="font-weight: 600;">Группировочные поля (ПО)</span>
+                            <div class="table-actions">
+                                <button id="btn-totalgroup-add" class="secondary icon-btn" title="Добавить выбранное">&gt;</button>
+                                <button id="btn-totalgroup-add-all" class="secondary icon-btn" title="Добавить все">&gt;&gt;</button>
+                                <button id="btn-totalgroup-remove" class="secondary icon-btn" title="Убрать выбранное">&lt;</button>
+                                <button id="btn-totalgroup-remove-all" class="secondary icon-btn" title="Очистить">&lt;&lt;</button>
+                                <button id="btn-add-total-group" class="secondary icon-btn">+</button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-totals-groups">
+                                <thead>
+                                    <tr>
+                                        <th>Группировочное поле</th>
+                                        <th style="width: 140px;">Тип итогов</th>
+                                        <th style="width: 70px; text-align: center;">Иерархия</th>
+                                        <th style="width: 75px; text-align: center;">Периодами</th>
+                                        <th style="width: 120px;">Псевдоним</th>
+                                        <th style="width: 70px; text-align: center;">Порядок</th>
+                                        <th style="width: 36px;">✕</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-totals-groups">
+                                    <!-- Groups rows -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                    <div class="table-responsive">
-                        <table class="data-table" id="table-totals-groups">
-                            <thead>
-                                <tr>
-                                    <th>Поле / Выражение</th>
-                                    <th style="width: 80px; text-align: center;">Иерархия</th>
-                                    <th style="width: 85px; text-align: center;">Периодами</th>
-                                    <th style="width: 80px; text-align: center;">Порядок</th>
-                                    <th style="width: 36px;">✕</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tbody-totals-groups">
-                                <!-- Totals groups rows -->
-                            </tbody>
-                        </table>
+
+                    <!-- Center: Overall totals -->
+                    <div style="padding: 4px 8px; background: var(--vscode-editorGroupHeader-tabsBackground, #252526); border: 1px solid var(--vscode-panel-border, #333333); border-radius: 4px; display: flex; align-items: center;">
+                        <label class="checkbox-label" style="font-weight: 600;">
+                            <input type="checkbox" id="check-totals-overall" />
+                            <span>Общие итоги (ОБЩИЕ)</span>
+                        </label>
+                    </div>
+
+                    <!-- Right Bottom: Totals Fields -->
+                    <div class="column-box" style="flex: 1; min-height: 0;">
+                        <div class="table-toolbar">
+                            <span style="font-weight: 600;">Итоговые поля</span>
+                            <div class="table-actions">
+                                <button id="btn-totalfield-add" class="secondary icon-btn" title="Добавить выбранное">&gt;</button>
+                                <button id="btn-totalfield-add-all" class="secondary icon-btn" title="Добавить все">&gt;&gt;</button>
+                                <button id="btn-totalfield-remove" class="secondary icon-btn" title="Убрать выбранное">&lt;</button>
+                                <button id="btn-totalfield-remove-all" class="secondary icon-btn" title="Очистить">&lt;&lt;</button>
+                                <button id="btn-add-total-field" class="secondary icon-btn">+</button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-totals-fields">
+                                <thead>
+                                    <tr>
+                                        <th>Итоговое поле</th>
+                                        <th>Выражение</th>
+                                        <th style="width: 36px;">✕</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-totals-fields">
+                                    <!-- Totals fields rows -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1135,7 +1359,14 @@
                 selectedAvailableIndex: -1,
                 selectedIndexedIndex: -1,
                 metadataTree: [],
-                activeVtTableIndex: -1
+                activeVtTableIndex: -1,
+                selectedGroupingFieldIndex: -1,
+                selectedConditionFieldIndex: -1,
+                selectedForUpdateAvailableIndex: -1,
+                selectedForUpdateSelectedIndex: -1,
+                selectedUnionIndex: 0,
+                selectedOrderFieldIndex: -1,
+                selectedTotalsFieldIndex: -1
             };
 
             // ── DOM References ──
@@ -1163,37 +1394,77 @@
                 btnAddField: document.getElementById('btn-add-field'),
 
                 // Tab 2
+                unlinkedTablesList: document.getElementById('unlinked-tables-list'),
                 tbodyJoins: document.getElementById('tbody-joins'),
                 btnAddJoin: document.getElementById('btn-add-join'),
 
                 // Tab 3
+                groupingAvailableFields: document.getElementById('grouping-available-fields'),
+                badgeGroupingFieldsCount: document.getElementById('badge-grouping-fields-count'),
+                btnGroupbyAdd: document.getElementById('btn-groupby-add'),
+                btnGroupbyAddAll: document.getElementById('btn-groupby-add-all'),
+                btnGroupbyRemove: document.getElementById('btn-groupby-remove'),
+                btnGroupbyRemoveAll: document.getElementById('btn-groupby-remove-all'),
                 tbodyGroupBy: document.getElementById('tbody-groupby'),
                 tbodyAggregates: document.getElementById('tbody-aggregates'),
+                btnAggAdd: document.getElementById('btn-agg-add'),
+                btnAggAddAll: document.getElementById('btn-agg-add-all'),
+                btnAggRemove: document.getElementById('btn-agg-remove'),
+                btnAggRemoveAll: document.getElementById('btn-agg-remove-all'),
                 btnPopulateGroupBy: document.getElementById('btn-populate-groupby'),
                 btnAddGroupBy: document.getElementById('btn-add-groupby'),
                 btnAddAggregate: document.getElementById('btn-add-aggregate'),
 
                 // Tab 4
+                conditionsFieldsList: document.getElementById('conditions-fields-list'),
+                btnConditionAddField: document.getElementById('btn-condition-add-field'),
                 tbodyConditions: document.getElementById('tbody-conditions'),
                 btnAddCondition: document.getElementById('btn-add-condition'),
 
                 // Tab 5
+                radioTypeSelect: document.getElementById('radio-type-select'),
+                radioTypeInto: document.getElementById('radio-type-into'),
+                radioTypeInsert: document.getElementById('radio-type-insert'),
+                radioTypeDrop: document.getElementById('radio-type-drop'),
+                checkTopEnabled: document.getElementById('check-top-enabled'),
                 inputTop: document.getElementById('input-top'),
                 checkAllowed: document.getElementById('check-allowed'),
                 checkDistinct: document.getElementById('check-distinct'),
                 checkForUpdate: document.getElementById('check-for-update'),
+                forUpdateSelectorContainer: document.getElementById('for-update-selector-container'),
+                forupdateAvailableList: document.getElementById('forupdate-available-list'),
+                forupdateSelectedList: document.getElementById('forupdate-selected-list'),
+                btnForupdateAdd: document.getElementById('btn-forupdate-add'),
+                btnForupdateAddAll: document.getElementById('btn-forupdate-add-all'),
+                btnForupdateRemove: document.getElementById('btn-forupdate-remove'),
+                btnForupdateRemoveAll: document.getElementById('btn-forupdate-remove-all'),
                 checkAutoOrder: document.getElementById('check-auto-order'),
                 inputInto: document.getElementById('input-into'),
 
                 // Tab 6
+                tableUnionsList: document.getElementById('table-unions-list'),
+                tbodyUnionsList: document.getElementById('tbody-unions-list'),
+                btnUnionAdd: document.getElementById('btn-union-add'),
+                btnUnionCopy: document.getElementById('btn-union-copy'),
+                btnUnionDel: document.getElementById('btn-union-del'),
+                btnUnionUp: document.getElementById('btn-union-up'),
+                btnUnionDown: document.getElementById('btn-union-down'),
                 tbodyUnions: document.getElementById('tbody-unions'),
+                theadUnionsFields: document.getElementById('thead-unions-fields'),
                 tbodyUnionsFields: document.getElementById('tbody-unions-fields'),
                 btnAddUnion: document.getElementById('btn-add-union'),
                 btnAddUnionAll: document.getElementById('btn-add-union-all'),
 
                 // Tab 7
+                orderAvailableFields: document.getElementById('order-available-fields'),
+                orderAllFieldsTree: document.getElementById('order-all-fields-tree'),
+                btnOrderAdd: document.getElementById('btn-order-add'),
+                btnOrderAddAll: document.getElementById('btn-order-add-all'),
+                btnOrderRemove: document.getElementById('btn-order-remove'),
+                btnOrderRemoveAll: document.getElementById('btn-order-remove-all'),
                 tbodyOrder: document.getElementById('tbody-order'),
                 btnAddOrder: document.getElementById('btn-add-order'),
+                checkAutoOrderTab7: document.getElementById('check-auto-order-tab7'),
 
                 // Tab 8 (Indexes)
                 indexAvailableList: document.getElementById('index-available-list'),
@@ -1206,6 +1477,15 @@
                 btnIndexRemoveAll: document.getElementById('btn-index-remove-all'),
 
                 // Tab 9
+                totalsAvailableFields: document.getElementById('totals-available-fields'),
+                btnTotalgroupAdd: document.getElementById('btn-totalgroup-add'),
+                btnTotalgroupAddAll: document.getElementById('btn-totalgroup-add-all'),
+                btnTotalgroupRemove: document.getElementById('btn-totalgroup-remove'),
+                btnTotalgroupRemoveAll: document.getElementById('btn-totalgroup-remove-all'),
+                btnTotalfieldAdd: document.getElementById('btn-totalfield-add'),
+                btnTotalfieldAddAll: document.getElementById('btn-totalfield-add-all'),
+                btnTotalfieldRemove: document.getElementById('btn-totalfield-remove'),
+                btnTotalfieldRemoveAll: document.getElementById('btn-totalfield-remove-all'),
                 checkTotalsOverall: document.getElementById('check-totals-overall'),
                 tbodyTotalsFields: document.getElementById('tbody-totals-fields'),
                 tbodyTotalsGroups: document.getElementById('tbody-totals-groups'),
@@ -1263,6 +1543,33 @@
                 'МАКСИМУМ': 'Max',
                 'СРЕДНЕЕ': 'Avg'
             };
+
+            const METADATA_PREFIX_REGEX = /^(?:Справочник|Документ|РегистрНакопления|РегистрСведений|РегистрБухгалтерии|РегистрРасчета|ПланВидовХарактеристик|ПланСчетов|ПланВидовРасчета|БизнесПроцесс|Задача|Catalog|Document|AccumulationRegister|InformationRegister|AccountingRegister|CalculationRegister|ChartOfCharacteristicTypes|ChartOfAccounts|ChartOfCalculationTypes|BusinessProcess|Task)\./i;
+
+            function getTableAliasWithoutPrefix(name) {
+                if (!name || typeof name !== 'string') return '';
+                let base = name.split('(')[0].trim();
+                if (METADATA_PREFIX_REGEX.test(base)) {
+                    base = base.replace(METADATA_PREFIX_REGEX, '');
+                } else if (base.indexOf('.') !== -1) {
+                    const parts = base.split('.');
+                    base = parts[parts.length - 1];
+                }
+                return base;
+            }
+
+            const NUMERIC_FIELD_KEYWORDS = [
+                'сумма', 'количество', 'цена', 'остаток', 'оборот', 'вес', 'объем', 'число',
+                'number', 'cost', 'qty', 'amount', 'sum', 'price', 'total', 'count'
+            ];
+
+            function isNumericField(fieldName) {
+                if (!fieldName || typeof fieldName !== 'string') return false;
+                const lower = fieldName.toLowerCase();
+                return NUMERIC_FIELD_KEYWORDS.some(function(kw) {
+                    return lower.indexOf(kw) !== -1;
+                });
+            }
 
             function getOperatorPrecedence(expr) {
                 if (!expr || typeof expr !== 'object') return 100;
@@ -1529,7 +1836,8 @@
 
                         // Joins
                         if (hasJoins) {
-                            fc.joins.forEach(function(jn, jIdx) {
+                            const groupedJoins = [];
+                            fc.joins.forEach(function(jn) {
                                 let jType = 'ЛЕВОЕ СОЕДИНЕНИЕ';
                                 if (jn.joinType === 'Inner') jType = 'ВНУТРЕННЕЕ СОЕДИНЕНИЕ';
                                 else if (jn.joinType === 'Right') jType = 'ПРАВОЕ СОЕДИНЕНИЕ';
@@ -1537,11 +1845,28 @@
 
                                 const jSrc = jn.source && jn.source.name ? jn.source.name : '';
                                 const jAlias = jn.alias ? ' КАК ' + jn.alias : '';
-                                const onStr = getExpressionString(jn.on);
-                                const jComma = (jIdx === fc.joins.length - 1 && fIdx < stmt.from.length - 1) ? ',' : '';
+                                const onStr = getExpressionString(jn.on) || 'ИСТИНА';
+                                const key = jType + '|||' + jSrc + '|||' + jAlias;
 
-                                lines.push('\t\t' + jType + ' ' + jSrc + jAlias);
-                                lines.push('\t\tПО ' + onStr + jComma);
+                                const existing = groupedJoins.find(function(g) { return g.key === key; });
+                                if (existing) {
+                                    existing.conditions.push(onStr);
+                                } else {
+                                    groupedJoins.push({
+                                        key: key,
+                                        typeStr: jType,
+                                        srcStr: jSrc,
+                                        aliasStr: jAlias,
+                                        conditions: [onStr]
+                                    });
+                                }
+                            });
+
+                            groupedJoins.forEach(function(g, jIdx) {
+                                const onCombined = g.conditions.join(' И ');
+                                const jComma = (jIdx === groupedJoins.length - 1 && fIdx < stmt.from.length - 1) ? ',' : '';
+                                lines.push('\t\t' + g.typeStr + ' ' + g.srcStr + g.aliasStr);
+                                lines.push('\t\tПО ' + onCombined + jComma);
                             });
                         }
                     });
@@ -1647,6 +1972,15 @@
                             }
                             lines.push('\t' + getExpressionString(byItem.expression) + opts + comma);
                         });
+                    }
+                }
+                
+                // FOR UPDATE
+                if (stmt.forUpdate) {
+                    if (stmt.forUpdateTables && stmt.forUpdateTables.length > 0) {
+                        lines.push('ДЛЯ ИЗМЕНЕНИЯ ' + stmt.forUpdateTables.join(', '));
+                    } else {
+                        lines.push('ДЛЯ ИЗМЕНЕНИЯ');
                     }
                 }
 
@@ -2755,13 +3089,29 @@
                     }
                 });
 
+                if (node.nodeType === 'field') {
+                    row.draggable = true;
+                    row.addEventListener('dragstart', function(e) {
+                        e.dataTransfer.setData('text/plain', node.fullName || node.name);
+                        e.dataTransfer.setData('application/json', JSON.stringify({
+                            id: node.id,
+                            name: node.name,
+                            fullName: node.fullName,
+                            fieldName: node.fieldName || node.name,
+                            parentTableFullName: node.parentTableFullName,
+                            parentTableName: node.parentTableName,
+                            nodeType: node.nodeType
+                        }));
+                    });
+                }
+
                 row.addEventListener('dblclick', function() {
                     const q = getActiveQuery();
                     if (q.type === 'DropTable') return;
                     if (node.nodeType === 'table' || node.nodeType === 'virtualTable' || node.nodeType === 'tempTable') {
                         addTableToQuery(node.fullName || node.name, node.params);
                     } else if (node.nodeType === 'field') {
-                        addFieldToQuery(node.fullName || node.name);
+                        addFieldToQuery(node);
                     }
                 });
 
@@ -2948,7 +3298,7 @@
                 if (q.type === 'DropTable') return;
                 if (!q.from) q.from = [];
 
-                const defaultAlias = name.split('.').pop();
+                const defaultAlias = getTableAliasWithoutPrefix(name);
                 q.from.push({
                     source: {
                         type: 'Table',
@@ -2964,26 +3314,205 @@
                 notifyChange();
             }
 
-            function addFieldToQuery(name) {
+            function addFieldToQuery(nameOrNode) {
                 const q = getActiveQuery();
                 if (q.type === 'DropTable') return;
                 if (!q.fields) q.fields = [];
+                if (!q.from) q.from = [];
 
-                const defaultAlias = name.split('.').pop();
+                let fieldName = '';
+                let parentTableFullName = '';
+                let parentTableName = '';
+
+                if (nameOrNode && typeof nameOrNode === 'object') {
+                    fieldName = nameOrNode.fieldName || nameOrNode.name || '';
+                    parentTableFullName = nameOrNode.parentTableFullName || '';
+                    parentTableName = nameOrNode.parentTableName || nameOrNode.tableName || '';
+                    if (!fieldName && nameOrNode.fullName) {
+                        fieldName = nameOrNode.fullName;
+                    }
+                } else if (typeof nameOrNode === 'string') {
+                    const str = nameOrNode.trim();
+                    if (METADATA_PREFIX_REGEX.test(str)) {
+                        const withoutPrefix = str.replace(METADATA_PREFIX_REGEX, '');
+                        const dotIdx = withoutPrefix.indexOf('.');
+                        if (dotIdx !== -1) {
+                            const prefixMatch = str.match(METADATA_PREFIX_REGEX)[0];
+                            const tblPart = withoutPrefix.substring(0, dotIdx);
+                            parentTableFullName = prefixMatch + tblPart;
+                            parentTableName = tblPart;
+                            fieldName = withoutPrefix.substring(dotIdx + 1);
+                        } else {
+                            fieldName = withoutPrefix;
+                        }
+                    } else {
+                        const parts = str.split('.');
+                        if (parts.length >= 2) {
+                            parentTableName = parts[0];
+                            fieldName = parts.slice(1).join('.');
+                        } else {
+                            fieldName = str;
+                        }
+                    }
+                }
+
+                let targetFromClause = null;
+                const tableIdentifier = parentTableFullName || parentTableName;
+
+                if (tableIdentifier) {
+                    targetFromClause = q.from.find(function(fc) {
+                        const srcName = fc.source && fc.source.name ? fc.source.name : '';
+                        return fc.alias === parentTableName ||
+                               fc.alias === getTableAliasWithoutPrefix(tableIdentifier) ||
+                               srcName === tableIdentifier ||
+                               srcName === parentTableFullName ||
+                               srcName === parentTableName;
+                    });
+
+                    if (!targetFromClause) {
+                        const defaultAlias = getTableAliasWithoutPrefix(tableIdentifier);
+                        targetFromClause = {
+                            source: {
+                                type: 'Table',
+                                name: parentTableFullName || parentTableName || defaultAlias
+                            },
+                            alias: defaultAlias
+                        };
+                        q.from.push(targetFromClause);
+                        renderFromTables();
+                        renderTab2();
+                    }
+                } else if (q.from.length > 0) {
+                    targetFromClause = q.from[0];
+                }
+
+                let tableAlias = '';
+                if (targetFromClause) {
+                    tableAlias = targetFromClause.alias || getTableAliasWithoutPrefix(targetFromClause.source && targetFromClause.source.name);
+                } else if (parentTableName) {
+                    tableAlias = getTableAliasWithoutPrefix(parentTableName);
+                }
+
+                if (tableAlias && fieldName.startsWith(tableAlias + '.')) {
+                    fieldName = fieldName.substring(tableAlias.length + 1);
+                }
+
+                const expr = tableAlias ? (tableAlias + '.' + fieldName) : fieldName;
+                const defaultAlias = fieldName.split('.').pop() || fieldName;
+
                 q.fields.push({
-                    expression: name,
+                    expression: expr,
                     alias: defaultAlias
                 });
+
                 renderSelectedFields();
                 renderTab8();
                 notifyChange();
+            }
+
+            function getUnlinkedTables(q) {
+                if (!q || !q.from || q.from.length <= 1) return [];
+                const linkedSet = new Set();
+                q.from.forEach(function(fc) {
+                    const fcName = fc.alias || (fc.source && fc.source.name);
+                    if (fc.joins && fc.joins.length > 0) {
+                        fc.joins.forEach(function(jn) {
+                            const t1 = jn.t1 || fcName;
+                            const t2 = jn.alias || (jn.source && jn.source.name) || jn.t2;
+                            if (t1) linkedSet.add(t1);
+                            if (t2) linkedSet.add(t2);
+                        });
+                    }
+                });
+                const unlinked = [];
+                q.from.forEach(function(fc) {
+                    const name = fc.alias || (fc.source && fc.source.name);
+                    if (name && !linkedSet.has(name)) {
+                        unlinked.push(name);
+                    }
+                });
+                return unlinked;
+            }
+
+            function createFullJoinBetween(tblA, tblB) {
+                const q = getActiveQuery();
+                if (!q || !q.from || q.from.length === 0) return;
+                const fcA = q.from.find(function(f) {
+                    return (f.alias && f.alias === tblA) || (f.source && f.source.name === tblA);
+                });
+                const srcFullName = fcA && fcA.source && fcA.source.name ? fcA.source.name : tblA;
+                const targetFc = q.from.find(function(f) {
+                    return (f.alias && f.alias === tblB) || (f.source && f.source.name === tblB);
+                }) || q.from[0];
+
+                if (!targetFc.joins) targetFc.joins = [];
+                targetFc.joins.push({
+                    joinType: 'Full',
+                    source: { type: 'Table', name: srcFullName },
+                    alias: tblA,
+                    t1: tblB,
+                    on: { type: 'RawExpression', raw: 'ИСТИНА' }
+                });
+                renderTab2();
+                notifyChange();
+            }
+
+            function copyJoin(idx) {
+                const q = getActiveQuery();
+                if (!q || !q.from) return;
+                const joins = [];
+                q.from.forEach(function(fc) {
+                    if (fc.joins) {
+                        fc.joins.forEach(function(j) { joins.push({ join: j, fc: fc }); });
+                    }
+                });
+                if (idx >= 0 && idx < joins.length) {
+                    const target = joins[idx];
+                    const cloned = JSON.parse(JSON.stringify(target.join));
+                    target.fc.joins.push(cloned);
+                    renderTab2();
+                    notifyChange();
+                }
             }
 
             // Tab 2: Joins
             function renderTab2() {
                 const q = getActiveQuery();
                 elements.tbodyJoins.innerHTML = '';
+                if (elements.unlinkedTablesList) {
+                    elements.unlinkedTablesList.innerHTML = '';
+                }
                 if (q.type === 'DropTable' || !q.from || q.from.length === 0) return;
+
+                // Render unlinked tables list
+                if (elements.unlinkedTablesList) {
+                    const unlinked = getUnlinkedTables(q);
+                    if (unlinked.length === 0) {
+                        elements.unlinkedTablesList.innerHTML = '<span class="unlinked-empty" style="font-size: 11px; color: var(--vscode-descriptionForeground, #999999);">Все таблицы связаны</span>';
+                    } else {
+                        unlinked.forEach(function(uTbl) {
+                            const chip = document.createElement('div');
+                            chip.className = 'unlinked-chip';
+                            chip.draggable = true;
+                            chip.setAttribute('data-table', uTbl);
+                            chip.textContent = uTbl;
+                            chip.addEventListener('dragstart', function(e) {
+                                e.dataTransfer.setData('text/table', uTbl);
+                            });
+                            chip.addEventListener('dragover', function(e) {
+                                e.preventDefault();
+                            });
+                            chip.addEventListener('drop', function(e) {
+                                e.preventDefault();
+                                const draggedTable = e.dataTransfer.getData('text/table');
+                                if (draggedTable && draggedTable !== uTbl) {
+                                    createFullJoinBetween(draggedTable, uTbl);
+                                }
+                            });
+                            elements.unlinkedTablesList.appendChild(chip);
+                        });
+                    }
+                }
 
                 const tables = q.from.map(function(fc) {
                     return fc.alias || (fc.source && fc.source.name) || 'Таблица';
@@ -3054,12 +3583,24 @@
                     tdOn.appendChild(inputOn);
                     tr.appendChild(tdOn);
 
-                    // Delete
-                    const tdDel = document.createElement('td');
-                    tdDel.style.textAlign = 'center';
+                    // Actions: Copy + Delete
+                    const tdActions = document.createElement('td');
+                    tdActions.style.textAlign = 'center';
+
+                    const btnCopy = document.createElement('button');
+                    btnCopy.className = 'secondary icon-btn';
+                    btnCopy.textContent = '📋';
+                    btnCopy.title = 'Копировать строку связи';
+                    btnCopy.style.marginRight = '4px';
+                    btnCopy.addEventListener('click', function() {
+                        copyJoin(idx);
+                    });
+                    tdActions.appendChild(btnCopy);
+
                     const btnDel = document.createElement('button');
                     btnDel.className = 'secondary icon-btn danger';
                     btnDel.textContent = '✕';
+                    btnDel.title = 'Удалить связь';
                     btnDel.addEventListener('click', function() {
                         q.from.forEach(function(fc) {
                             if (fc.joins) {
@@ -3072,8 +3613,8 @@
                         renderTab2();
                         notifyChange();
                     });
-                    tdDel.appendChild(btnDel);
-                    tr.appendChild(tdDel);
+                    tdActions.appendChild(btnDel);
+                    tr.appendChild(tdActions);
 
                     elements.tbodyJoins.appendChild(tr);
                 });
@@ -3084,8 +3625,53 @@
                 const q = getActiveQuery();
                 elements.tbodyGroupBy.innerHTML = '';
                 elements.tbodyAggregates.innerHTML = '';
-                if (q.type === 'DropTable') return;
+                if (elements.groupingAvailableFields) {
+                    elements.groupingAvailableFields.innerHTML = '';
+                }
+                if (q.type === 'DropTable') {
+                    if (elements.badgeGroupingFieldsCount) elements.badgeGroupingFieldsCount.textContent = '0';
+                    return;
+                }
 
+                // 1. Available fields (from q.fields)
+                const availableFields = [];
+                (q.fields || []).forEach(function(f, idx) {
+                    const expr = getExpressionString(f.expression);
+                    if (!isAggregateExpression(expr)) {
+                        availableFields.push({ name: expr, alias: f.alias, originalIndex: idx });
+                    }
+                });
+
+                if (elements.badgeGroupingFieldsCount) {
+                    elements.badgeGroupingFieldsCount.textContent = String(availableFields.length);
+                }
+
+                if (elements.groupingAvailableFields) {
+                    availableFields.forEach(function(item, idx) {
+                        const div = document.createElement('div');
+                        div.className = 'item-row' + (state.selectedGroupingFieldIndex === idx ? ' selected' : '');
+                        div.setAttribute('data-index', String(idx));
+                        div.textContent = item.alias ? (item.alias + ' (' + item.name + ')') : item.name;
+
+                        div.addEventListener('click', function() {
+                            state.selectedGroupingFieldIndex = idx;
+                            const rows = elements.groupingAvailableFields.querySelectorAll('.item-row');
+                            rows.forEach(function(r) { r.classList.remove('selected'); });
+                            div.classList.add('selected');
+                        });
+
+                        div.addEventListener('dblclick', function() {
+                            if (!q.groupBy) q.groupBy = [];
+                            q.groupBy.push({ type: 'RawExpression', raw: item.name });
+                            renderTab3();
+                            notifyChange();
+                        });
+
+                        elements.groupingAvailableFields.appendChild(div);
+                    });
+                }
+
+                // 2. GroupBy fields
                 if (!q.groupBy) q.groupBy = [];
                 q.groupBy.forEach(function(gb, idx) {
                     const tr = document.createElement('tr');
@@ -3145,25 +3731,13 @@
                     elements.tbodyGroupBy.appendChild(tr);
                 });
 
-                // Aggregates
+                // 3. Aggregates fields
                 const aggregateFields = (q.fields || []).filter(function(f) {
                     return isAggregateExpression(getExpressionString(f.expression));
                 });
 
                 aggregateFields.forEach(function(af, idx) {
                     const tr = document.createElement('tr');
-
-                    const tdExpr = document.createElement('td');
-                    const inputExpr = document.createElement('input');
-                    inputExpr.type = 'text';
-                    inputExpr.value = getExpressionString(af.expression);
-                    inputExpr.style.width = '100%';
-                    inputExpr.addEventListener('change', function() {
-                        af.expression = inputExpr.value;
-                        notifyChange();
-                    });
-                    tdExpr.appendChild(inputExpr);
-                    tr.appendChild(tdExpr);
 
                     const currentFn = (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate')
                         ? (aggTypeToRu[af.expression.aggregateType] || 'СУММА')
@@ -3172,48 +3746,58 @@
                         ? Boolean(af.expression.distinct)
                         : false;
 
+                    // Col 0: Function select
                     const tdFn = document.createElement('td');
                     const selFn = createDropdown(['СУММА', 'КОЛИЧЕСТВО', 'МИНИМУМ', 'МАКСИМУМ', 'СРЕДНЕЕ'], currentFn);
-                    selFn.addEventListener('change', function() {
-                        const newType = ruToAggType[selFn.value] || 'Sum';
-                        if (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate') {
-                            af.expression.aggregateType = newType;
-                        } else {
-                            af.expression = {
-                                type: 'Aggregate',
-                                aggregateType: newType,
-                                distinct: chDist.checked,
-                                expression: parseExpressionOrRaw(getExpressionString(af.expression))
-                            };
-                        }
-                        inputExpr.value = getExpressionString(af.expression);
-                        notifyChange();
-                    });
                     tdFn.appendChild(selFn);
                     tr.appendChild(tdFn);
 
+                    // Col 1: Distinct checkbox
                     const tdDist = document.createElement('td');
                     tdDist.style.textAlign = 'center';
                     const chDist = document.createElement('input');
                     chDist.type = 'checkbox';
                     chDist.checked = isDistinct;
-                    chDist.addEventListener('change', function() {
-                        if (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate') {
-                            af.expression.distinct = chDist.checked;
-                        } else {
-                            af.expression = {
-                                type: 'Aggregate',
-                                aggregateType: ruToAggType[selFn.value] || 'Sum',
-                                distinct: chDist.checked,
-                                expression: parseExpressionOrRaw(getExpressionString(af.expression))
-                            };
-                        }
-                        inputExpr.value = getExpressionString(af.expression);
-                        notifyChange();
-                    });
                     tdDist.appendChild(chDist);
                     tr.appendChild(tdDist);
 
+                    // Col 2: Field / Expression
+                    const tdExpr = document.createElement('td');
+                    const inputExpr = document.createElement('input');
+                    inputExpr.type = 'text';
+                    let innerExpr = '';
+                    if (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate') {
+                        innerExpr = getExpressionString(af.expression.expression);
+                    } else {
+                        innerExpr = getExpressionString(af.expression);
+                    }
+                    inputExpr.value = innerExpr;
+                    inputExpr.style.width = '100%';
+                    tdExpr.appendChild(inputExpr);
+                    tr.appendChild(tdExpr);
+
+                    function updateAggExpression() {
+                        const newType = ruToAggType[selFn.value] || 'Sum';
+                        if (typeof af.expression === 'object' && af.expression !== null && af.expression.type === 'Aggregate') {
+                            af.expression.aggregateType = newType;
+                            af.expression.distinct = chDist.checked;
+                            af.expression.expression = parseExpressionOrRaw(inputExpr.value.trim());
+                        } else {
+                            af.expression = {
+                                type: 'Aggregate',
+                                aggregateType: newType,
+                                distinct: chDist.checked,
+                                expression: parseExpressionOrRaw(inputExpr.value.trim())
+                            };
+                        }
+                        notifyChange();
+                    }
+
+                    selFn.addEventListener('change', updateAggExpression);
+                    chDist.addEventListener('change', updateAggExpression);
+                    inputExpr.addEventListener('change', updateAggExpression);
+
+                    // Col 3: Alias
                     const tdAlias = document.createElement('td');
                     const inputAlias = document.createElement('input');
                     inputAlias.type = 'text';
@@ -3226,6 +3810,7 @@
                     tdAlias.appendChild(inputAlias);
                     tr.appendChild(tdAlias);
 
+                    // Col 4: Delete
                     const tdDel = document.createElement('td');
                     const btnDel = document.createElement('button');
                     btnDel.className = 'secondary icon-btn danger';
@@ -3246,11 +3831,78 @@
                 });
             }
 
+            function addFieldToAggregates(fieldName) {
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') return;
+                if (!q.fields) q.fields = [];
+
+                const isNum = isNumericField(fieldName);
+                const fnType = isNum ? 'Sum' : 'Count';
+                const distinct = isNum ? false : true;
+                const cleanAlias = fieldName.split('.').pop() || fieldName;
+                const alias = cleanAlias + (isNum ? 'Сумма' : 'Количество');
+                const expr = parseExpressionOrRaw(fieldName);
+
+                q.fields.push({
+                    expression: {
+                        type: 'Aggregate',
+                        aggregateType: fnType,
+                        distinct: distinct,
+                        expression: expr
+                    },
+                    alias: alias
+                });
+
+                renderTab3();
+                renderSelectedFields();
+                notifyChange();
+            }
+
             // Tab 4: Conditions (Auto-routing WHERE / HAVING)
             function renderTab4() {
                 const q = getActiveQuery();
                 elements.tbodyConditions.innerHTML = '';
+                if (elements.conditionsFieldsList) {
+                    elements.conditionsFieldsList.innerHTML = '';
+                }
                 if (q.type === 'DropTable') return;
+
+                // Render available fields in left panel
+                if (elements.conditionsFieldsList) {
+                    const fieldsForConditions = [];
+                    (q.fields || []).forEach(function(f) {
+                        const expr = getExpressionString(f.expression);
+                        if (fieldsForConditions.indexOf(expr) === -1) fieldsForConditions.push(expr);
+                    });
+                    (q.from || []).forEach(function(fc) {
+                        const alias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                        const commonFields = ['Ссылка', 'Код', 'Наименование', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
+                        commonFields.forEach(function(cf) {
+                            const str = alias ? (alias + '.' + cf) : cf;
+                            if (fieldsForConditions.indexOf(str) === -1) fieldsForConditions.push(str);
+                        });
+                    });
+
+                    fieldsForConditions.forEach(function(fName, idx) {
+                        const div = document.createElement('div');
+                        div.className = 'item-row' + (state.selectedConditionFieldIndex === idx ? ' selected' : '');
+                        div.setAttribute('data-index', String(idx));
+                        div.textContent = fName;
+
+                        div.addEventListener('click', function() {
+                            state.selectedConditionFieldIndex = idx;
+                            const rows = elements.conditionsFieldsList.querySelectorAll('.item-row');
+                            rows.forEach(function(r) { r.classList.remove('selected'); });
+                            div.classList.add('selected');
+                        });
+
+                        div.addEventListener('dblclick', function() {
+                            addConditionFromField(fName);
+                        });
+
+                        elements.conditionsFieldsList.appendChild(div);
+                    });
+                }
 
                 if ((!q.whereConditions || q.whereConditions.length === 0) && q.where) {
                     q.whereConditions = flattenConditionNode(q.where, 'И');
@@ -3409,68 +4061,444 @@
                 notifyChange();
             }
 
+            function addConditionFromField(fName) {
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') return;
+                const cleanParam = fName.split('.').pop() || fName;
+                const isAgg = isAggregateExpression(fName);
+                const condObj = {
+                    op: 'И',
+                    field: fName,
+                    cmp: '=',
+                    value: '&' + cleanParam
+                };
+                if (isAgg) {
+                    if (!q.havingConditions) q.havingConditions = [];
+                    condObj.op = q.havingConditions.length === 0 ? '' : 'И';
+                    q.havingConditions.push(condObj);
+                } else {
+                    if (!q.whereConditions) q.whereConditions = [];
+                    condObj.op = q.whereConditions.length === 0 ? '' : 'И';
+                    q.whereConditions.push(condObj);
+                }
+                syncConditionsToAst(q);
+                renderTab4();
+                notifyChange();
+            }
+
             // Tab 5: Extra
             function renderTab5() {
                 const q = getActiveQuery();
-                if (q.type === 'DropTable') return;
+                updateQueryTypeRadios();
 
-                elements.inputTop.value = q.top !== undefined && q.top !== null ? q.top : '';
+                if (q.type === 'DropTable') {
+                    elements.inputTop.disabled = true;
+                    if (elements.checkTopEnabled) elements.checkTopEnabled.checked = false;
+                    elements.checkAllowed.checked = false;
+                    elements.checkDistinct.checked = false;
+                    elements.checkForUpdate.checked = false;
+                    elements.checkAutoOrder.checked = false;
+                    if (elements.forUpdateSelectorContainer) elements.forUpdateSelectorContainer.style.display = 'none';
+                    return;
+                }
+
+                const hasTop = q.top !== undefined && q.top !== null && q.top !== '';
+                if (elements.checkTopEnabled) elements.checkTopEnabled.checked = hasTop;
+                elements.inputTop.disabled = !hasTop;
+                elements.inputTop.value = hasTop ? q.top : '';
+
                 elements.checkAllowed.checked = Boolean(q.allowed);
                 elements.checkDistinct.checked = Boolean(q.distinct);
                 elements.checkForUpdate.checked = Boolean(q.forUpdate);
+                if (elements.forUpdateSelectorContainer) {
+                    elements.forUpdateSelectorContainer.style.display = q.forUpdate ? 'flex' : 'none';
+                }
+                renderForUpdateSelector();
+
                 elements.checkAutoOrder.checked = Boolean(q.autoOrder);
+                if (elements.checkAutoOrderTab7) elements.checkAutoOrderTab7.checked = Boolean(q.autoOrder);
                 elements.inputInto.value = q.into || '';
+
+                updateTotalsTabVisibility();
+            }
+
+            function updateQueryTypeRadios() {
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') {
+                    if (elements.radioTypeDrop) elements.radioTypeDrop.checked = true;
+                    elements.inputInto.disabled = false;
+                    elements.inputInto.value = q.tableName || '';
+                } else if (q.into) {
+                    if (elements.radioTypeInto) elements.radioTypeInto.checked = true;
+                    elements.inputInto.disabled = false;
+                    elements.inputInto.value = q.into;
+                } else {
+                    if (elements.radioTypeSelect) elements.radioTypeSelect.checked = true;
+                    elements.inputInto.disabled = true;
+                    elements.inputInto.value = '';
+                }
+                updateTotalsTabVisibility();
+            }
+
+            function updateTotalsTabVisibility() {
+                const q = getActiveQuery();
+                const isInto = Boolean(q.into);
+                const isDrop = q.type === 'DropTable';
+                const hideTotals = isInto || isDrop;
+                const tabBtnTotals = document.querySelector('.tab-btn[data-tab="tab-totals"]');
+                if (tabBtnTotals) {
+                    tabBtnTotals.style.display = hideTotals ? 'none' : '';
+                    if (hideTotals && tabBtnTotals.classList.contains('active')) {
+                        const tabBtnTables = document.querySelector('.tab-btn[data-tab="tab-tables"]');
+                        if (tabBtnTables) tabBtnTables.click();
+                    }
+                }
+            }
+
+            function renderForUpdateSelector() {
+                if (!elements.forupdateAvailableList || !elements.forupdateSelectedList) return;
+                elements.forupdateAvailableList.innerHTML = '';
+                elements.forupdateSelectedList.innerHTML = '';
+                const q = getActiveQuery();
+                if (!q.forUpdate) return;
+                if (!q.forUpdateTables) q.forUpdateTables = [];
+
+                const tablesInFrom = (q.from || []).map(function(fc) {
+                    return fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                }).filter(Boolean);
+
+                const available = tablesInFrom.filter(function(t) {
+                    return q.forUpdateTables.indexOf(t) === -1;
+                });
+
+                available.forEach(function(t, idx) {
+                    const div = document.createElement('div');
+                    div.className = 'item-row' + (state.selectedForUpdateAvailableIndex === idx ? ' selected' : '');
+                    div.textContent = t;
+                    div.addEventListener('click', function() {
+                        state.selectedForUpdateAvailableIndex = idx;
+                        renderForUpdateSelector();
+                    });
+                    div.addEventListener('dblclick', function() {
+                        if (q.forUpdateTables.indexOf(t) === -1) {
+                            q.forUpdateTables.push(t);
+                            renderForUpdateSelector();
+                            notifyChange();
+                        }
+                    });
+                    elements.forupdateAvailableList.appendChild(div);
+                });
+
+                q.forUpdateTables.forEach(function(t, idx) {
+                    const div = document.createElement('div');
+                    div.className = 'item-row' + (state.selectedForUpdateSelectedIndex === idx ? ' selected' : '');
+                    div.textContent = t;
+                    div.addEventListener('click', function() {
+                        state.selectedForUpdateSelectedIndex = idx;
+                        renderForUpdateSelector();
+                    });
+                    div.addEventListener('dblclick', function() {
+                        q.forUpdateTables.splice(idx, 1);
+                        renderForUpdateSelector();
+                        notifyChange();
+                    });
+                    elements.forupdateSelectedList.appendChild(div);
+                });
             }
 
             // Tab 6: Unions
             function renderTab6() {
                 const q = getActiveQuery();
                 elements.tbodyUnions.innerHTML = '';
+                if (elements.tbodyUnionsList) elements.tbodyUnionsList.innerHTML = '';
+                if (elements.theadUnionsFields) elements.theadUnionsFields.innerHTML = '';
                 elements.tbodyUnionsFields.innerHTML = '';
                 if (q.type === 'DropTable') return;
 
-                // Main query row
+                if (!q.unions) q.unions = [];
+
+                // 1. Left panel unions list
+                if (elements.tbodyUnionsList) {
+                    const trMainList = document.createElement('tr');
+                    trMainList.className = (state.selectedUnionIndex === 0 ? 'selected-row' : '');
+                    trMainList.innerHTML = '<td>1</td><td>Основной запрос</td><td style="text-align:center;">—</td>';
+                    trMainList.addEventListener('click', function() {
+                        state.selectedUnionIndex = 0;
+                        renderTab6();
+                    });
+                    elements.tbodyUnionsList.appendChild(trMainList);
+                }
+
+                // Legacy sync
                 const trMain = document.createElement('tr');
                 trMain.innerHTML = '<td>1</td><td>Основной запрос</td><td>Основная ветка выборки</td><td style="text-align:center;">—</td>';
                 elements.tbodyUnions.appendChild(trMain);
 
-                if (!q.unions) q.unions = [];
                 q.unions.forEach(function(u, idx) {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = '<td>' + (idx + 2) + '</td>' +
+                    const uIdx = idx + 1;
+                    if (elements.tbodyUnionsList) {
+                        const trList = document.createElement('tr');
+                        trList.className = (state.selectedUnionIndex === uIdx ? 'selected-row' : '');
+
+                        const tdNum = document.createElement('td');
+                        tdNum.textContent = String(uIdx + 1);
+                        trList.appendChild(tdNum);
+
+                        const tdName = document.createElement('td');
+                        tdName.textContent = u.name || ('Объединение ' + uIdx);
+                        trList.appendChild(tdName);
+
+                        const tdDistinct = document.createElement('td');
+                        tdDistinct.style.textAlign = 'center';
+                        const chDistinct = document.createElement('input');
+                        chDistinct.type = 'checkbox';
+                        chDistinct.checked = (u.unionType === 'Union');
+                        chDistinct.title = 'Отмечено = без дубликатов (ОБЪЕДИНИТЬ), Снято = ОБЪЕДИНИТЬ ВСЕ';
+                        chDistinct.addEventListener('change', function() {
+                            u.unionType = chDistinct.checked ? 'Union' : 'UnionAll';
+                            notifyChange();
+                        });
+                        tdDistinct.appendChild(chDistinct);
+                        trList.appendChild(tdDistinct);
+
+                        trList.addEventListener('click', function(e) {
+                            if (e.target !== chDistinct) {
+                                state.selectedUnionIndex = uIdx;
+                                renderTab6();
+                            }
+                        });
+                        elements.tbodyUnionsList.appendChild(trList);
+                    }
+
+                    // Legacy sync
+                    const trLegacy = document.createElement('tr');
+                    trLegacy.innerHTML = '<td>' + (idx + 2) + '</td>' +
                         '<td>' + (u.unionType === 'UnionAll' ? 'ОБЪЕДИНИТЬ ВСЕ' : 'ОБЪЕДИНИТЬ') + '</td>' +
                         '<td>Ветка объединения ' + (idx + 1) + '</td>';
-
                     const tdDel = document.createElement('td');
                     tdDel.style.textAlign = 'center';
                     const btnDel = document.createElement('button');
                     btnDel.className = 'secondary icon-btn danger';
                     btnDel.textContent = '✕';
                     btnDel.addEventListener('click', function() {
-                        q.unions.splice(idx, 1);
-                        renderTab6();
-                        notifyChange();
+                        deleteUnionQuery(idx);
                     });
                     tdDel.appendChild(btnDel);
-                    tr.appendChild(tdDel);
-                    elements.tbodyUnions.appendChild(tr);
+                    trLegacy.appendChild(tdDel);
+                    elements.tbodyUnions.appendChild(trLegacy);
                 });
 
-                // Fields correspondence
+                // 2. Right panel fields correspondence table
+                if (elements.theadUnionsFields) {
+                    const trHead = document.createElement('tr');
+                    const thField = document.createElement('th');
+                    thField.style.width = '180px';
+                    thField.textContent = 'Поле / Псевдоним';
+                    trHead.appendChild(thField);
+
+                    const thMain = document.createElement('th');
+                    thMain.textContent = 'Основной запрос';
+                    trHead.appendChild(thMain);
+
+                    q.unions.forEach(function(u, idx) {
+                        const thU = document.createElement('th');
+                        thU.textContent = u.name || ('Объединение ' + (idx + 1));
+                        trHead.appendChild(thU);
+                    });
+                    elements.theadUnionsFields.appendChild(trHead);
+                }
+
+                const allAliases = [];
                 (q.fields || []).forEach(function(f) {
+                    const a = f.alias || getExpressionString(f.expression);
+                    if (a && allAliases.indexOf(a) === -1) allAliases.push(a);
+                });
+                q.unions.forEach(function(u) {
+                    if (u.statement && u.statement.fields) {
+                        u.statement.fields.forEach(function(f) {
+                            const a = f.alias || getExpressionString(f.expression);
+                            if (a && allAliases.indexOf(a) === -1) allAliases.push(a);
+                        });
+                    }
+                });
+
+                allAliases.forEach(function(aliasName) {
                     const trF = document.createElement('tr');
-                    const alias = f.alias || getExpressionString(f.expression);
-                    trF.innerHTML = '<td>' + alias + '</td><td>' + getExpressionString(f.expression) + '</td><td>' + getExpressionString(f.expression) + '</td>';
+
+                    const tdA = document.createElement('td');
+                    tdA.style.fontWeight = '600';
+                    tdA.textContent = aliasName;
+                    trF.appendChild(tdA);
+
+                    const tdMainField = document.createElement('td');
+                    const mainField = (q.fields || []).find(function(f) {
+                        return (f.alias || getExpressionString(f.expression)) === aliasName;
+                    });
+                    const inputMain = document.createElement('input');
+                    inputMain.type = 'text';
+                    inputMain.style.width = '100%';
+                    inputMain.value = mainField ? getExpressionString(mainField.expression) : 'NULL';
+                    inputMain.addEventListener('change', function() {
+                        if (mainField) {
+                            mainField.expression = parseExpressionOrRaw(inputMain.value.trim());
+                        } else {
+                            if (!q.fields) q.fields = [];
+                            q.fields.push({
+                                expression: parseExpressionOrRaw(inputMain.value.trim()),
+                                alias: aliasName
+                            });
+                        }
+                        notifyChange();
+                    });
+                    tdMainField.appendChild(inputMain);
+                    trF.appendChild(tdMainField);
+
+                    q.unions.forEach(function(u) {
+                        const tdU = document.createElement('td');
+                        if (!u.statement) u.statement = { type: 'Select', fields: [], from: [] };
+                        if (!u.statement.fields) u.statement.fields = [];
+
+                        let uField = u.statement.fields.find(function(f) {
+                            return (f.alias || getExpressionString(f.expression)) === aliasName;
+                        });
+
+                        if (!uField) {
+                            uField = {
+                                expression: { type: 'Literal', value: null, raw: 'NULL' },
+                                alias: aliasName
+                            };
+                            u.statement.fields.push(uField);
+                        }
+
+                        const inputU = document.createElement('input');
+                        inputU.type = 'text';
+                        inputU.style.width = '100%';
+                        inputU.value = getExpressionString(uField.expression);
+                        inputU.addEventListener('change', function() {
+                            uField.expression = parseExpressionOrRaw(inputU.value.trim());
+                            notifyChange();
+                        });
+                        tdU.appendChild(inputU);
+                        trF.appendChild(tdU);
+                    });
+
                     elements.tbodyUnionsFields.appendChild(trF);
                 });
+            }
+
+            function addUnionQuery(unionType) {
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') return;
+                if (!q.unions) q.unions = [];
+                const fieldsCopy = (q.fields || []).map(function(f) {
+                    return {
+                        expression: parseExpressionOrRaw(getExpressionString(f.expression)),
+                        alias: f.alias
+                    };
+                });
+                q.unions.push({
+                    unionType: unionType || 'UnionAll',
+                    name: 'Объединение ' + (q.unions.length + 1),
+                    statement: {
+                        type: 'Select',
+                        fields: fieldsCopy,
+                        from: []
+                    }
+                });
+                state.selectedUnionIndex = q.unions.length;
+                renderTab6();
+                notifyChange();
+            }
+
+            function copyUnionQuery(idx) {
+                const q = getActiveQuery();
+                if (!q || !q.unions || idx < 0 || idx >= q.unions.length) return;
+                const cloned = JSON.parse(JSON.stringify(q.unions[idx]));
+                cloned.name = (cloned.name || ('Объединение ' + (idx + 1))) + ' (копия)';
+                q.unions.splice(idx + 1, 0, cloned);
+                state.selectedUnionIndex = idx + 2;
+                renderTab6();
+                notifyChange();
+            }
+
+            function deleteUnionQuery(idx) {
+                const q = getActiveQuery();
+                if (!q || !q.unions || idx < 0 || idx >= q.unions.length) return;
+                q.unions.splice(idx, 1);
+                if (state.selectedUnionIndex > q.unions.length) {
+                    state.selectedUnionIndex = q.unions.length;
+                }
+                renderTab6();
+                notifyChange();
             }
 
             // Tab 7: Order By
             function renderTab7() {
                 const q = getActiveQuery();
                 elements.tbodyOrder.innerHTML = '';
+                if (elements.orderAvailableFields) elements.orderAvailableFields.innerHTML = '';
+                if (elements.orderAllFieldsTree) elements.orderAllFieldsTree.innerHTML = '';
                 if (q.type === 'DropTable') return;
 
+                if (elements.checkAutoOrderTab7) elements.checkAutoOrderTab7.checked = Boolean(q.autoOrder);
+                elements.checkAutoOrder.checked = Boolean(q.autoOrder);
+
+                // 1. Available fields from q.fields
+                if (elements.orderAvailableFields) {
+                    const availableOrderFields = (q.fields || []).map(function(f) {
+                        return getExpressionString(f.expression);
+                    });
+
+                    availableOrderFields.forEach(function(fName, idx) {
+                        const div = document.createElement('div');
+                        div.className = 'item-row' + (state.selectedOrderFieldIndex === idx ? ' selected' : '');
+                        div.textContent = fName;
+                        div.addEventListener('click', function() {
+                            state.selectedOrderFieldIndex = idx;
+                            const rows = elements.orderAvailableFields.querySelectorAll('.item-row');
+                            rows.forEach(function(r) { r.classList.remove('selected'); });
+                            div.classList.add('selected');
+                        });
+                        div.addEventListener('dblclick', function() {
+                            addOrderField(fName);
+                        });
+                        elements.orderAvailableFields.appendChild(div);
+                    });
+                }
+
+                // 2. All fields tree from q.from
+                if (elements.orderAllFieldsTree) {
+                    (q.from || []).forEach(function(fc) {
+                        const tblName = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                        const tblNode = document.createElement('div');
+                        tblNode.className = 'tree-node';
+                        const row = document.createElement('div');
+                        row.className = 'tree-row';
+                        row.innerHTML = '<span class="tree-toggle">▼</span><span class="tree-icon">🗂️</span><span class="tree-label">' + tblName + '</span>';
+                        tblNode.appendChild(row);
+
+                        const chDiv = document.createElement('div');
+                        chDiv.className = 'tree-children';
+                        chDiv.style.display = 'flex';
+
+                        const sampleFields = ['Ссылка', 'Код', 'Наименование', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
+                        sampleFields.forEach(function(sf) {
+                            const fRow = document.createElement('div');
+                            fRow.className = 'tree-row';
+                            fRow.style.paddingLeft = '18px';
+                            fRow.innerHTML = '<span class="tree-icon">🔹</span><span class="tree-label">' + sf + '</span>';
+                            fRow.addEventListener('dblclick', function() {
+                                addOrderField(tblName + '.' + sf);
+                            });
+                            chDiv.appendChild(fRow);
+                        });
+
+                        tblNode.appendChild(chDiv);
+                        elements.orderAllFieldsTree.appendChild(tblNode);
+                    });
+                }
+
+                // 3. Render Order table
                 if (!q.orderBy) q.orderBy = [];
                 q.orderBy.forEach(function(ob, idx) {
                     const tr = document.createElement('tr');
@@ -3481,7 +4509,7 @@
                     inputExpr.value = getExpressionString(ob.expression);
                     inputExpr.style.width = '100%';
                     inputExpr.addEventListener('change', function() {
-                        ob.expression = inputExpr.value;
+                        ob.expression = parseExpressionOrRaw(inputExpr.value.trim());
                         notifyChange();
                     });
                     tdExpr.appendChild(inputExpr);
@@ -3541,6 +4569,18 @@
 
                     elements.tbodyOrder.appendChild(tr);
                 });
+            }
+
+            function addOrderField(fName) {
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') return;
+                if (!q.orderBy) q.orderBy = [];
+                q.orderBy.push({
+                    expression: parseExpressionOrRaw(fName),
+                    direction: 'Asc'
+                });
+                renderTab7();
+                notifyChange();
             }
 
             // Tab 8: Two-Panel Index Selector
@@ -3693,131 +4733,78 @@
                 const q = getActiveQuery();
                 elements.tbodyTotalsFields.innerHTML = '';
                 elements.tbodyTotalsGroups.innerHTML = '';
+                if (elements.totalsAvailableFields) elements.totalsAvailableFields.innerHTML = '';
                 if (q.type === 'DropTable') return;
 
                 cleanEmptyTotals(q);
                 elements.checkTotalsOverall.checked = Boolean(q.totals && q.totals.overall);
+                updateTotalsTabVisibility();
 
-                // Fields
-                (q.totals && q.totals.fields ? q.totals.fields : []).forEach(function(tf, idx) {
-                    const tr = document.createElement('tr');
-
-                    const tdExpr = document.createElement('td');
-                    const inputExpr = document.createElement('input');
-                    inputExpr.type = 'text';
-                    inputExpr.value = getExpressionString(tf.expression);
-                    inputExpr.style.width = '100%';
-                    inputExpr.addEventListener('change', function() {
-                        tf.expression = inputExpr.value;
-                        notifyChange();
+                // 1. Available fields
+                if (elements.totalsAvailableFields) {
+                    const availableTotalsFields = (q.fields || []).map(function(f) {
+                        return getExpressionString(f.expression);
                     });
-                    tdExpr.appendChild(inputExpr);
-                    tr.appendChild(tdExpr);
 
-                    const currentFn = (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate')
-                        ? (aggTypeToRu[tf.expression.aggregateType] || 'СУММА')
-                        : 'СУММА';
-                    const isDistinct = (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate')
-                        ? Boolean(tf.expression.distinct)
-                        : false;
-
-                    const tdFn = document.createElement('td');
-                    const selFn = createDropdown(['СУММА', 'КОЛИЧЕСТВО', 'МИНИМУМ', 'МАКСИМУМ', 'СРЕДНЕЕ'], currentFn);
-                    selFn.addEventListener('change', function() {
-                        const newType = ruToAggType[selFn.value] || 'Sum';
-                        if (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate') {
-                            tf.expression.aggregateType = newType;
-                        } else {
-                            tf.expression = {
-                                type: 'Aggregate',
-                                aggregateType: newType,
-                                distinct: chDist.checked,
-                                expression: parseExpressionOrRaw(getExpressionString(tf.expression))
-                            };
-                        }
-                        inputExpr.value = getExpressionString(tf.expression);
-                        notifyChange();
+                    availableTotalsFields.forEach(function(fName, idx) {
+                        const div = document.createElement('div');
+                        div.className = 'item-row' + (state.selectedTotalsFieldIndex === idx ? ' selected' : '');
+                        div.textContent = fName;
+                        div.addEventListener('click', function() {
+                            state.selectedTotalsFieldIndex = idx;
+                            const rows = elements.totalsAvailableFields.querySelectorAll('.item-row');
+                            rows.forEach(function(r) { r.classList.remove('selected'); });
+                            div.classList.add('selected');
+                        });
+                        div.addEventListener('dblclick', function() {
+                            addTotalGroupField(fName);
+                        });
+                        elements.totalsAvailableFields.appendChild(div);
                     });
-                    tdFn.appendChild(selFn);
-                    tr.appendChild(tdFn);
+                }
 
-                    const tdDist = document.createElement('td');
-                    tdDist.style.textAlign = 'center';
-                    const chDist = document.createElement('input');
-                    chDist.type = 'checkbox';
-                    chDist.checked = isDistinct;
-                    chDist.addEventListener('change', function() {
-                        if (typeof tf.expression === 'object' && tf.expression !== null && tf.expression.type === 'Aggregate') {
-                            tf.expression.distinct = chDist.checked;
-                        } else {
-                            tf.expression = {
-                                type: 'Aggregate',
-                                aggregateType: ruToAggType[selFn.value] || 'Sum',
-                                distinct: chDist.checked,
-                                expression: parseExpressionOrRaw(getExpressionString(tf.expression))
-                            };
-                        }
-                        inputExpr.value = getExpressionString(tf.expression);
-                        notifyChange();
-                    });
-                    tdDist.appendChild(chDist);
-                    tr.appendChild(tdDist);
-
-                    const tdAlias = document.createElement('td');
-                    const inputAlias = document.createElement('input');
-                    inputAlias.type = 'text';
-                    inputAlias.value = tf.alias || '';
-                    inputAlias.style.width = '100%';
-                    inputAlias.addEventListener('change', function() {
-                        tf.alias = inputAlias.value.trim() || undefined;
-                        notifyChange();
-                    });
-                    tdAlias.appendChild(inputAlias);
-                    tr.appendChild(tdAlias);
-
-                    const tdDel = document.createElement('td');
-                    const btnDel = document.createElement('button');
-                    btnDel.className = 'secondary icon-btn danger';
-                    btnDel.textContent = '✕';
-                    btnDel.addEventListener('click', function() {
-                        if (q.totals && q.totals.fields) {
-                            q.totals.fields.splice(idx, 1);
-                            cleanEmptyTotals(q);
-                        }
-                        renderTab9();
-                        notifyChange();
-                    });
-                    tdDel.appendChild(btnDel);
-                    tr.appendChild(tdDel);
-
-                    elements.tbodyTotalsFields.appendChild(tr);
-                });
-
-                // Groups
+                // 2. Groups (q.totals.by)
                 (q.totals && q.totals.by ? q.totals.by : []).forEach(function(tb, idx) {
                     const tr = document.createElement('tr');
 
+                    // Field Expr
                     const tdExpr = document.createElement('td');
                     const inputExpr = document.createElement('input');
                     inputExpr.type = 'text';
                     inputExpr.value = getExpressionString(tb.expression);
                     inputExpr.style.width = '100%';
                     inputExpr.addEventListener('change', function() {
-                        tb.expression = inputExpr.value;
+                        tb.expression = parseExpressionOrRaw(inputExpr.value.trim());
                         notifyChange();
                     });
                     tdExpr.appendChild(inputExpr);
                     tr.appendChild(tdExpr);
 
+                    // Determine current totals type
+                    let currentType = 'Elements';
+                    if (tb.periods !== false && (tb.periods || tb.period)) {
+                        currentType = 'Periods';
+                    } else if (tb.hierarchy) {
+                        currentType = (tb.hierarchyType === 'OnlyHierarchy') ? 'OnlyHierarchy' : 'Hierarchy';
+                    }
+
+                    // Dropdown
+                    const tdType = document.createElement('td');
+                    const selType = createDropdown([
+                        { value: 'Elements', text: 'Элементы' },
+                        { value: 'Hierarchy', text: 'Иерархия' },
+                        { value: 'OnlyHierarchy', text: 'Только иерархия' },
+                        { value: 'Periods', text: 'Периодами' }
+                    ], currentType);
+                    tdType.appendChild(selType);
+                    tr.appendChild(tdType);
+
+                    // Checkboxes (kept in sync for full webviewUi.test.ts compatibility!)
                     const tdHier = document.createElement('td');
                     tdHier.style.textAlign = 'center';
                     const chHier = document.createElement('input');
                     chHier.type = 'checkbox';
                     chHier.checked = Boolean(tb.hierarchy);
-                    chHier.addEventListener('change', function() {
-                        tb.hierarchy = chHier.checked;
-                        notifyChange();
-                    });
                     tdHier.appendChild(chHier);
                     tr.appendChild(tdHier);
 
@@ -3826,6 +4813,60 @@
                     const chPer = document.createElement('input');
                     chPer.type = 'checkbox';
                     chPer.checked = Boolean(tb.periods !== false && (tb.periods || tb.period));
+                    tdPer.appendChild(chPer);
+                    tr.appendChild(tdPer);
+
+                    // Sync dropdown & checkboxes
+                    selType.addEventListener('change', function() {
+                        if (selType.value === 'Hierarchy') {
+                            tb.hierarchy = true;
+                            tb.hierarchyType = 'Hierarchy';
+                            tb.periods = false;
+                            delete tb.periodDefinition;
+                            delete tb.period;
+                            chHier.checked = true;
+                            chPer.checked = false;
+                        } else if (selType.value === 'OnlyHierarchy') {
+                            tb.hierarchy = true;
+                            tb.hierarchyType = 'OnlyHierarchy';
+                            tb.periods = false;
+                            delete tb.periodDefinition;
+                            delete tb.period;
+                            chHier.checked = true;
+                            chPer.checked = false;
+                        } else if (selType.value === 'Periods') {
+                            tb.periods = true;
+                            tb.period = true;
+                            tb.hierarchy = false;
+                            delete tb.hierarchyType;
+                            chHier.checked = false;
+                            chPer.checked = true;
+                        } else {
+                            tb.hierarchy = false;
+                            tb.periods = false;
+                            delete tb.hierarchyType;
+                            delete tb.periodDefinition;
+                            delete tb.period;
+                            chHier.checked = false;
+                            chPer.checked = false;
+                        }
+                        notifyChange();
+                    });
+
+                    chHier.addEventListener('change', function() {
+                        tb.hierarchy = chHier.checked;
+                        if (chHier.checked) {
+                            tb.periods = false;
+                            delete tb.periodDefinition;
+                            delete tb.period;
+                            chPer.checked = false;
+                            selType.value = (tb.hierarchyType === 'OnlyHierarchy') ? 'OnlyHierarchy' : 'Hierarchy';
+                        } else {
+                            selType.value = chPer.checked ? 'Periods' : 'Elements';
+                        }
+                        notifyChange();
+                    });
+
                     chPer.addEventListener('change', function() {
                         tb.periods = chPer.checked;
                         tb.period = chPer.checked;
@@ -3833,12 +4874,29 @@
                             delete tb.periodDefinition;
                             delete tb.period;
                             tb.periods = false;
+                        } else {
+                            tb.hierarchy = false;
+                            delete tb.hierarchyType;
+                            chHier.checked = false;
                         }
+                        selType.value = chPer.checked ? 'Periods' : (chHier.checked ? 'Hierarchy' : 'Elements');
                         notifyChange();
                     });
-                    tdPer.appendChild(chPer);
-                    tr.appendChild(tdPer);
 
+                    // Alias
+                    const tdAlias = document.createElement('td');
+                    const inputAlias = document.createElement('input');
+                    inputAlias.type = 'text';
+                    inputAlias.value = tb.alias || '';
+                    inputAlias.style.width = '100%';
+                    inputAlias.addEventListener('change', function() {
+                        tb.alias = inputAlias.value.trim() || undefined;
+                        notifyChange();
+                    });
+                    tdAlias.appendChild(inputAlias);
+                    tr.appendChild(tdAlias);
+
+                    // Order
                     const tdOrder = document.createElement('td');
                     tdOrder.style.textAlign = 'center';
                     const btnUp = document.createElement('button');
@@ -3867,6 +4925,7 @@
                     tdOrder.appendChild(btnDown);
                     tr.appendChild(tdOrder);
 
+                    // Delete
                     const tdDel = document.createElement('td');
                     const btnDel = document.createElement('button');
                     btnDel.className = 'secondary icon-btn danger';
@@ -3884,6 +4943,83 @@
 
                     elements.tbodyTotalsGroups.appendChild(tr);
                 });
+
+                // 3. Totals fields (q.totals.fields)
+                (q.totals && q.totals.fields ? q.totals.fields : []).forEach(function(tf, idx) {
+                    const tr = document.createElement('tr');
+
+                    const tdName = document.createElement('td');
+                    tdName.textContent = tf.alias || getExpressionString(tf.expression);
+                    tr.appendChild(tdName);
+
+                    const tdExpr = document.createElement('td');
+                    const inputExpr = document.createElement('input');
+                    inputExpr.type = 'text';
+                    inputExpr.value = getExpressionString(tf.expression);
+                    inputExpr.style.width = '100%';
+                    inputExpr.addEventListener('change', function() {
+                        tf.expression = parseExpressionOrRaw(inputExpr.value.trim());
+                        notifyChange();
+                    });
+                    tdExpr.appendChild(inputExpr);
+                    tr.appendChild(tdExpr);
+
+                    const tdDel = document.createElement('td');
+                    const btnDel = document.createElement('button');
+                    btnDel.className = 'secondary icon-btn danger';
+                    btnDel.textContent = '✕';
+                    btnDel.addEventListener('click', function() {
+                        if (q.totals && q.totals.fields) {
+                            q.totals.fields.splice(idx, 1);
+                            cleanEmptyTotals(q);
+                        }
+                        renderTab9();
+                        notifyChange();
+                    });
+                    tdDel.appendChild(btnDel);
+                    tr.appendChild(tdDel);
+
+                    elements.tbodyTotalsFields.appendChild(tr);
+                });
+            }
+
+            function addTotalGroupField(fName) {
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') return;
+                if (!q.totals) q.totals = { fields: [], by: [] };
+                if (!q.totals.by) q.totals.by = [];
+                q.totals.by.push({
+                    expression: parseExpressionOrRaw(fName),
+                    hierarchy: false,
+                    periods: false
+                });
+                renderTab9();
+                notifyChange();
+            }
+
+            function addTotalValueField(fName) {
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') return;
+                if (!q.totals) q.totals = { fields: [], by: [] };
+                if (!q.totals.fields) q.totals.fields = [];
+
+                const isNum = isNumericField(fName);
+                const fnType = isNum ? 'Sum' : 'Count';
+                const distinct = isNum ? false : true;
+                const cleanAlias = fName.split('.').pop() || fName;
+                const alias = cleanAlias + (isNum ? 'Итог' : 'КоличествоИтог');
+
+                q.totals.fields.push({
+                    expression: {
+                        type: 'Aggregate',
+                        aggregateType: fnType,
+                        distinct: distinct,
+                        expression: parseExpressionOrRaw(fName)
+                    },
+                    alias: alias
+                });
+                renderTab9();
+                notifyChange();
             }
 
             // Tab 10: Package Queries Table
@@ -4224,6 +5360,26 @@
                 }
             });
 
+            if (elements.tbodySelectedFields) {
+                elements.tbodySelectedFields.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                });
+                elements.tbodySelectedFields.addEventListener('drop', function(e) {
+                    e.preventDefault();
+                    let data = null;
+                    try {
+                        const jsonStr = e.dataTransfer.getData('application/json');
+                        if (jsonStr) data = JSON.parse(jsonStr);
+                    } catch (_) {}
+                    if (!data) {
+                        data = e.dataTransfer.getData('text/plain');
+                    }
+                    if (data) {
+                        addFieldToQuery(data);
+                    }
+                });
+            }
+
             // Tab 2 Joins Actions
             elements.btnAddJoin.addEventListener('click', function() {
                 const q = getActiveQuery();
@@ -4243,6 +5399,97 @@
             });
 
             // Tab 3 Grouping Actions
+            if (elements.btnGroupbyAdd) {
+                elements.btnGroupbyAdd.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const available = (q.fields || []).filter(function(f) { return !isAggregateExpression(getExpressionString(f.expression)); });
+                    if (state.selectedGroupingFieldIndex >= 0 && state.selectedGroupingFieldIndex < available.length) {
+                        const item = available[state.selectedGroupingFieldIndex];
+                        if (!q.groupBy) q.groupBy = [];
+                        q.groupBy.push({ type: 'RawExpression', raw: getExpressionString(item.expression) });
+                        renderTab3();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnGroupbyAddAll) {
+                elements.btnGroupbyAddAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (!q.groupBy) q.groupBy = [];
+                    (q.fields || []).forEach(function(f) {
+                        const expr = getExpressionString(f.expression);
+                        if (!isAggregateExpression(expr)) {
+                            q.groupBy.push({ type: 'RawExpression', raw: expr });
+                        }
+                    });
+                    renderTab3();
+                    notifyChange();
+                });
+            }
+            if (elements.btnGroupbyRemove) {
+                elements.btnGroupbyRemove.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.groupBy && q.groupBy.length > 0) {
+                        q.groupBy.pop();
+                        renderTab3();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnGroupbyRemoveAll) {
+                elements.btnGroupbyRemoveAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    q.groupBy = [];
+                    renderTab3();
+                    notifyChange();
+                });
+            }
+
+            if (elements.btnAggAdd) {
+                elements.btnAggAdd.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const available = (q.fields || []).filter(function(f) { return !isAggregateExpression(getExpressionString(f.expression)); });
+                    if (state.selectedGroupingFieldIndex >= 0 && state.selectedGroupingFieldIndex < available.length) {
+                        const item = available[state.selectedGroupingFieldIndex];
+                        addFieldToAggregates(getExpressionString(item.expression));
+                    }
+                });
+            }
+            if (elements.btnAggAddAll) {
+                elements.btnAggAddAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const available = (q.fields || []).filter(function(f) { return !isAggregateExpression(getExpressionString(f.expression)); });
+                    available.forEach(function(item) {
+                        addFieldToAggregates(getExpressionString(item.expression));
+                    });
+                });
+            }
+            if (elements.btnAggRemove) {
+                elements.btnAggRemove.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    for (let i = (q.fields || []).length - 1; i >= 0; i--) {
+                        if (isAggregateExpression(getExpressionString(q.fields[i].expression))) {
+                            q.fields.splice(i, 1);
+                            break;
+                        }
+                    }
+                    renderTab3();
+                    renderSelectedFields();
+                    notifyChange();
+                });
+            }
+            if (elements.btnAggRemoveAll) {
+                elements.btnAggRemoveAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    q.fields = (q.fields || []).filter(function(f) {
+                        return !isAggregateExpression(getExpressionString(f.expression));
+                    });
+                    renderTab3();
+                    renderSelectedFields();
+                    notifyChange();
+                });
+            }
+
             elements.btnPopulateGroupBy.addEventListener('click', function() {
                 const q = getActiveQuery();
                 if (q.type === 'DropTable') return;
@@ -4280,6 +5527,28 @@
             });
 
             // Tab 4 Conditions Actions
+            if (elements.btnConditionAddField) {
+                elements.btnConditionAddField.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const fieldsForConditions = [];
+                    (q.fields || []).forEach(function(f) {
+                        const expr = getExpressionString(f.expression);
+                        if (fieldsForConditions.indexOf(expr) === -1) fieldsForConditions.push(expr);
+                    });
+                    (q.from || []).forEach(function(fc) {
+                        const alias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                        const commonFields = ['Ссылка', 'Код', 'Наименование', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
+                        commonFields.forEach(function(cf) {
+                            const str = alias ? (alias + '.' + cf) : cf;
+                            if (fieldsForConditions.indexOf(str) === -1) fieldsForConditions.push(str);
+                        });
+                    });
+                    if (state.selectedConditionFieldIndex >= 0 && state.selectedConditionFieldIndex < fieldsForConditions.length) {
+                        addConditionFromField(fieldsForConditions[state.selectedConditionFieldIndex]);
+                    }
+                });
+            }
+
             elements.btnAddCondition.addEventListener('click', function() {
                 const q = getActiveQuery();
                 if (q.type === 'DropTable') return;
@@ -4294,10 +5563,72 @@
                 notifyChange();
             });
 
-            // Tab 5 Extra Inputs
+            // Tab 5 Extra Inputs & Radios
+            if (elements.radioTypeSelect) {
+                elements.radioTypeSelect.addEventListener('change', function() {
+                    const q = getActiveQuery();
+                    q.type = 'Select';
+                    delete q.into;
+                    delete q.tableName;
+                    elements.inputInto.disabled = true;
+                    elements.inputInto.value = '';
+                    updateTotalsTabVisibility();
+                    notifyChange();
+                });
+            }
+            if (elements.radioTypeInto) {
+                elements.radioTypeInto.addEventListener('change', function() {
+                    const q = getActiveQuery();
+                    q.type = 'Select';
+                    elements.inputInto.disabled = false;
+                    if (!q.into) q.into = elements.inputInto.value.trim() || 'ВТ_Данные';
+                    elements.inputInto.value = q.into;
+                    updateTotalsTabVisibility();
+                    notifyChange();
+                });
+            }
+            if (elements.radioTypeInsert) {
+                elements.radioTypeInsert.addEventListener('change', function() {
+                    const q = getActiveQuery();
+                    q.type = 'Select';
+                    elements.inputInto.disabled = false;
+                    if (!q.into) q.into = elements.inputInto.value.trim() || 'ВТ_Данные';
+                    elements.inputInto.value = q.into;
+                    updateTotalsTabVisibility();
+                    notifyChange();
+                });
+            }
+            if (elements.radioTypeDrop) {
+                elements.radioTypeDrop.addEventListener('change', function() {
+                    const q = getActiveQuery();
+                    q.type = 'DropTable';
+                    elements.inputInto.disabled = false;
+                    q.tableName = elements.inputInto.value.trim() || 'ВТ_Данные';
+                    elements.inputInto.value = q.tableName;
+                    updateTotalsTabVisibility();
+                    notifyChange();
+                });
+            }
+
+            if (elements.checkTopEnabled) {
+                elements.checkTopEnabled.addEventListener('change', function() {
+                    const q = getActiveQuery();
+                    elements.inputTop.disabled = !elements.checkTopEnabled.checked;
+                    if (elements.checkTopEnabled.checked) {
+                        q.top = elements.inputTop.value ? parseInt(elements.inputTop.value, 10) : 100;
+                        elements.inputTop.value = q.top;
+                    } else {
+                        delete q.top;
+                        elements.inputTop.value = '';
+                    }
+                    notifyChange();
+                });
+            }
+
             elements.inputTop.addEventListener('change', function() {
                 const q = getActiveQuery();
                 q.top = elements.inputTop.value ? parseInt(elements.inputTop.value, 10) : undefined;
+                if (elements.checkTopEnabled) elements.checkTopEnabled.checked = (q.top !== undefined);
                 notifyChange();
             });
             elements.checkAllowed.addEventListener('change', function() {
@@ -4309,45 +5640,188 @@
                 notifyChange();
             });
             elements.checkForUpdate.addEventListener('change', function() {
-                getActiveQuery().forUpdate = elements.checkForUpdate.checked;
+                const q = getActiveQuery();
+                q.forUpdate = elements.checkForUpdate.checked;
+                if (elements.forUpdateSelectorContainer) {
+                    elements.forUpdateSelectorContainer.style.display = q.forUpdate ? 'flex' : 'none';
+                }
+                if (!q.forUpdate) {
+                    delete q.forUpdateTables;
+                } else if (!q.forUpdateTables) {
+                    q.forUpdateTables = [];
+                }
+                renderForUpdateSelector();
                 notifyChange();
             });
+
+            if (elements.btnForupdateAdd) {
+                elements.btnForupdateAdd.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const tablesInFrom = (q.from || []).map(function(fc) {
+                        return fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                    }).filter(Boolean);
+                    const available = tablesInFrom.filter(function(t) { return (q.forUpdateTables || []).indexOf(t) === -1; });
+                    if (state.selectedForUpdateAvailableIndex >= 0 && state.selectedForUpdateAvailableIndex < available.length) {
+                        if (!q.forUpdateTables) q.forUpdateTables = [];
+                        q.forUpdateTables.push(available[state.selectedForUpdateAvailableIndex]);
+                        state.selectedForUpdateAvailableIndex = -1;
+                        renderForUpdateSelector();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnForupdateAddAll) {
+                elements.btnForupdateAddAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const tablesInFrom = (q.from || []).map(function(fc) {
+                        return fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                    }).filter(Boolean);
+                    q.forUpdateTables = [...tablesInFrom];
+                    state.selectedForUpdateAvailableIndex = -1;
+                    renderForUpdateSelector();
+                    notifyChange();
+                });
+            }
+            if (elements.btnForupdateRemove) {
+                elements.btnForupdateRemove.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.forUpdateTables && state.selectedForUpdateSelectedIndex >= 0 && state.selectedForUpdateSelectedIndex < q.forUpdateTables.length) {
+                        q.forUpdateTables.splice(state.selectedForUpdateSelectedIndex, 1);
+                        state.selectedForUpdateSelectedIndex = -1;
+                        renderForUpdateSelector();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnForupdateRemoveAll) {
+                elements.btnForupdateRemoveAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    q.forUpdateTables = [];
+                    state.selectedForUpdateSelectedIndex = -1;
+                    renderForUpdateSelector();
+                    notifyChange();
+                });
+            }
+
             elements.checkAutoOrder.addEventListener('change', function() {
                 getActiveQuery().autoOrder = elements.checkAutoOrder.checked;
+                if (elements.checkAutoOrderTab7) elements.checkAutoOrderTab7.checked = elements.checkAutoOrder.checked;
                 notifyChange();
             });
             elements.inputInto.addEventListener('change', function() {
-                getActiveQuery().into = elements.inputInto.value.trim() || undefined;
+                const q = getActiveQuery();
+                if (q.type === 'DropTable') {
+                    q.tableName = elements.inputInto.value.trim() || undefined;
+                } else {
+                    q.into = elements.inputInto.value.trim() || undefined;
+                }
+                updateTotalsTabVisibility();
                 renderHeaderPackage();
                 renderTab10();
                 notifyChange();
             });
 
             // Tab 6 Unions Actions
-            elements.btnAddUnion.addEventListener('click', function() {
-                const q = getActiveQuery();
-                if (q.type === 'DropTable') return;
-                if (!q.unions) q.unions = [];
-                q.unions.push({
-                    unionType: 'Union',
-                    statement: { type: 'Select', fields: [], from: [] }
+            if (elements.btnUnionAdd) {
+                elements.btnUnionAdd.addEventListener('click', function() {
+                    addUnionQuery('UnionAll');
                 });
-                renderTab6();
-                notifyChange();
+            }
+            if (elements.btnUnionCopy) {
+                elements.btnUnionCopy.addEventListener('click', function() {
+                    if (state.selectedUnionIndex > 0) {
+                        copyUnionQuery(state.selectedUnionIndex - 1);
+                    }
+                });
+            }
+            if (elements.btnUnionDel) {
+                elements.btnUnionDel.addEventListener('click', function() {
+                    if (state.selectedUnionIndex > 0) {
+                        deleteUnionQuery(state.selectedUnionIndex - 1);
+                    }
+                });
+            }
+            if (elements.btnUnionUp) {
+                elements.btnUnionUp.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.unions && state.selectedUnionIndex > 1) {
+                        const idx = state.selectedUnionIndex - 1;
+                        const tmp = q.unions[idx];
+                        q.unions[idx] = q.unions[idx - 1];
+                        q.unions[idx - 1] = tmp;
+                        state.selectedUnionIndex--;
+                        renderTab6();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnUnionDown) {
+                elements.btnUnionDown.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.unions && state.selectedUnionIndex > 0 && state.selectedUnionIndex < q.unions.length) {
+                        const idx = state.selectedUnionIndex - 1;
+                        const tmp = q.unions[idx];
+                        q.unions[idx] = q.unions[idx + 1];
+                        q.unions[idx + 1] = tmp;
+                        state.selectedUnionIndex++;
+                        renderTab6();
+                        notifyChange();
+                    }
+                });
+            }
+
+            elements.btnAddUnion.addEventListener('click', function() {
+                addUnionQuery('Union');
             });
             elements.btnAddUnionAll.addEventListener('click', function() {
-                const q = getActiveQuery();
-                if (q.type === 'DropTable') return;
-                if (!q.unions) q.unions = [];
-                q.unions.push({
-                    unionType: 'UnionAll',
-                    statement: { type: 'Select', fields: [], from: [] }
-                });
-                renderTab6();
-                notifyChange();
+                addUnionQuery('UnionAll');
             });
 
             // Tab 7 Order Actions
+            if (elements.btnOrderAdd) {
+                elements.btnOrderAdd.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const available = (q.fields || []).map(function(f) { return getExpressionString(f.expression); });
+                    if (state.selectedOrderFieldIndex >= 0 && state.selectedOrderFieldIndex < available.length) {
+                        addOrderField(available[state.selectedOrderFieldIndex]);
+                    }
+                });
+            }
+            if (elements.btnOrderAddAll) {
+                elements.btnOrderAddAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    (q.fields || []).forEach(function(f) {
+                        addOrderField(getExpressionString(f.expression));
+                    });
+                });
+            }
+            if (elements.btnOrderRemove) {
+                elements.btnOrderRemove.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.orderBy && q.orderBy.length > 0) {
+                        q.orderBy.pop();
+                        renderTab7();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnOrderRemoveAll) {
+                elements.btnOrderRemoveAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    q.orderBy = [];
+                    renderTab7();
+                    notifyChange();
+                });
+            }
+            if (elements.checkAutoOrderTab7) {
+                elements.checkAutoOrderTab7.addEventListener('change', function() {
+                    const q = getActiveQuery();
+                    q.autoOrder = elements.checkAutoOrderTab7.checked;
+                    elements.checkAutoOrder.checked = q.autoOrder;
+                    notifyChange();
+                });
+            }
+
             elements.btnAddOrder.addEventListener('click', function() {
                 const q = getActiveQuery();
                 if (q.type === 'DropTable') return;
@@ -4395,6 +5869,86 @@
             });
 
             // Tab 9 Totals Actions
+            if (elements.btnTotalgroupAdd) {
+                elements.btnTotalgroupAdd.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const available = (q.fields || []).map(function(f) { return getExpressionString(f.expression); });
+                    if (state.selectedTotalsFieldIndex >= 0 && state.selectedTotalsFieldIndex < available.length) {
+                        addTotalGroupField(available[state.selectedTotalsFieldIndex]);
+                    }
+                });
+            }
+            if (elements.btnTotalgroupAddAll) {
+                elements.btnTotalgroupAddAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    (q.fields || []).forEach(function(f) {
+                        addTotalGroupField(getExpressionString(f.expression));
+                    });
+                });
+            }
+            if (elements.btnTotalgroupRemove) {
+                elements.btnTotalgroupRemove.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.totals && q.totals.by && q.totals.by.length > 0) {
+                        q.totals.by.pop();
+                        cleanEmptyTotals(q);
+                        renderTab9();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnTotalgroupRemoveAll) {
+                elements.btnTotalgroupRemoveAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.totals) {
+                        q.totals.by = [];
+                        cleanEmptyTotals(q);
+                        renderTab9();
+                        notifyChange();
+                    }
+                });
+            }
+
+            if (elements.btnTotalfieldAdd) {
+                elements.btnTotalfieldAdd.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    const available = (q.fields || []).map(function(f) { return getExpressionString(f.expression); });
+                    if (state.selectedTotalsFieldIndex >= 0 && state.selectedTotalsFieldIndex < available.length) {
+                        addTotalValueField(available[state.selectedTotalsFieldIndex]);
+                    }
+                });
+            }
+            if (elements.btnTotalfieldAddAll) {
+                elements.btnTotalfieldAddAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    (q.fields || []).forEach(function(f) {
+                        addTotalValueField(getExpressionString(f.expression));
+                    });
+                });
+            }
+            if (elements.btnTotalfieldRemove) {
+                elements.btnTotalfieldRemove.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.totals && q.totals.fields && q.totals.fields.length > 0) {
+                        q.totals.fields.pop();
+                        cleanEmptyTotals(q);
+                        renderTab9();
+                        notifyChange();
+                    }
+                });
+            }
+            if (elements.btnTotalfieldRemoveAll) {
+                elements.btnTotalfieldRemoveAll.addEventListener('click', function() {
+                    const q = getActiveQuery();
+                    if (q.totals) {
+                        q.totals.fields = [];
+                        cleanEmptyTotals(q);
+                        renderTab9();
+                        notifyChange();
+                    }
+                });
+            }
+
             elements.checkTotalsOverall.addEventListener('change', function() {
                 const q = getActiveQuery();
                 if (elements.checkTotalsOverall.checked) {
@@ -4610,6 +6164,24 @@
             window.isTableVirtual = isTableVirtual;
             window.findTableMetadataNode = findTableMetadataNode;
             window.getFieldDisplayName = getFieldDisplayName;
+            window.METADATA_PREFIX_REGEX = METADATA_PREFIX_REGEX;
+            window.getTableAliasWithoutPrefix = getTableAliasWithoutPrefix;
+            window.isNumericField = isNumericField;
+            window.addFieldToQuery = addFieldToQuery;
+            window.getUnlinkedTables = getUnlinkedTables;
+            window.createFullJoinBetween = createFullJoinBetween;
+            window.copyJoin = copyJoin;
+            window.addFieldToAggregates = addFieldToAggregates;
+            window.addConditionFromField = addConditionFromField;
+            window.updateQueryTypeRadios = updateQueryTypeRadios;
+            window.updateTotalsTabVisibility = updateTotalsTabVisibility;
+            window.renderForUpdateSelector = renderForUpdateSelector;
+            window.addUnionQuery = addUnionQuery;
+            window.copyUnionQuery = copyUnionQuery;
+            window.deleteUnionQuery = deleteUnionQuery;
+            window.addOrderField = addOrderField;
+            window.addTotalGroupField = addTotalGroupField;
+            window.addTotalValueField = addTotalValueField;
 
             // Initial render & ready handshake
             renderAll();
