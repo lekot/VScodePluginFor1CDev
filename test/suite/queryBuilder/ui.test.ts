@@ -2,7 +2,8 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseSdbl } from '../../../src/queryBuilder/sdbl/sdblParser';
-import { formatSdbl } from '../../../src/queryBuilder/sdbl/sdblFormatter';
+import { formatSdbl, extractParameters } from '../../../src/queryBuilder/sdbl/sdblFormatter';
+import { generateBslQueryWithProcessing } from '../../../src/queryBuilder/editor/queryCodeTemplates';
 
 suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
   const rootDir = path.resolve(__dirname, '../../../..');
@@ -1498,6 +1499,43 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       assert.ok(!formatted.includes('Т.Сумма'));
       assert.ok(!formatted.includes('Т.Описание'));
       assert.ok(!formatted.includes('Т.Количество'));
+    });
+
+    test('Re-review d27582e Finding 1: editing field expression to &Парам in webview produces УстановитьПараметр upon save', () => {
+      const initialSdbl = 'ВЫБРАТЬ 1 КАК Значение';
+      const parsedPkg = parseSdbl(initialSdbl);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'withProcessing',
+      });
+
+      // Find the field expression input in tbodySelectedFields
+      const inputExpr = env.elements.tbodySelectedFields.querySelector('input[type="text"]');
+      assert.ok(inputExpr, 'Field expression input must exist');
+
+      // Edit field expression to &Парам and trigger change
+      inputExpr.value = '&Парам';
+      inputExpr.dispatchEvent({ type: 'change' });
+
+      // Click save button
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'Save message must be sent');
+
+      // Verify extractParameters extracts the edited string parameter
+      const params = extractParameters(saveMsg.ast);
+      assert.deepStrictEqual(params, ['Парам'], 'Parameters must contain Парам from edited field');
+
+      // Verify generateBslQueryWithProcessing contains УстановитьПараметр
+      const bslCode = generateBslQueryWithProcessing(saveMsg.ast);
+      assert.ok(
+        bslCode.includes('Запрос.УстановитьПараметр("Парам", Парам);'),
+        `BSL code must include УстановитьПараметр for &Парам: ${bslCode}`
+      );
     });
   });
 });

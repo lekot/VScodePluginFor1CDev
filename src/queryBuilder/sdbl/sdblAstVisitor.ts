@@ -12,6 +12,7 @@ export interface ExpressionVisitor {
   enter?(node: ExpressionNode): void;
   leave?(node: ExpressionNode): void;
   enterSubquery?(stmt: SelectStatement): void;
+  traverseSubqueries?: boolean;
 }
 
 /**
@@ -100,7 +101,11 @@ export function traverseExpression(expr: ExpressionNode, visitor: ExpressionVisi
         typeof expr.values === 'object' &&
         (expr.values as SelectStatement).type === 'Select'
       ) {
-        visitor.enterSubquery?.(expr.values as SelectStatement);
+        const subquery = expr.values as SelectStatement;
+        visitor.enterSubquery?.(subquery);
+        if (visitor.traverseSubqueries) {
+          traverseSelectStatement(subquery, visitor);
+        }
       }
       break;
 
@@ -421,7 +426,9 @@ export function traverseSelectStatement(
   }
 
   stmt.fields?.forEach((f) => {
-    if (typeof f.expression !== 'string') {
+    if (typeof f.expression === 'string') {
+      visitor.enter?.({ type: 'RawExpression', raw: f.expression });
+    } else if (f.expression) {
       traverseExpression(f.expression, visitor);
     } else if (f.raw) {
       visitor.enter?.({ type: 'RawExpression', raw: f.raw });
@@ -432,19 +439,25 @@ export function traverseSelectStatement(
     traverseTableSource(fc.source, visitor);
     fc.joins?.forEach((j) => {
       traverseTableSource(j.source, visitor);
-      if (j.on) {
+      if (typeof j.on === 'string') {
+        visitor.enter?.({ type: 'RawExpression', raw: j.on });
+      } else if (j.on) {
         traverseExpression(j.on, visitor);
       }
     });
   });
 
-  if (stmt.where) {
+  if (typeof stmt.where === 'string') {
+    visitor.enter?.({ type: 'RawExpression', raw: stmt.where });
+  } else if (stmt.where) {
     traverseExpression(stmt.where, visitor);
   }
 
   stmt.groupBy?.forEach((g) => traverseExpression(g, visitor));
 
-  if (stmt.having) {
+  if (typeof stmt.having === 'string') {
+    visitor.enter?.({ type: 'RawExpression', raw: stmt.having });
+  } else if (stmt.having) {
     traverseExpression(stmt.having, visitor);
   }
 
@@ -502,6 +515,7 @@ export function extractParametersFromExpression(expr: ExpressionNode): string[] 
   const params = new Set<string>();
 
   const visitor: ExpressionVisitor = {
+    traverseSubqueries: true,
     enter: (node) => {
       if (node.type === 'Parameter' && node.name) {
         params.add(node.name);
@@ -510,9 +524,6 @@ export function extractParametersFromExpression(expr: ExpressionNode): string[] 
           params.add(p);
         }
       }
-    },
-    enterSubquery: (subquery) => {
-      traverseSelectStatement(subquery, visitor);
     },
   };
 
@@ -527,6 +538,7 @@ export function extractParametersFromPackage(pkg: QueryPackage): string[] {
   const params = new Set<string>();
 
   const visitor: ExpressionVisitor = {
+    traverseSubqueries: true,
     enter: (node) => {
       if (node.type === 'Parameter' && node.name) {
         params.add(node.name);
@@ -535,9 +547,6 @@ export function extractParametersFromPackage(pkg: QueryPackage): string[] {
           params.add(p);
         }
       }
-    },
-    enterSubquery: (subquery) => {
-      traverseSelectStatement(subquery, visitor);
     },
   };
 

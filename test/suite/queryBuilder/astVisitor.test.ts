@@ -14,6 +14,7 @@ import {
   BetweenNode,
   LikeNode,
   SelectStatement,
+  QueryPackage,
 } from '../../../src/queryBuilder/sdbl/sdblAst';
 import {
   traverseExpression,
@@ -25,6 +26,7 @@ import {
 } from '../../../src/queryBuilder/sdbl/sdblAstVisitor';
 import { parseSdbl } from '../../../src/queryBuilder/sdbl/sdblParser';
 import { extractParameters } from '../../../src/queryBuilder/sdbl/sdblFormatter';
+import { generateBslQueryWithProcessing } from '../../../src/queryBuilder/editor/queryCodeTemplates';
 
 suite('SDBL AST Visitor & Expression Transformers', () => {
   test('traverseExpression visits all 13 AST node types without omission', () => {
@@ -495,6 +497,162 @@ suite('SDBL AST Visitor & Expression Transformers', () => {
       isAggregateExpression(subqueryWhere),
       false,
       'Aggregate inside subquery must not make outer WHERE expression aggregate'
+    );
+  });
+
+  test('Finding 1 (d27582e): traverseSelectStatement extracts parameters from UI string field expressions', () => {
+    // 1. Webview editing case from review: f.expression is a string, f.raw is undefined
+    const uiEditedPkg: QueryPackage = {
+      queries: [
+        {
+          type: 'Select',
+          fields: [
+            {
+              expression: '&Парам',
+              alias: 'Значение',
+            },
+          ],
+          from: [
+            {
+              source: { type: 'Table', name: 'Справочник.Номенклатура' },
+              alias: 'Номенклатура',
+            },
+          ],
+        },
+      ],
+    };
+
+    const params = extractParameters(uiEditedPkg);
+    assert.deepStrictEqual(
+      params,
+      ['Парам'],
+      'extractParameters must extract &Парам from string expression without raw'
+    );
+
+    // Verify generateBslQueryWithProcessing integration:
+    const bsl = generateBslQueryWithProcessing(uiEditedPkg);
+    assert.ok(
+      bsl.includes('Запрос.УстановитьПараметр("Парам", Парам);'),
+      'generateBslQueryWithProcessing must generate УстановитьПараметр for UI string expression'
+    );
+
+    // 2. Edited string expression takes precedence over stale raw
+    const staleRawPkg: QueryPackage = {
+      queries: [
+        {
+          type: 'Select',
+          fields: [
+            {
+              expression: '&Новый',
+              alias: 'Значение',
+              raw: '&Старый',
+            },
+          ],
+        },
+      ],
+    };
+    assert.deepStrictEqual(
+      extractParameters(staleRawPkg),
+      ['Новый'],
+      'Edited string expression must take precedence over stale f.raw'
+    );
+
+    // 3. String expression in join.on and where
+    const joinWhereStringPkg: QueryPackage = {
+      queries: [
+        {
+          type: 'Select',
+          fields: [{ expression: { type: 'Identifier', name: 'A' } }],
+          from: [
+            {
+              source: { type: 'Table', name: 'T1' },
+              joins: [
+                {
+                  joinType: 'Left',
+                  source: { type: 'Table', name: 'T2' },
+                  on: 'T2.Id = T1.Id И T2.Status = &Статус' as any,
+                },
+              ],
+            },
+          ],
+          where: 'T1.Amount > &МинСумма' as any,
+        },
+      ],
+    };
+    assert.deepStrictEqual(
+      extractParameters(joinWhereStringPkg),
+      ['МинСумма', 'Статус'],
+      'extractParameters must extract parameters from string join.on and where'
+    );
+  });
+
+  test('Finding 2 (d27582e): traverseSelectStatement visits nested subqueries with linear O(N) complexity without exponential duplication', () => {
+    // 1. Chain of 10 nested subqueries in FROM clause
+    let innerParameterReads = 0;
+    const innerNode: ParameterNode = {
+      type: 'Parameter',
+      get name() {
+        innerParameterReads++;
+        return 'P';
+      },
+    };
+
+    let currentSelect: SelectStatement = {
+      type: 'Select',
+      fields: [{ expression: innerNode }],
+    };
+
+    const depth = 10;
+    for (let i = 0; i < depth; i++) {
+      currentSelect = {
+        type: 'Select',
+        fields: [{ expression: { type: 'Identifier', name: 'Col' } }],
+        from: [{ source: { type: 'Subquery', query: currentSelect } }],
+      };
+    }
+
+    const nestedPkg: QueryPackage = { queries: [currentSelect] };
+
+    innerParameterReads = 0;
+    const params = extractParameters(nestedPkg);
+    assert.deepStrictEqual(params, ['P']);
+
+    // With 10 nested subqueries, exponential duplication resulted in 2^10 = 1024 visits (2048 reads).
+    // With single-owner linear recursion, the inner parameter must be visited exactly ONCE (2 reads for Set+sort, or 1 visit).
+    assert.ok(
+      innerParameterReads <= 2,
+      `Inner parameter must be visited once without exponential duplication (actual reads: ${innerParameterReads})`
+    );
+
+    // 2. Chain of 5 nested UNION queries
+    let unionParameterReads = 0;
+    const unionInnerNode: ParameterNode = {
+      type: 'Parameter',
+      get name() {
+        unionParameterReads++;
+        return 'UnionParam';
+      },
+    };
+
+    let unionSelect: SelectStatement = {
+      type: 'Select',
+      fields: [{ expression: unionInnerNode }],
+    };
+
+    for (let i = 0; i < 5; i++) {
+      unionSelect = {
+        type: 'Select',
+        fields: [{ expression: { type: 'Identifier', name: 'Col' } }],
+        unions: [{ unionType: 'UnionAll', statement: unionSelect }],
+      };
+    }
+
+    unionParameterReads = 0;
+    const unionParams = extractParameters({ queries: [unionSelect] });
+    assert.deepStrictEqual(unionParams, ['UnionParam']);
+    assert.ok(
+      unionParameterReads <= 2,
+      `Union inner parameter must be visited once without exponential duplication (actual reads: ${unionParameterReads})`
     );
   });
 });
