@@ -30,9 +30,11 @@ import { runConfigurationPlan } from '../services/configurationSession/configura
 import type { MutationExpectation, MutationPlan } from '../services/configurationSession/mutationPlan';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { validateElementName } from '../utils/elementNameValidator';
+import { registerQueryBuilderCommands } from '../queryBuilder/queryBuilderCommands';
 
 type RegisterEditorCommandsDeps = {
   state: ExtensionState;
+  context?: vscode.ExtensionContext;
 };
 
 function ensureSelectedXdtoPackage(state: ExtensionState, node: TreeNode | undefined): TreeNode | undefined {
@@ -89,6 +91,7 @@ function sanitizePackageName(raw: string): string {
 
 export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode.Disposable[] {
   const { state } = deps;
+  const context = deps.context ?? ({} as vscode.ExtensionContext);
 
   const showPropertiesCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.showProperties',
@@ -810,6 +813,8 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     }
   );
 
+  const queryBuilderCommands = registerQueryBuilderCommands(context, deps);
+
   return [
     showPropertiesCommand,
     openXMLCommand,
@@ -832,5 +837,6 @@ export function registerEditorCommands(deps: RegisterEditorCommandsDeps): vscode
     compareMergeXdtoPackageCommand,
     viewCotPredefinedCommand,
     startDebuggingCommand,
+    ...queryBuilderCommands,
   ];
 }

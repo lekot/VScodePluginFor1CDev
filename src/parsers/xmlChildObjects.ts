@@ -2,7 +2,7 @@
  * Shared helpers to parse ChildObjects from 1C metadata XML (Designer/EDT).
  * Used by designerParser and edtParser for Attributes and TabularSections.
  */
-import { convertStringBooleans } from '../utils/xmlPropertyUtils';
+import { convertStringBooleans, extractV8String } from '../utils/xmlPropertyUtils';
 
 export function findChildObjects(xmlContent: Record<string, unknown>): unknown {
   if (!xmlContent || typeof xmlContent !== 'object') {
@@ -247,8 +247,9 @@ export function flattenAttributeProperties(attr: Record<string, unknown>): Recor
   if (!attr || typeof attr !== 'object') {
     return properties;
   }
-  if (attr.uuid) {
-    properties.uuid = attr.uuid;
+  const rawUuid = attr['@_uuid'] ?? attr.uuid;
+  if (rawUuid !== undefined && rawUuid !== null) {
+    properties.uuid = String(rawUuid);
   }
   if (attr.Properties && typeof attr.Properties === 'object') {
     const props = attr.Properties as Record<string, unknown>;
@@ -260,14 +261,9 @@ export function flattenAttributeProperties(attr: Record<string, unknown>): Recor
         properties[key] = value;
       } else if (value && typeof value === 'object') {
         const obj = value as Record<string, unknown>;
-        if (obj['v8:item']) {
-          const items = obj['v8:item'];
-          if (Array.isArray(items) && items.length > 0) {
-            const firstItem = items[0];
-            if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
-              properties[key] = (firstItem as Record<string, unknown>)['v8:content'];
-            }
-          }
+        const v8Str = extractV8String(obj);
+        if (v8Str !== undefined) {
+          properties[key] = v8Str;
         } else if ('v8:Type' in obj) {
           properties[key] = obj;
         } else {
@@ -278,3 +274,4 @@ export function flattenAttributeProperties(attr: Record<string, unknown>): Recor
   }
   return convertStringBooleans(properties);
 }
+

@@ -178,7 +178,7 @@ export async function registerAllCommands({
     ...registerUtilityCommandsLeading(utilityDeps),
     ...registerConfigurationCompareCommands({ context, state }),
     ...registerCfCommands({ state }),
-    ...registerEditorCommands({ state }),
+    ...registerEditorCommands({ state, context }),
     ...registerElementCommands({
       state,
       loadMetadataTree: lifecycle.loadMetadataTree,

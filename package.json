@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.51.7",
+  "version": "0.52.0",
   "icon": "images/icon.png",
   "publisher": "1c-dev",
   "repository": {
@@ -199,6 +199,16 @@
       {
         "command": "1c-metadata-tree.saveRightsEditor",
         "title": "Сохранить права (редактор)",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.queryBuilder",
+        "title": "Конструктор запроса…",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.queryBuilderWithProcessing",
+        "title": "Конструктор запроса с обработкой результата…",
         "category": "CDT 41"
       },
       {
@@ -1160,6 +1170,16 @@
       ],
       "editor/context": [
         {
+          "command": "1c-metadata-tree.queryBuilder",
+          "when": "editorTextFocus && (resourceLangId == bsl || resourceLangId == sdbl)",
+          "group": "1_query_builder@1"
+        },
+        {
+          "command": "1c-metadata-tree.queryBuilderWithProcessing",
+          "when": "editorTextFocus && (resourceLangId == bsl || resourceLangId == sdbl)",
+          "group": "1_query_builder@2"
+        },
+        {
           "command": "1c-metadata-tree.validateCurrentXml",
           "when": "resourceExtname == .xml",
           "group": "navigation@20"
@@ -1655,6 +1675,12 @@
     },
     "keybindings": [
       {
+        "command": "1c-metadata-tree.queryBuilder",
+        "key": "ctrl+alt+q",
+        "mac": "cmd+alt+q",
+        "when": "editorTextFocus && (resourceLangId == bsl || resourceLangId == sdbl)"
+      },
+      {
         "command": "1c-metadata-tree.openPanel",
         "key": "ctrl+alt+1",
         "mac": "cmd+alt+1"
@@ -1882,7 +1908,8 @@
     "vscode:prepublish": "npm run compile",
     "package": "node node_modules/@vscode/vsce/vsce package",
     "copy:webviews": "node scripts/copy-webviews.js",
-    "compile": "tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
+    "bundle:query-builder-visitor": "node scripts/bundle-query-builder-visitor.js",
+    "compile": "node scripts/bundle-query-builder-visitor.js && tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
     "verify:session-router-bundle": "node scripts/verify-session-router-bundle.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",

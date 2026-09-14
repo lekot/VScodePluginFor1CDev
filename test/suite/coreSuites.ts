@@ -250,6 +250,16 @@ export const coreSuiteFiles: string[] = [
   'suite/externalProcessorService.test.js',
   'suite/agentExternalProcessorOperations.test.js',
   'suite/externalProcessorCommands.test.js',
+  'suite/queryBuilder/tokenizer.test.js',
+  'suite/queryBuilder/parser.test.js',
+  'suite/queryBuilder/formatter.test.js',
+  'suite/queryBuilder/extractor.test.js',
+  'suite/queryBuilder/metadata.test.js',
+  'suite/queryBuilder/webviewUi.test.js',
+  'suite/queryBuilder/ui.test.js',
+  'suite/queryBuilder/provider.test.js',
+  'suite/queryBuilder/astVisitor.test.js',
+  'suite/queryBuilder/astVisitorParity.test.js',
   ...(process.env.SKIP_CONTAINER_MATRIX_E2E === '1'
     ? []
     : ['suite/containerMatrix.e2e.test.js']),

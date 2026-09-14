@@ -55,6 +55,8 @@ suite('editorCommands', () => {
       '1c-metadata-tree.compareMergeXdtoPackage',
       '1c-metadata-tree.viewChartOfCharacteristicTypesPredefined',
       '1c-metadata-tree.startDebugging',
+      '1c-metadata-tree.queryBuilder',
+      '1c-metadata-tree.queryBuilderWithProcessing',
     ]);
   });
 
