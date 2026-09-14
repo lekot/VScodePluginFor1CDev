@@ -1046,6 +1046,274 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       const recheckedFormatted = formatSdbl(saveMessages2[1].ast);
       assert.ok(recheckedFormatted.includes('ПЕРИОДАМИ'), 'Rechecking periods must restore ПЕРИОДАМИ in production formatter');
     });
+
+    suite('Right Join Unfolding & Deduplication Broad Edge Cases', () => {
+      test('Tab 2 selecting Right join unfolds into ЛЕВОЕ СОЕДИНЕНИЕ with swapped base table in formatSdblQuery and on save', () => {
+        const env = createWebviewEnvironment();
+        const q = env.window.getActiveQuery();
+        q.fields = [
+          { expression: 'ТабА.Код', alias: 'Код' },
+          { expression: 'ТабБ.Наименование', alias: 'Наименование' },
+        ];
+        q.from = [
+          {
+            source: { type: 'Table', name: 'Справочник.ТаблицаА' },
+            alias: 'ТабА',
+            joins: [
+              {
+                joinType: 'Right',
+                source: { type: 'Table', name: 'Справочник.ТаблицаБ' },
+                alias: 'ТабБ',
+                on: { type: 'RawExpression', raw: 'ТабА.ID = ТабБ.ID' },
+              },
+            ],
+          },
+        ];
+
+        // Format in UI
+        const uiFormatted = env.window.formatSdblQuery(q);
+        assert.ok(!uiFormatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), 'UI formatted query must NEVER include ПРАВОЕ СОЕДИНЕНИЕ');
+        assert.ok(uiFormatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ'), 'UI formatted query must include ЛЕВОЕ СОЕДИНЕНИЕ');
+        assert.ok(uiFormatted.includes('ИЗ\n\tСправочник.ТаблицаБ КАК ТабБ'), 'Right table must become base table in ИЗ');
+        assert.ok(uiFormatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.ТаблицаА КАК ТабА'), 'Left table must become joined table');
+
+        // Click save button and verify saved AST
+        env.elements.btnSave.click();
+        const saveMessages = env.sentMessages.filter((m: any) => m.command === 'save');
+        assert.strictEqual(saveMessages.length, 1, 'Save message must be sent');
+        const savedAst = saveMessages[0].ast;
+        const savedQuery = savedAst.queries[0];
+
+        assert.strictEqual(savedQuery.from[0].source.name, 'Справочник.ТаблицаБ', 'Base table in saved AST must be ТаблицаБ');
+        assert.strictEqual(savedQuery.from[0].joins[0].joinType, 'Left', 'Join in saved AST must be normalized to Left');
+        assert.strictEqual(savedQuery.from[0].joins[0].source.name, 'Справочник.ТаблицаА', 'Joined table in saved AST must be ТаблицаА');
+
+        // Verify production backend formatSdbl
+        const backendFormatted = formatSdbl(savedAst);
+        assert.ok(!backendFormatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), 'Backend formatSdbl must NEVER contain ПРАВОЕ СОЕДИНЕНИЕ');
+        assert.ok(backendFormatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ'), 'Backend formatSdbl must contain ЛЕВОЕ СОЕДИНЕНИЕ');
+      });
+
+      test('Joined table is never duplicated as comma-separated root in ИЗ', () => {
+        const env = createWebviewEnvironment();
+        const q = env.window.getActiveQuery();
+        q.fields = [{ expression: 'Товары.Наименование', alias: 'Товар' }];
+        // Simulate duplicate from clause where Склады is both a joined table and a separate root
+        q.from = [
+          {
+            source: { type: 'Table', name: 'Справочник.Товары' },
+            alias: 'Товары',
+            joins: [
+              {
+                joinType: 'Left',
+                source: { type: 'Table', name: 'Справочник.Склады' },
+                alias: 'Склады',
+                on: { type: 'RawExpression', raw: 'Товары.Склад = Склады.Ссылка' },
+              },
+            ],
+          },
+          {
+            source: { type: 'Table', name: 'Справочник.Склады' },
+            alias: 'Склады',
+          },
+        ];
+
+        env.window.renderFromTables();
+
+        // Must display only 2 rows in Tab 1 (Товары and Склады), not 3
+        const rows = env.elements.tbodyFromTables.children;
+        assert.strictEqual(rows.length, 2, 'Tab 1 must display exactly 2 unique tables without duplication');
+
+        const uiFormatted = env.window.formatSdblQuery(q);
+        // There should not be a trailing comma or duplicate Склады
+        const skladiMatches = uiFormatted.match(/Справочник\.Склады/g);
+        assert.strictEqual(skladiMatches ? skladiMatches.length : 0, 1, 'Справочник.Склады must appear exactly once in query text');
+        assert.ok(!uiFormatted.includes('Справочник.Склады КАК Склады,'), 'Must not have trailing comma after joined table');
+      });
+
+      test('Adding fields or tables for already joined table prevents duplicate roots in q.from', () => {
+        const env = createWebviewEnvironment();
+        const q = env.window.getActiveQuery();
+        q.from = [
+          {
+            source: { type: 'Table', name: 'Справочник.Товары' },
+            alias: 'Товары',
+            joins: [
+              {
+                joinType: 'Left',
+                source: { type: 'Table', name: 'Справочник.Склады' },
+                alias: 'Склады',
+                on: { type: 'RawExpression', raw: 'Товары.Склад = Склады.Ссылка' },
+              },
+            ],
+          },
+        ];
+
+        // Try adding Склады as custom table
+        env.window.addTableToQuery('Справочник.Склады');
+        assert.strictEqual(q.from.length, 1, 'q.from must not add duplicate root for already joined table');
+
+        // Try adding field for Склады
+        env.window.addFieldToQuery({ name: 'Наименование', parentTableName: 'Склады', parentTableFullName: 'Справочник.Склады' });
+        assert.strictEqual(q.from.length, 1, 'addFieldToQuery must not add duplicate root for already joined table');
+        const addedField = q.fields[q.fields.length - 1];
+        assert.strictEqual(addedField.expression, 'Склады.Наименование', 'Field must use existing joined table alias');
+      });
+
+      test('Reopening query with ЛЕВОЕ СОЕДИНЕНИЕ displays both base and joined tables in Tab 1 and Tab 2', () => {
+        const env = createWebviewEnvironment();
+        const parsed = parseSdbl('ВЫБРАТЬ Док.Номер ИЗ Документ.Заказ КАК Док ЛЕВОЕ СОЕДИНЕНИЕ Справочник.Контрагенты КАК Контр ПО Док.Контрагент = Контр.Ссылка');
+
+        env.postMessageToWebview({
+          command: 'init',
+          ast: parsed,
+          metadata: [],
+        });
+
+        // Check Tab 1: both tables must be visible
+        const fromRows = env.elements.tbodyFromTables.children;
+        assert.strictEqual(fromRows.length, 2, 'Tab 1 must render both base table and joined table');
+        assert.strictEqual(fromRows[0].children[0].textContent, 'Документ.Заказ');
+        assert.strictEqual(fromRows[1].children[0].textContent, 'Справочник.Контрагенты');
+
+        // Check Tab 2: joins must render with both tables in dropdowns
+        env.window.renderTab2();
+        const joinRows = env.elements.tbodyJoins.children;
+        assert.strictEqual(joinRows.length, 1, 'Tab 2 must render the join');
+        const selT1 = joinRows[0].children[0].querySelector('select');
+        const selT2 = joinRows[0].children[2].querySelector('select');
+        assert.ok(selT1);
+        assert.ok(selT2);
+        assert.strictEqual(selT1.value, 'Док');
+        assert.strictEqual(selT2.value, 'Контр');
+      });
+
+      test('Virtual table parameters modal functions correctly on a joined table', () => {
+        const env = createWebviewEnvironment();
+        const q = env.window.getActiveQuery();
+        q.fields = [{ expression: 'Ном.Ссылка', alias: 'Номенклатура' }];
+        q.from = [
+          {
+            source: { type: 'Table', name: 'Справочник.Номенклатура' },
+            alias: 'Ном',
+            joins: [
+              {
+                joinType: 'Left',
+                source: { type: 'Table', name: 'РегистрНакопления.ОстаткиТоваров.Остатки' },
+                alias: 'Ост',
+                on: { type: 'RawExpression', raw: 'Ном.Ссылка = Ост.Номенклатура' },
+              },
+            ],
+          },
+        ];
+
+        env.window.renderFromTables();
+
+        // Joined virtual table is row index 1 in Tab 1
+        const fromRows = env.elements.tbodyFromTables.children;
+        assert.strictEqual(fromRows.length, 2);
+
+        // Open modal for index 1
+        env.window.openVirtualTableParamsModal(1);
+        assert.strictEqual(env.elements.modalVtTitle.textContent, 'Параметры: РегистрНакопления.ОстаткиТоваров.Остатки');
+
+        const inputs = env.elements.tbodyVtParams.querySelectorAll('input');
+        assert.ok(inputs.length >= 2);
+        inputs[0].value = '&Период';
+        inputs[1].value = 'Номенклатура = &Номенклатура';
+
+        env.window.saveVirtualTableParamsModal();
+
+        const formatted = env.window.formatSdblQuery(q);
+        assert.ok(
+          formatted.includes('РегистрНакопления.ОстаткиТоваров.Остатки(&Период, Номенклатура = &Номенклатура)'),
+          `Formatted query must contain virtual table params on joined table: ${formatted}`
+        );
+
+        // Save and verify backend formatSdbl
+        env.elements.btnSave.click();
+        const saveMessages = env.sentMessages.filter((m: any) => m.command === 'save');
+        assert.strictEqual(saveMessages.length, 1);
+        const backendFormatted = formatSdbl(saveMessages[0].ast);
+        assert.ok(
+          backendFormatted.includes('РегистрНакопления.ОстаткиТоваров.Остатки(&Период, Номенклатура = &Номенклатура)'),
+          `Backend formatSdbl must contain virtual table params on joined table: ${backendFormatted}`
+        );
+      });
+
+      test('Deleting joined table in Tab 1 cleanly removes table and its join without corrupting base table', () => {
+        const env = createWebviewEnvironment();
+        const q = env.window.getActiveQuery();
+        q.from = [
+          {
+            source: { type: 'Table', name: 'Справочник.Номенклатура' },
+            alias: 'Ном',
+            joins: [
+              {
+                joinType: 'Left',
+                source: { type: 'Table', name: 'Справочник.Склады' },
+                alias: 'Скл',
+                on: { type: 'RawExpression', raw: 'Ном.Склад = Скл.Ссылка' },
+              },
+            ],
+          },
+        ];
+
+        env.window.renderFromTables();
+        assert.strictEqual(env.elements.tbodyFromTables.children.length, 2);
+
+        // Click delete button on row 1 (Склады)
+        const delBtnJoined = env.elements.tbodyFromTables.children[1].querySelector('button.danger');
+        assert.ok(delBtnJoined);
+        delBtnJoined.click();
+
+        // Verify Tab 1 now has only 1 table
+        assert.strictEqual(env.elements.tbodyFromTables.children.length, 1);
+        assert.strictEqual(env.elements.tbodyFromTables.children[0].children[0].textContent, 'Справочник.Номенклатура');
+
+        // Verify Tab 2 has 0 joins
+        env.window.renderTab2();
+        assert.strictEqual(env.elements.tbodyJoins.children.length, 0);
+
+        // Verify formatted query has no joins
+        const formatted = env.window.formatSdblQuery(q);
+        assert.ok(!formatted.includes('Справочник.Склады'));
+        assert.ok(!formatted.includes('СОЕДИНЕНИЕ'));
+      });
+
+      test('Chained Right joins (A RIGHT JOIN B RIGHT JOIN C) unfold into C LEFT JOIN B LEFT JOIN A', () => {
+        const env = createWebviewEnvironment();
+        const q = env.window.getActiveQuery();
+        q.fields = [{ expression: 'A.ID', alias: 'A_ID' }];
+        q.from = [
+          {
+            source: { type: 'Table', name: 'Справочник.A' },
+            alias: 'A',
+            joins: [
+              {
+                joinType: 'Right',
+                source: { type: 'Table', name: 'Справочник.B' },
+                alias: 'B',
+                on: { type: 'RawExpression', raw: 'A.ID = B.ID' },
+              },
+              {
+                t1: 'B',
+                joinType: 'Right',
+                source: { type: 'Table', name: 'Справочник.C' },
+                alias: 'C',
+                on: { type: 'RawExpression', raw: 'B.ID = C.ID' },
+              },
+            ],
+          },
+        ];
+
+        const formatted = env.window.formatSdblQuery(q);
+        assert.ok(!formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), 'Must not contain Right join');
+        assert.ok(formatted.includes('ИЗ\n\tСправочник.C КАК C'), 'C must become the root table');
+        assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.B КАК B'), 'B must be joined with Left join');
+        assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.A КАК A'), 'A must be joined with Left join');
+      });
+    });
   });
 });
 

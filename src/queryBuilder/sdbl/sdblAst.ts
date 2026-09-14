@@ -37,6 +37,7 @@ export interface JoinClause {
   source: TableOrSubquery;
   alias?: string;
   on: ExpressionNode;
+  t1?: string;
 }
 
 export interface FromClause {

@@ -242,14 +242,13 @@ suite('SDBL Parser', () => {
   });
 
   suite('7. Joins (LEFT, RIGHT, FULL, INNER)', () => {
-    test('parses all join types: ЛЕВОЕ, ПРАВОЕ, ПОЛНОЕ, ВНУТРЕННЕЕ with ON conditions', () => {
+    test('parses join types: ЛЕВОЕ, ПОЛНОЕ, ВНУТРЕННЕЕ with ON conditions', () => {
       const sql = `
         ВЫБРАТЬ
-          Т1.Код, Т2.Сумма, Т3.Номер, Т4.Дата
+          Т1.Код, Т2.Сумма, Т4.Дата
         ИЗ
           Справочник.Номенклатура КАК Т1
           ЛЕВОЕ СОЕДИНЕНИЕ Документ.Заказ КАК Т2 ПО Т1.Ссылка = Т2.Номенклатура
-          ПРАВОЕ СОЕДИНЕНИЕ Регистр.Остатки КАК Т3 ПО Т1.Ссылка = Т3.Товар
           ПОЛНОЕ ВНЕШНЕЕ СОЕДИНЕНИЕ Регистр.Продажи КАК Т4 ПО Т1.Ссылка = Т4.Товар
           ВНУТРЕННЕЕ СОЕДИНЕНИЕ Справочник.Склады КАК Т5 ПО Т1.Склад = Т5.Ссылка
       `;
@@ -258,24 +257,43 @@ suite('SDBL Parser', () => {
       const fromItem = select.from![0];
 
       assert.ok(fromItem.joins);
-      assert.strictEqual(fromItem.joins.length, 4);
+      assert.strictEqual(fromItem.joins.length, 3);
 
       assert.strictEqual(fromItem.joins[0].joinType, 'Left');
       assert.strictEqual((fromItem.joins[0].source as TableSource).name, 'Документ.Заказ');
       assert.strictEqual(fromItem.joins[0].alias, 'Т2');
       assert.strictEqual(fromItem.joins[0].on.type, 'BinaryOp');
 
-      assert.strictEqual(fromItem.joins[1].joinType, 'Right');
-      assert.strictEqual((fromItem.joins[1].source as TableSource).name, 'Регистр.Остатки');
-      assert.strictEqual(fromItem.joins[1].alias, 'Т3');
+      assert.strictEqual(fromItem.joins[1].joinType, 'Full');
+      assert.strictEqual((fromItem.joins[1].source as TableSource).name, 'Регистр.Продажи');
+      assert.strictEqual(fromItem.joins[1].alias, 'Т4');
 
-      assert.strictEqual(fromItem.joins[2].joinType, 'Full');
-      assert.strictEqual((fromItem.joins[2].source as TableSource).name, 'Регистр.Продажи');
-      assert.strictEqual(fromItem.joins[2].alias, 'Т4');
+      assert.strictEqual(fromItem.joins[2].joinType, 'Inner');
+      assert.strictEqual((fromItem.joins[2].source as TableSource).name, 'Справочник.Склады');
+      assert.strictEqual(fromItem.joins[2].alias, 'Т5');
+    });
 
-      assert.strictEqual(fromItem.joins[3].joinType, 'Inner');
-      assert.strictEqual((fromItem.joins[3].source as TableSource).name, 'Справочник.Склады');
-      assert.strictEqual(fromItem.joins[3].alias, 'Т5');
+    test('parses ПРАВОЕ СОЕДИНЕНИЕ and unfolds it into canonical ЛЕВОЕ with right table as base in ИЗ', () => {
+      const sql = `
+        ВЫБРАТЬ Т1.Код
+        ИЗ
+          Справочник.Номенклатура КАК Т1
+          ПРАВОЕ СОЕДИНЕНИЕ Регистр.Остатки КАК Т3 ПО Т1.Ссылка = Т3.Товар
+      `;
+      const pkg = parseSdbl(sql);
+      const select = pkg.queries[0] as SelectStatement;
+      const fromItem = select.from![0];
+
+      // Т3 (Регистр.Остатки) must become the root in ИЗ
+      assert.strictEqual((fromItem.source as TableSource).name, 'Регистр.Остатки');
+      assert.strictEqual(fromItem.alias, 'Т3');
+      assert.ok(fromItem.joins);
+      assert.strictEqual(fromItem.joins.length, 1);
+
+      // Т1 (Справочник.Номенклатура) must be joined via ЛЕВОЕ СОЕДИНЕНИЕ
+      assert.strictEqual(fromItem.joins[0].joinType, 'Left');
+      assert.strictEqual((fromItem.joins[0].source as TableSource).name, 'Справочник.Номенклатура');
+      assert.strictEqual(fromItem.joins[0].alias, 'Т1');
     });
 
     test('parses joins without explicit INNER or OUTER: СОЕДИНЕНИЕ / JOIN', () => {

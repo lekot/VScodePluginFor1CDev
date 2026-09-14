@@ -1361,7 +1361,10 @@ var SdblAstVisitor = (() => {
     extractParametersFromExpression: () => extractParametersFromExpression,
     extractParametersFromPackage: () => extractParametersFromPackage,
     extractParametersFromRawString: () => extractParametersFromRawString,
+    getAllTablesFromClauses: () => getAllTablesFromClauses,
+    getTableKey: () => getTableKey,
     isAggregateExpression: () => isAggregateExpression,
+    normalizeFromClauses: () => normalizeFromClauses,
     replaceAliasInExpression: () => replaceAliasInExpression,
     replaceAliasInRawString: () => replaceAliasInRawString,
     transformExpression: () => transformExpression,
@@ -1781,6 +1784,221 @@ var SdblAstVisitor = (() => {
       }
     }
     return Array.from(params).sort((a, b) => a.localeCompare(b));
+  }
+  function getTableKey(source, alias) {
+    if (alias && alias.trim().length > 0) {
+      return alias.trim();
+    }
+    if (source && source.type === "Table" && source.name) {
+      return source.name;
+    }
+    return "";
+  }
+  function getAllTablesFromClauses(from) {
+    if (!from || !Array.isArray(from)) {
+      return [];
+    }
+    const result = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const fc of from) {
+      const rootKey = getTableKey(fc.source, fc.alias);
+      if (rootKey && !seen.has(rootKey)) {
+        seen.add(rootKey);
+        result.push({ source: fc.source, alias: fc.alias, key: rootKey });
+      }
+      if (fc.joins && Array.isArray(fc.joins)) {
+        for (const jn of fc.joins) {
+          const jnKey = getTableKey(jn.source, jn.alias);
+          if (jnKey && !seen.has(jnKey)) {
+            seen.add(jnKey);
+            result.push({ source: jn.source, alias: jn.alias, key: jnKey });
+          }
+        }
+      }
+    }
+    return result;
+  }
+  function normalizeFromClauses(from) {
+    if (!from || !Array.isArray(from) || from.length === 0) {
+      return [];
+    }
+    const tablesMap = /* @__PURE__ */ new Map();
+    const tableOrder = [];
+    const registerTable = (source, alias, order) => {
+      const key = getTableKey(source, alias);
+      if (!key) {
+        return;
+      }
+      if (!tablesMap.has(key)) {
+        tablesMap.set(key, { source, alias, originalOrder: order });
+        tableOrder.push(key);
+      } else {
+        const existing = tablesMap.get(key);
+        if (source.type === "Table" && source.params && source.params.length > 0) {
+          existing.source = source;
+        }
+        if (alias && !existing.alias) {
+          existing.alias = alias;
+        }
+      }
+    };
+    let orderCounter = 0;
+    for (const fc of from) {
+      registerTable(fc.source, fc.alias, orderCounter++);
+      if (fc.joins && Array.isArray(fc.joins)) {
+        for (const jn of fc.joins) {
+          registerTable(jn.source, jn.alias, orderCounter++);
+        }
+      }
+    }
+    const normalizedJoins = [];
+    for (const fc of from) {
+      const defaultLeftKey = getTableKey(fc.source, fc.alias);
+      if (fc.joins && Array.isArray(fc.joins)) {
+        for (const jn of fc.joins) {
+          const jnRightKey = getTableKey(jn.source, jn.alias);
+          const jnLeftKey = jn.t1 || defaultLeftKey;
+          if (!jnLeftKey || !jnRightKey) {
+            continue;
+          }
+          if (jn.joinType === "Right") {
+            normalizedJoins.push({
+              leftKey: jnRightKey,
+              rightKey: jnLeftKey,
+              joinType: "Left",
+              on: jn.on
+            });
+          } else {
+            normalizedJoins.push({
+              leftKey: jnLeftKey,
+              rightKey: jnRightKey,
+              joinType: jn.joinType,
+              on: jn.on
+            });
+          }
+        }
+      }
+    }
+    if (normalizedJoins.length === 0) {
+      return tableOrder.map((key) => {
+        const t = tablesMap.get(key);
+        return { source: t.source, alias: t.alias };
+      });
+    }
+    const adj = /* @__PURE__ */ new Map();
+    for (const key of tableOrder) {
+      adj.set(key, /* @__PURE__ */ new Set());
+    }
+    for (const j of normalizedJoins) {
+      if (adj.has(j.leftKey) && adj.has(j.rightKey)) {
+        adj.get(j.leftKey).add(j.rightKey);
+        adj.get(j.rightKey).add(j.leftKey);
+      }
+    }
+    const visited = /* @__PURE__ */ new Set();
+    const components = [];
+    for (const key of tableOrder) {
+      if (!visited.has(key)) {
+        const comp = [];
+        const queue = [key];
+        visited.add(key);
+        while (queue.length > 0) {
+          const curr = queue.shift();
+          comp.push(curr);
+          for (const neighbor of adj.get(curr) || []) {
+            if (!visited.has(neighbor)) {
+              visited.add(neighbor);
+              queue.push(neighbor);
+            }
+          }
+        }
+        components.push(comp);
+      }
+    }
+    const result = [];
+    for (const comp of components) {
+      if (comp.length === 1) {
+        const t = tablesMap.get(comp[0]);
+        result.push({ source: t.source, alias: t.alias });
+        continue;
+      }
+      const leftJoinRightSides = /* @__PURE__ */ new Set();
+      for (const j of normalizedJoins) {
+        if (j.joinType === "Left" && comp.includes(j.rightKey)) {
+          leftJoinRightSides.add(j.rightKey);
+        }
+      }
+      let candidates = comp.filter((k) => !leftJoinRightSides.has(k));
+      if (candidates.length === 0) {
+        candidates = comp;
+      }
+      candidates.sort((a, b) => tableOrder.indexOf(a) - tableOrder.indexOf(b));
+      const rootKey = candidates[0];
+      const rootTable = tablesMap.get(rootKey);
+      const attached = /* @__PURE__ */ new Set([rootKey]);
+      const compJoins = [];
+      const remaining = normalizedJoins.filter(
+        (j) => comp.includes(j.leftKey) && comp.includes(j.rightKey)
+      );
+      let madeProgress = true;
+      while (remaining.length > 0 && madeProgress) {
+        madeProgress = false;
+        for (let i = 0; i < remaining.length; i++) {
+          const j = remaining[i];
+          if (attached.has(j.leftKey) && !attached.has(j.rightKey)) {
+            attached.add(j.rightKey);
+            const targetTable = tablesMap.get(j.rightKey);
+            compJoins.push({
+              joinType: j.joinType,
+              source: targetTable.source,
+              alias: targetTable.alias,
+              on: j.on
+            });
+            remaining.splice(i, 1);
+            madeProgress = true;
+            break;
+          } else if (attached.has(j.rightKey) && !attached.has(j.leftKey) && (j.joinType === "Inner" || j.joinType === "Full")) {
+            attached.add(j.leftKey);
+            const targetTable = tablesMap.get(j.leftKey);
+            compJoins.push({
+              joinType: j.joinType,
+              source: targetTable.source,
+              alias: targetTable.alias,
+              on: j.on
+            });
+            remaining.splice(i, 1);
+            madeProgress = true;
+            break;
+          } else if (attached.has(j.leftKey) && attached.has(j.rightKey)) {
+            const targetTable = tablesMap.get(j.rightKey);
+            compJoins.push({
+              joinType: j.joinType,
+              source: targetTable.source,
+              alias: targetTable.alias,
+              on: j.on
+            });
+            remaining.splice(i, 1);
+            madeProgress = true;
+            break;
+          }
+        }
+      }
+      for (const j of remaining) {
+        const targetTable = tablesMap.get(j.rightKey) || tablesMap.get(j.leftKey);
+        compJoins.push({
+          joinType: j.joinType,
+          source: targetTable.source,
+          alias: targetTable.alias,
+          on: j.on
+        });
+      }
+      result.push({
+        source: rootTable.source,
+        alias: rootTable.alias,
+        joins: compJoins.length > 0 ? compJoins : void 0
+      });
+    }
+    return result;
   }
   return __toCommonJS(sdblAstVisitor_exports);
 })();
@@ -2470,6 +2688,54 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 return trimmed;
             }
 
+            function getNormalizedFrom(from) {
+                const api = typeof window !== 'undefined' && window.SdblAstVisitor ? window.SdblAstVisitor : (typeof SdblAstVisitor !== 'undefined' ? SdblAstVisitor : null);
+                if (api && typeof api.normalizeFromClauses === 'function') {
+                    return api.normalizeFromClauses(from);
+                }
+                return from || [];
+            }
+
+            function getAllTablesInQuery(q) {
+                if (!q) return [];
+                const api = typeof window !== 'undefined' && window.SdblAstVisitor ? window.SdblAstVisitor : (typeof SdblAstVisitor !== 'undefined' ? SdblAstVisitor : null);
+                if (api && typeof api.getAllTablesFromClauses === 'function') {
+                    return api.getAllTablesFromClauses(q.from);
+                }
+                const result = [];
+                const seen = new Set();
+                (q.from || []).forEach(function(fc) {
+                    const k = fc.alias || (fc.source && fc.source.name) || '';
+                    if (k && !seen.has(k)) { seen.add(k); result.push({ source: fc.source, alias: fc.alias, key: k }); }
+                    if (fc.joins) {
+                        fc.joins.forEach(function(j) {
+                            const jk = j.alias || (j.source && j.source.name) || '';
+                            if (jk && !seen.has(jk)) { seen.add(jk); result.push({ source: j.source, alias: j.alias, key: jk }); }
+                        });
+                    }
+                });
+                return result;
+            }
+
+            function deleteTableFromQuery(q, tblInfo) {
+                if (!q || !q.from) return;
+                const targetKey = tblInfo.key || tblInfo.alias || (tblInfo.source && tblInfo.source.name);
+                q.from = q.from.filter(function(fc) {
+                    const fcKey = fc.alias || (fc.source && fc.source.name);
+                    return fcKey !== targetKey && fc.source !== tblInfo.source;
+                });
+                q.from.forEach(function(fc) {
+                    if (fc.joins) {
+                        fc.joins = fc.joins.filter(function(jn) {
+                            const jnKey = jn.alias || (jn.source && jn.source.name);
+                            const jnT1 = jn.t1 || '';
+                            return jnKey !== targetKey && jnT1 !== targetKey && jn.source !== tblInfo.source;
+                        });
+                    }
+                });
+                q.from = getNormalizedFrom(q.from);
+            }
+
             // ── SDBL Formatter ──
             function formatSdblQuery(stmt) {
                 if (stmt.type === 'DropTable') {
@@ -2514,9 +2780,10 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 }
 
                 // FROM
-                if (stmt.from && stmt.from.length > 0) {
+                const normalizedFrom = getNormalizedFrom(stmt.from);
+                if (normalizedFrom && normalizedFrom.length > 0) {
                     lines.push('ИЗ');
-                    stmt.from.forEach(function(fc, fIdx) {
+                    normalizedFrom.forEach(function(fc, fIdx) {
                         let srcName = '';
                         if (fc.source) {
                             if (fc.source.type === 'Table') {
@@ -2533,7 +2800,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         }
                         const alias = fc.alias ? ' КАК ' + fc.alias : '';
                         const hasJoins = fc.joins && fc.joins.length > 0;
-                        const comma = (!hasJoins && fIdx < stmt.from.length - 1) ? ',' : '';
+                        const comma = (!hasJoins && fIdx < normalizedFrom.length - 1) ? ',' : '';
                         lines.push('\t' + srcName + alias + comma);
 
                         // Joins
@@ -2542,10 +2809,23 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                             fc.joins.forEach(function(jn) {
                                 let jType = 'ЛЕВОЕ СОЕДИНЕНИЕ';
                                 if (jn.joinType === 'Inner') jType = 'ВНУТРЕННЕЕ СОЕДИНЕНИЕ';
-                                else if (jn.joinType === 'Right') jType = 'ПРАВОЕ СОЕДИНЕНИЕ';
+                                else if (jn.joinType === 'Right') jType = 'ЛЕВОЕ СОЕДИНЕНИЕ'; // Unfolded
                                 else if (jn.joinType === 'Full') jType = 'ПОЛНОЕ СОЕДИНЕНИЕ';
 
-                                const jSrc = jn.source && jn.source.name ? jn.source.name : '';
+                                let jSrc = '';
+                                if (jn.source) {
+                                    if (jn.source.type === 'Table') {
+                                        jSrc = jn.source.name || '';
+                                        if (jn.source.params && jn.source.params.length > 0) {
+                                            const pStrings = jn.source.params.map(function(p) {
+                                                return getExpressionString(p);
+                                            });
+                                            jSrc += '(' + pStrings.join(', ') + ')';
+                                        }
+                                    } else if (jn.source.type === 'Subquery') {
+                                        jSrc = '(\n' + formatSdblQuery(jn.source.query) + '\n)';
+                                    }
+                                }
                                 const jAlias = jn.alias ? ' КАК ' + jn.alias : '';
                                 const onStr = getExpressionString(jn.on) || 'ИСТИНА';
                                 const key = jType + '|||' + jSrc + '|||' + jAlias;
@@ -2568,7 +2848,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                                 const onCombined = g.conditions.length > 1
                                     ? g.conditions.map(wrapConditionIfOr).join(' И ')
                                     : g.conditions[0];
-                                const jComma = (jIdx === groupedJoins.length - 1 && fIdx < stmt.from.length - 1) ? ',' : '';
+                                const jComma = (jIdx === groupedJoins.length - 1 && fIdx < normalizedFrom.length - 1) ? ',' : '';
                                 lines.push('\t\t' + g.typeStr + ' ' + g.srcStr + g.aliasStr);
                                 lines.push('\t\tПО ' + onCombined + jComma);
                             });
@@ -3842,14 +4122,17 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 }
 
                 if (!q.from) q.from = [];
-                q.from.forEach(function(fc, idx) {
+                q.from = getNormalizedFrom(q.from);
+
+                const allTables = getAllTablesInQuery(q);
+                allTables.forEach(function(tblInfo, idx) {
                     const tr = document.createElement('tr');
 
                     let tableName = '';
                     let isVirtual = false;
-                    if (fc.source) {
-                        tableName = fc.source.name || '';
-                        isVirtual = isTableVirtual(fc.source);
+                    if (tblInfo.source) {
+                        tableName = tblInfo.source.name || '';
+                        isVirtual = isTableVirtual(tblInfo.source);
                     }
 
                     // Col 1: Table name
@@ -3861,16 +4144,28 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     const tdAlias = document.createElement('td');
                     const inputAlias = document.createElement('input');
                     inputAlias.type = 'text';
-                    inputAlias.value = fc.alias || '';
+                    inputAlias.value = tblInfo.alias || '';
                     inputAlias.placeholder = 'Алиас';
                     inputAlias.style.width = '100%';
                     inputAlias.addEventListener('change', function() {
-                        const oldAlias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
+                        const oldAlias = tblInfo.alias || getTableAliasWithoutPrefix(tblInfo.source && tblInfo.source.name);
                         const newAlias = inputAlias.value.trim() || undefined;
                         if (oldAlias && newAlias && oldAlias !== newAlias) {
                             renameTableAliasInQuery(q, oldAlias, newAlias);
                         }
-                        fc.alias = newAlias;
+                        tblInfo.alias = newAlias;
+                        (q.from || []).forEach(function(fc) {
+                            if (fc.source === tblInfo.source || fc.alias === oldAlias) {
+                                fc.alias = newAlias;
+                            }
+                            if (fc.joins) {
+                                fc.joins.forEach(function(jn) {
+                                    if (jn.source === tblInfo.source || jn.alias === oldAlias) {
+                                        jn.alias = newAlias;
+                                    }
+                                });
+                            }
+                        });
                         renderSelectedFields();
                         renderTab2();
                         notifyChange();
@@ -3899,7 +4194,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     btnDel.textContent = '✕';
                     btnDel.title = 'Удалить таблицу';
                     btnDel.addEventListener('click', function() {
-                        q.from.splice(idx, 1);
+                        deleteTableFromQuery(q, tblInfo);
                         renderFromTables();
                         renderTab2();
                         notifyChange();
@@ -3939,13 +4234,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     const inputAlias = document.createElement('input');
                     inputAlias.type = 'text';
                     inputAlias.value = f.alias || '';
+                    inputAlias.placeholder = 'Алиас';
                     inputAlias.style.width = '100%';
                     inputAlias.addEventListener('change', function() {
-                        const oldName = getFieldDisplayName(f);
-                        const newAlias = inputAlias.value.trim() || undefined;
-                        f.alias = newAlias;
-                        const newName = getFieldDisplayName(f);
-                        if (q.indexBy && q.indexBy.length > 0 && oldName !== newName) {
+                        const oldName = f.alias || getExpressionString(f.expression);
+                        f.alias = inputAlias.value.trim() || undefined;
+                        const newName = f.alias || getExpressionString(f.expression);
+                        if (q.indexBy && oldName !== newName) {
                             const idxInIndex = q.indexBy.indexOf(oldName);
                             if (idxInIndex !== -1) {
                                 q.indexBy[idxInIndex] = newName;
@@ -3957,7 +4252,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     tdAlias.appendChild(inputAlias);
                     tr.appendChild(tdAlias);
 
-                    // Col 3: Move Up / Down
+                    // Col 3: Order
                     const tdOrder = document.createElement('td');
                     tdOrder.style.textAlign = 'center';
                     const btnUp = document.createElement('button');
@@ -3965,11 +4260,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     btnUp.textContent = '▲';
                     btnUp.disabled = (idx === 0);
                     btnUp.addEventListener('click', function() {
-                        const temp = q.fields[idx];
-                        q.fields[idx] = q.fields[idx - 1];
-                        q.fields[idx - 1] = temp;
-                        renderSelectedFields();
-                        notifyChange();
+                        if (idx > 0) {
+                            const tmp = q.fields[idx];
+                            q.fields[idx] = q.fields[idx - 1];
+                            q.fields[idx - 1] = tmp;
+                            renderSelectedFields();
+                            notifyChange();
+                        }
                     });
 
                     const btnDown = document.createElement('button');
@@ -3977,11 +4274,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     btnDown.textContent = '▼';
                     btnDown.disabled = (idx === q.fields.length - 1);
                     btnDown.addEventListener('click', function() {
-                        const temp = q.fields[idx];
-                        q.fields[idx] = q.fields[idx + 1];
-                        q.fields[idx + 1] = temp;
-                        renderSelectedFields();
-                        notifyChange();
+                        if (idx < q.fields.length - 1) {
+                            const tmp = q.fields[idx];
+                            q.fields[idx] = q.fields[idx + 1];
+                            q.fields[idx + 1] = tmp;
+                            renderSelectedFields();
+                            notifyChange();
+                        }
                     });
 
                     tdOrder.appendChild(btnUp);
@@ -4017,6 +4316,14 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 const q = getActiveQuery();
                 if (q.type === 'DropTable') return;
                 if (!q.from) q.from = [];
+
+                const allTables = getAllTablesInQuery(q);
+                const existing = allTables.find(function(t) {
+                    return (t.source && t.source.name === name) || t.alias === getTableAliasWithoutPrefix(name);
+                });
+                if (existing) {
+                    return;
+                }
 
                 const defaultAlias = getTableAliasWithoutPrefix(name);
                 q.from.push({
@@ -4076,39 +4383,39 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     }
                 }
 
-                let targetFromClause = null;
                 const tableIdentifier = parentTableFullName || parentTableName;
+                let tableAlias = '';
 
                 if (tableIdentifier) {
-                    targetFromClause = q.from.find(function(fc) {
-                        const srcName = fc.source && fc.source.name ? fc.source.name : '';
-                        return fc.alias === parentTableName ||
-                               fc.alias === getTableAliasWithoutPrefix(tableIdentifier) ||
+                    const allTables = getAllTablesInQuery(q);
+                    const matchingTable = allTables.find(function(t) {
+                        const srcName = t.source && t.source.name ? t.source.name : '';
+                        return t.alias === parentTableName ||
+                               t.alias === getTableAliasWithoutPrefix(tableIdentifier) ||
                                srcName === tableIdentifier ||
                                srcName === parentTableFullName ||
                                srcName === parentTableName;
                     });
 
-                    if (!targetFromClause) {
+                    if (matchingTable) {
+                        tableAlias = matchingTable.alias || getTableAliasWithoutPrefix(matchingTable.source && matchingTable.source.name);
+                    } else {
                         const defaultAlias = getTableAliasWithoutPrefix(tableIdentifier);
-                        targetFromClause = {
+                        q.from.push({
                             source: {
                                 type: 'Table',
                                 name: parentTableFullName || parentTableName || defaultAlias
                             },
                             alias: defaultAlias
-                        };
-                        q.from.push(targetFromClause);
+                        });
+                        tableAlias = defaultAlias;
                         renderFromTables();
                         renderTab2();
                     }
                 } else if (q.from.length > 0) {
-                    targetFromClause = q.from[0];
-                }
-
-                let tableAlias = '';
-                if (targetFromClause) {
-                    tableAlias = targetFromClause.alias || getTableAliasWithoutPrefix(targetFromClause.source && targetFromClause.source.name);
+                    const allTables = getAllTablesInQuery(q);
+                    const firstTbl = allTables[0];
+                    tableAlias = firstTbl ? (firstTbl.alias || getTableAliasWithoutPrefix(firstTbl.source && firstTbl.source.name)) : '';
                 } else if (parentTableName) {
                     tableAlias = getTableAliasWithoutPrefix(parentTableName);
                 }
@@ -4131,7 +4438,9 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             }
 
             function getUnlinkedTables(q) {
-                if (!q || !q.from || q.from.length <= 1) return [];
+                if (!q || !q.from) return [];
+                const allTables = getAllTablesInQuery(q);
+                if (allTables.length <= 1) return [];
                 const linkedSet = new Set();
                 q.from.forEach(function(fc) {
                     const fcName = fc.alias || (fc.source && fc.source.name);
@@ -4145,8 +4454,8 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     }
                 });
                 const unlinked = [];
-                q.from.forEach(function(fc) {
-                    const name = fc.alias || (fc.source && fc.source.name);
+                allTables.forEach(function(tbl) {
+                    const name = tbl.alias || (tbl.source && tbl.source.name);
                     if (name && !linkedSet.has(name)) {
                         unlinked.push(name);
                     }
@@ -4157,10 +4466,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             function createFullJoinBetween(tblA, tblB) {
                 const q = getActiveQuery();
                 if (!q || !q.from || q.from.length === 0) return;
-                const fcA = q.from.find(function(f) {
+                const allTables = getAllTablesInQuery(q);
+                const tblItemA = allTables.find(function(f) {
                     return (f.alias && f.alias === tblA) || (f.source && f.source.name === tblA);
                 });
-                const srcFullName = fcA && fcA.source && fcA.source.name ? fcA.source.name : tblA;
+                const srcFullName = tblItemA && tblItemA.source && tblItemA.source.name ? tblItemA.source.name : tblA;
                 const targetFc = q.from.find(function(f) {
                     return (f.alias && f.alias === tblB) || (f.source && f.source.name === tblB);
                 }) || q.from[0];
@@ -4204,6 +4514,8 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 }
                 if (q.type === 'DropTable' || !q.from || q.from.length === 0) return;
 
+                const allTables = getAllTablesInQuery(q);
+
                 // Render unlinked tables list
                 if (elements.unlinkedTablesList) {
                     const unlinked = getUnlinkedTables(q);
@@ -4234,14 +4546,18 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     }
                 }
 
-                const tables = q.from.map(function(fc) {
+                const tables = allTables.map(function(fc) {
                     return fc.alias || (fc.source && fc.source.name) || 'Таблица';
                 });
 
                 const joins = [];
                 q.from.forEach(function(fc) {
+                    const fcName = fc.alias || (fc.source && fc.source.name);
                     if (fc.joins) {
-                        fc.joins.forEach(function(j) { joins.push(j); });
+                        fc.joins.forEach(function(j) {
+                            if (!j.t1) j.t1 = fcName;
+                            joins.push(j);
+                        });
                     }
                 });
 
@@ -4275,7 +4591,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     }
                     const selT2 = createDropdown(tables, currentT2);
                     selT2.addEventListener('change', function() {
-                        const matchingFc = q.from.find(function(f) {
+                        const matchingFc = allTables.find(function(f) {
                             return (f.alias && f.alias === selT2.value) || (f.source && f.source.name === selT2.value);
                         });
                         if (matchingFc && matchingFc.source) {
@@ -4594,7 +4910,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         const expr = getExpressionString(f.expression);
                         if (fieldsForConditions.indexOf(expr) === -1) fieldsForConditions.push(expr);
                     });
-                    (q.from || []).forEach(function(fc) {
+                    getAllTablesInQuery(q).forEach(function(fc) {
                         const alias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
                         const fields = getTableFieldsFromMetadata(alias, fc.source && fc.source.name);
                         fields.forEach(function(fName) {
@@ -4883,7 +5199,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 if (!q.forUpdate) return;
                 if (!q.forUpdateTables) q.forUpdateTables = [];
 
-                const tablesInFrom = (q.from || []).map(function(fc) {
+                const tablesInFrom = getAllTablesInQuery(q).map(function(fc) {
                     return fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
                 }).filter(Boolean);
 
@@ -5258,7 +5574,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                 // 2. All fields tree from q.from
                 if (elements.orderAllFieldsTree) {
-                    (q.from || []).forEach(function(fc) {
+                    getAllTablesInQuery(q).forEach(function(fc) {
                         const tblName = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
                         const tblNode = document.createElement('div');
                         tblNode.className = 'tree-node';
@@ -5870,7 +6186,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     // Tables count
                     const tdTables = document.createElement('td');
                     tdTables.style.textAlign = 'center';
-                    tdTables.textContent = q.type === 'DropTable' ? '1' : (q.from ? q.from.length : 0);
+                    tdTables.textContent = q.type === 'DropTable' ? '1' : getAllTablesInQuery(q).length;
                     tr.appendChild(tdTables);
 
                     // Delete
@@ -5907,9 +6223,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             function openVirtualTableParamsModal(tableIndex) {
                 state.activeVtTableIndex = tableIndex;
                 const q = getActiveQuery();
-                if (!q.from || !q.from[tableIndex]) return;
-                const fc = q.from[tableIndex];
-                const tableName = fc.source && fc.source.name ? fc.source.name : 'Виртуальная таблица';
+                const allTables = getAllTablesInQuery(q);
+                if (!allTables || !allTables[tableIndex]) return;
+                const tblItem = allTables[tableIndex];
+                state.activeVtTarget = tblItem;
+                const tableName = tblItem.source && tblItem.source.name ? tblItem.source.name : 'Виртуальная таблица';
 
                 elements.modalVtTitle.textContent = 'Параметры: ' + tableName;
                 elements.tbodyVtParams.innerHTML = '';
@@ -5935,7 +6253,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     ];
                 }
 
-                const currentParams = fc.source && fc.source.params ? fc.source.params : [];
+                const currentParams = tblItem.source && tblItem.source.params ? tblItem.source.params : [];
 
                 paramsToUse.forEach(function(dp, idx) {
                     const tr = document.createElement('tr');
@@ -5961,13 +6279,15 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             function closeVirtualTableParamsModal() {
                 elements.modalVtParams.classList.remove('open');
                 state.activeVtTableIndex = -1;
+                state.activeVtTarget = null;
             }
 
             function saveVirtualTableParamsModal() {
-                if (state.activeVtTableIndex === -1) return;
-                const q = getActiveQuery();
-                const fc = q.from[state.activeVtTableIndex];
-                if (!fc || !fc.source) return;
+                const target = state.activeVtTarget;
+                if (!target || !target.source) {
+                    closeVirtualTableParamsModal();
+                    return;
+                }
 
                 const inputs = elements.tbodyVtParams.querySelectorAll('input');
                 let lastNonEmptyIdx = -1;
@@ -5979,13 +6299,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 }
 
                 if (lastNonEmptyIdx === -1) {
-                    fc.source.params = undefined;
+                    target.source.params = undefined;
                 } else {
                     const params = [];
                     for (let i = 0; i <= lastNonEmptyIdx; i++) {
                         params.push({ type: 'RawExpression', raw: inputs[i].value.trim() });
                     }
-                    fc.source.params = params;
+                    target.source.params = params;
                 }
 
                 closeVirtualTableParamsModal();
@@ -6156,6 +6476,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         syncConditionsToAst(q);
                         cleanEmptyTotals(q);
                         normalizeUnionColumns(q);
+                        if (q.from) q.from = getNormalizedFrom(q.from);
                     }
                 });
 
@@ -6364,7 +6685,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         const expr = getExpressionString(f.expression);
                         if (fieldsForConditions.indexOf(expr) === -1) fieldsForConditions.push(expr);
                     });
-                    (q.from || []).forEach(function(fc) {
+                    getAllTablesInQuery(q).forEach(function(fc) {
                         const alias = fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
                         const fields = getTableFieldsFromMetadata(alias, fc.source && fc.source.name);
                         fields.forEach(function(fName) {
@@ -6477,7 +6798,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             if (elements.btnForupdateAdd) {
                 elements.btnForupdateAdd.addEventListener('click', function() {
                     const q = getActiveQuery();
-                    const tablesInFrom = (q.from || []).map(function(fc) {
+                    const tablesInFrom = getAllTablesInQuery(q).map(function(fc) {
                         return fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
                     }).filter(Boolean);
                     const available = tablesInFrom.filter(function(t) { return (q.forUpdateTables || []).indexOf(t) === -1; });
@@ -6493,7 +6814,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             if (elements.btnForupdateAddAll) {
                 elements.btnForupdateAddAll.addEventListener('click', function() {
                     const q = getActiveQuery();
-                    const tablesInFrom = (q.from || []).map(function(fc) {
+                    const tablesInFrom = getAllTablesInQuery(q).map(function(fc) {
                         return fc.alias || getTableAliasWithoutPrefix(fc.source && fc.source.name);
                     }).filter(Boolean);
                     q.forUpdateTables = [...tablesInFrom];
@@ -6845,6 +7166,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 const text = elements.sdblTextEditor.value;
                 try {
                     const parsed = parseSdblClient(text);
+                    if (parsed && parsed.queries) {
+                        parsed.queries.forEach(function(q) {
+                            if (q.from) q.from = getNormalizedFrom(q.from);
+                        });
+                    }
                     state.ast = parsed;
                     if (state.activeQueryIndex >= state.ast.queries.length) {
                         state.activeQueryIndex = 0;
@@ -6877,6 +7203,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
             function createDropdown(options, selectedValue) {
                 const sel = document.createElement('select');
+                if (selectedValue !== undefined) sel.value = selectedValue;
                 options.forEach(function(opt) {
                     const o = document.createElement('option');
                     if (typeof opt === 'string') {
@@ -6886,7 +7213,10 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         o.value = opt.value;
                         o.textContent = opt.text;
                     }
-                    if (o.value === selectedValue) o.selected = true;
+                    if (o.value === selectedValue) {
+                        o.selected = true;
+                        sel.value = o.value;
+                    }
                     sel.appendChild(o);
                 });
                 return sel;
@@ -6936,7 +7266,14 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 switch (msg.command) {
                     case 'init':
                         if (msg.mode) state.mode = msg.mode;
-                        if (msg.ast) state.ast = msg.ast;
+                        if (msg.ast) {
+                            state.ast = msg.ast;
+                            if (state.ast.queries) {
+                                state.ast.queries.forEach(function(q) {
+                                    if (q.from) q.from = getNormalizedFrom(q.from);
+                                });
+                            }
+                        }
                         if (msg.metadata) state.metadataTree = msg.metadata;
                         state.activeQueryIndex = 0;
                         renderAll();
@@ -6996,6 +7333,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             window.getTableAliasWithoutPrefix = getTableAliasWithoutPrefix;
             window.isNumericField = isNumericField;
             window.addFieldToQuery = addFieldToQuery;
+            window.addTableToQuery = addTableToQuery;
             window.getUnlinkedTables = getUnlinkedTables;
             window.createFullJoinBetween = createFullJoinBetween;
             window.copyJoin = copyJoin;

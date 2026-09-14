@@ -21,6 +21,7 @@ import {
   TotalsGroupItem,
   ExpressionNode,
 } from './sdblAst';
+import { normalizeFromClauses } from './sdblAstVisitor';
 
 /**
  * Recursive descent parser for SDBL (1C:Enterprise Query Language).
@@ -368,7 +369,7 @@ class SdblParser {
       });
     } while (this.matchSymbol(','));
 
-    return list;
+    return normalizeFromClauses(list);
   }
 
   private isPotentialFromAlias(): boolean {

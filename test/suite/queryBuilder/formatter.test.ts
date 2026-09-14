@@ -499,7 +499,6 @@ suite('SDBL Formatter & BSL Serializer', () => {
 
       const kwMap = {
         Left: 'ЛЕВОЕ СОЕДИНЕНИЕ',
-        Right: 'ПРАВОЕ СОЕДИНЕНИЕ',
         Full: 'ПОЛНОЕ СОЕДИНЕНИЕ',
         Inner: 'ВНУТРЕННЕЕ СОЕДИНЕНИЕ',
       };
@@ -511,6 +510,221 @@ suite('SDBL Formatter & BSL Serializer', () => {
           `Expected '${kw}' in formatted text`
         );
       }
+
+      // SDBL platform rule: RIGHT JOIN does not exist in 1C SDBL syntax!
+      // Any Right join must unfold into a LEFT JOIN with T2 in ИЗ and T1 joined to it.
+      const rightFormatted = formatSdbl(makeJoinPkg('Right'));
+      assert.strictEqual(
+        rightFormatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'),
+        false,
+        'ПРАВОЕ СОЕДИНЕНИЕ must NEVER appear in SDBL output'
+      );
+      assert.ok(
+        rightFormatted.includes('ИЗ\r\n\tТаб2') || rightFormatted.includes('ИЗ\n\tТаб2'),
+        'Таб2 must become the base table in ИЗ'
+      );
+      assert.ok(
+        rightFormatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Таб1'),
+        'Таб1 must be joined to Таб2 via ЛЕВОЕ СОЕДИНЕНИЕ'
+      );
+    });
+
+    test('unfolds Right Join with aliases and conditions into canonical Left Join in SDBL', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [
+              {
+                expression: { type: 'CompoundIdentifier', parts: ['СтарееСтарых', 'Ссылка'] },
+                alias: 'Ссылка',
+              },
+            ],
+            from: [
+              {
+                source: { type: 'Table', name: 'Справочник.СтарееСтарых' },
+                alias: 'СтарееСтарых',
+                joins: [
+                  {
+                    joinType: 'Right',
+                    source: { type: 'Table', name: 'Справочник.Справочник55' },
+                    alias: 'Справочник55',
+                    on: {
+                      type: 'BinaryOp',
+                      operator: '=',
+                      left: { type: 'CompoundIdentifier', parts: ['СтарееСтарых', 'Реквизит'] },
+                      right: { type: 'CompoundIdentifier', parts: ['Справочник55', 'Реквизит'] },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const formatted = formatSdbl(pkg);
+      assert.strictEqual(
+        formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'),
+        false,
+        'Must never emit ПРАВОЕ СОЕДИНЕНИЕ'
+      );
+      assert.ok(
+        formatted.includes('Справочник.Справочник55 КАК Справочник55'),
+        'Справочник55 must be present'
+      );
+      assert.ok(
+        formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.СтарееСтарых КАК СтарееСтарых'),
+        'СтарееСтарых must be joined via ЛЕВОЕ СОЕДИНЕНИЕ'
+      );
+    });
+
+    test('deduplicates joined tables in FROM clause: joined table is NOT repeated with comma in ИЗ', () => {
+      // Recreating the exact user bug:
+      // Tab 1 had added both СтарееСтарых and Справочник55 to from,
+      // and Tab 2 configured a join between them.
+      const pkgWithDuplicate: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [
+              {
+                expression: { type: 'CompoundIdentifier', parts: ['СтарееСтарых', 'Ссылка'] },
+                alias: 'Ссылка',
+              },
+            ],
+            from: [
+              {
+                source: { type: 'Table', name: 'Справочник.СтарееСтарых' },
+                alias: 'СтарееСтарых',
+                joins: [
+                  {
+                    joinType: 'Right',
+                    source: { type: 'Table', name: 'Справочник.Справочник55' },
+                    alias: 'Справочник55',
+                    on: {
+                      type: 'BinaryOp',
+                      operator: '=',
+                      left: { type: 'CompoundIdentifier', parts: ['СтарееСтарых', 'Реквизит'] },
+                      right: { type: 'CompoundIdentifier', parts: ['Справочник55', 'Реквизит'] },
+                    },
+                  },
+                ],
+              },
+              {
+                source: { type: 'Table', name: 'Справочник.Справочник55' },
+                alias: 'Справочник55',
+              },
+            ],
+          },
+        ],
+      };
+
+      const formatted = formatSdbl(pkgWithDuplicate);
+      // Справочник55 must appear exactly ONCE in FROM clause (as the base table in ИЗ), NOT duplicated with comma
+      const matches = formatted.match(/Справочник\.Справочник55/g);
+      assert.strictEqual(
+        matches ? matches.length : 0,
+        1,
+        `Expected Справочник.Справочник55 to appear exactly once in FROM, got ${matches?.length}:\n${formatted}`
+      );
+      assert.strictEqual(
+        formatted.includes(',\r\n\tСправочник.Справочник55') || formatted.includes(',\n\tСправочник.Справочник55'),
+        false,
+        'Must not contain trailing comma-separated duplicate table'
+      );
+    });
+
+    test('deduplicates Left Join when joined table is also in from roots, and preserves truly unjoined tables', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Поле' } }],
+            from: [
+              {
+                source: { type: 'Table', name: 'Справочник.Номенклатура' },
+                alias: 'Ном',
+                joins: [
+                  {
+                    joinType: 'Left',
+                    source: { type: 'Table', name: 'Справочник.ЕдиницыИзмерения' },
+                    alias: 'Ед',
+                    on: {
+                      type: 'BinaryOp',
+                      operator: '=',
+                      left: { type: 'CompoundIdentifier', parts: ['Ном', 'Единица'] },
+                      right: { type: 'CompoundIdentifier', parts: ['Ед', 'Ссылка'] },
+                    },
+                  },
+                ],
+              },
+              // Duplicate joined table from Tab 1
+              {
+                source: { type: 'Table', name: 'Справочник.ЕдиницыИзмерения' },
+                alias: 'Ед',
+              },
+              // Truly unjoined third table
+              {
+                source: { type: 'Table', name: 'Справочник.Организации' },
+                alias: 'Орг',
+              },
+            ],
+          },
+        ],
+      };
+
+      const formatted = formatSdbl(pkg);
+      // Ед must appear once
+      const edMatches = formatted.match(/Справочник\.ЕдиницыИзмерения/g);
+      assert.strictEqual(edMatches ? edMatches.length : 0, 1, 'ЕдиницыИзмерения must not be duplicated');
+      // Орг must be present as a comma table
+      assert.ok(formatted.includes('Справочник.Организации КАК Орг'), 'Unjoined Организации must remain');
+    });
+
+    test('unfolds Right Join when right table is a virtual table with parameters', () => {
+      const pkg: QueryPackage = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Количество' } }],
+            from: [
+              {
+                source: { type: 'Table', name: 'Справочник.Номенклатура' },
+                alias: 'Ном',
+                joins: [
+                  {
+                    joinType: 'Right',
+                    source: {
+                      type: 'Table',
+                      name: 'РегистрНакопления.ОстаткиНоменклатуры.Остатки',
+                      params: [{ type: 'Parameter', name: 'Период' }],
+                    },
+                    alias: 'Остатки',
+                    on: {
+                      type: 'BinaryOp',
+                      operator: '=',
+                      left: { type: 'CompoundIdentifier', parts: ['Ном', 'Ссылка'] },
+                      right: { type: 'CompoundIdentifier', parts: ['Остатки', 'Номенклатура'] },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const formatted = formatSdbl(pkg);
+      assert.strictEqual(formatted.includes('ПРАВОЕ'), false);
+      assert.ok(
+        formatted.includes('РегистрНакопления.ОстаткиНоменклатуры.Остатки(&Период) КАК Остатки'),
+        'Virtual table with params must become base table'
+      );
+      assert.ok(
+        formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.Номенклатура КАК Ном'),
+        'Original left table must be left-joined'
+      );
     });
 
     test('Rereview Finding 4: grouped joins wrap conditions with OR in parentheses', () => {

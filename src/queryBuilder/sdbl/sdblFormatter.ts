@@ -7,7 +7,10 @@ import {
   TotalsClause,
   ExpressionNode,
 } from './sdblAst';
-import { extractParametersFromPackage } from './sdblAstVisitor';
+import {
+  extractParametersFromPackage,
+  normalizeFromClauses,
+} from './sdblAstVisitor';
 
 export interface SdblFormatOptions {
   indent?: string;
@@ -173,15 +176,16 @@ function formatSelect(
   }
 
   // 4. FROM / ИЗ and JOINS
-  if (stmt.from && stmt.from.length > 0) {
+  const normalizedFrom = stmt.from ? normalizeFromClauses(stmt.from) : undefined;
+  if (normalizedFrom && normalizedFrom.length > 0) {
     lines.push('ИЗ');
-    for (let i = 0; i < stmt.from.length; i++) {
-      const fromClause = stmt.from[i];
+    for (let i = 0; i < normalizedFrom.length; i++) {
+      const fromClause = normalizedFrom[i];
       const srcStr = formatTableOrSubquery(fromClause.source, indent, newline);
       const aliasStr = fromClause.alias ? ` КАК ${fromClause.alias}` : '';
       const hasJoins = Boolean(fromClause.joins && fromClause.joins.length > 0);
       const fromComma =
-        i < stmt.from.length - 1 && !hasJoins ? ',' : '';
+        i < normalizedFrom.length - 1 && !hasJoins ? ',' : '';
 
       lines.push(`${indent}${srcStr}${aliasStr}${fromComma}`);
 
@@ -222,7 +226,7 @@ function formatSelect(
           const g = groupedJoins[j];
           const isLastJoin = j === groupedJoins.length - 1;
           const joinComma =
-            isLastJoin && i < stmt.from.length - 1 ? ',' : '';
+            isLastJoin && i < normalizedFrom.length - 1 ? ',' : '';
 
           const combinedConditions =
             g.conditions.length > 1
@@ -388,9 +392,8 @@ function formatTableOrSubquery(
 function getJoinKeyword(joinType: 'Left' | 'Right' | 'Full' | 'Inner'): string {
   switch (joinType) {
     case 'Left':
+    case 'Right': // In 1C SDBL, Right Join does not exist; normalized into Left
       return 'ЛЕВОЕ СОЕДИНЕНИЕ';
-    case 'Right':
-      return 'ПРАВОЕ СОЕДИНЕНИЕ';
     case 'Full':
       return 'ПОЛНОЕ СОЕДИНЕНИЕ';
     case 'Inner':
