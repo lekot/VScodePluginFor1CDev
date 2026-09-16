@@ -1786,7 +1786,7 @@ suite('SDBL Formatter & BSL Serializer', () => {
         'СписокНоменклатуры',
         'Счет',
         'Условие',
-      ].sort((a, b) => a.localeCompare(b));
+      ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
       assert.deepStrictEqual(params, expected);
     });
@@ -1805,7 +1805,7 @@ suite('SDBL Formatter & BSL Serializer', () => {
       `;
       const pkg = parseSdbl(sql);
       const params = extractParameters(pkg);
-      assert.deepStrictEqual(params, ['Другой', 'Парам'].sort((a, b) => a.localeCompare(b)));
+      assert.deepStrictEqual(params, ['Другой', 'Парам'].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
     });
 
     test('R11: extracts parameters from PERIODS clause in totals', () => {

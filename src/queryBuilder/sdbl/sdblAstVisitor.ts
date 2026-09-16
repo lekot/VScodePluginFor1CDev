@@ -538,7 +538,7 @@ export function extractParametersFromExpression(expr: ExpressionNode): string[] 
   };
 
   traverseExpression(expr, visitor);
-  return Array.from(params).sort((a, b) => a.localeCompare(b));
+  return Array.from(params).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /**
@@ -566,7 +566,7 @@ export function extractParametersFromPackage(pkg: QueryPackage): string[] {
     }
   }
 
-  return Array.from(params).sort((a, b) => a.localeCompare(b));
+  return Array.from(params).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /**

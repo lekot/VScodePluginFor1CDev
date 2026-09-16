@@ -1762,7 +1762,7 @@ var SdblAstVisitor = (() => {
       }
     };
     traverseExpression(expr, visitor);
-    return Array.from(params).sort((a, b) => a.localeCompare(b));
+    return Array.from(params).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   }
   function extractParametersFromPackage(pkg) {
     const params = /* @__PURE__ */ new Set();
@@ -1783,7 +1783,7 @@ var SdblAstVisitor = (() => {
         traverseSelectStatement(q, visitor);
       }
     }
-    return Array.from(params).sort((a, b) => a.localeCompare(b));
+    return Array.from(params).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   }
   function getTableKey(source, alias) {
     if (alias && alias.trim().length > 0) {

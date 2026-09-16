@@ -305,6 +305,6 @@ suite('Query Builder: Backend & Webview AST Visitor Parity', () => {
     const wParams = env.window.SdblAstVisitor.extractParametersFromPackage(pkg);
 
     assert.deepStrictEqual(Array.from(wParams), bParams, 'Extracted package parameters must match 1:1');
-    assert.deepStrictEqual(bParams, ['Организация', 'ПарамПоля', 'ПарамAST', 'Период']);
+    assert.deepStrictEqual(bParams, ['Организация', 'ПарамAST', 'ПарамПоля', 'Период']);
   });
 });
