@@ -22,7 +22,7 @@ suite('Query Builder: Backend & Webview AST Visitor Parity', () => {
   const htmlSource = fs.readFileSync(sourceHtmlPath, 'utf-8');
 
   // Extract the main script content from queryBuilderWebview.html
-  const scriptMatch = htmlSource.match(/<script>([\s\S]*?)<\/script>/);
+  const scriptMatch = htmlSource.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
   assert.ok(scriptMatch, 'Script tag must exist in queryBuilderWebview.html');
   const scriptCode = scriptMatch[1];
 

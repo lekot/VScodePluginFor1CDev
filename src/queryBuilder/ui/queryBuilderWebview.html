@@ -4116,7 +4116,12 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 elements.tbodyFromTables.innerHTML = '';
                 if (q.type === 'DropTable') {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = '<td colspan="3" style="text-align:center;color:var(--vscode-descriptionForeground);">Запрос УНИЧТОЖИТЬ ВТ: ' + (q.tableName || '') + '</td>';
+                    const td = document.createElement('td');
+                    td.setAttribute('colspan', '3');
+                    td.style.textAlign = 'center';
+                    td.style.color = 'var(--vscode-descriptionForeground)';
+                    td.textContent = 'Запрос УНИЧТОЖИТЬ ВТ: ' + (q.tableName || '');
+                    tr.appendChild(td);
                     elements.tbodyFromTables.appendChild(tr);
                     return;
                 }
@@ -4520,7 +4525,12 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 if (elements.unlinkedTablesList) {
                     const unlinked = getUnlinkedTables(q);
                     if (unlinked.length === 0) {
-                        elements.unlinkedTablesList.innerHTML = '<span class="unlinked-empty" style="font-size: 11px; color: var(--vscode-descriptionForeground, #999999);">Все таблицы связаны</span>';
+                        const emptySpan = document.createElement('span');
+                        emptySpan.className = 'unlinked-empty';
+                        emptySpan.style.fontSize = '11px';
+                        emptySpan.style.color = 'var(--vscode-descriptionForeground, #999999)';
+                        emptySpan.textContent = 'Все таблицы связаны';
+                        elements.unlinkedTablesList.appendChild(emptySpan);
                     } else {
                         unlinked.forEach(function(uTbl) {
                             const chip = document.createElement('div');
@@ -5312,7 +5322,16 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 if (elements.tbodyUnionsList) {
                     const trMainList = document.createElement('tr');
                     trMainList.className = (state.selectedUnionIndex === 0 ? 'selected-row' : '');
-                    trMainList.innerHTML = '<td>1</td><td>Основной запрос</td><td style="text-align:center;">—</td>';
+                    const td1 = document.createElement('td');
+                    td1.textContent = '1';
+                    const td2 = document.createElement('td');
+                    td2.textContent = 'Основной запрос';
+                    const td3 = document.createElement('td');
+                    td3.style.textAlign = 'center';
+                    td3.textContent = '—';
+                    trMainList.appendChild(td1);
+                    trMainList.appendChild(td2);
+                    trMainList.appendChild(td3);
                     trMainList.addEventListener('click', function() {
                         state.selectedUnionIndex = 0;
                         state.activeUnionIndex = 0;
@@ -5324,7 +5343,19 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                 // Legacy sync
                 const trMain = document.createElement('tr');
-                trMain.innerHTML = '<td>1</td><td>Основной запрос</td><td>Основная ветка выборки</td><td style="text-align:center;">—</td>';
+                const tdM1 = document.createElement('td');
+                tdM1.textContent = '1';
+                const tdM2 = document.createElement('td');
+                tdM2.textContent = 'Основной запрос';
+                const tdM3 = document.createElement('td');
+                tdM3.textContent = 'Основная ветка выборки';
+                const tdM4 = document.createElement('td');
+                tdM4.style.textAlign = 'center';
+                tdM4.textContent = '—';
+                trMain.appendChild(tdM1);
+                trMain.appendChild(tdM2);
+                trMain.appendChild(tdM3);
+                trMain.appendChild(tdM4);
                 elements.tbodyUnions.appendChild(trMain);
 
                 q.unions.forEach(function(u, idx) {
@@ -5367,9 +5398,15 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                     // Legacy sync
                     const trLegacy = document.createElement('tr');
-                    trLegacy.innerHTML = '<td>' + (idx + 2) + '</td>' +
-                        '<td>' + (u.unionType === 'UnionAll' ? 'ОБЪЕДИНИТЬ ВСЕ' : 'ОБЪЕДИНИТЬ') + '</td>' +
-                        '<td>Ветка объединения ' + (idx + 1) + '</td>';
+                    const tdLegIdx = document.createElement('td');
+                    tdLegIdx.textContent = String(idx + 2);
+                    const tdLegType = document.createElement('td');
+                    tdLegType.textContent = (u.unionType === 'UnionAll' ? 'ОБЪЕДИНИТЬ ВСЕ' : 'ОБЪЕДИНИТЬ');
+                    const tdLegDesc = document.createElement('td');
+                    tdLegDesc.textContent = 'Ветка объединения ' + (idx + 1);
+                    trLegacy.appendChild(tdLegIdx);
+                    trLegacy.appendChild(tdLegType);
+                    trLegacy.appendChild(tdLegDesc);
                     const tdDel = document.createElement('td');
                     tdDel.style.textAlign = 'center';
                     const btnDel = document.createElement('button');
@@ -5580,7 +5617,18 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         tblNode.className = 'tree-node';
                         const row = document.createElement('div');
                         row.className = 'tree-row';
-                        row.innerHTML = '<span class="tree-toggle">▼</span><span class="tree-icon">🗂️</span><span class="tree-label">' + tblName + '</span>';
+                        const spanToggle = document.createElement('span');
+                        spanToggle.className = 'tree-toggle';
+                        spanToggle.textContent = '▼';
+                        const spanIcon = document.createElement('span');
+                        spanIcon.className = 'tree-icon';
+                        spanIcon.textContent = '🗂️';
+                        const spanLabel = document.createElement('span');
+                        spanLabel.className = 'tree-label';
+                        spanLabel.textContent = tblName;
+                        row.appendChild(spanToggle);
+                        row.appendChild(spanIcon);
+                        row.appendChild(spanLabel);
                         tblNode.appendChild(row);
 
                         const chDiv = document.createElement('div');
@@ -5592,7 +5640,14 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                             const fRow = document.createElement('div');
                             fRow.className = 'tree-row';
                             fRow.style.paddingLeft = '18px';
-                            fRow.innerHTML = '<span class="tree-icon">🔹</span><span class="tree-label">' + sf + '</span>';
+                            const fIcon = document.createElement('span');
+                            fIcon.className = 'tree-icon';
+                            fIcon.textContent = '🔹';
+                            const fLabel = document.createElement('span');
+                            fLabel.className = 'tree-label';
+                            fLabel.textContent = sf;
+                            fRow.appendChild(fIcon);
+                            fRow.appendChild(fLabel);
                             fRow.addEventListener('dblclick', function() {
                                 addOrderField(tblName ? (tblName + '.' + sf) : sf);
                             });
@@ -5720,7 +5775,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     const item = document.createElement('div');
                     item.className = 'index-item' + (idx === state.selectedAvailableIndex ? ' selected' : '');
                     item.draggable = true;
-                    item.innerHTML = '<span>' + fn + '</span><span style="color:var(--vscode-descriptionForeground);">≡</span>';
+                    const spanField = document.createElement('span');
+                    spanField.textContent = fn;
+                    const spanHandle = document.createElement('span');
+                    spanHandle.style.color = 'var(--vscode-descriptionForeground)';
+                    spanHandle.textContent = '≡';
+                    item.appendChild(spanField);
+                    item.appendChild(spanHandle);
 
                     item.addEventListener('click', function() {
                         state.selectedAvailableIndex = idx;
@@ -5744,7 +5805,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     const item = document.createElement('div');
                     item.className = 'index-item' + (idx === state.selectedIndexedIndex ? ' selected' : '');
                     item.draggable = true;
-                    item.innerHTML = '<span>' + fn + '</span><span style="color:var(--vscode-descriptionForeground);">≡</span>';
+                    const spanField = document.createElement('span');
+                    spanField.textContent = fn;
+                    const spanHandle = document.createElement('span');
+                    spanHandle.style.color = 'var(--vscode-descriptionForeground)';
+                    spanHandle.textContent = '≡';
+                    item.appendChild(spanField);
+                    item.appendChild(spanHandle);
 
                     item.addEventListener('click', function() {
                         state.selectedIndexedIndex = idx;
@@ -6258,7 +6325,16 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 paramsToUse.forEach(function(dp, idx) {
                     const tr = document.createElement('tr');
                     const tdName = document.createElement('td');
-                    tdName.innerHTML = '<strong>' + dp.name + '</strong><br><span style="font-size:11px;color:var(--vscode-descriptionForeground);">' + dp.desc + '</span>';
+                    const strongName = document.createElement('strong');
+                    strongName.textContent = dp.name;
+                    const br = document.createElement('br');
+                    const spanDesc = document.createElement('span');
+                    spanDesc.style.fontSize = '11px';
+                    spanDesc.style.color = 'var(--vscode-descriptionForeground)';
+                    spanDesc.textContent = dp.desc;
+                    tdName.appendChild(strongName);
+                    tdName.appendChild(br);
+                    tdName.appendChild(spanDesc);
                     tr.appendChild(tdName);
 
                     const tdVal = document.createElement('td');

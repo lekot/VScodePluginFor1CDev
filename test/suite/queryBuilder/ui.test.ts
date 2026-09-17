@@ -9,7 +9,7 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
   const rootDir = path.resolve(__dirname, '../../../..');
   const sourceHtmlPath = path.join(rootDir, 'src/queryBuilder/ui/queryBuilderWebview.html');
   const htmlSource = fs.readFileSync(sourceHtmlPath, 'utf-8');
-  const scriptMatch = htmlSource.match(/<script>([\s\S]*?)<\/script>/);
+  const scriptMatch = htmlSource.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
   assert.ok(scriptMatch, 'Script tag must exist in HTML');
   const scriptCode = scriptMatch[1];
 
@@ -63,7 +63,11 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
     }
 
     get textContent(): string {
-      return this._textContent;
+      if (this._textContent) return this._textContent;
+      if (this.children.length > 0) {
+        return this.children.map((c) => c.textContent).join('');
+      }
+      return '';
     }
     set textContent(val: string) {
       this._textContent = val;

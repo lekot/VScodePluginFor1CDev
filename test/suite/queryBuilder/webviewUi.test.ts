@@ -199,7 +199,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
 
   suite('Webview UI Runtime VM Tests (P1.1, P1.2, P2.12-P2.17)', () => {
     const htmlSource = fs.readFileSync(sourceHtmlPath, 'utf-8');
-    const scriptMatch = htmlSource.match(/<script>([\s\S]*?)<\/script>/);
+    const scriptMatch = htmlSource.match(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i);
     assert.ok(scriptMatch, 'Script tag must exist in HTML');
     const scriptCode = scriptMatch[1];
 
@@ -234,7 +234,11 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
       }
 
       get textContent(): string {
-        return this._textContent;
+        if (this._textContent) return this._textContent;
+        if (this.children.length > 0) {
+          return this.children.map((c) => c.textContent).join('');
+        }
+        return '';
       }
       set textContent(val: string) {
         this._textContent = val;
