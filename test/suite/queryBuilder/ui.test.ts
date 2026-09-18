@@ -1775,6 +1775,268 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
       const params4 = extractParameters(save4.ast);
       assert.deepStrictEqual(params4, ['НовыйСтатус']);
     });
+
+    test('Finding R3: aggregate inside subquery SELECT does not route outer condition to HAVING', () => {
+      const sql = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код В (ВЫБРАТЬ МАКСИМУМ(Д.Код) ИЗ Справочник.Д КАК Д)';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      // Save without editing
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'Save message must be sent');
+
+      const savedQuery = saveMsg.ast.queries[0];
+      assert.ok(savedQuery.where, 'Condition MUST stay in WHERE clause');
+      assert.strictEqual(savedQuery.having, undefined, 'HAVING clause must NOT be created');
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(formatted.includes('ГДЕ'), `Must contain ГДЕ: ${formatted}`);
+      assert.ok(!formatted.includes('ИМЕЮЩИЕ'), `Must NOT contain ИМЕЮЩИЕ: ${formatted}`);
+    });
+
+    test('Finding R3 (Broad): NOT IN with SUM/COUNT in subquery stays in WHERE; genuine outer aggregate goes to HAVING', () => {
+      // 1. НЕ В with COUNT inside subquery
+      const sql1 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код НЕ В (ВЫБРАТЬ СУММА(Д.Количество) ИЗ Документ.Д КАК Д)';
+      const env1 = createWebviewEnvironment();
+      env1.postMessageToWebview({ command: 'init', ast: parseSdbl(sql1), metadata: [], mode: 'simple' });
+      env1.elements.btnSave.click();
+      const saveMsg1 = env1.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg1.ast.queries[0].where, 'Subquery with SUM must stay in WHERE');
+      assert.strictEqual(saveMsg1.ast.queries[0].having, undefined);
+
+      // 2. Genuine outer aggregate with subquery in WHERE
+      const sql2 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код В (ВЫБРАТЬ МАКСИМУМ(Д.Код) ИЗ Справочник.Д КАК Д) СГРУППИРОВАТЬ ПО Т.Код ИМЕЮЩИЕ СУММА(Т.Сумма) > 100';
+      const env2 = createWebviewEnvironment();
+      env2.postMessageToWebview({ command: 'init', ast: parseSdbl(sql2), metadata: [], mode: 'simple' });
+      env2.elements.btnSave.click();
+      const saveMsg2 = env2.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg2.ast.queries[0].where, 'In subquery condition must stay in WHERE');
+      assert.ok(saveMsg2.ast.queries[0].having, 'Genuine aggregate must stay in HAVING');
+    });
+
+    test('Finding R4: BETWEEN with CASE/ВЫБОР containing И does not split into separate conditions upon apply text', () => {
+      const sql = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Число МЕЖДУ ВЫБОР КОГДА Т.А = 1 И Т.Б = 2 ТОГДА 0 ИНАЧЕ 3 КОНЕЦ И 10';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({ command: 'init', ast: parsedPkg, metadata: [], mode: 'simple' });
+      env.window.renderTab11();
+      env.elements.sdblTextEditor.value = sql;
+      env.elements.btnApplyText.click();
+      env.elements.btnSave.click();
+
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg);
+      const savedQuery = saveMsg.ast.queries[0];
+      assert.strictEqual(savedQuery.whereConditions.length, 1, 'Must have exactly 1 whereCondition');
+      assert.strictEqual(savedQuery.whereConditions[0].field, 'Т.Число');
+      assert.strictEqual(savedQuery.whereConditions[0].cmp, 'МЕЖДУ');
+
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(!formatted.includes('И 10 ='), `Must not contain broken condition: ${formatted}`);
+      assert.ok(formatted.includes('ВЫБОР КОГДА Т.А = 1 И Т.Б = 2 ТОГДА 0 ИНАЧЕ 3 КОНЕЦ И 10'), `Must preserve full BETWEEN range: ${formatted}`);
+    });
+
+    test('Finding R4 (Broad): BETWEEN preserves string literals with AND/И without corrupting quotes or content', () => {
+      const sql = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код МЕЖДУ "A AND B" И "Z"';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({ command: 'init', ast: parsedPkg, metadata: [], mode: 'simple' });
+      env.elements.btnSave.click();
+
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg);
+      const savedQuery = saveMsg.ast.queries[0];
+      assert.strictEqual(savedQuery.where.type, 'Between');
+      assert.strictEqual(savedQuery.where.from.type, 'Literal');
+      assert.strictEqual(savedQuery.where.from.value, 'A AND B');
+      assert.strictEqual(savedQuery.where.to.type, 'Literal');
+      assert.strictEqual(savedQuery.where.to.value, 'Z');
+
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(formatted.includes('"A AND B"'), `Literal "A AND B" must not be corrupted to "A И B": ${formatted}`);
+    });
+
+    test('Finding R4 (Broad Edge Cases): nested CASE, English CASE WHEN, and multiple BETWEEN conditions', () => {
+      // 1. English CASE WHEN with AND inside
+      const sql1 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Число МЕЖДУ CASE WHEN Т.А = 1 AND Т.Б = 2 THEN 0 ELSE 3 END AND 10';
+      const env1 = createWebviewEnvironment();
+      env1.postMessageToWebview({ command: 'init', ast: parseSdbl(sql1), metadata: [], mode: 'simple' });
+      env1.window.renderTab11();
+      env1.elements.sdblTextEditor.value = sql1;
+      env1.elements.btnApplyText.click();
+      env1.elements.btnSave.click();
+      const save1 = env1.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(save1);
+      assert.strictEqual(save1.ast.queries[0].whereConditions.length, 1);
+      assert.strictEqual(save1.ast.queries[0].whereConditions[0].cmp, 'МЕЖДУ');
+
+      // 2. Escaped quotes inside BETWEEN string literal
+      const sql2 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код МЕЖДУ "A ""AND"" B" И "Z"';
+      const env2 = createWebviewEnvironment();
+      env2.postMessageToWebview({ command: 'init', ast: parseSdbl(sql2), metadata: [], mode: 'simple' });
+      env2.elements.btnSave.click();
+      const save2 = env2.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(save2);
+      assert.strictEqual(save2.ast.queries[0].where.from.value, 'A "AND" B');
+
+      // 3. Multiple BETWEEN conditions connected by OR
+      const sql3 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Число МЕЖДУ 1 И 5 ИЛИ Т.Число МЕЖДУ 10 И 20';
+      const env3 = createWebviewEnvironment();
+      env3.postMessageToWebview({ command: 'init', ast: parseSdbl(sql3), metadata: [], mode: 'simple' });
+      env3.window.renderTab11();
+      env3.elements.sdblTextEditor.value = sql3;
+      env3.elements.btnApplyText.click();
+      env3.elements.btnSave.click();
+      const save3 = env3.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(save3);
+      assert.strictEqual(save3.ast.queries[0].whereConditions.length, 2);
+      assert.strictEqual(save3.ast.queries[0].whereConditions[0].cmp, 'МЕЖДУ');
+      assert.strictEqual(save3.ast.queries[0].whereConditions[1].cmp, 'МЕЖДУ');
+      assert.strictEqual(save3.ast.queries[0].whereConditions[1].op, 'ИЛИ');
+    });
+
+    test('Finding R1: adding join between 2nd and 3rd table attaches join to 2nd table, not 1st table', () => {
+      const sql = 'ВЫБРАТЬ a.id ИЗ A КАК a, B КАК b, C КАК c';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      env.window.renderTab2();
+      env.elements.btnAddJoin.click();
+
+      const tr = env.elements.tbodyJoins.children[0];
+      const selT1 = tr.children[0].querySelector('select');
+      const selType = tr.children[1].querySelector('select');
+      const selT2 = tr.children[2].querySelector('select');
+      const inputOn = tr.children[3].querySelector('input');
+
+      // Select T1 = 'b', Type = 'Left', T2 = 'c', ON = 'b.id = c.bid'
+      selT1.value = 'b';
+      selT1.dispatchEvent({ type: 'change' });
+      selType.value = 'Left';
+      selType.dispatchEvent({ type: 'change' });
+      selT2.value = 'c';
+      selT2.dispatchEvent({ type: 'change' });
+      inputOn.value = 'b.id = c.bid';
+      inputOn.dispatchEvent({ type: 'change' });
+
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg);
+
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(formatted.includes('A КАК a'), `Must contain A: ${formatted}`);
+      assert.ok(formatted.includes('B КАК b'), `Must contain B: ${formatted}`);
+      assert.ok(formatted.includes('C КАК c'), `Must contain C: ${formatted}`);
+
+      const normFrom = saveMsg.ast.queries[0].from;
+      const fromA = normFrom.find((f: any) => f.alias === 'a' || (f.source && f.source.name === 'A'));
+      assert.ok(fromA, 'Table A must be a FromClause root');
+      assert.ok(!fromA.joins || fromA.joins.length === 0, `Table A must have 0 joins, but had: ${JSON.stringify(fromA.joins)}`);
+
+      const fromB = normFrom.find((f: any) => f.alias === 'b' || (f.source && f.source.name === 'B'));
+      assert.ok(fromB, 'Table B must be a FromClause root');
+      assert.ok(fromB.joins && fromB.joins.length === 1, 'Table B must have the join to C');
+      assert.strictEqual(fromB.joins[0].alias, 'c');
+      assert.strictEqual(fromB.joins[0].joinType, 'Left');
+    });
+
+    test('Finding R1 (Broad): changing T1 of existing join updates join attachment from A to B', () => {
+      const sql = 'ВЫБРАТЬ a.id ИЗ A КАК a ЛЕВОЕ СОЕДИНЕНИЕ C КАК c ПО a.id = c.aid, B КАК b';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      env.window.renderTab2();
+      const tr = env.elements.tbodyJoins.children[0];
+      const selT1 = tr.children[0].querySelector('select');
+      const inputOn = tr.children[3].querySelector('input');
+
+      // Change T1 to 'b' and condition to 'b.id = c.bid'
+      selT1.value = 'b';
+      selT1.dispatchEvent({ type: 'change' });
+      inputOn.value = 'b.id = c.bid';
+      inputOn.dispatchEvent({ type: 'change' });
+
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg);
+
+      const normFrom = saveMsg.ast.queries[0].from;
+      const fromA = normFrom.find((f: any) => f.alias === 'a' || (f.source && f.source.name === 'A'));
+      assert.ok(!fromA.joins || fromA.joins.length === 0, 'Table A must no longer have joins');
+
+      const fromB = normFrom.find((f: any) => f.alias === 'b' || (f.source && f.source.name === 'B'));
+      assert.ok(fromB.joins && fromB.joins.length === 1, 'Table B must now have the join');
+      assert.strictEqual(fromB.joins[0].alias, 'c');
+    });
+
+    test('Finding R1 (Broad): multiple independent components preserve separate FromClause trees', () => {
+      // 4 tables: A joins B, C joins D
+      const sql = 'ВЫБРАТЬ a.id ИЗ A КАК a, B КАК b, C КАК c, D КАК d';
+      const env = createWebviewEnvironment();
+      env.postMessageToWebview({ command: 'init', ast: parseSdbl(sql), metadata: [], mode: 'simple' });
+
+      env.window.renderTab2();
+      // Join 1: A Left B
+      env.elements.btnAddJoin.click();
+      const tr1 = env.elements.tbodyJoins.children[0];
+      tr1.children[0].querySelector('select').value = 'a';
+      tr1.children[0].querySelector('select').dispatchEvent({ type: 'change' });
+      tr1.children[1].querySelector('select').value = 'Left';
+      tr1.children[1].querySelector('select').dispatchEvent({ type: 'change' });
+      tr1.children[2].querySelector('select').value = 'b';
+      tr1.children[2].querySelector('select').dispatchEvent({ type: 'change' });
+      tr1.children[3].querySelector('input').value = 'a.id = b.aid';
+      tr1.children[3].querySelector('input').dispatchEvent({ type: 'change' });
+
+      // Join 2: C Left D
+      env.elements.btnAddJoin.click();
+      const tr2 = env.elements.tbodyJoins.children[1];
+      tr2.children[0].querySelector('select').value = 'c';
+      tr2.children[0].querySelector('select').dispatchEvent({ type: 'change' });
+      tr2.children[1].querySelector('select').value = 'Left';
+      tr2.children[1].querySelector('select').dispatchEvent({ type: 'change' });
+      tr2.children[2].querySelector('select').value = 'd';
+      tr2.children[2].querySelector('select').dispatchEvent({ type: 'change' });
+      tr2.children[3].querySelector('input').value = 'c.id = d.cid';
+      tr2.children[3].querySelector('input').dispatchEvent({ type: 'change' });
+
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg);
+
+      const normFrom = saveMsg.ast.queries[0].from;
+      assert.strictEqual(normFrom.length, 2, 'Must have exactly 2 FromClause trees');
+      assert.strictEqual(normFrom[0].alias, 'a');
+      assert.strictEqual(normFrom[0].joins.length, 1);
+      assert.strictEqual(normFrom[0].joins[0].alias, 'b');
+
+      assert.strictEqual(normFrom[1].alias, 'c');
+      assert.strictEqual(normFrom[1].joins.length, 1);
+      assert.strictEqual(normFrom[1].joins[0].alias, 'd');
+    });
   });
 });
 

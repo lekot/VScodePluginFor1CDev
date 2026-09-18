@@ -1982,6 +1982,16 @@ suite('SDBL Formatter & BSL Serializer', () => {
       assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.А КАК Т1'), `A must be left joined: ${formatted}`);
       assert.ok(!formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must unfold into Left join: ${formatted}`);
     });
+
+    test('Finding R2: multi-table RIGHT JOIN chain preserves ПРАВОЕ СОЕДИНЕНИЕ and does not unfold into flat LEFT joins', () => {
+      const sql = `ВЫБРАТЬ c.id ИЗ A КАК a ПРАВОЕ СОЕДИНЕНИЕ B КАК b ПО ИСТИНА ПРАВОЕ СОЕДИНЕНИЕ C КАК c ПО b.id = c.bid`;
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      assert.ok(formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must preserve ПРАВОЕ СОЕДИНЕНИЕ: ${formatted}`);
+      assert.ok(!formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ B КАК b ПО b.id = c.bid\n\tЛЕВОЕ СОЕДИНЕНИЕ A КАК a ПО ИСТИНА'),
+        `Must not unfold into row-corrupting flat LEFT joins: ${formatted}`);
+    });
   });
 });
 

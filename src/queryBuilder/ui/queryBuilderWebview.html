@@ -1822,30 +1822,129 @@ var SdblAstVisitor = (() => {
     if (!from || !Array.isArray(from) || from.length === 0) {
       return [];
     }
-    const seenTableKeys = /* @__PURE__ */ new Set();
-    const normalized = [];
+    const tablesMap = /* @__PURE__ */ new Map();
+    const tableOrder = [];
+    const rawJoins = [];
+    let orderCounter = 0;
+    const registerTable = (source, alias) => {
+      const key = getTableKey(source, alias);
+      if (!key) {
+        return;
+      }
+      if (!tablesMap.has(key)) {
+        tablesMap.set(key, {
+          key,
+          source,
+          alias,
+          identKeys: getTableIdentKeys(source, alias),
+          order: orderCounter++
+        });
+        tableOrder.push(key);
+      } else {
+        const existing = tablesMap.get(key);
+        if (source.type === "Table" && source.params && source.params.length > 0) {
+          existing.source = source;
+        }
+        if (alias && !existing.alias) {
+          existing.alias = alias;
+        }
+      }
+    };
     for (const fc of from) {
-      if (fc.joins) {
+      registerTable(fc.source, fc.alias);
+      const fcKey = getTableKey(fc.source, fc.alias);
+      if (fc.joins && Array.isArray(fc.joins)) {
         for (const jn of fc.joins) {
-          const jnKey = getTableKey(jn.source, jn.alias);
-          if (jnKey) {
-            seenTableKeys.add(jnKey);
-          }
+          registerTable(jn.source, jn.alias);
+          rawJoins.push({
+            jn,
+            t1Ident: jn.t1,
+            defaultT1Key: fcKey
+          });
         }
       }
     }
-    for (const fc of from) {
-      const norm = normalizeSingleFromClause(fc);
-      const key = getTableKey(norm.source, norm.alias);
-      if (!norm.joins || norm.joins.length === 0) {
-        if (key && seenTableKeys.has(key)) {
-          continue;
+    if (rawJoins.length === 0) {
+      return tableOrder.map((key) => {
+        const t = tablesMap.get(key);
+        return { source: t.source, alias: t.alias };
+      });
+    }
+    const findTableKeyByIdent = (ident) => {
+      if (!ident) {
+        return void 0;
+      }
+      const norm = ident.trim().toLowerCase();
+      for (const key of tableOrder) {
+        const t = tablesMap.get(key);
+        if (t.identKeys.has(norm)) {
+          return key;
         }
       }
-      if (key) {
-        seenTableKeys.add(key);
+      return void 0;
+    };
+    const resolvedJoins = [];
+    const joinedTables = /* @__PURE__ */ new Set();
+    for (const rj of rawJoins) {
+      const t2Key = getTableKey(rj.jn.source, rj.jn.alias);
+      const t1Key = (rj.t1Ident ? findTableKeyByIdent(rj.t1Ident) : void 0) || rj.defaultT1Key;
+      if (t1Key && t2Key && t1Key !== t2Key) {
+        resolvedJoins.push({
+          t1Key,
+          t2Key,
+          joinClause: rj.jn
+        });
+        joinedTables.add(t2Key);
+      } else if (t1Key && t2Key) {
+        resolvedJoins.push({
+          t1Key,
+          t2Key,
+          joinClause: rj.jn
+        });
       }
-      normalized.push(norm);
+    }
+    const normalized = [];
+    const processedTables = /* @__PURE__ */ new Set();
+    const remainingJoins = [...resolvedJoins];
+    for (const rootKey of tableOrder) {
+      if (joinedTables.has(rootKey)) {
+        continue;
+      }
+      if (processedTables.has(rootKey)) {
+        continue;
+      }
+      const rootTable = tablesMap.get(rootKey);
+      processedTables.add(rootKey);
+      const inTree = /* @__PURE__ */ new Set([rootKey]);
+      const treeJoins = [];
+      let progress = true;
+      while (remainingJoins.length > 0 && progress) {
+        progress = false;
+        for (let i = 0; i < remainingJoins.length; i++) {
+          const j = remainingJoins[i];
+          if (inTree.has(j.t1Key)) {
+            treeJoins.push(j.joinClause);
+            inTree.add(j.t2Key);
+            processedTables.add(j.t2Key);
+            remainingJoins.splice(i, 1);
+            progress = true;
+            break;
+          }
+        }
+      }
+      const initialClause = {
+        source: rootTable.source,
+        alias: rootTable.alias,
+        joins: treeJoins.length > 0 ? treeJoins : void 0
+      };
+      normalized.push(normalizeSingleFromClause(initialClause));
+    }
+    for (const rj of remainingJoins) {
+      if (!processedTables.has(rj.t2Key)) {
+        processedTables.add(rj.t2Key);
+        const t = tablesMap.get(rj.t2Key);
+        normalized.push({ source: t.source, alias: t.alias });
+      }
     }
     return normalized;
   }
@@ -1894,59 +1993,36 @@ var SdblAstVisitor = (() => {
     if (!fc.joins || fc.joins.length === 0) {
       return fc;
     }
-    const hasRightJoin = fc.joins.some((j) => j.joinType === "Right");
-    if (!hasRightJoin) {
+    if (fc.joins.length !== 1 || fc.joins[0].joinType !== "Right") {
       return fc;
     }
-    const allRightJoins = fc.joins.every((j) => j.joinType === "Right");
-    if (!allRightJoins) {
-      return fc;
+    const j = fc.joins[0];
+    const rootKeys = getTableIdentKeys(fc.source, fc.alias);
+    const targetKeys = getTableIdentKeys(j.source, j.alias);
+    const scope = /* @__PURE__ */ new Set();
+    for (const k of rootKeys) {
+      scope.add(k);
     }
-    const tables = [
-      {
-        source: fc.source,
-        alias: fc.alias,
-        keys: getTableIdentKeys(fc.source, fc.alias)
+    for (const k of targetKeys) {
+      scope.add(k);
+    }
+    const condRefs = getTableKeysFromExpression(j.on);
+    for (const ref of condRefs) {
+      if (!scope.has(ref)) {
+        return fc;
       }
-    ];
-    for (const j of fc.joins) {
-      tables.push({
-        source: j.source,
-        alias: j.alias,
-        keys: getTableIdentKeys(j.source, j.alias)
-      });
-    }
-    const inScope = /* @__PURE__ */ new Set();
-    for (const k of tables[tables.length - 1].keys) {
-      inScope.add(k);
-    }
-    for (let i = fc.joins.length - 1; i >= 0; i--) {
-      const targetTable = tables[i];
-      for (const k of targetTable.keys) {
-        inScope.add(k);
-      }
-      const condRefs = getTableKeysFromExpression(fc.joins[i].on);
-      for (const ref of condRefs) {
-        if (!inScope.has(ref)) {
-          return fc;
-        }
-      }
-    }
-    const root = tables[tables.length - 1];
-    const newJoins = [];
-    for (let i = fc.joins.length - 1; i >= 0; i--) {
-      const targetTable = tables[i];
-      newJoins.push({
-        joinType: "Left",
-        source: targetTable.source,
-        alias: targetTable.alias,
-        on: fc.joins[i].on
-      });
     }
     return {
-      source: root.source,
-      alias: root.alias,
-      joins: newJoins
+      source: j.source,
+      alias: j.alias,
+      joins: [
+        {
+          joinType: "Left",
+          source: fc.source,
+          alias: fc.alias,
+          on: j.on
+        }
+      ]
     };
   }
   return __toCommonJS(sdblAstVisitor_exports);
@@ -2410,6 +2486,55 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 return res;
             }
 
+            function stripSubqueries(s) {
+                let res = '';
+                let inQ = false;
+                let parenDepth = 0;
+                let subqueryDepth = -1;
+
+                for (let i = 0; i < s.length; i++) {
+                    const ch = s[i];
+                    if (ch === '"') {
+                        if (inQ && i + 1 < s.length && s[i + 1] === '"') {
+                            if (subqueryDepth === -1) res += '""';
+                            i++;
+                            continue;
+                        }
+                        inQ = !inQ;
+                        if (subqueryDepth === -1) res += '"';
+                        continue;
+                    }
+                    if (inQ) {
+                        if (subqueryDepth === -1) res += ch;
+                        continue;
+                    }
+
+                    if (ch === '(') {
+                        parenDepth++;
+                        if (subqueryDepth === -1) {
+                            const rest = s.substring(i + 1).trimStart();
+                            if (/^(?:ВЫБРАТЬ|SELECT)\b/i.test(rest)) {
+                                subqueryDepth = parenDepth;
+                                res += '()';
+                                continue;
+                            }
+                        }
+                    } else if (ch === ')') {
+                        if (subqueryDepth === parenDepth) {
+                            subqueryDepth = -1;
+                            parenDepth--;
+                            continue;
+                        }
+                        parenDepth--;
+                    }
+
+                    if (subqueryDepth === -1) {
+                        res += ch;
+                    }
+                }
+                return res;
+            }
+
             function isAggregateExpression(str) {
                 if (!str) return false;
                 const api = typeof window !== 'undefined' && window.SdblAstVisitor ? window.SdblAstVisitor : (typeof SdblAstVisitor !== 'undefined' ? SdblAstVisitor : null);
@@ -2419,7 +2544,8 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     }
                     str = getExpressionString(str);
                 }
-                const stripped = stripStringLiterals(String(str));
+                const withoutSubqueries = stripSubqueries(String(str));
+                const stripped = stripStringLiterals(withoutSubqueries);
                 const upper = stripped.toUpperCase();
                 // Aggregate functions in SDBL must be a call with parentheses and NOT preceded by a member access dot (e.g. not Т.Сумма)
                 const aggRe = /(?:^|[^a-zA-Z0-9а-яА-ЯёЁ_.])(СУММА|КОЛИЧЕСТВО|МИНИМУМ|МАКСИМУМ|СРЕДНЕЕ|SUM|COUNT|AVG|MIN|MAX)\s*\(/i;
@@ -3037,6 +3163,81 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 return { type: 'RawExpression', raw: trimmed };
             }
 
+            function splitBetweenBounds(str) {
+                if (!str) return { from: '', to: '' };
+                let parenDepth = 0;
+                let bracketDepth = 0;
+                let caseDepth = 0;
+                let inQ = false;
+                let splitIdx = -1;
+                let splitLen = 0;
+
+                for (let i = 0; i < str.length; i++) {
+                    const ch = str[i];
+                    if (ch === '"') {
+                        if (inQ && i + 1 < str.length && str[i + 1] === '"') {
+                            i++;
+                            continue;
+                        }
+                        inQ = !inQ;
+                        continue;
+                    }
+                    if (inQ) continue;
+
+                    if (ch === '(') {
+                        parenDepth++;
+                        continue;
+                    }
+                    if (ch === ')') {
+                        if (parenDepth > 0) parenDepth--;
+                        continue;
+                    }
+                    if (ch === '[') {
+                        bracketDepth++;
+                        continue;
+                    }
+                    if (ch === ']') {
+                        if (bracketDepth > 0) bracketDepth--;
+                        continue;
+                    }
+
+                    const isWordChar = function(c) { return Boolean(c && /[a-zA-Z0-9а-яА-ЯёЁ_]/.test(c)); };
+                    const prevIsWordChar = i > 0 && isWordChar(str[i - 1]);
+                    if (!prevIsWordChar) {
+                        const sub = str.substring(i);
+                        const caseMatch = sub.match(/^(?:ВЫБОР|CASE)/i);
+                        if (caseMatch && !isWordChar(sub[caseMatch[0].length])) {
+                            caseDepth++;
+                            i += caseMatch[0].length - 1;
+                            continue;
+                        }
+                        const endMatch = sub.match(/^(?:КОНЕЦ|END)/i);
+                        if (endMatch && !isWordChar(sub[endMatch[0].length])) {
+                            if (caseDepth > 0) caseDepth--;
+                            i += endMatch[0].length - 1;
+                            continue;
+                        }
+
+                        if (parenDepth === 0 && bracketDepth === 0 && caseDepth === 0) {
+                            const andMatch = sub.match(/^(?:И|AND)/i);
+                            if (andMatch && !isWordChar(sub[andMatch[0].length])) {
+                                splitIdx = i;
+                                splitLen = andMatch[0].length;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (splitIdx !== -1) {
+                    return {
+                        from: str.substring(0, splitIdx).trim(),
+                        to: str.substring(splitIdx + splitLen).trim()
+                    };
+                }
+                return { from: str.trim(), to: '' };
+            }
+
             function conditionToNode(cond) {
                 const cmp = (cond.cmp || '=').trim();
                 const cmpUpper = cmp.toUpperCase();
@@ -3118,15 +3319,32 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 if (cmp.indexOf('МЕЖДУ') !== -1 || cmpUpper.indexOf('BETWEEN') !== -1) {
                     const isNot = cmp.indexOf('НЕ') !== -1 || cmpUpper.indexOf('NOT') !== -1;
                     const v = (cond.value || '').trim();
-                    const andMatch = v.split(/\s+(?:И|AND)\s+/i);
-                    const fromStr = andMatch[0] || '';
-                    const toStr = andMatch.length > 1 ? andMatch.slice(1).join(' И ') : '';
+                    const bounds = splitBetweenBounds(v);
+                    let fromNode = null;
+                    let toNode = null;
+
+                    if (cond.originalNode && (cond.originalNode.type === 'Between' || cond.originalNode.from)) {
+                        const origFromStr = getExpressionString(cond.originalNode.from).trim();
+                        const origToStr = getExpressionString(cond.originalNode.to).trim();
+                        if (bounds.from === origFromStr && bounds.to === origToStr) {
+                            fromNode = cond.originalNode.from;
+                            toNode = cond.originalNode.to;
+                        }
+                    }
+
+                    if (!fromNode) {
+                        fromNode = parseExpressionOrRaw(bounds.from);
+                    }
+                    if (!toNode) {
+                        toNode = parseExpressionOrRaw(bounds.to);
+                    }
+
                     return {
                         type: 'Between',
                         expression: parseExpressionOrRaw(cond.field),
                         not: isNot || undefined,
-                        from: parseExpressionOrRaw(fromStr),
-                        to: parseExpressionOrRaw(toStr)
+                        from: fromNode,
+                        to: toNode
                     };
                 }
                 if (cmp.indexOf('ПОДОБНО') !== -1 || cmpUpper.indexOf('LIKE') !== -1) {
@@ -3250,9 +3468,26 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 const whereList = [];
                 const havingList = [];
 
+                function isAggregateCondition(c) {
+                    if (!c) return false;
+                    if (isAggregateExpression(c.field)) return true;
+                    const cmp = (c.cmp || '').toUpperCase();
+                    if (cmp.indexOf('В') !== -1 || cmp.indexOf('IN') !== -1) {
+                        let v = (c.value || '').trim();
+                        if (v.startsWith('(') && v.endsWith(')')) v = v.slice(1, -1).trim();
+                        if (/^(?:ВЫБРАТЬ|SELECT)\b/i.test(v)) {
+                            return false;
+                        }
+                        if (c.originalNode && c.originalNode.values && c.originalNode.values.type === 'Select') {
+                            return false;
+                        }
+                    }
+                    return isAggregateExpression(c.value);
+                }
+
                 const allConditions = (q.whereConditions || []).concat(q.havingConditions || []);
                 allConditions.forEach(function(c) {
-                    if (isAggregateExpression(c.field) || isAggregateExpression(c.value)) {
+                    if (isAggregateCondition(c)) {
                         havingList.push(c);
                     } else {
                         whereList.push(c);
@@ -3298,7 +3533,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     const f = getExpressionString(node.expression);
                     const cmpStr = node.not ? 'НЕ МЕЖДУ' : 'МЕЖДУ';
                     const valStr = getExpressionString(node.from) + ' И ' + getExpressionString(node.to);
-                    return { op: currentOp, field: f, cmp: cmpStr, value: valStr };
+                    return { op: currentOp, field: f, cmp: cmpStr, value: valStr, originalNode: node };
                 }
                 if (node.type === 'Like') {
                     const f = getExpressionString(node.expression);
@@ -3867,38 +4102,81 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 const result = [];
                 const linkMatches = [];
                 let inBetween = false;
+                let parenDepth = 0;
+                let bracketDepth = 0;
+                let caseDepth = 0;
+                let inQ = false;
 
-                const tokenRegex = new RegExp(WB_START + '(?:(МЕЖДУ|BETWEEN)|(И|AND)|(ИЛИ|OR))' + WB_END, 'gi');
-                let tm;
-                while ((tm = tokenRegex.exec(str)) !== null) {
-                    const matchIdx = tm.index;
-                    let d = 0;
-                    let q = false;
-                    for (let i = 0; i < matchIdx; i++) {
-                        const ch = str[i];
-                        if (ch === '"') {
-                            if (i + 1 < str.length && str[i + 1] === '"') { i++; }
-                            else { q = !q; }
+                for (let i = 0; i < str.length; i++) {
+                    const ch = str[i];
+                    if (ch === '"') {
+                        if (inQ && i + 1 < str.length && str[i + 1] === '"') {
+                            i++;
+                            continue;
                         }
-                        else if (!q && (ch === '(' || ch === '[')) d++;
-                        else if (!q && (ch === ')' || ch === ']')) { if (d > 0) d--; }
+                        inQ = !inQ;
+                        continue;
                     }
-                    if (d === 0 && !q) {
-                        if (tm[1]) {
-                            // МЕЖДУ / BETWEEN
-                            inBetween = true;
-                        } else if (tm[2]) {
-                            // И / AND
-                            if (inBetween) {
-                                // Range separator for BETWEEN ... AND
-                                inBetween = false;
-                            } else {
-                                linkMatches.push({ op: 'И', index: matchIdx, length: tm[0].length });
+                    if (inQ) continue;
+
+                    if (ch === '(') {
+                        parenDepth++;
+                        continue;
+                    }
+                    if (ch === ')') {
+                        if (parenDepth > 0) parenDepth--;
+                        continue;
+                    }
+                    if (ch === '[') {
+                        bracketDepth++;
+                        continue;
+                    }
+                    if (ch === ']') {
+                        if (bracketDepth > 0) bracketDepth--;
+                        continue;
+                    }
+
+                    const isWordChar = function(c) { return Boolean(c && /[a-zA-Z0-9а-яА-ЯёЁ_]/.test(c)); };
+                    const prevIsWordChar = i > 0 && isWordChar(str[i - 1]);
+                    if (!prevIsWordChar) {
+                        const sub = str.substring(i);
+                        const caseMatch = sub.match(/^(?:ВЫБОР|CASE)/i);
+                        if (caseMatch && !isWordChar(sub[caseMatch[0].length])) {
+                            caseDepth++;
+                            i += caseMatch[0].length - 1;
+                            continue;
+                        }
+                        const endMatch = sub.match(/^(?:КОНЕЦ|END)/i);
+                        if (endMatch && !isWordChar(sub[endMatch[0].length])) {
+                            if (caseDepth > 0) caseDepth--;
+                            i += endMatch[0].length - 1;
+                            continue;
+                        }
+
+                        if (parenDepth === 0 && bracketDepth === 0 && caseDepth === 0) {
+                            const betweenMatch = sub.match(/^(?:МЕЖДУ|BETWEEN)/i);
+                            if (betweenMatch && !isWordChar(sub[betweenMatch[0].length])) {
+                                inBetween = true;
+                                i += betweenMatch[0].length - 1;
+                                continue;
                             }
-                        } else if (tm[3]) {
-                            // ИЛИ / OR
-                            inBetween = false;
-                            linkMatches.push({ op: 'ИЛИ', index: matchIdx, length: tm[0].length });
+                            const andMatch = sub.match(/^(?:И|AND)/i);
+                            if (andMatch && !isWordChar(sub[andMatch[0].length])) {
+                                if (inBetween) {
+                                    inBetween = false;
+                                } else {
+                                    linkMatches.push({ op: 'И', index: i, length: andMatch[0].length });
+                                }
+                                i += andMatch[0].length - 1;
+                                continue;
+                            }
+                            const orMatch = sub.match(/^(?:ИЛИ|OR)/i);
+                            if (orMatch && !isWordChar(sub[orMatch[0].length])) {
+                                inBetween = false;
+                                linkMatches.push({ op: 'ИЛИ', index: i, length: orMatch[0].length });
+                                i += orMatch[0].length - 1;
+                                continue;
+                            }
                         }
                     }
                 }
