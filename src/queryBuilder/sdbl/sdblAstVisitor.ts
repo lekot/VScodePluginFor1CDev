@@ -848,44 +848,73 @@ function normalizeSingleFromClause(fc: FromClause): FromClause {
     return fc;
   }
 
-  // Finding R2: A RIGHT join can ONLY be safely unfolded into an equivalent LEFT join
-  // if it is a single 2-table join (i.e. exactly 1 join in fc.joins).
-  // Multi-table RIGHT join chains (e.g. ((A RIGHT B) RIGHT C)) cannot be flattened into
-  // flat LEFT joins ((C LEFT B) LEFT A) without changing outer join associativity and row
-  // multiplication when intermediate tables contain NULLs (see Astra SQLite proof).
-  // 1C SDBL natively supports ПРАВОЕ СОЕДИНЕНИЕ for multi-table chains.
-  if (fc.joins.length !== 1 || fc.joins[0].joinType !== 'Right') {
+  const hasRightJoin = fc.joins.some((j) => j.joinType === 'Right');
+  if (!hasRightJoin) {
     return fc;
   }
 
-  const j = fc.joins[0];
-  const rootKeys = getTableIdentKeys(fc.source, fc.alias);
-  const targetKeys = getTableIdentKeys(j.source, j.alias);
-  const scope = new Set<string>();
-  for (const k of rootKeys) {
-    scope.add(k);
-  }
-  for (const k of targetKeys) {
-    scope.add(k);
+  // Pure chain of RIGHT joins (e.g. A RIGHT B or A RIGHT B RIGHT C) is transposed
+  // into canonical LEFT joins (e.g. B LEFT A or C LEFT B LEFT A), by analogy with
+  // the 1C platform query builder.
+  const allRightJoins = fc.joins.every((j) => j.joinType === 'Right');
+  if (!allRightJoins) {
+    return fc;
   }
 
-  const condRefs = getTableKeysFromExpression(j.on);
-  for (const ref of condRefs) {
-    if (!scope.has(ref)) {
-      return fc;
+  const tables: { source: TableOrSubquery; alias?: string; keys: Set<string> }[] = [
+    {
+      source: fc.source,
+      alias: fc.alias,
+      keys: getTableIdentKeys(fc.source, fc.alias),
+    },
+  ];
+
+  for (const j of fc.joins) {
+    tables.push({
+      source: j.source,
+      alias: j.alias,
+      keys: getTableIdentKeys(j.source, j.alias),
+    });
+  }
+
+  // Check condition scoping in reversed order:
+  // Root table is tables[tables.length - 1] (i.e. Tn)
+  const inScope = new Set<string>();
+  for (const k of tables[tables.length - 1].keys) {
+    inScope.add(k);
+  }
+
+  for (let i = fc.joins.length - 1; i >= 0; i--) {
+    const targetTable = tables[i];
+    for (const k of targetTable.keys) {
+      inScope.add(k);
+    }
+    const condRefs = getTableKeysFromExpression(fc.joins[i].on);
+    for (const ref of condRefs) {
+      if (!inScope.has(ref)) {
+        // Condition references a table that is NOT yet in scope!
+        return fc;
+      }
     }
   }
 
+  // All checks passed: transpose into canonical LEFT joins!
+  const root = tables[tables.length - 1];
+  const newJoins: JoinClause[] = [];
+
+  for (let i = fc.joins.length - 1; i >= 0; i--) {
+    const targetTable = tables[i];
+    newJoins.push({
+      joinType: 'Left',
+      source: targetTable.source,
+      alias: targetTable.alias,
+      on: fc.joins[i].on,
+    });
+  }
+
   return {
-    source: j.source,
-    alias: j.alias,
-    joins: [
-      {
-        joinType: 'Left',
-        source: fc.source,
-        alias: fc.alias,
-        on: j.on,
-      },
-    ],
+    source: root.source,
+    alias: root.alias,
+    joins: newJoins,
   };
 }

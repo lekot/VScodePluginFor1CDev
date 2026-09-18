@@ -1285,7 +1285,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.ok(!formatted.includes('СОЕДИНЕНИЕ'));
       });
 
-      test('Finding R2: chained Right joins (A RIGHT JOIN B RIGHT JOIN C) preserve ПРАВОЕ СОЕДИНЕНИЕ and do not unfold into flat Left joins', () => {
+      test('chained Right joins (A RIGHT JOIN B RIGHT JOIN C) transpose into canonical Left joins like 1C platform constructor', () => {
         const env = createWebviewEnvironment();
         const q = env.window.getActiveQuery();
         q.fields = [{ expression: 'A.ID', alias: 'A_ID' }];
@@ -1312,8 +1312,10 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         ];
 
         const formatted = env.window.formatSdblQuery(q);
-        assert.ok(formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), 'Must preserve Right join for multi-table chains');
-        assert.ok(!formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.A КАК A'), 'Must not unfold into flat Left joins');
+        assert.ok(!formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must NEVER contain ПРАВОЕ СОЕДИНЕНИЕ: ${formatted}`);
+        assert.ok(formatted.includes('Справочник.C КАК C'), `C must be the base table in ИЗ: ${formatted}`);
+        assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.B КАК B'), `B must be left joined: ${formatted}`);
+        assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.A КАК A'), `A must be left joined: ${formatted}`);
       });
     });
   });

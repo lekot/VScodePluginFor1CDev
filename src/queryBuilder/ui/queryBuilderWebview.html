@@ -1993,36 +1993,59 @@ var SdblAstVisitor = (() => {
     if (!fc.joins || fc.joins.length === 0) {
       return fc;
     }
-    if (fc.joins.length !== 1 || fc.joins[0].joinType !== "Right") {
+    const hasRightJoin = fc.joins.some((j) => j.joinType === "Right");
+    if (!hasRightJoin) {
       return fc;
     }
-    const j = fc.joins[0];
-    const rootKeys = getTableIdentKeys(fc.source, fc.alias);
-    const targetKeys = getTableIdentKeys(j.source, j.alias);
-    const scope = /* @__PURE__ */ new Set();
-    for (const k of rootKeys) {
-      scope.add(k);
+    const allRightJoins = fc.joins.every((j) => j.joinType === "Right");
+    if (!allRightJoins) {
+      return fc;
     }
-    for (const k of targetKeys) {
-      scope.add(k);
+    const tables = [
+      {
+        source: fc.source,
+        alias: fc.alias,
+        keys: getTableIdentKeys(fc.source, fc.alias)
+      }
+    ];
+    for (const j of fc.joins) {
+      tables.push({
+        source: j.source,
+        alias: j.alias,
+        keys: getTableIdentKeys(j.source, j.alias)
+      });
     }
-    const condRefs = getTableKeysFromExpression(j.on);
-    for (const ref of condRefs) {
-      if (!scope.has(ref)) {
-        return fc;
+    const inScope = /* @__PURE__ */ new Set();
+    for (const k of tables[tables.length - 1].keys) {
+      inScope.add(k);
+    }
+    for (let i = fc.joins.length - 1; i >= 0; i--) {
+      const targetTable = tables[i];
+      for (const k of targetTable.keys) {
+        inScope.add(k);
+      }
+      const condRefs = getTableKeysFromExpression(fc.joins[i].on);
+      for (const ref of condRefs) {
+        if (!inScope.has(ref)) {
+          return fc;
+        }
       }
     }
+    const root = tables[tables.length - 1];
+    const newJoins = [];
+    for (let i = fc.joins.length - 1; i >= 0; i--) {
+      const targetTable = tables[i];
+      newJoins.push({
+        joinType: "Left",
+        source: targetTable.source,
+        alias: targetTable.alias,
+        on: fc.joins[i].on
+      });
+    }
     return {
-      source: j.source,
-      alias: j.alias,
-      joins: [
-        {
-          joinType: "Left",
-          source: fc.source,
-          alias: fc.alias,
-          on: j.on
-        }
-      ]
+      source: root.source,
+      alias: root.alias,
+      joins: newJoins
     };
   }
   return __toCommonJS(sdblAstVisitor_exports);

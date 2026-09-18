@@ -1983,14 +1983,32 @@ suite('SDBL Formatter & BSL Serializer', () => {
       assert.ok(!formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must unfold into Left join: ${formatted}`);
     });
 
-    test('Finding R2: multi-table RIGHT JOIN chain preserves ПРАВОЕ СОЕДИНЕНИЕ and does not unfold into flat LEFT joins', () => {
+    test('multi-table RIGHT JOIN chain transposes into canonical LEFT JOINs like 1C platform constructor', () => {
       const sql = `ВЫБРАТЬ c.id ИЗ A КАК a ПРАВОЕ СОЕДИНЕНИЕ B КАК b ПО ИСТИНА ПРАВОЕ СОЕДИНЕНИЕ C КАК c ПО b.id = c.bid`;
       const pkg = parseSdbl(sql);
       const formatted = formatSdbl(pkg);
 
-      assert.ok(formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must preserve ПРАВОЕ СОЕДИНЕНИЕ: ${formatted}`);
-      assert.ok(!formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ B КАК b ПО b.id = c.bid\n\tЛЕВОЕ СОЕДИНЕНИЕ A КАК a ПО ИСТИНА'),
-        `Must not unfold into row-corrupting flat LEFT joins: ${formatted}`);
+      assert.ok(!formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must NEVER contain ПРАВОЕ СОЕДИНЕНИЕ: ${formatted}`);
+      assert.ok(formatted.includes('ИЗ\n\tC КАК c') || formatted.includes('ИЗ\r\n\tC КАК c'), `C must be the base table in ИЗ: ${formatted}`);
+      assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ B КАК b'), `B must be left joined: ${formatted}`);
+      assert.ok(formatted.includes('b.id = c.bid'), `Condition b.id = c.bid must be present: ${formatted}`);
+      assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ A КАК a'), `A must be left joined: ${formatted}`);
+      assert.ok(formatted.includes('ПО ИСТИНА'), `Condition ПО ИСТИНА must be present: ${formatted}`);
+    });
+
+    test('multi-table RIGHT JOIN chain (4 tables) transposes in reverse order into canonical LEFT JOINs', () => {
+      const sql = `ВЫБРАТЬ d.id ИЗ A КАК a ПРАВОЕ СОЕДИНЕНИЕ B КАК b ПО a.id = b.aid ПРАВОЕ СОЕДИНЕНИЕ C КАК c ПО b.id = c.bid ПРАВОЕ СОЕДИНЕНИЕ D КАК d ПО c.id = d.cid`;
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      assert.ok(!formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must NEVER contain ПРАВОЕ СОЕДИНЕНИЕ: ${formatted}`);
+      assert.ok(formatted.includes('ИЗ\n\tD КАК d') || formatted.includes('ИЗ\r\n\tD КАК d'), `D must be the base table in ИЗ: ${formatted}`);
+      assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ C КАК c'), `C must be left joined: ${formatted}`);
+      assert.ok(formatted.includes('c.id = d.cid'), `Condition c.id = d.cid must be present: ${formatted}`);
+      assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ B КАК b'), `B must be left joined: ${formatted}`);
+      assert.ok(formatted.includes('b.id = c.bid'), `Condition b.id = c.bid must be present: ${formatted}`);
+      assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ A КАК a'), `A must be left joined: ${formatted}`);
+      assert.ok(formatted.includes('a.id = b.aid'), `Condition a.id = b.aid must be present: ${formatted}`);
     });
   });
 });
