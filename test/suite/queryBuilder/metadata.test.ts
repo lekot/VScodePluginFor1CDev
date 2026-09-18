@@ -1586,6 +1586,150 @@ suite('Query Metadata Provider (Synthetic Metadata Layer)', () => {
       assert.strictEqual(lazyCat.label, 'Ленивый Справочник', 'Label must use extracted synonym');
     });
   });
+
+  suite('Review Findings 5 & 6: Periodicity & Filter Isolation', () => {
+    test('Finding 5: canonical Nonperiodical XML periodicity does not generate Period or slice tables', async () => {
+      const provider = new QueryMetadataProvider();
+      const configRoot: TreeNode = {
+        id: 'ConfigRoot',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      const irFolder: TreeNode = {
+        id: 'InformationRegisters',
+        name: 'InformationRegisters',
+        type: MetadataType.InformationRegister,
+        properties: {},
+      };
+
+      // 1. Canonical 1C XML enum: Nonperiodical
+      const nonperiodicalIr: TreeNode = {
+        id: 'InformationRegisters.ЦеныНоменклатуры',
+        name: 'ЦеныНоменклатуры',
+        type: MetadataType.InformationRegister,
+        properties: {
+          InformationRegisterPeriodicity: 'Nonperiodical',
+        } as unknown as TreeNodeProperties,
+      };
+
+      // 2. Russian enum: Непериодический
+      const ruNonperiodicalIr: TreeNode = {
+        id: 'InformationRegisters.Штрихкоды',
+        name: 'Штрихкоды',
+        type: MetadataType.InformationRegister,
+        properties: {
+          InformationRegisterPeriodicity: 'Непериодический',
+        } as unknown as TreeNodeProperties,
+      };
+
+      // 3. Periodic register: Day
+      const dailyIr: TreeNode = {
+        id: 'InformationRegisters.КурсыВалют',
+        name: 'КурсыВалют',
+        type: MetadataType.InformationRegister,
+        properties: {
+          InformationRegisterPeriodicity: 'Day',
+        } as unknown as TreeNodeProperties,
+      };
+
+      irFolder.children = [nonperiodicalIr, ruNonperiodicalIr, dailyIr];
+
+      const mockProvider: any = {
+        getRootNodes: () => [configRoot],
+        getChildren: (node?: TreeNode) => {
+          if (!node || node === configRoot) return Promise.resolve([irFolder]);
+          if (node === irFolder) return Promise.resolve(irFolder.children);
+          return Promise.resolve([]);
+        },
+      };
+
+      const tree = await provider.buildTreeFromProvider(mockProvider);
+      const irCat = tree.find((c: QueryMetadataNode) => c.id === 'InformationRegisters');
+      assert.ok(irCat);
+
+      // Check Nonperiodical (Prices)
+      const pricesTable = irCat.children?.find((t: QueryMetadataNode) => t.name === 'ЦеныНоменклатуры');
+      assert.ok(pricesTable);
+      const pricesFieldNames = (pricesTable.children ?? []).map((f: QueryMetadataNode) => f.name);
+      assert.strictEqual(
+        pricesFieldNames.includes('Период'),
+        false,
+        'Nonperiodical register must NOT have Период'
+      );
+
+      // Check Russian Непериодический
+      const barcodesTable = irCat.children?.find((t: QueryMetadataNode) => t.name === 'Штрихкоды');
+      assert.ok(barcodesTable);
+      const barcodeFieldNames = (barcodesTable.children ?? []).map((f: QueryMetadataNode) => f.name);
+      assert.strictEqual(
+        barcodeFieldNames.includes('Период'),
+        false,
+        'Непериодический register must NOT have Период'
+      );
+
+      // Virtual tables check: slices only for dailyIr, NOT for nonperiodical
+      const vts = (irCat.children ?? []).filter((t: QueryMetadataNode) => t.nodeType === 'virtualTable');
+      const vtNames = vts.map((v) => v.name);
+      assert.strictEqual(vtNames.includes('ЦеныНоменклатуры.СрезПоследних'), false);
+      assert.strictEqual(vtNames.includes('ЦеныНоменклатуры.СрезПервых'), false);
+      assert.strictEqual(vtNames.includes('Штрихкоды.СрезПоследних'), false);
+      assert.strictEqual(vtNames.includes('КурсыВалют.СрезПоследних'), true);
+      assert.strictEqual(vtNames.includes('КурсыВалют.СрезПервых'), true);
+    });
+
+    test('Finding 6: sidebar active filter does not truncate constructor metadata', async () => {
+      const provider = new QueryMetadataProvider();
+      const configRoot: TreeNode = {
+        id: 'ConfigRoot',
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+      };
+
+      const catFolder: TreeNode = {
+        id: 'Catalogs',
+        name: 'Catalogs',
+        type: MetadataType.Catalog,
+        properties: {},
+      };
+
+      const catA: TreeNode = { id: 'Catalogs.Товары', name: 'Товары', type: MetadataType.Catalog, properties: {} };
+      const catB: TreeNode = { id: 'Catalogs.Склады', name: 'Склады', type: MetadataType.Catalog, properties: {} };
+      const catC: TreeNode = { id: 'Catalogs.Контрагенты', name: 'Контрагенты', type: MetadataType.Catalog, properties: {} };
+
+      // The full unfiltered children on TreeNode
+      catFolder.children = [catA, catB, catC];
+
+      // Simulate a TreeDataProvider where an active search filter in the sidebar
+      // causes getChildren() to return ONLY catA (or [] if search had no match)
+      const mockTreeProvider: any = {
+        getRootNodes: () => [configRoot],
+        getChildren: async (node?: TreeNode) => {
+          if (!node || node === configRoot) {
+            return [catFolder];
+          }
+          if (node === catFolder) {
+            // Sidebar filter simulates matching only 'Товары'
+            return [catA];
+          }
+          return [];
+        },
+      };
+
+      const tree = await provider.buildTreeFromProvider(mockTreeProvider);
+      const catCat = tree.find((c: QueryMetadataNode) => c.id === 'Catalogs');
+      assert.ok(catCat);
+
+      const tableNames = (catCat.children ?? []).map((t: QueryMetadataNode) => t.name);
+      // All 3 catalogs MUST be present despite sidebar filter
+      assert.strictEqual(tableNames.includes('Товары'), true);
+      assert.strictEqual(tableNames.includes('Склады'), true, 'Склады must be included despite sidebar filter');
+      assert.strictEqual(tableNames.includes('Контрагенты'), true, 'Контрагенты must be included despite sidebar filter');
+      assert.strictEqual(catCat.children?.length, 3, 'Must contain all 3 catalogs');
+    });
+  });
 });
 
 

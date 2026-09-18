@@ -565,7 +565,9 @@ export class QueryMetadataProvider {
   ): Promise<TreeNode[]> {
     try {
       const res = await provider.getChildren(element);
-      return res || element.children || [];
+      return element.children && element.children.length > 0
+        ? element.children
+        : (res || []);
     } catch {
       return element.children || [];
     }
@@ -739,7 +741,14 @@ export class QueryMetadataProvider {
         props.isPeriodic;
       if (rawPeriodicity !== undefined) {
         const str = String(rawPeriodicity).trim().toLowerCase();
-        if (rawPeriodicity === false || str === 'false' || str === 'nonperiodic' || str === 'непериодический') {
+        if (
+          rawPeriodicity === false ||
+          str === 'false' ||
+          str === 'nonperiodical' ||
+          str === 'nonperiodic' ||
+          str === 'непериодический' ||
+          str === ''
+        ) {
           isPeriodic = false;
         } else {
           isPeriodic = true;

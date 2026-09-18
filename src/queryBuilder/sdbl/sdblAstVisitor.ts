@@ -633,222 +633,157 @@ export function normalizeFromClauses(from?: FromClause[]): FromClause[] {
     return [];
   }
 
-  // 1. Collect all unique tables
-  interface RegisteredTable {
-    source: TableOrSubquery;
-    alias?: string;
-    originalOrder: number;
-  }
-  const tablesMap = new Map<string, RegisteredTable>();
-  const tableOrder: string[] = [];
+  const seenTableKeys = new Set<string>();
+  const normalized: FromClause[] = [];
 
-  const registerTable = (source: TableOrSubquery, alias: string | undefined, order: number) => {
-    const key = getTableKey(source, alias);
-    if (!key) {
-      return;
-    }
-    if (!tablesMap.has(key)) {
-      tablesMap.set(key, { source, alias, originalOrder: order });
-      tableOrder.push(key);
-    } else {
-      const existing = tablesMap.get(key)!;
-      // Preserve richest definition (e.g. if params exist)
-      if (source.type === 'Table' && source.params && source.params.length > 0) {
-        existing.source = source;
-      }
-      if (alias && !existing.alias) {
-        existing.alias = alias;
+  // First collect all tables that are joined in any FromClause
+  for (const fc of from) {
+    if (fc.joins) {
+      for (const jn of fc.joins) {
+        const jnKey = getTableKey(jn.source, jn.alias);
+        if (jnKey) {
+          seenTableKeys.add(jnKey);
+        }
       }
     }
+  }
+
+  for (const fc of from) {
+    const norm = normalizeSingleFromClause(fc);
+    const key = getTableKey(norm.source, norm.alias);
+    if (!norm.joins || norm.joins.length === 0) {
+      if (key && seenTableKeys.has(key)) {
+        continue;
+      }
+    }
+    if (key) {
+      seenTableKeys.add(key);
+    }
+    normalized.push(norm);
+  }
+
+  return normalized;
+}
+
+function getTableIdentKeys(source: TableOrSubquery, alias?: string): Set<string> {
+  const set = new Set<string>();
+  if (alias && alias.trim()) {
+    set.add(alias.trim().toLowerCase());
+  }
+  if (source.type === 'Table' && source.name) {
+    const rawName = source.name.trim();
+    set.add(rawName.toLowerCase());
+    const dotIdx = rawName.indexOf('.');
+    if (dotIdx !== -1) {
+      set.add(rawName.substring(dotIdx + 1).toLowerCase());
+    }
+  }
+  return set;
+}
+
+function getTableKeysFromExpression(expr: ExpressionNode | string): Set<string> {
+  const keys = new Set<string>();
+  if (!expr) {
+    return keys;
+  }
+  if (typeof expr === 'string') {
+    const matches = expr.matchAll(/\b([a-zA-Z0-9_а-яА-ЯёЁ]+)\.[a-zA-Z0-9_а-яА-ЯёЁ]+/g);
+    for (const m of matches) {
+      keys.add(m[1].toLowerCase());
+    }
+    return keys;
+  }
+  traverseExpression(expr, {
+    enter: (node) => {
+      if (node.type === 'CompoundIdentifier' && node.parts && node.parts.length > 1) {
+        keys.add(node.parts[0].toLowerCase());
+      } else if (node.type === 'RawExpression' && node.raw) {
+        const matches = node.raw.matchAll(/\b([a-zA-Z0-9_а-яА-ЯёЁ]+)\.[a-zA-Z0-9_а-яА-ЯёЁ]+/g);
+        for (const m of matches) {
+          keys.add(m[1].toLowerCase());
+        }
+      }
+    },
+  });
+  return keys;
+}
+
+function normalizeSingleFromClause(fc: FromClause): FromClause {
+  if (!fc.joins || fc.joins.length === 0) {
+    return fc;
+  }
+
+  const hasRightJoin = fc.joins.some((j) => j.joinType === 'Right');
+  if (!hasRightJoin) {
+    return fc;
+  }
+
+  // A chain of joins with a RIGHT join can ONLY be safely unfolded into LEFT joins if:
+  // 1. ALL joins in the chain are RIGHT joins (pure RIGHT join chain).
+  //    Mixed chains (e.g. INNER + RIGHT or LEFT + RIGHT) have different join precedence / row preservation
+  //    semantics and cannot be flattened into LEFT joins without subqueries/parentheses in 1C SDBL.
+  const allRightJoins = fc.joins.every((j) => j.joinType === 'Right');
+  if (!allRightJoins) {
+    return fc;
+  }
+
+  const tables: { source: TableOrSubquery; alias?: string; keys: Set<string> }[] = [
+    {
+      source: fc.source,
+      alias: fc.alias,
+      keys: getTableIdentKeys(fc.source, fc.alias),
+    },
+  ];
+
+  for (const j of fc.joins) {
+    tables.push({
+      source: j.source,
+      alias: j.alias,
+      keys: getTableIdentKeys(j.source, j.alias),
+    });
+  }
+
+  // Check condition scoping in reversed order:
+  // Root table is tables[tables.length - 1] (i.e. Tn)
+  const inScope = new Set<string>();
+  for (const k of tables[tables.length - 1].keys) {
+    inScope.add(k);
+  }
+
+  // For each step i from fc.joins.length - 1 down to 0:
+  // The table being attached is tables[i] (Tk).
+  // The condition applied is fc.joins[i].on.
+  for (let i = fc.joins.length - 1; i >= 0; i--) {
+    const targetTable = tables[i];
+    for (const k of targetTable.keys) {
+      inScope.add(k);
+    }
+    const condRefs = getTableKeysFromExpression(fc.joins[i].on);
+    for (const ref of condRefs) {
+      if (!inScope.has(ref)) {
+        // Condition references a table that is NOT yet in scope!
+        return fc;
+      }
+    }
+  }
+
+  // All checks passed: provably equivalent and safe to unfold!
+  const root = tables[tables.length - 1];
+  const newJoins: JoinClause[] = [];
+
+  for (let i = fc.joins.length - 1; i >= 0; i--) {
+    const targetTable = tables[i];
+    newJoins.push({
+      joinType: 'Left',
+      source: targetTable.source,
+      alias: targetTable.alias,
+      on: fc.joins[i].on,
+    });
+  }
+
+  return {
+    source: root.source,
+    alias: root.alias,
+    joins: newJoins,
   };
-
-  let orderCounter = 0;
-  for (const fc of from) {
-    registerTable(fc.source, fc.alias, orderCounter++);
-    if (fc.joins && Array.isArray(fc.joins)) {
-      for (const jn of fc.joins) {
-        registerTable(jn.source, jn.alias, orderCounter++);
-      }
-    }
-  }
-
-  // 2. Collect all joins, unfolding Right joins into Left joins
-  interface NormalizedJoin {
-    leftKey: string;
-    rightKey: string;
-    joinType: 'Left' | 'Full' | 'Inner';
-    on: ExpressionNode;
-  }
-  const normalizedJoins: NormalizedJoin[] = [];
-
-  for (const fc of from) {
-    const defaultLeftKey = getTableKey(fc.source, fc.alias);
-    if (fc.joins && Array.isArray(fc.joins)) {
-      for (const jn of fc.joins) {
-        const jnRightKey = getTableKey(jn.source, jn.alias);
-        const jnLeftKey = (jn as { t1?: string }).t1 || defaultLeftKey;
-        if (!jnLeftKey || !jnRightKey) {
-          continue;
-        }
-
-        if (jn.joinType === 'Right') {
-          // Unfold: T1 RIGHT JOIN T2 ON Cond => T2 LEFT JOIN T1 ON Cond
-          normalizedJoins.push({
-            leftKey: jnRightKey,
-            rightKey: jnLeftKey,
-            joinType: 'Left',
-            on: jn.on,
-          });
-        } else {
-          normalizedJoins.push({
-            leftKey: jnLeftKey,
-            rightKey: jnRightKey,
-            joinType: jn.joinType,
-            on: jn.on,
-          });
-        }
-      }
-    }
-  }
-
-  // If there are no joins at all, return deduplicated tables as separate from roots
-  if (normalizedJoins.length === 0) {
-    return tableOrder.map((key) => {
-      const t = tablesMap.get(key)!;
-      return { source: t.source, alias: t.alias };
-    });
-  }
-
-  // 3. Group tables into connected components
-  const adj = new Map<string, Set<string>>();
-  for (const key of tableOrder) {
-    adj.set(key, new Set());
-  }
-  for (const j of normalizedJoins) {
-    if (adj.has(j.leftKey) && adj.has(j.rightKey)) {
-      adj.get(j.leftKey)!.add(j.rightKey);
-      adj.get(j.rightKey)!.add(j.leftKey);
-    }
-  }
-
-  const visited = new Set<string>();
-  const components: string[][] = [];
-
-  for (const key of tableOrder) {
-    if (!visited.has(key)) {
-      const comp: string[] = [];
-      const queue = [key];
-      visited.add(key);
-      while (queue.length > 0) {
-        const curr = queue.shift()!;
-        comp.push(curr);
-        for (const neighbor of adj.get(curr) || []) {
-          if (!visited.has(neighbor)) {
-            visited.add(neighbor);
-            queue.push(neighbor);
-          }
-        }
-      }
-      components.push(comp);
-    }
-  }
-
-  // 4. For each component, build a canonical FromClause
-  const result: FromClause[] = [];
-
-  for (const comp of components) {
-    if (comp.length === 1) {
-      const t = tablesMap.get(comp[0])!;
-      result.push({ source: t.source, alias: t.alias });
-      continue;
-    }
-
-    // Determine the root table for this component:
-    // A table that is only on the right side of a Left join cannot be the root table.
-    const leftJoinRightSides = new Set<string>();
-    for (const j of normalizedJoins) {
-      if (j.joinType === 'Left' && comp.includes(j.rightKey)) {
-        leftJoinRightSides.add(j.rightKey);
-      }
-    }
-
-    let candidates = comp.filter((k) => !leftJoinRightSides.has(k));
-    if (candidates.length === 0) {
-      candidates = comp;
-    }
-    // Prefer table that appeared earliest in tableOrder
-    candidates.sort((a, b) => tableOrder.indexOf(a) - tableOrder.indexOf(b));
-    const rootKey = candidates[0];
-    const rootTable = tablesMap.get(rootKey)!;
-
-    const attached = new Set<string>([rootKey]);
-    const compJoins: JoinClause[] = [];
-    const remaining = normalizedJoins.filter(
-      (j) => comp.includes(j.leftKey) && comp.includes(j.rightKey)
-    );
-
-    let madeProgress = true;
-    while (remaining.length > 0 && madeProgress) {
-      madeProgress = false;
-      for (let i = 0; i < remaining.length; i++) {
-        const j = remaining[i];
-        if (attached.has(j.leftKey) && !attached.has(j.rightKey)) {
-          attached.add(j.rightKey);
-          const targetTable = tablesMap.get(j.rightKey)!;
-          compJoins.push({
-            joinType: j.joinType,
-            source: targetTable.source,
-            alias: targetTable.alias,
-            on: j.on,
-          });
-          remaining.splice(i, 1);
-          madeProgress = true;
-          break;
-        } else if (attached.has(j.rightKey) && !attached.has(j.leftKey) && (j.joinType === 'Inner' || j.joinType === 'Full')) {
-          attached.add(j.leftKey);
-          const targetTable = tablesMap.get(j.leftKey)!;
-          compJoins.push({
-            joinType: j.joinType,
-            source: targetTable.source,
-            alias: targetTable.alias,
-            on: j.on,
-          });
-          remaining.splice(i, 1);
-          madeProgress = true;
-          break;
-        } else if (attached.has(j.leftKey) && attached.has(j.rightKey)) {
-          // Additional condition between already attached tables
-          const targetTable = tablesMap.get(j.rightKey)!;
-          compJoins.push({
-            joinType: j.joinType,
-            source: targetTable.source,
-            alias: targetTable.alias,
-            on: j.on,
-          });
-          remaining.splice(i, 1);
-          madeProgress = true;
-          break;
-        }
-      }
-    }
-
-    // Attach any leftover joins
-    for (const j of remaining) {
-      const targetTable = tablesMap.get(j.rightKey) || tablesMap.get(j.leftKey)!;
-      compJoins.push({
-        joinType: j.joinType,
-        source: targetTable.source,
-        alias: targetTable.alias,
-        on: j.on,
-      });
-    }
-
-    result.push({
-      source: rootTable.source,
-      alias: rootTable.alias,
-      joins: compJoins.length > 0 ? compJoins : undefined,
-    });
-  }
-
-  return result;
 }

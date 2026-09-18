@@ -1822,183 +1822,132 @@ var SdblAstVisitor = (() => {
     if (!from || !Array.isArray(from) || from.length === 0) {
       return [];
     }
-    const tablesMap = /* @__PURE__ */ new Map();
-    const tableOrder = [];
-    const registerTable = (source, alias, order) => {
-      const key = getTableKey(source, alias);
-      if (!key) {
-        return;
-      }
-      if (!tablesMap.has(key)) {
-        tablesMap.set(key, { source, alias, originalOrder: order });
-        tableOrder.push(key);
-      } else {
-        const existing = tablesMap.get(key);
-        if (source.type === "Table" && source.params && source.params.length > 0) {
-          existing.source = source;
-        }
-        if (alias && !existing.alias) {
-          existing.alias = alias;
+    const seenTableKeys = /* @__PURE__ */ new Set();
+    const normalized = [];
+    for (const fc of from) {
+      if (fc.joins) {
+        for (const jn of fc.joins) {
+          const jnKey = getTableKey(jn.source, jn.alias);
+          if (jnKey) {
+            seenTableKeys.add(jnKey);
+          }
         }
       }
+    }
+    for (const fc of from) {
+      const norm = normalizeSingleFromClause(fc);
+      const key = getTableKey(norm.source, norm.alias);
+      if (!norm.joins || norm.joins.length === 0) {
+        if (key && seenTableKeys.has(key)) {
+          continue;
+        }
+      }
+      if (key) {
+        seenTableKeys.add(key);
+      }
+      normalized.push(norm);
+    }
+    return normalized;
+  }
+  function getTableIdentKeys(source, alias) {
+    const set = /* @__PURE__ */ new Set();
+    if (alias && alias.trim()) {
+      set.add(alias.trim().toLowerCase());
+    }
+    if (source.type === "Table" && source.name) {
+      const rawName = source.name.trim();
+      set.add(rawName.toLowerCase());
+      const dotIdx = rawName.indexOf(".");
+      if (dotIdx !== -1) {
+        set.add(rawName.substring(dotIdx + 1).toLowerCase());
+      }
+    }
+    return set;
+  }
+  function getTableKeysFromExpression(expr) {
+    const keys = /* @__PURE__ */ new Set();
+    if (!expr) {
+      return keys;
+    }
+    if (typeof expr === "string") {
+      const matches = expr.matchAll(/\b([a-zA-Z0-9_а-яА-ЯёЁ]+)\.[a-zA-Z0-9_а-яА-ЯёЁ]+/g);
+      for (const m of matches) {
+        keys.add(m[1].toLowerCase());
+      }
+      return keys;
+    }
+    traverseExpression(expr, {
+      enter: (node) => {
+        if (node.type === "CompoundIdentifier" && node.parts && node.parts.length > 1) {
+          keys.add(node.parts[0].toLowerCase());
+        } else if (node.type === "RawExpression" && node.raw) {
+          const matches = node.raw.matchAll(/\b([a-zA-Z0-9_а-яА-ЯёЁ]+)\.[a-zA-Z0-9_а-яА-ЯёЁ]+/g);
+          for (const m of matches) {
+            keys.add(m[1].toLowerCase());
+          }
+        }
+      }
+    });
+    return keys;
+  }
+  function normalizeSingleFromClause(fc) {
+    if (!fc.joins || fc.joins.length === 0) {
+      return fc;
+    }
+    const hasRightJoin = fc.joins.some((j) => j.joinType === "Right");
+    if (!hasRightJoin) {
+      return fc;
+    }
+    const allRightJoins = fc.joins.every((j) => j.joinType === "Right");
+    if (!allRightJoins) {
+      return fc;
+    }
+    const tables = [
+      {
+        source: fc.source,
+        alias: fc.alias,
+        keys: getTableIdentKeys(fc.source, fc.alias)
+      }
+    ];
+    for (const j of fc.joins) {
+      tables.push({
+        source: j.source,
+        alias: j.alias,
+        keys: getTableIdentKeys(j.source, j.alias)
+      });
+    }
+    const inScope = /* @__PURE__ */ new Set();
+    for (const k of tables[tables.length - 1].keys) {
+      inScope.add(k);
+    }
+    for (let i = fc.joins.length - 1; i >= 0; i--) {
+      const targetTable = tables[i];
+      for (const k of targetTable.keys) {
+        inScope.add(k);
+      }
+      const condRefs = getTableKeysFromExpression(fc.joins[i].on);
+      for (const ref of condRefs) {
+        if (!inScope.has(ref)) {
+          return fc;
+        }
+      }
+    }
+    const root = tables[tables.length - 1];
+    const newJoins = [];
+    for (let i = fc.joins.length - 1; i >= 0; i--) {
+      const targetTable = tables[i];
+      newJoins.push({
+        joinType: "Left",
+        source: targetTable.source,
+        alias: targetTable.alias,
+        on: fc.joins[i].on
+      });
+    }
+    return {
+      source: root.source,
+      alias: root.alias,
+      joins: newJoins
     };
-    let orderCounter = 0;
-    for (const fc of from) {
-      registerTable(fc.source, fc.alias, orderCounter++);
-      if (fc.joins && Array.isArray(fc.joins)) {
-        for (const jn of fc.joins) {
-          registerTable(jn.source, jn.alias, orderCounter++);
-        }
-      }
-    }
-    const normalizedJoins = [];
-    for (const fc of from) {
-      const defaultLeftKey = getTableKey(fc.source, fc.alias);
-      if (fc.joins && Array.isArray(fc.joins)) {
-        for (const jn of fc.joins) {
-          const jnRightKey = getTableKey(jn.source, jn.alias);
-          const jnLeftKey = jn.t1 || defaultLeftKey;
-          if (!jnLeftKey || !jnRightKey) {
-            continue;
-          }
-          if (jn.joinType === "Right") {
-            normalizedJoins.push({
-              leftKey: jnRightKey,
-              rightKey: jnLeftKey,
-              joinType: "Left",
-              on: jn.on
-            });
-          } else {
-            normalizedJoins.push({
-              leftKey: jnLeftKey,
-              rightKey: jnRightKey,
-              joinType: jn.joinType,
-              on: jn.on
-            });
-          }
-        }
-      }
-    }
-    if (normalizedJoins.length === 0) {
-      return tableOrder.map((key) => {
-        const t = tablesMap.get(key);
-        return { source: t.source, alias: t.alias };
-      });
-    }
-    const adj = /* @__PURE__ */ new Map();
-    for (const key of tableOrder) {
-      adj.set(key, /* @__PURE__ */ new Set());
-    }
-    for (const j of normalizedJoins) {
-      if (adj.has(j.leftKey) && adj.has(j.rightKey)) {
-        adj.get(j.leftKey).add(j.rightKey);
-        adj.get(j.rightKey).add(j.leftKey);
-      }
-    }
-    const visited = /* @__PURE__ */ new Set();
-    const components = [];
-    for (const key of tableOrder) {
-      if (!visited.has(key)) {
-        const comp = [];
-        const queue = [key];
-        visited.add(key);
-        while (queue.length > 0) {
-          const curr = queue.shift();
-          comp.push(curr);
-          for (const neighbor of adj.get(curr) || []) {
-            if (!visited.has(neighbor)) {
-              visited.add(neighbor);
-              queue.push(neighbor);
-            }
-          }
-        }
-        components.push(comp);
-      }
-    }
-    const result = [];
-    for (const comp of components) {
-      if (comp.length === 1) {
-        const t = tablesMap.get(comp[0]);
-        result.push({ source: t.source, alias: t.alias });
-        continue;
-      }
-      const leftJoinRightSides = /* @__PURE__ */ new Set();
-      for (const j of normalizedJoins) {
-        if (j.joinType === "Left" && comp.includes(j.rightKey)) {
-          leftJoinRightSides.add(j.rightKey);
-        }
-      }
-      let candidates = comp.filter((k) => !leftJoinRightSides.has(k));
-      if (candidates.length === 0) {
-        candidates = comp;
-      }
-      candidates.sort((a, b) => tableOrder.indexOf(a) - tableOrder.indexOf(b));
-      const rootKey = candidates[0];
-      const rootTable = tablesMap.get(rootKey);
-      const attached = /* @__PURE__ */ new Set([rootKey]);
-      const compJoins = [];
-      const remaining = normalizedJoins.filter(
-        (j) => comp.includes(j.leftKey) && comp.includes(j.rightKey)
-      );
-      let madeProgress = true;
-      while (remaining.length > 0 && madeProgress) {
-        madeProgress = false;
-        for (let i = 0; i < remaining.length; i++) {
-          const j = remaining[i];
-          if (attached.has(j.leftKey) && !attached.has(j.rightKey)) {
-            attached.add(j.rightKey);
-            const targetTable = tablesMap.get(j.rightKey);
-            compJoins.push({
-              joinType: j.joinType,
-              source: targetTable.source,
-              alias: targetTable.alias,
-              on: j.on
-            });
-            remaining.splice(i, 1);
-            madeProgress = true;
-            break;
-          } else if (attached.has(j.rightKey) && !attached.has(j.leftKey) && (j.joinType === "Inner" || j.joinType === "Full")) {
-            attached.add(j.leftKey);
-            const targetTable = tablesMap.get(j.leftKey);
-            compJoins.push({
-              joinType: j.joinType,
-              source: targetTable.source,
-              alias: targetTable.alias,
-              on: j.on
-            });
-            remaining.splice(i, 1);
-            madeProgress = true;
-            break;
-          } else if (attached.has(j.leftKey) && attached.has(j.rightKey)) {
-            const targetTable = tablesMap.get(j.rightKey);
-            compJoins.push({
-              joinType: j.joinType,
-              source: targetTable.source,
-              alias: targetTable.alias,
-              on: j.on
-            });
-            remaining.splice(i, 1);
-            madeProgress = true;
-            break;
-          }
-        }
-      }
-      for (const j of remaining) {
-        const targetTable = tablesMap.get(j.rightKey) || tablesMap.get(j.leftKey);
-        compJoins.push({
-          joinType: j.joinType,
-          source: targetTable.source,
-          alias: targetTable.alias,
-          on: j.on
-        });
-      }
-      result.push({
-        source: rootTable.source,
-        alias: rootTable.alias,
-        joins: compJoins.length > 0 ? compJoins : void 0
-      });
-    }
-    return result;
   }
   return __toCommonJS(sdblAstVisitor_exports);
 })();
@@ -2423,6 +2372,9 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         return leftStr + ' ' + notStr + 'ПОДОБНО ' + patStr + escStr;
                     }
 
+                    case 'Select':
+                        return '(' + formatSdblQuery(expr) + ')';
+
                     case 'RawExpression':
                         return expr.raw || '';
 
@@ -2439,6 +2391,25 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 }
             }
 
+            function stripStringLiterals(s) {
+                let res = '';
+                let inQ = false;
+                for (let i = 0; i < s.length; i++) {
+                    if (s[i] === '"') {
+                        if (inQ && i + 1 < s.length && s[i + 1] === '"') {
+                            i++; // skip escaped quote ""
+                        } else {
+                            inQ = !inQ;
+                        }
+                        continue;
+                    }
+                    if (!inQ) {
+                        res += s[i];
+                    }
+                }
+                return res;
+            }
+
             function isAggregateExpression(str) {
                 if (!str) return false;
                 const api = typeof window !== 'undefined' && window.SdblAstVisitor ? window.SdblAstVisitor : (typeof SdblAstVisitor !== 'undefined' ? SdblAstVisitor : null);
@@ -2448,7 +2419,8 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     }
                     str = getExpressionString(str);
                 }
-                const upper = String(str).toUpperCase();
+                const stripped = stripStringLiterals(String(str));
+                const upper = stripped.toUpperCase();
                 // Aggregate functions in SDBL must be a call with parentheses and NOT preceded by a member access dot (e.g. not Т.Сумма)
                 const aggRe = /(?:^|[^a-zA-Z0-9а-яА-ЯёЁ_.])(СУММА|КОЛИЧЕСТВО|МИНИМУМ|МАКСИМУМ|СРЕДНЕЕ|SUM|COUNT|AVG|MIN|MAX)\s*\(/i;
                 return aggRe.test(upper);
@@ -2809,7 +2781,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                             fc.joins.forEach(function(jn) {
                                 let jType = 'ЛЕВОЕ СОЕДИНЕНИЕ';
                                 if (jn.joinType === 'Inner') jType = 'ВНУТРЕННЕЕ СОЕДИНЕНИЕ';
-                                else if (jn.joinType === 'Right') jType = 'ЛЕВОЕ СОЕДИНЕНИЕ'; // Unfolded
+                                else if (jn.joinType === 'Right') jType = 'ПРАВОЕ СОЕДИНЕНИЕ';
                                 else if (jn.joinType === 'Full') jType = 'ПОЛНОЕ СОЕДИНЕНИЕ';
 
                                 let jSrc = '';
@@ -3089,6 +3061,47 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     const isNot = cmp.indexOf('НЕ') !== -1 || cmpUpper.indexOf('NOT') !== -1;
                     const isHier = cmp.indexOf('ИЕРАРХИИ') !== -1 || cmpUpper.indexOf('HIERARCHY') !== -1;
                     let v = (cond.value || '').trim();
+
+                    // Check if original condition was a subquery and value hasn't changed, or if value is a SELECT statement
+                    let subqueryNode = null;
+                    if (cond.originalNode && cond.originalNode.values && cond.originalNode.values.type === 'Select') {
+                        let unwrapV = v;
+                        if (unwrapV.startsWith('(') && unwrapV.endsWith(')')) {
+                            unwrapV = unwrapV.slice(1, -1).trim();
+                        }
+                        const origFormatted = formatSdblQuery(cond.originalNode.values).trim();
+                        if (unwrapV === origFormatted || v === origFormatted || unwrapV === ('(' + origFormatted + ')')) {
+                            subqueryNode = cond.originalNode.values;
+                        }
+                    }
+
+                    if (!subqueryNode) {
+                        let candidate = v;
+                        if (candidate.startsWith('(') && candidate.endsWith(')')) {
+                            candidate = candidate.slice(1, -1).trim();
+                        }
+                        if (/^(?:ВЫБРАТЬ|SELECT)\s+/i.test(candidate)) {
+                            try {
+                                const parsed = parseSdblClient(candidate);
+                                if (parsed && parsed.queries && parsed.queries.length > 0 && parsed.queries[0].type === 'Select') {
+                                    subqueryNode = parsed.queries[0];
+                                }
+                            } catch (e) {
+                                // fallback to list
+                            }
+                        }
+                    }
+
+                    if (subqueryNode) {
+                        return {
+                            type: 'In',
+                            expression: parseExpressionOrRaw(cond.field),
+                            not: isNot || undefined,
+                            inHierarchy: isHier || undefined,
+                            values: subqueryNode
+                        };
+                    }
+
                     if (v.startsWith('(') && v.endsWith(')')) {
                         v = v.slice(1, -1).trim();
                     }
@@ -3279,7 +3292,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     } else {
                         valStr = getExpressionString(node.values);
                     }
-                    return { op: currentOp, field: f, cmp: cmpStr, value: valStr };
+                    return { op: currentOp, field: f, cmp: cmpStr, value: valStr, originalNode: node };
                 }
                 if (node.type === 'Between') {
                     const f = getExpressionString(node.expression);
@@ -3852,21 +3865,41 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
             function parseConditionList(str) {
                 const result = [];
-                const linkRegex = new RegExp(WB_START + '(И|AND|ИЛИ|OR)' + WB_END, 'gi');
-
                 const linkMatches = [];
-                let lm;
-                while ((lm = linkRegex.exec(str)) !== null) {
+                let inBetween = false;
+
+                const tokenRegex = new RegExp(WB_START + '(?:(МЕЖДУ|BETWEEN)|(И|AND)|(ИЛИ|OR))' + WB_END, 'gi');
+                let tm;
+                while ((tm = tokenRegex.exec(str)) !== null) {
+                    const matchIdx = tm.index;
                     let d = 0;
                     let q = false;
-                    for (let i = 0; i < lm.index; i++) {
+                    for (let i = 0; i < matchIdx; i++) {
                         const ch = str[i];
-                        if (ch === '"') q = !q;
+                        if (ch === '"') {
+                            if (i + 1 < str.length && str[i + 1] === '"') { i++; }
+                            else { q = !q; }
+                        }
                         else if (!q && (ch === '(' || ch === '[')) d++;
                         else if (!q && (ch === ')' || ch === ']')) { if (d > 0) d--; }
                     }
                     if (d === 0 && !q) {
-                        linkMatches.push({ op: lm[1].toUpperCase(), index: lm.index, length: lm[0].length });
+                        if (tm[1]) {
+                            // МЕЖДУ / BETWEEN
+                            inBetween = true;
+                        } else if (tm[2]) {
+                            // И / AND
+                            if (inBetween) {
+                                // Range separator for BETWEEN ... AND
+                                inBetween = false;
+                            } else {
+                                linkMatches.push({ op: 'И', index: matchIdx, length: tm[0].length });
+                            }
+                        } else if (tm[3]) {
+                            // ИЛИ / OR
+                            inBetween = false;
+                            linkMatches.push({ op: 'ИЛИ', index: matchIdx, length: tm[0].length });
+                        }
                     }
                 }
 

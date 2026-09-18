@@ -1541,6 +1541,240 @@ suite('Query Builder Webview UI & Logic Refinements (Task 2)', () => {
         `BSL code must include УстановитьПараметр for &Парам: ${bslCode}`
       );
     });
+
+    test('Finding 4: string literal containing aggregate function name stays in WHERE and does not move to HAVING', () => {
+      const sql = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код = "СУММА(Т.Код)"';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      // Save immediately without editing
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'Save message must be sent');
+
+      const savedQuery = saveMsg.ast.queries[0];
+      assert.ok(savedQuery.where, 'Query must have WHERE clause');
+      assert.strictEqual(savedQuery.having, undefined, 'Query must NOT have HAVING clause');
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(formatted.includes('ГДЕ'), `Formatted text must contain ГДЕ: ${formatted}`);
+      assert.ok(!formatted.includes('ИМЕЮЩИЕ'), `Formatted text must NOT contain ИМЕЮЩИЕ: ${formatted}`);
+    });
+
+    test('Finding 4 (Broad): escaped quotes, English aggregate names in strings, and mixed WHERE/HAVING routing', () => {
+      // 1. Escaped quotes and English aggregate names in string literal
+      const sql1 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код = "текст ""СУММА(1)"" и ""COUNT(X)"""';
+      const parsedPkg1 = parseSdbl(sql1);
+      const env1 = createWebviewEnvironment();
+      env1.postMessageToWebview({ command: 'init', ast: parsedPkg1, metadata: [], mode: 'simple' });
+      env1.elements.btnSave.click();
+      const saveMsg1 = env1.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg1);
+      assert.ok(saveMsg1.ast.queries[0].where, 'Must remain in WHERE');
+      assert.strictEqual(saveMsg1.ast.queries[0].having, undefined, 'Must NOT have HAVING');
+
+      // 2. Genuine aggregate correctly routes to HAVING
+      const sql2 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т СГРУППИРОВАТЬ ПО Т.Код ИМЕЮЩИЕ СУММА(Т.Количество) > 10';
+      const parsedPkg2 = parseSdbl(sql2);
+      const env2 = createWebviewEnvironment();
+      env2.postMessageToWebview({ command: 'init', ast: parsedPkg2, metadata: [], mode: 'simple' });
+      env2.elements.btnSave.click();
+      const saveMsg2 = env2.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg2);
+      assert.ok(saveMsg2.ast.queries[0].having, 'Genuine aggregate MUST route to HAVING');
+
+      // 3. Mixed: genuine aggregate in HAVING + string literal with aggregate name in WHERE
+      const sql3 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код = "СУММА(1)" СГРУППИРОВАТЬ ПО Т.Код ИМЕЮЩИЕ СУММА(Т.Количество) > 10';
+      const parsedPkg3 = parseSdbl(sql3);
+      const env3 = createWebviewEnvironment();
+      env3.postMessageToWebview({ command: 'init', ast: parsedPkg3, metadata: [], mode: 'simple' });
+      env3.elements.btnSave.click();
+      const saveMsg3 = env3.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg3);
+      assert.ok(saveMsg3.ast.queries[0].where, 'String literal condition must remain in WHERE');
+      assert.ok(saveMsg3.ast.queries[0].having, 'Genuine aggregate condition must remain in HAVING');
+    });
+
+    test('Finding 3: applying text with МЕЖДУ preserves range and does not split into two conditions', () => {
+      const sql = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Число МЕЖДУ 1 И 10';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      // Switch to text tab
+      env.window.renderTab11();
+      // Set text in editor and apply
+      env.elements.sdblTextEditor.value = sql;
+      env.elements.btnApplyText.click();
+
+      // Click OK / Save
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'Save message must be sent');
+
+      const savedQuery = saveMsg.ast.queries[0];
+      assert.strictEqual(savedQuery.whereConditions.length, 1, 'Must have exactly 1 whereCondition');
+      assert.strictEqual(savedQuery.whereConditions[0].field, 'Т.Число');
+      assert.strictEqual(savedQuery.whereConditions[0].cmp, 'МЕЖДУ');
+      assert.strictEqual(savedQuery.whereConditions[0].value, '1 И 10');
+
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(!formatted.includes('И 10 ='), `Must not contain broken condition: ${formatted}`);
+      assert.ok(formatted.includes('Т.Число МЕЖДУ 1 И 10'), `Must contain valid BETWEEN: ${formatted}`);
+    });
+
+    test('Finding 3 (Broad): НЕ МЕЖДУ, English BETWEEN, chained AND/OR, and complex range expressions', () => {
+      // 1. НЕ МЕЖДУ
+      const sql1 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Число НЕ МЕЖДУ 1 И 10';
+      const env1 = createWebviewEnvironment();
+      env1.postMessageToWebview({ command: 'init', ast: parseSdbl(sql1), metadata: [], mode: 'simple' });
+      env1.window.renderTab11();
+      env1.elements.sdblTextEditor.value = sql1;
+      env1.elements.btnApplyText.click();
+      env1.elements.btnSave.click();
+      const saveMsg1 = env1.sentMessages.find((m: any) => m.command === 'save');
+      assert.strictEqual(saveMsg1.ast.queries[0].whereConditions.length, 1);
+      assert.strictEqual(saveMsg1.ast.queries[0].whereConditions[0].cmp, 'НЕ МЕЖДУ');
+      assert.strictEqual(saveMsg1.ast.queries[0].whereConditions[0].value, '1 И 10');
+
+      // 2. English BETWEEN ... AND ... AND ...
+      const sql2 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Число BETWEEN 1 AND 10 AND Т.Статус = 1';
+      const env2 = createWebviewEnvironment();
+      env2.postMessageToWebview({ command: 'init', ast: parseSdbl(sql2), metadata: [], mode: 'simple' });
+      env2.window.renderTab11();
+      env2.elements.sdblTextEditor.value = sql2;
+      env2.elements.btnApplyText.click();
+      env2.elements.btnSave.click();
+      const saveMsg2 = env2.sentMessages.find((m: any) => m.command === 'save');
+      assert.strictEqual(saveMsg2.ast.queries[0].whereConditions.length, 2);
+      assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[0].field, 'Т.Число');
+      assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[0].value, '1 AND 10');
+      assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[1].field, 'Т.Статус');
+      assert.strictEqual(saveMsg2.ast.queries[0].whereConditions[1].value, '1');
+
+      // 3. Multiple BETWEENs in chain: A BETWEEN 1 AND 10 AND B BETWEEN 20 AND 30
+      const sql3 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.А МЕЖДУ 1 И 10 И Т.Б МЕЖДУ 20 И 30';
+      const env3 = createWebviewEnvironment();
+      env3.postMessageToWebview({ command: 'init', ast: parseSdbl(sql3), metadata: [], mode: 'simple' });
+      env3.window.renderTab11();
+      env3.elements.sdblTextEditor.value = sql3;
+      env3.elements.btnApplyText.click();
+      env3.elements.btnSave.click();
+      const saveMsg3 = env3.sentMessages.find((m: any) => m.command === 'save');
+      assert.strictEqual(saveMsg3.ast.queries[0].whereConditions.length, 2);
+      assert.strictEqual(saveMsg3.ast.queries[0].whereConditions[0].value, '1 И 10');
+      assert.strictEqual(saveMsg3.ast.queries[0].whereConditions[1].value, '20 И 30');
+
+      // 4. Expressions with parentheses inside boundaries
+      const sql4 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Число МЕЖДУ (1 + 2) И (10 * 2) ИЛИ Т.Флаг = ИСТИНА';
+      const env4 = createWebviewEnvironment();
+      env4.postMessageToWebview({ command: 'init', ast: parseSdbl(sql4), metadata: [], mode: 'simple' });
+      env4.window.renderTab11();
+      env4.elements.sdblTextEditor.value = sql4;
+      env4.elements.btnApplyText.click();
+      env4.elements.btnSave.click();
+      const saveMsg4 = env4.sentMessages.find((m: any) => m.command === 'save');
+      assert.strictEqual(saveMsg4.ast.queries[0].whereConditions.length, 2);
+      assert.strictEqual(saveMsg4.ast.queries[0].whereConditions[0].value, '(1 + 2) И (10 * 2)');
+      assert.strictEqual(saveMsg4.ast.queries[0].whereConditions[1].op, 'ИЛИ');
+    });
+
+    test('Finding 2: opening and saving preserves subquery in IN condition clause', () => {
+      const sql = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код В (ВЫБРАТЬ Д.Код ИЗ Справочник.Д КАК Д ГДЕ Д.Код = &Код)';
+      const parsedPkg = parseSdbl(sql);
+      const env = createWebviewEnvironment();
+
+      env.postMessageToWebview({
+        command: 'init',
+        ast: parsedPkg,
+        metadata: [],
+        mode: 'simple',
+      });
+
+      // Save without editing
+      env.elements.btnSave.click();
+      const saveMsg = env.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(saveMsg, 'Save message must be sent');
+
+      const savedQuery = saveMsg.ast.queries[0];
+      assert.ok(savedQuery.where, 'Query must have WHERE clause');
+      assert.strictEqual(savedQuery.where.type, 'In');
+      assert.strictEqual(savedQuery.where.values.type, 'Select');
+      const formatted = formatSdbl(saveMsg.ast);
+      assert.ok(!formatted.includes('В ()'), `Must NOT be empty in (): ${formatted}`);
+      const normFormatted = formatted.replace(/\s+/g, ' ');
+      assert.ok(normFormatted.includes('ВЫБРАТЬ Д.Код ИЗ Справочник.Д КАК Д'), `Must preserve subquery SELECT: ${formatted}`);
+      assert.ok(formatted.includes('&Код'), `Must preserve parameter &Код: ${formatted}`);
+
+      // Extract parameters from saved AST to verify &Код is captured
+      const params = extractParameters(saveMsg.ast);
+      assert.ok(params.includes('Код'), `Parameter Код must be extracted: ${params.join(', ')}`);
+    });
+
+    test('Finding 2 (Broad): НЕ В, В ИЕРАРХИИ, subquery with joins, and edited subquery in condition', () => {
+      // 1. НЕ В with subquery
+      const sql1 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код НЕ В (ВЫБРАТЬ Д.Код ИЗ Справочник.Д КАК Д)';
+      const env1 = createWebviewEnvironment();
+      env1.postMessageToWebview({ command: 'init', ast: parseSdbl(sql1), metadata: [], mode: 'simple' });
+      env1.elements.btnSave.click();
+      const save1 = env1.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(save1);
+      assert.strictEqual(save1.ast.queries[0].where.type, 'In');
+      assert.strictEqual(save1.ast.queries[0].where.not, true);
+      assert.strictEqual(save1.ast.queries[0].where.values.type, 'Select');
+
+      // 2. В ИЕРАРХИИ with subquery
+      const sql2 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код В ИЕРАРХИИ (ВЫБРАТЬ Г.Код ИЗ Справочник.Г КАК Г)';
+      const env2 = createWebviewEnvironment();
+      env2.postMessageToWebview({ command: 'init', ast: parseSdbl(sql2), metadata: [], mode: 'simple' });
+      env2.elements.btnSave.click();
+      const save2 = env2.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(save2);
+      assert.strictEqual(save2.ast.queries[0].where.type, 'In');
+      assert.strictEqual(save2.ast.queries[0].where.inHierarchy, true);
+      assert.strictEqual(save2.ast.queries[0].where.values.type, 'Select');
+
+      // 3. Subquery with joins & multiple parameters
+      const sql3 = 'ВЫБРАТЬ Т.Ссылка ИЗ Справочник.Т КАК Т ГДЕ Т.Ссылка В (ВЫБРАТЬ Д.Ссылка ИЗ Документ.Р КАК Д ЛЕВОЕ СОЕДИНЕНИЕ Справочник.С КАК С ПО Д.Ссылка = С.Ссылка ГДЕ Д.Дата >= &ДатаНачала И С.Вид = &Вид)';
+      const env3 = createWebviewEnvironment();
+      env3.postMessageToWebview({ command: 'init', ast: parseSdbl(sql3), metadata: [], mode: 'simple' });
+      env3.elements.btnSave.click();
+      const save3 = env3.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(save3);
+      const params3 = extractParameters(save3.ast);
+      assert.deepStrictEqual(params3.sort(), ['Вид', 'ДатаНачала'].sort());
+
+      // 4. Editing subquery in condition UI input and saving
+      const sql4 = 'ВЫБРАТЬ Т.Код ИЗ Справочник.Т КАК Т ГДЕ Т.Код В (ВЫБРАТЬ Д.Код ИЗ Справочник.Д КАК Д)';
+      const env4 = createWebviewEnvironment();
+      env4.postMessageToWebview({ command: 'init', ast: parseSdbl(sql4), metadata: [], mode: 'simple' });
+      // Change condition value in UI
+      env4.window.renderTab4();
+      const inputs = env4.elements.tbodyConditions.querySelectorAll('input[type="text"]');
+      assert.ok(inputs.length >= 2, 'Field and Value inputs must exist in Tab 4');
+      const valInput = inputs[1]; // Value input
+      valInput.value = '(ВЫБРАТЬ Н.Код ИЗ Справочник.Н КАК Н ГДЕ Н.Статус = &НовыйСтатус)';
+      valInput.dispatchEvent({ type: 'input' });
+      env4.elements.btnSave.click();
+      const save4 = env4.sentMessages.find((m: any) => m.command === 'save');
+      assert.ok(save4);
+      assert.strictEqual(save4.ast.queries[0].where.type, 'In');
+      assert.strictEqual(save4.ast.queries[0].where.values.type, 'Select');
+      const params4 = extractParameters(save4.ast);
+      assert.deepStrictEqual(params4, ['НовыйСтатус']);
+    });
   });
 });
 

@@ -1926,5 +1926,63 @@ suite('SDBL Formatter & BSL Serializer', () => {
       assert.strictEqual((stmt.unions?.[0].statement.fields?.[1].expression as LiteralNode).raw, 'NULL');
     });
   });
+
+  suite('Finding 1: RIGHT JOIN normalization and preservation', () => {
+    test('Finding 1: INNER followed by RIGHT JOIN preserves all tables and does not duplicate or delete tables', () => {
+      const sql = `ВЫБРАТЬ c.id ИЗ A КАК a ВНУТРЕННЕЕ СОЕДИНЕНИЕ B КАК b ПО a.id = b.aid ПРАВОЕ СОЕДИНЕНИЕ C КАК c ПО a.id = c.aid`;
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      // Must contain all three tables: a, b, c
+      assert.ok(formatted.includes('A КАК a'), `Must contain table A: ${formatted}`);
+      assert.ok(formatted.includes('B КАК b'), `Must contain table B: ${formatted}`);
+      assert.ok(formatted.includes('C КАК c'), `Must contain table C: ${formatted}`);
+
+      // Must NOT duplicate table A
+      const countA = (formatted.match(/A КАК a/g) || []).length;
+      assert.strictEqual(countA, 1, `Table A must appear exactly once: ${formatted}`);
+
+      // Both join conditions must be present
+      assert.ok(formatted.includes('a.id = b.aid'), `Condition a.id = b.aid must be present: ${formatted}`);
+      assert.ok(formatted.includes('a.id = c.aid'), `Condition a.id = c.aid must be present: ${formatted}`);
+    });
+
+    test('Finding 1 (Broad): LEFT followed by RIGHT JOIN preserves all tables without duplication', () => {
+      const sql = `ВЫБРАТЬ c.id ИЗ A КАК a ЛЕВОЕ СОЕДИНЕНИЕ B КАК b ПО a.id = b.aid ПРАВОЕ СОЕДИНЕНИЕ C КАК c ПО a.id = c.aid`;
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      assert.ok(formatted.includes('A КАК a'), `Must contain table A: ${formatted}`);
+      assert.ok(formatted.includes('B КАК b'), `Must contain table B: ${formatted}`);
+      assert.ok(formatted.includes('C КАК c'), `Must contain table C: ${formatted}`);
+      const countA = (formatted.match(/A КАК a/g) || []).length;
+      assert.strictEqual(countA, 1, `Table A must appear exactly once: ${formatted}`);
+    });
+
+    test('Finding 1 (Broad): RIGHT JOIN referencing intermediate table preserves valid condition order', () => {
+      const sql = `ВЫБРАТЬ c.id ИЗ A КАК a ЛЕВОЕ СОЕДИНЕНИЕ B КАК b ПО a.id = b.aid ПРАВОЕ СОЕДИНЕНИЕ C КАК c ПО b.id = c.bid`;
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      assert.ok(formatted.includes('A КАК a'), `Must contain table A: ${formatted}`);
+      assert.ok(formatted.includes('B КАК b'), `Must contain table B: ${formatted}`);
+      assert.ok(formatted.includes('C КАК c'), `Must contain table C: ${formatted}`);
+      // Condition b.id = c.bid must occur AFTER B has been declared
+      const posB = formatted.indexOf('B КАК b');
+      const posCond = formatted.indexOf('b.id = c.bid');
+      assert.ok(posCond > posB, `Condition b.id = c.bid must appear after B is declared: ${formatted}`);
+    });
+
+    test('Finding 1 (Broad): two-table A RIGHT JOIN B continues to unfold into B LEFT JOIN A', () => {
+      const sql = `ВЫБРАТЬ Т1.Код ИЗ Справочник.А КАК Т1 ПРАВОЕ СОЕДИНЕНИЕ Справочник.Б КАК Т2 ПО Т1.Код = Т2.Код`;
+      const pkg = parseSdbl(sql);
+      const formatted = formatSdbl(pkg);
+
+      assert.ok(formatted.includes('ИЗ\n\tСправочник.Б КАК Т2'), `B must be root in ИЗ: ${formatted}`);
+      assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.А КАК Т1'), `A must be left joined: ${formatted}`);
+      assert.ok(!formatted.includes('ПРАВОЕ СОЕДИНЕНИЕ'), `Must unfold into Left join: ${formatted}`);
+    });
+  });
 });
+
 

@@ -392,8 +392,9 @@ function formatTableOrSubquery(
 function getJoinKeyword(joinType: 'Left' | 'Right' | 'Full' | 'Inner'): string {
   switch (joinType) {
     case 'Left':
-    case 'Right': // In 1C SDBL, Right Join does not exist; normalized into Left
       return 'ЛЕВОЕ СОЕДИНЕНИЕ';
+    case 'Right':
+      return 'ПРАВОЕ СОЕДИНЕНИЕ';
     case 'Full':
       return 'ПОЛНОЕ СОЕДИНЕНИЕ';
     case 'Inner':
