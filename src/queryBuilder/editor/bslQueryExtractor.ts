@@ -292,11 +292,60 @@ export function extractBslQuery(
 ): ExtractedQueryInfo {
   const docLen = documentText.length;
   const clampedCursor = Math.max(0, Math.min(cursorOffset, docLen));
+  const literals = findBslLiterals(documentText);
 
   // 1. If selection is provided and contains text
   if (selectionRange && selectionRange.start !== selectionRange.end) {
     const selStart = Math.max(0, Math.min(selectionRange.start, selectionRange.end));
     const selEnd = Math.min(docLen, Math.max(selectionRange.start, selectionRange.end));
+
+    const enclosingLiteral = literals.find((lit) => lit.start <= selStart && selEnd <= lit.end);
+    const matchingLiteral = literals.find(
+      (lit) =>
+        lit.start >= selStart &&
+        lit.end <= selEnd &&
+        documentText.slice(selStart, lit.start).trim() === '' &&
+        documentText.slice(lit.end, selEnd).trim() === ''
+    );
+    const targetLit = enclosingLiteral || matchingLiteral;
+
+    if (targetLit && hasQueryKeywords(cleanBslLiteral(targetLit.rawText))) {
+      const sdblText = cleanBslLiteral(targetLit.rawText);
+      const startPos = offsetToPosition(documentText, targetLit.start);
+      const endPos = offsetToPosition(documentText, targetLit.end);
+      const varName = detectVariableName(documentText.slice(0, targetLit.start));
+      const stmtOffsets = findStatementRange(documentText, targetLit.start, targetLit.end);
+      let statementRange: ExtractedQueryInfo['statementRange'];
+      if (stmtOffsets) {
+        const sPos = offsetToPosition(documentText, stmtOffsets.startOffset);
+        const ePos = offsetToPosition(documentText, stmtOffsets.endOffset);
+        statementRange = {
+          startOffset: stmtOffsets.startOffset,
+          endOffset: stmtOffsets.endOffset,
+          startLine: sPos.line,
+          startColumn: sPos.column,
+          endLine: ePos.line,
+          endColumn: ePos.column,
+        };
+      }
+
+      return {
+        rawBslText: targetLit.rawText,
+        sdblText,
+        replaceRange: {
+          startOffset: targetLit.start,
+          endOffset: targetLit.end,
+          startLine: startPos.line,
+          startColumn: startPos.column,
+          endLine: endPos.line,
+          endColumn: endPos.column,
+        },
+        ...(statementRange ? { statementRange } : {}),
+        isNewQuery: false,
+        ...(varName ? { variableName: varName } : {}),
+      };
+    }
+
     const rawSelected = documentText.slice(selStart, selEnd);
     const trimmed = rawSelected.trim();
 
@@ -349,7 +398,6 @@ export function extractBslQuery(
   }
 
   // 2. Check cursor inside BSL string literals
-  const literals = findBslLiterals(documentText);
   const matchedLiteral = literals.find(
     (lit) => clampedCursor >= lit.start && clampedCursor <= lit.end
   );

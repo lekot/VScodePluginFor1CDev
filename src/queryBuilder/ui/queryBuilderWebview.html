@@ -6742,7 +6742,10 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                     // If switching FROM query-text, parse text back to AST
                     if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text' && targetId !== 'tab-query-text') {
-                        applyTextEditorChanges();
+                        const success = applyTextEditorChanges();
+                        if (!success) {
+                            return; // Блокируем переключение вкладок! Пользователь остаётся на вкладке текста с отображённой ошибкой
+                        }
                     }
 
                     elements.tabBtns.forEach(function(b) { b.classList.remove('active'); });
@@ -6788,6 +6791,14 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
             // Package Query Selector & Actions
             elements.packageSelect.addEventListener('change', function() {
+                const activeBtn = document.querySelector('.tab-btn.active');
+                if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text') {
+                    const success = applyTextEditorChanges();
+                    if (!success) {
+                        elements.packageSelect.value = String(state.activeQueryIndex);
+                        return;
+                    }
+                }
                 state.activeQueryIndex = parseInt(elements.packageSelect.value, 10);
                 state.activeUnionIndex = 0;
                 state.selectedUnionIndex = 0;
@@ -6795,6 +6806,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             });
 
             elements.btnAddQuery.addEventListener('click', function() {
+                const activeBtn = document.querySelector('.tab-btn.active');
+                if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text') {
+                    const success = applyTextEditorChanges();
+                    if (!success) return;
+                }
                 state.ast.queries.push({
                     type: 'Select',
                     fields: [],
@@ -6808,6 +6824,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             });
 
             elements.btnRemoveQuery.addEventListener('click', function() {
+                const activeBtn = document.querySelector('.tab-btn.active');
+                if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text') {
+                    const success = applyTextEditorChanges();
+                    if (!success) return;
+                }
                 if (state.ast.queries.length <= 1) return;
                 state.ast.queries.splice(state.activeQueryIndex, 1);
                 if (state.activeQueryIndex >= state.ast.queries.length) {
@@ -6820,6 +6841,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             });
 
             elements.btnMoveQueryUp.addEventListener('click', function() {
+                const activeBtn = document.querySelector('.tab-btn.active');
+                if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text') {
+                    const success = applyTextEditorChanges();
+                    if (!success) return;
+                }
                 if (state.activeQueryIndex <= 0) return;
                 const temp = state.ast.queries[state.activeQueryIndex];
                 state.ast.queries[state.activeQueryIndex] = state.ast.queries[state.activeQueryIndex - 1];
@@ -6832,6 +6858,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             });
 
             elements.btnMoveQueryDown.addEventListener('click', function() {
+                const activeBtn = document.querySelector('.tab-btn.active');
+                if (activeBtn && activeBtn.getAttribute('data-tab') === 'tab-query-text') {
+                    const success = applyTextEditorChanges();
+                    if (!success) return;
+                }
                 if (state.activeQueryIndex >= state.ast.queries.length - 1) return;
                 const temp = state.ast.queries[state.activeQueryIndex];
                 state.ast.queries[state.activeQueryIndex] = state.ast.queries[state.activeQueryIndex + 1];

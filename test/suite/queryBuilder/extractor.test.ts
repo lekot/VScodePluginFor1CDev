@@ -544,5 +544,125 @@ suite('BSL Query Extractor & Templates', () => {
       assert.strictEqual(result.statementRange, undefined, 'Must not replace statement when followed by method call');
     });
   });
+
+  suite('9. Broad testing of selection inside BSL (R1 / P1)', () => {
+    test('1. Selection without quotes in single-line literal expands to enclosing literal and prevents double quotes', () => {
+      const code = 'Запрос.Текст = "ВЫБРАТЬ 1 КАК Поле";';
+      const litStart = code.indexOf('"ВЫБРАТЬ');
+      const litEnd = code.lastIndexOf('"') + 1;
+      const selStart = code.indexOf('ВЫБРАТЬ');
+      const selEnd = code.lastIndexOf('Поле') + 4;
+
+      const result = extractBslQuery(code, selStart, { start: selStart, end: selEnd });
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.variableName, 'Запрос');
+      assert.strictEqual(result.sdblText, 'ВЫБРАТЬ 1 КАК Поле');
+      assert.strictEqual(result.replaceRange.startOffset, litStart);
+      assert.strictEqual(result.replaceRange.endOffset, litEnd);
+      assert.ok(result.statementRange, 'statementRange must be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+
+      const generated = generateBslSimpleQuery(parseSdbl(result.sdblText));
+      const replaced =
+        code.slice(0, result.replaceRange.startOffset) +
+        generated +
+        code.slice(result.replaceRange.endOffset);
+      assert.strictEqual(replaced, 'Запрос.Текст = "ВЫБРАТЬ\n|\t1 КАК Поле";');
+      assert.strictEqual(replaced.includes('""'), false, 'Must not produce double quotes');
+    });
+
+    test('2. Selection without outer quotes in multiline literal with pipes', () => {
+      const code = [
+        'Запрос = Новый Запрос;',
+        'Запрос.Текст = "ВЫБРАТЬ',
+        '|\t1 КАК Поле',
+        '|ИЗ',
+        '|\tСправочник.Номенклатура";',
+      ].join('\n');
+
+      const litStart = code.indexOf('"ВЫБРАТЬ');
+      const litEnd = code.lastIndexOf('"') + 1;
+      const selStart = code.indexOf('ВЫБРАТЬ');
+      const selEnd = code.indexOf('Номенклатура') + 'Номенклатура'.length;
+
+      const result = extractBslQuery(code, selStart, { start: selStart, end: selEnd });
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.variableName, 'Запрос');
+      assert.strictEqual(result.replaceRange.startOffset, litStart);
+      assert.strictEqual(result.replaceRange.endOffset, litEnd);
+      assert.ok(result.sdblText.startsWith('ВЫБРАТЬ'));
+      assert.ok(!result.sdblText.includes('|'));
+      assert.ok(result.statementRange, 'statementRange must be defined');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+    });
+
+    test('3. Selection inside literal with escaped quotes unescapes and replaces full literal', () => {
+      const code = 'Запрос.Текст = "ВЫБРАТЬ ""Специальный текст"" КАК Поле";';
+      const litStart = code.indexOf('"ВЫБРАТЬ');
+      const litEnd = code.lastIndexOf('"') + 1;
+      const selStart = code.indexOf('ВЫБРАТЬ');
+      const selEnd = code.lastIndexOf('Поле') + 4;
+
+      const result = extractBslQuery(code, selStart, { start: selStart, end: selEnd });
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.variableName, 'Запрос');
+      assert.strictEqual(result.replaceRange.startOffset, litStart);
+      assert.strictEqual(result.replaceRange.endOffset, litEnd);
+      assert.strictEqual(result.sdblText, 'ВЫБРАТЬ "Специальный текст" КАК Поле');
+      assert.strictEqual(result.rawBslText, '"ВЫБРАТЬ ""Специальный текст"" КАК Поле"');
+    });
+
+    test('4. Selection inside constructor call without quotes detects statementRange', () => {
+      const code = 'Запрос = Новый Запрос("ВЫБРАТЬ 1");';
+      const litStart = code.indexOf('"ВЫБРАТЬ');
+      const litEnd = code.lastIndexOf('"') + 1;
+      const selStart = code.indexOf('ВЫБРАТЬ');
+      const selEnd = code.indexOf('1') + 1;
+
+      const result = extractBslQuery(code, selStart, { start: selStart, end: selEnd });
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.variableName, 'Запрос');
+      assert.strictEqual(result.replaceRange.startOffset, litStart);
+      assert.strictEqual(result.replaceRange.endOffset, litEnd);
+      assert.strictEqual(result.sdblText, 'ВЫБРАТЬ 1');
+      assert.ok(result.statementRange, 'statementRange must be defined for constructor');
+      assert.strictEqual(result.statementRange?.startOffset, 0);
+      assert.strictEqual(result.statementRange?.endOffset, code.length);
+    });
+
+    test('5. Selection with outer whitespace matching literal trims and targets literal', () => {
+      const code = '   "ВЫБРАТЬ 1"   ';
+      const litStart = code.indexOf('"');
+      const litEnd = code.lastIndexOf('"') + 1;
+      const selStart = 0;
+      const selEnd = code.length;
+
+      const result = extractBslQuery(code, selStart, { start: selStart, end: selEnd });
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.replaceRange.startOffset, litStart);
+      assert.strictEqual(result.replaceRange.endOffset, litEnd);
+      assert.strictEqual(result.sdblText, 'ВЫБРАТЬ 1');
+    });
+
+    test('6. Selection of pure SDBL text without literals preserves existing behavior', () => {
+      const code = 'ВЫБРАТЬ 1 КАК Поле ИЗ Справочник.Номенклатура';
+      const selStart = 0;
+      const selEnd = code.length;
+
+      const result = extractBslQuery(code, selStart, { start: selStart, end: selEnd });
+
+      assert.strictEqual(result.isNewQuery, false);
+      assert.strictEqual(result.replaceRange.startOffset, 0);
+      assert.strictEqual(result.replaceRange.endOffset, code.length);
+      assert.strictEqual(result.sdblText, code);
+    });
+  });
 });
 

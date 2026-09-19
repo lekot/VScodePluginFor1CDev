@@ -1318,6 +1318,165 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.ok(formatted.includes('ЛЕВОЕ СОЕДИНЕНИЕ Справочник.A КАК A'), `A must be left joined: ${formatted}`);
       });
     });
+
+    suite('Tab Query Text Draft Protection on Error (R2 / P2)', () => {
+      test('1. Switching away from tab-query-text is blocked on parse error, preserving draft and showing error', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 КАК Поле'),
+          mode: 'simple',
+        });
+
+        const textTabBtn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-query-text');
+        const tab1Btn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-tables-fields');
+        const textTabPane = env.document.getElementById('tab-query-text');
+        const tab1Pane = env.document.getElementById('tab-tables-fields');
+
+        assert.ok(textTabBtn);
+        assert.ok(tab1Btn);
+
+        // Switch to text tab
+        textTabBtn.click();
+        assert.strictEqual(textTabBtn.classList.contains('active'), true);
+        assert.strictEqual(textTabPane.classList.contains('active'), true);
+        assert.ok(env.elements.sdblTextEditor.value.includes('1 КАК Поле'));
+
+        // Corrupt text to syntax error: "ВЫБРАТЬ"
+        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ';
+
+        // Attempt to switch to Tab 1
+        tab1Btn.click();
+
+        // Must NOT switch tabs: tab-query-text remains active
+        assert.strictEqual(textTabBtn.classList.contains('active'), true, 'tab-query-text button must remain active');
+        assert.strictEqual(textTabPane.classList.contains('active'), true, 'tab-query-text pane must remain active');
+        assert.strictEqual(tab1Btn.classList.contains('active'), false, 'tab-tables-fields button must NOT be active');
+        assert.strictEqual(tab1Pane.classList.contains('active'), false, 'tab-tables-fields pane must NOT be active');
+
+        // Draft must be preserved in textarea
+        assert.strictEqual(env.elements.sdblTextEditor.value, 'ВЫБРАТЬ', 'Draft text in editor must be preserved');
+
+        // Error message must be visible
+        assert.strictEqual(env.elements.textParseError.style.display, 'flex');
+        assert.ok(env.elements.textParseError.textContent.includes('Ошибка парсинга SDBL'));
+      });
+
+      test('2. Changing packageSelect or clicking toolbar query buttons is blocked on parse error, preserving draft', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 КАК Поле1; ВЫБРАТЬ 2 КАК Поле2'),
+          mode: 'simple',
+        });
+
+        const textTabBtn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-query-text');
+        textTabBtn.click();
+
+        // Corrupt text
+        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ';
+
+        // Attempt to change packageSelect
+        assert.strictEqual(env.state.activeQueryIndex, 0);
+        env.elements.packageSelect.value = '1';
+        env.elements.packageSelect.dispatchEvent({ type: 'change', target: env.elements.packageSelect });
+
+        // Must be blocked
+        assert.strictEqual(env.state.activeQueryIndex, 0, 'activeQueryIndex must remain 0');
+        assert.strictEqual(env.elements.packageSelect.value, '0', 'packageSelect value must be reset to 0');
+        assert.strictEqual(env.elements.sdblTextEditor.value, 'ВЫБРАТЬ', 'Draft must be preserved');
+        assert.strictEqual(env.elements.textParseError.style.display, 'flex');
+
+        // Attempt btnAddQuery
+        const prevCount = env.state.ast.queries.length;
+        env.elements.btnAddQuery.click();
+        assert.strictEqual(env.state.ast.queries.length, prevCount, 'btnAddQuery must be blocked');
+        assert.strictEqual(env.elements.sdblTextEditor.value, 'ВЫБРАТЬ', 'Draft must be preserved');
+
+        // Attempt btnRemoveQuery
+        env.elements.btnRemoveQuery.click();
+        assert.strictEqual(env.state.ast.queries.length, prevCount, 'btnRemoveQuery must be blocked');
+
+        // Attempt btnMoveQueryDown
+        env.elements.btnMoveQueryDown.click();
+        assert.strictEqual(env.state.activeQueryIndex, 0, 'btnMoveQueryDown must be blocked');
+      });
+
+      test('3. Successful error correction allows tab switching and updates AST', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 КАК Поле1'),
+          mode: 'simple',
+        });
+
+        const textTabBtn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-query-text');
+        const tab1Btn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-tables-fields');
+        const textTabPane = env.document.getElementById('tab-query-text');
+        const tab1Pane = env.document.getElementById('tab-tables-fields');
+
+        textTabBtn.click();
+
+        // Introduce syntax error
+        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ';
+        tab1Btn.click();
+        assert.strictEqual(textTabBtn.classList.contains('active'), true, 'Blocked on error');
+
+        // Now fix error
+        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 2 КАК Поле2';
+        tab1Btn.click();
+
+        // Switch succeeds
+        assert.strictEqual(tab1Btn.classList.contains('active'), true, 'tab-tables-fields must become active');
+        assert.strictEqual(tab1Pane.classList.contains('active'), true, 'tab-tables-fields pane must become active');
+        assert.strictEqual(textTabBtn.classList.contains('active'), false, 'tab-query-text must not be active');
+
+        // AST updated
+        const q = env.window.getActiveQuery();
+        assert.strictEqual(q.fields[0].alias, 'Поле2');
+
+        // Return to Tab 11 -> shows formatted new query
+        textTabBtn.click();
+        assert.strictEqual(textTabBtn.classList.contains('active'), true);
+        assert.ok(env.elements.sdblTextEditor.value.includes('Поле2'));
+        assert.strictEqual(env.elements.textParseError.style.display, 'none');
+      });
+
+      test('4. Package with multiple queries blocks tab switching when 2nd query has syntax error', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ 2 КАК П2'),
+          mode: 'simple',
+        });
+
+        env.state.activeQueryIndex = 1;
+        const textTabBtn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-query-text');
+        const tab1Btn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-tables-fields');
+
+        textTabBtn.click();
+        assert.ok(env.elements.sdblTextEditor.value.includes('1 КАК П1'));
+        assert.ok(env.elements.sdblTextEditor.value.includes('2 КАК П2'));
+
+        // Corrupt 2nd query
+        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ';
+
+        // Try tab switch
+        tab1Btn.click();
+
+        assert.strictEqual(textTabBtn.classList.contains('active'), true, 'Tab switch blocked for package query with error');
+        assert.strictEqual(env.elements.sdblTextEditor.value, 'ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ', 'Package draft preserved');
+        assert.strictEqual(env.elements.textParseError.style.display, 'flex');
+
+        // Fix error in 2nd query
+        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 1 КАК П1; ВЫБРАТЬ 3 КАК П3';
+        tab1Btn.click();
+
+        assert.strictEqual(tab1Btn.classList.contains('active'), true);
+        assert.strictEqual(env.state.ast.queries.length, 2);
+        assert.strictEqual(env.state.ast.queries[1].fields[0].alias, 'П3');
+      });
+    });
   });
 });
 
