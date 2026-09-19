@@ -234,12 +234,41 @@ export class DesignerParser {
           children: [],
           filePath,
         };
-        if (STANDARD_MODULES[metadataType] !== undefined) {
-          const extNode = await this.parseExtensions(
-            path.join(directoryPath, 'Ext'),
-            typeName === 'CommonModules' ? `${typeName}.${name}` : undefined,
-            metadataType
-          );
+        const standardModules = STANDARD_MODULES[metadataType];
+        if (standardModules !== undefined) {
+          let extNode: TreeNode;
+          if (!directoryNames.has(name)) {
+            const qp = typeName === 'CommonModules' ? `${typeName}.${name}.` : '';
+            const extPath = path.join(directoryPath, 'Ext');
+            extNode = {
+              id: `${qp}Ext`,
+              name: 'Extensions',
+              type: MetadataType.Extension,
+              properties: {},
+              filePath: extPath,
+              children: standardModules.map((mod) => ({
+                id: `${qp}Ext.${mod.fileName}`,
+                name: mod.fileName,
+                type: MetadataType.Method,
+                properties: {
+                  isModule: true,
+                  fileType: 'bsl',
+                  isVirtual: true,
+                  label: mod.label,
+                },
+                filePath: path.join(extPath, mod.fileName),
+              })),
+            };
+            for (const child of extNode.children!) {
+              child.parent = extNode;
+            }
+          } else {
+            extNode = await this.parseExtensions(
+              path.join(directoryPath, 'Ext'),
+              typeName === 'CommonModules' ? `${typeName}.${name}` : undefined,
+              metadataType
+            );
+          }
           extNode.parent = node;
           node.children = [extNode];
         }
@@ -664,66 +693,67 @@ export class DesignerParser {
     };
 
     try {
-      const items = await fs.promises.readdir(extPath);
+      const items = await fs.promises.readdir(extPath).catch(() => null);
+      if (items) {
+        // Process all extension items in parallel
+        const extElementNodes = await Promise.all(
+          items.map(async (item) => {
+            const itemPath = path.join(extPath, item);
+            try {
+              const stat = await fs.promises.stat(itemPath);
 
-      // Process all extension items in parallel
-      const extElementNodes = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = path.join(extPath, item);
-          try {
-            const stat = await fs.promises.stat(itemPath);
-
-            if (stat.isDirectory()) {
-              // For directories like "Form", recursively search for .bsl files
-              const bslFiles = await this.findBslFilesRecursive(itemPath);
-              if (bslFiles.length > 0) {
-                // Create a container node with .bsl files as children
+              if (stat.isDirectory()) {
+                // For directories like "Form", recursively search for .bsl files
+                const bslFiles = await this.findBslFilesRecursive(itemPath);
+                if (bslFiles.length > 0) {
+                  // Create a container node with .bsl files as children
+                  return {
+                    id: `${qp}Ext.${item}`,
+                    name: item,
+                    type: MetadataType.Extension,
+                    properties: { isExtension: true },
+                    filePath: itemPath,
+                    children: bslFiles.map((bslPath) => ({
+                      id: `${qp}Ext.${item}.${path.basename(bslPath)}`,
+                      name: path.basename(bslPath),
+                      type: MetadataType.Method,
+                      properties: {
+                        isModule: true,
+                        fileType: 'bsl',
+                      },
+                      filePath: bslPath,
+                    })),
+                  };
+                }
+                return null; // Skip empty directories
+              } else if (stat.isFile() && item.endsWith('.bsl')) {
+                // Add .bsl module files directly
                 return {
                   id: `${qp}Ext.${item}`,
                   name: item,
-                  type: MetadataType.Extension,
-                  properties: { isExtension: true },
+                  type: MetadataType.Method,
+                  properties: {
+                    isModule: true,
+                    fileType: 'bsl',
+                  },
                   filePath: itemPath,
-                  children: bslFiles.map((bslPath) => ({
-                    id: `${qp}Ext.${item}.${path.basename(bslPath)}`,
-                    name: path.basename(bslPath),
-                    type: MetadataType.Method,
-                    properties: {
-                      isModule: true,
-                      fileType: 'bsl',
-                    },
-                    filePath: bslPath,
-                  })),
                 };
               }
-              return null; // Skip empty directories
-            } else if (stat.isFile() && item.endsWith('.bsl')) {
-              // Add .bsl module files directly
-              return {
-                id: `${qp}Ext.${item}`,
-                name: item,
-                type: MetadataType.Method,
-                properties: {
-                  isModule: true,
-                  fileType: 'bsl',
-                },
-                filePath: itemPath,
-              };
+              // Predefined.xml is handled separately as a top-level "Предопределённые" R6 placeholder,
+              // not as a child of Extensions (see applyXmlDerivedChildren).
+            } catch (error) {
+              Logger.debug(`Error processing extension ${itemPath}`, error);
             }
-            // Predefined.xml is handled separately as a top-level "Предопределённые" R6 placeholder,
-            // not as a child of Extensions (see applyXmlDerivedChildren).
-          } catch (error) {
-            Logger.debug(`Error processing extension ${itemPath}`, error);
-          }
-          return null;
-        })
-      );
+            return null;
+          })
+        );
 
-      // Add non-null extension nodes and set parent
-      for (const extElementNode of extElementNodes) {
-        if (extElementNode) {
-          (extElementNode as TreeNode).parent = extNode;
-          extNode.children?.push(extElementNode);
+        // Add non-null extension nodes and set parent
+        for (const extElementNode of extElementNodes) {
+          if (extElementNode) {
+            (extElementNode as TreeNode).parent = extNode;
+            extNode.children?.push(extElementNode);
+          }
         }
       }
     } catch (error) {
