@@ -297,19 +297,47 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         return this._attrs[k] || null;
       }
 
+      public selectionStart: number = 0;
+      public selectionEnd: number = 0;
+      setSelectionRange(start: number, end: number) {
+        this.selectionStart = start;
+        this.selectionEnd = end;
+      }
+
       querySelectorAll(sel: string): MockElement[] {
         const res: MockElement[] = [];
         const search = (node: MockElement) => {
           for (const c of node.children) {
             let matched = false;
-            if (sel === 'input' && c.tagName === 'INPUT') matched = true;
-            else if (sel === 'select' && c.tagName === 'SELECT') matched = true;
-            else if (sel === 'button' && c.tagName === 'BUTTON') matched = true;
-            else if (sel === 'tr' && c.tagName === 'TR') matched = true;
-            else if (sel === 'button.danger' && c.tagName === 'BUTTON' && c.className.includes('danger')) matched = true;
-            else if (sel === 'input[type="checkbox"]' && c.tagName === 'INPUT' && (c as any).type === 'checkbox') matched = true;
-            else if (sel.startsWith('.') && c.className.includes(sel.substring(1))) matched = true;
-            else if (c.tagName === sel.toUpperCase()) matched = true;
+            if (sel === 'input[type="checkbox"]') {
+              if (c.tagName === 'INPUT' && (c as any).type === 'checkbox') matched = true;
+            } else if (sel === 'button.danger') {
+              if (c.tagName === 'BUTTON' && c.className.includes('danger')) matched = true;
+            } else if (sel === 'input' && c.tagName === 'INPUT') {
+              matched = true;
+            } else if (sel === 'select' && c.tagName === 'SELECT') {
+              matched = true;
+            } else if (sel === 'button' && c.tagName === 'BUTTON') {
+              matched = true;
+            } else if (sel === 'tr' && c.tagName === 'TR') {
+              matched = true;
+            } else if (sel.startsWith('.')) {
+              if (c.className.includes(sel.substring(1))) matched = true;
+            } else {
+              const attrMatch = sel.match(/^([a-zA-Z0-9_\-\.]*)\[([a-zA-Z0-9_\-]+)=(?:'|")?([^'"]+)(?:'|")?\]$/);
+              if (attrMatch) {
+                const baseSel = attrMatch[1];
+                const attrName = attrMatch[2];
+                const attrVal = attrMatch[3];
+                let baseOk = true;
+                if (baseSel.startsWith('.')) baseOk = c.className.includes(baseSel.substring(1));
+                else if (baseSel) baseOk = c.tagName === baseSel.toUpperCase();
+                const actualAttr = c.getAttribute(attrName) || (c as any)[attrName];
+                if (baseOk && actualAttr === attrVal) matched = true;
+              } else if (c.tagName === sel.toUpperCase()) {
+                matched = true;
+              }
+            }
 
             if (matched) res.push(c);
             search(c);
@@ -383,12 +411,20 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
           if (sel === '.tab-btn.active') {
             return tabButtons.find((b) => b.classList.contains('active')) || tabButtons[0];
           }
+          for (const k of Object.keys(elementsById)) {
+            const found = elementsById[k].querySelector(sel);
+            if (found) return found;
+          }
           return null;
         },
         querySelectorAll: (sel: string) => {
           if (sel === '.tab-btn') return tabButtons;
           if (sel === '.tab-pane') return tabPanes;
-          return [];
+          const res: MockElement[] = [];
+          for (const k of Object.keys(elementsById)) {
+            res.push(...elementsById[k].querySelectorAll(sel));
+          }
+          return res;
         },
       };
 
@@ -1758,6 +1794,275 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         const q = env.window.getActiveQuery();
         const onStr = env.window.getExpressionString(q.from[0].joins[0].on);
         assert.strictEqual(onStr, 'СтарееСтарых.Код = Справочник55.Код И СтарееСтарых.ПометкаУдаления = ЛОЖЬ');
+      });
+    });
+
+    suite('Expression Builder, From-Tables Tree & Custom Joins', () => {
+      const mockMetadataTree: any[] = [
+        {
+          id: 'Catalogs',
+          name: 'Catalogs',
+          fullName: 'Справочники',
+          nodeType: 'category',
+          children: [
+            {
+              id: 'Catalog.СтарееСтарых',
+              name: 'СтарееСтарых',
+              fullName: 'Справочник.СтарееСтарых',
+              nodeType: 'table',
+              attributesLoaded: true,
+              children: [
+                { id: 'Catalog.СтарееСтарых.Ref', name: 'Ссылка', nodeType: 'field', dataType: 'Ref' },
+                { id: 'Catalog.СтарееСтарых.Code', name: 'Код', nodeType: 'field', dataType: 'String' },
+                { id: 'Catalog.СтарееСтарых.Description', name: 'Наименование', nodeType: 'field', dataType: 'String' },
+                {
+                  id: 'Catalog.СтарееСтарых.чекчек',
+                  name: 'чекчек',
+                  nodeType: 'field',
+                  dataType: 'СправочникСсылка.Справочник55',
+                },
+              ],
+            },
+            {
+              id: 'Catalog.Справочник55',
+              name: 'Справочник55',
+              fullName: 'Справочник.Справочник55',
+              nodeType: 'table',
+              attributesLoaded: true,
+              children: [
+                { id: 'Catalog.Справочник55.Ref', name: 'Ссылка', nodeType: 'field', dataType: 'Ref' },
+                { id: 'Catalog.Справочник55.Code', name: 'Код', nodeType: 'field', dataType: 'String' },
+                { id: 'Catalog.Справочник55.Description', name: 'Наименование', nodeType: 'field', dataType: 'String' },
+              ],
+            },
+          ],
+        },
+      ];
+
+      test('1. Expression Builder Modal elements and API exist', () => {
+        const env = createWebviewEnvironment();
+        assert.ok(env.elements.modalExprBuilder, 'modalExprBuilder must exist in elements');
+        assert.ok(env.elements.exprFieldsTree, 'exprFieldsTree must exist in elements');
+        assert.ok(env.elements.exprFunctionsTree, 'exprFunctionsTree must exist in elements');
+        assert.ok(env.elements.exprBuilderTextarea, 'exprBuilderTextarea must exist in elements');
+        assert.ok(env.elements.btnExprSave, 'btnExprSave must exist in elements');
+        assert.ok(env.elements.btnExprCancel, 'btnExprCancel must exist in elements');
+        assert.strictEqual(typeof env.window.openExpressionBuilder, 'function', 'openExpressionBuilder must be exposed on window');
+      });
+
+      test('2. Pencil button ✏️ on selected fields opens Expression Builder modal', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 + 1 КАК Выражение ИЗ Справочник.СтарееСтарых КАК СтарееСтарых'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.renderSelectedFields();
+        const tr = env.elements.tbodySelectedFields.children[0];
+        assert.ok(tr, 'Row in selected fields must exist');
+        const btnEdit = tr.querySelector('.btn-edit-field-expr') as any;
+        assert.ok(btnEdit, '.btn-edit-field-expr pencil button must exist in field row');
+
+        btnEdit.click();
+
+        assert.ok(env.elements.modalExprBuilder.classList.contains('open'), 'Modal must have class open');
+        assert.strictEqual(env.elements.exprBuilderTextarea.value, '1 + 1');
+      });
+
+      test('3. expr-fields-tree renders tables and double-click inserts Table.Field', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.openExpressionBuilder({ value: '' });
+
+        const tree = env.elements.exprFieldsTree;
+        assert.ok(tree.children.length > 0, 'exprFieldsTree must contain nodes');
+
+        // Look for field node 'Ссылка'
+        const fieldRows = tree.querySelectorAll('.tree-row');
+        const refRow = fieldRows.find((r: any) => r.textContent.includes('Ссылка'));
+        assert.ok(refRow, 'Field row for Ссылка must exist in expr-fields-tree');
+
+        refRow.dispatchEvent({ type: 'dblclick' });
+
+        assert.ok(env.elements.exprBuilderTextarea.value.includes('СтарееСтарых.Ссылка'));
+      });
+
+      test('4. Reference field in expr-fields-tree expands target table attributes through dot', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.openExpressionBuilder({ value: '' });
+
+        const tree = env.elements.exprFieldsTree;
+        const fieldRows = tree.querySelectorAll('.tree-row');
+        const checkRow = fieldRows.find((r: any) => r.textContent.includes('чекчек'));
+        assert.ok(checkRow, 'чекчек row must exist');
+
+        // Find toggle on checkRow or its parent
+        const parentNode = checkRow.parentElement;
+        const toggle = checkRow.querySelector('.tree-toggle') || parentNode.querySelector('.tree-toggle');
+        assert.ok(toggle, 'Toggle for reference field must exist');
+
+        toggle.click();
+
+        // After toggle click, child fields from Справочник55 should be present
+        const subFieldRows = parentNode.querySelectorAll('.tree-row');
+        const nameSubRow = subFieldRows.filter((r: any) => r.textContent.includes('Наименование')).pop();
+        assert.ok(nameSubRow, 'Referenced attribute Наименование must be rendered under чекчек');
+
+        nameSubRow.dispatchEvent({ type: 'dblclick' });
+
+        assert.ok(env.elements.exprBuilderTextarea.value.includes('СтарееСтарых.чекчек.Наименование'));
+      });
+
+      test('5. expr-functions-tree inserts function templates with cursor positioning', () => {
+        const env = createWebviewEnvironment();
+        env.window.openExpressionBuilder({ value: '' });
+
+        const tree = env.elements.exprFunctionsTree;
+        assert.ok(tree.children.length > 0, 'exprFunctionsTree must contain category nodes');
+
+        const rows = tree.querySelectorAll('.tree-row');
+        const isNullRow = rows.find((r: any) => r.textContent.includes('ЕСТЬNULL'));
+        assert.ok(isNullRow, 'ЕСТЬNULL function row must exist');
+
+        isNullRow.dispatchEvent({ type: 'dblclick' });
+
+        assert.ok(env.elements.exprBuilderTextarea.value.includes('ЕСТЬNULL('));
+
+        const caseRow = rows.find((r: any) => r.textContent.includes('ВЫБОР'));
+        assert.ok(caseRow, 'ВЫБОР function row must exist');
+
+        caseRow.dispatchEvent({ type: 'dblclick' });
+
+        assert.ok(env.elements.exprBuilderTextarea.value.includes('ВЫБОР КОГДА'));
+      });
+
+      test('6. Saving Expression Builder updates field in AST and closes modal', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 КАК Поле1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.renderSelectedFields();
+        const tr = env.elements.tbodySelectedFields.children[0];
+        const btnEdit = tr.querySelector('.btn-edit-field-expr') as any;
+        btnEdit.click();
+
+        env.elements.exprBuilderTextarea.value = 'ЕСТЬNULL(СтарееСтарых.чекчек.Наименование, "")';
+        env.elements.btnExprSave.click();
+
+        assert.strictEqual(env.elements.modalExprBuilder.classList.contains('open'), false, 'Modal must be closed');
+        const q = env.window.getActiveQuery();
+        assert.strictEqual(env.window.getExpressionString(q.fields[0].expression), 'ЕСТЬNULL(СтарееСтарых.чекчек.Наименование, "")');
+      });
+
+      test('7. Tab 1 Column 2: From-tables hierarchical tree with reference expansion', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.renderFromTables();
+
+        // from-tables-tree container must exist and contain the table
+        const tree = env.elements.fromTablesTree || env.elements.tbodyFromTables;
+        assert.ok(tree, 'fromTablesTree must exist');
+
+        const rows = tree.querySelectorAll('.tree-row');
+        const tableRow = rows.find((r: any) => r.textContent.includes('СтарееСтарых'));
+        assert.ok(tableRow, 'СтарееСтарых table row must exist');
+
+        const toggle = tableRow.querySelector('.tree-toggle');
+        assert.ok(toggle, 'Table row must have expander toggle');
+        toggle.click();
+
+        // Should show fields of СтарееСтарых
+        const fieldRows = tree.querySelectorAll('.tree-row');
+        const checkField = fieldRows.find((r: any) => r.textContent.includes('чекчек'));
+        assert.ok(checkField, 'чекчек field must be visible after expanding table');
+
+        // Expand чекчек
+        const checkToggle = checkField.querySelector('.tree-toggle');
+        assert.ok(checkToggle, 'чекчек must have expander toggle for reference type');
+        checkToggle.click();
+
+        const subFieldRows = tree.querySelectorAll('.tree-row');
+        const nameSub = subFieldRows.filter((r: any) => r.textContent.includes('Наименование')).pop();
+        assert.ok(nameSub, 'Наименование sub-field must be visible under чекчек');
+
+        // Double clicking adds field to q.fields
+        nameSub.dispatchEvent({ type: 'dblclick' });
+
+        const q = env.window.getActiveQuery();
+        const lastField = q.fields[q.fields.length - 1];
+        assert.strictEqual(env.window.getExpressionString(lastField.expression), 'СтарееСтарых.чекчек.Наименование');
+      });
+
+      test('8. Tab 2 Joins: Checkbox [ ] Произвольное with bi-directional translation and pencil button', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых ЛЕВОЕ СОЕДИНЕНИЕ Справочник.Справочник55 КАК Справочник55 ПО СтарееСтарых.чекчек = Справочник55.Ссылка'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.renderTab2();
+        const tr = env.elements.tbodyJoins.children[0];
+        const chkCustom = tr.querySelector('.join-check-custom') as any;
+        const btnEdit = tr.querySelector('.btn-edit-join-expr') as any;
+        const structDiv = tr.querySelector('.join-on-structured') as any;
+        const rawDiv = tr.querySelector('.join-on-raw') as any;
+
+        assert.ok(chkCustom, 'Checkbox .join-check-custom must exist in join row');
+        assert.ok(btnEdit, 'Button .btn-edit-join-expr must exist in join row');
+
+        // Check custom
+        chkCustom.checked = true;
+        chkCustom.dispatchEvent({ type: 'change', target: chkCustom });
+
+        assert.strictEqual(structDiv.style.display, 'none', 'Structured controls must be hidden when custom join is checked');
+        assert.strictEqual(rawDiv.style.display, 'block', 'Raw input must be visible when custom join is checked');
+
+        // Click pencil to edit in Expression Builder
+        btnEdit.click();
+        assert.ok(env.elements.modalExprBuilder.classList.contains('open'));
+        assert.strictEqual(env.elements.exprBuilderTextarea.value, 'СтарееСтарых.чекчек = Справочник55.Ссылка');
+
+        // Edit expression in modal and save
+        env.elements.exprBuilderTextarea.value = 'СтарееСтарых.чекчек = Справочник55.Ссылка И СтарееСтарых.ПометкаУдаления = ЛОЖЬ';
+        env.elements.btnExprSave.click();
+
+        const q = env.window.getActiveQuery();
+        assert.strictEqual(env.window.getExpressionString(q.from[0].joins[0].on), 'СтарееСтарых.чекчек = Справочник55.Ссылка И СтарееСтарых.ПометкаУдаления = ЛОЖЬ');
+
+        // Uncheck custom: if it has simple condition, parses back into selectors
+        const inputRaw = tr.querySelector('.join-input-raw') as any;
+        inputRaw.value = 'СтарееСтарых.Код = Справочник55.Код';
+        inputRaw.dispatchEvent({ type: 'change', target: inputRaw });
+
+        chkCustom.checked = false;
+        chkCustom.dispatchEvent({ type: 'change', target: chkCustom });
+
+        assert.strictEqual(structDiv.style.display, 'flex', 'Structured controls must be visible when custom join is unchecked');
+        const selF1 = tr.querySelector('.join-select-f1') as any;
+        const selF2 = tr.querySelector('.join-select-f2') as any;
+        assert.strictEqual(selF1.value, 'Код');
+        assert.strictEqual(selF2.value, 'Код');
       });
     });
   });

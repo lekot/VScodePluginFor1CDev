@@ -674,6 +674,52 @@
             background: #543b1b;
             color: #ffc079;
         }
+
+        /* ── Tree View Styles ── */
+        .tree-toggle {
+            cursor: pointer;
+            user-select: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground, #999999);
+            flex-shrink: 0;
+        }
+        .tree-toggle:hover {
+            color: var(--vscode-foreground, #cccccc);
+        }
+        .tree-toggle::before {
+            content: '▶';
+        }
+        .tree-toggle.expanded::before {
+            content: '▼';
+        }
+        .tree-row {
+            padding: 2px 4px;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            font-size: 12px;
+            user-select: none;
+        }
+        .tree-row:hover {
+            background-color: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.08));
+        }
+        .tree-children {
+            padding-left: 14px;
+        }
+        .btn-edit-field-expr {
+            padding: 1px 5px;
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+        .btn-edit-join-expr {
+            padding: 2px 6px;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
@@ -1327,6 +1373,52 @@
             <div class="modal-footer">
                 <button id="btn-modal-save">Применить</button>
                 <button id="btn-modal-cancel" class="secondary">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Modal Dialog: Expression Builder ── -->
+    <div id="modal-expr-builder" class="modal-backdrop">
+        <div class="modal-dialog" style="width: 860px; height: 600px; max-width: 95vw; max-height: 90vh;">
+            <div class="modal-header">
+                <span class="modal-title" id="modal-expr-title">Редактирование выражения</span>
+                <button id="btn-expr-close" class="secondary icon-btn">✕</button>
+            </div>
+            <div class="modal-body" style="display: flex; flex-direction: column; gap: 10px; height: calc(100% - 90px); min-height: 0;">
+                <!-- Top split: Available Fields (left) & Functions/Operators (right) -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 260px; min-height: 180px;">
+                    <div class="column-box" style="height: 100%; min-height: 0;">
+                        <div class="column-title"><span>Доступные поля</span></div>
+                        <div id="expr-fields-tree" class="tree-container" style="flex: 1; overflow-y: auto;"></div>
+                    </div>
+                    <div class="column-box" style="height: 100%; min-height: 0;">
+                        <div class="column-title"><span>Функции и операторы</span></div>
+                        <div id="expr-functions-tree" class="tree-container" style="flex: 1; overflow-y: auto;"></div>
+                    </div>
+                </div>
+                <!-- Quick operators toolbar -->
+                <div id="expr-op-toolbar" class="expr-toolbar" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+                    <button type="button" class="secondary expr-op-btn" data-op="+">+</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="-">-</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="*">*</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="/">/</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="=">=</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="<>">&lt;&gt;</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="<">&lt;</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="<=">&lt;=</button>
+                    <button type="button" class="secondary expr-op-btn" data-op=">">&gt;</button>
+                    <button type="button" class="secondary expr-op-btn" data-op=">=">&gt;=</button>
+                    <button type="button" class="secondary expr-op-btn" data-op="( )">( )</button>
+                    <button type="button" class="secondary expr-op-btn" data-op=",">,</button>
+                </div>
+                <!-- Center / Bottom: Editable Expression Textarea -->
+                <div style="flex: 1; display: flex; flex-direction: column; min-height: 120px;">
+                    <textarea id="expr-builder-textarea" class="sdbl-editor" style="flex: 1; resize: none; font-family: var(--vscode-editor-font-family); font-size: 13px;" placeholder="Введите выражение..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-expr-save">ОК</button>
+                <button id="btn-expr-cancel" class="secondary">Отмена</button>
             </div>
         </div>
     </div>
@@ -2222,13 +2314,27 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 editorSyncStatus: document.getElementById('editor-sync-status'),
                 textParseError: document.getElementById('text-parse-error'),
 
-                // Modal
+                // Modal VT Params
                 modalVtParams: document.getElementById('modal-vt-params'),
                 modalVtTitle: document.getElementById('modal-vt-title'),
                 tbodyVtParams: document.getElementById('tbody-vt-params'),
                 btnModalClose: document.getElementById('btn-modal-close'),
                 btnModalSave: document.getElementById('btn-modal-save'),
-                btnModalCancel: document.getElementById('btn-modal-cancel')
+                btnModalCancel: document.getElementById('btn-modal-cancel'),
+
+                // Modal Expression Builder
+                modalExprBuilder: document.getElementById('modal-expr-builder'),
+                modalExprTitle: document.getElementById('modal-expr-title'),
+                exprFieldsTree: document.getElementById('expr-fields-tree'),
+                exprFunctionsTree: document.getElementById('expr-functions-tree'),
+                exprOpToolbar: document.getElementById('expr-op-toolbar'),
+                exprBuilderTextarea: document.getElementById('expr-builder-textarea'),
+                btnExprClose: document.getElementById('btn-expr-close'),
+                btnExprSave: document.getElementById('btn-expr-save'),
+                btnExprCancel: document.getElementById('btn-expr-cancel'),
+
+                // From Tables Tree
+                fromTablesTree: document.getElementById('tbody-from-tables')
             };
 
             // ── Helpers ──
@@ -2697,6 +2803,29 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
             function getTableFieldsFromMetadata(tableAlias, sourceName) {
                 return getTableFieldNodes(tableAlias, sourceName).map(function(f) { return f.name; });
+            }
+
+            function getReferencedEntityName(dataType) {
+                if (!dataType) return null;
+                const dt = String(dataType).trim();
+                const m = dt.match(/^(?:СправочникСсылка|CatalogRef|ДокументСсылка|DocumentRef|ПланВидовХарактеристикСсылка|ChartOfCharacteristicTypesRef|ПланСчетовСсылка|ChartOfAccountsRef|ПланВидовРасчетаСсылка|ChartOfCalculationTypesRef|БизнесПроцессСсылка|BusinessProcessRef|ЗадачаСсылка|TaskRef)\.([a-zA-Z0-9а-яА-ЯёЁ_]+)$/i);
+                if (m) {
+                    return m[1];
+                }
+                const dotIdx = dt.lastIndexOf('.');
+                if (dotIdx !== -1) {
+                    const prefix = dt.substring(0, dotIdx).toLowerCase();
+                    if (prefix.indexOf('ссылка') !== -1 || prefix.indexOf('ref') !== -1) {
+                        return dt.substring(dotIdx + 1);
+                    }
+                }
+                return null;
+            }
+
+            function getReferencedTableFields(dataType) {
+                const entityName = getReferencedEntityName(dataType);
+                if (!entityName) return [];
+                return getTableFieldNodes(entityName, entityName);
             }
 
             function parseSimpleJoinOn(onStr, t1, t2) {
@@ -4697,9 +4826,125 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         isVirtual = isTableVirtual(tblInfo.source);
                     }
 
-                    // Col 1: Table name
+                    // Col 1: Table name & Expandable Fields Tree
                     const tdName = document.createElement('td');
-                    tdName.textContent = tableName;
+
+                    const tableRow = document.createElement('div');
+                    tableRow.className = 'tree-row table-node';
+                    tableRow.style.display = 'flex';
+                    tableRow.style.alignItems = 'center';
+                    tableRow.style.cursor = 'pointer';
+
+                    const toggle = document.createElement('span');
+                    toggle.className = 'tree-toggle';
+                    toggle.textContent = '';
+                    toggle.style.display = 'inline-block';
+                    toggle.style.width = '14px';
+
+                    const label = document.createElement('span');
+                    label.textContent = tableName;
+
+                    tableRow.appendChild(toggle);
+                    tableRow.appendChild(label);
+                    tdName.appendChild(tableRow);
+
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'tree-children';
+                    childContainer.style.display = 'none';
+                    childContainer.style.paddingLeft = '14px';
+                    tdName.appendChild(childContainer);
+
+                    let isExpanded = false;
+
+                    function renderFromTableFields(container, fieldNodes, parentPath) {
+                        (fieldNodes || []).forEach(function(fn) {
+                            const fRow = document.createElement('div');
+                            fRow.className = 'tree-row field-node';
+                            fRow.style.display = 'flex';
+                            fRow.style.alignItems = 'center';
+                            fRow.style.cursor = 'pointer';
+                            fRow.style.padding = '1px 2px';
+
+                            const fullPath = parentPath + '.' + fn.name;
+                            const refEntity = getReferencedEntityName(fn.dataType);
+                            let fChildren = null;
+                            let fToggle = null;
+
+                            if (refEntity) {
+                                fToggle = document.createElement('span');
+                                fToggle.className = 'tree-toggle';
+                                fToggle.textContent = '';
+                                fToggle.style.display = 'inline-block';
+                                fToggle.style.width = '14px';
+                                fRow.appendChild(fToggle);
+
+                                fChildren = document.createElement('div');
+                                fChildren.className = 'tree-children';
+                                fChildren.style.display = 'none';
+                                fChildren.style.paddingLeft = '14px';
+                            } else {
+                                const spacer = document.createElement('span');
+                                spacer.style.display = 'inline-block';
+                                spacer.style.width = '14px';
+                                fRow.appendChild(spacer);
+                            }
+
+                            const fIcon = document.createElement('span');
+                            fIcon.className = 'tree-icon';
+                            fIcon.textContent = refEntity ? '🔗 ' : '🔹 ';
+                            fRow.appendChild(fIcon);
+
+                            const fLabel = document.createElement('span');
+                            fLabel.textContent = fn.name + (fn.dataType ? ' : ' + fn.dataType : '');
+                            fRow.appendChild(fLabel);
+
+                            fRow.addEventListener('dblclick', function(e) {
+                                if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                                addFieldToQuery(fullPath);
+                            });
+
+                            if (refEntity && fToggle && fChildren) {
+                                let subExpanded = false;
+                                fToggle.addEventListener('click', function(e) {
+                                    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                                    subExpanded = !subExpanded;
+                                    if (subExpanded) {
+                                        fChildren.style.display = 'block';
+                                        fToggle.classList.add('expanded');
+                                        if (fChildren.children.length === 0) {
+                                            const subNodes = getReferencedTableFields(fn.dataType);
+                                            renderFromTableFields(fChildren, subNodes, fullPath);
+                                        }
+                                    } else {
+                                        fChildren.style.display = 'none';
+                                        fToggle.classList.remove('expanded');
+                                    }
+                                });
+                            }
+
+                            container.appendChild(fRow);
+                            if (fChildren) {
+                                container.appendChild(fChildren);
+                            }
+                        });
+                    }
+
+                    toggle.addEventListener('click', function(e) {
+                        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                        isExpanded = !isExpanded;
+                        if (isExpanded) {
+                            childContainer.style.display = 'block';
+                            toggle.classList.add('expanded');
+                            if (childContainer.children.length === 0) {
+                                const fields = getTableFieldNodes(tblInfo.alias || tableName, tblInfo.source && tblInfo.source.name ? tblInfo.source.name : tableName);
+                                renderFromTableFields(childContainer, fields, tblInfo.alias || tableName);
+                            }
+                        } else {
+                            childContainer.style.display = 'none';
+                            toggle.classList.remove('expanded');
+                        }
+                    });
+
                     tr.appendChild(tdName);
 
                     // Col 2: Alias
@@ -4780,15 +5025,39 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                     // Col 1: Expression
                     const tdExpr = document.createElement('td');
+                    tdExpr.style.display = 'flex';
+                    tdExpr.style.alignItems = 'center';
+                    tdExpr.style.gap = '4px';
+
                     const inputExpr = document.createElement('input');
                     inputExpr.type = 'text';
                     inputExpr.value = getExpressionString(f.expression);
+                    inputExpr.style.flex = '1';
                     inputExpr.style.width = '100%';
                     inputExpr.addEventListener('change', function() {
                         f.expression = inputExpr.value;
                         notifyChange();
                     });
+
+                    const btnEdit = document.createElement('button');
+                    btnEdit.type = 'button';
+                    btnEdit.className = 'secondary icon-btn btn-edit-field-expr';
+                    btnEdit.textContent = '✏️';
+                    btnEdit.title = 'Открыть конструктор выражений';
+                    btnEdit.addEventListener('click', function() {
+                        openExpressionBuilder({
+                            title: 'Выражение: ' + (f.alias || getExpressionString(f.expression)),
+                            value: getExpressionString(f.expression),
+                            onSave: function(newVal) {
+                                f.expression = newVal;
+                                inputExpr.value = newVal;
+                                notifyChange();
+                            }
+                        });
+                    });
+
                     tdExpr.appendChild(inputExpr);
+                    tdExpr.appendChild(btnEdit);
                     tr.appendChild(tdExpr);
 
                     // Col 2: Alias
@@ -5171,11 +5440,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                     const onStr = getExpressionString(jn.on);
                     const parsed = parseSimpleJoinOn(onStr, selT1.value, selT2.value);
+                    const isCustom = jn.isCustom !== undefined ? jn.isCustom : (onStr && onStr !== 'ИСТИНА' && !parsed);
+                    jn.isCustom = !!isCustom;
 
                     // Structured selectors container
                     const structDiv = document.createElement('div');
                     structDiv.className = 'join-on-structured';
-                    structDiv.style.display = 'flex';
+                    structDiv.style.display = isCustom ? 'none' : 'flex';
                     structDiv.style.alignItems = 'center';
                     structDiv.style.gap = '4px';
                     structDiv.style.marginBottom = '4px';
@@ -5246,7 +5517,6 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         populateFieldSelect(selF2, fNodes, val);
                     }
 
-                    // Initial population of F1 and F2
                     updateF1Options(parsed ? parsed.f1 : '');
                     updateF2Options(parsed ? parsed.f2 : '');
 
@@ -5258,29 +5528,17 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     btnAutoLink.title = 'Автоматически связать по типам';
                     btnAutoLink.style.padding = '2px 6px';
 
-                    // Toggle raw expression button
-                    const btnToggleRaw = document.createElement('button');
-                    btnToggleRaw.type = 'button';
-                    btnToggleRaw.className = 'secondary icon-btn btn-toggle-raw';
-                    btnToggleRaw.textContent = '✏️';
-                    btnToggleRaw.title = 'Произвольное выражение';
-                    btnToggleRaw.style.padding = '2px 6px';
-
                     structDiv.appendChild(selF1);
                     structDiv.appendChild(selOp);
                     structDiv.appendChild(selF2);
                     structDiv.appendChild(btnAutoLink);
-                    structDiv.appendChild(btnToggleRaw);
                     tdOn.appendChild(structDiv);
 
                     // Raw expression container
                     const rawDiv = document.createElement('div');
                     rawDiv.className = 'join-on-raw';
-                    if (parsed && onStr && onStr !== 'ИСТИНА') {
-                        rawDiv.style.display = 'none';
-                    } else {
-                        rawDiv.style.display = 'block';
-                    }
+                    rawDiv.style.display = isCustom ? 'block' : 'none';
+                    rawDiv.style.marginBottom = '4px';
 
                     const inputRaw = document.createElement('input');
                     inputRaw.type = 'text';
@@ -5291,6 +5549,42 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                     rawDiv.appendChild(inputRaw);
                     tdOn.appendChild(rawDiv);
+
+                    // Controls row: [x] Произвольное & ✏️ Expression Builder button
+                    const ctrlDiv = document.createElement('div');
+                    ctrlDiv.className = 'join-on-controls';
+                    ctrlDiv.style.display = 'flex';
+                    ctrlDiv.style.alignItems = 'center';
+                    ctrlDiv.style.gap = '8px';
+
+                    const labelCustom = document.createElement('label');
+                    labelCustom.style.display = 'inline-flex';
+                    labelCustom.style.alignItems = 'center';
+                    labelCustom.style.gap = '4px';
+                    labelCustom.style.fontSize = '11px';
+                    labelCustom.style.cursor = 'pointer';
+
+                    const chkCustom = document.createElement('input');
+                    chkCustom.type = 'checkbox';
+                    chkCustom.className = 'join-check-custom';
+                    chkCustom.checked = isCustom;
+
+                    const spanCustom = document.createElement('span');
+                    spanCustom.textContent = 'Произвольное';
+
+                    labelCustom.appendChild(chkCustom);
+                    labelCustom.appendChild(spanCustom);
+                    ctrlDiv.appendChild(labelCustom);
+
+                    const btnEdit = document.createElement('button');
+                    btnEdit.type = 'button';
+                    btnEdit.className = 'secondary icon-btn btn-edit-join-expr';
+                    btnEdit.textContent = '✏️';
+                    btnEdit.title = 'Редактировать в конструкторе выражений';
+                    btnEdit.style.padding = '2px 6px';
+                    ctrlDiv.appendChild(btnEdit);
+
+                    tdOn.appendChild(ctrlDiv);
                     tr.appendChild(tdOn);
 
                     // Handlers
@@ -5323,6 +5617,54 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         notifyChange();
                     });
 
+                    chkCustom.addEventListener('change', function() {
+                        if (chkCustom.checked) {
+                            jn.isCustom = true;
+                            structDiv.style.display = 'none';
+                            rawDiv.style.display = 'block';
+                            if (selF1.value && selF2.value) {
+                                const op = selOp.value || '=';
+                                const newStr = selT1.value + '.' + selF1.value + ' ' + op + ' ' + selT2.value + '.' + selF2.value;
+                                inputRaw.value = newStr;
+                                jn.on = { type: 'RawExpression', raw: newStr };
+                            }
+                        } else {
+                            jn.isCustom = false;
+                            structDiv.style.display = 'flex';
+                            rawDiv.style.display = 'none';
+                            const p = parseSimpleJoinOn(inputRaw.value, selT1.value, selT2.value);
+                            if (p) {
+                                selF1.value = p.f1 || '';
+                                selOp.value = p.op || '=';
+                                selF2.value = p.f2 || '';
+                            }
+                        }
+                        notifyChange();
+                    });
+
+                    btnEdit.addEventListener('click', function() {
+                        openExpressionBuilder({
+                            title: 'Условие связи: ' + selT1.value + ' ↔ ' + selT2.value,
+                            value: getExpressionString(jn.on) || inputRaw.value || '',
+                            onSave: function(newVal) {
+                                jn.on = { type: 'RawExpression', raw: newVal };
+                                inputRaw.value = newVal;
+                                const p = parseSimpleJoinOn(newVal, selT1.value, selT2.value);
+                                if (p && !jn.isCustom) {
+                                    selF1.value = p.f1 || '';
+                                    selOp.value = p.op || '=';
+                                    selF2.value = p.f2 || '';
+                                } else if (!p) {
+                                    jn.isCustom = true;
+                                    chkCustom.checked = true;
+                                    structDiv.style.display = 'none';
+                                    rawDiv.style.display = 'block';
+                                }
+                                notifyChange();
+                            }
+                        });
+                    });
+
                     btnAutoLink.addEventListener('click', function() {
                         const t1Obj = allTables.find(function(f) {
                             return (f.alias && f.alias === selT1.value) || (f.source && f.source.name === selT1.value);
@@ -5340,23 +5682,20 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                             selF1.value = sug.field1;
                             selOp.value = sug.op || '=';
                             selF2.value = sug.field2;
+                            jn.isCustom = false;
+                            chkCustom.checked = false;
+                            structDiv.style.display = 'flex';
                             rawDiv.style.display = 'none';
                         } else {
                             selF1.value = '';
                             selOp.value = '=';
                             selF2.value = '';
+                            jn.isCustom = true;
+                            chkCustom.checked = true;
+                            structDiv.style.display = 'none';
                             rawDiv.style.display = 'block';
                         }
                         notifyChange();
-                    });
-
-                    btnToggleRaw.addEventListener('click', function() {
-                        if (rawDiv.style.display === 'none') {
-                            rawDiv.style.display = 'block';
-                            inputRaw.focus();
-                        } else {
-                            rawDiv.style.display = 'none';
-                        }
                     });
 
                     selT1.addEventListener('change', function() {
@@ -7139,6 +7478,441 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 notifyChange();
             }
 
+            // ── Modal Dialog: Expression Builder ──
+            let currentExprBuilderCallback = null;
+
+            function openExpressionBuilder(options) {
+                options = options || {};
+                currentExprBuilderCallback = typeof options.onSave === 'function' ? options.onSave : null;
+                if (elements.modalExprTitle) {
+                    elements.modalExprTitle.textContent = options.title || 'Редактирование выражения';
+                }
+                if (elements.exprBuilderTextarea) {
+                    elements.exprBuilderTextarea.value = options.value || '';
+                }
+                if (elements.modalExprBuilder) {
+                    elements.modalExprBuilder.classList.add('open');
+                }
+                renderExprFieldsTree();
+                renderExprFunctionsTree();
+                if (elements.exprBuilderTextarea && typeof elements.exprBuilderTextarea.focus === 'function') {
+                    elements.exprBuilderTextarea.focus();
+                }
+            }
+
+            function closeExpressionBuilder() {
+                if (elements.modalExprBuilder) {
+                    elements.modalExprBuilder.classList.remove('open');
+                }
+                currentExprBuilderCallback = null;
+            }
+
+            function insertIntoExprEditor(text) {
+                if (!elements.exprBuilderTextarea) return;
+                const ta = elements.exprBuilderTextarea;
+                const val = ta.value || '';
+                const start = ta.selectionStart !== undefined ? ta.selectionStart : val.length;
+                const end = ta.selectionEnd !== undefined ? ta.selectionEnd : val.length;
+
+                let insertText = String(text);
+                let cursorOffset = -1;
+                const barIdx = insertText.indexOf('|');
+                if (barIdx !== -1) {
+                    insertText = insertText.substring(0, barIdx) + insertText.substring(barIdx + 1);
+                    cursorOffset = barIdx;
+                }
+
+                const before = val.substring(0, start);
+                const after = val.substring(end);
+                ta.value = before + insertText + after;
+
+                const newPos = cursorOffset !== -1 ? (start + cursorOffset) : (start + insertText.length);
+                if (typeof ta.setSelectionRange === 'function') {
+                    ta.setSelectionRange(newPos, newPos);
+                }
+                ta.selectionStart = newPos;
+                ta.selectionEnd = newPos;
+
+                try {
+                    ta.dispatchEvent(new Event('input'));
+                    ta.dispatchEvent(new Event('change'));
+                } catch (e) {
+                    if (typeof ta.dispatchEvent === 'function') {
+                        ta.dispatchEvent({ type: 'input' });
+                        ta.dispatchEvent({ type: 'change' });
+                    }
+                }
+            }
+
+            // Quick operators toolbar
+            const exprOperators = ['+', '-', '*', '/', '=', '<>', '<', '<=', '>', '>=', '( )', ','];
+            if (elements.exprOpToolbar) {
+                elements.exprOpToolbar.innerHTML = '';
+                exprOperators.forEach(function(op) {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'secondary expr-op-btn';
+                    btn.setAttribute('data-op', op);
+                    btn.textContent = op;
+                    btn.addEventListener('click', function() {
+                        if (op === '( )') {
+                            insertIntoExprEditor('(|)');
+                        } else if (op === ',') {
+                            insertIntoExprEditor(', ');
+                        } else {
+                            insertIntoExprEditor(' ' + op + ' ');
+                        }
+                    });
+                    elements.exprOpToolbar.appendChild(btn);
+                });
+            } else {
+                const opBtns = document.querySelectorAll('.expr-op-btn');
+                opBtns.forEach(function(btn) {
+                    const op = btn.getAttribute('data-op') || btn.textContent.trim();
+                    btn.addEventListener('click', function() {
+                        if (op === '( )') {
+                            insertIntoExprEditor('(|)');
+                        } else if (op === ',') {
+                            insertIntoExprEditor(', ');
+                        } else {
+                            insertIntoExprEditor(' ' + op + ' ');
+                        }
+                    });
+                });
+            }
+
+            if (elements.exprBuilderTextarea) {
+                elements.exprBuilderTextarea.addEventListener('dragover', function(e) {
+                    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+                });
+                elements.exprBuilderTextarea.addEventListener('drop', function(e) {
+                    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+                    if (e && e.dataTransfer) {
+                        const data = e.dataTransfer.getData('text/plain');
+                        if (data) {
+                            insertIntoExprEditor(data);
+                        }
+                    }
+                });
+            }
+
+            if (elements.btnExprClose) {
+                elements.btnExprClose.addEventListener('click', closeExpressionBuilder);
+            }
+            if (elements.btnExprCancel) {
+                elements.btnExprCancel.addEventListener('click', closeExpressionBuilder);
+            }
+            if (elements.btnExprSave) {
+                elements.btnExprSave.addEventListener('click', function() {
+                    const val = elements.exprBuilderTextarea ? elements.exprBuilderTextarea.value : '';
+                    if (typeof currentExprBuilderCallback === 'function') {
+                        currentExprBuilderCallback(val);
+                    }
+                    closeExpressionBuilder();
+                });
+            }
+
+            function renderExprFieldsTree() {
+                if (!elements.exprFieldsTree) return;
+                elements.exprFieldsTree.innerHTML = '';
+                const q = getActiveQuery();
+                const allTables = getAllTablesInQuery(q);
+
+                allTables.forEach(function(tblInfo) {
+                    const tblAlias = tblInfo.alias || (tblInfo.source && tblInfo.source.name) || 'Таблица';
+                    const tblSource = tblInfo.source && tblInfo.source.name ? tblInfo.source.name : tblAlias;
+
+                    const tableNode = document.createElement('div');
+                    tableNode.className = 'tree-row table-node';
+                    tableNode.style.display = 'flex';
+                    tableNode.style.alignItems = 'center';
+                    tableNode.style.cursor = 'pointer';
+                    tableNode.style.padding = '2px 4px';
+
+                    const toggle = document.createElement('span');
+                    toggle.className = 'tree-toggle';
+                    toggle.textContent = '';
+                    toggle.style.display = 'inline-block';
+                    toggle.style.width = '14px';
+
+                    const icon = document.createElement('span');
+                    icon.className = 'tree-icon';
+                    icon.textContent = '📄 ';
+
+                    const label = document.createElement('span');
+                    label.textContent = tblAlias;
+
+                    tableNode.appendChild(toggle);
+                    tableNode.appendChild(icon);
+                    tableNode.appendChild(label);
+
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'tree-children';
+                    childContainer.style.display = 'block';
+                    childContainer.style.paddingLeft = '14px';
+
+                    let isExpanded = true;
+                    toggle.classList.add('expanded');
+
+                    function renderFieldItems(container, fieldNodes, parentPath) {
+                        (fieldNodes || []).forEach(function(fn) {
+                            const fRow = document.createElement('div');
+                            fRow.className = 'tree-row field-node';
+                            fRow.style.display = 'flex';
+                            fRow.style.alignItems = 'center';
+                            fRow.style.cursor = 'pointer';
+                            fRow.style.padding = '1px 4px';
+
+                            const fullFieldPath = parentPath + '.' + fn.name;
+                            const refEntity = getReferencedEntityName(fn.dataType);
+                            let fChildren = null;
+                            let fToggle = null;
+
+                            if (refEntity) {
+                                fToggle = document.createElement('span');
+                                fToggle.className = 'tree-toggle';
+                                fToggle.textContent = '';
+                                fToggle.style.display = 'inline-block';
+                                fToggle.style.width = '14px';
+                                fRow.appendChild(fToggle);
+
+                                fChildren = document.createElement('div');
+                                fChildren.className = 'tree-children';
+                                fChildren.style.display = 'none';
+                                fChildren.style.paddingLeft = '14px';
+                            } else {
+                                const spacer = document.createElement('span');
+                                spacer.style.display = 'inline-block';
+                                spacer.style.width = '14px';
+                                fRow.appendChild(spacer);
+                            }
+
+                            const fIcon = document.createElement('span');
+                            fIcon.className = 'tree-icon';
+                            fIcon.textContent = refEntity ? '🔗 ' : '🔹 ';
+                            fRow.appendChild(fIcon);
+
+                            const fLabel = document.createElement('span');
+                            fLabel.textContent = fn.name + (fn.dataType ? ' : ' + fn.dataType : '');
+                            fRow.appendChild(fLabel);
+
+                            fRow.addEventListener('dblclick', function(e) {
+                                if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                                insertIntoExprEditor(fullFieldPath);
+                            });
+
+                            fRow.draggable = true;
+                            fRow.addEventListener('dragstart', function(e) {
+                                if (e && e.dataTransfer) {
+                                    e.dataTransfer.setData('text/plain', fullFieldPath);
+                                }
+                            });
+
+                            if (refEntity && fToggle && fChildren) {
+                                let subExpanded = false;
+                                fToggle.addEventListener('click', function(e) {
+                                    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                                    subExpanded = !subExpanded;
+                                    if (subExpanded) {
+                                        fChildren.style.display = 'block';
+                                        fToggle.classList.add('expanded');
+                                        if (fChildren.children.length === 0) {
+                                            const subNodes = getReferencedTableFields(fn.dataType);
+                                            renderFieldItems(fChildren, subNodes, fullFieldPath);
+                                        }
+                                    } else {
+                                        fChildren.style.display = 'none';
+                                        fToggle.classList.remove('expanded');
+                                    }
+                                });
+                            }
+
+                            container.appendChild(fRow);
+                            if (fChildren) {
+                                container.appendChild(fChildren);
+                            }
+                        });
+                    }
+
+                    const initialFields = getTableFieldNodes(tblAlias, tblSource);
+                    renderFieldItems(childContainer, initialFields, tblAlias);
+
+                    toggle.addEventListener('click', function(e) {
+                        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                        isExpanded = !isExpanded;
+                        if (isExpanded) {
+                            childContainer.style.display = 'block';
+                            toggle.classList.add('expanded');
+                            if (childContainer.children.length === 0) {
+                                const fields = getTableFieldNodes(tblAlias, tblSource);
+                                renderFieldItems(childContainer, fields, tblAlias);
+                            }
+                        } else {
+                            childContainer.style.display = 'none';
+                            toggle.classList.remove('expanded');
+                        }
+                    });
+
+                    elements.exprFieldsTree.appendChild(tableNode);
+                    elements.exprFieldsTree.appendChild(childContainer);
+                });
+            }
+
+            function renderExprFunctionsTree() {
+                if (!elements.exprFunctionsTree) return;
+                elements.exprFunctionsTree.innerHTML = '';
+
+                const functionCategories = [
+                    {
+                        name: 'Агрегатные функции',
+                        items: [
+                            { name: 'СУММА', template: 'СУММА(|)' },
+                            { name: 'КОЛИЧЕСТВО', template: 'КОЛИЧЕСТВО(|)' },
+                            { name: 'КОЛИЧЕСТВО(РАЗЛИЧНЫЕ)', template: 'КОЛИЧЕСТВО(РАЗЛИЧНЫЕ |)' },
+                            { name: 'МИНИМУМ', template: 'МИНИМУМ(|)' },
+                            { name: 'МАКСИМУМ', template: 'МАКСИМУМ(|)' },
+                            { name: 'СРЕДНЕЕ', template: 'СРЕДНЕЕ(|)' }
+                        ]
+                    },
+                    {
+                        name: 'Логика и условия',
+                        items: [
+                            { name: 'ЕСТЬNULL', template: 'ЕСТЬNULL(|, 0)' },
+                            { name: 'ВЫБОР', template: 'ВЫБОР КОГДА | ТОГДА \n    \nИНАЧЕ \nКОНЕЦ' },
+                            { name: 'ВЫРАЗИТЬ(Число)', template: 'ВЫРАЗИТЬ(| КАК Число(15, 2))' },
+                            { name: 'ВЫРАЗИТЬ(Строка)', template: 'ВЫРАЗИТЬ(| КАК Строка(100))' },
+                            { name: 'ВЫРАЗИТЬ(Дата)', template: 'ВЫРАЗИТЬ(| КАК Дата)' },
+                            { name: 'ВЫРАЗИТЬ(Булево)', template: 'ВЫРАЗИТЬ(| КАК Булево)' },
+                            { name: 'ЕСТЬ NULL', template: '| ЕСТЬ NULL' },
+                            { name: 'НЕ ЕСТЬ NULL', template: '| НЕ ЕСТЬ NULL' },
+                            { name: 'В ИЕРАРХИИ', template: 'В ИЕРАРХИИ (|)' },
+                            { name: 'В (списке)', template: 'В (|)' },
+                            { name: 'МЕЖДУ', template: 'МЕЖДУ | И ' },
+                            { name: 'ПОДОБНО', template: 'ПОДОБНО "|%"' }
+                        ]
+                    },
+                    {
+                        name: 'Строковые функции',
+                        items: [
+                            { name: 'ПОДСТРОКА', template: 'ПОДСТРОКА(|, 1, 10)' },
+                            { name: 'СТРОКА', template: 'СТРОКА(|)' },
+                            { name: 'ДЛИНАСТРОКИ', template: 'ДЛИНАСТРОКИ(|)' },
+                            { name: 'СОКРЛ', template: 'СОКРЛ(|)' },
+                            { name: 'СОКРП', template: 'СОКРП(|)' },
+                            { name: 'СОКРЛП', template: 'СОКРЛП(|)' },
+                            { name: 'ЛЕВ', template: 'ЛЕВ(|, 5)' },
+                            { name: 'ПРАВ', template: 'ПРАВ(|, 5)' },
+                            { name: 'ВРЕГ', template: 'ВРЕГ(|)' },
+                            { name: 'НРЕГ', template: 'НРЕГ(|)' },
+                            { name: 'СТРЗАМЕНИТЬ', template: 'СТРЗАМЕНИТЬ(|, "", "")' },
+                            { name: 'СТРНАЙТИ', template: 'СТРНАЙТИ(|, "")' },
+                            { name: 'ПУСТАЯСТРОКА', template: 'ПУСТАЯСТРОКА(|)' }
+                        ]
+                    },
+                    {
+                        name: 'Функции работы с датами',
+                        items: [
+                            { name: 'ГОД', template: 'ГОД(|)' },
+                            { name: 'КВАРТАЛ', template: 'КВАРТАЛ(|)' },
+                            { name: 'МЕСЯЦ', template: 'МЕСЯЦ(|)' },
+                            { name: 'ДЕНЬ', template: 'ДЕНЬ(|)' },
+                            { name: 'ДЕНЬГОДА', template: 'ДЕНЬГОДА(|)' },
+                            { name: 'ДЕНЬНЕДЕЛИ', template: 'ДЕНЬНЕДЕЛИ(|)' },
+                            { name: 'ЧАС', template: 'ЧАС(|)' },
+                            { name: 'МИНУТА', template: 'МИНУТА(|)' },
+                            { name: 'СЕКУНДА', template: 'СЕКУНДА(|)' },
+                            { name: 'НАЧАЛОПЕРИОДА', template: 'НАЧАЛОПЕРИОДА(|, ДЕНЬ)' },
+                            { name: 'КОНЕЦПЕРИОДА', template: 'КОНЕЦПЕРИОДА(|, ДЕНЬ)' },
+                            { name: 'ДОБАВИТЬКДАТЕ', template: 'ДОБАВИТЬКДАТЕ(|, ДЕНЬ, 1)' },
+                            { name: 'РАЗНОСТЬДАТ', template: 'РАЗНОСТЬДАТ(|, ДАТА, ДЕНЬ)' }
+                        ]
+                    },
+                    {
+                        name: 'Числовые функции',
+                        items: [
+                            { name: 'ОКРУГЛ', template: 'ОКРУГЛ(|, 2)' },
+                            { name: 'ЦЕЛОЕ', template: 'ЦЕЛОЕ(|)' }
+                        ]
+                    }
+                ];
+
+                functionCategories.forEach(function(cat) {
+                    const catNode = document.createElement('div');
+                    catNode.className = 'tree-row cat-node';
+                    catNode.style.display = 'flex';
+                    catNode.style.alignItems = 'center';
+                    catNode.style.cursor = 'pointer';
+                    catNode.style.fontWeight = '600';
+                    catNode.style.padding = '2px 4px';
+
+                    const toggle = document.createElement('span');
+                    toggle.className = 'tree-toggle expanded';
+                    toggle.textContent = '';
+                    toggle.style.display = 'inline-block';
+                    toggle.style.width = '14px';
+
+                    const label = document.createElement('span');
+                    label.textContent = cat.name;
+
+                    catNode.appendChild(toggle);
+                    catNode.appendChild(label);
+
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'tree-children';
+                    childContainer.style.display = 'block';
+                    childContainer.style.paddingLeft = '14px';
+
+                    let isExpanded = true;
+                    toggle.addEventListener('click', function(e) {
+                        if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                        isExpanded = !isExpanded;
+                        if (isExpanded) {
+                            childContainer.style.display = 'block';
+                            toggle.classList.add('expanded');
+                        } else {
+                            childContainer.style.display = 'none';
+                            toggle.classList.remove('expanded');
+                        }
+                    });
+
+                    cat.items.forEach(function(item) {
+                        const itemRow = document.createElement('div');
+                        itemRow.className = 'tree-row func-item-node';
+                        itemRow.style.display = 'flex';
+                        itemRow.style.alignItems = 'center';
+                        itemRow.style.cursor = 'pointer';
+                        itemRow.style.padding = '1px 4px';
+
+                        const icon = document.createElement('span');
+                        icon.className = 'tree-icon';
+                        icon.textContent = 'ƒ ';
+
+                        const itemLabel = document.createElement('span');
+                        itemLabel.textContent = item.name;
+
+                        itemRow.appendChild(icon);
+                        itemRow.appendChild(itemLabel);
+
+                        itemRow.addEventListener('dblclick', function(e) {
+                            if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+                            insertIntoExprEditor(item.template);
+                        });
+
+                        itemRow.draggable = true;
+                        itemRow.addEventListener('dragstart', function(e) {
+                            if (e && e.dataTransfer) {
+                                e.dataTransfer.setData('text/plain', item.template);
+                            }
+                        });
+
+                        childContainer.appendChild(itemRow);
+                    });
+
+                    elements.exprFunctionsTree.appendChild(catNode);
+                    elements.exprFunctionsTree.appendChild(childContainer);
+                });
+            }
+
             // ── Event Listeners ──
             // Tabs navigation
             elements.tabBtns.forEach(function(btn) {
@@ -8239,6 +9013,13 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             window.autoSuggestJoinCondition = autoSuggestJoinCondition;
             window.parseSimpleJoinOn = parseSimpleJoinOn;
             window.traverseAstExpr = traverseAstExpr;
+            window.openExpressionBuilder = openExpressionBuilder;
+            window.closeExpressionBuilder = closeExpressionBuilder;
+            window.insertIntoExprEditor = insertIntoExprEditor;
+            window.renderExprFieldsTree = renderExprFieldsTree;
+            window.renderExprFunctionsTree = renderExprFunctionsTree;
+            window.getReferencedEntityName = getReferencedEntityName;
+            window.getReferencedTableFields = getReferencedTableFields;
 
             // Initial render & ready handshake
             renderAll();
