@@ -2575,7 +2575,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 return aggRe.test(upper);
             }
 
-            function getTableFieldsFromMetadata(tableAlias, sourceName) {
+            function getTableFieldNodes(tableAlias, sourceName) {
                 const foundFields = [];
                 const normSource = (sourceName || '').trim().toLowerCase();
                 const withoutPref = normSource ? getTableAliasWithoutPrefix(normSource).toLowerCase() : '';
@@ -2635,8 +2635,14 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                 if (tableNode && tableNode.children && tableNode.children.length > 0) {
                     tableNode.children.forEach(function(ch) {
-                        if (ch.nodeType === 'field') {
-                            foundFields.push(ch.name);
+                        if (ch.nodeType === 'field' || !ch.nodeType) {
+                            foundFields.push({
+                                name: ch.name,
+                                dataType: ch.dataType,
+                                nodeType: ch.nodeType || 'field',
+                                label: ch.label,
+                                synonym: ch.synonym
+                            });
                         }
                     });
                 }
@@ -2648,18 +2654,235 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 // Category-specific fallbacks if metadata tree children are not loaded yet
                 const lowerSrc = (sourceName || '').toLowerCase();
                 if (lowerSrc.indexOf('справочник') !== -1 || lowerSrc.indexOf('catalog') !== -1) {
-                    return ['Ссылка', 'ПометкаУдаления', 'Предопределенный', 'Код', 'Наименование'];
+                    return [
+                        { name: 'Ссылка', dataType: 'Ref' },
+                        { name: 'ПометкаУдаления', dataType: 'Boolean' },
+                        { name: 'Предопределенный', dataType: 'Boolean' },
+                        { name: 'Код', dataType: 'String' },
+                        { name: 'Наименование', dataType: 'String' }
+                    ];
                 }
                 if (lowerSrc.indexOf('документ') !== -1 || lowerSrc.indexOf('document') !== -1) {
-                    return ['Ссылка', 'ПометкаУдаления', 'Дата', 'Номер', 'Проведен'];
+                    return [
+                        { name: 'Ссылка', dataType: 'Ref' },
+                        { name: 'ПометкаУдаления', dataType: 'Boolean' },
+                        { name: 'Дата', dataType: 'Date' },
+                        { name: 'Номер', dataType: 'String' },
+                        { name: 'Проведен', dataType: 'Boolean' }
+                    ];
                 }
                 if (lowerSrc.indexOf('регистрсведений') !== -1 || lowerSrc.indexOf('informationregister') !== -1) {
-                    return ['Период', 'Регистратор', 'НомерСтроки', 'Активность'];
+                    return [
+                        { name: 'Период', dataType: 'Date' },
+                        { name: 'Регистратор', dataType: 'Ref' },
+                        { name: 'НомерСтроки', dataType: 'Number' },
+                        { name: 'Активность', dataType: 'Boolean' }
+                    ];
                 }
                 if (lowerSrc.indexOf('регистрнакопления') !== -1 || lowerSrc.indexOf('accumulationregister') !== -1) {
-                    return ['Период', 'Регистратор', 'НомерСтроки', 'Активность', 'ВидДвижения'];
+                    return [
+                        { name: 'Период', dataType: 'Date' },
+                        { name: 'Регистратор', dataType: 'Ref' },
+                        { name: 'НомерСтроки', dataType: 'Number' },
+                        { name: 'Активность', dataType: 'Boolean' },
+                        { name: 'ВидДвижения', dataType: 'Enum' }
+                    ];
                 }
-                return ['Ссылка', 'Код', 'Наименование'];
+                return [
+                    { name: 'Ссылка', dataType: 'Ref' },
+                    { name: 'Код', dataType: 'String' },
+                    { name: 'Наименование', dataType: 'String' }
+                ];
+            }
+
+            function getTableFieldsFromMetadata(tableAlias, sourceName) {
+                return getTableFieldNodes(tableAlias, sourceName).map(function(f) { return f.name; });
+            }
+
+            function parseSimpleJoinOn(onStr, t1, t2) {
+                if (!onStr || typeof onStr !== 'string') return null;
+                const str = onStr.trim();
+                const m = str.match(/^([a-zA-Z0-9а-яА-ЯёЁ_]+(?:\.[a-zA-Z0-9а-яА-ЯёЁ_]+)?)\s*(=|<>|<=|>=|<|>)\s*([a-zA-Z0-9а-яА-ЯёЁ_]+(?:\.[a-zA-Z0-9а-яА-ЯёЁ_]+)?)$/);
+                if (!m) return null;
+                const left = m[1];
+                const op = m[2];
+                const right = m[3];
+
+                let leftTbl = '', leftField = left;
+                if (left.indexOf('.') !== -1) {
+                    leftTbl = left.substring(0, left.indexOf('.'));
+                    leftField = left.substring(left.indexOf('.') + 1);
+                }
+                let rightTbl = '', rightField = right;
+                if (right.indexOf('.') !== -1) {
+                    rightTbl = right.substring(0, right.indexOf('.'));
+                    rightField = right.substring(right.indexOf('.') + 1);
+                }
+
+                if ((!leftTbl || leftTbl === t1) && (!rightTbl || rightTbl === t2)) {
+                    return { f1: leftField, op: op, f2: rightField };
+                }
+                if (leftTbl === t2 && rightTbl === t1) {
+                    let invOp = op;
+                    if (op === '<') invOp = '>';
+                    else if (op === '>') invOp = '<';
+                    else if (op === '<=') invOp = '>=';
+                    else if (op === '>=') invOp = '<=';
+                    return { f1: rightField, op: invOp, f2: leftField };
+                }
+                return { f1: leftField, op: op, f2: rightField };
+            }
+
+            function autoSuggestJoinCondition(t1Alias, t1Source, t2Alias, t2Source) {
+                const q = typeof getActiveQuery === 'function' ? getActiveQuery() : null;
+                const allTables = q ? getAllTablesInQuery(q) : [];
+
+                if (!t1Source && t1Alias && allTables.length > 0) {
+                    const found = allTables.find(function(f) {
+                        return (f.alias && f.alias === t1Alias) || (f.source && f.source.name === t1Alias);
+                    });
+                    if (found && found.source && found.source.name) {
+                        t1Source = found.source.name;
+                    }
+                }
+                if (!t2Source && t2Alias && allTables.length > 0) {
+                    const found = allTables.find(function(f) {
+                        return (f.alias && f.alias === t2Alias) || (f.source && f.source.name === t2Alias);
+                    });
+                    if (found && found.source && found.source.name) {
+                        t2Source = found.source.name;
+                    }
+                }
+
+                t1Alias = t1Alias || t1Source || 'Таблица1';
+                t2Alias = t2Alias || t2Source || 'Таблица2';
+                t1Source = t1Source || t1Alias;
+                t2Source = t2Source || t2Alias;
+
+                const t1Fields = getTableFieldNodes(t1Alias, t1Source);
+                const t2Fields = getTableFieldNodes(t2Alias, t2Source);
+
+                function extractEntity(src) {
+                    if (!src) return '';
+                    let s = String(src).trim();
+                    const dotIdx = s.lastIndexOf('.');
+                    if (dotIdx !== -1) {
+                        s = s.substring(dotIdx + 1);
+                    }
+                    return getTableAliasWithoutPrefix(s);
+                }
+
+                const t1Entity = extractEntity(t1Source);
+                const t2Entity = extractEntity(t2Source);
+
+                function isRefField(f) {
+                    if (!f) return false;
+                    const nameLow = (f.name || '').toLowerCase();
+                    if (nameLow === 'ссылка' || nameLow === 'ref') return true;
+                    const dtLow = (f.dataType || '').toLowerCase();
+                    return dtLow === 'ref' || dtLow === 'ссылка';
+                }
+
+                function fieldReferencesEntity(dataType, targetEntity) {
+                    if (!dataType || !targetEntity) return false;
+                    const dt = String(dataType).toLowerCase();
+                    const target = targetEntity.toLowerCase();
+                    const targetClean = getTableAliasWithoutPrefix(target).toLowerCase();
+
+                    const dotIdx = dt.lastIndexOf('.');
+                    if (dotIdx !== -1) {
+                        const afterDot = dt.substring(dotIdx + 1).trim();
+                        if (afterDot === target || afterDot === targetClean) return true;
+                    }
+
+                    const esc = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const re = new RegExp('(?:ссылка|ref)\\.' + esc + '(?:[^a-zA-Z0-9а-яА-ЯёЁ_]|$)', 'i');
+                    if (re.test(dt)) return true;
+
+                    if (targetClean && targetClean !== target) {
+                        const escClean = targetClean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const reClean = new RegExp('(?:ссылка|ref)\\.' + escClean + '(?:[^a-zA-Z0-9а-яА-ЯёЁ_]|$)', 'i');
+                        if (reClean.test(dt)) return true;
+                    }
+                    return false;
+                }
+
+                const t1RefField = t1Fields.find(isRefField) || { name: 'Ссылка' };
+                const t2RefField = t2Fields.find(isRefField) || { name: 'Ссылка' };
+
+                // Priority 1: Direct reference T1 -> T2
+                for (let i = 0; i < t1Fields.length; i++) {
+                    const f1 = t1Fields[i];
+                    if (!isRefField(f1) && fieldReferencesEntity(f1.dataType, t2Entity)) {
+                        const f2Name = t2RefField ? t2RefField.name : 'Ссылка';
+                        return {
+                            field1: f1.name,
+                            op: '=',
+                            field2: f2Name,
+                            raw: t1Alias + '.' + f1.name + ' = ' + t2Alias + '.' + f2Name
+                        };
+                    }
+                }
+
+                // Priority 2: Direct reference T2 -> T1 (Reverse)
+                for (let i = 0; i < t2Fields.length; i++) {
+                    const f2 = t2Fields[i];
+                    if (!isRefField(f2) && fieldReferencesEntity(f2.dataType, t1Entity)) {
+                        const f1Name = t1RefField ? t1RefField.name : 'Ссылка';
+                        return {
+                            field1: f1Name,
+                            op: '=',
+                            field2: f2.name,
+                            raw: t1Alias + '.' + f1Name + ' = ' + t2Alias + '.' + f2.name
+                        };
+                    }
+                }
+
+                // Priority 3: Common reference attribute / dimension (T1.name = T2.name)
+                for (let i = 0; i < t1Fields.length; i++) {
+                    const f1 = t1Fields[i];
+                    if (isRefField(f1)) continue;
+                    const dt1 = (f1.dataType || '').toLowerCase();
+                    const isRefType1 = dt1.indexOf('ссылка') !== -1 || dt1.indexOf('ref') !== -1;
+                    if (!isRefType1) continue;
+
+                    for (let j = 0; j < t2Fields.length; j++) {
+                        const f2 = t2Fields[j];
+                        if (isRefField(f2)) continue;
+                        if (f1.name.toLowerCase() === f2.name.toLowerCase()) {
+                            const dt2 = (f2.dataType || '').toLowerCase();
+                            const isRefType2 = dt2.indexOf('ссылка') !== -1 || dt2.indexOf('ref') !== -1;
+                            if (isRefType2) {
+                                return {
+                                    field1: f1.name,
+                                    op: '=',
+                                    field2: f2.name,
+                                    raw: t1Alias + '.' + f1.name + ' = ' + t2Alias + '.' + f2.name
+                                };
+                            }
+                        }
+                    }
+                }
+
+                // Priority 4: Same object link (T1.Ссылка = T2.Ссылка)
+                if (t1Entity && t2Entity && t1Entity.toLowerCase() === t2Entity.toLowerCase() && t1Alias !== t2Alias) {
+                    const f1Name = t1RefField ? t1RefField.name : 'Ссылка';
+                    const f2Name = t2RefField ? t2RefField.name : 'Ссылка';
+                    return {
+                        field1: f1Name,
+                        op: '=',
+                        field2: f2Name,
+                        raw: t1Alias + '.' + f1Name + ' = ' + t2Alias + '.' + f2Name
+                    };
+                }
+
+                // Priority 5: Fallback to ИСТИНА
+                return {
+                    field1: '',
+                    op: '=',
+                    field2: '',
+                    raw: 'ИСТИНА'
+                };
             }
 
             function renameTableAliasInQuery(q, oldAlias, newAlias) {
@@ -4814,13 +5037,19 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     return (f.alias && f.alias === tblB) || (f.source && f.source.name === tblB);
                 }) || q.from[0];
 
+                const t1Name = tblB;
+                const t2Name = tblA;
+                const t1Src = targetFc.source ? targetFc.source.name : tblB;
+                const t2Src = srcFullName;
+                const suggested = autoSuggestJoinCondition(t1Name, t1Src, t2Name, t2Src);
+
                 if (!targetFc.joins) targetFc.joins = [];
                 targetFc.joins.push({
                     joinType: 'Full',
                     source: { type: 'Table', name: srcFullName },
                     alias: tblA,
                     t1: tblB,
-                    on: { type: 'RawExpression', raw: 'ИСТИНА' }
+                    on: { type: 'RawExpression', raw: suggested.raw || 'ИСТИНА' }
                 });
                 renderTab2();
                 notifyChange();
@@ -4911,7 +5140,6 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     // T1
                     const tdT1 = document.createElement('td');
                     const selT1 = createDropdown(tables, jn.t1 || tables[0]);
-                    selT1.addEventListener('change', function() { jn.t1 = selT1.value; notifyChange(); });
                     tdT1.appendChild(selT1);
                     tr.appendChild(tdT1);
 
@@ -4934,6 +5162,209 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         currentT2 = jn.source.name;
                     }
                     const selT2 = createDropdown(tables, currentT2);
+                    tdT2.appendChild(selT2);
+                    tr.appendChild(tdT2);
+
+                    // ON condition
+                    const tdOn = document.createElement('td');
+                    tdOn.className = 'td-join-on';
+
+                    const onStr = getExpressionString(jn.on);
+                    const parsed = parseSimpleJoinOn(onStr, selT1.value, selT2.value);
+
+                    // Structured selectors container
+                    const structDiv = document.createElement('div');
+                    structDiv.className = 'join-on-structured';
+                    structDiv.style.display = 'flex';
+                    structDiv.style.alignItems = 'center';
+                    structDiv.style.gap = '4px';
+                    structDiv.style.marginBottom = '4px';
+
+                    function populateFieldSelect(sel, fieldNodes, selectedValue) {
+                        sel.innerHTML = '';
+                        const defOpt = document.createElement('option');
+                        defOpt.value = '';
+                        defOpt.textContent = '(выберите поле)';
+                        sel.appendChild(defOpt);
+
+                        (fieldNodes || []).forEach(function(fn) {
+                            const opt = document.createElement('option');
+                            opt.value = fn.name;
+                            opt.textContent = fn.name + (fn.dataType ? ' (' + fn.dataType + ')' : '');
+                            if (fn.name === selectedValue) {
+                                opt.selected = true;
+                            }
+                            sel.appendChild(opt);
+                        });
+
+                        if (selectedValue) {
+                            sel.value = selectedValue;
+                        }
+                    }
+
+                    // Field 1 select
+                    const selF1 = document.createElement('select');
+                    selF1.className = 'join-select-f1';
+                    selF1.style.flex = '1';
+                    selF1.style.minWidth = '100px';
+
+                    function updateF1Options(preserveVal) {
+                        const val = preserveVal !== undefined ? preserveVal : selF1.value;
+                        const t1Obj = allTables.find(function(f) {
+                            return (f.alias && f.alias === selT1.value) || (f.source && f.source.name === selT1.value);
+                        });
+                        const s1 = t1Obj && t1Obj.source && t1Obj.source.name ? t1Obj.source.name : selT1.value;
+                        const fNodes = getTableFieldNodes(selT1.value, s1);
+                        populateFieldSelect(selF1, fNodes, val);
+                    }
+
+                    // Operator select
+                    const selOp = document.createElement('select');
+                    selOp.className = 'join-select-op';
+                    selOp.style.width = '55px';
+                    ['=', '<>', '<', '<=', '>', '>='].forEach(function(opText) {
+                        const opOpt = document.createElement('option');
+                        opOpt.value = opText;
+                        opOpt.textContent = opText;
+                        selOp.appendChild(opOpt);
+                    });
+                    selOp.value = (parsed && parsed.op) ? parsed.op : '=';
+
+                    // Field 2 select
+                    const selF2 = document.createElement('select');
+                    selF2.className = 'join-select-f2';
+                    selF2.style.flex = '1';
+                    selF2.style.minWidth = '100px';
+
+                    function updateF2Options(preserveVal) {
+                        const val = preserveVal !== undefined ? preserveVal : selF2.value;
+                        const t2Obj = allTables.find(function(f) {
+                            return (f.alias && f.alias === selT2.value) || (f.source && f.source.name === selT2.value);
+                        });
+                        const s2 = t2Obj && t2Obj.source && t2Obj.source.name ? t2Obj.source.name : selT2.value;
+                        const fNodes = getTableFieldNodes(selT2.value, s2);
+                        populateFieldSelect(selF2, fNodes, val);
+                    }
+
+                    // Initial population of F1 and F2
+                    updateF1Options(parsed ? parsed.f1 : '');
+                    updateF2Options(parsed ? parsed.f2 : '');
+
+                    // Auto-link button
+                    const btnAutoLink = document.createElement('button');
+                    btnAutoLink.type = 'button';
+                    btnAutoLink.className = 'secondary icon-btn btn-auto-link';
+                    btnAutoLink.textContent = '⚡';
+                    btnAutoLink.title = 'Автоматически связать по типам';
+                    btnAutoLink.style.padding = '2px 6px';
+
+                    // Toggle raw expression button
+                    const btnToggleRaw = document.createElement('button');
+                    btnToggleRaw.type = 'button';
+                    btnToggleRaw.className = 'secondary icon-btn btn-toggle-raw';
+                    btnToggleRaw.textContent = '✏️';
+                    btnToggleRaw.title = 'Произвольное выражение';
+                    btnToggleRaw.style.padding = '2px 6px';
+
+                    structDiv.appendChild(selF1);
+                    structDiv.appendChild(selOp);
+                    structDiv.appendChild(selF2);
+                    structDiv.appendChild(btnAutoLink);
+                    structDiv.appendChild(btnToggleRaw);
+                    tdOn.appendChild(structDiv);
+
+                    // Raw expression container
+                    const rawDiv = document.createElement('div');
+                    rawDiv.className = 'join-on-raw';
+                    if (parsed && onStr && onStr !== 'ИСТИНА') {
+                        rawDiv.style.display = 'none';
+                    } else {
+                        rawDiv.style.display = 'block';
+                    }
+
+                    const inputRaw = document.createElement('input');
+                    inputRaw.type = 'text';
+                    inputRaw.className = 'join-input-raw';
+                    inputRaw.value = onStr;
+                    inputRaw.placeholder = 'Таблица1.Ссылка = Таблица2.Владелец';
+                    inputRaw.style.width = '100%';
+
+                    rawDiv.appendChild(inputRaw);
+                    tdOn.appendChild(rawDiv);
+                    tr.appendChild(tdOn);
+
+                    // Handlers
+                    function syncFromStructured() {
+                        if (selF1.value && selF2.value) {
+                            const op = selOp.value || '=';
+                            const newStr = selT1.value + '.' + selF1.value + ' ' + op + ' ' + selT2.value + '.' + selF2.value;
+                            inputRaw.value = newStr;
+                            jn.on = { type: 'RawExpression', raw: newStr };
+                            notifyChange();
+                        }
+                    }
+
+                    selF1.addEventListener('change', syncFromStructured);
+                    selOp.addEventListener('change', syncFromStructured);
+                    selF2.addEventListener('change', syncFromStructured);
+
+                    inputRaw.addEventListener('change', function() {
+                        jn.on = { type: 'RawExpression', raw: inputRaw.value };
+                        const p = parseSimpleJoinOn(inputRaw.value, selT1.value, selT2.value);
+                        if (p) {
+                            selF1.value = p.f1 || '';
+                            selOp.value = p.op || '=';
+                            selF2.value = p.f2 || '';
+                        } else {
+                            selF1.value = '';
+                            selOp.value = '=';
+                            selF2.value = '';
+                        }
+                        notifyChange();
+                    });
+
+                    btnAutoLink.addEventListener('click', function() {
+                        const t1Obj = allTables.find(function(f) {
+                            return (f.alias && f.alias === selT1.value) || (f.source && f.source.name === selT1.value);
+                        });
+                        const s1 = t1Obj && t1Obj.source && t1Obj.source.name ? t1Obj.source.name : selT1.value;
+                        const t2Obj = allTables.find(function(f) {
+                            return (f.alias && f.alias === selT2.value) || (f.source && f.source.name === selT2.value);
+                        });
+                        const s2 = t2Obj && t2Obj.source && t2Obj.source.name ? t2Obj.source.name : selT2.value;
+
+                        const sug = autoSuggestJoinCondition(selT1.value, s1, selT2.value, s2);
+                        jn.on = { type: 'RawExpression', raw: sug.raw };
+                        inputRaw.value = sug.raw;
+                        if (sug.field1 && sug.field2) {
+                            selF1.value = sug.field1;
+                            selOp.value = sug.op || '=';
+                            selF2.value = sug.field2;
+                            rawDiv.style.display = 'none';
+                        } else {
+                            selF1.value = '';
+                            selOp.value = '=';
+                            selF2.value = '';
+                            rawDiv.style.display = 'block';
+                        }
+                        notifyChange();
+                    });
+
+                    btnToggleRaw.addEventListener('click', function() {
+                        if (rawDiv.style.display === 'none') {
+                            rawDiv.style.display = 'block';
+                            inputRaw.focus();
+                        } else {
+                            rawDiv.style.display = 'none';
+                        }
+                    });
+
+                    selT1.addEventListener('change', function() {
+                        jn.t1 = selT1.value;
+                        updateF1Options();
+                        notifyChange();
+                    });
+
                     selT2.addEventListener('change', function() {
                         const matchingFc = allTables.find(function(f) {
                             return (f.alias && f.alias === selT2.value) || (f.source && f.source.name === selT2.value);
@@ -4944,24 +5375,9 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         } else {
                             jn.source = { type: 'Table', name: selT2.value };
                         }
+                        updateF2Options();
                         notifyChange();
                     });
-                    tdT2.appendChild(selT2);
-                    tr.appendChild(tdT2);
-
-                    // ON condition
-                    const tdOn = document.createElement('td');
-                    const inputOn = document.createElement('input');
-                    inputOn.type = 'text';
-                    inputOn.value = getExpressionString(jn.on);
-                    inputOn.placeholder = 'Таблица1.Ссылка = Таблица2.Владелец';
-                    inputOn.style.width = '100%';
-                    inputOn.addEventListener('change', function() {
-                        jn.on = { type: 'RawExpression', raw: inputOn.value };
-                        notifyChange();
-                    });
-                    tdOn.appendChild(inputOn);
-                    tr.appendChild(tdOn);
 
                     // Actions: Copy + Delete
                     const tdActions = document.createElement('td');
@@ -6980,10 +7396,37 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     return;
                 }
                 if (!q.from[0].joins) q.from[0].joins = [];
+                const allTables = getAllTablesInQuery(q);
+                const t1 = q.from[0];
+                const t1Name = t1.alias || (t1.source ? t1.source.name : '');
+                const t1Src = t1.source ? t1.source.name : t1Name;
+
+                const candidates = allTables.filter(function(tbl) {
+                    const name = tbl.alias || (tbl.source && tbl.source.name);
+                    return name && name !== t1Name;
+                });
+
+                let t2 = candidates.length > 0 ? candidates[0] : allTables[0];
+                const unlinked = getUnlinkedTables(q);
+                if (unlinked.length > 0) {
+                    const foundUnlinked = candidates.find(function(tbl) {
+                        const name = tbl.alias || (tbl.source && tbl.source.name);
+                        return unlinked.indexOf(name) !== -1;
+                    });
+                    if (foundUnlinked) t2 = foundUnlinked;
+                }
+
+                const t2Name = t2.alias || (t2.source ? t2.source.name : '');
+                const t2Src = t2.source ? t2.source.name : t2Name;
+
+                const suggested = autoSuggestJoinCondition(t1Name, t1Src, t2Name, t2Src);
+
                 q.from[0].joins.push({
                     joinType: 'Inner',
-                    source: { type: 'Table', name: q.from[0].source ? q.from[0].source.name : '' },
-                    on: { type: 'RawExpression', raw: '' }
+                    source: t2.source ? JSON.parse(JSON.stringify(t2.source)) : { type: 'Table', name: t2Name },
+                    alias: t2.alias,
+                    t1: t1Name,
+                    on: { type: 'RawExpression', raw: suggested.raw || 'ИСТИНА' }
                 });
                 renderTab2();
                 notifyChange();
@@ -7792,6 +8235,9 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             window.addTotalValueField = addTotalValueField;
             window.renameTableAliasInQuery = renameTableAliasInQuery;
             window.getTableFieldsFromMetadata = getTableFieldsFromMetadata;
+            window.getTableFieldNodes = getTableFieldNodes;
+            window.autoSuggestJoinCondition = autoSuggestJoinCondition;
+            window.parseSimpleJoinOn = parseSimpleJoinOn;
             window.traverseAstExpr = traverseAstExpr;
 
             // Initial render & ready handshake

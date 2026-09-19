@@ -1477,6 +1477,289 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.strictEqual(env.state.ast.queries[1].fields[0].alias, 'П3');
       });
     });
+
+    suite('Tab 2 Joins: Field Pickers & Reference Type Auto-Linking', () => {
+      const mockMetadataTree: any[] = [
+        {
+          id: 'Catalogs',
+          name: 'Catalogs',
+          fullName: 'Справочники',
+          nodeType: 'category',
+          children: [
+            {
+              id: 'Catalog.СтарееСтарых',
+              name: 'СтарееСтарых',
+              fullName: 'Справочник.СтарееСтарых',
+              nodeType: 'table',
+              attributesLoaded: true,
+              children: [
+                { id: 'Catalog.СтарееСтарых.Ref', name: 'Ссылка', nodeType: 'field', dataType: 'Ref' },
+                { id: 'Catalog.СтарееСтарых.Code', name: 'Код', nodeType: 'field', dataType: 'String' },
+                { id: 'Catalog.СтарееСтарых.Description', name: 'Наименование', nodeType: 'field', dataType: 'String' },
+                {
+                  id: 'Catalog.СтарееСтарых.чекчек',
+                  name: 'чекчек',
+                  nodeType: 'field',
+                  dataType: 'СправочникСсылка.Справочник55',
+                },
+              ],
+            },
+            {
+              id: 'Catalog.Справочник55',
+              name: 'Справочник55',
+              fullName: 'Справочник.Справочник55',
+              nodeType: 'table',
+              attributesLoaded: true,
+              children: [
+                { id: 'Catalog.Справочник55.Ref', name: 'Ссылка', nodeType: 'field', dataType: 'Ref' },
+                { id: 'Catalog.Справочник55.Code', name: 'Код', nodeType: 'field', dataType: 'String' },
+                { id: 'Catalog.Справочник55.Description', name: 'Наименование', nodeType: 'field', dataType: 'String' },
+              ],
+            },
+            {
+              id: 'Catalog.Валюты',
+              name: 'Валюты',
+              fullName: 'Справочник.Валюты',
+              nodeType: 'table',
+              attributesLoaded: true,
+              children: [
+                { id: 'Catalog.Валюты.Ref', name: 'Ссылка', nodeType: 'field', dataType: 'Ref' },
+                { id: 'Catalog.Валюты.Code', name: 'Код', nodeType: 'field', dataType: 'String' },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'Documents',
+          name: 'Documents',
+          fullName: 'Документы',
+          nodeType: 'category',
+          children: [
+            {
+              id: 'Document.РасходнаяНакладная',
+              name: 'РасходнаяНакладная',
+              fullName: 'Документ.РасходнаяНакладная',
+              nodeType: 'table',
+              attributesLoaded: true,
+              children: [
+                { id: 'Document.РасходнаяНакладная.Ref', name: 'Ссылка', nodeType: 'field', dataType: 'Ref' },
+                {
+                  id: 'Document.РасходнаяНакладная.Номенклатура',
+                  name: 'Номенклатура',
+                  nodeType: 'field',
+                  dataType: 'СправочникСсылка.Номенклатура',
+                },
+              ],
+            },
+            {
+              id: 'Document.ПриходнаяНакладная',
+              name: 'ПриходнаяНакладная',
+              fullName: 'Документ.ПриходнаяНакладная',
+              nodeType: 'table',
+              attributesLoaded: true,
+              children: [
+                { id: 'Document.ПриходнаяНакладная.Ref', name: 'Ссылка', nodeType: 'field', dataType: 'Ref' },
+                {
+                  id: 'Document.ПриходнаяНакладная.Номенклатура',
+                  name: 'Номенклатура',
+                  nodeType: 'field',
+                  dataType: 'СправочникСсылка.Номенклатура',
+                },
+              ],
+            },
+          ],
+        },
+      ];
+
+      test('1. autoSuggestJoinCondition links T1 attribute to T2 Ссылка when type matches', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых, Справочник.Справочник55 КАК Справочник55'),
+          metadata: mockMetadataTree,
+        });
+
+        assert.ok(typeof env.window.autoSuggestJoinCondition === 'function', 'autoSuggestJoinCondition must be exported');
+        const res = env.window.autoSuggestJoinCondition(
+          'СтарееСтарых',
+          'Справочник.СтарееСтарых',
+          'Справочник55',
+          'Справочник.Справочник55'
+        );
+
+        assert.strictEqual(res.field1, 'чекчек');
+        assert.strictEqual(res.op, '=');
+        assert.strictEqual(res.field2, 'Ссылка');
+        assert.strictEqual(res.raw, 'СтарееСтарых.чекчек = Справочник55.Ссылка');
+      });
+
+      test('2. autoSuggestJoinCondition links T2 attribute to T1 Ссылка when type matches in reverse', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.Справочник55 КАК Справочник55, Справочник.СтарееСтарых КАК СтарееСтарых'),
+          metadata: mockMetadataTree,
+        });
+
+        const res = env.window.autoSuggestJoinCondition(
+          'Справочник55',
+          'Справочник.Справочник55',
+          'СтарееСтарых',
+          'Справочник.СтарееСтарых'
+        );
+
+        assert.strictEqual(res.field1, 'Ссылка');
+        assert.strictEqual(res.op, '=');
+        assert.strictEqual(res.field2, 'чекчек');
+        assert.strictEqual(res.raw, 'Справочник55.Ссылка = СтарееСтарых.чекчек');
+      });
+
+      test('3. autoSuggestJoinCondition links common reference attribute', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Документ.РасходнаяНакладная КАК Расходная, Документ.ПриходнаяНакладная КАК Приходная'),
+          metadata: mockMetadataTree,
+        });
+
+        const res = env.window.autoSuggestJoinCondition(
+          'Расходная',
+          'Документ.РасходнаяНакладная',
+          'Приходная',
+          'Документ.ПриходнаяНакладная'
+        );
+
+        assert.strictEqual(res.field1, 'Номенклатура');
+        assert.strictEqual(res.op, '=');
+        assert.strictEqual(res.field2, 'Номенклатура');
+        assert.strictEqual(res.raw, 'Расходная.Номенклатура = Приходная.Номенклатура');
+      });
+
+      test('4. autoSuggestJoinCondition falls back to ИСТИНА for unrelated tables', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.Валюты КАК Валюты, Справочник.Справочник55 КАК Справочник55'),
+          metadata: mockMetadataTree,
+        });
+
+        const res = env.window.autoSuggestJoinCondition(
+          'Валюты',
+          'Справочник.Валюты',
+          'Справочник55',
+          'Справочник.Справочник55'
+        );
+
+        assert.strictEqual(res.raw, 'ИСТИНА');
+      });
+
+      test('5. renderTab2 renders field dropdowns populated with table fields and updates AST on change', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых ЛЕВОЕ СОЕДИНЕНИЕ Справочник.Справочник55 КАК Справочник55 ПО ИСТИНА'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.renderTab2();
+
+        const tbody = env.elements.tbodyJoins;
+        assert.strictEqual(tbody.children.length, 1, 'One join row must be rendered');
+        const tr = tbody.children[0];
+
+        const selF1 = tr.querySelector('.join-select-f1') as any;
+        const selOp = tr.querySelector('.join-select-op') as any;
+        const selF2 = tr.querySelector('.join-select-f2') as any;
+
+        assert.ok(selF1, 'join-select-f1 must exist in join row');
+        assert.ok(selOp, 'join-select-op must exist in join row');
+        assert.ok(selF2, 'join-select-f2 must exist in join row');
+
+        // Check options in selF1 (from СтарееСтарых)
+        const f1OptionValues = selF1.children.map((opt: any) => opt.value);
+        assert.ok(f1OptionValues.includes('Ссылка'));
+        assert.ok(f1OptionValues.includes('чекчек'));
+        assert.ok(f1OptionValues.includes('Наименование'));
+
+        // Check options in selF2 (from Справочник55)
+        const f2OptionValues = selF2.children.map((opt: any) => opt.value);
+        assert.ok(f2OptionValues.includes('Ссылка'));
+        assert.ok(f2OptionValues.includes('Код'));
+
+        // Select чекчек in selF1 and Ссылка in selF2
+        selF1.value = 'чекчек';
+        selF1.dispatchEvent({ type: 'change', target: selF1 });
+
+        selF2.value = 'Ссылка';
+        selF2.dispatchEvent({ type: 'change', target: selF2 });
+
+        const q = env.window.getActiveQuery();
+        const join = q.from[0].joins[0];
+        const onStr = env.window.getExpressionString(join.on);
+        assert.strictEqual(onStr, 'СтарееСтарых.чекчек = Справочник55.Ссылка');
+      });
+
+      test('6. btnAddJoin automatically applies autoSuggestJoinCondition', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых, Справочник.Справочник55 КАК Справочник55'),
+          metadata: mockMetadataTree,
+        });
+
+        // Click add join
+        env.elements.btnAddJoin.click();
+
+        const q = env.window.getActiveQuery();
+        assert.strictEqual(q.from[0].joins.length, 1);
+        const join = q.from[0].joins[0];
+        const onStr = env.window.getExpressionString(join.on);
+        assert.strictEqual(onStr, 'СтарееСтарых.чекчек = Справочник55.Ссылка');
+      });
+
+      test('7. Auto-link button (⚡) re-calculates link condition for row', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых ЛЕВОЕ СОЕДИНЕНИЕ Справочник.Справочник55 КАК Справочник55 ПО ИСТИНА'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.renderTab2();
+        const tr = env.elements.tbodyJoins.children[0];
+        const btnAutoLink = tr.querySelector('.btn-auto-link') as any;
+        assert.ok(btnAutoLink, 'btn-auto-link must exist in row');
+
+        btnAutoLink.click();
+
+        const q = env.window.getActiveQuery();
+        const onStr = env.window.getExpressionString(q.from[0].joins[0].on);
+        assert.strictEqual(onStr, 'СтарееСтарых.чекчек = Справочник55.Ссылка');
+      });
+
+      test('8. Freeform text input allows editing custom expressions and syncs', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 ИЗ Справочник.СтарееСтарых КАК СтарееСтарых ЛЕВОЕ СОЕДИНЕНИЕ Справочник.Справочник55 КАК Справочник55 ПО ИСТИНА'),
+          metadata: mockMetadataTree,
+        });
+
+        env.window.renderTab2();
+        const tr = env.elements.tbodyJoins.children[0];
+        const inputRaw = tr.querySelector('.join-input-raw') as any;
+        assert.ok(inputRaw, 'join-input-raw must exist');
+        assert.strictEqual(inputRaw.value, 'ИСТИНА');
+
+        // Type custom expression
+        inputRaw.value = 'СтарееСтарых.Код = Справочник55.Код И СтарееСтарых.ПометкаУдаления = ЛОЖЬ';
+        inputRaw.dispatchEvent({ type: 'change', target: inputRaw });
+
+        const q = env.window.getActiveQuery();
+        const onStr = env.window.getExpressionString(q.from[0].joins[0].on);
+        assert.strictEqual(onStr, 'СтарееСтарых.Код = Справочник55.Код И СтарееСтарых.ПометкаУдаления = ЛОЖЬ');
+      });
+    });
   });
 });
 
