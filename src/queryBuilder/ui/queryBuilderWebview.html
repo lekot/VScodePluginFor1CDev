@@ -1335,7 +1335,7 @@
                     <span style="font-weight: 600;">Текст запроса (1C SDBL)</span>
                     <div class="table-actions">
                         <span id="editor-sync-status" style="font-size: 11px; color: var(--vscode-descriptionForeground, #999999); margin-right: 8px;">Синхронизировано</span>
-                        <button id="btn-apply-text" class="secondary" title="Применить изменения текста в конструктор">Применить текст</button>
+                        <button id="btn-apply-text" class="secondary" title="Разобрать текст во вкладки конструктора (не сохраняет в файл модулей 1С; для сохранения нажмите кнопку «ОК» вверху)">Применить текст</button>
                     </div>
                 </div>
                 <div id="text-parse-error" class="banner error"></div>
@@ -5149,14 +5149,17 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 if (!q.from) q.from = [];
 
                 const allTables = getAllTablesInQuery(q);
-                const existing = allTables.find(function(t) {
-                    return (t.source && t.source.name === name) || t.alias === getTableAliasWithoutPrefix(name);
-                });
-                if (existing) {
-                    return;
+                const defaultAlias = getTableAliasWithoutPrefix(name);
+                let targetAlias = defaultAlias;
+
+                if (allTables.some(function(t) { return t.alias === targetAlias; })) {
+                    let counter = 1;
+                    while (allTables.some(function(t) { return t.alias === defaultAlias + counter; })) {
+                        counter++;
+                    }
+                    targetAlias = defaultAlias + counter;
                 }
 
-                const defaultAlias = getTableAliasWithoutPrefix(name);
                 q.from.push({
                     source: {
                         type: 'Table',
@@ -5165,7 +5168,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                             return { type: 'RawExpression', raw: p.defaultValue || '' };
                         }) : undefined
                     },
-                    alias: defaultAlias
+                    alias: targetAlias
                 });
                 renderFromTables();
                 renderTab2();
@@ -8835,8 +8838,8 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     }
                     elements.textParseError.style.display = 'none';
                     elements.textParseError.textContent = '';
-                    elements.editorSyncStatus.textContent = 'Применено';
                     renderAll();
+                    elements.editorSyncStatus.textContent = 'Разобрано во вкладки';
                     notifyChange();
                     return true;
                 } catch (err) {
@@ -8846,6 +8849,10 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     return false;
                 }
             }
+
+            elements.sdblTextEditor.addEventListener('input', function() {
+                elements.editorSyncStatus.textContent = 'Текст изменен (не разобран)';
+            });
 
             // Modal Actions
             elements.btnModalClose.addEventListener('click', closeVirtualTableParamsModal);

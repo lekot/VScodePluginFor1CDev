@@ -1171,7 +1171,7 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.ok(!uiFormatted.includes('Справочник.Склады КАК Склады,'), 'Must not have trailing comma after joined table');
       });
 
-      test('Adding fields or tables for already joined table prevents duplicate roots in q.from', () => {
+      test('Adding fields for already joined table prevents duplicate roots in q.from', () => {
         const env = createWebviewEnvironment();
         const q = env.window.getActiveQuery();
         q.from = [
@@ -1189,15 +1189,16 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
           },
         ];
 
-        // Try adding Склады as custom table
-        env.window.addTableToQuery('Справочник.Склады');
-        assert.strictEqual(q.from.length, 1, 'q.from must not add duplicate root for already joined table');
-
-        // Try adding field for Склады
+        // Try adding field for Склады: must use existing joined table alias and NOT add a duplicate root
         env.window.addFieldToQuery({ name: 'Наименование', parentTableName: 'Склады', parentTableFullName: 'Справочник.Склады' });
         assert.strictEqual(q.from.length, 1, 'addFieldToQuery must not add duplicate root for already joined table');
         const addedField = q.fields[q.fields.length - 1];
         assert.strictEqual(addedField.expression, 'Склады.Наименование', 'Field must use existing joined table alias');
+
+        // Explicitly adding table Склады adds a new instance for self-join with incremented alias
+        env.window.addTableToQuery('Справочник.Склады');
+        assert.strictEqual(q.from.length, 2, 'Explicit addTableToQuery must add second instance for self-joins');
+        assert.strictEqual(q.from[1].alias, 'Склады1');
       });
 
       test('Reopening query with ЛЕВОЕ СОЕДИНЕНИЕ displays both base and joined tables in Tab 1 and Tab 2', () => {
@@ -1476,6 +1477,32 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.strictEqual(textTabBtn.classList.contains('active'), true);
         assert.ok(env.elements.sdblTextEditor.value.includes('Поле2'));
         assert.strictEqual(env.elements.textParseError.style.display, 'none');
+      });
+
+      test('5. Apply text button preserves feedback status "Разобрано во вкладки" and editor input sets "Текст изменен"', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient('ВЫБРАТЬ 1 КАК Поле1'),
+          mode: 'simple',
+        });
+
+        const textTabBtn = env.tabButtons.find((b: any) => b.getAttribute('data-tab') === 'tab-query-text');
+        textTabBtn.click();
+
+        // User edits text
+        env.elements.sdblTextEditor.value = 'ВЫБРАТЬ 2 КАК Поле2';
+        env.elements.sdblTextEditor.dispatchEvent({ type: 'input' });
+        assert.strictEqual(env.elements.editorSyncStatus.textContent, 'Текст изменен (не разобран)');
+
+        // User clicks btnApplyText
+        env.elements.btnApplyText.click();
+        assert.strictEqual(env.elements.editorSyncStatus.textContent, 'Разобрано во вкладки');
+        assert.strictEqual(env.elements.textParseError.style.display, 'none');
+
+        // Check AST was updated
+        const q = env.window.getActiveQuery();
+        assert.strictEqual(q.fields[0].alias, 'Поле2');
       });
 
       test('4. Package with multiple queries blocks tab switching when 2nd query has syntax error', () => {
@@ -2063,6 +2090,33 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         const selF2 = tr.querySelector('.join-select-f2') as any;
         assert.strictEqual(selF1.value, 'Код');
         assert.strictEqual(selF2.value, 'Код');
+      });
+
+      test('Finding: adding the same table twice generates unique alias (e.g. Номенклатура1) for self-joins', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: { queries: [{ type: 'Select', fields: [], from: [] }] },
+          mode: 'simple',
+        });
+
+        // Add table first time
+        env.window.addTableToQuery('Справочник.Номенклатура');
+        let q = env.window.getActiveQuery();
+        assert.strictEqual(q.from.length, 1);
+        assert.strictEqual(q.from[0].alias, 'Номенклатура');
+
+        // Add table second time (self-join scenario)
+        env.window.addTableToQuery('Справочник.Номенклатура');
+        q = env.window.getActiveQuery();
+        assert.strictEqual(q.from.length, 2, 'Must allow adding the same table twice for self-joins');
+        assert.strictEqual(q.from[1].alias, 'Номенклатура1', 'Second instance must have auto-incremented alias Номенклатура1');
+
+        // Add table third time
+        env.window.addTableToQuery('Справочник.Номенклатура');
+        q = env.window.getActiveQuery();
+        assert.strictEqual(q.from.length, 3);
+        assert.strictEqual(q.from[2].alias, 'Номенклатура2', 'Third instance must have auto-incremented alias Номенклатура2');
       });
     });
   });

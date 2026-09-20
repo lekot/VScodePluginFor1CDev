@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as path from 'path';
+import { vscodeTestState } from '../../helpers/vscodeModuleStub';
 import * as vscode from 'vscode';
 import {
   handleQueryBuilderMessage,
@@ -402,6 +403,170 @@ suite('QueryBuilder Provider & Message Handler', () => {
 
       await handleQueryBuilderMessage({ command: 'save' }, context);
       assert.strictEqual(mock.isDisposed(), false, 'Panel must remain open on edit failure');
+    });
+
+    test('Finding: save succeeds and disposes panel via workspace.applyEdit when editor.edit returns false (hidden tab)', async () => {
+      const mock = createMockPanel();
+      let applyEditCalledWith: any = null;
+      vscodeTestState.applyEditImpl = async (edit: any) => {
+        applyEditCalledWith = edit;
+        return true;
+      };
+
+      const failingEditor = {
+        document: {
+          uri: vscode.Uri.file('/path/to/ObjectModule.bsl'),
+          positionAt: () => new vscode.Position(0, 0),
+        },
+        edit: async () => false,
+      } as unknown as vscode.TextEditor;
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor: failingEditor,
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'CompoundIdentifier', parts: ['Справочник55', 'Ссылка'] }, alias: 'СпрСсылка' }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Справочник55' }, alias: 'Справочник55' }]
+          }]
+        },
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: 0,
+          endOffset: 0,
+          startLine: 1,
+          startColumn: 1,
+          endLine: 1,
+          endColumn: 1,
+        },
+      };
+
+      try {
+        await handleQueryBuilderMessage({ command: 'save' }, context);
+        assert.strictEqual(mock.isDisposed(), true, 'Panel must be disposed when workspace.applyEdit succeeds');
+        assert.ok(applyEditCalledWith, 'workspace.applyEdit must have been called');
+        assert.ok(applyEditCalledWith.replaces[0].newText.includes('СпрСсылка'), 'Must replace with generated SDBL literal');
+      } finally {
+        vscodeTestState.applyEditImpl = undefined;
+      }
+    });
+
+    test('Finding: shows error message when both workspace.applyEdit and editor.edit fail', async () => {
+      const mock = createMockPanel();
+      vscodeTestState.applyEditImpl = async () => false;
+
+      const failingEditor = {
+        document: {
+          uri: vscode.Uri.file('/path/to/ObjectModule.bsl'),
+          positionAt: () => new vscode.Position(0, 0),
+        },
+        edit: async () => false,
+      } as unknown as vscode.TextEditor;
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor: failingEditor,
+        ast: { queries: [{ type: 'Select', fields: [], from: [] }] },
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: 0,
+          endOffset: 0,
+          startLine: 1,
+          startColumn: 1,
+          endLine: 1,
+          endColumn: 1,
+        },
+      };
+
+      try {
+        await handleQueryBuilderMessage({ command: 'save' }, context);
+        assert.strictEqual(mock.isDisposed(), false, 'Panel must not be disposed on total save failure');
+        assert.ok(errorMessage && errorMessage.includes('Не удалось сохранить запрос'), `Expected error message, got: ${errorMessage}`);
+      } finally {
+        vscodeTestState.applyEditImpl = undefined;
+      }
+    });
+
+    test('Finding: new query insertion relocates when document version changed and lines added above', async () => {
+      const mock = createMockPanel();
+      const initialText = 'Процедура ПриЗаписи(Отказ)\n\tЗапрос = Новый Запрос;\n\tЗапрос.Текст = \nКонецПроцедуры';
+      const targetPrefix = 'Запрос.Текст = ';
+      const initialOffset = initialText.indexOf(targetPrefix) + targetPrefix.length;
+      const initialScope = 'ПриЗаписи';
+
+      const modifiedText = '// Заголовок модуля\n// Автор: Макс\n' + initialText;
+      const editor = createMockEditor(modifiedText);
+      editor.setVersion(2);
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor: editor as any,
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'CompoundIdentifier', parts: ['Справочник55', 'Ссылка'] }, alias: 'СпрСсылка' }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Справочник55' }, alias: 'Справочник55' }]
+          }]
+        },
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: initialOffset,
+          endOffset: initialOffset,
+          startLine: 3,
+          startColumn: 17,
+          endLine: 3,
+          endColumn: 17,
+        },
+        initialDocumentVersion: 1,
+        expectedText: '',
+        surroundingPrefix: '\tЗапрос.Текст = ',
+        enclosingScope: initialScope,
+      };
+
+      await handleQueryBuilderMessage({ command: 'save' }, context);
+      assert.strictEqual(mock.isDisposed(), true, 'Panel must be disposed after successful relocated insertion');
+      const appliedCode = editor.getFullText();
+      assert.ok(appliedCode.includes('СпрСсылка'), 'Must generate query code in editor');
+      assert.ok(appliedCode.includes('Запрос.Текст = "ВЫБРАТЬ'), 'Must insert query right after Запрос.Текст =');
+      assert.ok(appliedCode.includes('";'), 'Must append trailing semicolon for unclosed assignment statement');
+    });
+
+    test('Finding: new query aborts save with error if enclosing procedure was deleted', async () => {
+      const mock = createMockPanel();
+      const initialText = 'Процедура ПриЗаписи(Отказ)\n\tЗапрос.Текст = \nКонецПроцедуры';
+      const initialOffset = initialText.indexOf('Запрос.Текст = ') + 'Запрос.Текст = '.length;
+
+      const modifiedText = 'Процедура Другая()\n\tа = 1;\nКонецПроцедуры';
+      const editor = createMockEditor(modifiedText);
+      editor.setVersion(2);
+
+      const context: QueryBuilderMessageContext = {
+        panel: mock.panel,
+        editor: editor as any,
+        ast: { queries: [{ type: 'Select', fields: [], from: [] }] },
+        metadata: [],
+        mode: 'simple',
+        replaceRange: {
+          startOffset: initialOffset,
+          endOffset: initialOffset,
+          startLine: 2,
+          startColumn: 17,
+          endLine: 2,
+          endColumn: 17,
+        },
+        initialDocumentVersion: 1,
+        expectedText: '',
+        surroundingPrefix: '\tЗапрос.Текст = ',
+        enclosingScope: 'ПриЗаписи',
+      };
+
+      await handleQueryBuilderMessage({ command: 'save' }, context);
+      assert.strictEqual(mock.isDisposed(), false, 'Panel must remain open when scope was deleted');
+      assert.ok(errorMessage && errorMessage.includes('Документ был изменен'), `Expected error message, got: ${errorMessage}`);
     });
 
     test('disposes panel on "cancel"', async () => {

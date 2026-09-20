@@ -188,11 +188,39 @@ export async function handleQueryBuilderMessage(
 
             if (!canUseFastPath) {
               if (!expectedText) {
-                void vscode.window.showErrorMessage(
-                  'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
-                );
-                return;
-              }
+                let relocatedOffset = -1;
+                if (expectedPrefixLine.length > 0) {
+                  let searchIdx = -1;
+                  const matchingIndices: number[] = [];
+                  while ((searchIdx = fullText.indexOf(expectedPrefixLine, searchIdx + 1)) !== -1) {
+                    const scope = getEnclosingScope(fullText, searchIdx);
+                    if (context.enclosingScope && scope !== context.enclosingScope) {
+                      continue;
+                    }
+                    let insertPos = searchIdx + expectedPrefixLine.length;
+                    while (insertPos < fullText.length && (fullText[insertPos] === ' ' || fullText[insertPos] === '\t')) {
+                      insertPos++;
+                    }
+                    matchingIndices.push(insertPos);
+                  }
+                  if (matchingIndices.length === 1) {
+                    relocatedOffset = matchingIndices[0];
+                  } else if (matchingIndices.length > 1) {
+                    matchingIndices.sort((a, b) => Math.abs(a - currentOffset) - Math.abs(b - currentOffset));
+                    relocatedOffset = matchingIndices[0];
+                  }
+                }
+
+                if (relocatedOffset !== -1) {
+                  const newPos = context.editor.document.positionAt(relocatedOffset);
+                  targetVscodeRange = new vscode.Range(newPos, newPos);
+                } else {
+                  void vscode.window.showErrorMessage(
+                    'Документ был изменен в редакторе после открытия конструктора. Сохранение отменено.'
+                  );
+                  return;
+                }
+              } else {
 
               // Find all occurrences of expectedText in fullText
               const occurrences: number[] = [];
@@ -372,14 +400,82 @@ export async function handleQueryBuilderMessage(
               targetVscodeRange = new vscode.Range(newStart, newEnd);
             }
           }
+        }
 
-          const success = await context.editor.edit((editBuilder) => {
-            editBuilder.replace(targetVscodeRange, generatedCode);
-          });
+          // Trailing semicolon check: if inserting right after an unclosed assignment (e.g. `Запрос.Текст = `),
+          // ensure the statement is closed with `;` to form valid BSL code.
+          if (
+            targetMode !== 'withProcessing' &&
+            !context.isSdblDocument &&
+            typeof context.editor.document.getText === 'function' &&
+            typeof context.editor.document.offsetAt === 'function'
+          ) {
+            try {
+              const docFullText = context.editor.document.getText();
+              const targetStartOffset = context.editor.document.offsetAt(targetVscodeRange.start);
+              const targetEndOffset = context.editor.document.offsetAt(targetVscodeRange.end);
+              const textBeforeInsertion = docFullText.slice(0, targetStartOffset).trimEnd();
+              const textAfterInsertion = docFullText.slice(targetEndOffset).trimStart();
+              if (
+                textBeforeInsertion.endsWith('=') &&
+                !textAfterInsertion.startsWith(';') &&
+                !generatedCode.trimEnd().endsWith(';')
+              ) {
+                generatedCode += ';';
+              }
+            } catch {
+              // Ignore offset inspection error
+            }
+          }
+
+          let success = false;
+
+          // 1. Try context.editor.edit first (standard editor edit)
+          if (typeof context.editor.edit === 'function') {
+            try {
+              success = await context.editor.edit((editBuilder) => {
+                editBuilder.replace(targetVscodeRange, generatedCode);
+              });
+            } catch (err) {
+              Logger.warn('context.editor.edit failed in query builder, will try workspace.applyEdit fallback', err);
+            }
+          }
+
+          // 2. If editor.edit returned false (e.g. editor tab is hidden/inactive behind Webview), fallback to workspace.applyEdit!
+          if (!success) {
+            try {
+              if (
+                vscode.workspace &&
+                typeof vscode.workspace.applyEdit === 'function' &&
+                context.editor.document &&
+                context.editor.document.uri
+              ) {
+                const workspaceEdit = new vscode.WorkspaceEdit();
+                workspaceEdit.replace(context.editor.document.uri, targetVscodeRange, generatedCode);
+                success = await vscode.workspace.applyEdit(workspaceEdit);
+              }
+            } catch (err) {
+              Logger.warn('vscode.workspace.applyEdit failed in query builder', err);
+            }
+          }
 
           if (success) {
             vscode.window.setStatusBarMessage('Запрос 1С сохранен.', 3000);
             context.panel.dispose();
+            try {
+              if (vscode.window && typeof vscode.window.showTextDocument === 'function') {
+                await vscode.window.showTextDocument(context.editor.document, {
+                  preserveFocus: false,
+                  preview: false,
+                });
+              }
+            } catch {
+              // Ignore focus error
+            }
+          } else {
+            void vscode.window.showErrorMessage(
+              'Не удалось сохранить запрос в активный документ. Проверьте права на запись файла или закройте блокирующие диалоги.'
+            );
           }
         } else {
           context.panel.dispose();
