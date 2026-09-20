@@ -236,38 +236,38 @@ export class DesignerParser {
         };
         const standardModules = STANDARD_MODULES[metadataType];
         if (standardModules !== undefined) {
-          let extNode: TreeNode;
-          if (!directoryNames.has(name)) {
-            const qp = typeName === 'CommonModules' ? `${typeName}.${name}.` : '';
-            const extPath = path.join(directoryPath, 'Ext');
-            extNode = {
-              id: `${qp}Ext`,
-              name: 'Extensions',
-              type: MetadataType.Extension,
-              properties: {},
-              filePath: extPath,
-              children: standardModules.map((mod) => ({
+          const qp = typeName === 'CommonModules' ? `${typeName}.${name}.` : '';
+          const extPath = path.join(directoryPath, 'Ext');
+          let existingFiles: Set<string> | null = null;
+          if (directoryNames.has(name)) {
+            const items = await fs.promises.readdir(extPath).catch(() => null);
+            if (items) {
+              existingFiles = new Set(items);
+            }
+          }
+          const extNode: TreeNode = {
+            id: `${qp}Ext`,
+            name: 'Extensions',
+            type: MetadataType.Extension,
+            properties: {},
+            filePath: extPath,
+            children: standardModules.map((mod) => {
+              const fileExists = existingFiles !== null && existingFiles.has(mod.fileName);
+              return {
                 id: `${qp}Ext.${mod.fileName}`,
                 name: mod.fileName,
                 type: MetadataType.Method,
                 properties: {
                   isModule: true,
                   fileType: 'bsl',
-                  isVirtual: true,
-                  label: mod.label,
+                  ...(fileExists ? {} : { isVirtual: true, label: mod.label }),
                 },
                 filePath: path.join(extPath, mod.fileName),
-              })),
-            };
-            for (const child of extNode.children!) {
-              child.parent = extNode;
-            }
-          } else {
-            extNode = await this.parseExtensions(
-              path.join(directoryPath, 'Ext'),
-              typeName === 'CommonModules' ? `${typeName}.${name}` : undefined,
-              metadataType
-            );
+              };
+            }),
+          };
+          for (const child of extNode.children!) {
+            child.parent = extNode;
           }
           extNode.parent = node;
           node.children = [extNode];

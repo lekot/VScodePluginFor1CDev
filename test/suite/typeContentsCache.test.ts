@@ -102,4 +102,30 @@ suite('typeContentsCache', () => {
     await fs.promises.rm(configPath, { recursive: true, force: true });
     await fs.promises.rm(storagePath, { recursive: true, force: true });
   });
+
+  test('loadTypeContentsFromCache matches case-insensitively and slash-independently for configPath', async () => {
+    const configPath = await makeTempDir('1cviewer-type-cache-cfg-');
+    const storagePath = await makeTempDir('1cviewer-type-cache-store-');
+    const typePath = path.join(configPath, 'Catalogs');
+    await fs.promises.mkdir(typePath, { recursive: true });
+    await fs.promises.writeFile(path.join(typePath, 'Item.xml'), '<MetaDataObject/>', 'utf-8');
+
+    const signature = await computeTypeContentsSignature(typePath, ConfigFormat.Designer);
+    assert.ok(signature);
+
+    const lowerConfigPath = configPath.toLowerCase().replace(/\\/g, '/');
+    const upperConfigPath = configPath.toUpperCase().replace(/\//g, '\\');
+
+    await saveTypeContentsToCache(storagePath, lowerConfigPath, 'Catalogs', signature, [
+      { id: 'Catalogs.Item', name: 'Item', type: MetadataType.Catalog, properties: {} },
+    ]);
+
+    const loaded = await loadTypeContentsFromCache(storagePath, upperConfigPath, 'Catalogs', signature);
+    assert.ok(loaded, 'Cache must hit even when configPath differs by drive letter case or slashes');
+    assert.strictEqual(loaded.length, 1);
+    assert.strictEqual(loaded[0].id, 'Catalogs.Item');
+
+    await fs.promises.rm(configPath, { recursive: true, force: true });
+    await fs.promises.rm(storagePath, { recursive: true, force: true });
+  });
 });

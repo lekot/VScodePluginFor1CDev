@@ -261,6 +261,45 @@ suite('DesignerParser', () => {
     }
   });
 
+  test('parseTypeIndex ignores Ext/Help subdirectories and does not call findBslFilesRecursive', async () => {
+    const configPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), '1cviewer-type-index-help-'));
+    const originalFindBsl = (DesignerParser as any).findBslFilesRecursive;
+    let findBslCalled = false;
+    (DesignerParser as any).findBslFilesRecursive = async (...args: any[]) => {
+      findBslCalled = true;
+      return originalFindBsl.apply(DesignerParser, args);
+    };
+
+    try {
+      const catalogsPath = path.join(configPath, 'Catalogs');
+      const catalogName = 'ItemWithHelp';
+      const extPath = path.join(catalogsPath, catalogName, 'Ext');
+      const helpPath = path.join(extPath, 'Help', 'subtopic');
+      await fs.promises.mkdir(helpPath, { recursive: true });
+      await fs.promises.writeFile(path.join(catalogsPath, `${catalogName}.xml`), '<MetaDataObject/>', 'utf-8');
+      await fs.promises.writeFile(path.join(extPath, 'ObjectModule.bsl'), '// Object module', 'utf-8');
+      await fs.promises.writeFile(path.join(helpPath, 'help.html'), '<html>Help</html>', 'utf-8');
+
+      const children = await DesignerParser.parseTypeIndex(configPath, 'Catalogs');
+      assert.strictEqual(findBslCalled, false, 'parseTypeIndex must not invoke findBslFilesRecursive');
+
+      const node = children.find((c) => c.name === catalogName);
+      assert.ok(node, 'Catalog should be indexed');
+      const ext = node.children?.find((c) => c.name === 'Extensions');
+      assert.ok(ext, 'Extensions node should exist');
+      const modNames = ext.children?.map((c) => c.name).sort();
+      assert.deepStrictEqual(modNames, ['ManagerModule.bsl', 'ObjectModule.bsl']);
+
+      const objMod = ext.children?.find((c) => c.name === 'ObjectModule.bsl');
+      assert.strictEqual(objMod?.properties?.isVirtual, undefined);
+      const mgrMod = ext.children?.find((c) => c.name === 'ManagerModule.bsl');
+      assert.strictEqual(mgrMod?.properties?.isVirtual, true);
+    } finally {
+      (DesignerParser as any).findBslFilesRecursive = originalFindBsl;
+      await fs.promises.rm(configPath, { recursive: true, force: true });
+    }
+  });
+
   test('should parse extensions_samples if present (configuration extension with Ext)', async function () {
     const projectRoot = path.resolve(__dirname, '../../..');
     const extensionsSamplesPath = path.join(projectRoot, 'FormatSamples', 'extensions_samples');
