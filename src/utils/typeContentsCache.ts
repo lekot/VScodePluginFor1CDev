@@ -28,8 +28,16 @@ function getConfigCachePrefix(configPath: string): string {
   return `${hash(normalizePathForSignature(configPath))}-`;
 }
 
-function getCacheFilePath(globalStoragePath: string, configPath: string, typeName: string): string {
-  return path.join(getCacheDir(globalStoragePath), `${getConfigCachePrefix(configPath)}${hash(typeName)}.json`);
+export type TypeCacheKind = 'contents' | 'index';
+
+function getCacheFilePath(
+  globalStoragePath: string,
+  configPath: string,
+  typeName: string,
+  kind: TypeCacheKind = 'contents'
+): string {
+  const ext = kind === 'index' ? '.index.json' : '.json';
+  return path.join(getCacheDir(globalStoragePath), `${getConfigCachePrefix(configPath)}${hash(typeName)}${ext}`);
 }
 
 function normalizePathForSignature(value: string): string {
@@ -108,10 +116,11 @@ export async function loadTypeContentsFromCache(
   globalStoragePath: string,
   configPath: string,
   typeName: string,
-  signature: string
+  signature: string,
+  kind: TypeCacheKind = 'contents'
 ): Promise<TreeNode[] | null> {
   try {
-    const cacheFilePath = getCacheFilePath(globalStoragePath, configPath, typeName);
+    const cacheFilePath = getCacheFilePath(globalStoragePath, configPath, typeName, kind);
     const raw = await fs.promises.readFile(cacheFilePath, 'utf-8');
     const entry = JSON.parse(raw) as TypeContentsCacheEntry;
     if (
@@ -142,7 +151,8 @@ export async function saveTypeContentsToCache(
   configPath: string,
   typeName: string,
   signature: string,
-  children: TreeNode[]
+  children: TreeNode[],
+  kind: TypeCacheKind = 'contents'
 ): Promise<void> {
   try {
     const dir = getCacheDir(globalStoragePath);
@@ -162,7 +172,7 @@ export async function saveTypeContentsToCache(
       version: CACHE_VERSION,
     };
     await fs.promises.writeFile(
-      getCacheFilePath(globalStoragePath, configPath, typeName),
+      getCacheFilePath(globalStoragePath, configPath, typeName, kind),
       JSON.stringify(entry),
       'utf-8'
     );

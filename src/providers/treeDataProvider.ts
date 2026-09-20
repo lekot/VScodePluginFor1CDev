@@ -1159,6 +1159,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       }
       const activeElement = this.cache.resolveActiveNode(element, this.rootNodes);
 
+      if (activeElement.type === MetadataType.Configuration) {
+        this.startTypeContentsCacheWarmup({
+          delayMs: 50,
+          preferredRootId: activeElement.id,
+        });
+      }
+
       // Lazy load: type node with no children yet
       if (this.isLazyTypeNode(activeElement)) {
         const configRoot = this.cache.getConfigurationRoot(activeElement);
@@ -1171,7 +1178,6 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             nodeCount: this.cache.size,
           });
           this.filter.filterAncestorOrVisibleIds = null;
-          this.refresh(activeElement);
           if (!this.filter.hasActiveFilter()) {return children;}
           this.filter.ensureFilterSets(this.cache.nodes);
           const ids = this.filter.filterAncestorOrVisibleIds!;
@@ -1226,7 +1232,6 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
               nodeCount: this.cache.size,
             });
             this.filter.filterAncestorOrVisibleIds = null;
-            this.refresh(activeElement);
             if (!this.filter.hasActiveFilter()) {return children;}
             this.filter.ensureFilterSets(this.cache.nodes);
             const ids = this.filter.filterAncestorOrVisibleIds!;

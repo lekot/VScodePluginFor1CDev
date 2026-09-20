@@ -360,7 +360,7 @@ export function createMetadataTreeLifecycle(state: ExtensionState): MetadataTree
     }
     provider.startTypeContentsCacheWarmup({
       delayMs: 1000,
-      rootIds: [loaded.rootNode.id],
+      preferredRootId: loaded.rootNode.id,
     });
     return true;
   }

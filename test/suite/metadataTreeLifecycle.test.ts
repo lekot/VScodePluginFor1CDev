@@ -256,6 +256,51 @@ suite('MetadataTreeLifecycle', () => {
     }
   });
 
+  test('targeted reload starts warmup with preferredRootId preserving other roots in queue', async () => {
+    const workspaceFolderPath = 'C:/workspace/1c';
+    const configA = `${workspaceFolderPath}/cfg-a`;
+    const configB = `${workspaceFolderPath}/cfg-b`;
+    vscodeTestState.mockWorkspaceFolders = [
+      { name: '1c', index: 0, uri: vscode.Uri.file(workspaceFolderPath) },
+    ];
+    stubDiscovery({
+      configs: [
+        { configPath: configA, workspaceFolderPath },
+        { configPath: configB, workspaceFolderPath },
+      ],
+    });
+    (MetadataParser.parseStructureOnly as unknown as typeof MetadataParser.parseStructureOnly) =
+      async (configPath) => ({
+        id: `configuration:${configPath}`,
+        name: 'Configuration',
+        type: MetadataType.Configuration,
+        properties: {},
+        children: [],
+      });
+    (FormatDetector.detect as unknown as typeof FormatDetector.detect) =
+      async () => ConfigFormat.Designer;
+
+    const { state, provider } = createStateWithProvider();
+    const warmupCalls: Array<any> = [];
+    provider.startTypeContentsCacheWarmup = ((options: any) => {
+      warmupCalls.push(options);
+    }) as any;
+
+    const lifecycle = createMetadataTreeLifecycle(state);
+    try {
+      await lifecycle.loadMetadataTree();
+      warmupCalls.length = 0;
+
+      await lifecycle.invalidateCacheAndReload(configA);
+
+      assert.strictEqual(warmupCalls.length, 1);
+      assert.strictEqual(warmupCalls[0]?.preferredRootId, provider.getRootNodes()[0].id);
+      assert.strictEqual(warmupCalls[0]?.rootIds, undefined, 'rootIds must not be restricted to single root on reload');
+    } finally {
+      lifecycle.dispose();
+    }
+  });
+
   test('new targeted generation cannot consume cache saved by an older parse after invalidation', async () => {
     const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'metadata-reload-generation-'));
     const workspaceFolderPath = path.join(tempRoot, 'workspace');

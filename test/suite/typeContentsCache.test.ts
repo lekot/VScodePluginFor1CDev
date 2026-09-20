@@ -128,4 +128,46 @@ suite('typeContentsCache', () => {
     await fs.promises.rm(configPath, { recursive: true, force: true });
     await fs.promises.rm(storagePath, { recursive: true, force: true });
   });
+
+  test('index and contents cache kinds are isolated and do not collide', async () => {
+    const configPath = await makeTempDir('1cviewer-type-cache-cfg-');
+    const storagePath = await makeTempDir('1cviewer-type-cache-store-');
+    const typePath = path.join(configPath, 'Catalogs');
+    await fs.promises.mkdir(typePath, { recursive: true });
+    await fs.promises.writeFile(path.join(typePath, 'Item.xml'), '<MetaDataObject/>', 'utf-8');
+
+    const signature = await computeTypeContentsSignature(typePath, ConfigFormat.Designer);
+    assert.ok(signature);
+
+    const indexItems = [{ id: 'Catalogs.Item', name: 'Item', type: MetadataType.Catalog, properties: { _lazy: true } }];
+    const contentItems = [
+      {
+        id: 'Catalogs.Item',
+        name: 'Item',
+        type: MetadataType.Catalog,
+        properties: {},
+        children: [{ id: 'Catalogs.Item.Attributes', name: 'Attributes', type: MetadataType.Attribute, properties: {} }],
+      },
+    ];
+
+    await saveTypeContentsToCache(storagePath, configPath, 'Catalogs', signature, indexItems, 'index');
+    await saveTypeContentsToCache(storagePath, configPath, 'Catalogs', signature, contentItems, 'contents');
+
+    const loadedIndex = await loadTypeContentsFromCache(storagePath, configPath, 'Catalogs', signature, 'index');
+    const loadedContents = await loadTypeContentsFromCache(storagePath, configPath, 'Catalogs', signature, 'contents');
+
+    assert.ok(loadedIndex);
+    assert.strictEqual(loadedIndex[0].properties._lazy, true);
+    assert.strictEqual(loadedIndex[0].children, undefined);
+
+    assert.ok(loadedContents);
+    assert.strictEqual(loadedContents[0].children?.length, 1);
+
+    await invalidateTypeContentsCache(storagePath, configPath);
+    assert.strictEqual(await loadTypeContentsFromCache(storagePath, configPath, 'Catalogs', signature, 'index'), null);
+    assert.strictEqual(await loadTypeContentsFromCache(storagePath, configPath, 'Catalogs', signature, 'contents'), null);
+
+    await fs.promises.rm(configPath, { recursive: true, force: true });
+    await fs.promises.rm(storagePath, { recursive: true, force: true });
+  });
 });

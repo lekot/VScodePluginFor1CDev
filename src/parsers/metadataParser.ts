@@ -233,13 +233,13 @@ export class MetadataParser {
       return await this.parseTypeIndexUncached(configPath, typeName, format);
     }
 
-    const cached = await loadTypeContentsFromCache(storagePath, configPath, typeName, signature);
+    const cached = await loadTypeContentsFromCache(storagePath, configPath, typeName, signature, 'index');
     if (cached) {
       return cached;
     }
 
     const children = await this.parseTypeIndexUncached(configPath, typeName, format);
-    await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children);
+    await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children, 'index');
     return children;
   }
 
