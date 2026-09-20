@@ -51,6 +51,24 @@ export class SupportApplicationService {
     if (!this.isExpectedConfiguration(request.configurationId)) {
       return operationRejected();
     }
+    if (request.includeUniverse === false) {
+      const masterStatus = await this.deps.modeService.getMasterStatus();
+      if (masterStatus.status === 'operationRejected') {
+        return masterStatus;
+      }
+      try {
+        const lastRun = await this.deps.journal.getLastRun(request.configurationId);
+        return {
+          status: 'available',
+          master: masterStatus.master.kind === 'ready'
+            ? filterMasterObjects(masterStatus.master, request.objectIds)
+            : masterStatus.master,
+          ...(lastRun ? { lastRun } : {}),
+        };
+      } catch {
+        return operationRejected();
+      }
+    }
     const status = await this.deps.modeService.getStatus();
     if (status.status === 'operationRejected') {
       return status;

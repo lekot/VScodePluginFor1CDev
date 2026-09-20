@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import type { ConfigurationId } from '../../src/services/configurationSession/types';
 import {
+  createSupportStateCacheFacade,
   SupportStateCache,
   type CachedSupportStatus,
 } from '../../src/support/supportStateCache';
@@ -184,6 +185,147 @@ suite('Support state cache/watcher/root lifecycle', () => {
     assert.strictEqual(registered, 0);
     assert.strictEqual(errors.length, 1);
     await lifecycle.dispose();
+  });
+
+  test('SupportStateCache loads ready status without metadataUniverse and indexes master cleanly', async () => {
+    const configurationId = 'cfg-ready-no-universe' as ConfigurationId;
+    const root = path.resolve('no-universe-root');
+    const cache = new SupportStateCache({
+      getStatus: async () => ({
+        status: 'available',
+        master: {
+          kind: 'ready' as const,
+          snapshot: {
+            configurationId,
+            generationId: 'gen-no-universe',
+            semanticDigest: 'gen-no-universe'.padEnd(64, '0').slice(0, 64),
+            filePath: path.join(root, 'Ext', 'ParentConfigurations.bin'),
+            formatRevision: '1',
+            globalEditability: 'enabled',
+            configurationMode: 'editable' as const,
+            objectModes: new Map(),
+            supplierConfigurations: [],
+          },
+        },
+        metadataUniverse: undefined,
+      }),
+    });
+    cache.register(root, configurationId);
+    const loaded = await cache.load(root);
+
+    assert.strictEqual(loaded.status, 'available');
+    assert.strictEqual(loaded.configurationId, configurationId);
+    assert.strictEqual(loaded.generationId, 'gen-no-universe');
+    assert.strictEqual(loaded.master.kind, 'ready');
+    assert.strictEqual('metadataUniverse' in loaded, false);
+    assert.strictEqual(loaded.metadataUniverseIdentityIndex, undefined);
+    assert.strictEqual(cache.get(root), loaded);
+  });
+
+  test('createSupportStateCacheFacade forwards getMasterStatus and attaches lastRun without invoking getStatus', async () => {
+    const configurationId = 'cfg-adapter' as ConfigurationId;
+    let getMasterStatusCalls = 0;
+    let getLastRunCalls = 0;
+    let getStatusCalls = 0;
+
+    const mockFacade = {
+      getMasterStatus: async (request: { configurationId: ConfigurationId }) => {
+        getMasterStatusCalls += 1;
+        assert.strictEqual(request.configurationId, configurationId);
+        return {
+          status: 'available' as const,
+          master: {
+            kind: 'ready' as const,
+            snapshot: {
+              configurationId,
+              generationId: 'gen-adapter',
+              semanticDigest: 'gen-adapter'.padEnd(64, '0').slice(0, 64),
+              filePath: path.resolve('Ext', 'ParentConfigurations.bin'),
+              formatRevision: '1',
+              globalEditability: 'enabled' as const,
+              configurationMode: 'mixed' as const,
+              objectModes: new Map(),
+              supplierConfigurations: [],
+            },
+          },
+        };
+      },
+      getLastRun: async (request: { configurationId: ConfigurationId }) => {
+        getLastRunCalls += 1;
+        assert.strictEqual(request.configurationId, configurationId);
+        return {
+          status: 'available' as const,
+          run: {
+            runId: 'run-1',
+            configurationId,
+            desiredGenerationId: 'gen-adapter',
+            operation: 'sync' as const,
+            scope: 'masterOnly' as const,
+            targets: [] as const,
+            state: 'complete' as const,
+            completedAt: '2026-09-20T12:00:00.000Z',
+          },
+        };
+      },
+      getStatus: async () => {
+        getStatusCalls += 1;
+        throw new Error('getStatus must NOT be called by UI cache');
+      },
+    };
+
+    const cacheFacade = createSupportStateCacheFacade(mockFacade);
+    const result = await cacheFacade.getStatus({ configurationId });
+
+    assert.strictEqual(getMasterStatusCalls, 1);
+    assert.strictEqual(getLastRunCalls, 1);
+    assert.strictEqual(getStatusCalls, 0);
+    assert.strictEqual(result.status, 'available');
+    assert.strictEqual(result.master.kind, 'ready');
+    assert.strictEqual(result.metadataUniverse, undefined);
+    assert.strictEqual(result.lastRun?.runId, 'run-1');
+  });
+
+  test('createSupportStateCacheFacade throws on rejected getMasterStatus and handles unmanaged/no lastRun', async () => {
+    const configurationId = 'cfg-unmanaged' as ConfigurationId;
+    const mockFacade = {
+      getMasterStatus: async () => ({
+        status: 'available' as const,
+        master: {
+          kind: 'unmanaged' as const,
+          reason: 'missing' as const,
+          configurationId,
+          expectedFilePath: path.resolve('missing', 'Ext', 'ParentConfigurations.bin'),
+        },
+      }),
+      getLastRun: async () => ({
+        status: 'available' as const,
+        run: undefined,
+      }),
+    };
+
+    const cacheFacade = createSupportStateCacheFacade(mockFacade);
+    const result = await cacheFacade.getStatus({ configurationId });
+    assert.strictEqual(result.status, 'available');
+    assert.strictEqual(result.master.kind, 'unmanaged');
+    assert.strictEqual('lastRun' in result, false);
+
+    const rejectingFacade = {
+      getMasterStatus: async () => ({
+        status: 'operationRejected' as const,
+        errorCode: 'SUPPORT_OPERATION_FAILED' as const,
+        retryable: true as const,
+      }),
+      getLastRun: async () => ({
+        status: 'available' as const,
+        run: undefined,
+      }),
+    };
+
+    const rejectingCacheFacade = createSupportStateCacheFacade(rejectingFacade);
+    await assert.rejects(
+      () => rejectingCacheFacade.getStatus({ configurationId }),
+      /Support status is unavailable: SUPPORT_OPERATION_FAILED/,
+    );
   });
 });
 

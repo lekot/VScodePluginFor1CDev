@@ -4,6 +4,10 @@ import type {
   MasterSupportState,
   MetadataUniverseEntry,
   MetadataUniverseSnapshot,
+  SupportGetLastRunOutcome,
+  SupportGetLastRunRequest,
+  SupportMasterStatusOutcome,
+  SupportMasterStatusRequest,
   SupportStatusRequest,
   SupportStatusResult,
 } from './supportTypes';
@@ -11,6 +15,33 @@ import type {
 /** Narrow facade boundary: the UI cache can only read the public support status operation. */
 export interface SupportStatusFacade {
   getStatus(request: SupportStatusRequest): Promise<SupportStatusResult>;
+}
+
+export interface SupportCacheMasterSource {
+  getMasterStatus(request: SupportMasterStatusRequest): Promise<SupportMasterStatusOutcome>;
+  getLastRun?(request: SupportGetLastRunRequest): Promise<SupportGetLastRunOutcome>;
+}
+
+export function createSupportStateCacheFacade(
+  source: SupportCacheMasterSource,
+): SupportStatusFacade {
+  return {
+    getStatus: async (request: SupportStatusRequest): Promise<SupportStatusResult> => {
+      const outcome = await source.getMasterStatus({ configurationId: request.configurationId });
+      if (outcome.status !== 'available') {
+        throw new Error(`Support status is unavailable: ${outcome.errorCode}.`);
+      }
+      const lastRunOutcome = source.getLastRun
+        ? await source.getLastRun({ configurationId: request.configurationId })
+        : undefined;
+      const lastRun = lastRunOutcome?.status === 'available' ? lastRunOutcome.run : undefined;
+      return {
+        status: 'available',
+        master: outcome.master,
+        ...(lastRun ? { lastRun } : {}),
+      };
+    },
+  };
 }
 
 interface CachedSupportStatusBase {
@@ -194,13 +225,10 @@ function freezeCachedStatus(
     ...(status.lastRun === undefined ? {} : { lastRun: status.lastRun }),
     ...(generationId === undefined ? {} : { generationId }),
   };
-  if (status.master.kind !== 'ready') {
+  if (status.master.kind !== 'ready' || status.metadataUniverse === undefined) {
     return Object.freeze(common) as CachedSupportStatus;
   }
   const metadataUniverse = status.metadataUniverse;
-  if (metadataUniverse === undefined) {
-    throw new Error('Ready support status must include the metadata universe.');
-  }
   return Object.freeze({
     ...common,
     master: status.master,

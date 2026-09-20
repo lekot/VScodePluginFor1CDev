@@ -69,6 +69,8 @@ export interface TypeContentsWarmupOptions {
   delayMs?: number;
   budgetMs?: number;
   rootIds?: readonly string[];
+  preferredRootId?: string;
+  slicePauseMs?: number;
 }
 
 export interface SupportStateCacheReader {
@@ -744,12 +746,23 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (roots.length === 0) {
       return;
     }
+    if (normalizedOptions.preferredRootId) {
+      const idx = roots.findIndex((r) => r.id === normalizedOptions.preferredRootId);
+      if (idx > 0) {
+        const [preferred] = roots.splice(idx, 1);
+        roots.unshift(preferred);
+      }
+    }
+    const budgetMs = normalizedOptions.budgetMs ?? TYPE_CONTENTS_WARMUP_DEFAULT_BUDGET_MS;
+    const slicePauseMs = normalizedOptions.slicePauseMs ?? 50;
+
     this.typeContentsWarmupTimer = setTimeout(() => {
       this.typeContentsWarmupTimer = null;
       void this.warmUpTypeContentsCache(
         roots,
         generation,
-        normalizedOptions.budgetMs ?? TYPE_CONTENTS_WARMUP_DEFAULT_BUDGET_MS,
+        budgetMs,
+        slicePauseMs,
       ).catch((error) => {
         Logger.warn('Type contents cache warmup failed', error);
       });
@@ -767,6 +780,13 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   private cancelTypeContentsCacheWarmup(): void {
     this.typeContentsWarmupGeneration++;
     this.clearScheduledTypeContentsCacheWarmup();
+  }
+
+  private isTypeFolderAlreadyLoaded(element: TreeNode): boolean {
+    return Boolean(
+      (element.properties as Record<string, unknown> | undefined)?._indexLoaded ||
+      (element.children && element.children.length > 0)
+    );
   }
 
   private collectWarmupTypeFolders(root: TreeNode): TreeNode[] {
@@ -797,10 +817,16 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     roots: TreeNode[],
     generation: number,
     budgetMs: number,
+    slicePauseMs = 50,
   ): Promise<void> {
     const deadline = Date.now() + Math.max(0, budgetMs);
-    for (const root of roots) {
-      if (generation !== this.typeContentsWarmupGeneration || Date.now() >= deadline) {
+    for (let rIdx = 0; rIdx < roots.length; rIdx++) {
+      const root = roots[rIdx];
+      if (generation !== this.typeContentsWarmupGeneration) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        this.scheduleWarmupContinuation(roots.slice(rIdx), generation, budgetMs, slicePauseMs);
         return;
       }
       const ctx = this.cache.getLoadContext(root.id);
@@ -808,10 +834,14 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         continue;
       }
       for (const typeFolder of this.collectWarmupTypeFolders(root)) {
-        if (generation !== this.typeContentsWarmupGeneration || Date.now() >= deadline) {
+        if (generation !== this.typeContentsWarmupGeneration) {
           return;
         }
-        if (typeFolder.children && typeFolder.children.length > 0) {
+        if (Date.now() >= deadline) {
+          this.scheduleWarmupContinuation(roots.slice(rIdx), generation, budgetMs, slicePauseMs);
+          return;
+        }
+        if (this.isTypeFolderAlreadyLoaded(typeFolder)) {
           continue;
         }
         const startedAt = Date.now();
@@ -830,6 +860,24 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
     }
+  }
+
+  private scheduleWarmupContinuation(
+    roots: TreeNode[],
+    generation: number,
+    budgetMs: number,
+    slicePauseMs: number,
+  ): void {
+    if (generation !== this.typeContentsWarmupGeneration) {
+      return;
+    }
+    this.clearScheduledTypeContentsCacheWarmup();
+    this.typeContentsWarmupTimer = setTimeout(() => {
+      this.typeContentsWarmupTimer = null;
+      void this.warmUpTypeContentsCache(roots, generation, budgetMs, slicePauseMs).catch((error) => {
+        Logger.warn('Type contents cache warmup continuation failed', error);
+      });
+    }, slicePauseMs);
   }
 
   private async populateTypeFolderIndex(
@@ -851,6 +899,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       ensureR6PlaceholdersForInstanceNode(c, { configPath: ctx.configPath, format: ctx.format });
     }
     typeFolder.children = children;
+    if (!typeFolder.properties) {
+      typeFolder.properties = {};
+    }
+    (typeFolder.properties as Record<string, unknown>)._indexLoaded = true;
     this.clearTypeEditorReferenceableCache();
     return children;
   }
@@ -961,6 +1013,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       el.properties = {};
     }
     el.children = [];
+    delete (el.properties as Record<string, unknown>)._indexLoaded;
     if (R6_LAZY_SECTION_IDS.has(el.id) || el.type === MetadataType.Subsystem) {
       (el.properties as Record<string, unknown>)._lazy = true;
     } else if (
@@ -1000,7 +1053,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
   }
 
   private isLazyTypeNode(element: TreeNode): boolean {
-    if (element.children && element.children.length > 0) {
+    if (this.isTypeFolderAlreadyLoaded(element)) {
       return false;
     }
     const configRoot = this.cache.getConfigurationRoot(element);
@@ -1124,7 +1177,10 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
           const ids = this.filter.filterAncestorOrVisibleIds!;
           return children.filter((c) => ids.has(c.id));
         }).finally(() => {
-          this.startTypeContentsCacheWarmup(TYPE_CONTENTS_WARMUP_RESUME_AFTER_FOREGROUND_MS);
+          this.startTypeContentsCacheWarmup({
+            delayMs: TYPE_CONTENTS_WARMUP_RESUME_AFTER_FOREGROUND_MS,
+            preferredRootId: configRoot?.id,
+          });
         });
       }
 
@@ -1137,6 +1193,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
         if (format == null) {
           return Promise.resolve([]);
         }
+        this.cancelTypeContentsCacheWarmup();
         return MetadataParser.loadElementChildren(ctx.configPath, format, activeElement).then(
           (loaded) => {
             const existingSubsystems = (activeElement.children ?? []).filter(
@@ -1175,7 +1232,12 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
             const ids = this.filter.filterAncestorOrVisibleIds!;
             return children.filter((c) => ids.has(c.id));
           }
-        );
+        ).finally(() => {
+          this.startTypeContentsCacheWarmup({
+            delayMs: TYPE_CONTENTS_WARMUP_RESUME_AFTER_FOREGROUND_MS,
+            preferredRootId: configRoot?.id,
+          });
+        });
       }
 
       const configRoot = this.cache.getConfigurationRoot(activeElement);

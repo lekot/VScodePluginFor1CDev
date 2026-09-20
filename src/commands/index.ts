@@ -25,7 +25,10 @@ import { configureConfigurationMutationGateway } from '../services/configuration
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { sharedInfobaseConfigurationOperationQueue } from '../infobases/infobaseConfigurationOperationQueue';
 import { createSupportServiceComposition } from '../support/supportServiceComposition';
-import { SupportStateCache } from '../support/supportStateCache';
+import {
+  createSupportStateCacheFacade,
+  SupportStateCache,
+} from '../support/supportStateCache';
 import {
   SUPPORT_MASTER_WATCH_GLOB,
   SupportStateWatcher,
@@ -241,15 +244,9 @@ function configureSupportServices({
     targetQueue: sharedInfobaseConfigurationOperationQueue,
     runExclusiveConfigurationOperation: runConfigurationMutation,
   });
-  const cache = new SupportStateCache({
-    getStatus: async (request) => {
-      const outcome = await composition.facade.getStatus(request);
-      if (outcome.status !== 'available') {
-        throw new Error(`Support status is unavailable: ${outcome.errorCode}.`);
-      }
-      return outcome;
-    },
-  });
+  const cache = new SupportStateCache(
+    createSupportStateCacheFacade(composition.facade),
+  );
   const watcher = new SupportStateWatcher(
     createSupportWatcherFactory(),
     cache,
