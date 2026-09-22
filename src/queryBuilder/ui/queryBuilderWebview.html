@@ -3198,6 +3198,317 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 return from || [];
             }
 
+            function rawExpressionReferencesAlias(raw, alias) {
+                if (!raw || !alias) return false;
+                const source = String(raw);
+                const needle = String(alias).trim().toLowerCase();
+                if (!needle) return false;
+
+                let inString = false;
+                for (let i = 0; i < source.length;) {
+                    const ch = source[i];
+                    if (ch === '"') {
+                        if (inString && i + 1 < source.length && source[i + 1] === '"') {
+                            i += 2;
+                            continue;
+                        }
+                        inString = !inString;
+                        i++;
+                        continue;
+                    }
+
+                    if (!inString && source.substring(i, i + needle.length).toLowerCase() === needle) {
+                        const previous = i > 0 ? source[i - 1] : '';
+                        const next = i + needle.length;
+                        const isWordStart = i === 0 || !/[a-zA-Z0-9_а-яА-ЯёЁ]/.test(previous);
+                        const isParameter = previous === '&';
+                        const isSubProperty = previous === '.';
+                        if (isWordStart && !isParameter && !isSubProperty && source[next] === '.') {
+                            return true;
+                        }
+                    }
+                    i++;
+                }
+                return false;
+            }
+
+            function compoundIdentifierReferencesAlias(parts, alias) {
+                if (!Array.isArray(parts) || parts.length < 2 || !alias) return false;
+                const aliasParts = String(alias).trim().split('.');
+                if (aliasParts.length >= parts.length) return false;
+                for (let i = 0; i < aliasParts.length; i++) {
+                    if (!aliasesEqual(parts[i], aliasParts[i])) return false;
+                }
+                return true;
+            }
+
+            function expressionReferencesAliases(expr, aliases) {
+                if (!expr || !aliases || aliases.length === 0) return false;
+                const aliasList = aliases.filter(Boolean);
+                if (aliasList.length === 0) return false;
+                if (typeof expr === 'string') {
+                    return aliasList.some(function(alias) {
+                        return rawExpressionReferencesAlias(expr, alias);
+                    });
+                }
+                if (typeof expr !== 'object') return false;
+
+                let found = false;
+                const visitor = {
+                    // Nested SELECTs have their own alias scope. Their
+                    // references are inspected by the scope-aware callback
+                    // below instead of being visited as part of this scope.
+                    traverseSubqueries: false,
+                    enter: function(node) {
+                        if (found) return;
+                        if (node.type === 'CompoundIdentifier' && node.parts) {
+                            found = aliasList.some(function(alias) {
+                                return compoundIdentifierReferencesAlias(node.parts, alias);
+                            });
+                        } else if (node.type === 'RawExpression') {
+                            found = aliasList.some(function(alias) {
+                                return rawExpressionReferencesAlias(node.raw, alias);
+                            });
+                        }
+                    },
+                    enterSubquery: function(subquery) {
+                        if (!found && selectStatementReferencesAliases(subquery, aliasList)) {
+                            found = true;
+                        }
+                    }
+                };
+
+                if (expr.type === 'RawExpression' || expr.type === 'CompoundIdentifier') {
+                    visitor.enter(expr);
+                    return found;
+                }
+                if (expr.type === 'Select') {
+                    return selectStatementReferencesAliases(expr, aliasList);
+                }
+
+                traverseAstExpr(expr, visitor);
+                return found;
+            }
+
+            function selectStatementReferencesAliases(stmt, aliases) {
+                if (!stmt || typeof stmt !== 'object') return false;
+                const localAliases = [];
+                const addLocalAlias = function(source, alias) {
+                    const value = alias || (source && source.name);
+                    if (!value) return;
+                    const text = String(value).trim();
+                    if (text && localAliases.every(function(existing) { return !aliasesEqual(existing, text); })) {
+                        localAliases.push(text);
+                    }
+                    if (!alias && source && source.name) {
+                        const shortName = getTableAliasWithoutPrefix(source.name);
+                        if (shortName && localAliases.every(function(existing) { return !aliasesEqual(existing, shortName); })) {
+                            localAliases.push(shortName);
+                        }
+                    }
+                };
+                (stmt.from || []).forEach(function(fc) {
+                    addLocalAlias(fc.source, fc.alias);
+                    (fc.joins || []).forEach(function(jn) {
+                        addLocalAlias(jn.source, jn.alias);
+                    });
+                });
+                const effectiveAliases = aliases.filter(function(alias) {
+                    return !localAliases.some(function(localAlias) { return aliasesEqual(localAlias, alias); });
+                });
+                if (effectiveAliases.length === 0) return false;
+
+                if ((stmt.from || []).some(function(fc) {
+                    if (tableSourceReferencesAliases(fc.source, effectiveAliases)) return true;
+                    return (fc.joins || []).some(function(jn) {
+                        return expressionReferencesAliases(jn.on, effectiveAliases) ||
+                            tableSourceReferencesAliases(jn.source, effectiveAliases);
+                    });
+                })) return true;
+                if ((stmt.fields || []).some(function(field) {
+                    return expressionReferencesAliases(field.expression, effectiveAliases) ||
+                        expressionReferencesAliases(field.raw, effectiveAliases);
+                })) return true;
+                if ((stmt.groupBy || []).some(function(expr) {
+                    return expressionReferencesAliases(expr, effectiveAliases);
+                })) return true;
+                if ((stmt.orderBy || []).some(function(item) {
+                    return expressionReferencesAliases(item.expression, effectiveAliases);
+                })) return true;
+                if (expressionReferencesAliases(stmt.where, effectiveAliases) || expressionReferencesAliases(stmt.having, effectiveAliases)) {
+                    return true;
+                }
+                if ((stmt.whereConditions || []).some(function(cond) {
+                    return conditionReferencesAliases(cond, effectiveAliases);
+                }) || (stmt.havingConditions || []).some(function(cond) {
+                    return conditionReferencesAliases(cond, effectiveAliases);
+                })) return true;
+                if (stmt.totals && ((stmt.totals.fields || []).some(function(item) {
+                    return expressionReferencesAliases(item.expression, effectiveAliases);
+                }) || (stmt.totals.by || []).some(function(item) {
+                    return expressionReferencesAliases(item.expression, effectiveAliases) ||
+                        (item.periodDefinition && (
+                            expressionReferencesAliases(item.periodDefinition.from, effectiveAliases) ||
+                            expressionReferencesAliases(item.periodDefinition.to, effectiveAliases)
+                        ));
+                }))) return true;
+                if ((stmt.indexBy || []).some(function(item) {
+                    return expressionReferencesAliases(item, effectiveAliases);
+                }) || (stmt.forUpdateTables || []).some(function(item) {
+                    return effectiveAliases.some(function(alias) { return aliasesEqual(item, alias); });
+                })) return true;
+                if ((stmt.unions || []).some(function(union) {
+                    return selectStatementReferencesAliases(union.statement, effectiveAliases);
+                })) return true;
+                return false;
+            }
+
+            function conditionReferencesAliases(condition, aliases) {
+                if (!condition) return false;
+                if (expressionReferencesAliases(condition.field, aliases)) return true;
+                if (condition.originalNode) {
+                    // For parsed IN/BETWEEN/LIKE conditions the original AST
+                    // retains subquery scope; scanning its display string
+                    // would incorrectly treat a shadowed alias as outer.
+                    return expressionReferencesAliases(condition.originalNode, aliases);
+                }
+                return expressionReferencesAliases(condition.value, aliases);
+            }
+
+            function pruneConditionTree(node, aliases) {
+                if (!node || typeof node !== 'object') {
+                    return expressionReferencesAliases(node, aliases) ? null : node;
+                }
+                if (node.type === 'BinaryOp') {
+                    const op = String(node.operator || '').toUpperCase();
+                    if (op === 'AND' || op === 'И' || op === 'OR' || op === 'ИЛИ') {
+                        const left = pruneConditionTree(node.left, aliases);
+                        const right = pruneConditionTree(node.right, aliases);
+                        if (!left) return right;
+                        if (!right) return left;
+                        return Object.assign({}, node, { left: left, right: right });
+                    }
+                }
+                return expressionReferencesAliases(node, aliases) ? null : node;
+            }
+
+            function cleanConditionSection(q, listProperty, treeProperty, aliases) {
+                const hasList = Array.isArray(q[listProperty]);
+                const originalTree = q[treeProperty];
+                const treeHasReferences = originalTree && expressionReferencesAliases(originalTree, aliases);
+                let listChanged = false;
+                if (hasList) {
+                    const originalLength = q[listProperty].length;
+                    q[listProperty] = q[listProperty].filter(function(condition) {
+                        return !conditionReferencesAliases(condition, aliases);
+                    });
+                    listChanged = q[listProperty].length !== originalLength;
+                }
+
+                if (hasList && (listChanged || treeHasReferences)) {
+                    // Prefer the AST when the display value contains a
+                    // nested SELECT: it retains alias shadowing and
+                    // correlation that a flattened string cannot express.
+                    const cleanedTree = treeHasReferences
+                        ? pruneConditionTree(originalTree, aliases)
+                        : originalTree;
+                    q[treeProperty] = cleanedTree || undefined;
+                    q[listProperty] = cleanedTree ? flattenConditionNode(cleanedTree, 'И') : [];
+                } else if (originalTree) {
+                    q[treeProperty] = pruneConditionTree(originalTree, aliases) || undefined;
+                    if (!hasList && q[treeProperty]) {
+                        q[listProperty] = flattenConditionNode(q[treeProperty], 'И');
+                    }
+                } else if (hasList) {
+                    q[treeProperty] = conditionsToTree(q[listProperty]);
+                }
+            }
+
+            function getTableReferenceAliases(tblInfo) {
+                const aliases = [];
+                const add = function(value) {
+                    if (!value) return;
+                    const text = String(value).trim();
+                    if (text && aliases.every(function(existing) { return !aliasesEqual(existing, text); })) {
+                        aliases.push(text);
+                    }
+                };
+
+                if (tblInfo && tblInfo.alias) {
+                    add(tblInfo.alias);
+                } else if (tblInfo && tblInfo.source) {
+                    add(tblInfo.source.name);
+                    add(getTableAliasWithoutPrefix(tblInfo.source.name));
+                }
+                return aliases;
+            }
+
+            function tableSourceReferencesAliases(source, aliases) {
+                if (!source) return false;
+                if ((source.params || []).some(function(param) {
+                    return expressionReferencesAliases(param, aliases);
+                })) return true;
+                return source.type === 'Subquery' && source.query
+                    ? selectStatementReferencesAliases(source.query, aliases)
+                    : false;
+            }
+
+            function cleanupQueryReferences(q, aliases) {
+                if (!q || !aliases || aliases.length === 0) return;
+
+                const removedFieldNames = [];
+                if (Array.isArray(q.fields)) {
+                    q.fields = q.fields.filter(function(field) {
+                        if (!expressionReferencesAliases(field.expression, aliases) &&
+                            !expressionReferencesAliases(field.raw, aliases)) return true;
+                        removedFieldNames.push(getFieldDisplayName(field));
+                        return false;
+                    });
+                }
+
+                cleanConditionSection(q, 'whereConditions', 'where', aliases);
+                cleanConditionSection(q, 'havingConditions', 'having', aliases);
+
+                if (Array.isArray(q.groupBy)) {
+                    q.groupBy = q.groupBy.filter(function(expr) {
+                        return !expressionReferencesAliases(expr, aliases);
+                    });
+                }
+                if (Array.isArray(q.orderBy)) {
+                    q.orderBy = q.orderBy.filter(function(item) {
+                        return !expressionReferencesAliases(item.expression, aliases);
+                    });
+                }
+                if (q.totals) {
+                    if (Array.isArray(q.totals.fields)) {
+                        q.totals.fields = q.totals.fields.filter(function(item) {
+                            return !expressionReferencesAliases(item.expression, aliases);
+                        });
+                    }
+                    if (Array.isArray(q.totals.by)) {
+                        q.totals.by = q.totals.by.filter(function(item) {
+                            return !expressionReferencesAliases(item.expression, aliases) &&
+                                !(item.periodDefinition && (
+                                    expressionReferencesAliases(item.periodDefinition.from, aliases) ||
+                                    expressionReferencesAliases(item.periodDefinition.to, aliases)
+                                ));
+                        });
+                    }
+                    cleanEmptyTotals(q);
+                }
+                if (Array.isArray(q.indexBy)) {
+                    q.indexBy = q.indexBy.filter(function(item) {
+                        return removedFieldNames.indexOf(item) === -1 &&
+                            !expressionReferencesAliases(item, aliases);
+                    });
+                }
+                if (Array.isArray(q.forUpdateTables)) {
+                    q.forUpdateTables = q.forUpdateTables.filter(function(item) {
+                        return !aliases.some(function(alias) { return aliasesEqual(item, alias); });
+                    });
+                }
+            }
+
             function getAllTablesInQuery(q) {
                 if (!q) return [];
                 const api = typeof window !== 'undefined' && window.SdblAstVisitor ? window.SdblAstVisitor : (typeof SdblAstVisitor !== 'undefined' ? SdblAstVisitor : null);
@@ -3222,6 +3533,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             function deleteTableFromQuery(q, tblInfo) {
                 if (!q || !q.from) return;
                 const targetKey = tblInfo.key || tblInfo.alias || (tblInfo.source && tblInfo.source.name);
+                const targetAliases = getTableReferenceAliases(tblInfo);
                 const keyOf = function(source, alias) {
                     return alias || (source && source.name) || '';
                 };
@@ -3290,6 +3602,36 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
 
                 q.from = rootOrder.map(function(key) { return roots.get(key); });
                 q.from = getNormalizedFrom(q.from);
+
+                // Remove surviving joins or table sources whose expressions
+                // still depend on the deleted alias before cleaning query
+                // sections. Detached joined tables remain valid roots.
+                const detachedRoots = [];
+                const detachJoinSource = function(jn) {
+                    if (!jn || tableSourceReferencesAliases(jn.source, targetAliases)) return;
+                    detachedRoots.push({ source: jn.source, alias: jn.alias, joins: [] });
+                };
+                q.from = q.from.filter(function(fc) {
+                    if (tableSourceReferencesAliases(fc.source, targetAliases)) {
+                        (fc.joins || []).forEach(detachJoinSource);
+                        return false;
+                    }
+                    if (fc.joins) {
+                        fc.joins = fc.joins.filter(function(jn) {
+                            const dependsOnDeletedAlias = expressionReferencesAliases(jn.on, targetAliases) ||
+                                tableSourceReferencesAliases(jn.source, targetAliases);
+                            if (dependsOnDeletedAlias) {
+                                detachJoinSource(jn);
+                                return false;
+                            }
+                            return true;
+                        });
+                    }
+                    return true;
+                });
+                q.from.push.apply(q.from, detachedRoots);
+                q.from = getNormalizedFrom(q.from);
+                cleanupQueryReferences(q, targetAliases);
             }
 
             // ── SDBL Formatter ──

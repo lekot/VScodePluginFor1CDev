@@ -1951,6 +1951,196 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         assert.ok(!q.from.some((fc: any) => fc.alias === 'b'), 'Deleted B must not remain in FROM');
       });
 
+      test('Finding: deleting a table cascades references in all query sections', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: {
+            queries: [{
+              type: 'Select',
+              fields: [
+                { expression: 'B.Value', alias: 'Removed' },
+                { expression: 'A.Value', alias: 'Kept' },
+              ],
+              from: [
+                { source: { type: 'Table', name: 'TableA' }, alias: 'A' },
+                { source: { type: 'Table', name: 'TableB' }, alias: 'B' },
+              ],
+              whereConditions: [
+                { op: '', field: 'B.Filter', cmp: '=', value: '1' },
+                { op: 'И', field: 'A.Filter', cmp: '=', value: '2' },
+              ],
+              where: {
+                type: 'BinaryOp',
+                operator: 'AND',
+                left: {
+                  type: 'BinaryOp',
+                  operator: '=',
+                  left: { type: 'CompoundIdentifier', parts: ['B', 'Filter'] },
+                  right: { type: 'Literal', valueType: 'number', value: 1, raw: '1' },
+                },
+                right: {
+                  type: 'BinaryOp',
+                  operator: '=',
+                  left: { type: 'CompoundIdentifier', parts: ['A', 'Filter'] },
+                  right: { type: 'Literal', valueType: 'number', value: 2, raw: '2' },
+                },
+              },
+              havingConditions: [
+                { op: '', field: 'B.Total', cmp: '>', value: '0' },
+                { op: 'И', field: 'A.Total', cmp: '>', value: '0' },
+              ],
+              having: {
+                type: 'BinaryOp',
+                operator: 'AND',
+                left: {
+                  type: 'BinaryOp',
+                  operator: '>',
+                  left: { type: 'CompoundIdentifier', parts: ['B', 'Total'] },
+                  right: { type: 'Literal', valueType: 'number', value: 0, raw: '0' },
+                },
+                right: {
+                  type: 'BinaryOp',
+                  operator: '>',
+                  left: { type: 'CompoundIdentifier', parts: ['A', 'Total'] },
+                  right: { type: 'Literal', valueType: 'number', value: 0, raw: '0' },
+                },
+              },
+              groupBy: [
+                { type: 'CompoundIdentifier', parts: ['B', 'Group'] },
+                { type: 'CompoundIdentifier', parts: ['A', 'Group'] },
+              ],
+              orderBy: [
+                { expression: { type: 'CompoundIdentifier', parts: ['B', 'Order'] }, direction: 'Asc' },
+                { expression: { type: 'CompoundIdentifier', parts: ['A', 'Order'] }, direction: 'Desc' },
+              ],
+              totals: {
+                fields: [
+                  { expression: { type: 'CompoundIdentifier', parts: ['B', 'Total'] } },
+                  { expression: { type: 'CompoundIdentifier', parts: ['A', 'Total'] } },
+                ],
+                by: [
+                  { expression: { type: 'CompoundIdentifier', parts: ['B', 'Group'] } },
+                  { expression: { type: 'CompoundIdentifier', parts: ['A', 'Group'] } },
+                ],
+              },
+              indexBy: ['B.Key', 'A.Key'],
+              forUpdate: true,
+              forUpdateTables: ['B', 'A'],
+            }],
+          },
+        });
+
+        const q = env.window.getActiveQuery();
+        env.window.renderFromTables();
+        const tableRows = env.elements.tbodyFromTables.children;
+        assert.strictEqual(tableRows.length, 2);
+        const deleteButton = tableRows[1].querySelector('button.danger') as any;
+        assert.ok(deleteButton);
+        deleteButton.click();
+
+        assert.strictEqual(q.fields.length, 1);
+        assert.strictEqual(q.fields[0].alias, 'Kept');
+        assert.strictEqual(q.whereConditions.length, 1);
+        assert.strictEqual(q.whereConditions[0].field, 'A.Filter');
+        assert.strictEqual(env.window.getExpressionString(q.where), 'A.Filter = 2');
+        assert.strictEqual(q.havingConditions.length, 1);
+        assert.strictEqual(q.havingConditions[0].field, 'A.Total');
+        assert.strictEqual(env.window.getExpressionString(q.having), 'A.Total > 0');
+        assert.strictEqual(q.groupBy.length, 1);
+        assert.strictEqual(env.window.getExpressionString(q.groupBy[0]), 'A.Group');
+        assert.strictEqual(q.orderBy.length, 1);
+        assert.strictEqual(env.window.getExpressionString(q.orderBy[0].expression), 'A.Order');
+        assert.strictEqual(q.totals.fields.length, 1);
+        assert.strictEqual(env.window.getExpressionString(q.totals.fields[0].expression), 'A.Total');
+        assert.strictEqual(q.totals.by.length, 1);
+        assert.strictEqual(env.window.getExpressionString(q.totals.by[0].expression), 'A.Group');
+        assert.strictEqual(q.indexBy.length, 1);
+        assert.strictEqual(q.indexBy[0], 'A.Key');
+        assert.strictEqual(q.forUpdateTables.length, 1);
+        assert.strictEqual(q.forUpdateTables[0], 'A');
+
+        const formatted = env.window.formatSdblQuery(q);
+        assert.strictEqual(formatted.includes('B.'), false, 'Formatted query must not retain references to deleted alias');
+      });
+
+      test('Finding: deleting an outer alias keeps a shadowed subquery alias', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient(
+            'ВЫБРАТЬ A.Value ИЗ TableA КАК A, TableB КАК B ГДЕ A.Id В (ВЫБРАТЬ B.Id ИЗ Other КАК B)'
+          ),
+        });
+
+        const q = env.window.getActiveQuery();
+        env.window.renderFromTables();
+        const deleteButton = env.elements.tbodyFromTables.children[1].querySelector('button.danger') as any;
+        assert.ok(deleteButton);
+        deleteButton.click();
+
+        assert.ok(q.where, 'The condition must survive because B is local to the subquery');
+        const formatted = env.window.formatSdblQuery(q);
+        assert.ok(formatted.includes('ВЫБРАТЬ'), 'The subquery must remain in the condition');
+        assert.ok(formatted.includes('B.Id'), 'The shadowed subquery alias must remain intact');
+      });
+
+      test('Finding: deleting an outer alias removes correlated subquery conditions', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient(
+            'ВЫБРАТЬ A.Value ИЗ TableA КАК A, TableB КАК B ГДЕ A.Id В (ВЫБРАТЬ Other.Id ИЗ Other КАК Other ГДЕ Other.Ref = B.Id)'
+          ),
+        });
+
+        const q = env.window.getActiveQuery();
+        env.window.renderFromTables();
+        const deleteButton = env.elements.tbodyFromTables.children[1].querySelector('button.danger') as any;
+        assert.ok(deleteButton);
+        deleteButton.click();
+
+        assert.strictEqual(q.where, undefined, 'The condition correlated to the deleted outer alias must be removed');
+        const formatted = env.window.formatSdblQuery(q);
+        assert.strictEqual(formatted.includes('B.'), false, 'Correlated references to the deleted alias must not survive');
+      });
+
+      test('Finding: deleting an alias detaches joins whose ON condition references it', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: {
+            queries: [{
+              type: 'Select',
+              fields: [{ expression: 'A.Value' }],
+              from: [
+                {
+                  source: { type: 'Table', name: 'TableA' },
+                  alias: 'A',
+                  joins: [{
+                    joinType: 'Left',
+                    source: { type: 'Table', name: 'TableC' },
+                    alias: 'C',
+                    t1: 'A',
+                    on: { type: 'RawExpression', raw: 'B.Id = C.Id' },
+                  }],
+                },
+                { source: { type: 'Table', name: 'TableB' }, alias: 'B' },
+              ],
+            }],
+          },
+        });
+
+        const q = env.window.getActiveQuery();
+        env.window.renderFromTables();
+        const deleteButton = env.elements.tbodyFromTables.children[2].querySelector('button.danger') as any;
+        assert.ok(deleteButton);
+        deleteButton.click();
+
+        assert.ok(q.from.some((fc: any) => fc.alias === 'C'), 'The joined table must survive as a root');
+        assert.strictEqual(q.from.some((fc: any) => fc.joins && fc.joins.some((jn: any) => jn.alias === 'C')), false);
+      });
+
       test('Finding: table aliases are unique case-insensitively for self-joins', () => {
         const env = createWebviewEnvironment();
         const q = env.window.getActiveQuery();
