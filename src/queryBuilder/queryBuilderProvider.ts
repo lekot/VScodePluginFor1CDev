@@ -1,0 +1,427 @@
+import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
+import { ExtensionState } from '../state/extensionState';
+import { QueryPackage } from './sdbl/sdblAst';
+import { parseSdbl } from './sdbl/sdblParser';
+import { extractBslQuery, offsetToPosition } from './editor/bslQueryExtractor';
+import { QueryMetadataProvider } from './metadata/queryMetadataProvider';
+import { QueryMetadataNode } from './metadata/queryMetadataTypes';
+import {
+  QueryBuilderMessageHandler,
+  QueryBuilderMessageContext,
+  getEnclosingScope,
+} from './queryBuilderMessageHandler';
+import { TreeNode, MetadataType } from '../models/treeNode';
+import { Logger } from '../utils/logger';
+
+export class QueryBuilderProvider {
+  private panel: vscode.WebviewPanel | undefined;
+  private messageHandler: QueryBuilderMessageHandler | undefined;
+  private messageSubscription?: vscode.Disposable;
+  private openGeneration = 0;
+
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly state: ExtensionState
+  ) {
+    const treeProvider = this.state?.treeDataProvider as { onDidChangeTreeData?: vscode.Event<unknown> } | undefined;
+    if (treeProvider?.onDidChangeTreeData) {
+      const sub = treeProvider.onDidChangeTreeData(() => {
+        QueryMetadataProvider.clearCache();
+      });
+      if (this.context?.subscriptions) {
+        this.context.subscriptions.push(sub);
+      }
+    }
+  }
+
+  public async open(
+    editor?: vscode.TextEditor,
+    mode: 'simple' | 'withProcessing' = 'simple'
+  ): Promise<vscode.WebviewPanel | undefined> {
+    const targetEditor = editor ?? vscode.window.activeTextEditor;
+
+    if (!targetEditor) {
+      void vscode.window.showWarningMessage(
+        'Откройте модуль 1С или файл запроса для запуска конструктора.'
+      );
+      return undefined;
+    }
+
+    const doc = targetEditor.document;
+    const initialDocumentVersion = doc.version;
+    const documentText = doc.getText();
+    const cursorOffset = doc.offsetAt(targetEditor.selection.active);
+    const selectionRange = targetEditor.selection.isEmpty
+      ? undefined
+      : {
+          start: doc.offsetAt(targetEditor.selection.start),
+          end: doc.offsetAt(targetEditor.selection.end),
+        };
+
+    const fileName = doc.fileName || doc.uri?.fsPath || doc.uri?.path || '';
+    const isSdblDocument =
+      doc.languageId === 'sdbl' || /\.(sdbl|query)$/i.test(fileName);
+
+    let extracted: {
+      rawBslText: string;
+      sdblText: string;
+      replaceRange: {
+        startOffset: number;
+        endOffset: number;
+        startLine: number;
+        startColumn: number;
+        endLine: number;
+        endColumn: number;
+      };
+      statementRange?: {
+        startOffset: number;
+        endOffset: number;
+        startLine: number;
+        startColumn: number;
+        endLine: number;
+        endColumn: number;
+      };
+      isNewQuery: boolean;
+      variableName?: string;
+    };
+
+    if (isSdblDocument) {
+      if (selectionRange && selectionRange.start !== selectionRange.end) {
+        const selStart = Math.min(selectionRange.start, selectionRange.end);
+        const selEnd = Math.max(selectionRange.start, selectionRange.end);
+        const selectedText = documentText.slice(selStart, selEnd);
+        const sPos = offsetToPosition(documentText, selStart);
+        const ePos = offsetToPosition(documentText, selEnd);
+        extracted = {
+          rawBslText: selectedText,
+          sdblText: selectedText,
+          replaceRange: {
+            startOffset: selStart,
+            endOffset: selEnd,
+            startLine: sPos.line,
+            startColumn: sPos.column,
+            endLine: ePos.line,
+            endColumn: ePos.column,
+          },
+          isNewQuery: selectedText.trim().length === 0,
+        };
+      } else {
+        const trimmed = documentText.trim();
+        if (trimmed.length > 0) {
+          const sPos = offsetToPosition(documentText, 0);
+          const ePos = offsetToPosition(documentText, documentText.length);
+          extracted = {
+            rawBslText: documentText,
+            sdblText: documentText,
+            replaceRange: {
+              startOffset: 0,
+              endOffset: documentText.length,
+              startLine: sPos.line,
+              startColumn: sPos.column,
+              endLine: ePos.line,
+              endColumn: ePos.column,
+            },
+            isNewQuery: false,
+          };
+        } else {
+          const cPos = offsetToPosition(documentText, cursorOffset);
+          extracted = {
+            rawBslText: '',
+            sdblText: '',
+            replaceRange: {
+              startOffset: cursorOffset,
+              endOffset: cursorOffset,
+              startLine: cPos.line,
+              startColumn: cPos.column,
+              endLine: cPos.line,
+              endColumn: cPos.column,
+            },
+            isNewQuery: true,
+          };
+        }
+      }
+    } else {
+      extracted = extractBslQuery(documentText, cursorOffset, selectionRange);
+    }
+
+    const expectedText = documentText.slice(
+      extracted.replaceRange.startOffset,
+      extracted.replaceRange.endOffset
+    );
+    const expectedStatementText = extracted.statementRange
+      ? documentText.slice(
+          extracted.statementRange.startOffset,
+          extracted.statementRange.endOffset
+        )
+      : undefined;
+
+    const isWithProcessingEarly = mode === 'withProcessing' && !!extracted.statementRange;
+    const activeRangeEarly = isWithProcessingEarly ? extracted.statementRange! : extracted.replaceRange;
+    const targetExpectedText = isWithProcessingEarly ? (expectedStatementText ?? expectedText) : expectedText;
+
+    let occurrenceIndex = 0;
+    let initialOccurrenceCount = 0;
+    if (targetExpectedText.length > 0) {
+      let idx = -1;
+      while ((idx = documentText.indexOf(targetExpectedText, idx + 1)) !== -1) {
+        if (idx < activeRangeEarly.startOffset) {
+          occurrenceIndex++;
+        }
+        initialOccurrenceCount++;
+      }
+    }
+
+    const surroundingPrefix = documentText.slice(
+      Math.max(0, activeRangeEarly.startOffset - 200),
+      activeRangeEarly.startOffset
+    );
+    const surroundingSuffix = documentText.slice(
+      activeRangeEarly.endOffset,
+      Math.min(documentText.length, activeRangeEarly.endOffset + 200)
+    );
+    const enclosingScope = getEnclosingScope(documentText, activeRangeEarly.startOffset);
+
+    let ast: QueryPackage;
+    if (extracted.isNewQuery || !extracted.sdblText || extracted.sdblText.trim().length === 0) {
+      ast = {
+        queries: [
+          {
+            type: 'Select',
+            fields: [],
+            from: [],
+          },
+        ],
+      };
+    } else {
+      try {
+        ast = parseSdbl(extracted.sdblText);
+      } catch (err) {
+        const errorMsg = (err as Error)?.message ?? String(err);
+        Logger.warn('Failed to parse extracted SDBL query', err);
+        void vscode.window.showErrorMessage(
+          'Ошибка синтаксиса запроса: ' + errorMsg + '. Открытие конструктора отменено.'
+        );
+        return undefined;
+      }
+    }
+
+    const { targetRoot, targetConfigPath } = this.getTargetRootNode(targetEditor);
+    const metadataProvider = new QueryMetadataProvider();
+    const cachedTree = metadataProvider.getCachedTree(targetConfigPath);
+
+    let metadata: QueryMetadataNode[];
+    if (cachedTree) {
+      metadata = cachedTree;
+    } else {
+      try {
+        metadata = metadataProvider.buildShallowTree(
+          this.state?.treeDataProvider ?? null,
+          targetRoot
+        );
+      } catch (err) {
+        Logger.warn('Failed to build shallow metadata tree for query builder', err);
+        metadata = metadataProvider.getMetadataCategories();
+      }
+    }
+
+    const title = 'Конструктор запроса' + (extracted.isNewQuery ? ' (новый)' : '');
+
+    if (this.panel) {
+      this.panel.title = title;
+      this.panel.reveal(vscode.ViewColumn.Active);
+    } else {
+      const localResourceRoots: vscode.Uri[] = [];
+      if (this.context.extensionUri) {
+        localResourceRoots.push(this.context.extensionUri);
+      }
+
+      this.panel = vscode.window.createWebviewPanel(
+        '1c-query-builder',
+        title,
+        vscode.ViewColumn.Active,
+        {
+          enableScripts: true,
+          retainContextWhenHidden: true,
+          localResourceRoots,
+        }
+      );
+
+      this.panel.onDidDispose(() => {
+        this.messageSubscription?.dispose();
+        this.panel = undefined;
+        this.messageHandler = undefined;
+        this.messageSubscription = undefined;
+      });
+    }
+
+    const messageContext: QueryBuilderMessageContext = {
+      panel: this.panel,
+      editor: targetEditor,
+      ast,
+      metadata,
+      mode,
+      replaceRange: extracted.replaceRange,
+      statementRange: extracted.statementRange,
+      variableName: extracted.variableName,
+      metadataProvider,
+      treeProvider: this.state?.treeDataProvider ?? null,
+      targetRoot,
+      isSdblDocument,
+      initialDocumentVersion,
+      expectedText,
+      expectedStatementText,
+      surroundingPrefix,
+      surroundingSuffix,
+      occurrenceIndex,
+      initialOccurrenceCount,
+      enclosingScope,
+    };
+
+    this.messageHandler = new QueryBuilderMessageHandler(messageContext);
+
+    this.messageSubscription?.dispose();
+    this.messageSubscription = this.panel.webview.onDidReceiveMessage((message: unknown) => {
+      void this.messageHandler?.handleMessage(message);
+    });
+
+    this.panel.webview.html = this.getHtmlContent();
+
+    const currentGeneration = ++this.openGeneration;
+    if (!cachedTree && targetConfigPath) {
+      void this.warmupMetadata(
+        metadataProvider,
+        targetRoot,
+        targetConfigPath,
+        currentGeneration,
+        this.panel,
+        this.messageHandler
+      );
+    }
+
+    return this.panel;
+  }
+
+  private getTargetRootNode(targetEditor?: vscode.TextEditor): {
+    targetRoot: TreeNode | null;
+    targetConfigPath: string;
+  } {
+    const treeProvider = this.state?.treeDataProvider;
+    if (!treeProvider) {
+      return { targetRoot: null, targetConfigPath: '' };
+    }
+
+    const allRoots = treeProvider.getRootNodes() ?? [];
+    const configRoots = treeProvider.getConfigRootPaths() ?? [];
+
+    let matchedConfigPath = '';
+    let bestLength = -1;
+    if (targetEditor && targetEditor.document.uri.scheme === 'file') {
+      const filePath = targetEditor.document.uri.fsPath;
+      for (const rootPath of configRoots) {
+        const normRoot = path.normalize(rootPath);
+        const rel = path.relative(normRoot, path.normalize(filePath));
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+          if (normRoot.length > bestLength) {
+            bestLength = normRoot.length;
+            matchedConfigPath = rootPath;
+          }
+        }
+      }
+    }
+
+    if (matchedConfigPath) {
+      const matchedRoot = allRoots.find((r) => {
+        const rPath = treeProvider.getSupportConfigRootForNode(r);
+        return (
+          rPath &&
+          path.normalize(rPath).toLowerCase() === path.normalize(matchedConfigPath).toLowerCase()
+        );
+      });
+      if (matchedRoot) {
+        return { targetRoot: matchedRoot, targetConfigPath: matchedConfigPath };
+      }
+    }
+
+    const firstConfigRoot =
+      allRoots.find((r) => r.type === MetadataType.Configuration) ??
+      allRoots[0] ??
+      null;
+    const firstConfigPath = firstConfigRoot
+      ? treeProvider.getSupportConfigRootForNode(firstConfigRoot) ?? ''
+      : '';
+    return { targetRoot: firstConfigRoot, targetConfigPath: firstConfigPath };
+  }
+
+  private async warmupMetadata(
+    metadataProvider: QueryMetadataProvider,
+    targetRoot: TreeNode | null,
+    configPath: string,
+    generation: number,
+    targetPanel: vscode.WebviewPanel | undefined,
+    targetHandler: QueryBuilderMessageHandler | undefined
+  ): Promise<void> {
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const fullTree = await metadataProvider.buildTreeFromProvider(
+        this.state?.treeDataProvider ?? null,
+        targetRoot
+      );
+      metadataProvider.setCachedTree(configPath, fullTree);
+      if (
+        generation === this.openGeneration &&
+        this.panel &&
+        this.panel === targetPanel &&
+        this.messageHandler === targetHandler
+      ) {
+        this.messageHandler?.updateMetadata(fullTree);
+        await this.panel.webview.postMessage({
+          command: 'updateMetadata',
+          metadata: fullTree,
+        });
+      }
+    } catch (err) {
+      Logger.warn('[QueryBuilderProvider] Background metadata warmup error', err);
+    }
+  }
+
+  private resolveWebviewHtmlPath(): string {
+    const primary = path.join(__dirname, 'ui', 'queryBuilderWebview.html');
+    if (fs.existsSync(primary)) {
+      return primary;
+    }
+
+    const direct = path.join(__dirname, 'queryBuilderWebview.html');
+    if (fs.existsSync(direct)) {
+      return direct;
+    }
+
+    const extPath = this.context.extensionPath || this.context.extensionUri?.fsPath;
+    if (extPath) {
+      const dist = path.join(extPath, 'dist', 'queryBuilder', 'ui', 'queryBuilderWebview.html');
+      if (fs.existsSync(dist)) {
+        return dist;
+      }
+      const src = path.join(extPath, 'src', 'queryBuilder', 'ui', 'queryBuilderWebview.html');
+      if (fs.existsSync(src)) {
+        return src;
+      }
+    }
+
+    const repoSrc = path.resolve(__dirname, '../../src/queryBuilder/ui/queryBuilderWebview.html');
+    if (fs.existsSync(repoSrc)) {
+      return repoSrc;
+    }
+
+    return primary;
+  }
+
+  private getHtmlContent(): string {
+    const htmlPath = this.resolveWebviewHtmlPath();
+    if (fs.existsSync(htmlPath)) {
+      return fs.readFileSync(htmlPath, 'utf8');
+    }
+    return '<!DOCTYPE html><html><body><h3>Не удалось загрузить queryBuilderWebview.html</h3></body></html>';
+  }
+}

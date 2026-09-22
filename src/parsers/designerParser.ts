@@ -4,7 +4,7 @@ import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
-import { convertStringBooleans } from '../utils/xmlPropertyUtils';
+import { convertStringBooleans, extractV8String } from '../utils/xmlPropertyUtils';
 import {
   findChildObjects,
   extractAttributes,
@@ -234,12 +234,41 @@ export class DesignerParser {
           children: [],
           filePath,
         };
-        if (STANDARD_MODULES[metadataType] !== undefined) {
-          const extNode = await this.parseExtensions(
-            path.join(directoryPath, 'Ext'),
-            typeName === 'CommonModules' ? `${typeName}.${name}` : undefined,
-            metadataType
-          );
+        const standardModules = STANDARD_MODULES[metadataType];
+        if (standardModules !== undefined) {
+          const qp = typeName === 'CommonModules' ? `${typeName}.${name}.` : '';
+          const extPath = path.join(directoryPath, 'Ext');
+          let existingFiles: Set<string> | null = null;
+          if (directoryNames.has(name)) {
+            const items = await fs.promises.readdir(extPath).catch(() => null);
+            if (items) {
+              existingFiles = new Set(items);
+            }
+          }
+          const extNode: TreeNode = {
+            id: `${qp}Ext`,
+            name: 'Extensions',
+            type: MetadataType.Extension,
+            properties: {},
+            filePath: extPath,
+            children: standardModules.map((mod) => {
+              const fileExists = existingFiles !== null && existingFiles.has(mod.fileName);
+              return {
+                id: `${qp}Ext.${mod.fileName}`,
+                name: mod.fileName,
+                type: MetadataType.Method,
+                properties: {
+                  isModule: true,
+                  fileType: 'bsl',
+                  ...(fileExists ? {} : { isVirtual: true, label: mod.label }),
+                },
+                filePath: path.join(extPath, mod.fileName),
+              };
+            }),
+          };
+          for (const child of extNode.children!) {
+            child.parent = extNode;
+          }
           extNode.parent = node;
           node.children = [extNode];
         }
@@ -294,6 +323,10 @@ export class DesignerParser {
 
     if (xmlContent) {
       await this.applyXmlDerivedChildren(container, xmlContent, xmlPath, elementName);
+      if (element) {
+        const extracted = this.extractPropertiesFromElement(xmlContent);
+        element.properties = { ...element.properties, ...extracted };
+      }
     }
 
     const typeDir = path.join(configPath, typeName);
@@ -660,66 +693,67 @@ export class DesignerParser {
     };
 
     try {
-      const items = await fs.promises.readdir(extPath);
+      const items = await fs.promises.readdir(extPath).catch(() => null);
+      if (items) {
+        // Process all extension items in parallel
+        const extElementNodes = await Promise.all(
+          items.map(async (item) => {
+            const itemPath = path.join(extPath, item);
+            try {
+              const stat = await fs.promises.stat(itemPath);
 
-      // Process all extension items in parallel
-      const extElementNodes = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = path.join(extPath, item);
-          try {
-            const stat = await fs.promises.stat(itemPath);
-
-            if (stat.isDirectory()) {
-              // For directories like "Form", recursively search for .bsl files
-              const bslFiles = await this.findBslFilesRecursive(itemPath);
-              if (bslFiles.length > 0) {
-                // Create a container node with .bsl files as children
+              if (stat.isDirectory()) {
+                // For directories like "Form", recursively search for .bsl files
+                const bslFiles = await this.findBslFilesRecursive(itemPath);
+                if (bslFiles.length > 0) {
+                  // Create a container node with .bsl files as children
+                  return {
+                    id: `${qp}Ext.${item}`,
+                    name: item,
+                    type: MetadataType.Extension,
+                    properties: { isExtension: true },
+                    filePath: itemPath,
+                    children: bslFiles.map((bslPath) => ({
+                      id: `${qp}Ext.${item}.${path.basename(bslPath)}`,
+                      name: path.basename(bslPath),
+                      type: MetadataType.Method,
+                      properties: {
+                        isModule: true,
+                        fileType: 'bsl',
+                      },
+                      filePath: bslPath,
+                    })),
+                  };
+                }
+                return null; // Skip empty directories
+              } else if (stat.isFile() && item.endsWith('.bsl')) {
+                // Add .bsl module files directly
                 return {
                   id: `${qp}Ext.${item}`,
                   name: item,
-                  type: MetadataType.Extension,
-                  properties: { isExtension: true },
+                  type: MetadataType.Method,
+                  properties: {
+                    isModule: true,
+                    fileType: 'bsl',
+                  },
                   filePath: itemPath,
-                  children: bslFiles.map((bslPath) => ({
-                    id: `${qp}Ext.${item}.${path.basename(bslPath)}`,
-                    name: path.basename(bslPath),
-                    type: MetadataType.Method,
-                    properties: {
-                      isModule: true,
-                      fileType: 'bsl',
-                    },
-                    filePath: bslPath,
-                  })),
                 };
               }
-              return null; // Skip empty directories
-            } else if (stat.isFile() && item.endsWith('.bsl')) {
-              // Add .bsl module files directly
-              return {
-                id: `${qp}Ext.${item}`,
-                name: item,
-                type: MetadataType.Method,
-                properties: {
-                  isModule: true,
-                  fileType: 'bsl',
-                },
-                filePath: itemPath,
-              };
+              // Predefined.xml is handled separately as a top-level "Предопределённые" R6 placeholder,
+              // not as a child of Extensions (see applyXmlDerivedChildren).
+            } catch (error) {
+              Logger.debug(`Error processing extension ${itemPath}`, error);
             }
-            // Predefined.xml is handled separately as a top-level "Предопределённые" R6 placeholder,
-            // not as a child of Extensions (see applyXmlDerivedChildren).
-          } catch (error) {
-            Logger.debug(`Error processing extension ${itemPath}`, error);
-          }
-          return null;
-        })
-      );
+            return null;
+          })
+        );
 
-      // Add non-null extension nodes and set parent
-      for (const extElementNode of extElementNodes) {
-        if (extElementNode) {
-          (extElementNode as TreeNode).parent = extNode;
-          extNode.children?.push(extElementNode);
+        // Add non-null extension nodes and set parent
+        for (const extElementNode of extElementNodes) {
+          if (extElementNode) {
+            (extElementNode as TreeNode).parent = extNode;
+            extNode.children?.push(extElementNode);
+          }
         }
       }
     } catch (error) {
@@ -1514,66 +1548,82 @@ export class DesignerParser {
    * @returns Properties object
    */
   private static extractPropertiesFromElement(xmlContent: Record<string, unknown>): Record<string, unknown> {
-      const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = {};
+    if (!xmlContent || typeof xmlContent !== 'object') {
+      return result;
+    }
 
-      // Find the root element (Catalog, Document, CommonModule, etc.)
+    const root = (xmlContent.MetaDataObject && typeof xmlContent.MetaDataObject === 'object'
+      ? xmlContent.MetaDataObject
+      : xmlContent) as Record<string, unknown>;
+
+    let holder: Record<string, unknown> | null = null;
+    if (root.Properties && typeof root.Properties === 'object') {
+      holder = root;
+    } else {
+      for (const [key, val] of Object.entries(root)) {
+        if (key === '@_' || key.startsWith('#') || !val || typeof val !== 'object') {
+          continue;
+        }
+        const childObj = val as Record<string, unknown>;
+        if (childObj.Properties && typeof childObj.Properties === 'object') {
+          holder = childObj;
+          break;
+        }
+      }
+    }
+
+    if (!holder) {
       for (const [key, value] of Object.entries(xmlContent)) {
         if (key === '@_' || key.startsWith('#')) {
           continue;
         }
-
         if (typeof value === 'object' && value !== null) {
           const element = value as Record<string, unknown>;
-          const properties = element.Properties as Record<string, unknown>;
-
-          if (properties) {
-            for (const [propKey, propValue] of Object.entries(properties)) {
-              if (propKey === '@_' || propKey.startsWith('#')) {
-                continue;
-              }
-
-              // Handle different value types
-              if (typeof propValue === 'boolean' || typeof propValue === 'number') {
-                // Direct boolean or number values
-                result[propKey] = propValue;
-              } else if (typeof propValue === 'string') {
-                // Direct string values
-                result[propKey] = propValue;
-              } else if (typeof propValue === 'object' && propValue !== null) {
-                const obj = propValue as Record<string, unknown>;
-
-                // Check for v8:item structure (localized strings like Synonym)
-                if (obj['v8:item']) {
-                  const items = obj['v8:item'];
-                  if (Array.isArray(items) && items.length > 0) {
-                    const firstItem = items[0];
-                    if (firstItem && typeof firstItem === 'object' && 'v8:content' in firstItem) {
-                      result[propKey] = (firstItem as Record<string, unknown>)['v8:content'];
-                    }
-                  }
-                } else if ('v8:Type' in obj) {
-                  // Store raw type object so the type editor can open (serialize to XML).
-                  // Properties panel formats for display via TypeParser.parseFromObject + TypeFormatter.
-                  result[propKey] = obj;
-                } else if (obj.item) {
-                  // Simple item wrapper
-                  result[propKey] = obj.item;
-                } else {
-                  // Complex object - store as-is
-                  result[propKey] = propValue;
-                }
-              } else {
-                // Other types (null, undefined, etc.)
-                result[propKey] = propValue;
-              }
-            }
+          if (element.Properties && typeof element.Properties === 'object') {
+            holder = element;
+            break;
           }
         }
       }
-
-      // Convert string "false"/"true" values to boolean primitives
-      return convertStringBooleans(result);
     }
+
+    if (holder) {
+      const rawUuid = holder['@_uuid'] ?? holder.uuid ?? (root as Record<string, unknown>)['@_uuid'];
+      if (rawUuid !== undefined && rawUuid !== null) {
+        result.uuid = String(rawUuid);
+      }
+
+      const properties = holder.Properties as Record<string, unknown>;
+      for (const [propKey, propValue] of Object.entries(properties)) {
+        if (propKey === '@_' || propKey.startsWith('#')) {
+          continue;
+        }
+
+        if (typeof propValue === 'boolean' || typeof propValue === 'number') {
+          result[propKey] = propValue;
+        } else if (typeof propValue === 'string') {
+          result[propKey] = propValue;
+        } else if (typeof propValue === 'object' && propValue !== null) {
+          const obj = propValue as Record<string, unknown>;
+          const v8Str = extractV8String(obj);
+          if (v8Str !== undefined) {
+            result[propKey] = v8Str;
+          } else if ('v8:Type' in obj) {
+            result[propKey] = obj;
+          } else if (obj.item !== undefined) {
+            result[propKey] = obj.item;
+          } else {
+            result[propKey] = propValue;
+          }
+        } else {
+          result[propKey] = propValue;
+        }
+      }
+    }
+
+    return convertStringBooleans(result);
+  }
 
   private static buildTabularColumnNodesFromTsBlock(
     ts: Record<string, unknown>,

@@ -25,11 +25,19 @@ function getCacheDir(globalStoragePath: string): string {
 }
 
 function getConfigCachePrefix(configPath: string): string {
-  return `${hash(path.normalize(configPath))}-`;
+  return `${hash(normalizePathForSignature(configPath))}-`;
 }
 
-function getCacheFilePath(globalStoragePath: string, configPath: string, typeName: string): string {
-  return path.join(getCacheDir(globalStoragePath), `${getConfigCachePrefix(configPath)}${hash(typeName)}.json`);
+export type TypeCacheKind = 'contents' | 'index';
+
+function getCacheFilePath(
+  globalStoragePath: string,
+  configPath: string,
+  typeName: string,
+  kind: TypeCacheKind = 'contents'
+): string {
+  const ext = kind === 'index' ? '.index.json' : '.json';
+  return path.join(getCacheDir(globalStoragePath), `${getConfigCachePrefix(configPath)}${hash(typeName)}${ext}`);
 }
 
 function normalizePathForSignature(value: string): string {
@@ -45,22 +53,20 @@ async function statPart(filePath: string, label: string): Promise<string | null>
 }
 
 async function collectEdtElementMetadataParts(elementPath: string, elementName: string): Promise<string[]> {
-  const parts: string[] = [];
   const entries = await fs.promises.readdir(elementPath, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
+  const candidateEntries = entries.filter((entry) => {
     if (!entry.isFile()) {
-      continue;
+      return false;
     }
     const lower = entry.name.toLowerCase();
-    if (!lower.endsWith('.mdo') && !lower.endsWith('.xml')) {
-      continue;
-    }
-    const part = await statPart(path.join(elementPath, entry.name), `${elementName}/${entry.name}`);
-    if (part) {
-      parts.push(part);
-    }
-  }
-  return parts;
+    return lower.endsWith('.mdo') || lower.endsWith('.xml');
+  });
+  const parts = await Promise.all(
+    candidateEntries.map((entry) =>
+      statPart(path.join(elementPath, entry.name), `${elementName}/${entry.name}`)
+    )
+  );
+  return parts.filter((part): part is string => part !== null);
 }
 
 /**
@@ -84,15 +90,23 @@ export async function computeTypeContentsSignature(
 
   const parts: string[] = [`path:${normalizePathForSignature(typePath)}`, `format:${format}`];
   const sortedEntries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
-  for (const entry of sortedEntries) {
-    const entryPath = path.join(typePath, entry.name);
-    const part = await statPart(entryPath, entry.name);
-    if (part) {
-      parts.push(part);
-    }
-    if (format === ConfigFormat.EDT && entry.isDirectory()) {
-      parts.push(...await collectEdtElementMetadataParts(entryPath, entry.name));
-    }
+  const entryParts = await Promise.all(
+    sortedEntries.map(async (entry) => {
+      const entryPath = path.join(typePath, entry.name);
+      const entryPartsList: string[] = [];
+      const part = await statPart(entryPath, entry.name);
+      if (part) {
+        entryPartsList.push(part);
+      }
+      if (format === ConfigFormat.EDT && entry.isDirectory()) {
+        entryPartsList.push(...await collectEdtElementMetadataParts(entryPath, entry.name));
+      }
+      return entryPartsList;
+    })
+  );
+
+  for (const list of entryParts) {
+    parts.push(...list);
   }
 
   return crypto.createHash('sha256').update(parts.join('|')).digest('hex');
@@ -102,15 +116,16 @@ export async function loadTypeContentsFromCache(
   globalStoragePath: string,
   configPath: string,
   typeName: string,
-  signature: string
+  signature: string,
+  kind: TypeCacheKind = 'contents'
 ): Promise<TreeNode[] | null> {
   try {
-    const cacheFilePath = getCacheFilePath(globalStoragePath, configPath, typeName);
+    const cacheFilePath = getCacheFilePath(globalStoragePath, configPath, typeName, kind);
     const raw = await fs.promises.readFile(cacheFilePath, 'utf-8');
     const entry = JSON.parse(raw) as TypeContentsCacheEntry;
     if (
       entry.version !== CACHE_VERSION ||
-      entry.configPath !== configPath ||
+      normalizePathForSignature(entry.configPath) !== normalizePathForSignature(configPath) ||
       entry.typeName !== typeName ||
       entry.signature !== signature ||
       !entry.tree
@@ -136,7 +151,8 @@ export async function saveTypeContentsToCache(
   configPath: string,
   typeName: string,
   signature: string,
-  children: TreeNode[]
+  children: TreeNode[],
+  kind: TypeCacheKind = 'contents'
 ): Promise<void> {
   try {
     const dir = getCacheDir(globalStoragePath);
@@ -156,7 +172,7 @@ export async function saveTypeContentsToCache(
       version: CACHE_VERSION,
     };
     await fs.promises.writeFile(
-      getCacheFilePath(globalStoragePath, configPath, typeName),
+      getCacheFilePath(globalStoragePath, configPath, typeName, kind),
       JSON.stringify(entry),
       'utf-8'
     );

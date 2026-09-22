@@ -2,6 +2,7 @@
 resources/**/node_modules/**
 .vscode/**
 .roo/**
+.superpowers/**
 .agents/**
 .vscode-test/**
 .ruff_cache/**

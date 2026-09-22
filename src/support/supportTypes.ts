@@ -549,6 +549,7 @@ export type SupportVerifyRunOutcome =
 export interface SupportStatusRequest {
   readonly configurationId: ConfigurationId;
   readonly objectIds?: readonly string[];
+  readonly includeUniverse?: boolean;
 }
 
 export interface SupportMasterStatusRequest {
@@ -564,7 +565,7 @@ export type SupportStatusResult =
     }
   | {
       readonly status: 'available';
-      readonly master: Exclude<MasterSupportState, { readonly kind: 'ready' }>;
+      readonly master: MasterSupportState;
       readonly metadataUniverse?: never;
       readonly lastRun?: SupportRunSummary;
     };

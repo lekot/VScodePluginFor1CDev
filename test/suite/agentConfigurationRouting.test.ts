@@ -21,7 +21,7 @@ suite('Agent configuration routing', () => {
 
   teardown(async () => {
     await registry.dispose();
-    await fs.promises.rm(tempDir, { recursive: true, force: true });
+    await fs.promises.rm(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     resetVscodeTestState();
   });
 

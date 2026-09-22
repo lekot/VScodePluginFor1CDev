@@ -113,6 +113,13 @@ class Location {
   }
 }
 
+class WorkspaceEdit {
+  public readonly replaces: Array<{ uri: any; range: Range; newText: string }> = [];
+  replace(uri: any, range: Range, newText: string): void {
+    this.replaces.push({ uri, range, newText });
+  }
+}
+
 class Breakpoint {
   public id: string = '';
   public verified: boolean = false;
@@ -219,6 +226,7 @@ class CancellationTokenSourceStub {
 /** Mutable hooks for core tests (workspace keys, dialog results, command log). */
 export const vscodeTestState = {
   workspaceConfig: {} as Record<string, unknown>,
+  applyEditImpl: undefined as ((edit: any) => Promise<boolean>) | undefined,
   /** Список id команд, зарегистрированных через vscode.commands.registerCommand (P7a-7). */
   registeredCommandIds: [] as string[],
   /** Хэндлеры зарегистрированных команд по id (P7a-7). */
@@ -411,6 +419,12 @@ const windowStub = {
 };
 
 const workspaceStub = {
+  applyEdit: async (edit: any): Promise<boolean> => {
+    if (vscodeTestState.applyEditImpl) {
+      return vscodeTestState.applyEditImpl(edit);
+    }
+    return true;
+  },
   fs: {
     stat: async (uri: { fsPath: string }) => {
       if (!vscodeTestState.workspaceFsFiles.has(path.normalize(uri.fsPath))) {
@@ -826,6 +840,7 @@ const vscodeStub = {
   Position,
   Range,
   Location,
+  WorkspaceEdit,
   Breakpoint,
   SourceBreakpoint,
   commands: commandsStub,

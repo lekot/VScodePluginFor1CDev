@@ -20,7 +20,18 @@ export enum ConfigFormat {
 }
 /* eslint-enable @typescript-eslint/naming-convention */
 
-const SKIPPED_DISCOVERY_DIRS = new Set(['node_modules', '.git', '.vscode', 'dist', 'out']);
+const SKIPPED_DISCOVERY_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.vscode',
+  '.vscode-test',
+  '.ibcmd-reports',
+  '.superpowers',
+  'dist',
+  'out',
+  'build',
+  'coverage',
+]);
 const XML_CONFIG_ROOT_MARKERS = new Set([CONFIGURATION_XML, CONFIG_DUMP_INFO_XML]);
 const NESTED_CONFIGURATION_CONTAINERS = [
   ['ConfigurationExtensions'],
@@ -156,7 +167,7 @@ export class FormatDetector {
 
   private static getCandidateChildDirectories(dirPath: string, entries: readonly fs.Dirent[]): string[] {
     return entries
-      .filter((entry) => entry.isDirectory() && !SKIPPED_DISCOVERY_DIRS.has(entry.name))
+      .filter((entry) => entry.isDirectory() && !SKIPPED_DISCOVERY_DIRS.has(entry.name) && !entry.name.startsWith('.'))
       .map((entry) => path.join(dirPath, entry.name));
   }
 

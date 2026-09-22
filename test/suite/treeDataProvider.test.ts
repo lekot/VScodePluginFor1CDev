@@ -862,6 +862,355 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     }
   });
 
+  test('warmup schedules continuation slices until all type folders are warmed up', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const parseCalls: string[] = [];
+    (MetadataParser as any).parseTypeIndex = async (_configPath: string, typeName: string) => {
+      parseCalls.push(typeName);
+      // Wait 15ms so each folder exceeds the 5ms budget
+      await new Promise<void>((resolve) => setTimeout(resolve, 15));
+      return [{ id: `${typeName}.Item`, name: 'Item', type: MetadataType.Unknown, properties: {} }];
+    };
+
+    const configPath = path.join('C:', 'cfg');
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(configPath, 'Configuration.xml'),
+      children: [
+        { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+        { id: 'Documents', name: 'Documents', type: MetadataType.Document, properties: {}, children: [] },
+        { id: 'Enums', name: 'Enums', type: MetadataType.Enum, properties: {}, children: [] },
+      ],
+    };
+    for (const child of root.children!) {
+      child.parent = root;
+    }
+
+    try {
+      provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+      provider.startTypeContentsCacheWarmup({ delayMs: 0, budgetMs: 5, slicePauseMs: 5 } as any);
+
+      for (let i = 0; i < 30 && parseCalls.length < 3; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      }
+
+      assert.deepStrictEqual(parseCalls, ['Catalogs', 'Documents', 'Enums']);
+    } finally {
+      provider.dispose();
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+    }
+  });
+
+  test('warmup prioritizes preferredRootId when specified', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const parseOrder: string[] = [];
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
+      const rootKey = path.basename(configPath);
+      parseOrder.push(`${rootKey}:${typeName}`);
+      return [{ id: `${typeName}.Item`, name: 'Item', type: MetadataType.Unknown, properties: {} }];
+    };
+
+    const cfgA = path.join('C:', 'cfgA');
+    const cfgB = path.join('C:', 'cfgB');
+    const rootA: TreeNode = {
+      id: 'root-a',
+      name: 'ConfigurationA',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgA, 'Configuration.xml'),
+      children: [
+        { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+      ],
+    };
+    rootA.children![0].parent = rootA;
+
+    const rootB: TreeNode = {
+      id: 'root-b',
+      name: 'ConfigurationB',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgB, 'Configuration.xml'),
+      children: [
+        { id: 'Documents', name: 'Documents', type: MetadataType.Document, properties: {}, children: [] },
+      ],
+    };
+    rootB.children![0].parent = rootB;
+
+    const contextMap = new Map([
+      ['root-a', { configPath: cfgA, format: ConfigFormat.Designer }],
+      ['root-b', { configPath: cfgB, format: ConfigFormat.Designer }],
+    ]);
+
+    try {
+      provider.setRootNodes([rootA, rootB], contextMap);
+      provider.startTypeContentsCacheWarmup({ delayMs: 0, preferredRootId: 'root-b' } as any);
+
+      for (let i = 0; i < 20 && parseOrder.length < 2; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+
+      assert.deepStrictEqual(parseOrder, ['cfgB:Documents', 'cfgA:Catalogs']);
+    } finally {
+      provider.dispose();
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+    }
+  });
+
+  test('warmup marks empty type folders as loaded and skips them on subsequent slices', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const parseCalls: string[] = [];
+    (MetadataParser as any).parseTypeIndex = async (_configPath: string, typeName: string) => {
+      parseCalls.push(typeName);
+      return [];
+    };
+
+    const configPath = path.join('C:', 'cfg');
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(configPath, 'Configuration.xml'),
+      children: [
+        { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+      ],
+    };
+    root.children![0].parent = root;
+
+    try {
+      provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+      provider.startTypeContentsCacheWarmup({ delayMs: 0 });
+      for (let i = 0; i < 20 && parseCalls.length < 1; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      assert.deepStrictEqual(parseCalls, ['Catalogs']);
+      assert.strictEqual((root.children![0].properties as any)._indexLoaded, true);
+
+      provider.startTypeContentsCacheWarmup({ delayMs: 0 });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      assert.deepStrictEqual(parseCalls, ['Catalogs']);
+    } finally {
+      provider.dispose();
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+    }
+  });
+
+  test('foreground lazy loading of a node resumes warmup prioritizing that active configuration root', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const parseOrder: string[] = [];
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
+      const rootKey = path.basename(configPath);
+      parseOrder.push(`${rootKey}:${typeName}`);
+      return [{ id: `${typeName}.Item`, name: 'Item', type: MetadataType.Unknown, properties: {} }];
+    };
+
+    const cfgA = path.join('C:', 'cfgA');
+    const cfgB = path.join('C:', 'cfgB');
+    const rootA: TreeNode = {
+      id: 'root-a',
+      name: 'ConfigurationA',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgA, 'Configuration.xml'),
+      children: [
+        { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+      ],
+    };
+    rootA.children![0].parent = rootA;
+
+    const rootB: TreeNode = {
+      id: 'root-b',
+      name: 'ConfigurationB',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgB, 'Configuration.xml'),
+      children: [
+        { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+        { id: 'Documents', name: 'Documents', type: MetadataType.Document, properties: {}, children: [] },
+      ],
+    };
+    rootB.children![0].parent = rootB;
+    rootB.children![1].parent = rootB;
+
+    const contextMap = new Map([
+      ['root-a', { configPath: cfgA, format: ConfigFormat.Designer }],
+      ['root-b', { configPath: cfgB, format: ConfigFormat.Designer }],
+    ]);
+
+    try {
+      provider.setRootNodes([rootA, rootB], contextMap);
+      await provider.getChildren(rootB.children![0]);
+      assert.deepStrictEqual(parseOrder, ['cfgB:Catalogs']);
+
+      for (let i = 0; i < 30 && parseOrder.length < 3; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      }
+
+      assert.deepStrictEqual(parseOrder, ['cfgB:Catalogs', 'cfgB:Documents', 'cfgA:Catalogs']);
+    } finally {
+      provider.dispose();
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+    }
+  });
+
+  test('getChildren for a lazy type folder resolves children without firing onDidChangeTreeData', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    (MetadataParser as any).parseTypeIndex = async () => {
+      return [{ id: 'Catalogs.Item1', name: 'Item1', type: MetadataType.Catalog, properties: {} }];
+    };
+
+    const cfgPath = path.join('C:', 'cfg');
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgPath, 'Configuration.xml'),
+      children: [
+        { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+      ],
+    };
+    root.children![0].parent = root;
+
+    const firedElements: Array<TreeNode | undefined | null | void> = [];
+    try {
+      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+      const sub = provider.onDidChangeTreeData((element) => {
+        firedElements.push(element);
+      });
+
+      const children = await provider.getChildren(root.children![0]);
+      sub.dispose();
+
+      assert.strictEqual(children.length, 1);
+      assert.strictEqual(children[0].name, 'Item1');
+      assert.strictEqual(
+        firedElements.length,
+        0,
+        `getChildren must not fire onDidChangeTreeData (fired ${firedElements.length} times), which causes TreeView spinner to spin indefinitely`
+      );
+    } finally {
+      provider.dispose();
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+    }
+  });
+
+  test('getChildren for a lazy element node resolves children without firing onDidChangeTreeData', async () => {
+    const originalLoadElementChildren = (MetadataParser as any).loadElementChildren;
+    (MetadataParser as any).loadElementChildren = async () => {
+      return [{ id: 'Catalogs.Item1.Attributes.Attr1', name: 'Attr1', type: MetadataType.Attribute, properties: {} }];
+    };
+
+    const cfgPath = path.join('C:', 'cfg');
+    const root: TreeNode = {
+      id: 'root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgPath, 'Configuration.xml'),
+      children: [],
+    };
+    const catalogItem: TreeNode = {
+      id: 'Catalogs.Item1',
+      name: 'Item1',
+      type: MetadataType.Catalog,
+      properties: {},
+      parent: root,
+      children: [],
+    };
+    const attributesFolder: TreeNode = {
+      id: 'Attributes',
+      name: 'Attributes',
+      type: MetadataType.Attribute,
+      properties: { _lazy: true },
+      parent: catalogItem,
+      children: [],
+    };
+    catalogItem.children = [attributesFolder];
+    root.children = [catalogItem];
+
+    const firedElements: Array<TreeNode | undefined | null | void> = [];
+    try {
+      provider.setRootNode(root, { configPath: cfgPath, format: ConfigFormat.Designer });
+      const sub = provider.onDidChangeTreeData((element) => {
+        firedElements.push(element);
+      });
+
+      const children = await provider.getChildren(attributesFolder);
+      sub.dispose();
+
+      assert.strictEqual(children.length, 1);
+      assert.strictEqual(children[0].name, 'Attr1');
+      assert.strictEqual(
+        firedElements.length,
+        0,
+        `getChildren on lazy element must not fire onDidChangeTreeData (fired ${firedElements.length} times)`
+      );
+    } finally {
+      provider.dispose();
+      (MetadataParser as any).loadElementChildren = originalLoadElementChildren;
+    }
+  });
+
+  test('expanding a Configuration root in getChildren prioritizes warmup for that configuration', async () => {
+    const originalParseTypeIndex = (MetadataParser as any).parseTypeIndex;
+    const parseOrder: string[] = [];
+    (MetadataParser as any).parseTypeIndex = async (configPath: string, typeName: string) => {
+      const rootKey = path.basename(configPath);
+      parseOrder.push(`${rootKey}:${typeName}`);
+      return [{ id: `${typeName}.Item`, name: 'Item', type: MetadataType.Unknown, properties: {} }];
+    };
+
+    const cfgA = path.join('C:', 'cfgA');
+    const cfgB = path.join('C:', 'cfgB');
+    const rootA: TreeNode = {
+      id: 'root-a',
+      name: 'ConfigurationA',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgA, 'Configuration.xml'),
+      children: [
+        { id: 'Catalogs', name: 'Catalogs', type: MetadataType.Catalog, properties: {}, children: [] },
+      ],
+    };
+    rootA.children![0].parent = rootA;
+
+    const rootB: TreeNode = {
+      id: 'root-b',
+      name: 'ConfigurationB',
+      type: MetadataType.Configuration,
+      properties: {},
+      filePath: path.join(cfgB, 'Configuration.xml'),
+      children: [
+        { id: 'Documents', name: 'Documents', type: MetadataType.Document, properties: {}, children: [] },
+      ],
+    };
+    rootB.children![0].parent = rootB;
+
+    const contextMap = new Map([
+      ['root-a', { configPath: cfgA, format: ConfigFormat.Designer }],
+      ['root-b', { configPath: cfgB, format: ConfigFormat.Designer }],
+    ]);
+
+    try {
+      provider.setRootNodes([rootA, rootB], contextMap);
+      // Expanding rootB should reprioritize warmup to rootB
+      await provider.getChildren(rootB);
+
+      for (let i = 0; i < 30 && parseOrder.length < 2; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 30));
+      }
+
+      assert.deepStrictEqual(parseOrder, ['cfgB:Documents', 'cfgA:Catalogs']);
+    } finally {
+      provider.dispose();
+      (MetadataParser as any).parseTypeIndex = originalParseTypeIndex;
+    }
+  });
+
   test('setRootNodes resolves stale ref in correct root when multi-root branches are identical', async () => {
     const makeFormsBranch = (formName: string): { root: TreeNode; forms: TreeNode } => {
       const forms: TreeNode = {

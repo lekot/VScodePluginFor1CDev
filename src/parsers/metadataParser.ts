@@ -192,16 +192,22 @@ export class MetadataParser {
   static async parseTypeIndex(
     configPath: string,
     typeName: string,
-    options?: { format?: ConfigFormat }
+    options?: { format?: ConfigFormat; bypassCache?: boolean }
   ): Promise<TreeNode[]> {
     const format = options?.format ?? await FormatDetector.detect(configPath);
+    if (options?.bypassCache === true) {
+      return this.cloneTreeNodes(await this.parseTypeIndexUncached(configPath, typeName, format));
+    }
+
     const inFlightKey = this.getTypeContentsInFlightKey(configPath, typeName, format);
     const existing = this.inFlightTypeIndex.get(inFlightKey);
     if (existing) {
       return this.cloneTreeNodes(await existing);
     }
 
-    const pending = this.parseTypeIndexUncached(configPath, typeName, format).finally(() => {
+    const pending = (async () => {
+      return await this.parseTypeIndexWithCache(configPath, typeName, format);
+    })().finally(() => {
       if (this.inFlightTypeIndex.get(inFlightKey) === pending) {
         this.inFlightTypeIndex.delete(inFlightKey);
       }
@@ -209,6 +215,32 @@ export class MetadataParser {
 
     this.inFlightTypeIndex.set(inFlightKey, pending);
     return this.cloneTreeNodes(await pending);
+  }
+
+  private static async parseTypeIndexWithCache(
+    configPath: string,
+    typeName: string,
+    format: ConfigFormat
+  ): Promise<TreeNode[]> {
+    const typePath = this.getTypePath(configPath, typeName, format);
+    const storagePath = this.typeContentsCacheStoragePath;
+    if (!typePath || !storagePath) {
+      return await this.parseTypeIndexUncached(configPath, typeName, format);
+    }
+
+    const signature = await computeTypeContentsSignature(typePath, format);
+    if (!signature) {
+      return await this.parseTypeIndexUncached(configPath, typeName, format);
+    }
+
+    const cached = await loadTypeContentsFromCache(storagePath, configPath, typeName, signature, 'index');
+    if (cached) {
+      return cached;
+    }
+
+    const children = await this.parseTypeIndexUncached(configPath, typeName, format);
+    await saveTypeContentsToCache(storagePath, configPath, typeName, signature, children, 'index');
+    return children;
   }
 
   private static async parseTypeContentsWithCache(

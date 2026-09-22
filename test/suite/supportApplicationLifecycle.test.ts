@@ -172,6 +172,33 @@ suite('Support application/registry/composition lifecycle', () => {
     assert.strictEqual(universeCalls, 1);
   });
 
+  test('application getStatus with includeUniverse === false skips metadata universe resolution', async () => {
+    const configurationId = 'cfg-skip-universe' as ConfigurationId;
+    const snapshot = master(configurationId, 'generation', []);
+    let universeCalls = 0;
+    const modeService = modeServiceForStatus({ kind: 'ready', snapshot }, async () => {
+      universeCalls += 1;
+      throw new Error('includeUniverse === false must not resolve the metadata universe');
+    });
+    const service = new SupportApplicationService({
+      configurationId,
+      modeService,
+      coordinator: {
+        sync: async () => { throw new Error('not used'); },
+        verifyOnly: async () => { throw new Error('not used'); },
+      },
+      journal: { getLastRun: async () => undefined },
+    });
+
+    const result = await service.getStatus({ configurationId, includeUniverse: false });
+    assert.strictEqual(result.status, 'available');
+    assert.strictEqual(universeCalls, 0);
+    if (result.status === 'available' && result.master.kind === 'ready') {
+      assert.strictEqual(result.metadataUniverse, undefined);
+      assert.strictEqual(result.master.snapshot.generationId, 'generation');
+    }
+  });
+
   test('application sync and verify use master-only status without resolving metadata universe', async () => {
     const configurationId = 'cfg-master-only-operations' as ConfigurationId;
     const snapshot = master(configurationId, 'generation', []);

@@ -1,5 +1,8 @@
 const fs = require('fs');
 const path = require('path');
+const { bundleQueryBuilderVisitor } = require('./bundle-query-builder-visitor');
+
+bundleQueryBuilderVisitor();
 
 const sources = [
   'src/rolesEditor/rolesEditorWebview.html',
@@ -8,6 +11,7 @@ const sources = [
   'src/xdtoPackageEditor/xdtoPackageWebview.html',
   'src/xdtoPackageCompare/xdtoPackageCompareWebview.html',
   'src/compareMerge/configCompareWebview.html',
+  'src/queryBuilder/ui/queryBuilderWebview.html',
 ];
 
 const outDirs = ['dist', 'out/src'];
