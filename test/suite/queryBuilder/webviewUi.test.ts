@@ -1822,6 +1822,153 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
         const onStr = env.window.getExpressionString(q.from[0].joins[0].on);
         assert.strictEqual(onStr, 'СтарееСтарых.Код = Справочник55.Код И СтарееСтарых.ПометкаУдаления = ЛОЖЬ');
       });
+
+      test('Finding: ON with a third table is kept custom and is not mapped to selected join fields', () => {
+        const env = createWebviewEnvironment();
+        const parsed = env.window.parseSimpleJoinOn('Склад.Код = Товар.Склад', 'Документ', 'Товар');
+
+        assert.strictEqual(parsed, null, 'A condition qualified by a third table must not be treated as a simple join');
+        const caseInsensitive = env.window.parseSimpleJoinOn('a.Код = b.Склад', 'A', 'B');
+        assert.ok(caseInsensitive, 'Table aliases in SDBL are case-insensitive');
+        assert.strictEqual(caseInsensitive.f1, 'Код');
+        assert.strictEqual(caseInsensitive.op, '=');
+        assert.strictEqual(caseInsensitive.f2, 'Склад');
+
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient(
+            'ВЫБРАТЬ 1 ИЗ Документ КАК Документ ЛЕВОЕ СОЕДИНЕНИЕ Товар КАК Товар ПО Склад.Код = Товар.Склад'
+          ),
+        });
+        env.window.renderTab2();
+
+        const row = env.elements.tbodyJoins.children[0];
+        const custom = row.querySelector('.join-check-custom') as any;
+        assert.ok(custom, 'Custom join checkbox must be rendered');
+        assert.strictEqual(custom.checked, true, 'Join using a third table must remain custom');
+      });
+
+      test('Finding: composite reference types expose the referenced entity for field expansion', () => {
+        const env = createWebviewEnvironment();
+
+        assert.strictEqual(
+          env.window.getReferencedEntityName('Строка, СправочникСсылка.Товары'),
+          'Товары',
+          'A composite type containing a reference must still resolve its referenced entity'
+        );
+        assert.strictEqual(
+          env.window.getReferencedEntityName('String, CatalogRef.Products'),
+          'Products',
+          'English composite reference types must still resolve their referenced entity'
+        );
+        assert.strictEqual(
+          env.window.getReferencedEntityName('СправочникСсылка.Товары, Строка'),
+          'Товары',
+          'A reference placed before another composite type must still resolve'
+        );
+        assert.strictEqual(
+          env.window.getReferencedEntityName('String, CatalogRef.Products, Number'),
+          'Products',
+          'A reference in the middle of an English composite type must still resolve'
+        );
+      });
+
+      test('Finding: deleting a root table keeps its joined table as an independent root', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient(
+            'ВЫБРАТЬ 1 ИЗ Документ КАК Документ ЛЕВОЕ СОЕДИНЕНИЕ Товар КАК Товар ПО Документ.Товар = Товар.Ссылка'
+          ),
+        });
+
+        const q = env.window.getActiveQuery();
+        assert.strictEqual(q.from.length, 1);
+        assert.strictEqual(q.from[0].joins.length, 1);
+
+        env.window.renderFromTables();
+        const rootRow = env.elements.tbodyFromTables.children[0];
+        const deleteButton = rootRow.querySelector('button.danger') as any;
+        assert.ok(deleteButton, 'Root table must have a delete button');
+        deleteButton.click();
+
+        assert.strictEqual(q.from.length, 1, 'Joined table must survive root deletion as a root');
+        assert.strictEqual(q.from[0].alias, 'Товар');
+        assert.ok(!q.from[0].joins || q.from[0].joins.length === 0);
+      });
+
+      test('Finding: deleting one self-join alias does not delete the other instance', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: env.window.parseSdblClient(
+            'ВЫБРАТЬ 1 ИЗ Справочник.Номенклатура КАК Номенклатура, Справочник.Номенклатура КАК Номенклатура1'
+          ),
+        });
+
+        const q = env.window.getActiveQuery();
+        env.window.renderFromTables();
+        const firstRow = env.elements.tbodyFromTables.children[0];
+        const deleteButton = firstRow.querySelector('button.danger') as any;
+        assert.ok(deleteButton);
+        deleteButton.click();
+
+        assert.strictEqual(q.from.length, 1, 'The second self-join instance must remain');
+        assert.strictEqual(q.from[0].alias, 'Номенклатура1');
+      });
+
+      test('Finding: deleting a middle table preserves the remaining join chain', () => {
+        const env = createWebviewEnvironment();
+        env.postMessageToWebview({
+          command: 'init',
+          ast: {
+            queries: [{
+              type: 'Select',
+              fields: [{ expression: { type: 'Literal', valueType: 'number', value: 1, raw: '1' } }],
+              from: [{
+                source: { type: 'Table', name: 'A' },
+                alias: 'a',
+                joins: [
+                  { joinType: 'Left', source: { type: 'Table', name: 'B' }, alias: 'b', t1: 'a', on: { type: 'RawExpression', raw: 'a.id = b.aid' } },
+                  { joinType: 'Left', source: { type: 'Table', name: 'C' }, alias: 'c', t1: 'b', on: { type: 'RawExpression', raw: 'b.id = c.bid' } },
+                  { joinType: 'Left', source: { type: 'Table', name: 'D' }, alias: 'd', t1: 'c', on: { type: 'RawExpression', raw: 'c.id = d.cid' } },
+                ],
+              }],
+            }],
+          },
+        });
+
+        const q = env.window.getActiveQuery();
+        env.window.renderFromTables();
+        const middleRow = env.elements.tbodyFromTables.children[1];
+        const deleteButton = middleRow.querySelector('button.danger') as any;
+        assert.ok(deleteButton);
+        deleteButton.click();
+
+        const cRoot = q.from.find((fc: any) => fc.alias === 'c');
+        assert.ok(cRoot, 'C must survive deletion of B');
+        assert.ok(cRoot.joins && cRoot.joins.some((jn: any) => jn.alias === 'd'), 'D must remain joined to C');
+        assert.ok(!q.from.some((fc: any) => fc.alias === 'b'), 'Deleted B must not remain in FROM');
+      });
+
+      test('Finding: table aliases are unique case-insensitively for self-joins', () => {
+        const env = createWebviewEnvironment();
+        const q = env.window.getActiveQuery();
+        q.from = [{ source: { type: 'Table', name: 'Справочник.Номенклатура' }, alias: 'Номенклатура' }];
+
+        env.window.addTableToQuery('Справочник.Номенклатура');
+        assert.strictEqual(q.from.length, 2);
+        assert.strictEqual(q.from[1].alias, 'Номенклатура1');
+
+        env.window.renameTableAliasInQuery(q, 'Номенклатура1', 'НОМЕНКЛАТУРА');
+        assert.strictEqual(q.from[1].alias, 'Номенклатура1', 'A case-only duplicate alias rename must be rejected');
+        env.window.addTableToQuery('Справочник.Номенклатура');
+        assert.strictEqual(q.from.length, 3);
+        assert.strictEqual(q.from[2].alias, 'Номенклатура2');
+
+        env.window.renameTableAliasInQuery(q, 'Номенклатура2', 'номенклатура');
+        assert.strictEqual(q.from[2].alias, 'Номенклатура2', 'A duplicate alias rename must be rejected');
+      });
     });
 
     suite('Expression Builder, From-Tables Tree & Custom Joins', () => {
@@ -2121,6 +2268,3 @@ suite('Query Builder Webview UI & Two-Panel Index Selector', () => {
     });
   });
 });
-
-
-

@@ -2808,15 +2808,19 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             function getReferencedEntityName(dataType) {
                 if (!dataType) return null;
                 const dt = String(dataType).trim();
-                const m = dt.match(/^(?:СправочникСсылка|CatalogRef|ДокументСсылка|DocumentRef|ПланВидовХарактеристикСсылка|ChartOfCharacteristicTypesRef|ПланСчетовСсылка|ChartOfAccountsRef|ПланВидовРасчетаСсылка|ChartOfCalculationTypesRef|БизнесПроцессСсылка|BusinessProcessRef|ЗадачаСсылка|TaskRef)\.([a-zA-Z0-9а-яА-ЯёЁ_]+)$/i);
-                if (m) {
-                    return m[1];
-                }
-                const dotIdx = dt.lastIndexOf('.');
-                if (dotIdx !== -1) {
-                    const prefix = dt.substring(0, dotIdx).toLowerCase();
-                    if (prefix.indexOf('ссылка') !== -1 || prefix.indexOf('ref') !== -1) {
-                        return dt.substring(dotIdx + 1);
+                const typeParts = dt.split(/\s*,\s*/);
+                for (let i = 0; i < typeParts.length; i++) {
+                    const part = typeParts[i].trim();
+                    const m = part.match(/^(?:СправочникСсылка|CatalogRef|ДокументСсылка|DocumentRef|ПланВидовХарактеристикСсылка|ChartOfCharacteristicTypesRef|ПланСчетовСсылка|ChartOfAccountsRef|ПланВидовРасчетаСсылка|ChartOfCalculationTypesRef|БизнесПроцессСсылка|BusinessProcessRef|ЗадачаСсылка|TaskRef)\.([a-zA-Z0-9а-яА-ЯёЁ_]+)$/i);
+                    if (m) {
+                        return m[1];
+                    }
+                    const dotIdx = part.lastIndexOf('.');
+                    if (dotIdx !== -1) {
+                        const prefix = part.substring(0, dotIdx).toLowerCase();
+                        if (prefix.indexOf('ссылка') !== -1 || prefix.indexOf('ref') !== -1) {
+                            return part.substring(dotIdx + 1);
+                        }
                     }
                 }
                 return null;
@@ -2848,10 +2852,18 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     rightField = right.substring(right.indexOf('.') + 1);
                 }
 
-                if ((!leftTbl || leftTbl === t1) && (!rightTbl || rightTbl === t2)) {
+                // An ON expression can refer to a table outside this join
+                // pair. Keep such expressions custom instead of mapping them
+                // to the two visible field selectors and rewriting them later.
+                if ((leftTbl && !aliasesEqual(leftTbl, t1) && !aliasesEqual(leftTbl, t2)) ||
+                    (rightTbl && !aliasesEqual(rightTbl, t1) && !aliasesEqual(rightTbl, t2))) {
+                    return null;
+                }
+
+                if ((!leftTbl || aliasesEqual(leftTbl, t1)) && (!rightTbl || aliasesEqual(rightTbl, t2))) {
                     return { f1: leftField, op: op, f2: rightField };
                 }
-                if (leftTbl === t2 && rightTbl === t1) {
+                if (aliasesEqual(leftTbl, t2) && aliasesEqual(rightTbl, t1)) {
                     let invOp = op;
                     if (op === '<') invOp = '>';
                     else if (op === '>') invOp = '<';
@@ -2859,7 +2871,7 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                     else if (op === '>=') invOp = '<=';
                     return { f1: rightField, op: invOp, f2: leftField };
                 }
-                return { f1: leftField, op: op, f2: rightField };
+                return null;
             }
 
             function autoSuggestJoinCondition(t1Alias, t1Source, t2Alias, t2Source) {
@@ -3014,15 +3026,31 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 };
             }
 
+            function aliasesEqual(left, right) {
+                return Boolean(left && right) && String(left).trim().toLowerCase() === String(right).trim().toLowerCase();
+            }
+
             function renameTableAliasInQuery(q, oldAlias, newAlias) {
-                if (!oldAlias || !newAlias || oldAlias === newAlias || !q) return;
+                if (!oldAlias || !newAlias || !q) return false;
+
+                const tables = getAllTablesInQuery(q);
+                const oldTable = tables.find(function(t) {
+                    return t.alias && aliasesEqual(t.alias, oldAlias);
+                });
+                const actualOldAlias = oldTable && oldTable.alias ? oldTable.alias : oldAlias;
+                const hasCollision = tables.some(function(t) {
+                    return t.alias && !aliasesEqual(t.alias, actualOldAlias) && aliasesEqual(t.alias, newAlias);
+                });
+                if (hasCollision) return false;
+
+                if (aliasesEqual(actualOldAlias, newAlias) && actualOldAlias === newAlias) return true;
 
                 const api = typeof window !== 'undefined' && window.SdblAstVisitor ? window.SdblAstVisitor : (typeof SdblAstVisitor !== 'undefined' ? SdblAstVisitor : null);
 
                 function replaceAliasInStr(str) {
                     if (!str || typeof str !== 'string') return str;
                     if (api && typeof api.replaceAliasInRawString === 'function') {
-                        return api.replaceAliasInRawString(str, oldAlias, newAlias);
+                        return api.replaceAliasInRawString(str, actualOldAlias, newAlias);
                     }
                     return str;
                 }
@@ -3030,14 +3058,14 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 function replaceAliasInExpr(expr) {
                     if (!expr || typeof expr !== 'object') return expr;
                     if (api && typeof api.replaceAliasInExpression === 'function') {
-                        return api.replaceAliasInExpression(expr, oldAlias, newAlias);
+                        return api.replaceAliasInExpression(expr, actualOldAlias, newAlias);
                     }
                     return expr;
                 }
 
                 // 0. From table aliases
                 (q.from || []).forEach(function(fc) {
-                    if (fc.alias === oldAlias) {
+                    if (fc.alias === actualOldAlias) {
                         fc.alias = newAlias;
                     }
                 });
@@ -3058,9 +3086,9 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 (q.from || []).forEach(function(fc) {
                     if (fc.joins) {
                         fc.joins.forEach(function(jn) {
-                            if (jn.alias === oldAlias) jn.alias = newAlias;
-                            if (jn.t1 === oldAlias) jn.t1 = newAlias;
-                            if (jn.t2 === oldAlias) jn.t2 = newAlias;
+                            if (jn.alias === actualOldAlias) jn.alias = newAlias;
+                            if (jn.t1 === actualOldAlias) jn.t1 = newAlias;
+                            if (jn.t2 === actualOldAlias) jn.t2 = newAlias;
                             if (typeof jn.on === 'string') {
                                 jn.on = replaceAliasInStr(jn.on);
                             } else if (jn.on) {
@@ -3110,9 +3138,10 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 // 5. ForUpdate tables
                 if (q.forUpdateTables && Array.isArray(q.forUpdateTables)) {
                     q.forUpdateTables = q.forUpdateTables.map(function(t) {
-                        return t === oldAlias ? newAlias : t;
+                        return t === actualOldAlias ? newAlias : t;
                     });
                 }
+                return true;
             }
 
             function getFieldDisplayName(field) {
@@ -3193,19 +3222,73 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
             function deleteTableFromQuery(q, tblInfo) {
                 if (!q || !q.from) return;
                 const targetKey = tblInfo.key || tblInfo.alias || (tblInfo.source && tblInfo.source.name);
-                q.from = q.from.filter(function(fc) {
-                    const fcKey = fc.alias || (fc.source && fc.source.name);
-                    return fcKey !== targetKey && fc.source !== tblInfo.source;
-                });
-                q.from.forEach(function(fc) {
-                    if (fc.joins) {
-                        fc.joins = fc.joins.filter(function(jn) {
-                            const jnKey = jn.alias || (jn.source && jn.source.name);
-                            const jnT1 = jn.t1 || '';
-                            return jnKey !== targetKey && jnT1 !== targetKey && jn.source !== tblInfo.source;
-                        });
+                const keyOf = function(source, alias) {
+                    return alias || (source && source.name) || '';
+                };
+                const targetHasAlias = Boolean(tblInfo.alias && String(tblInfo.alias).trim());
+                const targetAlias = targetHasAlias ? String(tblInfo.alias).trim() : '';
+                const targetSourceName = tblInfo.source && tblInfo.source.name;
+                const isTarget = function(source, alias, key) {
+                    if (targetHasAlias) {
+                        return Boolean(alias && aliasesEqual(alias, targetAlias)) ||
+                            (!alias && Boolean(key && aliasesEqual(key, targetAlias)));
                     }
+                    if (alias) return false;
+                    return Boolean(
+                        source && targetSourceName &&
+                        (source === tblInfo.source || aliasesEqual(source.name, targetSourceName))
+                    ) || Boolean(key && targetKey && aliasesEqual(key, targetKey));
+                };
+
+                // Rebuild the FROM graph from its vertices and edges. This
+                // keeps every surviving table, including self-join instances,
+                // and places each edge under its actual t1 owner after a
+                // vertex is removed.
+                const roots = new Map();
+                const rootOrder = [];
+                const ensureRoot = function(source, alias) {
+                    const key = keyOf(source, alias);
+                    if (!key || isTarget(source, alias, key)) return null;
+                    let root = roots.get(key);
+                    if (!root) {
+                        root = { source: source, alias: alias, joins: [] };
+                        roots.set(key, root);
+                        rootOrder.push(key);
+                    }
+                    return root;
+                };
+
+                (q.from || []).forEach(function(fc) {
+                    ensureRoot(fc.source, fc.alias);
+                    (fc.joins || []).forEach(function(jn) {
+                        ensureRoot(jn.source, jn.alias);
+                    });
                 });
+
+                const findRoot = function(key) {
+                    if (!key) return null;
+                    const direct = roots.get(key);
+                    if (direct) return direct;
+                    for (let i = 0; i < rootOrder.length; i++) {
+                        if (aliasesEqual(rootOrder[i], key)) return roots.get(rootOrder[i]);
+                    }
+                    return null;
+                };
+
+                (q.from || []).forEach(function(fc) {
+                    const fcKey = keyOf(fc.source, fc.alias);
+                    (fc.joins || []).forEach(function(jn) {
+                        const jnKey = keyOf(jn.source, jn.alias);
+                        const ownerKey = jn.t1 || fcKey;
+                        if (isTarget(jn.source, jn.alias, jnKey) || isTarget(null, null, ownerKey)) return;
+                        const ownerRoot = findRoot(ownerKey);
+                        if (ownerRoot && !isTarget(ownerRoot.source, ownerRoot.alias, ownerKey)) {
+                            ownerRoot.joins.push(jn);
+                        }
+                    });
+                });
+
+                q.from = rootOrder.map(function(key) { return roots.get(key); });
                 q.from = getNormalizedFrom(q.from);
             }
 
@@ -4958,7 +5041,11 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                         const oldAlias = tblInfo.alias || getTableAliasWithoutPrefix(tblInfo.source && tblInfo.source.name);
                         const newAlias = inputAlias.value.trim() || undefined;
                         if (oldAlias && newAlias && oldAlias !== newAlias) {
-                            renameTableAliasInQuery(q, oldAlias, newAlias);
+                            const renamed = renameTableAliasInQuery(q, oldAlias, newAlias);
+                            if (!renamed) {
+                                inputAlias.value = oldAlias;
+                                return;
+                            }
                         }
                         tblInfo.alias = newAlias;
                         (q.from || []).forEach(function(fc) {
@@ -5152,9 +5239,16 @@ if (typeof globalThis !== "undefined") { globalThis.SdblAstVisitor = SdblAstVisi
                 const defaultAlias = getTableAliasWithoutPrefix(name);
                 let targetAlias = defaultAlias;
 
-                if (allTables.some(function(t) { return t.alias === targetAlias; })) {
+                function isAliasUsed(alias) {
+                    return allTables.some(function(t) {
+                        const existingAlias = t.alias || getTableAliasWithoutPrefix(t.source && t.source.name);
+                        return aliasesEqual(existingAlias, alias);
+                    });
+                }
+
+                if (isAliasUsed(targetAlias)) {
                     let counter = 1;
-                    while (allTables.some(function(t) { return t.alias === defaultAlias + counter; })) {
+                    while (isAliasUsed(defaultAlias + counter)) {
                         counter++;
                     }
                     targetAlias = defaultAlias + counter;
