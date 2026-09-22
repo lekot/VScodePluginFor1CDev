@@ -32,7 +32,9 @@ export function resolveRepositoryTreeDecoration(
   if (!observed) {
     return undefined;
   }
-  const reference = resolveRepositoryObject(node, target);
+  // Decoration only needs the stable repository name. Walking every object's
+  // directory here turns rendering a large folder into a synchronous disk scan.
+  const reference = resolveRepositoryObject(node, target, { includeFiles: false });
   const confirmation = observed.lastConfirmedAt
     ? ` Последнее подтверждение: ${observed.lastConfirmedAt}.`
     : '';

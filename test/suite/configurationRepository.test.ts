@@ -16,6 +16,7 @@ import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import {
   resolveRepositoryObject,
   resolveRepositoryTarget,
+  type ResolveRepositoryObjectOptions,
 } from '../../src/services/configurationRepository/repositoryObjectResolver';
 import {
   writeRepositoryObjectsFile,
@@ -29,6 +30,7 @@ import {
   RepositoryStateStore,
   repositoryTargetKey,
 } from '../../src/services/configurationRepository/repositoryStores';
+import { XmlParser } from '../../src/parsers/xmlParser';
 
 suite('Configuration Repository phase 1', () => {
   test('Configurator batch builder keeps repository and infobase passwords separate and redacted', () => {
@@ -141,6 +143,69 @@ suite('Configuration Repository phase 1', () => {
       assert.ok(reference);
       assert.strictEqual(reference?.repositoryFullName, 'Справочник.Products');
       assert.strictEqual(reference?.ibcmdFullName, 'Catalog.Products');
+    } finally {
+      await fs.rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test('resolver does not parse Configuration.xml for every object in a base configuration', async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-fast-target-'));
+    const originalParseFile = XmlParser.parseFile;
+    let parseCount = 0;
+    try {
+      await fs.writeFile(
+        path.join(rootPath, 'Configuration.xml'),
+        '<Configuration><Properties><Name>Demo</Name></Properties></Configuration>',
+        'utf8',
+      );
+      const root = node(MetadataType.Configuration, 'Configuration', rootPath, {});
+      const folder = node(MetadataType.Unknown, 'Catalogs', undefined, {}, root);
+      const catalogs = Array.from({ length: 32 }, (_, index) =>
+        node(MetadataType.Catalog, `Product${index}`, undefined, {}, folder));
+
+      (XmlParser as unknown as { parseFile: typeof XmlParser.parseFile }).parseFile = ((_filePath: string) => {
+        parseCount += 1;
+        return {};
+      }) as typeof XmlParser.parseFile;
+
+      for (const catalog of catalogs) {
+        const target = resolveRepositoryTarget(catalog);
+        assert.ok(target);
+        assert.strictEqual(target?.configKind, 'cf');
+      }
+
+      assert.strictEqual(parseCount, 0, 'base repository targets must not parse the large Configuration.xml');
+    } finally {
+      (XmlParser as unknown as { parseFile: typeof XmlParser.parseFile }).parseFile = originalParseFile;
+      await fs.rm(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test('repository object resolver keeps file collection opt-in for tree decorations', async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cdt-repository-object-identity-'));
+    try {
+      const descriptorPath = path.join(rootPath, 'Catalogs', 'Products.xml');
+      const modulePath = path.join(rootPath, 'Catalogs', 'Products', 'Ext', 'ObjectModule.bsl');
+      await fs.mkdir(path.dirname(modulePath), { recursive: true });
+      await fs.writeFile(path.join(rootPath, 'Configuration.xml'), '<Configuration/>', 'utf8');
+      await fs.writeFile(descriptorPath, '<Catalog/>', 'utf8');
+      await fs.writeFile(modulePath, 'Процедура Тест()\nКонецПроцедуры', 'utf8');
+
+      const root = node(MetadataType.Configuration, 'Configuration', rootPath, {});
+      const folder = node(MetadataType.Unknown, 'Catalogs', undefined, {}, root);
+      const catalog = node(MetadataType.Catalog, 'Products', descriptorPath, {}, folder);
+      const target = resolveRepositoryTarget(catalog);
+      assert.ok(target);
+
+      const identity = resolveRepositoryObject(catalog, target!, {
+        includeFiles: false,
+      } satisfies ResolveRepositoryObjectOptions);
+      assert.ok(identity);
+      assert.deepStrictEqual(identity?.relativeFiles, []);
+
+      const complete = resolveRepositoryObject(catalog, target!);
+      assert.ok(complete);
+      assert.ok(complete?.relativeFiles.some((file) => file.endsWith('Products/Ext/ObjectModule.bsl')));
     } finally {
       await fs.rm(rootPath, { recursive: true, force: true });
     }

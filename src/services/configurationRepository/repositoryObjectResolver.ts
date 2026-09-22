@@ -61,11 +61,26 @@ const REPOSITORY_TYPE_NAMES: Partial<Record<MetadataType, string>> = {
 };
 
 const EXTENSION_CONTAINER_NAMES = new Set(['configurationextensions', 'extensions']);
+/**
+ * Repository target identity is stable for the lifetime of a loaded tree root.
+ * Keep it on the root object so resolving decorations for thousands of children
+ * never reparses the same Configuration.xml.
+ */
+const repositoryTargetCache = new WeakMap<TreeNode, RepositoryTarget>();
+
+export interface ResolveRepositoryObjectOptions {
+  /** Skip the disk walk when only the repository identity is needed for a decoration. */
+  readonly includeFiles?: boolean;
+}
 
 export function resolveRepositoryTarget(node: TreeNode): RepositoryTarget | undefined {
   const root = findConfigurationRoot(node);
   if (!root) {
     return undefined;
+  }
+  const cachedTarget = repositoryTargetCache.get(root);
+  if (cachedTarget) {
+    return cachedTarget;
   }
   const configRoot = configurationRootPath(root);
   if (!configRoot) {
@@ -73,20 +88,30 @@ export function resolveRepositoryTarget(node: TreeNode): RepositoryTarget | unde
   }
 
   const extensionNameFromPath = extensionNameFromConfigRoot(configRoot);
-  const xmlName = readConfigurationName(path.join(configRoot, 'Configuration.xml'));
-  const extensionName = extensionNameFromPath ?? (root.properties?.isExtension === true ? xmlName : undefined);
+  // A regular CF target never needs Configuration.xml. Parsing it here for every
+  // tree item made expanding a large type folder effectively O(objectCount × XML).
+  // Only extension roots without a name in their canonical path need the fallback
+  // XML lookup.
+  const extensionName = extensionNameFromPath ?? (
+    root.properties?.isExtension === true
+      ? readConfigurationName(path.join(configRoot, 'Configuration.xml'))
+      : undefined
+  );
   const configKind: RepositoryConfigurationKind = extensionName ? 'cfe' : 'cf';
   const target: Omit<RepositoryTarget, 'key'> = {
     configRoot,
     configKind,
     ...(extensionName ? { extensionName } : {}),
   };
-  return Object.freeze({ ...target, key: repositoryTargetKey(target) });
+  const resolved = Object.freeze({ ...target, key: repositoryTargetKey(target) });
+  repositoryTargetCache.set(root, resolved);
+  return resolved;
 }
 
 export function resolveRepositoryObject(
   node: TreeNode,
   target: RepositoryTarget,
+  options?: ResolveRepositoryObjectOptions,
 ): RepositoryObjectReference | undefined {
   const owner = resolveOwnerNode(node);
   if (!owner) {
@@ -98,7 +123,9 @@ export function resolveRepositoryObject(
   }
   const repositoryFullName = `${repositoryType}.${owner.name.trim()}`;
   const ibcmdFullName = `${owner.type}.${owner.name.trim()}`;
-  const relativeFiles = collectObjectFiles(owner, target.configRoot);
+  const relativeFiles = options?.includeFiles === false
+    ? []
+    : collectObjectFiles(owner, target.configRoot);
   return Object.freeze({
     target,
     ownerNode: owner,
