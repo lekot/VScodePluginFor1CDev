@@ -13,14 +13,6 @@ for /f "tokens=2 delims=:, " %%a in ('findstr /C:"\"version\"" package.json') do
 set NEWVERSION=%NEWVERSION:"=%
 echo New version: %NEWVERSION%
 
-echo Compiling TypeScript...
-node node_modules/typescript/bin/tsc -p .
-if %errorlevel% neq 0 exit /b %errorlevel%
-
-echo Copying webview HTML...
-node scripts/copy-webviews.js
-if %errorlevel% neq 0 exit /b %errorlevel%
-
 if not exist releases mkdir releases
 
 echo Building VSIX package...

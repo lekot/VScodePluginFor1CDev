@@ -1909,7 +1909,7 @@
     "package": "node node_modules/@vscode/vsce/vsce package",
     "copy:webviews": "node scripts/copy-webviews.js",
     "bundle:query-builder-visitor": "node scripts/bundle-query-builder-visitor.js",
-    "compile": "node scripts/bundle-query-builder-visitor.js && tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
+    "compile": "tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
     "verify:session-router-bundle": "node scripts/verify-session-router-bundle.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
