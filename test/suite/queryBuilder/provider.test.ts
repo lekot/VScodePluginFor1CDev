@@ -1258,6 +1258,116 @@ suite('QueryBuilder Provider & Message Handler', () => {
       assert.deepStrictEqual(initMsg.ast.queries[0].from, []);
     });
 
+    test('new query keeps nested tab indentation after a document shift with CRLF line endings', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const initialCode = [
+        'Процедура Выполнить()',
+        '\tЕсли Условие Тогда',
+        '\t\tЗапрос.Текст = ',
+        '\tКонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\r\n');
+      const prefix = '\t\tЗапрос.Текст = ';
+      const editor = createMockEditor(initialCode);
+      const cursor = editor.document.positionAt(initialCode.indexOf(prefix) + prefix.length);
+      editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      editor.updateContent('// Добавленная строка\r\n' + initialCode, 2);
+      await mockPanel.simulateMessage({
+        command: 'save',
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          }],
+        } satisfies QueryPackage,
+      });
+
+      assert.strictEqual(mockPanel.isDisposed(), true, 'Panel should close after relocated save');
+      assert.strictEqual(errorMessage, undefined, 'Relocated save should succeed');
+      const result = editor.getFullText();
+      assert.ok(
+        result.includes('\t\tЗапрос.Текст = "ВЫБРАТЬ\r\n\t\t|\tСсылка\r\n\t\t|ИЗ\r\n\t\t|\tСправочник.Номенклатура";'),
+        'Every BSL literal continuation line should inherit the nested tab indentation while SDBL indentation stays relative'
+      );
+      assert.strictEqual(
+        result.replace(/\r\n/g, '').includes('\n'),
+        false,
+        'The generated query should not mix LF into the surrounding CRLF document'
+      );
+    });
+
+    test('new query keeps space indentation on continuation lines', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const code = [
+        'Процедура Выполнить()',
+        '    Запрос.Текст = ',
+        'КонецПроцедуры',
+      ].join('\n');
+      const prefix = '    Запрос.Текст = ';
+      const editor = createMockEditor(code);
+      const cursor = editor.document.positionAt(code.indexOf(prefix) + prefix.length);
+      editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+      await mockPanel.simulateMessage({
+        command: 'save',
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          }],
+        } satisfies QueryPackage,
+      });
+
+      assert.strictEqual(mockPanel.isDisposed(), true);
+      const result = editor.getFullText();
+      assert.ok(
+        result.includes('    Запрос.Текст = "ВЫБРАТЬ\n    |\tСсылка\n    |ИЗ\n    |\tСправочник.Номенклатура";'),
+        'Continuation lines should inherit spaces without changing the relative SDBL indentation after each pipe'
+      );
+    });
+
+    test('new withProcessing query applies the insertion line indentation to generated BSL', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const code = 'Процедура Выполнить()\n    \nКонецПроцедуры';
+      const insertOffset = code.indexOf('    \n') + 4;
+      const editor = createMockEditor(code);
+      const cursor = editor.document.positionAt(insertOffset);
+      editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'withProcessing');
+      await mockPanel.simulateMessage({
+        command: 'save',
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          }],
+        } satisfies QueryPackage,
+      });
+
+      assert.strictEqual(mockPanel.isDisposed(), true);
+      const result = editor.getFullText();
+      assert.ok(result.includes('    Запрос = Новый Запрос;\n    Запрос.Текст =\n    \t"ВЫБРАТЬ'), 'The generated execution skeleton should be indented into the procedure');
+      assert.ok(result.includes('\n    \t|\tСсылка'), 'SDBL indentation inside the generated literal should remain relative');
+      assert.ok(result.includes('\n    РезультатЗапроса = Запрос.Выполнить();'), 'Top-level processing statements should share the insertion indentation');
+    });
+
     test('parses existing SDBL query in active editor and sets title without (новый)', async () => {
       const mockPanel = createMockPanel();
       let createdTitle = '';
