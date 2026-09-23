@@ -22,7 +22,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { recordFailure } from './smokeArtifacts';
 
-const EXT_ID = '1c-dev.1c-metadata-tree-vscode';
+const EXT_ID = 'Lekot.1c-metadata-tree-vscode';
 
 /** Poll until the metadata tree has a root node, or throw on timeout. */
 async function waitForTreeReady(timeoutMs = 20000): Promise<void> {

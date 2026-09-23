@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 suite('Smoke: Configuration Repository command surface', () => {
   test('phase-1 repository commands are registered by the activated extension', async function () {
     this.timeout(15000);
-    const extension = vscode.extensions.getExtension('1c-dev.1c-metadata-tree-vscode');
+    const extension = vscode.extensions.getExtension('Lekot.1c-metadata-tree-vscode');
     assert.ok(extension, 'CDT extension must be present');
     if (extension && !extension.isActive) {
       await extension.activate();
