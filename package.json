@@ -22,7 +22,21 @@
     }
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Visualization",
+    "Debuggers"
+  ],
+  "keywords": [
+    "1C",
+    "1С",
+    "1C:Enterprise",
+    "1С:Предприятие",
+    "BSL",
+    "SDBL",
+    "EDT",
+    "CDT 41",
+    "ibcmd",
+    "mxl"
   ],
   "activationEvents": [
     "workspaceContains:**/Configuration.xml",
