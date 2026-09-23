@@ -428,6 +428,23 @@ export async function handleQueryBuilderMessage(
             }
           }
 
+          if (!context.isSdblDocument) {
+            const documentText = context.editor.document.getText();
+            const insertionOffset = context.editor.document.offsetAt(targetVscodeRange.start);
+            const lineStart = documentText.slice(0, insertionOffset).lastIndexOf('\n') + 1;
+            const linePrefix = documentText.slice(lineStart, insertionOffset);
+            const insertionIndent = linePrefix.match(/^[\t ]*/)?.[0] ?? '';
+            const endOfLineApi = (vscode as unknown as { EndOfLine?: { CRLF?: number } }).EndOfLine;
+            const newline =
+              endOfLineApi?.CRLF !== undefined
+                ? (context.editor.document.eol === endOfLineApi.CRLF ? '\r\n' : '\n')
+                : (documentText.includes('\r\n') ? '\r\n' : '\n');
+            const lines = generatedCode.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+            generatedCode = lines
+              .map((line, index) => (index === 0 ? line : `${insertionIndent}${line}`))
+              .join(newline);
+          }
+
           let success = false;
 
           // 1. Try context.editor.edit first (standard editor edit)

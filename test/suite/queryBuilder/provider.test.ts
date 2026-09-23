@@ -380,6 +380,8 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const mock = createMockPanel();
       const failingEditor = {
         document: {
+          getText: () => '',
+          offsetAt: () => 0,
           positionAt: () => new vscode.Position(0, 0),
         },
         edit: async () => false,
@@ -416,6 +418,8 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const failingEditor = {
         document: {
           uri: vscode.Uri.file('/path/to/ObjectModule.bsl'),
+          getText: () => '',
+          offsetAt: () => 0,
           positionAt: () => new vscode.Position(0, 0),
         },
         edit: async () => false,
@@ -460,6 +464,8 @@ suite('QueryBuilder Provider & Message Handler', () => {
       const failingEditor = {
         document: {
           uri: vscode.Uri.file('/path/to/ObjectModule.bsl'),
+          getText: () => '',
+          offsetAt: () => 0,
           positionAt: () => new vscode.Position(0, 0),
         },
         edit: async () => false,
@@ -1258,6 +1264,204 @@ suite('QueryBuilder Provider & Message Handler', () => {
       assert.deepStrictEqual(initMsg.ast.queries[0].from, []);
     });
 
+    test('new query keeps nested tab indentation after a document shift with CRLF line endings', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const initialCode = [
+        'Процедура Выполнить()',
+        '\tЕсли Условие Тогда',
+        '\t\tЗапрос.Текст = ',
+        '\tКонецЕсли;',
+        'КонецПроцедуры',
+      ].join('\r\n');
+      const prefix = '\t\tЗапрос.Текст = ';
+      const editor = createMockEditor(initialCode);
+      const cursor = editor.document.positionAt(initialCode.indexOf(prefix) + prefix.length);
+      editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+
+      editor.updateContent('// Добавленная строка\r\n' + initialCode, 2);
+      await mockPanel.simulateMessage({
+        command: 'save',
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          }],
+        } satisfies QueryPackage,
+      });
+
+      assert.strictEqual(mockPanel.isDisposed(), true, 'Panel should close after relocated save');
+      assert.strictEqual(errorMessage, undefined, 'Relocated save should succeed');
+      const result = editor.getFullText();
+      assert.ok(
+        result.includes('\t\tЗапрос.Текст = "ВЫБРАТЬ\r\n\t\t|\tСсылка\r\n\t\t|ИЗ\r\n\t\t|\tСправочник.Номенклатура";'),
+        'Every BSL literal continuation line should inherit the nested tab indentation while SDBL indentation stays relative'
+      );
+      assert.strictEqual(
+        result.replace(/\r\n/g, '').includes('\n'),
+        false,
+        'The generated query should not mix LF into the surrounding CRLF document'
+      );
+    });
+
+    test('existing BSL query follows the current assignment indentation after relocation', async () => {
+      const cases = [
+        {
+          name: 'tabs and CRLF',
+          newline: '\r\n',
+          outerIndent: '\t',
+          initialIndent: '\t\t',
+          currentIndent: '\t\t\t',
+        },
+        {
+          name: 'spaces and LF',
+          newline: '\n',
+          outerIndent: '    ',
+          initialIndent: '        ',
+          currentIndent: '          ',
+        },
+      ];
+
+      for (const testCase of cases) {
+        const mockPanel = createMockPanel();
+        (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+        const { newline, outerIndent, initialIndent, currentIndent } = testCase;
+        const initialCode = [
+          'Процедура Выполнить()',
+          `${outerIndent}Если Условие Тогда`,
+          `${initialIndent}Запрос.Текст = "ВЫБРАТЬ`,
+          `${initialIndent}|\tСсылка КАК Ссылка,`,
+          `${initialIndent}|\tНаименование КАК Наименование`,
+          `${initialIndent}|ИЗ`,
+          `${initialIndent}|\tСправочник.Номенклатура КАК Номенклатура";`,
+          `${outerIndent}КонецЕсли;`,
+          'КонецПроцедуры',
+        ].join(newline);
+        const editor = createMockEditor(initialCode);
+        const cursor = editor.document.positionAt(initialCode.indexOf('ВЫБРАТЬ') + 2);
+        editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
+
+        const provider = new QueryBuilderProvider(fakeContext, {} as any);
+        await provider.open(editor, 'simple');
+
+        const changedAssignment = initialCode.replace(
+          `${initialIndent}Запрос.Текст =`,
+          `${currentIndent}Запрос.Текст =`
+        );
+        editor.updateContent(`// Добавлен комментарий${newline}${changedAssignment}`, 2);
+
+        await mockPanel.simulateMessage({
+          command: 'save',
+          ast: {
+            queries: [{
+              type: 'Select',
+              fields: [
+                { expression: { type: 'Identifier', name: 'Ссылка' }, alias: 'Ссылка' },
+                { expression: { type: 'Identifier', name: 'Наименование' }, alias: 'Наименование' },
+              ],
+              from: [{
+                source: { type: 'Table', name: 'Справочник.Номенклатура' },
+                alias: 'Номенклатура',
+              }],
+            }],
+          } satisfies QueryPackage,
+        });
+
+        assert.strictEqual(mockPanel.isDisposed(), true, `${testCase.name}: relocated save should succeed`);
+        assert.strictEqual(errorMessage, undefined, `${testCase.name}: relocation should not be rejected`);
+
+        const result = editor.getFullText();
+        const expectedLiteral = [
+          `${currentIndent}Запрос.Текст = "ВЫБРАТЬ`,
+          `${currentIndent}|\tСсылка КАК Ссылка,`,
+          `${currentIndent}|\tНаименование КАК Наименование`,
+          `${currentIndent}|ИЗ`,
+          `${currentIndent}|\tСправочник.Номенклатура КАК Номенклатура";`,
+        ].join(newline);
+        assert.ok(
+          result.includes(expectedLiteral),
+          `${testCase.name}: each continuation line should follow the current assignment indentation while retaining SDBL tabs after '|'.\n${result}`
+        );
+        assert.ok(result.includes(`// Добавлен комментарий${newline}`), `${testCase.name}: relocation must preserve the header`);
+        if (newline === '\r\n') {
+          assert.strictEqual(result.replace(/\r\n/g, '').includes('\n'), false, 'CRLF document must not gain LF-only breaks');
+        } else {
+          assert.strictEqual(result.includes('\r'), false, 'LF document must not gain CR characters');
+        }
+      }
+    });
+
+    test('new query keeps space indentation on continuation lines', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const code = [
+        'Процедура Выполнить()',
+        '    Запрос.Текст = ',
+        'КонецПроцедуры',
+      ].join('\n');
+      const prefix = '    Запрос.Текст = ';
+      const editor = createMockEditor(code);
+      const cursor = editor.document.positionAt(code.indexOf(prefix) + prefix.length);
+      editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'simple');
+      await mockPanel.simulateMessage({
+        command: 'save',
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          }],
+        } satisfies QueryPackage,
+      });
+
+      assert.strictEqual(mockPanel.isDisposed(), true);
+      const result = editor.getFullText();
+      assert.ok(
+        result.includes('    Запрос.Текст = "ВЫБРАТЬ\n    |\tСсылка\n    |ИЗ\n    |\tСправочник.Номенклатура";'),
+        'Continuation lines should inherit spaces without changing the relative SDBL indentation after each pipe'
+      );
+    });
+
+    test('new withProcessing query applies the insertion line indentation to generated BSL', async () => {
+      const mockPanel = createMockPanel();
+      (vscode.window as any).createWebviewPanel = () => mockPanel.panel;
+
+      const code = 'Процедура Выполнить()\n    \nКонецПроцедуры';
+      const insertOffset = code.indexOf('    \n') + 4;
+      const editor = createMockEditor(code);
+      const cursor = editor.document.positionAt(insertOffset);
+      editor.selection = { active: cursor, start: cursor, end: cursor, isEmpty: true } as any;
+
+      const provider = new QueryBuilderProvider(fakeContext, {} as any);
+      await provider.open(editor, 'withProcessing');
+      await mockPanel.simulateMessage({
+        command: 'save',
+        ast: {
+          queries: [{
+            type: 'Select',
+            fields: [{ expression: { type: 'Identifier', name: 'Ссылка' } }],
+            from: [{ source: { type: 'Table', name: 'Справочник.Номенклатура' } }],
+          }],
+        } satisfies QueryPackage,
+      });
+
+      assert.strictEqual(mockPanel.isDisposed(), true);
+      const result = editor.getFullText();
+      assert.ok(result.includes('    Запрос = Новый Запрос;\n    Запрос.Текст =\n    \t"ВЫБРАТЬ'), 'The generated execution skeleton should be indented into the procedure');
+      assert.ok(result.includes('\n    \t|\tСсылка'), 'SDBL indentation inside the generated literal should remain relative');
+      assert.ok(result.includes('\n    РезультатЗапроса = Запрос.Выполнить();'), 'Top-level processing statements should share the insertion indentation');
+    });
+
     test('parses existing SDBL query in active editor and sets title without (новый)', async () => {
       const mockPanel = createMockPanel();
       let createdTitle = '';
@@ -1767,7 +1971,7 @@ suite('QueryBuilder Provider & Message Handler', () => {
       );
       // Else branch must be updated to "ВЫБРАТЬ 2"
       assert.ok(
-        result.includes('Иначе\n        Запрос.Текст = "ВЫБРАТЬ\n|\t2";') ||
+        result.includes('Иначе\n        Запрос.Текст = "ВЫБРАТЬ\n        |\t2";') ||
           result.includes('Иначе\n        Запрос.Текст = "ВЫБРАТЬ 2";'),
         'Else branch must be updated with ВЫБРАТЬ 2'
       );
