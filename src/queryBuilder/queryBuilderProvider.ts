@@ -277,7 +277,6 @@ export class QueryBuilderProvider {
       occurrenceIndex,
       initialOccurrenceCount,
       enclosingScope,
-      isNewQuery: extracted.isNewQuery,
     };
 
     this.messageHandler = new QueryBuilderMessageHandler(messageContext);

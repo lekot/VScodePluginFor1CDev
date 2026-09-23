@@ -42,7 +42,6 @@ export interface QueryBuilderMessageContext {
   occurrenceIndex?: number;
   initialOccurrenceCount?: number;
   enclosingScope?: string;
-  isNewQuery?: boolean;
 }
 
 /**
@@ -429,12 +428,12 @@ export async function handleQueryBuilderMessage(
             }
           }
 
-          if (context.isNewQuery && !context.isSdblDocument) {
+          if (!context.isSdblDocument) {
             const documentText = context.editor.document.getText();
             const insertionOffset = context.editor.document.offsetAt(targetVscodeRange.start);
             const lineStart = documentText.slice(0, insertionOffset).lastIndexOf('\n') + 1;
-            const insertionIndent =
-              documentText.slice(lineStart, insertionOffset).match(/^[\t ]*/)?.[0] ?? '';
+            const linePrefix = documentText.slice(lineStart, insertionOffset);
+            const insertionIndent = linePrefix.match(/^[\t ]*/)?.[0] ?? '';
             const endOfLineApi = (vscode as unknown as { EndOfLine?: { CRLF?: number } }).EndOfLine;
             const newline =
               endOfLineApi?.CRLF !== undefined
