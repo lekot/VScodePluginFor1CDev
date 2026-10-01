@@ -33,7 +33,7 @@
 - 📦 **Расширения (CFE) и внешние файлы (EPF/ERF)**:
   - Создание расширений, заимствование объектов и форм, структурные BSL-перехваты (`&Вместо`, `&Перед`, `&После`).
   - Разбор и сборка `.cf`, а также внешних отчетов и обработок (`.epf` / `.erf`) в XML и обратно.
-- 🤖 **Agent API и MCP**: более 78 runtime-команд для AI-агентов (создание и редактирование метаданных, отладка, DSL для СКД, тестирование форм через Playwright).
+- 🤖 **Agent API и MCP**: 79 runtime-операций Agent API для AI-агентов; MCP публикует семь компактных tools (редактирование метаданных, права ролей, отладка, DSL для СКД, тестирование форм через Playwright).
 
 <img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />
 <img width="1092" height="450" alt="image" src="https://github.com/user-attachments/assets/755d5a95-4088-4567-89ba-8d6ffe38d670" />
@@ -43,7 +43,7 @@
 
 ### Agent API (для AI-агентов)
 
-CDT 41 предоставляет **78** runtime-команд Agent API для программного управления метаданными, CFE-проектами, поддержкой конфигурации, EPF/ERF, отладкой, формами, СКД и XDTO-пакетами 1С. Основной способ подключения — встроенный Streamable HTTP MCP endpoint; команды также доступны через `vscode.commands.executeCommand`, а legacy HTTP bridge сохранён только для совместимости. AI-агент (Claude Code, Copilot, MCP-клиент) может:
+CDT 41 предоставляет **79** runtime-операций Agent API для программного управления метаданными, ролями, CFE-проектами, поддержкой конфигурации, EPF/ERF, отладкой, формами, СКД и XDTO-пакетами 1С. Основной способ подключения — встроенный Streamable HTTP MCP endpoint; команды также доступны через `vscode.commands.executeCommand`, а legacy HTTP bridge сохранён только для совместимости. AI-агент (Claude Code, Copilot, MCP-клиент) может:
 - **CRUD метаданных** (12 команд) — создавать объекты, добавлять реквизиты/ТЧ/колонки, читать/писать свойства, переименовывать и удалять
 - **Отладка** (15 команд) — запускать отладочную сессию (thinClient / webServer), ставить breakpoints, читать переменные, шагать по коду, фильтровать исключения
 - **Привязки** (2 команды) — resolveBinding (фикстура→база), listBindings (все привязки с базами)
@@ -57,12 +57,28 @@ CDT 41 предоставляет **78** runtime-команд Agent API для �
 - **СКД** (4 команды, **новое**) — agent.skd.{compile, info, edit, validate}: PowerShell-скрипты внутри расширения, JSON DSL → Template.xml, 26 операций редактирования
 - **XDTO-пакеты** (7 команд, **новое**) — agent.xdto.{listPackages, getPackage, exportXsd, importXsd, createFromXsd, compare, merge}: чтение Package.bin, экспорт/импорт XSD, создание пакетов из XSD, сравнение и объединение XDTO/XSD/XML/BIN
 - **CFE-проекты** (9 команд) — agent.cfe.{listProjects, getContext, validate, createProject, borrowObject, createInterceptor, createOwnForm, borrowForm, extendForm}: создание расширения, структурные BSL-перехваты, собственные и заимствованные формы Catalog/Document. Заимствованную форму можно менять только через `extendForm`; зависимости должны быть уже заимствованы в CFE.
+- **Права ролей** — создайте роль через `agent.createObject` с `type: "Role"`, затем задайте права операцией `roles.setRights`. В DSL доступны пресеты `@view`, `@edit`, `@post` (только для Document), `@admin` и явный список прав, например `Catalog.Товары: @edit`.
 
 Мутации Designer XML поддерживаются для форматов `2.17`–`2.21` (платформы 8.3.24–8.5.1): CRUD берёт точную версию из корня `Configuration.xml`, применяет версионные свойства и сохраняет её в новых дочерних XML. Выгрузки `2.13`–`2.16`, XML без версии и неизвестные будущие форматы можно читать, но запись в них блокируется до изменения файлов — без автоматической подмены версии.
 
-MCP-клиент находит endpoint через discovery-файл `.vscode/cdt-agent-bridge.json`: URL находится в `mcp.url`, Bearer token — в верхнеуровневом поле `token`. MCP публикует полный каталог **78/78**: metadata CRUD, CFE, support, EPF/ERF, bindings/deploy, types/subsystems, debug, forms, SKD и XDTO. Каждый `cdt_*` tool является строгой тонкой обёрткой над одноимённой Agent-командой; legacy `/command` остаётся доступен без изменений. Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`.
+MCP-клиент находит endpoint через discovery-файл `.vscode/cdt-agent-bridge.json`: URL находится в `mcp.url`, Bearer token — в верхнеуровневом поле `token`. По умолчанию MCP публикует семь компактных tools: шесть диспетчеров (`cdt_read`, `cdt_write`, `cdt_write_idempotent`, `cdt_read_live`, `cdt_write_live`, `cdt_verify_live`) и `cdt_catalog`. Каждый диспетчер принимает `{ operation, arguments }`, где `operation` выбирает одну из **79 операций**, а `arguments` содержит её параметры. `cdt_catalog({})` перечисляет операции и профили; `cdt_catalog({ operation: "cdt_roles_set_rights" })` возвращает схему выбранной операции. Отдельные tools для каждой операции включаются только при запуске расширения с `CDT_MCP_LEGACY_TOOLS=1`; legacy `/command` остаётся доступен для совместимости. Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`.
 
-Bearer разрешает локальному MCP-клиенту весь Agent API, включая мутации и запуск процессов. `cdt_forms_exec` исполняет произвольный JavaScript, `cdt_debug_evaluate` — BSL-выражение, deploy/debug/forms/SKD/EPF/ERF взаимодействуют с внешними процессами, файлами или информационными базами. Для `cdt_dump_external_processor` и `cdt_build_external_processor` нужно явно выбрать существующую файловую ИБ либо автономный режим с подтверждением риска потери ссылочных типов; оба инструмента создают новые файлы и не перезаписывают существующие. Подключайте только доверенный локальный MCP-клиент; отмена MCP-запроса не прерывает уже запущенную Agent-команду. Полный каталог и inputs: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md).
+Для MCP сначала создайте роль через `cdt_write({ operation: "cdt_create_object", arguments: { type: "Role", name: "МенеджерТоваров", synonym: "Менеджер товаров" } })`, затем вызовите `cdt_write` для задания прав:
+
+```json
+{
+  "name": "cdt_write",
+  "arguments": {
+    "operation": "cdt_roles_set_rights",
+    "arguments": {
+      "roleName": "МенеджерТоваров",
+      "objects": ["Catalog.Товары: @edit", "Document.Заказ: @post"]
+    }
+  }
+}
+```
+
+Bearer разрешает локальному MCP-клиенту весь Agent API, включая мутации и запуск процессов. Среди операций каталога `cdt_forms_exec` исполняет произвольный JavaScript, `cdt_debug_evaluate` — BSL-выражение; deploy/debug/forms/SKD/EPF/ERF взаимодействуют с внешними процессами, файлами или информационными базами. Для `cdt_dump_external_processor` и `cdt_build_external_processor` нужно явно выбрать существующую файловую ИБ либо автономный режим с подтверждением риска потери ссылочных типов; обе операции создают новые файлы и не перезаписывают существующие. Подключайте только доверенный локальный MCP-клиент; отмена MCP-запроса не прерывает уже запущенную Agent-команду. Полный каталог и inputs: [docs/features/agent-api/agent-skill.md](docs/features/agent-api/agent-skill.md).
 
 #### Как подключить своего агента через MCP
 
