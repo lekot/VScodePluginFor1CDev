@@ -2,7 +2,10 @@ import * as assert from 'assert';
 import '../helpers/vscodeStubRegister';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
-import { MCP_TOOL_CATALOG } from '../../src/agent/mcpAdapter/toolCatalog';
+import {
+  MCP_OPERATION_CATALOG,
+  MCP_TOOL_CATALOG,
+} from '../../src/agent/mcpAdapter/toolCatalog';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 type AnnotationKind = 'readClosed' | 'writeClosed' | 'writeClosedIdempotent' | 'readOpen' | 'writeOpen' | 'verifyOpen';
@@ -108,6 +111,7 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_cfe_create_own_form', 'cfe.createOwnForm', 'writeClosedIdempotent'),
   tool('cdt_cfe_borrow_form', 'cfe.borrowForm', 'writeClosedIdempotent'),
   tool('cdt_cfe_extend_form', 'cfe.extendForm', 'writeClosedIdempotent'),
+  tool('cdt_roles_set_rights', 'roles.setRights', 'writeClosed'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
@@ -246,6 +250,9 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
       infobasePath: 'C:/db',
       credentials: { user: 'operator', password: 'secret' },
     },
+  },
+  cdt_roles_set_rights: {
+    configurationId: 'cfg', roleName: 'Manager', objects: ['Catalog.Goods: @admin'],
   },
 };
 
@@ -395,8 +402,8 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
 ];
 
 function schema(name: string): { safeParse(value: unknown): { success: boolean } } {
-  const found = MCP_TOOL_CATALOG.find((candidate) => candidate.name === name);
-  assert.ok(found, `MCP tool is missing: ${name}`);
+  const found = MCP_OPERATION_CATALOG.find((candidate) => candidate.name === name);
+  assert.ok(found, `MCP operation is missing: ${name}`);
   return found.inputSchema;
 }
 
@@ -408,19 +415,32 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('catalog has the exact 78 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 78, 'test oracle must enumerate all 78 tools');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 78);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 78);
+  test('operation registry has the exact 79 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 79, 'test oracle must enumerate all 79 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 79);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 79);
 
     assert.deepStrictEqual(
-      MCP_TOOL_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
+      MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
       EXPECTED_TOOLS.map(({ name, command, annotations }) => ({
         name,
         command,
         annotations: EXPECTED_ANNOTATIONS[annotations],
       })),
     );
+  });
+
+  test('default MCP root catalog is exactly the seven compact tools', () => {
+    assert.deepStrictEqual(MCP_TOOL_CATALOG.map(({ name }) => name), [
+      'cdt_read',
+      'cdt_write',
+      'cdt_write_idempotent',
+      'cdt_read_live',
+      'cdt_write_live',
+      'cdt_verify_live',
+      'cdt_catalog',
+    ]);
+    assert.ok(MCP_TOOL_CATALOG.every(({ description }) => description.trim().length > 0));
   });
 
   test('every tool has a description, schema and all four boolean annotations', () => {
@@ -439,7 +459,7 @@ suite('MCP Agent catalog coverage', () => {
   });
 
   test('support verify advertises external, non-destructive, non-idempotent process effects', () => {
-    const verify = MCP_TOOL_CATALOG.find(({ name }) => name === 'cdt_support_verify');
+    const verify = MCP_OPERATION_CATALOG.find(({ name }) => name === 'cdt_support_verify');
     assert.deepStrictEqual(verify?.annotations, {
       readOnlyHint: false,
       destructiveHint: false,
@@ -454,8 +474,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 78);
-    assert.strictEqual(new Set(registered).size, 78);
+    assert.strictEqual(registered.length, 79);
+    assert.strictEqual(new Set(registered).size, 79);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -464,11 +484,11 @@ suite('MCP Agent catalog coverage', () => {
       '1c-metadata-tree.showInterceptors',
     ]) {
       assert.ok(!registered.includes(uiCommand), uiCommand);
-      assert.ok(!MCP_TOOL_CATALOG.some(({ command }) => command === uiCommand), uiCommand);
+      assert.ok(!MCP_OPERATION_CATALOG.some(({ command }) => command === uiCommand), uiCommand);
     }
   });
 
-  test('all 78 valid fixtures pass and every root schema rejects an extra property', () => {
+  test('all 79 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

@@ -40,6 +40,18 @@ export interface ConfigurationScopedParams {
     configurationId?: string;
 }
 
+export interface AgentSetRoleRightsParams extends ConfigurationScopedParams {
+    roleName: string;
+    /** Entries in the role-rights DSL, for example `Catalog.Goods: @edit`. */
+    objects: string[];
+}
+
+export interface AgentSetRoleRightsResult {
+    roleName: string;
+    objectsAffected: number;
+    files: string[];
+}
+
 /** Exact configuration selector for support operations. */
 export interface AgentSupportConfigurationParams {
     configurationId: string;

@@ -686,6 +686,11 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.roles.setRights",
+        "title": "Agent: Установить права роли",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.getType",
         "title": "Agent: Получить тип объекта",
         "category": "CDT 41 Agent"

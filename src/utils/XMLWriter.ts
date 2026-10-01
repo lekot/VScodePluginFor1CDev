@@ -91,7 +91,7 @@ export class XMLWriter {
   /** Lists sibling names in the root ChildObjects scope or in one tabular section. */
   static async listNestedElementNames(
     filePath: string,
-    elementType: 'Attribute' | 'TabularSection',
+    elementType: 'Attribute' | 'TabularSection' | 'Command',
     scopedTabularSectionName?: string,
   ): Promise<string[]> {
     const { parsed } = await this.readUtf8AndParse(filePath);
@@ -128,7 +128,13 @@ export class XMLWriter {
         return;
       }
       for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-        if (matches(key, 'TabularSection')) {
+        if (matches(key, 'Command')) {
+          const commandName = extractName(child);
+          if (elementType === 'Command' && tabularScope === undefined && commandName) {
+            result.push(commandName);
+          }
+          visit(child, tabularScope);
+        } else if (matches(key, 'TabularSection')) {
           const sectionName = extractName(child);
           if (elementType === 'TabularSection' && !tabularScope && sectionName) {
             result.push(sectionName);

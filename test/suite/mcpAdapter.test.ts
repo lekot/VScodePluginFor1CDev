@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { AgentResult } from '../../src/agent/types';
 import {
+  MCP_OPERATION_CATALOG,
   MCP_TOOL_CATALOG,
   mapAgentResult,
   registerMcpTools,
@@ -49,16 +50,86 @@ function signal(aborted = false): AbortSignal {
 }
 
 suite('MCP adapter: tool contract', () => {
-  test('registerMcpTools preserves every catalog schema and annotation object', () => {
-    const tools = captureRegisteredTools(async () => ({ success: true }));
-    assert.strictEqual(tools.length, 78);
-    assert.deepStrictEqual(
-      tools.map(({ name, config }) => ({ name, annotations: config.annotations })),
-      MCP_TOOL_CATALOG.map(({ name, annotations }) => ({ name, annotations })),
-    );
-    for (const [index, registered] of tools.entries()) {
-      assert.strictEqual(registered.config.inputSchema, MCP_TOOL_CATALOG[index].inputSchema);
+  test('registerMcpTools exposes exactly seven compact schemas and annotation objects by default', () => {
+    const previous = process.env.CDT_MCP_LEGACY_TOOLS;
+    delete process.env.CDT_MCP_LEGACY_TOOLS;
+    try {
+      const tools = captureRegisteredTools(async () => ({ success: true }));
+      assert.strictEqual(tools.length, 7);
+      assert.deepStrictEqual(
+        tools.map(({ name, config }) => ({ name, annotations: config.annotations })),
+        MCP_TOOL_CATALOG.map(({ name, annotations }) => ({ name, annotations })),
+      );
+      for (const [index, registered] of tools.entries()) {
+        assert.strictEqual(registered.config.inputSchema, MCP_TOOL_CATALOG[index].inputSchema);
+      }
+    } finally {
+      if (previous !== undefined) {
+        process.env.CDT_MCP_LEGACY_TOOLS = previous;
+      }
     }
+  });
+
+  test('legacy opt-in registers all 79 operations alongside the seven compact tools', () => {
+    const previous = process.env.CDT_MCP_LEGACY_TOOLS;
+    process.env.CDT_MCP_LEGACY_TOOLS = '1';
+    try {
+      const tools = captureRegisteredTools(async () => ({ success: true }));
+      assert.strictEqual(tools.length, 86);
+      assert.deepStrictEqual(
+        tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
+        MCP_TOOL_CATALOG.map(({ name }) => name),
+      );
+      assert.deepStrictEqual(
+        tools.slice(MCP_TOOL_CATALOG.length).map(({ name }) => name),
+        MCP_OPERATION_CATALOG.map(({ name }) => name),
+      );
+      assert.ok(tools.some(({ name }) => name === 'cdt_roles_set_rights'));
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CDT_MCP_LEGACY_TOOLS;
+      } else {
+        process.env.CDT_MCP_LEGACY_TOOLS = previous;
+      }
+    }
+  });
+
+  test('cdt_catalog lists all operations and serializes all 79 input schemas', async () => {
+    const tools = captureRegisteredTools(async () => {
+      assert.fail('cdt_catalog must not dispatch Agent commands');
+    });
+    const catalog = tools.find(({ name }) => name === 'cdt_catalog')!;
+    const list = await catalog.handler({}, { signal: signal() });
+    const listed = list.structuredContent as unknown as {
+      success: boolean;
+      data: { operations: Array<{ name: string; profile: string }> };
+    };
+    assert.strictEqual(listed.success, true);
+    assert.deepStrictEqual(
+      listed.data.operations.map(({ name, profile }) => ({ name, profile })),
+      MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
+    );
+    assert.strictEqual(listed.data.operations.length, 79);
+
+    for (const operation of MCP_OPERATION_CATALOG) {
+      const result = await catalog.handler({ operation: operation.name }, { signal: signal() });
+      const described = result.structuredContent as unknown as {
+        success: boolean;
+        data?: { operation?: { name: string; inputSchema: Record<string, unknown> } };
+      };
+      assert.strictEqual(result.isError, undefined, `${operation.name}: serialization`);
+      assert.strictEqual(described.success, true, `${operation.name}: catalog result`);
+      assert.strictEqual(described.data?.operation?.name, operation.name);
+      assert.strictEqual(described.data?.operation?.inputSchema.type, 'object');
+      assert.ok(described.data?.operation?.inputSchema.properties, `${operation.name}: JSON Schema properties`);
+    }
+
+    const unknown = await catalog.handler({ operation: 'cdt_no_such_operation' }, { signal: signal() });
+    assert.strictEqual(unknown.isError, true);
+    assert.strictEqual(
+      (unknown.structuredContent as unknown as { code: string }).code,
+      'MCP_OPERATION_NOT_FOUND',
+    );
   });
 });
 
@@ -84,16 +155,17 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       calls.push({ command, args });
       return { success: true, data: { ok: true } };
     });
-    const cases: ReadonlyArray<readonly [string, Record<string, unknown>, string]> = [
-      ['cdt_list_objects', { type: 'Catalog', query: 'good' }, '1c-metadata-tree.agent.listObjects'],
-      ['cdt_cfe_list_projects', { configurationId: 'cfg' }, '1c-metadata-tree.agent.cfe.listProjects'],
-      ['cdt_cfe_borrow_object', { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods' }, '1c-metadata-tree.agent.cfe.borrowObject'],
-      ['cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],
-      ['cdt_debug_stop', { sessionId: 's1' }, '1c-metadata-tree.agent.debug.stop'],
-      ['cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],
-      ['cdt_skd_validate', { templatePath: 'template.xml' }, '1c-metadata-tree.agent.skd.validate'],
-      ['cdt_xdto_compare', { packageName: 'p', source: '<x/>' }, '1c-metadata-tree.agent.xdto.compare'],
+    const cases: ReadonlyArray<readonly [string, string, Record<string, unknown>, string]> = [
+      ['cdt_read', 'cdt_list_objects', { type: 'Catalog', query: 'good' }, '1c-metadata-tree.agent.listObjects'],
+      ['cdt_read', 'cdt_cfe_list_projects', { configurationId: 'cfg' }, '1c-metadata-tree.agent.cfe.listProjects'],
+      ['cdt_write_idempotent', 'cdt_cfe_borrow_object', { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods' }, '1c-metadata-tree.agent.cfe.borrowObject'],
+      ['cdt_write', 'cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],
+      ['cdt_write_live', 'cdt_debug_stop', { sessionId: 's1' }, '1c-metadata-tree.agent.debug.stop'],
+      ['cdt_read_live', 'cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],
+      ['cdt_write_live', 'cdt_skd_validate', { templatePath: 'template.xml' }, '1c-metadata-tree.agent.skd.validate'],
+      ['cdt_read', 'cdt_xdto_compare', { packageName: 'p', source: '<x/>' }, '1c-metadata-tree.agent.xdto.compare'],
       [
+        'cdt_write_live',
         'cdt_dump_external_processor',
         {
           srcPath: 'C:/work/Processor.epf',
@@ -103,6 +175,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
         '1c-metadata-tree.agent.dumpExternalProcessor',
       ],
       [
+        'cdt_write_live',
         'cdt_build_external_processor',
         {
           rootXmlPath: 'C:/work/Report_src/Report.xml',
@@ -111,13 +184,33 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
         '1c-metadata-tree.agent.buildExternalProcessor',
       ],
     ];
-    for (const [name, args] of cases) {
-      const target = tools.find((candidate) => candidate.name === name)!;
-      const result = await target.handler(args, { signal: signal() });
-      assert.strictEqual(result.isError, undefined, name);
+    for (const [toolName, operation, args] of cases) {
+      const target = tools.find((candidate) => candidate.name === toolName)!;
+      const result = await target.handler({ operation, arguments: args }, { signal: signal() });
+      assert.strictEqual(result.isError, undefined, operation);
     }
 
-    assert.deepStrictEqual(calls, cases.map(([, args, command]) => ({ command, args })));
+    assert.deepStrictEqual(calls, cases.map(([, , args, command]) => ({ command, args })));
+  });
+
+  test('invalid inner strict arguments fail before Agent dispatch', async () => {
+    let dispatched = false;
+    const tools = captureRegisteredTools(async () => {
+      dispatched = true;
+      return { success: true };
+    });
+    const write = tools.find(({ name }) => name === 'cdt_write')!;
+    const result = await write.handler({
+      operation: 'cdt_create_object',
+      arguments: { type: 'Catalog', name: 'Goods', unexpected: true },
+    }, { signal: signal() });
+
+    assert.strictEqual(dispatched, false);
+    assert.strictEqual(result.isError, true);
+    assert.strictEqual(
+      (result.structuredContent as unknown as { code: string }).code,
+      'INVALID_ARGUMENTS',
+    );
   });
 
   test('normalizes command exceptions without leaking a stack', async () => {
@@ -126,7 +219,9 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       error.stack = 'secret stack';
       throw error;
     });
-    const result = await tools[0].handler({}, { signal: signal() });
+    const result = await tools.find(({ name }) => name === 'cdt_read')!.handler({
+      operation: 'cdt_list_configurations', arguments: {},
+    }, { signal: signal() });
     assert.strictEqual(result.isError, true);
     assert.deepStrictEqual(result.structuredContent, {
       success: false,
@@ -143,7 +238,9 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       dispatched = true;
       return { success: true };
     });
-    const result = await tools[0].handler({}, { signal: signal(true) });
+    const result = await tools.find(({ name }) => name === 'cdt_read')!.handler({
+      operation: 'cdt_list_configurations', arguments: {},
+    }, { signal: signal(true) });
     assert.strictEqual(dispatched, false);
     assert.deepStrictEqual(result.structuredContent, {
       success: false,
@@ -158,7 +255,9 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     let finish!: (value: unknown) => void;
     const pending = new Promise<unknown>((resolve) => { finish = resolve; });
     const tools = captureRegisteredTools(async () => pending);
-    const invocation = tools[0].handler({}, { signal: controller.signal });
+    const invocation = tools.find(({ name }) => name === 'cdt_read')!.handler({
+      operation: 'cdt_list_configurations', arguments: {},
+    }, { signal: controller.signal });
     controller.abort();
     finish({ success: true, data: { mustNotEscape: true } });
     const result = await invocation;

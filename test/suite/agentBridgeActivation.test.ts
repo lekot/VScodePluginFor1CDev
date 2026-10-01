@@ -131,7 +131,7 @@ suite('activateAgentBridge', () => {
     assert.ok(stopCalled, 'bridge.stop() должен быть вызван при dispose');
   });
 
-  test('whitelist разрешает agent.xdto команды', async () => {
+  test('whitelist разрешает все публичные Agent command сегменты, включая role rights', async () => {
     const originalStart = AgentBridge.prototype.start;
     AgentBridge.prototype.start = async function () {
       return { port: 1, token: 'test' };
@@ -148,6 +148,9 @@ suite('activateAgentBridge', () => {
       const pattern = (bridge as unknown as { _commandPattern: RegExp })._commandPattern;
       assert.ok(pattern.test('1c-metadata-tree.agent.xdto.listPackages'));
       assert.ok(pattern.test('1c-metadata-tree.agent.xdto.exportXsd'));
+      assert.ok(pattern.test('1c-metadata-tree.agent.roles.setRights'));
+      assert.ok(!pattern.test('1c-metadata-tree.agent.roles.deleteAll'));
+      assert.ok(!pattern.test('1c-metadata-tree.agent.future.invoke'));
     } finally {
       AgentBridge.prototype.start = originalStart;
     }

@@ -5,7 +5,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import { XMLParser, XMLBuilder } from 'fast-xml-parser';
+import { XMLParser, XMLBuilder, XMLValidator } from 'fast-xml-parser';
 import { Logger } from '../utils/logger';
 import type { RightsMap, ObjectRights } from './models/roleModel';
 import { ALL_RIGHT_TYPES, type RightType } from './models/roleModel';
@@ -53,6 +53,9 @@ const RIGHTS_XML_BUILDER_OPTIONS = {
 
 /** Parsed Rights.xml as preserveOrder array: root is [ { Rights: contentArray } ]. */
 export type RightsDom = Array<Record<string, unknown>>;
+
+/** XML right names mapped to their desired values for one object. */
+export type NamedObjectRights = Readonly<Record<string, Readonly<Record<string, boolean>>>>;
 
 /**
  * Root attributes required on the Rights element so 1C XDTO maps children to typed properties.
@@ -208,6 +211,12 @@ export async function loadRightsXml(rightsPath: string, targetVersion?: string):
   }
   const existingProfile = requireDocumentWriteFormatProfile(xmlContent);
 
+  const validation = XMLValidator.validate(xmlContent);
+  if (validation !== true) {
+    const detail = typeof validation === 'object' ? validation.err.msg : 'Malformed XML';
+    throw new Error(`Некорректный XML в Rights.xml: ${detail}`);
+  }
+
   const parser = new XMLParser(RIGHTS_XML_PARSER_OPTIONS);
   let parsed: unknown;
   try {
@@ -238,6 +247,31 @@ function getRightsContentArray(dom: RightsDom): unknown[] {
     }
   }
   return [];
+}
+
+/** Return the default value applied to rights omitted from each root object in Rights.xml. */
+export function getSetForNewObjectsDefault(dom: RightsDom): boolean {
+  const content = getRightsContentArray(dom);
+  const entry = content.find((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {return false;}
+    return Object.keys(item as Record<string, unknown>).some((key) => {
+      const local = key.includes(':') ? key.split(':').pop()! : key;
+      return local === 'setForNewObjects';
+    });
+  });
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {return false;}
+  const key = Object.keys(entry as Record<string, unknown>).find((candidate) => {
+    const local = candidate.includes(':') ? candidate.split(':').pop()! : candidate;
+    return local === 'setForNewObjects';
+  });
+  if (!key) {return false;}
+  const value = (entry as Record<string, unknown>)[key];
+  const nodes = Array.isArray(value) ? value : [value];
+  for (const node of nodes) {
+    if (!node || typeof node !== 'object' || !('#text' in node)) {continue;}
+    return String((node as Record<string, unknown>)['#text']).trim().toLowerCase() === 'true';
+  }
+  return false;
 }
 
 function getTextFromNode(value: unknown): string {
@@ -396,17 +430,16 @@ function indexOfFirstRestrictionTemplate(content: unknown[]): number {
   return content.length;
 }
 
-/** Build new <object> element content for objectFullName and objectRights. When compactWrite is true, only rights with value true are added. */
+/** Build new <object> content, omitting rights that match the implicit default in compact mode. */
 function buildNewObjectContent(
   objectFullName: string,
-  objectRights: ObjectRights,
-  compactWrite: boolean
+  objectRights: Readonly<Record<string, boolean>>,
+  compactWrite: boolean,
+  defaultValue: boolean,
 ): unknown[] {
   const content: unknown[] = [{ name: [{ '#text': objectFullName }] }];
-  for (const rightType of ALL_RIGHT_TYPES) {
-    const xmlName = RIGHTS_TO_XML_NAME[rightType as RightType];
-    const value = objectRights[rightType as RightType];
-    if (compactWrite && !value) {continue;}
+  for (const [xmlName, value] of Object.entries(objectRights)) {
+    if (compactWrite && value === defaultValue) {continue;}
     content.push({
       right: [
         { name: [{ '#text': xmlName }] },
@@ -418,21 +451,44 @@ function buildNewObjectContent(
 }
 
 export interface MergeRightsOptions {
-  /** When true (default): write only true for simple rights; remove simple <right> when false; keep and only update <value> for rights with restrictionByCondition etc. */
+  /** When true (default), omit simple rights that match defaultValue and retain nested rights such as RLS. */
   compactWrite?: boolean;
+  /** Effective value when a right is absent. Defaults to false for the editor's legacy behavior. */
+  defaultValue?: boolean;
 }
 
 /**
  * Merge RoleModel.rights into the Rights DOM. Mutates dom.
  * For each objectFullName: find or create <object>, update/add only known rights; never remove restrictionByCondition, restrictionTemplate, or unknown rights.
- * When compactWrite is true: simple <right> only when value true (remove when false); rights with extra children only get <value> updated.
+ * When compactWrite is true: omit simple rights whose value equals defaultValue; rights with extra children only get <value> updated.
  */
 export function mergeRightsIntoDom(
   dom: RightsDom,
   rights: RightsMap,
   options?: MergeRightsOptions
 ): void {
+  const namedRights: Record<string, Record<string, boolean>> = {};
+  for (const [objectFullName, objectRights] of Object.entries(rights)) {
+    const values: Record<string, boolean> = {};
+    for (const rightType of ALL_RIGHT_TYPES) {
+      values[RIGHTS_TO_XML_NAME[rightType as RightType]] = objectRights[rightType as RightType];
+    }
+    namedRights[objectFullName] = values;
+  }
+  mergeNamedRightsIntoDom(dom, namedRights, options);
+}
+
+/**
+ * Merge an explicit allowlisted set of named rights into EDT Rights.xml.
+ * Rights omitted from the assignment are untouched, so newer or type-specific nodes survive.
+ */
+export function mergeNamedRightsIntoDom(
+  dom: RightsDom,
+  rights: NamedObjectRights,
+  options?: MergeRightsOptions
+): void {
   const compactWrite = options?.compactWrite !== false;
+  const defaultValue = options?.defaultValue ?? false;
   const content = getRightsContentArray(dom);
   const objectItems = getObjectItems(content);
   const insertBeforeIndex = indexOfFirstRestrictionTemplate(content);
@@ -448,7 +504,8 @@ export function mergeRightsIntoDom(
     }
 
     if (!objectContent) {
-      const newContent = buildNewObjectContent(objectFullName, objectRights, compactWrite);
+      if (compactWrite && !Object.values(objectRights).some((value) => value !== defaultValue)) {continue;}
+      const newContent = buildNewObjectContent(objectFullName, objectRights, compactWrite, defaultValue);
       const newItem: Record<string, unknown> = { object: newContent };
       content.splice(insertBeforeIndex, 0, newItem);
       objectItems.push({ index: insertBeforeIndex, content: newContent });
@@ -456,26 +513,65 @@ export function mergeRightsIntoDom(
       continue;
     }
 
-    for (const rightType of ALL_RIGHT_TYPES) {
-      const xmlName = RIGHTS_TO_XML_NAME[rightType as RightType];
-      const value = objectRights[rightType as RightType];
+    for (const [xmlName, value] of Object.entries(objectRights)) {
       const rightContent = findRightInObjectContent(objectContent, xmlName);
       if (rightContent) {
         if (!isSimpleRight(rightContent)) {
           setValueInRightContent(rightContent, value);
         } else {
-          if (compactWrite && !value) {
+          if (compactWrite && value === defaultValue) {
             removeRightFromObjectContent(objectContent, xmlName);
           } else {
             setValueInRightContent(rightContent, value);
           }
         }
       } else {
-        if (compactWrite && !value) {continue;}
+        if (compactWrite && value === defaultValue) {continue;}
         appendRightToObjectContent(objectContent, xmlName, value);
       }
     }
   }
+}
+
+/** Set the EDT default for child metadata attributes without changing other Rights.xml nodes. */
+export function ensureSetForAttributesByDefault(dom: RightsDom): void {
+  const content = getRightsContentArray(dom);
+  const existing = content.find((item) => item && typeof item === 'object'
+    && Object.keys(item as Record<string, unknown>).some((key) => {
+      const local = key.includes(':') ? key.split(':').pop()! : key;
+      return local === 'setForAttributesByDefault';
+    })) as Record<string, unknown> | undefined;
+  if (existing) {
+    const key = Object.keys(existing).find((candidate) => {
+      const local = candidate.includes(':') ? candidate.split(':').pop()! : candidate;
+      return local === 'setForAttributesByDefault';
+    });
+    if (key) {
+      const value = existing[key];
+      const nodes = Array.isArray(value) ? value : [];
+      let updatedText = false;
+      for (const node of nodes) {
+        if (node && typeof node === 'object' && '#text' in node) {
+          (node as Record<string, unknown>)['#text'] = 'true';
+          updatedText = true;
+          break;
+        }
+      }
+      if (!updatedText) {
+        existing[key] = [{ '#text': 'true' }];
+      }
+    }
+    return;
+  }
+
+  const setNewIndex = content.findIndex((item) => item && typeof item === 'object'
+    && Object.keys(item as Record<string, unknown>).some((key) => {
+      const local = key.includes(':') ? key.split(':').pop()! : key;
+      return local === 'setForNewObjects';
+    }));
+  content.splice(setNewIndex >= 0 ? setNewIndex + 1 : 0, 0, {
+    setForAttributesByDefault: [{ '#text': 'true' }],
+  });
 }
 
 /**
