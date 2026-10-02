@@ -70,12 +70,12 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('legacy opt-in registers all 79 operations alongside the seven compact tools', () => {
+  test('legacy opt-in registers all 82 operations alongside the seven compact tools', () => {
     const previous = process.env.CDT_MCP_LEGACY_TOOLS;
     process.env.CDT_MCP_LEGACY_TOOLS = '1';
     try {
       const tools = captureRegisteredTools(async () => ({ success: true }));
-      assert.strictEqual(tools.length, 86);
+      assert.strictEqual(tools.length, 89);
       assert.deepStrictEqual(
         tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
         MCP_TOOL_CATALOG.map(({ name }) => name),
@@ -94,7 +94,7 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('cdt_catalog lists all operations and serializes all 79 input schemas', async () => {
+  test('cdt_catalog lists all operations and serializes all 82 input schemas', async () => {
     const tools = captureRegisteredTools(async () => {
       assert.fail('cdt_catalog must not dispatch Agent commands');
     });
@@ -109,7 +109,7 @@ suite('MCP adapter: tool contract', () => {
       listed.data.operations.map(({ name, profile }) => ({ name, profile })),
       MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
     );
-    assert.strictEqual(listed.data.operations.length, 79);
+    assert.strictEqual(listed.data.operations.length, 82);
 
     for (const operation of MCP_OPERATION_CATALOG) {
       const result = await catalog.handler({ operation: operation.name }, { signal: signal() });
@@ -157,6 +157,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     });
     const cases: ReadonlyArray<readonly [string, string, Record<string, unknown>, string]> = [
       ['cdt_read', 'cdt_list_objects', { type: 'Catalog', query: 'good' }, '1c-metadata-tree.agent.listObjects'],
+      ['cdt_write', 'cdt_form_edit', { formPath: 'CommonForms/Editor/Ext/Form.xml', operations: [{ type: 'setElementIdentity', element: { id: '1' }, name: 'Renamed' }], dryRun: true }, '1c-metadata-tree.agent.forms.edit'],
       ['cdt_read', 'cdt_cfe_list_projects', { configurationId: 'cfg' }, '1c-metadata-tree.agent.cfe.listProjects'],
       ['cdt_write_idempotent', 'cdt_cfe_borrow_object', { extensionConfigurationId: 'cfg', sourceDotPath: 'Catalog.Goods' }, '1c-metadata-tree.agent.cfe.borrowObject'],
       ['cdt_write', 'cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],

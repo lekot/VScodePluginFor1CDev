@@ -42,6 +42,7 @@ import {
   openModuleInEditor,
   getFormEditorTitle,
 } from './formFileIo';
+import type { FormXmlSourceSnapshot } from './formXmlTextEditor';
 import {
   FormCommandEngine,
   type FormEditorCommand,
@@ -71,6 +72,8 @@ export interface MessageHandlerContext {
   document: FormEditorDocument;
   webviewPanel: vscode.WebviewPanel;
   documentModel: Map<string, FormModel>;
+  /** Raw source snapshots used for source-preserving writes and conflict detection. */
+  sourceSnapshots?: Map<string, FormXmlSourceSnapshot>;
   commandEngines?: Map<string, FormCommandEngine>;
   dirtyDocuments?: Set<string>;
   /** Notifies the editable custom-document provider about an in-memory edit. */
@@ -283,6 +286,13 @@ function getDocumentKey(ctx: MessageHandlerContext): string {
   return ctx.document.uri.toString();
 }
 
+function getSourceSnapshotMap(ctx: MessageHandlerContext): Map<string, FormXmlSourceSnapshot> {
+  if (!ctx.sourceSnapshots) {
+    ctx.sourceSnapshots = new Map<string, FormXmlSourceSnapshot>();
+  }
+  return ctx.sourceSnapshots;
+}
+
 function getCleanTitle(ctx: MessageHandlerContext): string {
   return getFormEditorTitle(ctx.document.uri.fsPath);
 }
@@ -338,7 +348,14 @@ export async function reloadFormAndSend(ctx: MessageHandlerContext): Promise<voi
     throw new Error(result.error);
   }
   const fileMissing = isFormParseFileMissing(result as never) || result.fileMissing;
-  ctx.documentModel.set(ctx.document.uri.toString(), result.model);
+  const documentKey = ctx.document.uri.toString();
+  ctx.documentModel.set(documentKey, result.model);
+  const sourceSnapshots = getSourceSnapshotMap(ctx);
+  if (result.sourceSnapshot) {
+    sourceSnapshots.set(documentKey, result.sourceSnapshot);
+  } else {
+    sourceSnapshots.delete(documentKey);
+  }
   resetCommandEngine(ctx);
   setDirtyState(ctx, false);
   ctx.webviewPanel.webview.postMessage({
@@ -358,8 +375,16 @@ export async function reloadFormAndSend(ctx: MessageHandlerContext): Promise<voi
 // ---------------------------------------------------------------------------
 
 async function handleLoad(ctx: MessageHandlerContext): Promise<void> {
-  const existing = ctx.documentModel.get(getDocumentKey(ctx));
+  const key = getDocumentKey(ctx);
+  const existing = ctx.documentModel.get(key);
   if (existing) {
+    const sourceSnapshots = getSourceSnapshotMap(ctx);
+    if (!sourceSnapshots.has(key)) {
+      const loaded = await loadFormModel(ctx.document.uri.fsPath);
+      if (!('error' in loaded) && loaded.sourceSnapshot) {
+        sourceSnapshots.set(key, loaded.sourceSnapshot);
+      }
+    }
     sendFormData(ctx, existing);
     updateTitleWithDirty(ctx, isDocumentDirty(ctx));
     return;
@@ -487,7 +512,9 @@ async function handleSave(
     return;
   }
   try {
-    await saveFormModel(formXmlPath, model);
+    const sourceSnapshots = getSourceSnapshotMap(ctx);
+    const nextSnapshot = await saveFormModel(formXmlPath, model, sourceSnapshots.get(key));
+    sourceSnapshots.set(key, nextSnapshot);
     commitPendingModuleTransaction(ctx);
     ctx.documentModel.set(key, model);
     ctx.commandEngines?.get(key)?.markSaved();

@@ -71,13 +71,15 @@ import type {
     SetPredefinedCotTypeParams,
 } from './types';
 import { FormsOperations } from './agentFormsOperations';
+import { AgentStaticFormOperations } from './agentStaticForms';
 import type {
-    FormsStartParams,
-    FormsExecParams,
-    FormsStopParams,
-    FormsShotParams,
-    FormsStatusParams,
+  FormsStartParams,
+  FormsExecParams,
+  FormsStopParams,
+  FormsShotParams,
+  FormsStatusParams,
 } from './agentFormsTypes';
+import type { StaticFormEditParams, StaticFormSelector, StaticFormValidateParams } from './agentStaticForms';
 import { SkdOperations } from './agentSkdOperations';
 import type {
     SkdCompileParams,
@@ -882,6 +884,29 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── Static Form.xml inspection and validation ──────────────────────────
+
+    const formsInspectCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.inspect',
+        async (params: StaticFormSelector) => runForConfiguration(params, 'read', undefined, (configRoot) =>
+            new AgentStaticFormOperations(configRoot).inspect(params)),
+    );
+
+    const formsValidateCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.validate',
+        async (params: StaticFormValidateParams) => runForConfiguration(params, 'read', undefined, (configRoot) =>
+            new AgentStaticFormOperations(configRoot).validate(params)),
+    );
+
+    const formsEditCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.edit',
+        async (params: StaticFormEditParams) => {
+            const dryRun = params?.dryRun === true;
+            return runForConfiguration(params, dryRun ? 'read' : 'write', dryRun ? undefined : 'agent.forms.edit', (configRoot) =>
+                new AgentStaticFormOperations(configRoot).edit(params));
+        },
+    );
+
     // ─── 1c-metadata-tree.agent.skd.compile ──────────────────────────────────
 
     const skdCompileCommand = vscode.commands.registerCommand(
@@ -1083,7 +1108,7 @@ export function registerAgentCommands(
         setPredefinedCharacteristicTypeCommand,
         getCharacteristicValueRegistersCommand,
         formsStartCommand, formsExecCommand, formsStopCommand,
-        formsShotCommand, formsStatusCommand,
+        formsShotCommand, formsStatusCommand, formsInspectCommand, formsValidateCommand, formsEditCommand,
         skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,
         listXdtoPackagesCommand, getXdtoPackageCommand, exportXdtoXsdCommand,
         importXdtoXsdCommand, createXdtoFromXsdCommand,

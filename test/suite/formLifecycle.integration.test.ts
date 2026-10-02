@@ -75,6 +75,7 @@ suite('form lifecycle integration', () => {
     const formXmlPath = path.join(tmpRoot, 'Catalogs', 'Orders', 'Forms', 'UiMainForm', 'Ext', 'Form.xml');
     try {
       await fs.promises.mkdir(path.dirname(formXmlPath), { recursive: true });
+      await fs.promises.writeFile(path.join(tmpRoot, 'Configuration.xml'), '<Configuration/>', 'utf-8');
       await fs.promises.writeFile(
         formXmlPath,
         `<?xml version="1.0" encoding="UTF-8"?>

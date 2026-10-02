@@ -26,7 +26,8 @@ import {
 import { FormCommandEngine } from './formCommandEngine';
 import { findElementById } from './formTreeOperations';
 import { getWebviewHtml } from './formWebviewHtml';
-import { getFormEditorTitle, loadFormModel, openModuleInEditor, saveFormModel } from './formFileIo';
+import { getFormEditorTitle, loadFormModel, openModuleInEditor, saveFormModel, saveFormModelAs } from './formFileIo';
+import { createFormXmlSourceSnapshot, type FormXmlSourceSnapshot } from './formXmlTextEditor';
 import { Logger } from '../utils/logger';
 import { runConfigurationMutation } from '../services/configurationSession/configurationMutationGateway';
 import { assertGenericFormMutationAllowed } from './cfeAdoptedFormGuard';
@@ -53,6 +54,11 @@ export class FormEditorDocument implements vscode.CustomDocument {
 interface FormEditorBackupPayload {
   version: 1;
   model: FormModel;
+  sourceSnapshot?: {
+    sourceBase64: string;
+    sha256: string;
+    baseline: FormModel;
+  };
   pendingModuleTransaction?: PendingFormModuleTransaction;
 }
 
@@ -101,6 +107,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
   >();
   readonly onDidChangeCustomDocument = this.changeEmitter.event;
   private documentModel = new Map<string, FormModel>();
+  private sourceSnapshots = new Map<string, FormXmlSourceSnapshot>();
   private commandEngines = new Map<string, FormCommandEngine>();
   private dirtyDocuments = new Set<string>();
   private pendingModuleTransactions = new Map<string, PendingFormModuleTransaction>();
@@ -137,6 +144,19 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       }
       const key = uri.toString();
       this.documentModel.set(key, payload.model);
+      if (payload.sourceSnapshot) {
+        const source = Buffer.from(payload.sourceSnapshot.sourceBase64, 'base64');
+        const snapshot = createFormXmlSourceSnapshot(source, payload.sourceSnapshot.baseline);
+        if (snapshot.sha256 !== payload.sourceSnapshot.sha256) {
+          throw new Error(`Unsupported Form Editor backup source snapshot: ${openContext.backupId}`);
+        }
+        this.sourceSnapshots.set(key, snapshot);
+      } else {
+        const loaded = await loadFormModel(uri.fsPath);
+        if (!('error' in loaded) && loaded.sourceSnapshot) {
+          this.sourceSnapshots.set(key, loaded.sourceSnapshot);
+        }
+      }
       this.dirtyDocuments.add(key);
       if (payload.pendingModuleTransaction) {
         this.pendingModuleTransactions.set(key, payload.pendingModuleTransaction);
@@ -162,6 +182,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       document,
       webviewPanel,
       documentModel: this.documentModel,
+      sourceSnapshots: this.sourceSnapshots,
       commandEngines: this.commandEngines,
       dirtyDocuments: this.dirtyDocuments,
       onDidChangeDocument: () => {
@@ -230,6 +251,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     const key = documentUri.toString();
     this.contextByDocument.delete(key);
     this.documentModel.delete(key);
+    this.sourceSnapshots.delete(key);
     this.commandEngines.delete(key);
     this.dirtyDocuments.delete(key);
     this.pendingModuleTransactions.delete(key);
@@ -256,9 +278,10 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
       throw new Error('Нет данных формы для сохранения.');
     }
     await assertGenericFormMutationAllowed(document.uri.fsPath);
+    let savedSnapshot: FormXmlSourceSnapshot | undefined;
     await runConfigurationMutation(document.uri.fsPath, 'ui.form.save', async () => {
       try {
-        await saveFormModel(document.uri.fsPath, model);
+        savedSnapshot = await saveFormModel(document.uri.fsPath, model, this.sourceSnapshots.get(key));
       } catch (error) {
         const ctx = this.contextByDocument.get(key);
         if (ctx) {
@@ -271,6 +294,9 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
         throw error;
       }
     });
+    if (savedSnapshot) {
+      this.sourceSnapshots.set(key, savedSnapshot);
+    }
     const ctx = this.contextByDocument.get(key);
     if (ctx) {
       commitPendingModuleTransaction(ctx);
@@ -314,7 +340,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     await runConfigurationMutation(document.uri.fsPath, 'ui.form.saveAs', async () => {
       try {
         await fs.promises.mkdir(path.dirname(destination.fsPath), { recursive: true });
-        await saveFormModel(destination.fsPath, model);
+        await saveFormModelAs(destination.fsPath, model);
         if (transaction && destinationModulePath && pendingModuleContent !== undefined) {
           if (path.normalize(destinationModulePath) === path.normalize(transaction.modulePath)) {
             this.pendingModuleTransactions.delete(key);
@@ -374,6 +400,11 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
         throw new Error(result.error);
       }
       this.documentModel.set(key, result.model);
+      if (result.sourceSnapshot) {
+        this.sourceSnapshots.set(key, result.sourceSnapshot);
+      } else {
+        this.sourceSnapshots.delete(key);
+      }
       this.commandEngines.delete(key);
       this.dirtyDocuments.delete(key);
     });
@@ -396,6 +427,14 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     const payload: FormEditorBackupPayload = {
       version: 1,
       model,
+      sourceSnapshot: (() => {
+        const snapshot = this.sourceSnapshots.get(document.uri.toString());
+        return snapshot ? {
+          sourceBase64: snapshot.source.toString('base64'),
+          sha256: snapshot.sha256,
+          baseline: snapshot.baseline,
+        } : undefined;
+      })(),
       pendingModuleTransaction: this.pendingModuleTransactions.get(document.uri.toString()),
     };
     await fs.promises.writeFile(backupPath, JSON.stringify(payload), 'utf8');
@@ -411,6 +450,7 @@ export class FormEditorProvider implements vscode.CustomEditorProvider<FormEdito
     this.changeEmitter.dispose();
     this.contextByDocument.clear();
     this.documentModel.clear();
+    this.sourceSnapshots.clear();
     this.commandEngines.clear();
     this.dirtyDocuments.clear();
     this.pendingModuleTransactions.clear();

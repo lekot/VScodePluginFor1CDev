@@ -33,7 +33,7 @@
 - 📦 **Расширения (CFE) и внешние файлы (EPF/ERF)**:
   - Создание расширений, заимствование объектов и форм, структурные BSL-перехваты (`&Вместо`, `&Перед`, `&После`).
   - Разбор и сборка `.cf`, а также внешних отчетов и обработок (`.epf` / `.erf`) в XML и обратно.
-- 🤖 **Agent API и MCP**: 79 runtime-операций Agent API для AI-агентов; MCP публикует семь компактных tools (редактирование метаданных, права ролей, отладка, DSL для СКД, тестирование форм через Playwright).
+- 🤖 **Agent API и MCP**: 82 runtime-операции Agent API для AI-агентов; MCP публикует семь компактных tools (редактирование метаданных, прав ролей и Form.xml, отладка, DSL для СКД и тестирование форм через Playwright).
 
 <img width="1407" height="929" alt="image" src="https://github.com/user-attachments/assets/b654c166-4e98-4429-a309-80ebe4f9ab16" />
 <img width="1092" height="450" alt="image" src="https://github.com/user-attachments/assets/755d5a95-4088-4567-89ba-8d6ffe38d670" />
@@ -43,7 +43,7 @@
 
 ### Agent API (для AI-агентов)
 
-CDT 41 предоставляет **79** runtime-операций Agent API для программного управления метаданными, ролями, CFE-проектами, поддержкой конфигурации, EPF/ERF, отладкой, формами, СКД и XDTO-пакетами 1С. Основной способ подключения — встроенный Streamable HTTP MCP endpoint; команды также доступны через `vscode.commands.executeCommand`, а legacy HTTP bridge сохранён только для совместимости. AI-агент (Claude Code, Copilot, MCP-клиент) может:
+CDT 41 предоставляет **82** runtime-операции Agent API для программного управления метаданными, ролями, CFE-проектами, поддержкой конфигурации, EPF/ERF, отладкой, формами, СКД и XDTO-пакетами 1С. Основной способ подключения — встроенный Streamable HTTP MCP endpoint; команды также доступны через `vscode.commands.executeCommand`, а legacy HTTP bridge сохранён только для совместимости. AI-агент (Claude Code, Copilot, MCP-клиент) может:
 - **CRUD метаданных** (12 команд) — создавать объекты, добавлять реквизиты/ТЧ/колонки, читать/писать свойства, переименовывать и удалять
 - **Отладка** (15 команд) — запускать отладочную сессию (thinClient / webServer), ставить breakpoints, читать переменные, шагать по коду, фильтровать исключения
 - **Привязки** (2 команды) — resolveBinding (фикстура→база), listBindings (все привязки с базами)
@@ -53,6 +53,7 @@ CDT 41 предоставляет **79** runtime-операций Agent API дл
 - **Типы** (2 команды) — getType / setType для реквизитов и колонок ТЧ
 - **Интерфейс команд подсистем** (4 команды) — getSubsystemCommandInterface, setSubsystemCommandVisibility, setSubsystemCommandOrder, setSubsystemSubsystemsOrder
 - **Предопределённые характеристики** (4 команды) — listPredefinedCharacteristics, getPredefinedCharacteristicType, setPredefinedCharacteristicType, getCharacteristicValueRegisters
+- **Формы конфигурации** (3 команды) — статически читать и проверять `Form.xml`, безопасно редактировать его с diff предпросмотром и CAS по SHA-256 ревизии без запуска 1С
 - **Формы enterprise** (5 команд, **новое**) — agent.forms.{start, exec, stop, shot, status}: Playwright + ibsrv внутри расширения, без внешних скриптов
 - **СКД** (4 команды, **новое**) — agent.skd.{compile, info, edit, validate}: PowerShell-скрипты внутри расширения, JSON DSL → Template.xml, 26 операций редактирования
 - **XDTO-пакеты** (7 команд, **новое**) — agent.xdto.{listPackages, getPackage, exportXsd, importXsd, createFromXsd, compare, merge}: чтение Package.bin, экспорт/импорт XSD, создание пакетов из XSD, сравнение и объединение XDTO/XSD/XML/BIN
@@ -61,7 +62,7 @@ CDT 41 предоставляет **79** runtime-операций Agent API дл
 
 Мутации Designer XML поддерживаются для форматов `2.17`–`2.21` (платформы 8.3.24–8.5.1): CRUD берёт точную версию из корня `Configuration.xml`, применяет версионные свойства и сохраняет её в новых дочерних XML. Выгрузки `2.13`–`2.16`, XML без версии и неизвестные будущие форматы можно читать, но запись в них блокируется до изменения файлов — без автоматической подмены версии.
 
-MCP-клиент находит endpoint через discovery-файл `.vscode/cdt-agent-bridge.json`: URL находится в `mcp.url`, Bearer token — в верхнеуровневом поле `token`. По умолчанию MCP публикует семь компактных tools: шесть диспетчеров (`cdt_read`, `cdt_write`, `cdt_write_idempotent`, `cdt_read_live`, `cdt_write_live`, `cdt_verify_live`) и `cdt_catalog`. Каждый диспетчер принимает `{ operation, arguments }`, где `operation` выбирает одну из **79 операций**, а `arguments` содержит её параметры. `cdt_catalog({})` перечисляет операции и профили; `cdt_catalog({ operation: "cdt_roles_set_rights" })` возвращает схему выбранной операции. Отдельные tools для каждой операции включаются только при запуске расширения с `CDT_MCP_LEGACY_TOOLS=1`; legacy `/command` остаётся доступен для совместимости. Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`.
+MCP-клиент находит endpoint через discovery-файл `.vscode/cdt-agent-bridge.json`: URL находится в `mcp.url`, Bearer token — в верхнеуровневом поле `token`. По умолчанию MCP публикует семь компактных tools: шесть диспетчеров (`cdt_read`, `cdt_write`, `cdt_write_idempotent`, `cdt_read_live`, `cdt_write_live`, `cdt_verify_live`) и `cdt_catalog`. Каждый диспетчер принимает `{ operation, arguments }`, где `operation` выбирает одну из **82 операций**, а `arguments` содержит её параметры. `cdt_catalog({})` перечисляет операции и профили; `cdt_catalog({ operation: "cdt_roles_set_rights" })` возвращает схему выбранной операции. Отдельные tools для каждой операции включаются только при запуске расширения с `CDT_MCP_LEGACY_TOOLS=1`; legacy `/command` остаётся доступен для совместимости. Объекты адресуются через dot-path: `Catalog.Товары`, `Document.ПриходТовара.Attribute.Склад`.
 
 Для MCP сначала создайте роль через `cdt_write({ operation: "cdt_create_object", arguments: { type: "Role", name: "МенеджерТоваров", synonym: "Менеджер товаров" } })`, затем вызовите `cdt_write` для задания прав:
 

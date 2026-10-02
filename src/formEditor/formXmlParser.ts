@@ -211,7 +211,12 @@ function parseCommandsContent(content: unknown[] | undefined): FormCommand[] {
     const cmdContent = getByLocalName(o, 'Command');
     if (cmdContent === undefined) {continue;}
     const c = Array.isArray(cmdContent) ? cmdContent : [cmdContent];
-    const { name: n, id } = getAttrsFromContent(c);
+    const contentAttrs = getAttrsFromContent(c);
+    const wrapperAttrs = o[':@'] && typeof o[':@'] === 'object' && !Array.isArray(o[':@'])
+      ? o[':@'] as Record<string, unknown>
+      : undefined;
+    const n = typeof wrapperAttrs?.['@_name'] === 'string' ? wrapperAttrs['@_name'] : contentAttrs.name;
+    const id = typeof wrapperAttrs?.['@_id'] === 'string' ? wrapperAttrs['@_id'] : contentAttrs.id;
     const properties: Record<string, unknown> = {};
     for (const prop of c) {
       if (!prop || typeof prop !== 'object') {continue;}
@@ -446,6 +451,16 @@ export async function parseFormXml(
     return { error: `Не удалось прочитать файл: ${err?.message ?? String(readErr)}` } as FormParseError;
   }
 
+  return parseFormXmlContent(xmlContent, formXmlPath, allowFileMissing);
+}
+
+/** Parse already-read Form.xml text. Keeps file I/O separate for source snapshots. */
+export function parseFormXmlContent(
+  xmlContent: string,
+  formXmlPath = '<memory>',
+  allowFileMissing = false,
+): FormParseResult {
+
   if (!xmlContent || xmlContent.trim() === '') {
     if (allowFileMissing) {
       return { fileMissing: true, model: createEmptyFormModel() } as FormParseFileMissing;
@@ -463,7 +478,7 @@ export async function parseFormXml(
   }
 
   // Extract version attribute from root <Form> element
-  const versionMatch = /<Form[^>]*\sversion="([^"]+)"/.exec(xmlContent);
+  const versionMatch = /<Form[^>]*\sversion="([^"]+)"/.exec(xmlContent.replace(/^\uFEFF/, ''));
   const formVersion = versionMatch ? versionMatch[1] : undefined;
 
   let parsed: unknown;

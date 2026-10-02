@@ -1,29 +1,48 @@
 /**
  * File I/O operations for the form editor.
- * Encapsulates loading, saving, and BSL module access for Ext/Form.xml.
+ * Encapsulates loading, source-preserving saving, and BSL module access for Ext/Form.xml.
  */
 
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { AtomicFileStorage, hashContent } from '../services/configurationSession/atomicFileStorage';
 import { Logger } from '../utils/logger';
-import { parseFormXml } from './formXmlParser';
-import { isFormParseError, isFormParseFileMissing } from './formModel';
+import { parseFormXmlContent } from './formXmlParser';
+import { createEmptyFormModel, isFormParseError } from './formModel';
 import type { FormModel } from './formModel';
 import { writeFormXml } from './formXmlWriter';
 import { parseBslModuleProcedures } from './bslModuleParser';
 import { getFormPaths } from './formPaths';
 import { getFormEditorTitle } from './formEditorTitle';
+import {
+  applyFormXmlEdits,
+  createFormXmlSourceSnapshot,
+  diffFormModels,
+  FormXmlEditError,
+  type FormXmlSourceSnapshot,
+} from './formXmlTextEditor';
 
 export interface LoadFormResult {
   model: FormModel;
   formXmlPath: string;
   modulePath: string;
   fileMissing?: boolean;
+  sourceSnapshot?: FormXmlSourceSnapshot;
+}
+
+export class FormXmlExternalChangeError extends Error {
+  readonly code = 'FORM_XML_EXTERNAL_CHANGE';
+
+  constructor(formXmlPath: string) {
+    super(`Form.xml изменился после загрузки; сохранение отменено: ${formXmlPath}`);
+    this.name = 'FormXmlExternalChangeError';
+  }
 }
 
 /**
- * Load form model from disk.
- * Returns LoadFormResult on success, or { error: string } on parse failure.
+ * Load form model and raw source from one read, so the snapshot hash always describes
+ * the exact bytes that produced the UI baseline.
  */
 export async function loadFormModel(
   formXmlFsPath: string
@@ -31,27 +50,122 @@ export async function loadFormModel(
   const formDirectory = path.dirname(path.dirname(formXmlFsPath));
   const modulePath = path.join(formDirectory, 'Ext', 'Form', 'Module.bsl');
 
-  const result = await parseFormXml(formXmlFsPath, true);
-  if (isFormParseError(result)) {
-    return { error: (result as { error: string }).error };
+  let source: Buffer;
+  try {
+    source = await fs.readFile(formXmlFsPath);
+  } catch (readErr) {
+    const err = readErr as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') {
+      return {
+        model: createEmptyFormModel(),
+        formXmlPath: formXmlFsPath,
+        modulePath,
+        fileMissing: true,
+      };
+    }
+    Logger.error(`Failed to read Form.xml: ${formXmlFsPath}`, readErr);
+    return { error: `Не удалось прочитать файл: ${err.message ?? String(readErr)}` };
   }
 
-  const model = (result as { model: FormModel }).model;
-  const fileMissing = isFormParseFileMissing(result) || undefined;
+  const text = source.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(source)) {
+    return { error: 'Form.xml не является корректным UTF-8; сохранение отменено.' };
+  }
+  const result = parseFormXmlContent(text, formXmlFsPath);
+  if (isFormParseError(result)) {
+    return { error: result.error };
+  }
 
   return {
-    model,
+    model: result.model,
     formXmlPath: formXmlFsPath,
     modulePath,
-    fileMissing,
+    sourceSnapshot: createFormXmlSourceSnapshot(source, result.model),
   };
 }
 
 /**
- * Save form model to disk (writes Ext/Form.xml).
+ * Save an existing form with source splices and compare-and-swap. A source snapshot is
+ * required for existing files; new files continue through the established writer.
  */
-export async function saveFormModel(formXmlFsPath: string, model: FormModel): Promise<void> {
+export async function saveFormModel(
+  formXmlFsPath: string,
+  model: FormModel,
+  sourceSnapshot?: FormXmlSourceSnapshot,
+): Promise<FormXmlSourceSnapshot> {
+  if (!sourceSnapshot) {
+    const exists = await fs.access(formXmlFsPath).then(() => true, () => false);
+    if (exists) {
+      throw new FormXmlEditError('Для сохранения существующего Form.xml передайте снимок из loadFormModel() третьим параметром.');
+    }
+    await writeFormXml(formXmlFsPath, model);
+    const written = await fs.readFile(formXmlFsPath);
+    const parsed = parseFormXmlContent(written.toString('utf8'), formXmlFsPath);
+    if (isFormParseError(parsed)) {
+      throw new FormXmlEditError(`Записанный Form.xml не удалось проверить: ${parsed.error}`);
+    }
+    return createFormXmlSourceSnapshot(written, parsed.model);
+  }
+
+  const edits = diffFormModels(sourceSnapshot.baseline, model);
+  if (edits.length === 0) {
+    const current = await fs.readFile(formXmlFsPath).catch(() => undefined);
+    if (!current || hashContent(current) !== sourceSnapshot.sha256) {
+      throw new FormXmlExternalChangeError(formXmlFsPath);
+    }
+    return createFormXmlSourceSnapshot(current, model);
+  }
+
+  const outputText = applyFormXmlEdits(sourceSnapshot.text, edits);
+  const parsed = parseFormXmlContent(outputText, formXmlFsPath);
+  if (isFormParseError(parsed)) {
+    throw new FormXmlEditError(`Изменённый Form.xml не прошёл проверку: ${parsed.error}`);
+  }
+  const output = Buffer.from(outputText, 'utf8');
+  const rootPath = await findConfigurationRoot(formXmlFsPath);
+  const outcome = await new AtomicFileStorage(rootPath).replace(
+    formXmlFsPath,
+    output,
+    sourceSnapshot.sha256,
+  );
+  if (outcome.status === 'conflict') {
+    if (outcome.code === 'STALE_TARGET_HASH') {
+      throw new FormXmlExternalChangeError(formXmlFsPath);
+    }
+    throw new FormXmlEditError(`Сохранение Form.xml отклонено: ${outcome.message}`);
+  }
+  if (outcome.status !== 'committed') {
+    throw new Error(`Не удалось атомарно сохранить Form.xml: ${outcome.message}`);
+  }
+  return createFormXmlSourceSnapshot(output, parsed.model);
+}
+
+/** Save As creates a separate file through the established full-form writer. */
+export async function saveFormModelAs(formXmlFsPath: string, model: FormModel): Promise<void> {
   await writeFormXml(formXmlFsPath, model);
+}
+
+async function findConfigurationRoot(formXmlFsPath: string): Promise<string> {
+  let cursor = path.dirname(path.resolve(formXmlFsPath));
+  let reachedFilesystemRoot = false;
+  while (!reachedFilesystemRoot) {
+    const designerMarker = await fs.access(path.join(cursor, 'Configuration.xml')).then(() => true, () => false);
+    const edtMarker = await fs.access(path.join(cursor, 'src', 'Configuration', 'Configuration.mdo')).then(() => true, () => false);
+    if (designerMarker || edtMarker) {
+      return cursor;
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      reachedFilesystemRoot = true;
+    } else {
+      cursor = parent;
+    }
+  }
+  const segments = path.resolve(formXmlFsPath).split(path.sep).map((segment) => segment.toLocaleLowerCase());
+  if (segments.some((segment) => segment === 'ext' || segment === 'forms' || segment === 'src')) {
+    throw new FormXmlEditError(`Не найдена корневая метка конфигурации для Form.xml: ${formXmlFsPath}`);
+  }
+  return path.dirname(path.resolve(formXmlFsPath));
 }
 
 /**

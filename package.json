@@ -876,6 +876,21 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.forms.inspect",
+        "title": "Agent: Прочитать статическую форму",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.forms.validate",
+        "title": "Agent: Проверить статическую форму",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.forms.edit",
+        "title": "Agent: Изменить статическую форму",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.skd.info",
         "title": "Agent: Информация о СКД",
         "category": "CDT 41 Agent"
