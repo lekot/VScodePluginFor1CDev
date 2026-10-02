@@ -533,47 +533,6 @@ export function mergeNamedRightsIntoDom(
   }
 }
 
-/** Set the EDT default for child metadata attributes without changing other Rights.xml nodes. */
-export function ensureSetForAttributesByDefault(dom: RightsDom): void {
-  const content = getRightsContentArray(dom);
-  const existing = content.find((item) => item && typeof item === 'object'
-    && Object.keys(item as Record<string, unknown>).some((key) => {
-      const local = key.includes(':') ? key.split(':').pop()! : key;
-      return local === 'setForAttributesByDefault';
-    })) as Record<string, unknown> | undefined;
-  if (existing) {
-    const key = Object.keys(existing).find((candidate) => {
-      const local = candidate.includes(':') ? candidate.split(':').pop()! : candidate;
-      return local === 'setForAttributesByDefault';
-    });
-    if (key) {
-      const value = existing[key];
-      const nodes = Array.isArray(value) ? value : [];
-      let updatedText = false;
-      for (const node of nodes) {
-        if (node && typeof node === 'object' && '#text' in node) {
-          (node as Record<string, unknown>)['#text'] = 'true';
-          updatedText = true;
-          break;
-        }
-      }
-      if (!updatedText) {
-        existing[key] = [{ '#text': 'true' }];
-      }
-    }
-    return;
-  }
-
-  const setNewIndex = content.findIndex((item) => item && typeof item === 'object'
-    && Object.keys(item as Record<string, unknown>).some((key) => {
-      const local = key.includes(':') ? key.split(':').pop()! : key;
-      return local === 'setForNewObjects';
-    }));
-  content.splice(setNewIndex >= 0 ? setNewIndex + 1 : 0, 0, {
-    setForAttributesByDefault: [{ '#text': 'true' }],
-  });
-}
-
 /**
  * Unescape &quot; to " so 1C receives literal quotes in condition text.
  * Single global replace is O(n) and safe for Rights.xml (no &quot; in attribute values).

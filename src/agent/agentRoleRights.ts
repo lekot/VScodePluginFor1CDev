@@ -1,25 +1,22 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { XMLBuilder, XMLParser, XMLValidator } from 'fast-xml-parser';
+import { XMLParser } from 'fast-xml-parser';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { getMetadataTypeDescriptorByRootTag } from '../constants/metadataTypeDescriptors';
 import { ConfigFormat } from '../parsers/formatDetector';
 import { EdtParser } from '../parsers/edtParser';
+import { MetadataType } from '../models/treeNode';
 import {
   assertNoSymlinkSegments,
   assertPathWithinRoot,
 } from '../services/configurationSession/pathBoundary';
 import { hashContent } from '../services/configurationSession/atomicFileStorage';
 import type { MutationExpectation, MutationPlan } from '../services/configurationSession/mutationPlan';
-import { MetadataType } from '../models/treeNode';
-import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { validateElementName } from '../utils/elementNameValidator';
 import { XMLWriter } from '../utils/XMLWriter';
+import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import {
-  ensureSetForAttributesByDefault,
   getSetForNewObjectsDefault,
-  getRightsPath,
-  listRightsXmlCandidatePaths,
   loadRightsXml,
   mergeNamedRightsIntoDom,
   serializeRightsDomToXml,
@@ -136,15 +133,6 @@ const ROOT_RIGHTS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   ],
 };
 
-const ATTRIBUTE_PARENT_TYPES = new Set([
-  'Catalog', 'Document', 'ExchangePlan', 'ChartOfAccounts', 'ChartOfCharacteristicTypes',
-  'ChartOfCalculationTypes', 'Task', 'BusinessProcess', 'InformationRegister',
-  'AccumulationRegister', 'AccountingRegister', 'CalculationRegister', 'DataProcessor', 'Report',
-]);
-const TABULAR_SECTION_PARENT_TYPES = new Set([
-  'Catalog', 'Document', 'ExchangePlan', 'ChartOfAccounts', 'ChartOfCharacteristicTypes',
-  'ChartOfCalculationTypes', 'Task', 'BusinessProcess', 'DataProcessor', 'Report',
-]);
 const INTERACTIVE_DELETE_RIGHTS = new Set([
   'InteractiveSetDeletionMark', 'InteractiveClearDeletionMark', 'InteractiveDelete',
   'InteractiveDeleteMarked', 'InteractiveDeletePredefinedData',
@@ -346,11 +334,7 @@ function getConfigurationName(xml: string): string {
   return textValue(fieldValue(properties, 'Name'));
 }
 
-function makeChildRights(parentRights: Readonly<Record<string, boolean>>): Record<string, boolean> {
-  return { View: Boolean(parentRights.View), Edit: Boolean(parentRights.Edit) };
-}
-
-async function expandChildRights(
+async function expandCommandRights(
   configRoot: string,
   format: ConfigFormat,
   entries: readonly ParsedRoleRightsEntry[],
@@ -379,23 +363,6 @@ async function expandChildRights(
     }
     try {
       requireDocumentWriteFormatProfile(xml);
-      if (ATTRIBUTE_PARENT_TYPES.has(entry.type)) {
-        const attributes = await XMLWriter.listNestedElementNames(metadataPath, 'Attribute');
-        for (const name of attributes) {
-          assignments[`${entry.objectName}.Attribute.${name}`] = makeChildRights(entry.rights);
-        }
-      }
-      if (TABULAR_SECTION_PARENT_TYPES.has(entry.type)) {
-        const sections = await XMLWriter.listNestedElementNames(metadataPath, 'TabularSection');
-        for (const sectionName of sections) {
-          const sectionPath = `${entry.objectName}.TabularSection.${sectionName}`;
-          assignments[sectionPath] = makeChildRights(entry.rights);
-          const columns = await XMLWriter.listNestedElementNames(metadataPath, 'Attribute', sectionName);
-          for (const columnName of columns) {
-            assignments[`${sectionPath}.Attribute.${columnName}`] = makeChildRights(entry.rights);
-          }
-        }
-      }
       const commands = await XMLWriter.listNestedElementNames(metadataPath, 'Command');
       for (const commandName of commands) {
         assignments[`${entry.objectName}.Command.${commandName}`] = {
@@ -469,234 +436,6 @@ function findElementRange(xml: string, target: string, directParent?: string): E
   return undefined;
 }
 
-const RIGHTS_XML_PARSER_OPTIONS = {
-  ignoreAttributes: false,
-  attributeNamePrefix: '@_',
-  textNodeName: '#text',
-  preserveOrder: true,
-  trimValues: true,
-  ignoreNameSpace: false,
-  removeNSPrefix: false,
-  parseTagValue: false,
-  processEntities: true,
-  commentPropName: '#comment',
-  cdataTagName: '__cdata',
-};
-
-const RIGHTS_XML_BUILDER_OPTIONS = {
-  ignoreAttributes: false,
-  attributeNamePrefix: '@_',
-  textNodeName: '#text',
-  preserveOrder: true,
-  format: true,
-  indentBy: '\t',
-  suppressEmptyNode: false,
-  commentPropName: '#comment',
-  cdataTagName: '__cdata',
-};
-
-type OrderedNode = Record<string, unknown>;
-
-function orderedChildren(node: unknown, name: string): unknown[] | undefined {
-  if (!node || typeof node !== 'object' || Array.isArray(node)) {return undefined;}
-  for (const [key, value] of Object.entries(node as OrderedNode)) {
-    if (key !== ':@' && localName(key) === name) {
-      return Array.isArray(value) ? value : [value];
-    }
-  }
-  return undefined;
-}
-
-function orderedText(value: unknown): string {
-  if (!Array.isArray(value)) {return textValue(value);}
-  for (const node of value) {
-    if (!node || typeof node !== 'object') {continue;}
-    const text = (node as OrderedNode)['#text'];
-    if (text !== undefined) {return String(text).trim();}
-    for (const [key, child] of Object.entries(node as OrderedNode)) {
-      if (key !== ':@' && key !== '#comment') {
-        const nested = orderedText(child);
-        if (nested) {return nested;}
-      }
-    }
-  }
-  return '';
-}
-
-function orderedEntry(name: string, children: unknown[]): OrderedNode {
-  return { [name]: children };
-}
-
-function orderedRightNode(name: string, value: boolean): OrderedNode {
-  return orderedEntry(name, [{ '#text': value ? 'true' : 'false' }]);
-}
-
-function writeOrderedText(content: unknown[], value: string): boolean {
-  for (const item of content) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {continue;}
-    const record = item as OrderedNode;
-    if (Object.prototype.hasOwnProperty.call(record, '#text')) {
-      record['#text'] = value;
-      return true;
-    }
-  }
-  return false;
-}
-
-function updateOrderedRightValue(node: OrderedNode, rightName: string, value: boolean): void {
-  const content = orderedChildren(node, rightName);
-  if (!content) {return;}
-  const valueKey = content
-    .flatMap((entry) => entry && typeof entry === 'object' && !Array.isArray(entry)
-      ? Object.keys(entry as OrderedNode).filter((key) => key !== ':@')
-      : [])
-    .find((key) => localName(key).toLowerCase() === 'value');
-  if (valueKey) {
-    const valueEntry = content.find((entry) => entry && typeof entry === 'object'
-      && !Array.isArray(entry) && Object.prototype.hasOwnProperty.call(entry, valueKey)) as OrderedNode;
-    const valueContent = valueEntry[valueKey];
-    const nodes = Array.isArray(valueContent) ? valueContent : [];
-    if (!writeOrderedText(nodes, value ? 'true' : 'false')) {
-      valueEntry[valueKey] = [{ '#text': value ? 'true' : 'false' }];
-    }
-    return;
-  }
-  if (writeOrderedText(content, value ? 'true' : 'false')) {return;}
-  content.push(orderedEntry('Value', [{ '#text': value ? 'true' : 'false' }]));
-}
-
-function findOrderedObjectByName(items: unknown[], expectedName: string): OrderedNode | undefined {
-  for (const item of items) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {continue;}
-    const objectContent = orderedChildren(item, 'Object');
-    if (!objectContent) {continue;}
-    const nameNode = objectContent.flatMap((node) => orderedChildren(node, 'Name') ?? []);
-    if (orderedText(nameNode) === expectedName) {return item as OrderedNode;}
-  }
-  return undefined;
-}
-
-function createDesignerObject(name: string, rights: Readonly<Record<string, boolean>>): OrderedNode {
-  const content: unknown[] = [orderedEntry('Name', [{ '#text': name }])];
-  for (const [right, value] of Object.entries(rights)) {
-    if (value) {content.push(orderedRightNode(right, true));}
-  }
-  return orderedEntry('Object', content);
-}
-
-function replaceDesignerObjectRights(
-  objectContent: unknown[],
-  rights: Readonly<Record<string, boolean>>,
-): void {
-  const knownRights = new Set(Object.keys(rights));
-  for (const node of objectContent) {
-    if (!node || typeof node !== 'object' || Array.isArray(node)) {continue;}
-    const names = Object.keys(node as OrderedNode).filter((key) => key !== ':@');
-    if (names.length === 1 && knownRights.has(localName(names[0]!))) {
-      const rightName = localName(names[0]!);
-      updateOrderedRightValue(node as OrderedNode, rightName, rights[rightName]!);
-    }
-  }
-  const nameIndex = objectContent.findIndex((node) => orderedChildren(node, 'Name') !== undefined);
-  const insertAt = nameIndex >= 0 ? nameIndex + 1 : objectContent.length;
-  const toInsert = Object.entries(rights)
-    .filter(([, value]) => value)
-    .map(([right]) => orderedRightNode(right, true));
-  const existingRights = new Set(objectContent.flatMap((node) => {
-    if (!node || typeof node !== 'object' || Array.isArray(node)) {return [];}
-    return Object.keys(node as OrderedNode)
-      .filter((key) => key !== ':@' && knownRights.has(localName(key)))
-      .map(localName);
-  }));
-  const missingTrueRights = toInsert.filter((node) => {
-    const name = Object.keys(node)[0];
-    return name !== undefined && !existingRights.has(name);
-  });
-  objectContent.splice(insertAt, 0, ...missingTrueRights);
-}
-
-function updateDesignerRightsContent(
-  rightsContent: unknown[],
-  assignments: Readonly<Record<string, Readonly<Record<string, boolean>>>>,
-): void {
-  for (const [fullName, rights] of Object.entries(assignments)) {
-    const hasAnyGrantedRight = Object.values(rights).some(Boolean);
-    const separator = fullName.indexOf('.');
-    const type = fullName.slice(0, separator);
-    const objectName = fullName.slice(separator + 1);
-    let group = rightsContent.find((node) => orderedChildren(node, type) !== undefined) as OrderedNode | undefined;
-    if (!group) {
-      if (!hasAnyGrantedRight) {continue;}
-      group = orderedEntry(type, []);
-      rightsContent.push(group);
-    }
-    const groupChildren = orderedChildren(group, type)!;
-    let objectEntry = findOrderedObjectByName(groupChildren, objectName);
-    if (!objectEntry) {
-      if (!hasAnyGrantedRight) {continue;}
-      objectEntry = createDesignerObject(objectName, rights);
-      groupChildren.push(objectEntry);
-      continue;
-    }
-    const objectContent = orderedChildren(objectEntry, 'Object')!;
-    replaceDesignerObjectRights(objectContent, rights);
-  }
-}
-
-function buildDesignerRightsSnippet(
-  xml: string,
-  range: ElementRange | undefined,
-  assignments: Readonly<Record<string, Readonly<Record<string, boolean>>>>,
-): string {
-  const parser = new XMLParser(RIGHTS_XML_PARSER_OPTIONS);
-  const builder = new XMLBuilder(RIGHTS_XML_BUILDER_OPTIONS);
-  let dom: unknown[];
-  let existingRange: ElementRange | undefined;
-  if (range) {
-    existingRange = range;
-    const validation = XMLValidator.validate(xml);
-    if (validation !== true) {
-      return fail('ROLE_RIGHTS_METADATA_INVALID', 'Role.xml содержит некорректный XML.');
-    }
-    const parsed = parser.parse(xml.slice(range.start, range.end));
-    if (!Array.isArray(parsed)) {
-      return fail('ROLE_RIGHTS_METADATA_INVALID', 'Не удалось разобрать секцию прав роли.');
-    }
-    dom = parsed as unknown[];
-  } else {
-    dom = parser.parse('<Rights/>') as unknown[];
-  }
-
-  const rightsRoot = dom.find((node) => orderedChildren(node, 'Rights') !== undefined) as OrderedNode | undefined;
-  if (!rightsRoot) {
-    return fail('ROLE_RIGHTS_METADATA_INVALID', 'Role.xml не содержит секцию Rights.');
-  }
-  const rightsContent = orderedChildren(rightsRoot, 'Rights')!;
-  updateDesignerRightsContent(rightsContent, assignments);
-  const generated = builder.build(dom) as string;
-  const generatedRange = findElementRange(generated, 'Rights');
-  if (!generatedRange) {
-    return fail('ROLE_RIGHTS_METADATA_INVALID', 'Не удалось сформировать секцию прав роли.');
-  }
-  const generatedInner = generated.slice(generatedRange.openEnd, generatedRange.closeStart);
-  if (existingRange) {
-    const lineStart = xml.lastIndexOf('\n', existingRange.start - 1) + 1;
-    const indent = xml.slice(lineStart, existingRange.start);
-    const indented = generatedInner.replace(/\r?\n/g, (lineBreak) => `${lineBreak}${indent}`);
-    return `${xml.slice(0, existingRange.openEnd)}${indented}${xml.slice(existingRange.closeStart)}`;
-  }
-
-  const roleRange = findElementRange(xml, 'Role');
-  if (!roleRange) {
-    return fail('ROLE_RIGHTS_METADATA_INVALID', 'Role.xml не содержит элемент Role.');
-  }
-  const lineStart = xml.lastIndexOf('\n', roleRange.start - 1) + 1;
-  const roleIndent = xml.slice(lineStart, roleRange.start);
-  const openTag = '<Rights>';
-  const inner = generatedInner.replace(/\r?\n/g, (lineBreak) => `${lineBreak}${roleIndent}\t`);
-  return `${xml.slice(0, roleRange.closeStart)}\n${roleIndent}\t${openTag}${inner}</Rights>${xml.slice(roleRange.closeStart)}`;
-}
-
 async function readContainedFile(root: string, target: string, missingCode: RoleRightsErrorCode): Promise<Buffer> {
   let canonical: { canonicalRoot: string; canonicalTarget: string };
   try {
@@ -753,13 +492,13 @@ async function verifyRoleAndObjects(
   format: ConfigFormat,
   roleName: string,
   entries: readonly ParsedRoleRightsEntry[],
-): Promise<{ rolePath: string; roleXml: Buffer; version: string }> {
+): Promise<{ rolePath: string; version: string }> {
   if (format !== ConfigFormat.EDT && format !== ConfigFormat.Designer) {
     return fail('UNSUPPORTED_ROLE_FORMAT', 'Запись прав поддерживает только форматы EDT и Designer.');
   }
   const rolePath = format === ConfigFormat.EDT
     ? path.join(configRoot, 'src', 'Roles', roleName, 'Role.mdo')
-    : path.join(configRoot, 'Roles', roleName, 'Role.xml');
+    : path.join(configRoot, 'Roles', `${roleName}.xml`);
   const roleXml = await readContainedFile(configRoot, rolePath, 'ROLE_NOT_FOUND');
   let version: string;
   try {
@@ -785,7 +524,7 @@ async function verifyRoleAndObjects(
       return fail('ROLE_RIGHTS_OBJECT_NOT_FOUND', `Объект «${entry.objectName}» отсутствует в конфигурации.`);
     }
   }
-  return { rolePath, roleXml, version };
+  return { rolePath, version };
 }
 
 function pathExpectation(source: Buffer): MutationExpectation {
@@ -813,104 +552,68 @@ export async function planSetRoleRights(
     return fail('INVALID_ROLE_RIGHTS_DSL', 'Переданы некорректные параметры записи прав роли.');
   }
   const entries = compileRoleRightsDsl(params.objects);
-  const { rolePath, roleXml, version } = await verifyRoleAndObjects(
+  const { rolePath, version } = await verifyRoleAndObjects(
     configRoot,
     format,
     params.roleName,
     entries,
   );
   const assignments = buildAssignments(entries);
-  await expandChildRights(configRoot, format, entries, assignments);
+  await expandCommandRights(configRoot, format, entries, assignments);
 
-  if (format === ConfigFormat.EDT) {
-    const existingRightsPath = (await findExistingRightsXml(rolePath)) ?? getRightsPath(rolePath);
-    const rightsPathBoundary = await assertPathWithinRoot(configRoot, existingRightsPath);
-    const rightsStat = await fs.promises.lstat(rightsPathBoundary.canonicalTarget).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') {return undefined;}
-      throw error;
-    });
-    let original: Buffer | undefined;
-    if (rightsStat) {
-      if (!rightsStat.isFile() || rightsStat.isSymbolicLink()) {
-        return fail('ROLE_RIGHTS_METADATA_INVALID', 'Rights.xml должен быть обычным файлом.');
-      }
-      const safePath = await assertPathWithinRoot(configRoot, existingRightsPath);
-      await assertNoSymlinkSegments(safePath.canonicalRoot, safePath.canonicalTarget);
-      original = await fs.promises.readFile(safePath.canonicalTarget);
+  const rightsPath = format === ConfigFormat.EDT
+    ? path.join(path.dirname(rolePath), 'Ext', 'Rights.xml')
+    : path.join(configRoot, 'Roles', params.roleName, 'Ext', 'Rights.xml');
+  const rightsPathBoundary = await assertPathWithinRoot(configRoot, rightsPath);
+  const rightsStat = await fs.promises.lstat(rightsPathBoundary.canonicalTarget).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') {return undefined;}
+    throw error;
+  });
+  let original: Buffer | undefined;
+  if (rightsStat) {
+    if (!rightsStat.isFile() || rightsStat.isSymbolicLink()) {
+      return fail('ROLE_RIGHTS_METADATA_INVALID', 'Rights.xml должен быть обычным файлом.');
     }
-    let dom: Awaited<ReturnType<typeof loadRightsXml>>;
-    try {
-      dom = await loadRightsXml(existingRightsPath, version);
-    } catch {
-      return fail('ROLE_RIGHTS_METADATA_INVALID', 'Rights.xml содержит некорректные метаданные XML.');
-    }
-    const setForNewObjects = getSetForNewObjectsDefault(dom);
-    ensureSetForAttributesByDefault(dom);
-    for (const [objectName, objectRights] of Object.entries(assignments)) {
-      const isRootObject = objectName.split('.').length === 2;
-      mergeNamedRightsIntoDom(dom, { [objectName]: objectRights }, {
-        compactWrite: true,
-        defaultValue: isRootObject ? setForNewObjects : false,
-      });
-    }
-    const updated = serializeRightsDomToXml(dom, version);
-    const steps = [] as MutationPlan<AgentResult<AgentSetRoleRightsResult>>['steps'][number][];
-    if (!rightsStat) {
-      steps.push({ type: 'ensureDirectory', targetPath: path.dirname(existingRightsPath) });
-    }
-    steps.push({
-      type: 'writeFile',
-      targetPath: existingRightsPath,
-      content: updated,
-      encoding: 'utf8',
-      expected: original ? pathExpectation(original) : { state: 'missing' },
-    });
-    return {
-      kind: 'agent.roles.setRights',
-      steps,
-      result: {
-        success: true,
-        data: {
-          roleName: params.roleName,
-          objectsAffected: Object.keys(assignments).length,
-          files: [relativePath(configRoot, existingRightsPath)],
-        },
-      },
-    };
+    const safePath = await assertPathWithinRoot(configRoot, rightsPath);
+    await assertNoSymlinkSegments(safePath.canonicalRoot, safePath.canonicalTarget);
+    original = await fs.promises.readFile(safePath.canonicalTarget);
   }
-
-  const source = roleXml.toString('utf8');
-  const range = findElementRange(source, 'Rights', 'Role');
-  const rightsContent = buildDesignerRightsSnippet(source, range, assignments);
-  const targetContent = rightsContent;
+  let dom: Awaited<ReturnType<typeof loadRightsXml>>;
+  try {
+    dom = await loadRightsXml(rightsPath, version);
+  } catch {
+    return fail('ROLE_RIGHTS_METADATA_INVALID', 'Rights.xml содержит некорректные метаданные XML.');
+  }
+  const setForNewObjects = getSetForNewObjectsDefault(dom);
+  for (const [objectName, objectRights] of Object.entries(assignments)) {
+    const isRootObject = objectName.split('.').length === 2;
+    mergeNamedRightsIntoDom(dom, { [objectName]: objectRights }, {
+      compactWrite: true,
+      defaultValue: isRootObject ? setForNewObjects : false,
+    });
+  }
+  const updated = serializeRightsDomToXml(dom, version);
+  const steps = [] as MutationPlan<AgentResult<AgentSetRoleRightsResult>>['steps'][number][];
+  if (!rightsStat) {
+    steps.push({ type: 'ensureDirectory', targetPath: path.dirname(rightsPath) });
+  }
+  steps.push({
+    type: 'writeFile',
+    targetPath: rightsPath,
+    content: updated,
+    encoding: 'utf8',
+    expected: original ? pathExpectation(original) : { state: 'missing' },
+  });
   return {
     kind: 'agent.roles.setRights',
-    steps: [{
-      type: 'writeFile',
-      targetPath: rolePath,
-      content: targetContent,
-      encoding: 'utf8',
-      expected: pathExpectation(roleXml),
-    }],
+    steps,
     result: {
       success: true,
       data: {
         roleName: params.roleName,
         objectsAffected: Object.keys(assignments).length,
-        files: [relativePath(configRoot, rolePath)],
+        files: [relativePath(configRoot, rightsPath)],
       },
     },
   };
-}
-
-async function findExistingRightsXml(rolePath: string): Promise<string | null> {
-  for (const candidate of listRightsXmlCandidatePaths(rolePath)) {
-    try {
-      const stat = await fs.promises.lstat(candidate);
-      if (stat.isFile()) {return candidate;}
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {throw error;}
-    }
-  }
-  return null;
 }
