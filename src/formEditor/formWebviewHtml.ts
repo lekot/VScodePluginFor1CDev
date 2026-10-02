@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
+import { getPreviewFieldCharacterWidth } from './formPreviewLayout';
 
 export function escapeWebviewText(value: unknown): string {
   if (value == null) {
@@ -28,6 +29,19 @@ export function escapeWebviewAttribute(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+/** Small self-authored command icons. Inline SVG keeps the webview independent of image resources. */
+function getCommandIconSvg(name: string): string {
+  const paths: Record<string, string> = {
+    add: 'M8 2.5v11M2.5 8h11',
+    delete: 'M3 4.5h10M6 4.5V3h4v1.5m1 0-.5 9h-5l-.5-9m2 2.5v4m2-4v4',
+    save: 'M3 2.5h8l2 2v9H3zM5 2.5v4h6v-4M5 13.5v-4h6v4',
+    search: 'M7 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9ZM10.3 10.3l3.2 3.2',
+  };
+  const path = paths[name];
+  if (!path) {return '';}
+  return `<svg class="fe-command-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="${path}"/></svg>`;
+}
+
 function hostThemeFromColorKind(kind: vscode.ColorThemeKind): 'light' | 'dark' {
   return kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight
     ? 'light'
@@ -42,6 +56,20 @@ function buildWebviewCss(): string {
       --fe-spacing-sm: 8px;
       --fe-spacing-md: 12px;
       --fe-spacing-lg: 16px;
+      --preview-horizontal-gap: 10px;
+      --preview-vertical-gap: 9px;
+      --preview-control-gap: 5px;
+      --preview-canvas-background: #f0f0f0;
+      --preview-card-background: #ffffff;
+      --preview-card-border: #c7cbd0;
+      --preview-control-background: #ffffff;
+      --preview-control-border: #aeb4bb;
+      --preview-foreground: #202020;
+      --preview-muted-foreground: #5f6368;
+      --preview-table-header-background: #f8f8f8;
+      --preview-table-row-background: #f5f5f5;
+      --preview-button-background: #f5f5f5;
+      --preview-button-foreground: #202020;
       --fe-radius-sm: 4px;
       --fe-radius-md: 8px;
       --fe-radius-btn: 8px;
@@ -126,6 +154,20 @@ function buildWebviewCss(): string {
       --vscode-tab-activeBackground: #25364b;
       --vscode-badge-background: #334155;
       --vscode-badge-foreground: #e5e7eb;
+    }
+    body[data-theme-mode='dark'],
+    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] {
+      --preview-canvas-background: #111827;
+      --preview-card-background: #1f2937;
+      --preview-card-border: #374151;
+      --preview-control-background: #0f172a;
+      --preview-control-border: #4b5563;
+      --preview-foreground: #e5e7eb;
+      --preview-muted-foreground: #9ca3af;
+      --preview-table-header-background: #273244;
+      --preview-table-row-background: #1b2638;
+      --preview-button-background: #334155;
+      --preview-button-foreground: #e5e7eb;
     }
     body[data-theme-mode='light'] .zone-right-upper {
       background: var(--vscode-sideBar-background);
@@ -274,7 +316,10 @@ function buildWebviewCss(): string {
       outline: 2px solid var(--vscode-focusBorder);
       outline-offset: 2px;
     }
+    .fe-command-icon { display: block; width: 16px; height: 16px; flex: 0 0 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .tree-icon-svg { display: inline-flex; align-items: center; justify-content: center; }
     #tb-save {
+      gap: var(--preview-control-gap);
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
       width: auto;
@@ -318,7 +363,7 @@ function buildWebviewCss(): string {
       flex: 1;
       min-height: 0;
       display: grid;
-      grid-template-columns: var(--tree-width) 6px minmax(520px, 1fr) 0;
+      grid-template-columns: var(--tree-width) 6px minmax(360px, 1fr) minmax(240px, 300px);
       grid-template-rows: 1fr;
       align-items: stretch;
       overflow: hidden;
@@ -435,6 +480,9 @@ function buildWebviewCss(): string {
       flex-shrink: 0;
     }
     .fe-toolbar-buttons button {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--preview-control-gap);
       padding: var(--fe-spacing-xs) var(--fe-spacing-sm);
       font-size: var(--vscode-font-size);
       font-family: var(--vscode-font-family);
@@ -454,13 +502,26 @@ function buildWebviewCss(): string {
       padding: var(--fe-spacing-md);
       border-left: 1px solid var(--fe-border-subtle);
       background: color-mix(in srgb, var(--vscode-sideBar-background) 82%, var(--vscode-editor-background) 18%);
-      display: none;
     }
     .zone-props h3 { padding-bottom: var(--fe-spacing-xs); border-bottom: 1px solid var(--fe-border-subtle); margin-bottom: var(--fe-spacing-sm); }
     .zone-props-scroll {
       flex: 1;
       min-height: 0;
       overflow: auto;
+    }
+    @media (max-width: 1000px) {
+      :root { --tree-width: clamp(160px, 26vw, 240px); }
+      .top-row { grid-template-columns: var(--tree-width) 6px minmax(260px, 1fr) minmax(220px, 260px); }
+    }
+    @media (max-width: 760px) {
+      .top-row {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-rows: minmax(120px, 1fr) minmax(120px, 1fr);
+      }
+      .zone-tree { grid-column: 1; grid-row: 1; min-width: 0; }
+      .splitter-v { display: none; }
+      .zone-right-upper { grid-column: 2; grid-row: 1; min-width: 0; }
+      .zone-props { grid-column: 1 / -1; grid-row: 2; border-left: 0; border-top: 1px solid var(--fe-border-subtle); }
     }
     .splitter-h {
       height: 6px;
@@ -571,18 +632,19 @@ function buildWebviewCss(): string {
       padding: var(--fe-spacing-md) var(--fe-spacing-sm);
     }
     .preview-placeholder { color: var(--vscode-descriptionForeground); font-style: italic; padding: var(--fe-spacing-sm) 0; }
-    #preview-form { width: 100%; min-width: 100%; box-sizing: border-box; border: 1px solid var(--fe-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%); }
-    .preview-item { width: 100%; min-width: 0; box-sizing: border-box; padding: 4px 6px; margin: 2px 0; cursor: pointer; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 75%, transparent); transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease; }
-    .preview-item:hover { border-color: color-mix(in srgb, var(--vscode-focusBorder) 45%, var(--vscode-panel-border) 55%); background: var(--fe-hover-bg); }
-    .preview-item.selected { background: var(--fe-selected-bg); color: var(--fe-selected-fg); box-shadow: inset 2px 0 0 var(--vscode-focusBorder); border-color: color-mix(in srgb, var(--vscode-focusBorder) 65%, var(--vscode-panel-border) 35%); }
+    /* Taxi layout metrics and visual treatment adapted from BslEdit v2.0.0 (MIT). */
+    #preview-form { width: 100%; min-width: 100%; box-sizing: border-box; border: 1px solid var(--preview-card-border); border-radius: 3px; background: var(--preview-canvas-background); color: var(--preview-foreground); }
+    .preview-item { width: 100%; min-width: 0; box-sizing: border-box; padding: 1px; margin: 0; cursor: pointer; border-radius: 2px; border: 1px solid transparent; transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease; }
+    .preview-item:hover { border-color: color-mix(in srgb, var(--vscode-focusBorder) 45%, var(--vscode-panel-border) 55%); background: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-focusBorder) 6%); }
+    .preview-item.selected { background: var(--fe-selected-bg); color: var(--fe-selected-fg); box-shadow: inset 0 0 0 1px var(--vscode-focusBorder); border-color: var(--vscode-focusBorder); }
     .preview-item.drop-target { outline: 2px solid var(--vscode-focusBorder); }
     .preview-container { background: transparent; min-height: 16px; width: 100%; box-sizing: border-box; }
-    .preview-item.preview-container { border-color: transparent; padding: 4px 6px; margin: 2px 0; }
+    .preview-item.preview-container { border-color: transparent; padding: 1px; margin: 0; }
     .preview-item.preview-container:hover { border-color: var(--fe-border-subtle); background: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-focusBorder) 6%); }
-    .preview-control { background: color-mix(in srgb, var(--vscode-input-background) 85%, var(--vscode-editor-background) 15%); width: 100%; box-sizing: border-box; }
-    .preview-children { margin-left: 0; width: 100%; box-sizing: border-box; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .preview-control { background: transparent; width: 100%; box-sizing: border-box; }
+    .preview-children { margin-left: 0; width: 100%; box-sizing: border-box; min-width: 0; display: flex; flex-direction: column; row-gap: var(--preview-vertical-gap); column-gap: var(--preview-horizontal-gap); }
     .preview-children.preview-children-vertical { flex-direction: column; }
-    .preview-children.preview-children-horizontal { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: var(--fe-spacing-sm); }
+    .preview-children.preview-children-horizontal { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: var(--preview-vertical-gap) var(--preview-horizontal-gap); }
     .preview-children.preview-children-horizontal > .preview-item { flex: 1 1 220px; min-width: 180px; width: auto; }
     /* Block 3B: ChildItemsWidth / ThroughAlign (UsualGroup horizontal — preview approximation) */
     .preview-children.preview-ciwidth-equal.preview-children-horizontal > .preview-item { flex: 1 1 0; min-width: 0; width: auto; }
@@ -597,36 +659,36 @@ function buildWebviewCss(): string {
     .preview-children.preview-children-indented { margin-left: 10px; }
     .preview-children.preview-container-page,
     .preview-children.preview-container-pages {
-      border: 1px solid var(--fe-border-subtle);
-      border-radius: var(--fe-radius-md);
-      padding: 8px;
-      background: color-mix(in srgb, var(--vscode-editor-background) 95%, var(--vscode-sideBar-background) 5%);
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
     }
-    .preview-control-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 22px; }
-    .preview-input { flex: 1; min-width: 120px; padding: 4px 8px; font-size: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid color-mix(in srgb, var(--vscode-input-border) 82%, var(--vscode-focusBorder) 18%); border-radius: 6px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
-    .preview-button { padding: var(--fe-spacing-xs) var(--fe-spacing-md); font-size: inherit; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: var(--fe-radius-btn); cursor: default; }
+    .preview-control-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: var(--preview-control-gap); min-height: 22px; }
+    .preview-input { flex: 0 1 auto; min-width: 4ch; max-width: 100%; height: 26px; padding: 3px 7px; font-size: inherit; background: var(--preview-control-background); color: var(--preview-foreground); border: 1px solid var(--preview-control-border); border-radius: 3px; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08); }
+    .preview-button { min-height: 26px; padding: 3px 12px; font-size: inherit; background: var(--preview-button-background); color: var(--preview-button-foreground); border: 1px solid var(--preview-control-border); border-radius: 3px; box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12); cursor: default; }
     .preview-label { color: var(--vscode-foreground); padding: 1px 0; }
     .preview-label-decoration { font-style: italic; color: var(--vscode-textLink-foreground); cursor: pointer; }
     .preview-picture-decoration { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border: 1px dashed var(--vscode-editorWidget-border); border-radius: 4px; font-size: 20px; opacity: 0.6; }
-    .preview-commandbar { display: flex; flex-direction: row; gap: 4px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-toolbar-hoverBackground); border-radius: 4px; margin-bottom: 4px; min-height: 28px; }
+    .preview-commandbar { display: flex; flex-direction: row; gap: var(--preview-control-gap); align-items: center; padding: 4px 6px; border: 1px solid var(--preview-card-border); border-radius: 3px; background: var(--preview-card-background); margin-bottom: 8px; min-height: 32px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
     .preview-check { width: 15px; height: 15px; accent-color: var(--vscode-focusBorder); }
-    .preview-radio-stack { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-md); align-items: center; }
-    .preview-radio-option { display: inline-flex; align-items: center; gap: 6px; color: var(--vscode-foreground); }
+    .preview-radio-stack { display: flex; flex-wrap: wrap; gap: var(--preview-control-gap); align-items: center; }
+    .preview-radio-option { display: inline-flex; align-items: center; gap: var(--preview-control-gap); color: var(--vscode-foreground); }
     .preview-radio-option input { accent-color: var(--vscode-focusBorder); }
     .preview-list-mock { min-width: 180px; border: 1px solid var(--fe-border-subtle); border-radius: 6px; background: var(--vscode-input-background); overflow: hidden; }
-    .preview-list-row { padding: 5px var(--fe-spacing-sm); border-bottom: 1px solid var(--fe-border-subtle); color: var(--vscode-foreground); font-size: 0.92em; }
+    .preview-list-row { padding: 5px 10px; border-bottom: 1px solid var(--fe-border-subtle); color: var(--vscode-foreground); font-size: 0.92em; }
     .preview-list-row:last-child { border-bottom: none; }
     .preview-list-row.active { background: var(--fe-selected-bg); color: var(--fe-selected-fg); }
     .preview-table { padding: var(--fe-spacing-sm); border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); font-size: 0.9em; color: var(--vscode-descriptionForeground); }
-    .preview-table-columns { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--fe-spacing-sm); }
-    .preview-table-cols-row { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--fe-spacing-xs); }
+    .preview-table-columns { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--preview-control-gap); }
+    .preview-table-cols-row { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--preview-control-gap); }
     .preview-table-col { min-width: 60px; padding: var(--fe-spacing-xs) var(--fe-spacing-sm); border: 1px solid var(--vscode-panel-border); border-radius: var(--fe-radius-md); font-size: 0.85em; }
     .preview-page-caption, .preview-group-caption { font-weight: 600; font-size: 0.9em; margin-bottom: var(--fe-spacing-xs); color: var(--vscode-foreground); }
     .preview-fallback { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
     .preview-fallback-widget {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--preview-control-gap);
       padding: 4px 8px;
       border: 1px dashed var(--fe-border-strong);
       border-radius: 6px;
@@ -642,34 +704,35 @@ function buildWebviewCss(): string {
       background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-list-hoverBackground) 12%);
     }
     /* Form mockup (variant B): layout as form */
-    #preview-form.preview-mockup-form { padding: var(--fe-spacing-sm); width: 100%; min-width: 100%; box-sizing: border-box; }
-    .preview-field-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--fe-spacing-sm); margin-bottom: var(--fe-spacing-xs); }
+    #preview-form.preview-mockup-form { padding: 9px 10px; width: 100%; min-width: 100%; box-sizing: border-box; }
+    #preview-form.preview-fit-width { overflow-x: clip; }
+    .preview-field-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--preview-control-gap); margin-bottom: 0; }
     .preview-field-label { min-width: 80px; color: var(--vscode-foreground); font-size: inherit; flex-shrink: 0; }
-    .preview-field-row .preview-input { flex: 1; min-width: 100px; }
+    .preview-field-row .preview-input { flex: 0 1 auto; }
     .preview-field-row.preview-title-top,
     .preview-field-row.preview-title-bottom {
       flex-direction: column;
       align-items: stretch;
-      gap: 4px;
+      gap: var(--preview-control-gap);
     }
     .preview-field-row.preview-title-right { flex-direction: row-reverse; justify-content: flex-end; }
     .preview-field-row.preview-title-none .preview-field-label { display: none; }
     .preview-field-row.preview-title-bottom .preview-field-label { order: 2; }
     .preview-field-row.preview-title-bottom .preview-input { order: 1; }
-    .preview-buttons-row { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-xs); align-items: center; }
-    .preview-table-mock { overflow-x: auto; border: 1px solid var(--fe-border-strong); border-radius: 6px; margin: 4px 0; background: var(--vscode-editor-background); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-editor-background) 70%, transparent); }
+    .preview-buttons-row { display: flex; flex-wrap: wrap; gap: var(--preview-control-gap); align-items: center; }
+    .preview-table-mock { overflow-x: auto; border: 1px solid var(--preview-card-border); border-radius: 3px; margin: 0; background: var(--preview-card-background); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
     .preview-table-mock table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-    .preview-table-mock th, .preview-table-mock td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--fe-border-subtle); border-right: 1px solid color-mix(in srgb, var(--fe-border-subtle) 85%, transparent); }
+    .preview-table-mock th, .preview-table-mock td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--preview-card-border); border-right: 1px solid var(--preview-card-border); color: var(--preview-foreground); }
     .preview-table-mock th:last-child, .preview-table-mock td:last-child { border-right: none; }
-    .preview-table-mock th { background: color-mix(in srgb, var(--vscode-editor-background) 78%, var(--vscode-list-hoverBackground) 22%); font-weight: 600; color: var(--vscode-foreground); cursor: pointer; text-transform: uppercase; letter-spacing: 0.01em; font-size: 0.82em; }
+    .preview-table-mock th { background: var(--preview-table-header-background); font-weight: 600; color: var(--preview-foreground); cursor: pointer; text-transform: none; letter-spacing: 0; font-size: 0.9em; }
     .preview-table-mock th:hover { background: var(--fe-hover-bg-strong); }
     .preview-table-mock th.selected { background: var(--fe-selected-bg); color: var(--fe-selected-fg); }
-    .preview-table-mock tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-focusBorder) 10%); }
+    .preview-table-mock tbody tr:nth-child(even) td { background: var(--preview-table-row-background); }
     .preview-table-mock tbody tr:last-child td { border-bottom: none; }
-    .preview-page-block { margin: 6px 0; }
-    .preview-page-title { font-weight: 700; font-size: 0.92em; margin-bottom: 4px; color: var(--vscode-foreground); padding-bottom: 2px; border-bottom: 1px solid var(--vscode-panel-border); }
-    .preview-group-block { margin-left: 0; margin-bottom: var(--fe-spacing-xs); }
-    .preview-group-title { font-weight: 600; font-size: 0.88em; margin-bottom: 6px; color: var(--vscode-descriptionForeground); }
+    .preview-page-block { margin: var(--preview-vertical-gap) 0; }
+    .preview-page-title { font-weight: 700; font-size: 0.92em; margin-bottom: var(--preview-control-gap); color: var(--vscode-foreground); padding-bottom: 2px; border-bottom: 1px solid var(--vscode-panel-border); }
+    .preview-group-block { margin-left: 0; margin-bottom: 0; border: 1px solid var(--preview-card-border); border-radius: 3px; padding: 9px 10px; background: var(--preview-card-background); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+    .preview-group-title { font-weight: 600; font-size: 0.88em; margin-bottom: 5px; color: var(--vscode-foreground); }
     /* Pages: tab strip (ADR-1 / block 2); TabsOnTop | TabsOnBottom from PagesRepresentation */
     .preview-pages-outer {
       display: flex;
@@ -688,7 +751,7 @@ function buildWebviewCss(): string {
       flex-direction: row;
       flex-wrap: wrap;
       align-items: flex-end;
-      gap: 2px;
+      gap: var(--preview-control-gap);
       padding: 0 0 4px 0;
       margin: 0 0 6px 0;
       border-bottom: 1px solid var(--fe-border-strong);
@@ -749,6 +812,11 @@ function buildWebviewCss(): string {
       min-height: 0;
       width: 100%;
       box-sizing: border-box;
+      padding: 12px;
+      border: 1px solid var(--preview-card-border);
+      border-radius: 3px;
+      background: var(--preview-card-background);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
     }
     .preview-children.preview-buttons-container { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-sm); align-items: center; margin-left: 0; }
     .empty-state { text-align: center; padding: var(--fe-spacing-lg); color: var(--vscode-descriptionForeground); }
@@ -761,12 +829,13 @@ function buildWebviewCss(): string {
     .zone-preview-head {
       display: flex;
       align-items: center;
-      justify-content: flex-start;
+      justify-content: space-between;
       margin-bottom: var(--fe-spacing-sm);
       border-bottom: 1px solid var(--fe-border-strong);
       padding-bottom: var(--fe-spacing-xs);
     }
     .zone-preview-head h3 { margin: 0; }
+    #tb-preview-fit { min-width: 0; padding: 0 8px; }
     .left-zone-tabs {
       display: flex;
       gap: 0;
@@ -849,6 +918,9 @@ function buildWebviewCss(): string {
     }
     #btn-cancel:focus-visible, #btn-save:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
     #btn-save {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--preview-control-gap);
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
     }
@@ -973,9 +1045,9 @@ function buildWebviewCss(): string {
 /** Returns the static HTML body layout for the form editor webview. */
 function buildWebviewLayout(): string {
   return `  <div class="fe-toolbar" role="toolbar" aria-label="Панель инструментов формы">
-    <button type="button" class="fe-toolbar-btn" id="tb-add" title="Добавить элемент" aria-label="Добавить">&#43;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-add" title="Добавить элемент" aria-label="Добавить">${getCommandIconSvg('add')}</button>
     <button type="button" class="fe-toolbar-btn" id="tb-add-wizard" title="Мастер добавления" aria-label="Мастер добавления">Мастер</button>
-    <button type="button" class="fe-toolbar-btn" id="tb-delete" title="Удалить" aria-label="Удалить">&#x1F5D1;</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-delete" title="Удалить" aria-label="Удалить">${getCommandIconSvg('delete')}</button>
     <button type="button" class="fe-toolbar-btn" id="tb-up" title="Вверх" aria-label="Вверх">&#x2191;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-down" title="Вниз" aria-label="Вниз">&#x2193;</button>
     <button type="button" class="fe-toolbar-btn" id="tb-copy" title="Копировать" aria-label="Копировать">&#x2398;</button>
@@ -991,7 +1063,7 @@ function buildWebviewLayout(): string {
     </div>
     <button type="button" class="fe-toolbar-btn" id="tb-module" title="Открыть модуль формы" aria-label="Модуль формы">Модуль</button>
     <button type="button" class="fe-toolbar-btn" id="tb-cancel" title="Отмена" aria-label="Отмена">Отмена</button>
-    <button type="button" class="fe-toolbar-btn" id="tb-save" title="Сохранить" aria-label="Сохранить">Сохранить</button>
+    <button type="button" class="fe-toolbar-btn" id="tb-save" title="Сохранить" aria-label="Сохранить">${getCommandIconSvg('save')}<span>Сохранить</span></button>
   </div>
   <div id="add-wizard-overlay" class="add-wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="add-wizard-title">
     <div class="add-wizard-panel">
@@ -1048,9 +1120,9 @@ function buildWebviewLayout(): string {
             <div id="attributes-tree-root" role="tree"></div>
           </div>
           <div class="fe-toolbar-buttons">
-            <button type="button" id="btn-add-attribute" title="Добавить реквизит">Добавить</button>
+            <button type="button" id="btn-add-attribute" title="Добавить реквизит">${getCommandIconSvg('add')}Добавить</button>
             <button type="button" id="btn-edit-attribute" title="Изменить выбранный" disabled>Изменить</button>
-            <button type="button" id="btn-delete-attribute" title="Удалить выбранный" disabled>Удалить</button>
+            <button type="button" id="btn-delete-attribute" title="Удалить выбранный" disabled>${getCommandIconSvg('delete')}Удалить</button>
           </div>
         </div>
         <div id="right-tab-commands" class="right-tab-panel is-hidden" role="tabpanel">
@@ -1061,8 +1133,8 @@ function buildWebviewLayout(): string {
             </table>
           </div>
           <div class="fe-toolbar-buttons">
-            <button type="button" id="btn-add-command" title="Добавить команду">Добавить</button>
-            <button type="button" id="btn-delete-command" title="Удалить выбранную" disabled>Удалить</button>
+            <button type="button" id="btn-add-command" title="Добавить команду">${getCommandIconSvg('add')}Добавить</button>
+            <button type="button" id="btn-delete-command" title="Удалить выбранную" disabled>${getCommandIconSvg('delete')}Удалить</button>
           </div>
         </div>
         <div id="right-tab-parameters" class="right-tab-panel is-hidden" role="tabpanel">
@@ -1078,7 +1150,7 @@ function buildWebviewLayout(): string {
       </div>
       <div id="props-actions" class="props-actions-sticky is-hidden">
         <button type="button" id="btn-cancel" title="Отмена">Отмена</button>
-        <button type="button" id="btn-save" title="Сохранить">Сохранить</button>
+        <button type="button" id="btn-save" title="Сохранить">${getCommandIconSvg('save')}Сохранить</button>
         <span id="save-status"></span>
       </div>
     </div>
@@ -1087,6 +1159,7 @@ function buildWebviewLayout(): string {
   <div class="zone-preview">
     <div class="zone-preview-head">
       <h3>Превью</h3>
+      <button type="button" class="fe-toolbar-btn" id="tb-preview-fit" title="Подогнать превью по ширине" aria-pressed="false">По ширине</button>
     </div>
     <div id="preview-form" class="preview-placeholder" role="tabpanel">
       <div class="preview-empty-state">
@@ -1102,6 +1175,8 @@ function buildWebviewJs(): string {
   return `    const vscode = acquireVsCodeApi();
     ${escapeWebviewText.toString()}
     ${escapeWebviewAttribute.toString()}
+    var getCommandIconSvg = ${getCommandIconSvg.toString()};
+    var getPreviewFieldCharacterWidth = ${getPreviewFieldCharacterWidth.toString()};
     const THEME_MODE_KEY = 'form-editor-theme-mode';
     function applyThemeMode(mode) {
       var m = mode || 'auto';
@@ -1120,6 +1195,37 @@ function buildWebviewJs(): string {
           applyThemeMode(mode);
         });
       }
+    })();
+    function updatePreviewFitScale() {
+      var root = document.getElementById('preview-form');
+      if (!root) return;
+      if (!root.classList.contains('preview-fit-width')) {
+        root.style.zoom = '';
+        root.removeAttribute('data-fit-scale');
+        return;
+      }
+      root.style.zoom = '1';
+      var availableWidth = root.clientWidth;
+      var contentWidth = root.scrollWidth;
+      var scale = contentWidth > availableWidth && contentWidth > 0
+        ? Math.max(0.25, availableWidth / contentWidth)
+        : 1;
+      root.style.zoom = String(scale);
+      root.setAttribute('data-fit-scale', scale.toFixed(3));
+    }
+    function fitPreviewToWidth() {
+      var root = document.getElementById('preview-form');
+      var button = document.getElementById('tb-preview-fit');
+      if (!root || !button) return;
+      var enabled = !root.classList.contains('preview-fit-width');
+      root.classList.toggle('preview-fit-width', enabled);
+      button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      updatePreviewFitScale();
+    }
+    (function initPreviewFitControl() {
+      var button = document.getElementById('tb-preview-fit');
+      if (button) button.addEventListener('click', fitPreviewToWidth);
+      window.addEventListener('resize', updatePreviewFitScale);
     })();
     function getDisplayItems() {
       if (!formModel) return [];
@@ -1147,7 +1253,10 @@ function buildWebviewJs(): string {
           var startW = parsePx(getComputedStyle(root).getPropertyValue('--tree-width')) || 280;
           function move(e2) {
             var dx = e2.clientX - startX;
-            var newW = Math.max(120, Math.min(window.innerWidth * 0.8, startW + dx));
+            var minCenterWidth = window.innerWidth <= 1000 ? 260 : 360;
+            var minInspectorWidth = window.innerWidth <= 1000 ? 220 : 240;
+            var maxW = Math.max(120, window.innerWidth - 6 - minCenterWidth - minInspectorWidth);
+            var newW = Math.max(120, Math.min(maxW, startW + dx));
             root.style.setProperty('--tree-width', px(newW));
           }
           function up() {
@@ -1433,22 +1542,22 @@ function buildWebviewJs(): string {
       if (throughAlign === 'use') flexAlignItems = 'stretch';
       return { flexJustifyContent: flexJustifyContent, flexAlignItems: flexAlignItems };
     }
-    function spacingKindToPxJs(k) {
+    function spacingKindToPxJs(k, orientation) {
       if (!k) return null;
-      if (k === 'half') return 4;
-      if (k === 'double') return 16;
-      return 8;
+      if (k === 'half') return 5;
+      if (k === 'double') return orientation === 'horizontal' ? 20 : 18;
+      return orientation === 'horizontal' ? 10 : 9;
     }
     function applyPreviewContainerLayout(el, meta) {
       if (!el || !meta) return;
       if (meta.verticalSpacing) {
-        var r = spacingKindToPxJs(meta.verticalSpacing);
+        var r = spacingKindToPxJs(meta.verticalSpacing, 'vertical');
         if (r != null) el.style.rowGap = r + 'px';
       } else {
         el.style.rowGap = '';
       }
       if (meta.horizontalSpacing) {
-        var c = spacingKindToPxJs(meta.horizontalSpacing);
+        var c = spacingKindToPxJs(meta.horizontalSpacing, 'horizontal');
         if (c != null) el.style.columnGap = c + 'px';
       } else {
         el.style.columnGap = '';
@@ -1777,7 +1886,12 @@ function buildWebviewJs(): string {
         }
         var iconSpan = document.createElement('span');
         iconSpan.className = 'tree-icon';
-        iconSpan.textContent = getTreeIcon(tag);
+        if (tag === 'SearchStringAddition') {
+          iconSpan.classList.add('tree-icon-svg');
+          iconSpan.innerHTML = getCommandIconSvg('search');
+        } else {
+          iconSpan.textContent = getTreeIcon(tag);
+        }
         iconSpan.setAttribute('aria-hidden', 'true');
         var labelSpan = document.createElement('span');
         labelSpan.className = 'tree-node-label';
@@ -1947,6 +2061,11 @@ function buildWebviewJs(): string {
         inp.placeholder = '';
         inp.readOnly = true;
         inp.className = 'preview-input';
+        var dataPath = getDataPathValue(item);
+        var characterWidth = getPreviewFieldCharacterWidth(dataPath, formModel && Array.isArray(formModel.attributes) ? formModel.attributes : []);
+        inp.style.width = characterWidth + 'ch';
+        inp.dataset.dataPath = dataPath;
+        inp.dataset.characterWidth = String(characterWidth);
         wrap.appendChild(lbl);
         wrap.appendChild(inp);
       } else if (tag === 'CheckBoxField') {
@@ -2191,12 +2310,13 @@ function buildWebviewJs(): string {
           if (tag === 'Pages') {
             renderPagesInPreview(item, childWrap, layoutMeta);
           } else {
-            childWrap.className = layoutContainerStyle(layoutMeta);
+            childWrap.className += ' ' + layoutContainerStyle(layoutMeta);
             applyPreviewContainerLayout(childWrap, layoutMeta);
             renderPreview(item.childItems, childWrap);
           }
         }
       });
+      if (parentEl && parentEl.id === 'preview-form') updatePreviewFitScale();
     }
 
     function findElement(model, id) {
@@ -2841,6 +2961,8 @@ function buildWebviewJs(): string {
       }
       if (propsHeader) propsHeader.textContent = (el.name || '') + ' (' + (el.tag || '') + ')';
       placeholder.style.display = 'none';
+      content.classList.remove('is-hidden');
+      actions.classList.remove('is-hidden');
       actions.style.display = 'block';
       var html = '<div class="props-block"><p class="props-block-title">Основные</p>';
       html += '<div class="prop-row"><label>Тип</label> <span class="fe-badge">' + escapeWebviewText(el.tag || '') + '</span></div>';
@@ -2858,7 +2980,48 @@ function buildWebviewJs(): string {
       }
       content.innerHTML = html;
       content.style.display = 'block';
+      const eventNames = el.events && typeof el.events === 'object' ? Object.keys(el.events) : [];
+      if (eventNames.length) {
+        const eventBlock = document.createElement('div');
+        eventBlock.className = 'props-block';
+        const eventTitle = document.createElement('p');
+        eventTitle.className = 'props-block-title';
+        eventTitle.textContent = 'События';
+        eventBlock.appendChild(eventTitle);
+        const elementId = el.id || el.name;
+        eventNames.forEach(eventName => {
+          const row = document.createElement('div');
+          row.className = 'prop-row';
+          const label = document.createElement('label');
+          label.textContent = eventName;
+          const inputWrap = document.createElement('div');
+          inputWrap.className = 'prop-input-wrap';
+          const input = document.createElement('input');
+          input.className = 'event-method-input';
+          input.dataset.event = eventName;
+          input.value = el.events && el.events[eventName] != null ? String(el.events[eventName]) : '';
+          input.placeholder = 'Имя процедуры';
+          input.addEventListener('change', () => {
+            vscode.postMessage({ type: 'propertyChange', elementId: elementId, section: 'events', key: eventName, value: input.value });
+          });
+          inputWrap.appendChild(input);
+          const gotoButton = document.createElement('button');
+          gotoButton.type = 'button';
+          gotoButton.className = 'btn-goto-proc';
+          gotoButton.textContent = 'Перейти';
+          gotoButton.addEventListener('click', () => {
+            var proc = input.value.trim();
+            if (proc) vscode.postMessage({ type: 'openModule', procedureName: proc });
+          });
+          row.appendChild(label);
+          row.appendChild(inputWrap);
+          row.appendChild(gotoButton);
+          eventBlock.appendChild(row);
+        });
+        content.appendChild(eventBlock);
+      }
       content.querySelectorAll('input').forEach(inp => {
+        if (inp.classList.contains('event-method-input')) return;
         inp.addEventListener('change', () => {
           var elementId = el.id || el.name;
           const key = inp.dataset.key ? inp.dataset.key : (inp.id ? inp.id.replace('prop-', '') : null);

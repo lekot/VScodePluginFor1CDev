@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <ChildItems>
+    <Pages name="Tabs" id="pages">
+      <ChildItems>
+        <Page name="Main" id="page-main">
+          <Title><v8:item><v8:lang>ru</v8:lang><v8:content>Основное</v8:content></v8:item></Title>
+          <ChildItems>
+            <UsualGroup name="General" id="group-general">
+              <Title><v8:item><v8:lang>ru</v8:lang><v8:content>Общие данные</v8:content></v8:item></Title>
+              <ChildItems>
+                <InputField name="CustomerField" id="field-customer"><DataPath>Customer</DataPath></InputField>
+                <SearchStringAddition name="FindCustomer" id="field-search"><DataPath>Customer</DataPath></SearchStringAddition>
+                <InputField name="DateField" id="field-date"><DataPath>BusinessDate</DataPath><Events><Event name="OnChange">WhenDateChanges</Event></Events></InputField>
+                <InputField name="TimeField" id="field-time"><DataPath>StartTime</DataPath></InputField>
+                <InputField name="DateTimeField" id="field-datetime"><DataPath>CreatedAt</DataPath></InputField>
+                <InputField name="BooleanField" id="field-enabled"><DataPath>Enabled</DataPath></InputField>
+                <InputField name="NumberField" id="field-amount"><DataPath>Amount</DataPath></InputField>
+              </ChildItems>
+            </UsualGroup>
+          </ChildItems>
+        </Page>
+        <Page name="Lines" id="page-lines">
+          <Title><v8:item><v8:lang>ru</v8:lang><v8:content>Строки</v8:content></v8:item></Title>
+          <ChildItems>
+            <Table name="Items" id="table-items">
+              <DataPath>Items</DataPath>
+              <ChildItems>
+                <TableColumn name="ItemColumn" id="column-item"><DataPath>Items.Item</DataPath></TableColumn>
+                <TableColumn name="QuantityColumn" id="column-quantity"><DataPath>Items.Quantity</DataPath></TableColumn>
+              </ChildItems>
+            </Table>
+          </ChildItems>
+        </Page>
+      </ChildItems>
+    </Pages>
+  </ChildItems>
+  <AutoCommandBar name="TopCommands" id="commandbar">
+    <ChildItems>
+      <Button name="Refresh" id="refresh"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Обновить</v8:content></v8:item></Title></Button>
+    </ChildItems>
+  </AutoCommandBar>
+  <Attributes>
+    <Attribute name="Customer" id="attr-customer"><Type><v8:Type>cfg:CatalogRef.Customers</v8:Type></Type></Attribute>
+    <Attribute name="BusinessDate" id="attr-date"><Type><v8:Type>xs:dateTime</v8:Type><v8:DateQualifiers><v8:DateFractions>Date</v8:DateFractions></v8:DateQualifiers></Type></Attribute>
+    <Attribute name="StartTime" id="attr-time"><Type><v8:Type>xs:dateTime</v8:Type><v8:DateQualifiers><v8:DateFractions>Time</v8:DateFractions></v8:DateQualifiers></Type></Attribute>
+    <Attribute name="CreatedAt" id="attr-datetime"><Type><v8:Type>xs:dateTime</v8:Type><v8:DateQualifiers><v8:DateFractions>DateTime</v8:DateFractions></v8:DateQualifiers></Type></Attribute>
+    <Attribute name="Enabled" id="attr-boolean"><Type><v8:Type>xs:boolean</v8:Type></Type></Attribute>
+    <Attribute name="Amount" id="attr-number"><Type><v8:Type>xs:decimal</v8:Type><v8:NumberQualifiers><v8:Digits>12</v8:Digits><v8:FractionDigits>2</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers></Type></Attribute>
+  </Attributes>
+</Form>

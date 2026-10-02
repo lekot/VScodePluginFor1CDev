@@ -74,6 +74,7 @@ export const coreSuiteFiles: string[] = [
   'suite/formWebviewSecurity.test.js',
   'suite/editorWebviewSecurity.test.js',
   'suite/formWebviewPagesPreview.test.js',
+  'suite/formWebviewTaxiPreview.test.js',
   'suite/formWebviewBlock3b.test.js',
   'suite/formEditorProviderRouting.test.js',
   'suite/formLifecycle.integration.test.js',

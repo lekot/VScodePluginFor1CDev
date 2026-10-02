@@ -179,7 +179,13 @@ function parseAttributesContent(content: unknown[] | undefined): FormAttribute[]
     const attrContent = getByLocalName(o, 'Attribute');
     if (attrContent === undefined) {continue;}
     const c = Array.isArray(attrContent) ? attrContent : [attrContent];
-    const { name: n, id } = getAttrsFromContent(c);
+    const contentAttrs = getAttrsFromContent(c);
+    const wrapperAttrs = o[':@'];
+    const wrapper = wrapperAttrs && typeof wrapperAttrs === 'object' && !Array.isArray(wrapperAttrs)
+      ? wrapperAttrs as Record<string, unknown>
+      : undefined;
+    const n = typeof wrapper?.['@_name'] === 'string' ? wrapper['@_name'] : contentAttrs.name;
+    const id = typeof wrapper?.['@_id'] === 'string' ? wrapper['@_id'] : contentAttrs.id;
     const properties: Record<string, unknown> = {};
     for (const prop of c) {
       if (!prop || typeof prop !== 'object') {continue;}
