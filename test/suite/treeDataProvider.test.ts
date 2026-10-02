@@ -61,6 +61,155 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     assert.ok(provider);
   });
 
+  test('read-only completion lookup returns loaded direct type children and never invokes getChildren', () => {
+    const configPath = path.resolve('completion-config');
+    const catalogs: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: { _indexLoaded: true } as TreeNode['properties'],
+      children: [
+        { id: 'Catalogs.Goods', name: 'Goods', type: MetadataType.Catalog, properties: {} },
+        { id: 'Catalogs.Customers', name: 'Customers', type: MetadataType.Catalog, properties: {} },
+      ],
+    };
+    const root: TreeNode = {
+      id: 'completion-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [catalogs],
+    };
+    catalogs.parent = root;
+    provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+    (provider as unknown as { getChildren: () => Promise<TreeNode[]> }).getChildren = () => {
+      throw new Error('completion lookup must not invoke getChildren');
+    };
+
+    assert.deepStrictEqual(
+      provider.getLoadedTypeObjectsForResource(path.join(configPath, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), 'Catalogs'),
+      { status: 'loaded', names: ['Goods', 'Customers'] },
+    );
+  });
+
+  test('read-only completion lookup reports cold, invalidated, and replaced type indexes', () => {
+    const configPath = path.resolve('completion-config-reload');
+    const unloadedCatalogs: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: {},
+      children: [],
+    };
+    const root: TreeNode = {
+      id: 'completion-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [unloadedCatalogs],
+    };
+    unloadedCatalogs.parent = root;
+    provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+    const resourcePath = path.join(configPath, 'Documents', 'Invoice', 'Ext', 'ObjectModule.bsl');
+
+    assert.deepStrictEqual(provider.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs'), { status: 'notLoaded' });
+
+    (unloadedCatalogs.properties as Record<string, unknown>)._indexLoaded = true;
+    unloadedCatalogs.children = [
+      { id: 'Catalogs.BeforeInvalidation', name: 'BeforeInvalidation', type: MetadataType.Catalog, properties: {} },
+    ];
+    assert.deepStrictEqual(
+      provider.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs'),
+      { status: 'loaded', names: ['BeforeInvalidation'] },
+    );
+    provider.invalidateLoadedChildren(unloadedCatalogs);
+    assert.deepStrictEqual(provider.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs'), { status: 'notLoaded' });
+
+    const replacedCatalogs: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: { _indexLoaded: true } as TreeNode['properties'],
+      children: [
+        { id: 'Catalogs.AfterReload', name: 'AfterReload', type: MetadataType.Catalog, properties: {} },
+      ],
+    };
+    const replacedRoot: TreeNode = {
+      id: 'replacement-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [replacedCatalogs],
+    };
+    replacedCatalogs.parent = replacedRoot;
+    provider.setRootNode(replacedRoot, { configPath, format: ConfigFormat.Designer });
+    assert.deepStrictEqual(
+      provider.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs'),
+      { status: 'loaded', names: ['AfterReload'] },
+    );
+  });
+
+  test('read-only completion lookup selects the longest containing configuration path with Windows case handling', () => {
+    const mainPath = path.resolve(path.join(path.parse(process.cwd()).root, 'CompletionWorkspace', 'Main'));
+    const extensionPath = path.join(mainPath, 'ConfigurationExtensions', 'ExtensionA');
+    const mainCatalogs: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: { _indexLoaded: true } as TreeNode['properties'],
+      children: [{ id: 'Catalogs.Base', name: 'BaseOnly', type: MetadataType.Catalog, properties: {} }],
+    };
+    const extensionCatalogs: TreeNode = {
+      id: 'Catalogs',
+      name: 'Catalogs',
+      type: MetadataType.Catalog,
+      properties: { _indexLoaded: true } as TreeNode['properties'],
+      children: [{ id: 'Catalogs.Extension', name: 'ExtensionOnly', type: MetadataType.Catalog, properties: {} }],
+    };
+    const mainRoot: TreeNode = {
+      id: 'main-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [mainCatalogs],
+    };
+    const extensionRoot: TreeNode = {
+      id: 'extension-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [extensionCatalogs],
+    };
+    mainCatalogs.parent = mainRoot;
+    extensionCatalogs.parent = extensionRoot;
+    const contexts = new Map<string, { configPath: string; format: ConfigFormat }>([
+      ['main-root', { configPath: mainPath, format: ConfigFormat.Designer }],
+      ['extension-root', {
+        configPath: process.platform === 'win32' ? extensionPath.toUpperCase() : extensionPath,
+        format: ConfigFormat.Designer,
+      }],
+    ]);
+    provider.setRootNodes([mainRoot, extensionRoot], contexts);
+    const resourcePath = path.join(extensionPath, 'CommonModules', 'Caller', 'Ext', 'Module.bsl');
+
+    assert.deepStrictEqual(
+      provider.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs'),
+      { status: 'loaded', names: ['ExtensionOnly'] },
+    );
+    assert.deepStrictEqual(
+      provider.getLoadedTypeObjectsForResource(path.join(mainPath, 'Documents', 'Invoice', 'Ext', 'Module.bsl'), 'Catalogs'),
+      { status: 'loaded', names: ['BaseOnly'] },
+    );
+    assert.deepStrictEqual(
+      provider.getLoadedTypeObjectsForResource(
+        path.join(path.dirname(mainPath), `${path.basename(mainPath)}-sibling`, 'CommonModules', 'Caller', 'Module.bsl'),
+        'Catalogs',
+      ),
+      { status: 'notLoaded' },
+      'a sibling path sharing the root prefix is outside the configuration',
+    );
+  });
+
   test('support configuration overlay preserves base root context tokens and original icon', () => {
     const configPath = path.resolve('support-config');
     const rootNode: TreeNode = {

@@ -277,7 +277,7 @@ export async function registerExtensionWorkspace(
   state: ExtensionState,
   lifecycle: MetadataTreeLifecycle
 ): Promise<void> {
-  registerBslCompletionProvider(context, context.extensionPath);
+  registerBslCompletionProvider(context, context.extensionPath, () => state.treeDataProvider);
   context.subscriptions.push({ dispose: lifecycle.dispose });
   const workspaceFolderLifecycle = registerMetadataWorkspaceFolderLifecycle(lifecycle);
   context.subscriptions.push(workspaceFolderLifecycle);

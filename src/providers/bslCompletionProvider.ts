@@ -7,6 +7,7 @@ import {
   type BslCompletionType,
   type CompletionArticleReference,
 } from './bslCompletionIndex';
+import { BslLocalCompletionIndex, type BslLocalRoutineCandidate } from './bslLocalCompletionIndex';
 
 const MAX_CONTEXT_LINES = 200;
 const MAX_CONTEXT_CHARS = 16_384;
@@ -44,6 +45,30 @@ interface CompletionContext {
   readonly typeName?: string;
   readonly receiver?: string;
 }
+
+interface ReceiverInference {
+  readonly typeName?: string;
+  readonly assigned: boolean;
+}
+
+export type LoadedTypeObjectsResult =
+  | { readonly status: 'loaded'; readonly names: readonly string[] }
+  | { readonly status: 'notLoaded' };
+
+export interface BslMetadataCompletionReader {
+  getLoadedTypeObjectsForResource(resourcePath: string, folderId: string): LoadedTypeObjectsResult;
+}
+
+type MetadataCompletionReaderProvider = () => BslMetadataCompletionReader | null | undefined;
+
+const METADATA_COLLECTION_FOLDERS = new Map<string, string>([
+  ['документы', 'Documents'],
+  ['documents', 'Documents'],
+  ['справочники', 'Catalogs'],
+  ['catalogs', 'Catalogs'],
+  ['регистрысведений', 'InformationRegisters'],
+  ['informationregisters', 'InformationRegisters'],
+]);
 
 const indexLoads = new Map<string, Promise<RuntimeIndex>>();
 
@@ -256,9 +281,9 @@ function inferredTypeForReceiver(
   position: vscode.Position,
   currentLinePrefix: string,
   receiver: string,
-): string | undefined {
+): ReceiverInference {
   if (currentLinePrefix.length > MAX_CONTEXT_CHARS) {
-    return undefined;
+    return { assigned: false };
   }
   const reverseLines = [currentLinePrefix];
   let characters = currentLinePrefix.length;
@@ -274,7 +299,7 @@ function inferredTypeForReceiver(
     characters += line.length + 1;
     const boundary = currentProcedureBoundary(line);
     if (boundary === 'end') {
-      return undefined;
+      return { assigned: false };
     }
     if (boundary === 'start') {
       foundProcedureStart = true;
@@ -282,10 +307,11 @@ function inferredTypeForReceiver(
     }
   }
   if (!foundProcedureStart) {
-    return undefined;
+    return { assigned: false };
   }
 
   const assignments = new Map<string, string>();
+  const assignedVariables = new Set<string>();
   for (const rawLine of reverseLines.reverse()) {
     const line = maskLine(rawLine).text;
     for (const statement of line.split(';')) {
@@ -294,6 +320,7 @@ function inferredTypeForReceiver(
         continue;
       }
       const variable = normalizeIdentifier(assignment[1]);
+      assignedVariables.add(variable);
       const constructor = /^\s*(?:Новый|New)\s+([\p{L}_][\p{L}\p{N}_]*)\s*\(/iu.exec(assignment[2]);
       if (constructor) {
         assignments.set(variable, normalizeIdentifier(constructor[1]));
@@ -302,7 +329,12 @@ function inferredTypeForReceiver(
       }
     }
   }
-  return assignments.get(normalizeIdentifier(receiver));
+  const normalizedReceiver = normalizeIdentifier(receiver);
+  const typeName = assignments.get(normalizedReceiver);
+  return {
+    ...(typeName ? { typeName } : {}),
+    assigned: assignedVariables.has(normalizedReceiver),
+  };
 }
 
 function matchingCandidates(
@@ -339,6 +371,68 @@ function toCompletionItem(candidate: Candidate): vscode.CompletionItem {
   return item;
 }
 
+function hasUnsafeParameterControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if ((code <= 8) || (code >= 14 && code <= 31) || code === 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function toLocalRoutineCompletionItem(
+  candidate: BslLocalRoutineCandidate,
+  sourceLabel: string,
+): vscode.CompletionItem {
+  const item = new vscode.CompletionItem(
+    candidate.name,
+    candidate.kind === 'function' ? vscode.CompletionItemKind.Function : vscode.CompletionItemKind.Method,
+  );
+  item.insertText = candidate.name;
+  const kindLabel = candidate.kind === 'function' ? 'Функция' : 'Процедура';
+  const parameterText = candidate.parameterText;
+  const safeParameterText = parameterText.length <= 160
+    && !hasUnsafeParameterControlCharacters(parameterText)
+    ? parameterText.replace(/\s+/gu, ' ').trim()
+    : '';
+  item.detail = safeParameterText
+    ? `${kindLabel} • ${sourceLabel} • Параметры: ${safeParameterText}`
+    : `${kindLabel} • ${sourceLabel}`;
+  item.sortText = normalizeIdentifier(candidate.name);
+  return item;
+}
+
+function toMetadataCompletionItem(name: string, folderId: string): vscode.CompletionItem {
+  const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Class);
+  item.insertText = name;
+  item.detail = `Объект метаданных • ${folderId}`;
+  item.sortText = normalizeIdentifier(name);
+  return item;
+}
+
+function metadataFolderForReceiver(receiver: string): string | undefined {
+  return METADATA_COLLECTION_FOLDERS.get(normalizeIdentifier(receiver));
+}
+
+function localRoutineCompletionItems(
+  prefix: string,
+  routines: readonly BslLocalRoutineCandidate[],
+  sourceLabel: string,
+): vscode.CompletionItem[] {
+  const foldedPrefix = normalizeIdentifier(prefix);
+  return routines
+    .filter(({ name }) => normalizeIdentifier(name).startsWith(foldedPrefix))
+    .map((routine) => toLocalRoutineCompletionItem(routine, sourceLabel));
+}
+
+function metadataCompletionItems(prefix: string, names: readonly string[], folderId: string): vscode.CompletionItem[] {
+  const foldedPrefix = normalizeIdentifier(prefix);
+  return names
+    .filter((name) => normalizeIdentifier(name).startsWith(foldedPrefix))
+    .map((name) => toMetadataCompletionItem(name, folderId));
+}
+
 function candidatesForType(type: BslCompletionType): Candidate[] {
   return [
     ...type.properties.map((name) => ({ name, kind: 'property' as const, article: type.article })),
@@ -348,8 +442,12 @@ function candidatesForType(type: BslCompletionType): Candidate[] {
 
 export class BslCompletionProvider implements vscode.CompletionItemProvider {
   private loadedIndex: Promise<RuntimeIndex> | undefined;
+  private readonly localIndex = new BslLocalCompletionIndex();
 
-  constructor(private readonly extensionPath: string) {}
+  constructor(
+    private readonly extensionPath: string,
+    private readonly getMetadataCompletionReader?: MetadataCompletionReaderProvider,
+  ) {}
 
   async provideCompletionItems(
     document: vscode.TextDocument,
@@ -377,11 +475,37 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
     let inferredTypeName = context.typeName;
     if (context.kind === 'member' && !inferredTypeName) {
       const receiver = context.receiver;
-      inferredTypeName = receiver
+      const metadataFolder = receiver ? metadataFolderForReceiver(receiver) : undefined;
+      if (metadataFolder) {
+        const resourcePath = document.uri.scheme === 'file' ? document.uri.fsPath : '';
+        if (!resourcePath || token.isCancellationRequested) {
+          return token.isCancellationRequested ? undefined : [];
+        }
+        try {
+          const result = this.getMetadataCompletionReader?.()?.getLoadedTypeObjectsForResource(resourcePath, metadataFolder);
+          if (token.isCancellationRequested) {
+            return undefined;
+          }
+          return result?.status === 'loaded'
+            ? metadataCompletionItems(context.prefix, result.names, metadataFolder)
+            : [];
+        } catch {
+          return [];
+        }
+      }
+      const receiverInference = receiver
         ? inferredTypeForReceiver(document, position, currentLinePrefix, receiver)
-        : undefined;
+        : { assigned: false };
+      inferredTypeName = receiverInference.typeName;
       if (!inferredTypeName) {
-        return [];
+        if (!receiver || receiverInference.assigned) {
+          return [];
+        }
+        const routines = await this.localIndex.getCommonModuleRoutines(document, receiver, token);
+        if (token.isCancellationRequested) {
+          return undefined;
+        }
+        return localRoutineCompletionItems(context.prefix, routines, `Общий модуль ${receiver}`);
       }
     }
 
@@ -391,8 +515,15 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
         return undefined;
       }
       if (context.kind === 'global') {
-        return matchingCandidates(context.prefix, index.globalCandidates, index.globalCandidatesByFirstCharacter)
-          .map(toCompletionItem);
+        const platformItems = matchingCandidates(
+          context.prefix,
+          index.globalCandidates,
+          index.globalCandidatesByFirstCharacter,
+        ).map(toCompletionItem);
+        const seenNames = new Set(platformItems.map(({ label }) => normalizeIdentifier(String(label))));
+        const localItems = localRoutineCompletionItems(context.prefix, this.localIndex.getCurrentDocumentRoutines(document), 'текущий модуль')
+          .filter(({ label }) => !seenNames.has(normalizeIdentifier(String(label))));
+        return [...platformItems, ...localItems];
       }
       if (context.kind === 'type') {
         return matchingCandidates(context.prefix, index.typeCandidates, index.typeCandidatesByFirstCharacter)
@@ -415,10 +546,11 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
 export function registerBslCompletionProvider(
   context: Pick<vscode.ExtensionContext, 'subscriptions'>,
   extensionPath: string,
+  getMetadataCompletionReader?: MetadataCompletionReaderProvider,
 ): vscode.Disposable {
   const disposable = vscode.languages.registerCompletionItemProvider(
     { language: 'bsl' },
-    new BslCompletionProvider(extensionPath),
+    new BslCompletionProvider(extensionPath, getMetadataCompletionReader),
     '.',
   );
   context.subscriptions.push(disposable);

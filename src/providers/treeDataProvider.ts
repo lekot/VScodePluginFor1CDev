@@ -73,6 +73,10 @@ export interface TypeContentsWarmupOptions {
   slicePauseMs?: number;
 }
 
+export type LoadedTypeObjectsResult =
+  | { readonly status: 'loaded'; readonly names: readonly string[] }
+  | { readonly status: 'notLoaded' };
+
 export interface SupportStateCacheReader {
   get(configRoot: string, generationId?: string): CachedSupportStatus | undefined;
 }
@@ -680,6 +684,47 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
    */
   getRootNodes(): readonly TreeNode[] {
     return this.rootNodes;
+  }
+
+  /**
+   * Returns names from an already-loaded direct type-folder index for the configuration
+   * containing `resourcePath`. This read-only lookup never triggers lazy loading or I/O.
+   */
+  getLoadedTypeObjectsForResource(resourcePath: string, folderId: string): LoadedTypeObjectsResult {
+    if (!resourcePath || !folderId) {
+      return { status: 'notLoaded' };
+    }
+    const targetPath = path.resolve(resourcePath);
+    const matchingRoots = this.rootNodes
+      .map((root) => {
+        const configPath = this.cache.getLoadContext(root.id)?.configPath;
+        if (!configPath) {
+          return undefined;
+        }
+        const resolvedConfigPath = path.resolve(configPath);
+        const relativePath = path.relative(resolvedConfigPath, targetPath);
+        const comparedRelativePath = process.platform === 'win32'
+          ? relativePath.toLocaleLowerCase('en-US')
+          : relativePath;
+        const isContained = comparedRelativePath === '' || (
+          comparedRelativePath !== '..'
+          && !comparedRelativePath.startsWith(`..${path.sep}`)
+          && !path.isAbsolute(relativePath)
+        );
+        return isContained ? { root, configPath: resolvedConfigPath } : undefined;
+      })
+      .filter((candidate): candidate is { root: TreeNode; configPath: string } => candidate !== undefined)
+      .sort((left, right) => right.configPath.length - left.configPath.length);
+
+    const selectedRoot = matchingRoots[0]?.root;
+    const typeFolder = selectedRoot?.children?.find((child) => child.id === folderId);
+    if (!typeFolder || (typeFolder.properties as Record<string, unknown>)._indexLoaded !== true) {
+      return { status: 'notLoaded' };
+    }
+    return {
+      status: 'loaded',
+      names: (typeFolder.children ?? []).map(({ name }) => name),
+    };
   }
 
   /** Atomically replaces one loaded configuration root and preserves every other root/context. */
