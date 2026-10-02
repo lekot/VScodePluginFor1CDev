@@ -155,6 +155,29 @@ class CompletionItem {
   ) {}
 }
 
+class ParameterInformation {
+  constructor(
+    public label: string | [number, number],
+    public documentation?: string,
+  ) {}
+}
+
+class SignatureInformation {
+  parameters: ParameterInformation[] = [];
+  activeParameter?: number;
+
+  constructor(
+    public label: string,
+    public documentation?: string,
+  ) {}
+}
+
+class SignatureHelp {
+  signatures: SignatureInformation[] = [];
+  activeSignature = 0;
+  activeParameter = 0;
+}
+
 const CompletionItemKind = {
   Text: 0,
   Method: 1,
@@ -165,6 +188,12 @@ const CompletionItemKind = {
   Class: 6,
   Property: 10,
   Keyword: 14,
+} as const;
+
+const SignatureHelpTriggerKind = {
+  Invoke: 1,
+  TriggerCharacter: 2,
+  ContentChange: 3,
 } as const;
 
 class VSCodeEventEmitter<T> {
@@ -256,6 +285,12 @@ export const vscodeTestState = {
   /** Хэндлеры зарегистрированных команд по id (P7a-7). */
   registeredCommandHandlers: new Map<string, (...args: unknown[]) => unknown>(),
   registeredCompletionProviders: [] as Array<{
+    selector: unknown;
+    provider: unknown;
+    triggerCharacters: string[];
+    disposed: boolean;
+  }>,
+  registeredSignatureHelpProviders: [] as Array<{
     selector: unknown;
     provider: unknown;
     triggerCharacters: string[];
@@ -550,6 +585,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.registeredCommandIds = [];
   vscodeTestState.registeredCommandHandlers = new Map();
   vscodeTestState.registeredCompletionProviders = [];
+  vscodeTestState.registeredSignatureHelpProviders = [];
   vscodeTestState.vscodeVersion = undefined;
   vscodeTestState.filesReadonlyIncludeUpdateThrows = false;
   vscodeTestState.informationMessageResult = undefined;
@@ -825,6 +861,19 @@ const languagesStub = {
       },
     };
   },
+  registerSignatureHelpProvider: (
+    selector: unknown,
+    provider: unknown,
+    ...triggerCharacters: string[]
+  ): { dispose: () => void } => {
+    const registration = { selector, provider, triggerCharacters, disposed: false };
+    vscodeTestState.registeredSignatureHelpProviders.push(registration);
+    return {
+      dispose: () => {
+        registration.disposed = true;
+      },
+    };
+  },
 };
 
 const envStub = {
@@ -892,6 +941,10 @@ const vscodeStub = {
   SourceBreakpoint,
   CompletionItem,
   CompletionItemKind,
+  ParameterInformation,
+  SignatureInformation,
+  SignatureHelp,
+  SignatureHelpTriggerKind,
   commands: commandsStub,
   languages: languagesStub,
   env: envStub,

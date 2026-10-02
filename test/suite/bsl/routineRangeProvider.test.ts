@@ -120,6 +120,28 @@ suite('routineRangeProvider', () => {
     );
   });
 
+  test('keeps nested default expressions and escaped strings in routine parameters', () => {
+    const source = [
+      'Function Prepare(Знач First = New Structure("A,B", 1, New Array(2, 3)),',
+      '    Знач Second = "text, ""quoted"" )"',
+      ') Export',
+      'EndFunction',
+    ].join('\n');
+
+    const result = parseBslRoutines(source);
+
+    assert.strictEqual(result.routines.length, 1);
+    assert.strictEqual(
+      result.routines[0].parameterText,
+      [
+        'Знач First = New Structure("A,B", 1, New Array(2, 3)),',
+        '    Знач Second = "text, ""quoted"" )"',
+      ].join('\n'),
+    );
+    assert.strictEqual(result.routines[0].exported, true);
+    assert.deepStrictEqual(result.diagnostics, []);
+  });
+
   test('returns no routines or diagnostics for empty module', () => {
     assert.deepStrictEqual(parseBslRoutines(''), { routines: [], diagnostics: [] });
   });

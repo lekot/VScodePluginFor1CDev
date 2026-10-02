@@ -25,7 +25,7 @@ suite('Smoke: BSL completion', () => {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     assert.ok(workspaceFolder, 'Smoke requires the metadata fixture workspace');
     const source = [
-      'Процедура ЛокальнаяПроцедура()',
+      'Процедура ЛокальнаяПроцедура(Первый, Второй)',
       'КонецПроцедуры',
       '',
       'Новый Зап',
@@ -33,6 +33,9 @@ suite('Smoke: BSL completion', () => {
       'КонецЦ',
       'КонецП',
       'Исключ',
+      '',
+      'Новый Структура("Код", 1,',
+      'ЛокальнаяПроцедура(1,',
     ].join('\n');
     const filePath = path.join(
       workspaceFolder.uri.fsPath,
@@ -80,6 +83,30 @@ suite('Smoke: BSL completion', () => {
         otherPlatformItems.every((item) => exceptionKeyword?.sortText! < item.sortText!),
         'the exception keyword should precede similarly prefixed platform names',
       );
+
+      const structureHelp = await vscode.commands.executeCommand<vscode.SignatureHelp>(
+        'vscode.executeSignatureHelpProvider',
+        document.uri,
+        new vscode.Position(9, 'Новый Структура("Код", 1,'.length),
+      );
+      assert.deepStrictEqual(
+        structureHelp?.signatures.map(({ label }) => label),
+        ['Структура(Ключи, Значение1, …)', 'Структура(ФиксированнаяСтруктура)'],
+        'signature help should include the supported Structure overloads',
+      );
+      assert.strictEqual(structureHelp?.activeParameter, 1);
+
+      const routineHelp = await vscode.commands.executeCommand<vscode.SignatureHelp>(
+        'vscode.executeSignatureHelpProvider',
+        document.uri,
+        new vscode.Position(10, 'ЛокальнаяПроцедура(1,'.length),
+      );
+      assert.strictEqual(
+        routineHelp?.signatures[0].label,
+        'ЛокальнаяПроцедура(Первый, Второй)',
+        'signature help should read parameters from the current unsaved module',
+      );
+      assert.strictEqual(routineHelp?.activeParameter, 1);
     } finally {
       if (document && vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
