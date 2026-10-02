@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import initSqlJs, { type Database as SqlDatabase, type SqlJsStatic } from 'sql.js';
 import type { AgentResult } from './types';
+import { loadSyntaxHelpDatabase, SyntaxHelpDatabaseError } from './syntaxHelpDatabase';
 
 export type SyntaxHelpSource = 'syntax' | 'standards' | 'all';
 export type SyntaxHelpAction = 'search' | 'get' | 'children';
@@ -284,6 +284,9 @@ export class AgentSyntaxHelpOperations {
       if (error instanceof KnowledgeError) {
         return { success: false, code: error.code, error: error.message, ...(error.data ? { data: error.data } : {}) };
       }
+      if (error instanceof SyntaxHelpDatabaseError) {
+        return { success: false, code: error.code, error: error.message };
+      }
       return {
         success: false,
         code: 'KNOWLEDGE_RESOURCE_UNAVAILABLE',
@@ -294,52 +297,18 @@ export class AgentSyntaxHelpOperations {
 
   private async loadKnowledge(): Promise<KnowledgeNode[]> {
     const root = path.join(this.extensionPath, 'resources');
-    const databasePath = path.join(root, 'help', 'shcntx_help.db');
-    const wasmPath = path.join(this.extensionPath, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
-    const databaseBytes = await fs.promises.readFile(databasePath);
-    const SQL = await initSqlJs({ locateFile: () => wasmPath });
-    const syntaxNodes = this.readSyntaxDatabase(SQL, databaseBytes);
+    const syntaxNodes = (await loadSyntaxHelpDatabase(this.extensionPath)).map((node) => createNode(
+      `syntax:${node.id}`,
+      'syntax',
+      node.parentId === null ? null : `syntax:${node.parentId}`,
+      node.name,
+      node.path,
+      node.content,
+    ));
     const standardsNodes = await this.readStandards(root);
     const allNodes = [...syntaxNodes, ...standardsNodes];
     this.validateHierarchy(allNodes);
     return allNodes;
-  }
-
-  private readSyntaxDatabase(SQL: SqlJsStatic, bytes: Uint8Array): KnowledgeNode[] {
-    let database: SqlDatabase | undefined;
-    try {
-      database = new SQL.Database(bytes);
-      const integrity = database.exec('PRAGMA quick_check');
-      if (integrity[0]?.values[0]?.[0] !== 'ok') {
-        throw new KnowledgeError('KNOWLEDGE_RESOURCE_INVALID', 'The syntax database failed its integrity check.');
-      }
-      const rows = database.exec('SELECT id, parent_id, name, path, content FROM nodes ORDER BY id');
-      const table = rows[0];
-      if (!table || table.columns.join(',') !== 'id,parent_id,name,path,content' || table.values.length === 0) {
-        throw new KnowledgeError('KNOWLEDGE_RESOURCE_INVALID', 'The syntax database has an unexpected schema.');
-      }
-      return table.values.map((row) => {
-        const [id, parentId, name, itemPath, content] = row;
-        if (typeof id !== 'number' || (parentId !== null && typeof parentId !== 'number')
-          || typeof name !== 'string' || typeof itemPath !== 'string' || typeof content !== 'string'
-          || !Number.isSafeInteger(id) || id <= 0 || !itemPath || itemPath.startsWith('/') || itemPath.includes('..')) {
-          throw new KnowledgeError('KNOWLEDGE_RESOURCE_INVALID', 'The syntax database contains an invalid node.');
-        }
-        return createNode(
-          `syntax:${id}`,
-          'syntax',
-          parentId === null ? null : `syntax:${parentId}`,
-          name,
-          itemPath.replace(/\\/g, '/'),
-          content,
-        );
-      });
-    } catch (error) {
-      if (error instanceof KnowledgeError) { throw error; }
-      throw new KnowledgeError('KNOWLEDGE_RESOURCE_INVALID', 'The syntax database could not be read.');
-    } finally {
-      database?.close();
-    }
   }
 
   private async readStandards(resourcesRoot: string): Promise<KnowledgeNode[]> {

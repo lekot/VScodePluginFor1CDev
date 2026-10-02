@@ -30,7 +30,7 @@ interface PackageManifest {
 }
 
 suite('extension manifest contracts', () => {
-  test('activates for 1C workspace markers and the explicit BSL debug resolver', () => {
+  test('activates for 1C workspace markers and the explicit BSL debug resolver, not standalone BSL files', () => {
     const pkg = readPackageJson();
     const expectedActivationEvents = [
       'workspaceContains:**/Configuration.xml',
@@ -47,6 +47,7 @@ suite('extension manifest contracts', () => {
     );
     assert.ok(!pkg.activationEvents.includes('onStartupFinished'));
     assert.ok(!pkg.activationEvents.includes('workspaceContains:**/.project'));
+    assert.ok(!pkg.activationEvents.includes('onLanguage:bsl'));
   });
 
   test('declares virtual workspaces unsupported because metadata access is filesystem based', () => {

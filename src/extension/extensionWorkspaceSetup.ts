@@ -27,6 +27,7 @@ import { SubsystemCommandInterfaceProvider } from '../subsystemCommandInterfaceE
 import { XdtoPackageEditorProvider } from '../xdtoPackageEditor';
 import { registerGitPhase4HeadChangeHandlers } from '../services/gitIntegration';
 import { registerLazyWorkspaceOrchestrator } from './lazyWorkspaceOrchestrator';
+import { registerBslCompletionProvider } from '../providers/bslCompletionProvider';
 import { registerMetadataWorkspaceFolderLifecycle } from './metadataWorkspaceFolders';
 import { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
 import {
@@ -276,6 +277,7 @@ export async function registerExtensionWorkspace(
   state: ExtensionState,
   lifecycle: MetadataTreeLifecycle
 ): Promise<void> {
+  registerBslCompletionProvider(context, context.extensionPath);
   context.subscriptions.push({ dispose: lifecycle.dispose });
   const workspaceFolderLifecycle = registerMetadataWorkspaceFolderLifecycle(lifecycle);
   context.subscriptions.push(workspaceFolderLifecycle);

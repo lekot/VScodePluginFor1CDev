@@ -143,6 +143,29 @@ class SourceBreakpoint extends Breakpoint {
   }
 }
 
+class CompletionItem {
+  insertText?: string;
+  detail?: string;
+  documentation?: string | { value: string };
+  sortText?: string;
+
+  constructor(
+    public readonly label: string,
+    public readonly kind?: number,
+  ) {}
+}
+
+const CompletionItemKind = {
+  Text: 0,
+  Method: 1,
+  Function: 2,
+  Constructor: 3,
+  Field: 4,
+  Variable: 5,
+  Class: 6,
+  Property: 10,
+} as const;
+
 class VSCodeEventEmitter<T> {
   private listeners: Array<(e: T) => void> = [];
   readonly event = (listener: (e: T) => void) => {
@@ -231,6 +254,12 @@ export const vscodeTestState = {
   registeredCommandIds: [] as string[],
   /** Хэндлеры зарегистрированных команд по id (P7a-7). */
   registeredCommandHandlers: new Map<string, (...args: unknown[]) => unknown>(),
+  registeredCompletionProviders: [] as Array<{
+    selector: unknown;
+    provider: unknown;
+    triggerCharacters: string[];
+    disposed: boolean;
+  }>,
   /** When set, `showInformationMessage` returns this instead of `undefined`. */
   informationMessageResult: undefined as string | undefined,
   executedCommands: [] as unknown[][],
@@ -519,6 +548,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.workspaceConfig = {};
   vscodeTestState.registeredCommandIds = [];
   vscodeTestState.registeredCommandHandlers = new Map();
+  vscodeTestState.registeredCompletionProviders = [];
   vscodeTestState.vscodeVersion = undefined;
   vscodeTestState.filesReadonlyIncludeUpdateThrows = false;
   vscodeTestState.informationMessageResult = undefined;
@@ -780,6 +810,22 @@ const commandsStub = {
   },
 };
 
+const languagesStub = {
+  registerCompletionItemProvider: (
+    selector: unknown,
+    provider: unknown,
+    ...triggerCharacters: string[]
+  ): { dispose: () => void } => {
+    const registration = { selector, provider, triggerCharacters, disposed: false };
+    vscodeTestState.registeredCompletionProviders.push(registration);
+    return {
+      dispose: () => {
+        registration.disposed = true;
+      },
+    };
+  },
+};
+
 const envStub = {
   openExternal: async (target: { toString(): string }): Promise<boolean> => {
     vscodeTestState.openExternalLog.push(target.toString());
@@ -843,7 +889,10 @@ const vscodeStub = {
   WorkspaceEdit,
   Breakpoint,
   SourceBreakpoint,
+  CompletionItem,
+  CompletionItemKind,
   commands: commandsStub,
+  languages: languagesStub,
   env: envStub,
   Disposable,
   window: windowStub,
