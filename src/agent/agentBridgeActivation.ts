@@ -25,7 +25,7 @@ export async function activateAgentBridge(
   const version = context.extension?.packageJSON?.version as string | undefined ?? 'unknown';
 
   const bridge = new AgentBridge({
-    commandPattern: /^1c-metadata-tree\.agent(\.debug|\.forms|\.skd|\.xdto)?\.[a-zA-Z]+$/,
+    commandPattern: /^1c-metadata-tree\.agent(?:(?:\.debug|\.forms|\.skd|\.xdto)?\.[a-zA-Z]+|\.roles\.setRights)$/,
     workspaceFolder,
     extensionVersion: version,
     extensionPath: context.extensionPath,

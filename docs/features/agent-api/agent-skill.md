@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **78** runtime-команд Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **79** runtime-команд Agent API для программного
 управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,24 +46,25 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-MCP публикует полный Agent API: **78 tools для 78 runtime-команд**.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **79 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
-| Домен | MCP tools |
+| Tool | Для чего используется |
 |---|---|
-| Configuration/CRUD (13) | `cdt_list_configurations`, `cdt_create_object`, `cdt_get_yaml`, `cdt_list_objects`, `cdt_get_properties`, `cdt_add_attribute`, `cdt_add_tabular_section`, `cdt_add_tabular_section_column`, `cdt_delete_attribute`, `cdt_delete_tabular_section`, `cdt_delete_object`, `cdt_rename_object`, `cdt_set_properties` |
-| CFE project lifecycle (9) | `cdt_cfe_list_projects`, `cdt_cfe_get_context`, `cdt_cfe_validate`, `cdt_cfe_create_project`, `cdt_cfe_borrow_object`, `cdt_cfe_create_interceptor`, `cdt_cfe_create_own_form`, `cdt_cfe_borrow_form`, `cdt_cfe_extend_form` |
-| Debug (15) | `cdt_debug_start`, `cdt_debug_stop`, `cdt_debug_set_breakpoint`, `cdt_debug_clear_breakpoints`, `cdt_debug_set_exception_filter`, `cdt_debug_wait_for_stop`, `cdt_debug_get_stack_trace`, `cdt_debug_get_scopes`, `cdt_debug_get_variables`, `cdt_debug_evaluate`, `cdt_debug_continue`, `cdt_debug_step_over`, `cdt_debug_step_in`, `cdt_debug_step_out`, `cdt_debug_start_from_binding` |
-| Bindings/deploy (7) | `cdt_resolve_binding`, `cdt_list_bindings`, `cdt_deploy`, `cdt_deploy_selected_objects`, `cdt_deploy_changed_files`, `cdt_pull_selected_objects`, `cdt_export_status` |
-| Support (6) | `cdt_support_get_status`, `cdt_support_set_object_mode`, `cdt_support_enable_object_rules`, `cdt_support_sync`, `cdt_support_verify`, `cdt_support_get_last_run` |
-| External EPF/ERF (2) | `cdt_dump_external_processor`, `cdt_build_external_processor` |
-| Types/subsystems/characteristics (10) | `cdt_get_type`, `cdt_set_type`, `cdt_get_subsystem_command_interface`, `cdt_set_subsystem_command_visibility`, `cdt_set_subsystem_command_order`, `cdt_set_subsystem_subsystems_order`, `cdt_list_predefined_characteristics`, `cdt_get_predefined_characteristic_type`, `cdt_set_predefined_characteristic_type`, `cdt_get_characteristic_value_registers` |
-| Forms (5) | `cdt_forms_start`, `cdt_forms_exec`, `cdt_forms_stop`, `cdt_forms_shot`, `cdt_forms_status` |
-| SKD (4) | `cdt_skd_compile`, `cdt_skd_info`, `cdt_skd_edit`, `cdt_skd_validate` |
-| XDTO (7) | `cdt_xdto_list_packages`, `cdt_xdto_get_package`, `cdt_xdto_export_xsd`, `cdt_xdto_import_xsd`, `cdt_xdto_create_from_xsd`, `cdt_xdto_compare`, `cdt_xdto_merge` |
+| `cdt_read` | Closed, read-only configuration and Agent API operations |
+| `cdt_write` | Closed configuration writes, including role rights |
+| `cdt_write_idempotent` | Closed writes that safely converge when repeated |
+| `cdt_read_live` | Reads from external systems |
+| `cdt_write_live` | Writes to external systems |
+| `cdt_verify_live` | Verification against external systems |
+| `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Имена и inputs соответствуют описанным ниже Agent-командам: например, `cdt_debug_get_variables` вызывает `1c-metadata-tree.agent.debug.getVariables`, а `cdt_xdto_export_xsd` — `1c-metadata-tree.agent.xdto.exportXsd`. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 79 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
-Каждый tool вызывает ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копию в text content. Input objects строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
+Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
+
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 79 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+
+Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
 ### CFE project lifecycle
 
@@ -108,8 +109,8 @@ metadata reference, отсутствующая или незаимствован
 
 Bearer даёт аутентифицированному локальному MCP-клиенту ту же authority, что legacy `/command`, то есть доступ ко всему Agent API. В частности:
 
-- `cdt_forms_exec` исполняет произвольный JavaScript в browser session;
-- `cdt_debug_evaluate` исполняет BSL-выражение, которое может иметь side effects;
+- Операция `cdt_forms_exec` исполняет произвольный JavaScript в browser session;
+- операция `cdt_debug_evaluate` исполняет BSL-выражение, которое может иметь side effects;
 - deploy/pull меняют информационные базы или workspace;
 - support set/enable/sync меняют master-файл и могут запускать Configurator для связанных ИБ;
 - support verify не меняет master или информационные базы, но запускает внешние Configurator dump-процессы и записывает durable audit run в локальный журнал;
@@ -157,7 +158,7 @@ req.end(data);
 
 Через bridge доступны только команды, соответствующие паттерну:
 ```
-/^1c-metadata-tree\.agent(\.debug|\.forms|\.skd|\.xdto)?\.[a-zA-Z]+$/
+/^1c-metadata-tree\.agent(?:(?:\.debug|\.forms|\.skd|\.xdto)?\.[a-zA-Z]+|\.roles\.setRights)$/
 ```
 
 #### Вызов через helper-скрипт
@@ -209,6 +210,50 @@ MCP endpoint через `mcp.url`.
 #### `1c-metadata-tree.agent.listConfigurations`
 
 Параметры не требуются. Команда не изменяет файлы и является публичной точкой discovery для multi-root workspace.
+
+### Права роли
+
+#### `1c-metadata-tree.agent.roles.setRights`
+
+Заменить права указанных объектов в уже существующей роли. Чтобы создать роль, сначала вызовите
+`agent.createObject` с `type: "Role"`, `name` и `synonym`, затем задайте её права:
+
+```json
+{
+  "roleName": "МенеджерТоваров",
+  "objects": [
+    "Catalog.Товары: @edit",
+    "Document.Заказ: @post"
+  ]
+}
+```
+
+`configurationId` необязателен только для единственной конфигурации. Каждая строка `objects` имеет
+форму `Type.Name: preset` либо `Type.Name: Right1, Right2`. Перечисление прав задаёт итоговый набор
+для этого объекта; права других объектов роли остаются без изменений.
+
+- `@view` выдаёт применимые Read/View, InputByString и Use; для DataProcessor/Report применяется
+  Use+View, для WebService/HTTPService/IntegrationService/ExternalDataSource — Use.
+- `@edit` сохраняет применимые права `@view` (включая Use для поддерживаемых типов) и добавляет
+  Read, Insert, Update, Delete, View, Edit, InteractiveInsert, InputByString и стандартные
+  интерактивные удаления. Права истории данных в пресет не входят.
+- `@post` доступен только для Document и равен `@edit` плюс Posting, UndoPosting,
+  InteractivePosting и InteractiveUndoPosting.
+- `@admin` выдаёт все права из allowlist для типа.
+
+Права атрибутов, табличных частей и колонок команда не создаёт и не переписывает: платформа
+применяет к ним сохранённый `setForAttributesByDefault`, а явные дочерние View/Edit остаются
+неизменными. Дочерние команды получают View, когда View разрешён у родителя. Права, ограничения
+RLS, шаблоны и неизвестные XML-узлы сохраняются. Некорректный `Rights.xml` отклоняется до создания
+плана записи. При `setForNewObjects=true` права со значением false записываются явно, чтобы
+переопределить значение по умолчанию. Оба формата хранят права отдельно от метаданных роли: EDT
+записывает `src/Roles/<role>/Ext/Rights.xml`, Designer — `Roles/<role>/Ext/Rights.xml`, а метаданные
+Designer-роли находятся в `Roles/<role>.xml`. Для существующего файла сохраняются точные значения
+`setForAttributesByDefault` и `independentRightsOfChildObjects`; для нового файла используется
+платформенный default `setForAttributesByDefault=true`. EDT читает объекты из
+`src/<folder>/<name>/<type>.mdo`. Результат содержит `{ roleName, objectsAffected, files }`, где
+`files` — относительные пути. Ошибки DSL, неизвестные права/объекты, отсутствующая роль и
+неподдерживаемый формат возвращаются с типизированным `code` до записи.
 
 ---
 
@@ -722,8 +767,8 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 }
 ```
 
-`outDir` можно опустить: используется соседний `<имя>_src`. MCP tool:
-`cdt_dump_external_processor`.
+`outDir` можно опустить: используется соседний `<имя>_src`. MCP operation `cdt_dump_external_processor`
+вызывается через dispatcher `cdt_write_live`.
 
 #### `1c-metadata-tree.agent.buildExternalProcessor`
 
@@ -738,8 +783,8 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 ```
 
 Тип результата определяется по metadata root `ExternalDataProcessor` или `ExternalReport`.
-`dstPath` можно опустить: сервис предложит соседний `_built.epf` или `_built.erf`. MCP tool:
-`cdt_build_external_processor`.
+`dstPath` можно опустить: сервис предложит соседний `_built.epf` или `_built.erf`. MCP operation
+`cdt_build_external_processor` вызывается через dispatcher `cdt_write_live`.
 
 ---
 

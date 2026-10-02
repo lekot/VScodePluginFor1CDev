@@ -41,6 +41,7 @@ import type {
     AgentSupportGetLastRunParams,
     AgentDumpExternalProcessorParams,
     AgentBuildExternalProcessorParams,
+    AgentSetRoleRightsParams,
 } from './types';
 import type {
     DebugStartParams,
@@ -96,6 +97,7 @@ import type {
 import { WorkspaceRegistry, WorkspaceRegistryError } from '../services/configurationSession/WorkspaceRegistry';
 import type { ConfigurationIdentity } from '../services/configurationSession/types';
 import type { MutationPlan } from '../services/configurationSession/mutationPlan';
+import { AgentRoleRightsError, planSetRoleRights } from './agentRoleRights';
 import { resolveAgentConfiguration } from './agentConfigurationResolver';
 import { AgentPathError } from './agentPathResolver';
 import {
@@ -217,11 +219,14 @@ export function registerAgentCommands(
 
     const runPlanForConfiguration = async <T>(
         params: ConfigurationScopedParams,
-        buildPlan: (configRoot: string) => Promise<MutationPlan<AgentResult<T>>>,
+        buildPlan: (
+            configRoot: string,
+            format: ConfigurationIdentity['format'],
+        ) => Promise<MutationPlan<AgentResult<T>>>,
     ): Promise<AgentResult<T>> => {
         try {
             const session = await resolveSession(params, 'write');
-            const plan = await buildPlan(session.identity.rootPath);
+            const plan = await buildPlan(session.identity.rootPath, session.identity.format);
             const outcome = await session.enqueuePlan(plan);
             if (outcome.status === 'committed') {
                 return {
@@ -242,6 +247,9 @@ export function registerAgentCommands(
                 snapshotVersion: outcome.snapshotVersion,
             };
         } catch (error) {
+            if (error instanceof AgentRoleRightsError) {
+                return { success: false, code: error.code, error: error.message };
+            }
             return {
                 success: false,
                 code: error instanceof WorkspaceRegistryError || error instanceof AgentPathError
@@ -259,6 +267,16 @@ export function registerAgentCommands(
             return registry
                 ? { success: true, data: { configurations: registry.list() } }
                 : { success: true, data: { configurations: [] } };
+        },
+    );
+
+    const setRoleRightsCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.roles.setRights',
+        async (params: AgentSetRoleRightsParams) => {
+            const result = await runPlanForConfiguration(params, (configRoot, format) =>
+                planSetRoleRights(configRoot, format, params));
+            if (result.success) { getTreeDataProvider()?.refresh(); }
+            return result;
         },
     );
 
@@ -1040,6 +1058,7 @@ export function registerAgentCommands(
 
     context.subscriptions.push(
         listConfigurationsCommand,
+        setRoleRightsCommand,
         cfeListProjectsCommand, cfeGetContextCommand, cfeValidateCommand, cfeCreateProjectCommand, cfeBorrowObjectCommand,
         cfeCreateInterceptorCommand, cfeCreateOwnFormCommand, cfeBorrowFormCommand, cfeExtendFormCommand,
         createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,

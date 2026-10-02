@@ -95,6 +95,7 @@ export const coreSuiteFiles: string[] = [
   'suite/rightsUpdateUtils.test.js',
   'suite/rightsXmlTemplates.test.js',
   'suite/rightsXmlEditWriter.test.js',
+  'suite/agentRoleRights.test.js',
   'suite/rightsEditor.integration.test.js',
   'suite/typeParser.test.js',
   'suite/subsystemTreeBuilder.test.js',

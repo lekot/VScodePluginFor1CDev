@@ -627,6 +627,7 @@ suite('AgentBridge — HTTP server', () => {
             assert.ok(quickstart.includes('forms.start только с url'), 'forms.start должен принимать url');
             assert.ok(quickstart.includes('или dbPath'), 'forms.start должен принимать dbPath');
             assert.ok(quickstart.includes('agent.debug.start'), 'quickstart должен ссылаться на debug.start');
+            assert.ok(quickstart.includes('roles\\.setRights'), 'whitelist должен включать roles.setRights');
             assert.ok(quickstart.includes("debuggeeType='webServer'"), 'должен использоваться webServer debuggee');
             assert.ok(quickstart.includes('webServerUrl'), 'должен использоваться URL запущенного веб-сервера');
             assert.ok(!quickstart.includes('forms.start с debuggeeType'), 'устаревший контракт forms.start запрещён');

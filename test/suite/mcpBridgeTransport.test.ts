@@ -179,6 +179,12 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
   let bridge: AgentBridge | undefined;
   let client: Client | undefined;
   let transport: StreamableHTTPClientTransport | undefined;
+  let previousLegacyTools: string | undefined;
+
+  setup(() => {
+    previousLegacyTools = process.env.CDT_MCP_LEGACY_TOOLS;
+    delete process.env.CDT_MCP_LEGACY_TOOLS;
+  });
 
   teardown(async () => {
     await client?.close().catch(() => undefined);
@@ -186,6 +192,11 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
     client = undefined;
     transport = undefined;
     bridge = undefined;
+    if (previousLegacyTools === undefined) {
+      delete process.env.CDT_MCP_LEGACY_TOOLS;
+    } else {
+      process.env.CDT_MCP_LEGACY_TOOLS = previousLegacyTools;
+    }
   });
 
   test('official client completes initialize, tools/list, tools/call and session termination', async () => {
@@ -210,13 +221,16 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
     await client.connect(transport);
     assert.ok(transport.sessionId, 'initialize must establish a stateful MCP session');
     const listed = await client.listTools();
-    assert.strictEqual(listed.tools.length, 78);
+    assert.strictEqual(listed.tools.length, 7);
     assert.deepStrictEqual(
       listed.tools.map((tool) => tool.name),
       MCP_TOOL_CATALOG.map((tool) => tool.name),
     );
 
-    const called = await client.callTool({ name: 'cdt_list_configurations', arguments: {} });
+    const called = await client.callTool({
+      name: 'cdt_read',
+      arguments: { operation: 'cdt_list_configurations', arguments: {} },
+    });
     assert.deepStrictEqual(called.structuredContent, {
       success: true,
       data: { configurations: [{ id: 'cfg' }] },
@@ -260,8 +274,11 @@ suite('MCP bridge: official SDK client and lifecycle', () => {
     await client.connect(transport);
 
     const result = await client.callTool({
-      name: 'cdt_create_object',
-      arguments: { type: 'Catalog', name: '1InvalidName' },
+      name: 'cdt_write',
+      arguments: {
+        operation: 'cdt_create_object',
+        arguments: { type: 'Catalog', name: '1InvalidName' },
+      },
     });
     assert.strictEqual(result.isError, true);
     assert.strictEqual(dispatchCount, 0);

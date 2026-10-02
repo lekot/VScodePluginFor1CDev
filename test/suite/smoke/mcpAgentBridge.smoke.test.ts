@@ -65,7 +65,7 @@ suite('Smoke: production MCP Agent Bridge', () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      assert.strictEqual(listed.tools.length, 78);
+      assert.strictEqual(listed.tools.length, MCP_TOOL_CATALOG.length);
       assert.deepStrictEqual(
         listed.tools.map((tool) => tool.name),
         MCP_TOOL_CATALOG.map((tool) => tool.name),
@@ -76,8 +76,11 @@ suite('Smoke: production MCP Agent Bridge', () => {
         {},
       );
       const viaMcp = await client.callTool({
-        name: 'cdt_list_configurations',
-        arguments: {},
+        name: 'cdt_read',
+        arguments: {
+          operation: 'cdt_list_configurations',
+          arguments: {},
+        },
       });
       assert.deepStrictEqual(viaMcp.structuredContent, direct);
       assert.strictEqual(
