@@ -26,6 +26,7 @@ interface RuntimeIndex {
   readonly typeCandidates: readonly Candidate[];
   readonly typeCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
   readonly typesByAlias: ReadonlyMap<string, readonly BslCompletionType[]>;
+  readonly metadataCollectionFolders: ReadonlyMap<string, string>;
 }
 
 interface MaskedLine {
@@ -60,15 +61,6 @@ export interface BslMetadataCompletionReader {
 }
 
 type MetadataCompletionReaderProvider = () => BslMetadataCompletionReader | null | undefined;
-
-const METADATA_COLLECTION_FOLDERS = new Map<string, string>([
-  ['документы', 'Documents'],
-  ['documents', 'Documents'],
-  ['справочники', 'Catalogs'],
-  ['catalogs', 'Catalogs'],
-  ['регистрысведений', 'InformationRegisters'],
-  ['informationregisters', 'InformationRegisters'],
-]);
 
 const indexLoads = new Map<string, Promise<RuntimeIndex>>();
 
@@ -124,12 +116,19 @@ function createRuntimeIndex(index: BslCompletionIndex): RuntimeIndex {
       }
     }
   }
+  const metadataCollectionFolders = new Map<string, string>();
+  for (const { aliases, folderId } of index.metadataCollections) {
+    for (const alias of aliases) {
+      metadataCollectionFolders.set(normalizeIdentifier(alias), folderId);
+    }
+  }
   return {
     globalCandidates,
     globalCandidatesByFirstCharacter: groupByFirstCharacter(globalCandidates),
     typeCandidates,
     typeCandidatesByFirstCharacter: groupByFirstCharacter(typeCandidates),
     typesByAlias: mutableTypesByAlias,
+    metadataCollectionFolders,
   };
 }
 
@@ -411,8 +410,8 @@ function toMetadataCompletionItem(name: string, folderId: string): vscode.Comple
   return item;
 }
 
-function metadataFolderForReceiver(receiver: string): string | undefined {
-  return METADATA_COLLECTION_FOLDERS.get(normalizeIdentifier(receiver));
+function metadataFolderForReceiver(receiver: string, index: RuntimeIndex): string | undefined {
+  return index.metadataCollectionFolders.get(normalizeIdentifier(receiver));
 }
 
 function localRoutineCompletionItems(
@@ -475,7 +474,21 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
     let inferredTypeName = context.typeName;
     if (context.kind === 'member' && !inferredTypeName) {
       const receiver = context.receiver;
-      const metadataFolder = receiver ? metadataFolderForReceiver(receiver) : undefined;
+      let metadataFolder: string | undefined;
+      if (receiver) {
+        let index: RuntimeIndex | undefined;
+        try {
+          index = await (this.loadedIndex ??= loadBslCompletionIndex(this.extensionPath));
+        } catch {
+          this.loadedIndex = undefined;
+        }
+        if (token.isCancellationRequested) {
+          return undefined;
+        }
+        if (index) {
+          metadataFolder = metadataFolderForReceiver(receiver, index);
+        }
+      }
       if (metadataFolder) {
         const resourcePath = document.uri.scheme === 'file' ? document.uri.fsPath : '';
         if (!resourcePath || token.isCancellationRequested) {
@@ -500,6 +513,9 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
       if (!inferredTypeName) {
         if (!receiver || receiverInference.assigned) {
           return [];
+        }
+        if (token.isCancellationRequested) {
+          return undefined;
         }
         const routines = await this.localIndex.getCommonModuleRoutines(document, receiver, token);
         if (token.isCancellationRequested) {

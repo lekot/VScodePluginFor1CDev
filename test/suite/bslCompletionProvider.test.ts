@@ -15,12 +15,41 @@ import {
   buildBslCompletionIndex,
   isBslCompletionIndex,
   parseCompletionSections,
+  type BslCompletionMetadataCollection,
   type SyntaxHelpDatabaseNodeForIndex,
 } from '../../src/providers/bslCompletionIndex';
 import { BslLocalCompletionIndex } from '../../src/providers/bslLocalCompletionIndex';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 const TEST_HASH = '0'.repeat(64);
+
+const EXPECTED_METADATA_COLLECTION_FOLDERS = [
+  'AccumulationRegisters',
+  'AccountingRegisters',
+  'BusinessProcesses',
+  'CalculationRegisters',
+  'Catalogs',
+  'ChartsOfAccounts',
+  'ChartsOfCalculationTypes',
+  'ChartsOfCharacteristicTypes',
+  'Constants',
+  'DataProcessors',
+  'DocumentJournals',
+  'Documents',
+  'Enums',
+  'ExchangePlans',
+  'ExternalDataSources',
+  'FilterCriteria',
+  'IntegrationServices',
+  'InformationRegisters',
+  'Reports',
+  'ScheduledJobs',
+  'Sequences',
+  'SessionParameters',
+  'SettingsStorages',
+  'Tasks',
+  'WSReferences',
+];
 
 function extensionRoot(): string {
   return path.resolve(__dirname, '../../..');
@@ -143,6 +172,16 @@ async function readBundledSyntaxNodes(): Promise<{ database: SqlDatabase; nodes:
   return { database, nodes };
 }
 
+async function readBundledMetadataCollections(): Promise<readonly BslCompletionMetadataCollection[]> {
+  const { database, nodes } = await readBundledSyntaxNodes();
+  try {
+    const index = buildBslCompletionIndex(nodes, TEST_HASH);
+    return index.metadataCollections;
+  } finally {
+    database.close();
+  }
+}
+
 suite('BSL platform completion', () => {
   setup(() => resetVscodeTestState());
   teardown(() => resetVscodeTestState());
@@ -220,6 +259,49 @@ suite('BSL platform completion', () => {
       );
     } finally {
       database.close();
+    }
+  });
+
+  test('derives every supported metadata collection from global context properties', async () => {
+    const metadataCollections = await readBundledMetadataCollections();
+    const byFolder = new Map(metadataCollections.map(({ folderId, aliases }) => [folderId, aliases]));
+
+    assert.deepStrictEqual(
+      [...byFolder.keys()].sort(),
+      [...EXPECTED_METADATA_COLLECTION_FOLDERS].sort(),
+    );
+    assert.deepStrictEqual(byFolder.get('AccumulationRegisters'), ['РегистрыНакопления', 'AccumulationRegisters']);
+    assert.deepStrictEqual(byFolder.get('CalculationRegisters'), ['РегистрыРасчета', 'CalculationRegisters']);
+    assert.deepStrictEqual(byFolder.get('Enums'), ['Перечисления', 'Enums']);
+    assert.deepStrictEqual(byFolder.get('IntegrationServices'), ['СервисыИнтеграции', 'IntegrationServices']);
+    assert.deepStrictEqual(byFolder.get('WSReferences'), ['WSСсылки', 'WSReferences']);
+
+    const aliases = new Set(metadataCollections.flatMap(({ aliases: names }) => names));
+    assert.strictEqual(aliases.has('ExternalDataProcessors'), false);
+    assert.strictEqual(aliases.has('ExternalReports'), false);
+    assert.strictEqual(aliases.has('CommonModules'), false);
+  });
+
+  test('rejects malformed or ambiguous metadata collection aliases', async () => {
+    const indexPath = path.join(extensionRoot(), 'resources', 'help', 'bsl-completion-index.json');
+    const base = JSON.parse(await fs.promises.readFile(indexPath, 'utf8')) as Record<string, unknown>;
+    const invalidCollections: BslCompletionMetadataCollection[][] = [
+      [],
+      [{ aliases: [], folderId: 'Documents' }],
+      [{ aliases: ['Catalogs', 'catalogs'], folderId: 'Catalogs' }],
+      [{ aliases: ['Catalogs'], folderId: 'UnknownFolder' }],
+      [
+        { aliases: ['Documents', 'SharedAlias'], folderId: 'Documents' },
+        { aliases: ['Catalogs', 'sharedalias'], folderId: 'Catalogs' },
+      ],
+    ];
+
+    for (const metadataCollections of invalidCollections) {
+      assert.strictEqual(
+        isBslCompletionIndex({ ...base, metadataCollections }),
+        false,
+        JSON.stringify(metadataCollections),
+      );
     }
   });
 
@@ -386,36 +468,90 @@ suite('BSL platform completion', () => {
     }
   });
 
-  test('completes metadata collection names from the current loaded tree cache by Russian and English aliases', async () => {
-    const calls: Array<{ resourcePath: string; folderId: string }> = [];
-    const reader = {
-      getLoadedTypeObjectsForResource: (resourcePath: string, folderId: string) => {
-        calls.push({ resourcePath, folderId });
-        const names = folderId === 'InformationRegisters'
-          ? ['Sales', 'SaleLines', 'Purchase']
-          : folderId === 'Documents'
-            ? ['Invoice', 'InvoiceCorrection']
-            : ['Customers', 'Goods'];
-        return { status: 'loaded' as const, names };
-      },
-    };
-    const provider = new BslCompletionProvider(extensionRoot(), () => reader);
-    const cases = [
-      { source: 'РегистрыСведений.Sal', folderId: 'InformationRegisters', expected: ['Sales', 'SaleLines'] },
-      { source: 'Documents.Inv', folderId: 'Documents', expected: ['Invoice', 'InvoiceCorrection'] },
-      { source: 'Справочники.Goo', folderId: 'Catalogs', expected: ['Goods'] },
-    ];
+  test('completes exact CommonModule methods when the platform index resource is missing', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-provider-module-without-index-'));
+    const extensionRootWithoutIndex = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-provider-empty-extension-'));
+    try {
+      await createConfigurationRoot(root);
+      await writeCommonModule(root, 'Library', 'Procedure MethodFromModule() Экспорт\nКонецПроцедуры');
+      setWorkspaceRoots(root);
+      const source = 'Library.Met';
+      const document = localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), source);
+      const provider = new BslCompletionProvider(extensionRootWithoutIndex);
 
-    for (const { source, folderId, expected } of cases) {
-      const document = localDocument(path.join(os.tmpdir(), 'MetadataCompletion.bsl'), source);
-      const items = labels(await completeWithLocalDocument(provider, document, source));
-      assert.deepStrictEqual(items, expected);
-      assert.strictEqual(calls[calls.length - 1]?.folderId, folderId);
-      assert.strictEqual(calls[calls.length - 1]?.resourcePath, document.uri.fsPath);
+      assert.deepStrictEqual(
+        labels(await completeWithLocalDocument(provider, document, source)),
+        ['MethodFromModule'],
+      );
+    } finally {
+      await fs.promises.rm(extensionRootWithoutIndex, { recursive: true, force: true });
+      await fs.promises.rm(root, { recursive: true, force: true });
     }
   });
 
-  test('metadata collection completion does not force a lazy tree index to load', async () => {
+  test('completes every metadata collection through the loaded tree cache by Russian and English aliases', async () => {
+    const calls: Array<{ resourcePath: string; folderId: string }> = [];
+    const metadataCollections = await readBundledMetadataCollections();
+    const reader = {
+      getLoadedTypeObjectsForResource: (resourcePath: string, folderId: string) => {
+        calls.push({ resourcePath, folderId });
+        return { status: 'loaded' as const, names: [`${folderId}Object`] };
+      },
+    };
+    const provider = new BslCompletionProvider(extensionRoot(), () => reader);
+
+    for (const { aliases, folderId } of metadataCollections) {
+      for (const alias of aliases) {
+        const source = `${alias}.`;
+        const document = localDocument(path.join(os.tmpdir(), 'MetadataCompletion.bsl'), source);
+        const items = labels(await completeWithLocalDocument(provider, document, source));
+        assert.deepStrictEqual(items, [`${folderId}Object`], `${alias} should resolve to ${folderId}`);
+        assert.strictEqual(calls[calls.length - 1]?.folderId, folderId);
+        assert.strictEqual(calls[calls.length - 1]?.resourcePath, document.uri.fsPath);
+      }
+    }
+  });
+
+  test('checks cancellation after platform index lookup before local module fallback', async () => {
+    await loadBslCompletionIndex(extensionRoot());
+    let tokenChecks = 0;
+    let localFallbackCalls = 0;
+    const provider = new BslCompletionProvider(extensionRoot());
+    const providerWithTestLocalIndex = provider as unknown as {
+      localIndex: {
+        getCommonModuleRoutines(
+          document: vscode.TextDocument,
+          receiver: string,
+          token: vscode.CancellationToken,
+        ): Promise<readonly never[]>;
+      };
+    };
+    providerWithTestLocalIndex.localIndex = {
+      getCommonModuleRoutines: async () => {
+        localFallbackCalls += 1;
+        return [];
+      },
+    };
+    const text = 'Library.Met';
+    const document = localDocument(path.join(os.tmpdir(), 'CancelledMetadataCompletion.bsl'), text);
+    const token = {
+      get isCancellationRequested() {
+        tokenChecks += 1;
+        return tokenChecks > 1;
+      },
+    } as vscode.CancellationToken;
+    const items = await provider.provideCompletionItems(
+      document,
+      new vscode.Position(0, text.length),
+      token,
+      {} as vscode.CompletionContext,
+    );
+
+    assert.strictEqual(items, undefined);
+    assert.strictEqual(localFallbackCalls, 0);
+  });
+
+  test('metadata collection completion does not force any unloaded lazy tree index to load', async () => {
     let calls = 0;
     const provider = new BslCompletionProvider(extensionRoot(), () => ({
       getLoadedTypeObjectsForResource: () => {
@@ -423,7 +559,7 @@ suite('BSL platform completion', () => {
         return { status: 'notLoaded' };
       },
     }));
-    const text = 'Документы.Inv';
+    const text = 'РегистрыНакопления.';
     const document = localDocument(path.join(os.tmpdir(), 'ColdMetadataCompletion.bsl'), text);
 
     assert.deepStrictEqual(labels(await completeWithLocalDocument(provider, document, text)), []);

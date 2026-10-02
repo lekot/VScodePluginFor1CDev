@@ -1,3 +1,5 @@
+import { METADATA_TYPE_DESCRIPTORS } from '../constants/metadataTypeDescriptors';
+
 export interface CompletionArticleReference {
   readonly id: number;
   readonly name: string;
@@ -11,6 +13,11 @@ export interface BslCompletionType {
   readonly methods: readonly string[];
 }
 
+export interface BslCompletionMetadataCollection {
+  readonly aliases: readonly string[];
+  readonly folderId: string;
+}
+
 export interface BslCompletionIndex {
   readonly sourceSha256: string;
   readonly global: {
@@ -19,6 +26,7 @@ export interface BslCompletionIndex {
     readonly methods: readonly string[];
   };
   readonly types: readonly BslCompletionType[];
+  readonly metadataCollections: readonly BslCompletionMetadataCollection[];
 }
 
 export interface SyntaxHelpDatabaseNodeForIndex {
@@ -155,6 +163,48 @@ function uniqueSorted(values: readonly string[]): string[] {
   return [...unique.values()].sort(compareFolded);
 }
 
+function metadataCollectionsFromGlobalProperties(content: string): BslCompletionMetadataCollection[] {
+  const descriptorsByFolder = new Map(
+    METADATA_TYPE_DESCRIPTORS.map((descriptor) => [normalizeIdentifier(descriptor.designerFolder), descriptor]),
+  );
+  const collectionsByFolder = new Map<string, BslCompletionMetadataCollection>();
+  let activeSection: SectionName | undefined;
+
+  for (const line of normalizeArticleText(content).split('\n')) {
+    const heading = sectionFor(line);
+    if (heading) {
+      activeSection = heading;
+      continue;
+    }
+    if (activeSection && isOtherHeading(line)) {
+      activeSection = undefined;
+      continue;
+    }
+    if (activeSection !== 'properties') {
+      continue;
+    }
+
+    const aliases = parseAliases(line);
+    const descriptor = aliases
+      .map((alias) => descriptorsByFolder.get(normalizeIdentifier(alias)))
+      .find((match) => match !== undefined);
+    if (!descriptor) {
+      continue;
+    }
+
+    const key = normalizeIdentifier(descriptor.designerFolder);
+    if (!collectionsByFolder.has(key)) {
+      collectionsByFolder.set(key, {
+        aliases,
+        folderId: descriptor.designerFolder,
+      });
+    }
+  }
+
+  return [...collectionsByFolder.values()]
+    .sort((left, right) => compareFolded(left.folderId, right.folderId));
+}
+
 /** Shared deterministic parser used by the offline generator and index contract tests. */
 export function buildBslCompletionIndex(
   nodes: readonly SyntaxHelpDatabaseNodeForIndex[],
@@ -165,6 +215,7 @@ export function buildBslCompletionIndex(
     throw new Error('The platform syntax database has no global context article (id 1).');
   }
   const globalSections = parseCompletionSections(globalNode.content);
+  const metadataCollections = metadataCollectionsFromGlobalProperties(globalNode.content);
   const types = nodes.flatMap((node): BslCompletionType[] => {
     const sections = parseCompletionSections(node.content);
     if (!sections.hasConstructors) {
@@ -190,6 +241,7 @@ export function buildBslCompletionIndex(
       methods: uniqueSorted(globalSections.methods),
     },
     types,
+    metadataCollections,
   };
 }
 
@@ -207,6 +259,45 @@ function isIdentifierList(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string' && identifierPattern.test(entry));
 }
 
+function isMetadataCollectionList(value: unknown): value is readonly BslCompletionMetadataCollection[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return false;
+  }
+
+  const knownFolderIds = new Set(METADATA_TYPE_DESCRIPTORS.map(({ designerFolder }) => designerFolder));
+  const seenFolderIds = new Set<string>();
+  const seenAliases = new Set<string>();
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+    const collection = entry as Partial<BslCompletionMetadataCollection>;
+    if (typeof collection.folderId !== 'string' || !knownFolderIds.has(collection.folderId)
+      || seenFolderIds.has(normalizeIdentifier(collection.folderId))
+      || !isIdentifierList(collection.aliases) || collection.aliases.length === 0) {
+      return false;
+    }
+
+    const collectionAliases = new Set<string>();
+    for (const alias of collection.aliases) {
+      const normalizedAlias = normalizeIdentifier(alias);
+      if (collectionAliases.has(normalizedAlias) || seenAliases.has(normalizedAlias)) {
+        return false;
+      }
+      collectionAliases.add(normalizedAlias);
+    }
+    if (!collectionAliases.has(normalizeIdentifier(collection.folderId))) {
+      return false;
+    }
+
+    seenFolderIds.add(normalizeIdentifier(collection.folderId));
+    for (const alias of collectionAliases) {
+      seenAliases.add(alias);
+    }
+    return true;
+  });
+}
+
 /** Performs a cheap structural check before trusting the bundled JSON resource. */
 export function isBslCompletionIndex(value: unknown): value is BslCompletionIndex {
   if (!value || typeof value !== 'object') {
@@ -217,6 +308,7 @@ export function isBslCompletionIndex(value: unknown): value is BslCompletionInde
   return typeof index.sourceSha256 === 'string' && /^[a-f0-9]{64}$/.test(index.sourceSha256)
     && Boolean(global) && isArticleReference(global?.article)
     && isIdentifierList(global?.properties) && isIdentifierList(global?.methods)
+    && isMetadataCollectionList(index.metadataCollections)
     && Array.isArray(index.types) && index.types.every((type) => Boolean(type)
       && isArticleReference(type.article)
       && isIdentifierList(type.aliases) && type.aliases.length > 0

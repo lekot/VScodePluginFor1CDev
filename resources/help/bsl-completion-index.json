@@ -12780,5 +12780,182 @@
       ],
       "methods": []
     }
+  ],
+  "metadataCollections": [
+    {
+      "aliases": [
+        "РегистрыБухгалтерии",
+        "AccountingRegisters"
+      ],
+      "folderId": "AccountingRegisters"
+    },
+    {
+      "aliases": [
+        "РегистрыНакопления",
+        "AccumulationRegisters"
+      ],
+      "folderId": "AccumulationRegisters"
+    },
+    {
+      "aliases": [
+        "БизнесПроцессы",
+        "BusinessProcesses"
+      ],
+      "folderId": "BusinessProcesses"
+    },
+    {
+      "aliases": [
+        "РегистрыРасчета",
+        "CalculationRegisters"
+      ],
+      "folderId": "CalculationRegisters"
+    },
+    {
+      "aliases": [
+        "Справочники",
+        "Catalogs"
+      ],
+      "folderId": "Catalogs"
+    },
+    {
+      "aliases": [
+        "ПланыСчетов",
+        "ChartsOfAccounts"
+      ],
+      "folderId": "ChartsOfAccounts"
+    },
+    {
+      "aliases": [
+        "ПланыВидовРасчета",
+        "ChartsOfCalculationTypes"
+      ],
+      "folderId": "ChartsOfCalculationTypes"
+    },
+    {
+      "aliases": [
+        "ПланыВидовХарактеристик",
+        "ChartsOfCharacteristicTypes"
+      ],
+      "folderId": "ChartsOfCharacteristicTypes"
+    },
+    {
+      "aliases": [
+        "Константы",
+        "Constants"
+      ],
+      "folderId": "Constants"
+    },
+    {
+      "aliases": [
+        "Обработки",
+        "DataProcessors"
+      ],
+      "folderId": "DataProcessors"
+    },
+    {
+      "aliases": [
+        "ЖурналыДокументов",
+        "DocumentJournals"
+      ],
+      "folderId": "DocumentJournals"
+    },
+    {
+      "aliases": [
+        "Документы",
+        "Documents"
+      ],
+      "folderId": "Documents"
+    },
+    {
+      "aliases": [
+        "Перечисления",
+        "Enums"
+      ],
+      "folderId": "Enums"
+    },
+    {
+      "aliases": [
+        "ПланыОбмена",
+        "ExchangePlans"
+      ],
+      "folderId": "ExchangePlans"
+    },
+    {
+      "aliases": [
+        "ВнешниеИсточникиДанных",
+        "ExternalDataSources"
+      ],
+      "folderId": "ExternalDataSources"
+    },
+    {
+      "aliases": [
+        "КритерииОтбора",
+        "FilterCriteria"
+      ],
+      "folderId": "FilterCriteria"
+    },
+    {
+      "aliases": [
+        "РегистрыСведений",
+        "InformationRegisters"
+      ],
+      "folderId": "InformationRegisters"
+    },
+    {
+      "aliases": [
+        "СервисыИнтеграции",
+        "IntegrationServices"
+      ],
+      "folderId": "IntegrationServices"
+    },
+    {
+      "aliases": [
+        "Отчеты",
+        "Reports"
+      ],
+      "folderId": "Reports"
+    },
+    {
+      "aliases": [
+        "РегламентныеЗадания",
+        "ScheduledJobs"
+      ],
+      "folderId": "ScheduledJobs"
+    },
+    {
+      "aliases": [
+        "Последовательности",
+        "Sequences"
+      ],
+      "folderId": "Sequences"
+    },
+    {
+      "aliases": [
+        "ПараметрыСеанса",
+        "SessionParameters"
+      ],
+      "folderId": "SessionParameters"
+    },
+    {
+      "aliases": [
+        "ХранилищаНастроек",
+        "SettingsStorages"
+      ],
+      "folderId": "SettingsStorages"
+    },
+    {
+      "aliases": [
+        "Задачи",
+        "Tasks"
+      ],
+      "folderId": "Tasks"
+    },
+    {
+      "aliases": [
+        "WSСсылки",
+        "WSReferences"
+      ],
+      "folderId": "WSReferences"
+    }
   ]
 }
