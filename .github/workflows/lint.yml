@@ -24,6 +24,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Reject ignored tracked docs
+        run: |
+          ignored_docs="$(git ls-files -ci --exclude-standard -- docs/)"
+          if [ -n "$ignored_docs" ]; then
+            printf '::error::Tracked docs are ignored by .gitignore:\n%s\n' "$ignored_docs"
+            exit 1
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
