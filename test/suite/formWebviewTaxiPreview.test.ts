@@ -29,6 +29,8 @@ suite('Form editor Taxi style preview', () => {
     assert.strictEqual(result.model.attributes.length, 6);
     assert.deepStrictEqual(result.model.attributes.map(attribute => attribute.name), ['Customer', 'BusinessDate', 'StartTime', 'CreatedAt', 'Enabled', 'Amount']);
     assert.deepStrictEqual(result.model.attributes.map(attribute => attribute.id), ['attr-customer', 'attr-date', 'attr-time', 'attr-datetime', 'attr-boolean', 'attr-number']);
+    assert.ok(result.model.childItemsRoot[0].childItems[0].childItems[0].childItems.some(item => item.tag === 'CheckBoxField'));
+    assert.ok(result.model.childItemsRoot[0].childItems[0].childItems[0].childItems.some(item => item.tag === 'RadioButtonField'));
   });
 
   test('preserves typed form attributes through the XML writer round-trip', async () => {
@@ -57,7 +59,7 @@ suite('Form editor Taxi style preview', () => {
   });
 
   test('uses Taxi preview spacing and a toolbar fit-to-width control', () => {
-    assert.ok(html.includes('--preview-horizontal-gap: 10px'), 'horizontal Taxi spacing');
+    assert.ok(html.includes('--preview-horizontal-gap: 8px'), 'horizontal Taxi spacing');
     assert.ok(html.includes('--preview-vertical-gap: 9px'), 'vertical Taxi spacing');
     assert.ok(html.includes('--preview-control-gap: 5px'), 'control spacing');
     assert.ok(html.includes('id="tb-preview-fit"'), 'fit-to-width toolbar button');
@@ -66,13 +68,16 @@ suite('Form editor Taxi style preview', () => {
     assert.ok(html.includes('@media (max-width: 760px)'), 'narrow viewports arrange the inspector below the editing panes');
   });
 
-  test('renders the light Taxi surface and preserves a VS Code dark palette', () => {
-    assert.ok(html.includes('--preview-canvas-background: #f0f0f0'), 'light preview uses the Taxi gray canvas');
+  test('defines a fixed light 1C form surface inside the VS Code themed editor', () => {
+    assert.ok(html.includes('--preview-canvas-background: #f2f2f2'), 'preview window uses the Taxi gray canvas');
     assert.ok(html.includes('--preview-card-background: #ffffff'), 'light preview uses white cards');
-    assert.ok(html.includes("body[data-theme-mode='dark']") && html.includes("html[data-vscode-theme='dark'] body[data-theme-mode='auto']"), 'explicit and inherited VS Code dark themes override preview colors');
+    assert.ok(html.includes("--preview-canvas-background: #111827") === false, 'host dark mode must not recolor the preview');
+    assert.ok(html.includes("#preview-form { ") && html.includes("font-family: Arial, 'Segoe UI', Tahoma, sans-serif"), 'form surface uses the platform-like font stack');
+    assert.ok(html.includes('font-size: 12px') && html.includes('background: #f2f2f2'), 'form surface uses fixed 1C typography and canvas');
     assert.ok(html.includes('.preview-pages-panel-wrap {') && html.includes('background: var(--preview-card-background)'), 'page content is a card');
     assert.ok(html.includes('.preview-input {') && html.includes('background: var(--preview-control-background)'), 'bound controls use preview styling');
     assert.ok(html.includes('.preview-table-mock th {') && html.includes('var(--preview-table-header-background)'), 'table headers use preview styling');
+    assert.ok(html.includes('.preview-button {') && html.includes('linear-gradient(180deg, #ffffff'), 'buttons use native-looking raised chrome');
   });
 
   test('sizes bound fields from their DataPath attribute type and numeric qualifiers', () => {
@@ -157,17 +162,45 @@ suite('Form editor Taxi style preview', () => {
         };
         return {
           canvas: color('#preview-form', 'backgroundColor'),
+          bodySurface: color('.preview-form-body', 'backgroundColor'),
+          fontFamily: color('#preview-form', 'fontFamily'),
+          fontSize: color('#preview-form', 'fontSize'),
+          hostPanel: color('.zone-preview', 'backgroundColor'),
           pageCard: color('.preview-pages-panel-wrap', 'backgroundColor'),
           groupCard: color('.preview-group-block', 'backgroundColor'),
-          input: color('input[data-data-path="BusinessDate"]', 'backgroundColor'),
-          button: color('.preview-button', 'backgroundColor'),
+          label: color('.preview-field-label', 'color'),
+          inputFrame: color('.preview-input-frame', 'backgroundColor'),
+          inputFrameBorder: color('.preview-input-frame', 'borderColor'),
+          button: color('.preview-button', 'backgroundImage'),
+          buttonHeight: color('.preview-button', 'height'),
+          checkbox: color('.preview-check', 'backgroundColor'),
+          checkboxBorder: color('.preview-check', 'borderColor'),
+          radio: color('.preview-radio-option input[type="radio"]', 'backgroundColor'),
+          radioCheckedMark: (() => {
+            const radio = document.querySelector('.preview-radio-option input[type="radio"]:checked');
+            return radio ? (globalThis as any).getComputedStyle(radio, '::after').backgroundColor : 'MISSING radio mark';
+          })(),
+          commandbar: color('.preview-commandbar', 'backgroundColor'),
+          tab: color('.preview-pages-tab[aria-selected="true"]', 'backgroundColor'),
         };
       });
-      assert.strictEqual(lightColors.canvas, 'rgb(240, 240, 240)', 'light preview canvas follows Taxi gray');
+      assert.strictEqual(lightColors.canvas, 'rgb(242, 242, 242)', 'light preview canvas follows Taxi gray');
+      assert.strictEqual(lightColors.bodySurface, 'rgb(255, 255, 255)', 'the form client area is white');
+      assert.strictEqual(lightColors.fontFamily, 'Arial, "Segoe UI", Tahoma, sans-serif', 'preview typography is independent of VS Code');
+      assert.strictEqual(lightColors.fontSize, '12px', 'preview uses platform-sized text');
+      assert.strictEqual(lightColors.label, 'rgb(77, 77, 77)', 'form captions use the fixed platform foreground');
       assert.strictEqual(lightColors.pageCard, 'rgb(255, 255, 255)', 'page area is a white card');
-      assert.strictEqual(lightColors.groupCard, 'rgb(255, 255, 255)', 'group renders as a nested white card');
-      assert.strictEqual(lightColors.input, 'rgb(255, 255, 255)', 'bound field renders as a white input');
-      assert.strictEqual(lightColors.button, 'rgb(245, 245, 245)', 'command buttons use native-looking neutral chrome');
+      assert.strictEqual(lightColors.groupCard, 'rgba(0, 0, 0, 0)', 'usual groups do not invent a card surface');
+      assert.strictEqual(lightColors.inputFrame, 'rgb(255, 255, 255)', 'bound field frame has a white platform surface');
+      assert.strictEqual(lightColors.inputFrameBorder, 'rgb(160, 160, 160)', 'bound field frame uses the Taxi border');
+      assert.ok(lightColors.button.startsWith('linear-gradient('), 'command buttons use raised Taxi chrome');
+      assert.strictEqual(lightColors.buttonHeight, '26px', 'command bar button follows the Taxi button height');
+      assert.strictEqual(lightColors.checkbox, 'rgb(255, 255, 255)', 'checkbox uses a white platform control face');
+      assert.strictEqual(lightColors.checkboxBorder, 'rgb(160, 160, 160)', 'checkbox uses the platform control border');
+      assert.strictEqual(lightColors.radio, 'rgb(255, 255, 255)', 'radio buttons use a white platform control face');
+      assert.strictEqual(lightColors.radioCheckedMark, 'rgb(0, 150, 70)', 'selected radio uses the Taxi green marker');
+      assert.strictEqual(lightColors.commandbar, 'rgba(0, 0, 0, 0)', 'root command bar sits directly on the form surface');
+      assert.strictEqual(lightColors.tab, 'rgb(255, 255, 255)', 'active page tab merges into the white page surface');
       await page.locator('.tree-icon-svg svg.fe-command-icon').waitFor();
       assert.ok(await page.locator('#tb-add svg.fe-command-icon, #tb-delete svg.fe-command-icon, #tb-save svg.fe-command-icon').count() >= 3);
       assert.strictEqual(await dateInput.getAttribute('data-character-width'), '10');
@@ -196,23 +229,68 @@ suite('Form editor Taxi style preview', () => {
       await page.locator('.preview-pages-tab').filter({ hasText: 'Строки' }).click();
       const tableColors = await page.locator('.preview-table-mock').evaluate(table => {
         const header = table.querySelector('th');
+        const cell = table.querySelector('td');
         const getStyle = (globalThis as any).getComputedStyle;
-        return { card: getStyle(table).backgroundColor, header: header ? getStyle(header).backgroundColor : '' };
+        return {
+          card: getStyle(table).backgroundColor,
+          header: header ? getStyle(header).backgroundColor : '',
+          cell: cell ? getStyle(cell).color : '',
+          fontSize: getStyle(table).fontSize,
+        };
       });
       assert.strictEqual(tableColors.card, 'rgb(255, 255, 255)', 'table is placed on a white card');
-      assert.strictEqual(tableColors.header, 'rgb(248, 248, 248)', 'table header has a subtle Taxi surface');
-      await page.locator('.preview-pages-tab').filter({ hasText: 'Основное' }).click();
+      assert.strictEqual(tableColors.header, 'rgb(242, 242, 242)', 'table header uses Taxi gray');
 
       await page.evaluate(() => (globalThis as any).document.body.setAttribute('data-theme-mode', 'dark'));
+      const darkTableColors = await page.locator('.preview-table-mock').evaluate(table => {
+        const header = table.querySelector('th');
+        const cell = table.querySelector('td');
+        const getStyle = (globalThis as any).getComputedStyle;
+        return {
+          card: getStyle(table).backgroundColor,
+          header: header ? getStyle(header).backgroundColor : '',
+          cell: cell ? getStyle(cell).color : '',
+          fontSize: getStyle(table).fontSize,
+        };
+      });
+      assert.deepStrictEqual(darkTableColors, tableColors, 'table chrome is independent of the host theme');
+      await page.locator('.preview-pages-tab').filter({ hasText: 'Основное' }).click();
       const darkColors = await page.evaluate(() => {
         const document = (globalThis as any).document;
         return {
           canvas: (globalThis as any).getComputedStyle(document.querySelector('#preview-form')).backgroundColor,
-          input: (globalThis as any).getComputedStyle(document.querySelector('input[data-data-path="BusinessDate"]')).backgroundColor,
+          bodySurface: (globalThis as any).getComputedStyle(document.querySelector('.preview-form-body')).backgroundColor,
+          inputFrame: (globalThis as any).getComputedStyle(document.querySelector('.preview-input-frame')).backgroundColor,
+          button: (globalThis as any).getComputedStyle(document.querySelector('.preview-button')).backgroundImage,
+          buttonHeight: (globalThis as any).getComputedStyle(document.querySelector('.preview-button')).height,
+          checkbox: (globalThis as any).getComputedStyle(document.querySelector('.preview-check')).backgroundColor,
+          checkboxBorder: (globalThis as any).getComputedStyle(document.querySelector('.preview-check')).borderColor,
+          radio: (globalThis as any).getComputedStyle(document.querySelector('.preview-radio-option input[type="radio"]')).backgroundColor,
+          radioCheckedMark: (globalThis as any).getComputedStyle(document.querySelector('.preview-radio-option input[type="radio"]:checked'), '::after').backgroundColor,
+          label: (globalThis as any).getComputedStyle(document.querySelector('.preview-field-label')).color,
+          commandbar: (globalThis as any).getComputedStyle(document.querySelector('.preview-commandbar')).backgroundColor,
+          tab: (globalThis as any).getComputedStyle(document.querySelector('.preview-pages-tab[aria-selected="true"]')).backgroundColor,
+          hostPanel: (globalThis as any).getComputedStyle(document.querySelector('.zone-preview')).backgroundColor,
         };
       });
-      assert.strictEqual(darkColors.canvas, 'rgb(17, 24, 39)', 'VS Code dark mode keeps a dark preview canvas');
-      assert.strictEqual(darkColors.input, 'rgb(15, 23, 42)', 'VS Code dark mode keeps dark inputs');
+      const { hostPanel: darkHostPanel, ...darkPlatformColors } = darkColors;
+      assert.deepStrictEqual(darkPlatformColors, {
+        canvas: lightColors.canvas,
+        bodySurface: lightColors.bodySurface,
+        inputFrame: lightColors.inputFrame,
+        button: lightColors.button,
+        buttonHeight: lightColors.buttonHeight,
+        checkbox: lightColors.checkbox,
+        checkboxBorder: lightColors.checkboxBorder,
+        radio: lightColors.radio,
+        radioCheckedMark: lightColors.radioCheckedMark,
+        label: lightColors.label,
+        commandbar: lightColors.commandbar,
+        tab: lightColors.tab,
+      }, 'the preview keeps the same Taxi chrome under VS Code dark mode');
+      assert.notStrictEqual(darkHostPanel, lightColors.hostPanel, 'surrounding editor panel follows the host theme');
+      const darkScreenshotPath = process.env.FORM_EDITOR_PREVIEW_DARK_SCREENSHOT_PATH;
+      if (darkScreenshotPath) await page.locator('.zone-preview').screenshot({ path: darkScreenshotPath });
       await page.evaluate(() => (globalThis as any).document.body.setAttribute('data-theme-mode', 'light'));
 
       const screenshotPath = process.env.FORM_EDITOR_PREVIEW_SCREENSHOT_PATH;

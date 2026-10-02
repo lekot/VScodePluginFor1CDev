@@ -9,13 +9,15 @@
             <UsualGroup name="General" id="group-general">
               <Title><v8:item><v8:lang>ru</v8:lang><v8:content>Общие данные</v8:content></v8:item></Title>
               <ChildItems>
-                <InputField name="CustomerField" id="field-customer"><DataPath>Customer</DataPath></InputField>
-                <SearchStringAddition name="FindCustomer" id="field-search"><DataPath>Customer</DataPath></SearchStringAddition>
-                <InputField name="DateField" id="field-date"><DataPath>BusinessDate</DataPath><Events><Event name="OnChange">WhenDateChanges</Event></Events></InputField>
-                <InputField name="TimeField" id="field-time"><DataPath>StartTime</DataPath></InputField>
-                <InputField name="DateTimeField" id="field-datetime"><DataPath>CreatedAt</DataPath></InputField>
-                <InputField name="BooleanField" id="field-enabled"><DataPath>Enabled</DataPath></InputField>
-                <InputField name="NumberField" id="field-amount"><DataPath>Amount</DataPath></InputField>
+                <InputField name="CustomerField" id="field-customer"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Контрагент</v8:content></v8:item></Title><DataPath>Customer</DataPath></InputField>
+                <SearchStringAddition name="FindCustomer" id="field-search"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Поиск</v8:content></v8:item></Title><DataPath>Customer</DataPath></SearchStringAddition>
+                <InputField name="DateField" id="field-date"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Дата</v8:content></v8:item></Title><DataPath>BusinessDate</DataPath><Events><Event name="OnChange">WhenDateChanges</Event></Events></InputField>
+                <InputField name="TimeField" id="field-time"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Время</v8:content></v8:item></Title><DataPath>StartTime</DataPath></InputField>
+                <InputField name="DateTimeField" id="field-datetime"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Создан</v8:content></v8:item></Title><DataPath>CreatedAt</DataPath></InputField>
+                <InputField name="BooleanField" id="field-enabled"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Активен</v8:content></v8:item></Title><DataPath>Enabled</DataPath></InputField>
+                <InputField name="NumberField" id="field-amount"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Сумма</v8:content></v8:item></Title><DataPath>Amount</DataPath></InputField>
+                <CheckBoxField name="EnabledCheck" id="field-check"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Учитывать остатки</v8:content></v8:item></Title><DataPath>Enabled</DataPath></CheckBoxField>
+                <RadioButtonField name="DisplayMode" id="field-radio"><Title><v8:item><v8:lang>ru</v8:lang><v8:content>Режим</v8:content></v8:item></Title></RadioButtonField>
               </ChildItems>
             </UsualGroup>
           </ChildItems>

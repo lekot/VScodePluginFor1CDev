@@ -56,20 +56,24 @@ function buildWebviewCss(): string {
       --fe-spacing-sm: 8px;
       --fe-spacing-md: 12px;
       --fe-spacing-lg: 16px;
-      --preview-horizontal-gap: 10px;
+      --preview-horizontal-gap: 8px;
       --preview-vertical-gap: 9px;
       --preview-control-gap: 5px;
-      --preview-canvas-background: #f0f0f0;
+      --preview-canvas-background: #f2f2f2;
       --preview-card-background: #ffffff;
-      --preview-card-border: #c7cbd0;
+      --preview-card-border: #c8c8c8;
       --preview-control-background: #ffffff;
-      --preview-control-border: #aeb4bb;
-      --preview-foreground: #202020;
-      --preview-muted-foreground: #5f6368;
-      --preview-table-header-background: #f8f8f8;
-      --preview-table-row-background: #f5f5f5;
-      --preview-button-background: #f5f5f5;
-      --preview-button-foreground: #202020;
+      --preview-control-border: #a0a0a0;
+      --preview-foreground: #4d4d4d;
+      --preview-muted-foreground: #6d6d6d;
+      --preview-table-header-background: #f2f2f2;
+      --preview-table-row-background: #f7f7f7;
+      --preview-button-background: linear-gradient(180deg, #ffffff 0%, #ffffff 46%, #ececec 100%);
+      --preview-button-foreground: #4d4d4d;
+      --preview-button-border: #b2b2b2;
+      --preview-button-border-bottom: #9b9b9b;
+      --preview-tab-background: #e0e0e0;
+      --preview-focus: #1e90ff;
       --fe-radius-sm: 4px;
       --fe-radius-md: 8px;
       --fe-radius-btn: 8px;
@@ -154,20 +158,6 @@ function buildWebviewCss(): string {
       --vscode-tab-activeBackground: #25364b;
       --vscode-badge-background: #334155;
       --vscode-badge-foreground: #e5e7eb;
-    }
-    body[data-theme-mode='dark'],
-    html[data-vscode-theme='dark'] body[data-theme-mode='auto'] {
-      --preview-canvas-background: #111827;
-      --preview-card-background: #1f2937;
-      --preview-card-border: #374151;
-      --preview-control-background: #0f172a;
-      --preview-control-border: #4b5563;
-      --preview-foreground: #e5e7eb;
-      --preview-muted-foreground: #9ca3af;
-      --preview-table-header-background: #273244;
-      --preview-table-row-background: #1b2638;
-      --preview-button-background: #334155;
-      --preview-button-foreground: #e5e7eb;
     }
     body[data-theme-mode='light'] .zone-right-upper {
       background: var(--vscode-sideBar-background);
@@ -818,6 +808,346 @@ function buildWebviewCss(): string {
       background: var(--preview-card-background);
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
     }
+    /* The form surface follows the fixed light Taxi palette from BslEdit v2.0.0;
+       surrounding editor chrome continues to use VS Code theme tokens. */
+    #preview-form {
+      color-scheme: light;
+      font-family: Arial, 'Segoe UI', Tahoma, sans-serif;
+      font-size: 12px;
+      line-height: 1.3;
+      color: #4d4d4d;
+      background: #f2f2f2;
+      border: 1px solid #c8c8c8;
+      border-radius: 0;
+      padding: 0;
+      overflow-x: auto;
+    }
+    #preview-form.preview-mockup-form { padding: 0; }
+    #preview-form .preview-form-body {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 9px;
+      width: 100%;
+      min-width: 100%;
+      min-height: 100%;
+      box-sizing: border-box;
+      padding: 12px 10px 9px;
+      background: #fff;
+      color: #4d4d4d;
+    }
+    #preview-form.preview-has-commandbar .preview-form-body { padding-top: 0; }
+    #preview-form .preview-item {
+      border-radius: 0;
+      border-color: transparent;
+      padding: 1px 0;
+      background: transparent;
+      color: inherit;
+      transition: none;
+    }
+    #preview-form .preview-item:hover,
+    #preview-form .preview-item.preview-container:hover {
+      border-color: transparent;
+      background: transparent;
+    }
+    #preview-form .preview-item.selected {
+      color: inherit;
+      background: transparent;
+      border-color: transparent;
+      box-shadow: none;
+      outline: 2px solid #1e90ff;
+      outline-offset: -2px;
+    }
+    #preview-form .preview-item.drop-target { outline: 2px dashed #1e90ff; outline-offset: -2px; }
+    #preview-form > .preview-form-body > .preview-item[data-tag='AutoCommandBar'] {
+      padding: 0;
+      min-height: 27px;
+    }
+    #preview-form .preview-commandbar {
+      min-height: 27px;
+      height: 27px;
+      margin: 0 0 1px;
+      padding: 1px 2px;
+      gap: 7px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    #preview-form .preview-control-wrap { gap: 5px; min-height: 0; }
+    #preview-form .preview-field-row {
+      flex-wrap: nowrap;
+      width: auto;
+      max-width: 100%;
+      gap: 5px;
+    }
+    #preview-form .preview-check-row { width: auto; align-items: center; gap: 5px; }
+    #preview-form .preview-field-label {
+      min-width: 0;
+      flex-shrink: 0;
+      color: #4d4d4d;
+      font-size: 12px;
+      line-height: 16px;
+      white-space: pre-line;
+    }
+    #preview-form .preview-input-frame {
+      display: inline-flex;
+      flex: 0 1 auto;
+      min-width: 40px;
+      min-height: 25px;
+      box-sizing: border-box;
+      align-items: stretch;
+      border: 1px solid #a0a0a0;
+      background: #fff;
+    }
+    #preview-form .preview-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      max-width: 100%;
+      height: 23px;
+      min-height: 23px;
+      box-sizing: border-box;
+      padding: 2px 5px;
+      border: 0;
+      border-radius: 0;
+      outline: 0;
+      box-shadow: none;
+      color: #4d4d4d;
+      background: transparent;
+      font: inherit;
+    }
+    #preview-form .preview-input:focus { outline: 1px solid #1e90ff; outline-offset: -1px; }
+    #preview-form .preview-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 26px;
+      height: 26px;
+      padding: 2px 12px 2px 13px;
+      border: 1px solid #b2b2b2;
+      border-bottom-color: #9b9b9b;
+      border-radius: 2.6px;
+      background: linear-gradient(180deg, #ffffff 0%, #ffffff 46%, #ececec 100%);
+      color: #4d4d4d;
+      box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1765);
+      font: inherit;
+      cursor: default;
+      white-space: nowrap;
+      opacity: 1;
+    }
+    #preview-form .preview-button:disabled { color: #4d4d4d; opacity: 1; }
+    #preview-form .preview-button:hover:not(:disabled) {
+      border-color: #e0b64d;
+      background: linear-gradient(180deg, #fffdf5 0%, #fdf3d8 46%, #fbe6ac 100%);
+    }
+    #preview-form .preview-button:active {
+      background: linear-gradient(180deg, #e2e2e2 0%, #ededed 60%, #f4f4f4 100%);
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+    #preview-form .preview-label,
+    #preview-form .preview-radio-option { color: #4d4d4d; }
+    #preview-form .preview-label-decoration { color: #1c55ae; }
+    #preview-form .preview-picture-decoration {
+      width: 30px; height: 30px; border: 1px solid #c8c8c8; border-radius: 0;
+      color: #6d6d6d; font-size: 16px; opacity: 1;
+    }
+    #preview-form .preview-check,
+    #preview-form .preview-radio-option input {
+      color-scheme: light;
+    }
+    #preview-form .preview-check {
+      -webkit-appearance: none;
+      appearance: none;
+      position: relative;
+      flex: 0 0 15px;
+      width: 15px;
+      height: 15px;
+      min-width: 15px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid #a0a0a0;
+      border-radius: 2px;
+      background: #fff;
+    }
+    #preview-form .preview-check:checked::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 0;
+      width: 4px;
+      height: 8px;
+      box-sizing: border-box;
+      border: solid #4d4d4d;
+      border-width: 0 2px 2px 0;
+      transform: rotate(42deg);
+    }
+    #preview-form .preview-radio-stack { gap: 4px; }
+    #preview-form .preview-radio-option { gap: 4px; }
+    #preview-form .preview-radio-option input[type='radio'] {
+      -webkit-appearance: none;
+      appearance: none;
+      position: relative;
+      flex: 0 0 15px;
+      width: 15px;
+      height: 15px;
+      min-width: 15px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid #a0a0a0;
+      border-radius: 50%;
+      background: #fff;
+    }
+    #preview-form .preview-radio-option input[type='radio']:checked::after {
+      content: '';
+      position: absolute;
+      left: 4px;
+      top: 4px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #009646;
+    }
+    #preview-form .preview-list-mock {
+      min-width: 180px;
+      border: 1px solid #c8c8c8;
+      border-radius: 0;
+      background: #fff;
+    }
+    #preview-form .preview-list-row {
+      padding: 3px 8px;
+      border-bottom: 1px solid #ebebeb;
+      color: #4d4d4d;
+      font-size: 12px;
+    }
+    #preview-form .preview-list-row.active { background: #d7ebff; color: #252525; }
+    #preview-form .preview-group-block {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    #preview-form .preview-group-title,
+    #preview-form .preview-page-title,
+    #preview-form .preview-page-caption,
+    #preview-form .preview-group-caption {
+      margin: 0 0 5px;
+      padding: 0;
+      border: 0;
+      color: #4d4d4d;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 16px;
+    }
+    #preview-form .preview-page-block { margin: 0; }
+    #preview-form .preview-pages-panel-wrap {
+      padding: 8px 10px 9px;
+      border: 1px solid #b3b3b3;
+      border-radius: 0;
+      background: #fff;
+      box-shadow: none;
+    }
+    #preview-form .preview-pages-tablist {
+      flex-wrap: nowrap;
+      gap: 0;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      border: 0;
+      background: transparent;
+    }
+    #preview-form .preview-pages-tab {
+      flex: 0 0 auto;
+      min-width: 0;
+      height: 27px;
+      min-height: 27px;
+      max-height: 27px;
+      margin: 0 0 0 -1px;
+      padding: 3px 10px;
+      border: 1px solid #b3b3b3;
+      border-bottom: 0;
+      border-radius: 2px 2px 0 0;
+      background: #e0e0e0;
+      color: #333;
+      font: inherit;
+      font-weight: 400;
+      white-space: nowrap;
+      text-align: center;
+    }
+    #preview-form .preview-pages-tab:first-child { margin-left: 0; }
+    #preview-form .preview-pages-tab:hover { background: #f4f4f4; color: #333; }
+    #preview-form .preview-pages-tab[aria-selected='true'] {
+      position: relative;
+      z-index: 1;
+      margin-bottom: -1px;
+      border-color: #b3b3b3;
+      border-bottom: 0;
+      background: #fff;
+      color: #1a1a1a;
+      font-weight: 400;
+      box-shadow: 0 1px 0 #fff;
+    }
+    #preview-form .preview-pages-tab:focus-visible { outline: 1px solid #1e90ff; outline-offset: -2px; }
+    #preview-form .preview-pages-outer.TabsOnBottom .preview-pages-tablist {
+      margin: 0; padding: 0; border: 0; border-top: 1px solid #b1b1b1;
+    }
+    #preview-form .preview-pages-outer.TabsOnBottom .preview-pages-tab {
+      border: 1px solid #b3b3b3; border-top: 0; border-radius: 0 0 2px 2px;
+    }
+    #preview-form .preview-pages-outer.TabsOnBottom .preview-pages-tab[aria-selected='true'] {
+      margin: -1px 0 0 -1px; border-top: 1px solid #fff; border-bottom-color: #b3b3b3;
+      box-shadow: 0 -1px 0 #fff;
+    }
+    #preview-form .preview-table-mock {
+      overflow-x: auto;
+      border: 1px solid #c8c8c8;
+      border-radius: 3px;
+      margin: 0;
+      background: #fff;
+      box-shadow: none;
+    }
+    #preview-form .preview-table-mock table { width: 100%; border-collapse: collapse; font-size: inherit; }
+    #preview-form .preview-table-mock th,
+    #preview-form .preview-table-mock td {
+      padding: 5px 8px;
+      border-bottom: 1px solid #c8c8c8;
+      border-right: 1px solid #c8c8c8;
+      color: #4d4d4d;
+      font-size: inherit;
+      text-align: left;
+      white-space: nowrap;
+    }
+    #preview-form .preview-table-mock th:last-child,
+    #preview-form .preview-table-mock td:last-child { border-right: 0; }
+    #preview-form .preview-table-mock th {
+      background: #f2f2f2;
+      border-bottom-color: #ccc;
+      box-shadow: inset 1px 1px #fff;
+      font-weight: 400;
+      cursor: pointer;
+    }
+    #preview-form .preview-table-mock th:hover { background: #e8e8e8; }
+    #preview-form .preview-table-mock th.selected { background: #d7ebff; color: #252525; }
+    #preview-form .preview-table-mock tbody tr:nth-child(even) td { background: #f7f7f7; }
+    #preview-form .preview-table-mock tbody td { color: #6d6d6d; }
+    #preview-form .preview-fallback,
+    #preview-form .preview-fallback-widget .fallback-label { color: #4d4d4d; }
+    #preview-form.preview-placeholder,
+    #preview-form .preview-empty-state { color: #6d6d6d; font-style: italic; }
+    #preview-form .preview-empty-state .preview-empty-title { color: #4d4d4d; font-size: 12px; font-style: normal; }
+    #preview-form .preview-empty-state .preview-empty-hint { font-size: 12px; }
+    #preview-form .preview-fallback-widget {
+      border-color: #c8c8c8;
+      border-radius: 0;
+      background: #fff;
+    }
+    #preview-form .preview-fallback-widget .fallback-tag {
+      border-color: #c8c8c8;
+      border-radius: 0;
+      background: #f2f2f2;
+      color: #6d6d6d;
+    }
     .preview-children.preview-buttons-container { display: flex; flex-wrap: wrap; gap: var(--fe-spacing-sm); align-items: center; margin-left: 0; }
     .empty-state { text-align: center; padding: var(--fe-spacing-lg); color: var(--vscode-descriptionForeground); }
     .empty-state h4 { margin: 0 0 var(--fe-spacing-sm) 0; font-size: 1em; color: var(--vscode-foreground); opacity: 0.9; }
@@ -1162,9 +1492,11 @@ function buildWebviewLayout(): string {
       <button type="button" class="fe-toolbar-btn" id="tb-preview-fit" title="Подогнать превью по ширине" aria-pressed="false">По ширине</button>
     </div>
     <div id="preview-form" class="preview-placeholder" role="tabpanel">
-      <div class="preview-empty-state">
-        <p class="preview-empty-title">Превью формы</p>
-        <p class="preview-empty-hint">Добавляйте элементы слева, чтобы сразу увидеть структуру и компоновку.</p>
+      <div class="preview-form-body">
+        <div class="preview-empty-state">
+          <p class="preview-empty-title">Превью формы</p>
+          <p class="preview-empty-hint">Добавляйте элементы слева, чтобы сразу увидеть структуру и компоновку.</p>
+        </div>
       </div>
     </div>
   </div>`;
@@ -2066,10 +2398,13 @@ function buildWebviewJs(): string {
         inp.style.width = characterWidth + 'ch';
         inp.dataset.dataPath = dataPath;
         inp.dataset.characterWidth = String(characterWidth);
+        var inputFrame = document.createElement('span');
+        inputFrame.className = 'preview-input-frame';
+        inputFrame.appendChild(inp);
         wrap.appendChild(lbl);
-        wrap.appendChild(inp);
+        wrap.appendChild(inputFrame);
       } else if (tag === 'CheckBoxField') {
-        wrap.className = 'preview-control-wrap preview-field-row';
+        wrap.className = 'preview-control-wrap preview-field-row preview-check-row';
         var cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.disabled = true;
@@ -2077,8 +2412,8 @@ function buildWebviewJs(): string {
         var lblCb = document.createElement('span');
         lblCb.className = 'preview-field-label';
         lblCb.textContent = label || '\u2014';
-        wrap.appendChild(lblCb);
         wrap.appendChild(cb);
+        wrap.appendChild(lblCb);
       } else if (tag === 'RadioButton' || tag === 'RadioButtonField') {
         wrap.className = 'preview-control-wrap preview-field-row';
         var radioLabel = document.createElement('span');
@@ -2154,7 +2489,7 @@ function buildWebviewJs(): string {
         var td = document.createElement('td');
         td.colSpan = Math.max(1, tableCols.length);
         td.textContent = '\u041d\u0435\u0442 \u0434\u0430\u043d\u043d\u044b\u0445';
-        td.style.color = 'var(--vscode-descriptionForeground)';
+        td.style.color = 'var(--preview-muted-foreground)';
         dataTr.appendChild(td);
         tbody.appendChild(dataTr);
         tbl.appendChild(tbody);
@@ -2176,7 +2511,7 @@ function buildWebviewJs(): string {
         wrap._mockupChildContainer = cmdBar;
       } else if (isContainerTag(tag)) {
         var groupBlock = document.createElement('div');
-        groupBlock.className = 'preview-group-block';
+        groupBlock.className = 'preview-group-block preview-group-' + String(tag).toLowerCase();
         if (label) {
           var groupTitle = document.createElement('div');
           groupTitle.className = 'preview-group-title';
@@ -2206,12 +2541,22 @@ function buildWebviewJs(): string {
       return wrap;
     }
     function renderPreview(items, parentEl) {
-      parentEl.innerHTML = '';
+      var renderTarget = parentEl;
+      if (parentEl.id === 'preview-form') {
+        renderTarget = parentEl.querySelector('.preview-form-body');
+        if (!renderTarget) {
+          renderTarget = document.createElement('div');
+          renderTarget.className = 'preview-form-body';
+          parentEl.appendChild(renderTarget);
+        }
+        parentEl.classList.toggle('preview-has-commandbar', !!(items && items.some(function(item) { return item.tag === 'AutoCommandBar'; })));
+      }
+      renderTarget.innerHTML = '';
       parentEl.classList.remove('preview-placeholder');
       if (items && items.length) parentEl.classList.add('preview-mockup-form');
       else parentEl.classList.remove('preview-mockup-form');
       if (!items || !items.length) {
-        parentEl.textContent = 'Нет элементов';
+        renderTarget.textContent = 'Нет элементов';
         return;
       }
       items.forEach(function(item) {
@@ -2282,7 +2627,7 @@ function buildWebviewJs(): string {
           updatePropsPanel();
           vscode.postMessage({ type: 'selectElement', elementId: id, selectedIds: selectedIds.slice() });
         });
-        parentEl.appendChild(div);
+        renderTarget.appendChild(div);
         if (tag === 'Table') {
           var ths = controlWrap.querySelectorAll('th[data-id]');
           for (var ti = 0; ti < ths.length; ti++) {
