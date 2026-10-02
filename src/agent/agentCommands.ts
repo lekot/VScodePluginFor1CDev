@@ -72,6 +72,7 @@ import type {
 } from './types';
 import { FormsOperations } from './agentFormsOperations';
 import { AgentStaticFormOperations } from './agentStaticForms';
+import { AgentSyntaxHelpOperations } from './agentSyntaxHelp';
 import type {
   FormsStartParams,
   FormsExecParams,
@@ -819,6 +820,12 @@ export function registerAgentCommands(
     const formsOutputChannel = vscode.window.createOutputChannel('CDT 41: 1C Forms');
     context.subscriptions.push(formsOutputChannel);
 
+    const syntaxHelpOperations = new AgentSyntaxHelpOperations(context.extensionPath);
+    const syntaxHelpCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.syntaxHelp',
+        (params: unknown) => syntaxHelpOperations.execute(params),
+    );
+
     // ─── 1c-metadata-tree.agent.forms.start ──────────────────────────────────
 
     const formsStartCommand = vscode.commands.registerCommand(
@@ -1109,6 +1116,7 @@ export function registerAgentCommands(
         getCharacteristicValueRegistersCommand,
         formsStartCommand, formsExecCommand, formsStopCommand,
         formsShotCommand, formsStatusCommand, formsInspectCommand, formsValidateCommand, formsEditCommand,
+        syntaxHelpCommand,
         skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,
         listXdtoPackagesCommand, getXdtoPackageCommand, exportXdtoXsdCommand,
         importXdtoXsdCommand, createXdtoFromXsdCommand,

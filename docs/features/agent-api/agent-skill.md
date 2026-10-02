@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **82** runtime-команды Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **83** runtime-команды Agent API для программного
 управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **82 операции Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **83 операции Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,11 +58,11 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 82 имени, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 83 имени, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 82 индивидуальных имени операции с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 83 индивидуальных имени операции с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
@@ -1096,6 +1096,38 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 #### `1c-metadata-tree.agent.forms.edit`
 
 Применить одну или несколько типизированных операций изменения формы. `dryRun` по умолчанию равен `false`; для записи передайте `ifRev` из inspect или предыдущего dry run. Предпросмотр не записывает файл и возвращает `{ formPath, dryRun: true, rev, plannedChanges: { files, summary, diff }, issues }`. При записи ревизия проверяется повторно через атомарный compare-and-swap; несовпадение возвращает `CONCURRENT_MODIFICATION_ERROR` и текущий `data.currentRev`. Результат записи содержит `previousRev` и новый `rev`. Перед сохранением XML повторно проверяется; новые ошибки валидации отклоняют запись, существующие ошибки можно исправлять постепенно.
+
+### Справка по синтаксису и стандартам (1 команда)
+
+`1c-metadata-tree.agent.syntaxHelp` читает встроенную SQLite-базу справки платформы и оригинальные памятки по разработке. База SQLite содержит 2673 узла и собиралась владельцем проекта; 13 кратких статей в `resources/standards/` написаны для проекта и ссылаются на официальные материалы ИТС. Статьи не заменяют актуальные стандарты: учитывайте область применения и версию платформы/БСП по ссылке.
+
+```json
+{
+  "source": "all",
+  "action": "search",
+  "query": "НачатьТранзакцию",
+  "limit": 5,
+  "snippetLength": 300
+}
+```
+
+Параметры:
+
+- `source`: `syntax`, `standards` или `all`; значение по умолчанию — `all`.
+- `action`: `search`, `get` или `children`; значение по умолчанию — `search`.
+- `query`: поисковая строка для `search`; для `get` — точное имя или относительный путь, если `id` не задан.
+- `id`: namespaced ID `syntax:<числовой ID>` или `standards:<slug>`; для синтаксиса можно передать числовой ID.
+- `parentId`: ID родителя для `children`; `null` или отсутствие значения перечисляет корни.
+- `limit`: максимум результатов, 1–50; по умолчанию 10.
+- `snippetLength`: длина фрагмента поиска, 40–1000 символов; по умолчанию 300.
+
+Поиск учитывает точное имя, начало имени, вхождение в имени, путь и содержимое именно в таком порядке; `%` и `_` являются обычными символами. Результаты с одинаковым рангом сортируются стабильно по имени, пути и ID. `get` принимает ровно один из `id` и `query`; при нескольких точных совпадениях возвращает `KNOWLEDGE_ITEM_AMBIGUOUS` и кандидатов, при отсутствии — `KNOWLEDGE_ITEM_NOT_FOUND`. `children` ограничивает результаты выбранным источником. Пути в DTO относительные; абсолютные пути расширения не возвращаются.
+
+```json
+{ "source": "syntax", "action": "get", "id": "syntax:1" }
+{ "source": "standards", "action": "get", "query": "Транзакции и блокировки" }
+{ "source": "syntax", "action": "children", "parentId": "syntax:2" }
+```
 
 ### Формы enterprise (5 команд)
 

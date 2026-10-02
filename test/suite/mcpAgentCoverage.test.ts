@@ -115,6 +115,7 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_cfe_borrow_form', 'cfe.borrowForm', 'writeClosedIdempotent'),
   tool('cdt_cfe_extend_form', 'cfe.extendForm', 'writeClosedIdempotent'),
   tool('cdt_roles_set_rights', 'roles.setRights', 'writeClosed'),
+  tool('cdt_syntax_help', 'syntaxHelp', 'readClosed'),
 ];
 
 const EXPECTED_ANNOTATIONS: Readonly<Record<AnnotationKind, Readonly<Record<string, boolean>>>> = {
@@ -265,6 +266,7 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_roles_set_rights: {
     configurationId: 'cfg', roleName: 'Manager', objects: ['Catalog.Goods: @admin'],
   },
+  cdt_syntax_help: { query: 'Справочник' },
 };
 
 interface InvalidRefinementCase {
@@ -274,6 +276,10 @@ interface InvalidRefinementCase {
 }
 
 const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
+  { label: 'syntax help get rejects both ID and query', tool: 'cdt_syntax_help', input: { action: 'get', id: 1, query: 'other' } },
+  { label: 'syntax help search requires query', tool: 'cdt_syntax_help', input: { action: 'search' } },
+  { label: 'syntax help rejects a limit above 50', tool: 'cdt_syntax_help', input: { query: 'Форма', limit: 51 } },
+  { label: 'syntax help rejects snippet length below 40', tool: 'cdt_syntax_help', input: { query: 'Форма', snippetLength: 39 } },
   { label: 'CFE create rejects an invalid extension identifier', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Bad-Name', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_3_24' } },
   { label: 'CFE create rejects an invalid name prefix', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Bad-Name', compatibilityMode: 'Version8_3_24' } },
   { label: 'CFE create rejects an invalid compatibility mode', tool: 'cdt_cfe_create_project', input: { baseConfigurationId: 'cfg', extensionName: 'Extension', purpose: 'Customization', namePrefix: 'Ext_', compatibilityMode: 'Version8_2_24' } },
@@ -433,10 +439,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 82 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 82, 'test oracle must enumerate all 82 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 82);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 82);
+  test('operation registry has the exact 83 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 83, 'test oracle must enumerate all 83 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 83);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 83);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -492,8 +498,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 82);
-    assert.strictEqual(new Set(registered).size, 82);
+    assert.strictEqual(registered.length, 83);
+    assert.strictEqual(new Set(registered).size, 83);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -506,7 +512,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 82 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 83 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];

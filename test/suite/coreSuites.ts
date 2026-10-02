@@ -248,6 +248,7 @@ export const coreSuiteFiles: string[] = [
   'suite/chromiumInstaller.test.js',
   'suite/agentFormsOperations.test.js',
   'suite/agentStaticForms.test.js',
+  'suite/agentSyntaxHelp.test.js',
   'suite/formsLifecycle.test.js',
   'suite/agentSkdOperations.test.js',
   'suite/agentXdtoOperations.test.js',

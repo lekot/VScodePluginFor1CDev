@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "slug": "code-placement",
+      "name": "Размещение кода",
+      "path": "categories/code-placement",
+      "category": true,
+      "summary": "Как выбрать модуль для прикладной логики и разделить обязанности формы, объекта, менеджера и общих модулей."
+    },
+    {
+      "slug": "form-module",
+      "name": "Что оставлять в модуле формы",
+      "path": "articles/form-module.md",
+      "parentSlug": "code-placement",
+      "summary": "Держите в модуле формы обработчики и функции, которым нужен контекст именно этой формы.",
+      "contentPath": "articles/form-module.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/1%C2%A0200/700/i8100630.htm"
+    },
+    {
+      "slug": "module-placement",
+      "name": "Общие модули и границы сервера",
+      "path": "articles/module-placement.md",
+      "parentSlug": "code-placement",
+      "summary": "Включайте вызов сервера только для процедур, которые действительно составляют клиентский API.",
+      "contentPath": "articles/module-placement.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/200/100/i8100469.htm"
+    },
+    {
+      "slug": "object-manager-modules",
+      "name": "Модуль объекта, менеджера и общий модуль",
+      "path": "articles/object-manager-modules.md",
+      "parentSlug": "code-placement",
+      "summary": "Разделяйте поведение экземпляра объекта, общую для объекта функциональность и независимый сервисный код.",
+      "contentPath": "articles/object-manager-modules.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/400/300/i8100486.htm"
+    },
+    {
+      "slug": "compilation-directives",
+      "name": "Директивы компиляции и препроцессор",
+      "path": "articles/compilation-directives.md",
+      "parentSlug": "code-placement",
+      "summary": "Размещайте клиентский и серверный код согласно контексту вызова, не разрывая директивами синтаксические конструкции.",
+      "contentPath": "articles/compilation-directives.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/400/200/i8100439.htm"
+    },
+    {
+      "slug": "client-server",
+      "name": "Клиент-серверное взаимодействие",
+      "path": "categories/client-server",
+      "category": true,
+      "summary": "Как проектировать контекстные вызовы формы, серверный интерфейс и длительные операции."
+    },
+    {
+      "slug": "form-server-context",
+      "name": "Контекстный и внеконтекстный вызов сервера",
+      "path": "articles/form-server-context.md",
+      "parentSlug": "client-server",
+      "summary": "Выбирайте контекстную передачу только когда передача изменённых данных формы оправдывает стоимость серверного контекста.",
+      "contentPath": "articles/form-server-context.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/1%C2%A0200/700/i8100636.htm"
+    },
+    {
+      "slug": "server-call-boundary",
+      "name": "Граница вызова сервера",
+      "path": "articles/server-call-boundary.md",
+      "parentSlug": "client-server",
+      "summary": "Открывайте клиентскому коду только ограниченный серверный API и контролируйте число удалённых вызовов.",
+      "contentPath": "articles/server-call-boundary.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/600/i8100679.htm"
+    },
+    {
+      "slug": "long-server-operations",
+      "name": "Длительные операции на сервере",
+      "path": "articles/long-server-operations.md",
+      "parentSlug": "client-server",
+      "summary": "Не удерживайте пользователя и серверный вызов длительной работой, которую можно оформить как фоновую операцию.",
+      "contentPath": "articles/long-server-operations.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/1%C2%A0200/i8100642.htm"
+    },
+    {
+      "slug": "data-and-security",
+      "name": "Данные и безопасность",
+      "path": "categories/data-and-security",
+      "category": true,
+      "summary": "Практические правила транзакций, запросов, привилегированного режима и интеграции с БСП."
+    },
+    {
+      "slug": "transactions-and-locks",
+      "name": "Транзакции и блокировки",
+      "path": "articles/transactions-and-locks.md",
+      "parentSlug": "data-and-security",
+      "summary": "Ограничивайте транзакцию действиями, которые должны быть атомарными, и держите её короткой.",
+      "contentPath": "articles/transactions-and-locks.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/300/300/i8100783.htm"
+    },
+    {
+      "slug": "repeated-queries",
+      "name": "Однотипные запросы в цикле",
+      "path": "articles/repeated-queries.md",
+      "parentSlug": "data-and-security",
+      "summary": "Собирайте однотипные данные одним запросом, а циклические запросы оставляйте для обоснованных порционных сценариев.",
+      "contentPath": "articles/repeated-queries.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/300/100/i8100436.htm"
+    },
+    {
+      "slug": "privileged-mode",
+      "name": "Привилегированный режим и серверная безопасность",
+      "path": "articles/privileged-mode.md",
+      "parentSlug": "data-and-security",
+      "summary": "Считайте привилегированный код границей безопасности и минимизируйте доступные извне серверные операции.",
+      "contentPath": "articles/privileged-mode.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/600/i8100678.htm"
+    },
+    {
+      "slug": "bsp-contracts",
+      "name": "Контракт вызова БСП",
+      "path": "articles/bsp-contracts.md",
+      "parentSlug": "data-and-security",
+      "summary": "Вызывайте документированный программный интерфейс конкретной версии БСП и не связывайтесь с внутренней реализацией.",
+      "contentPath": "articles/bsp-contracts.md",
+      "sourceUrl": "https://its.1c.ru/db/bsp321doc/content/2172/hdoc"
+    },
+    {
+      "slug": "platform-compatibility",
+      "name": "Минимальная и рекомендуемая версия платформы",
+      "path": "articles/platform-compatibility.md",
+      "parentSlug": "data-and-security",
+      "summary": "Фиксируйте поддерживаемую платформу как продуктовый контракт и проверяйте новое поведение на всём заявленном диапазоне.",
+      "contentPath": "articles/platform-compatibility.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/200/100/i8100785.htm"
+    },
+    {
+      "slug": "metadata-conventions",
+      "name": "Соглашения по объектам метаданных",
+      "path": "articles/metadata-conventions.md",
+      "parentSlug": "data-and-security",
+      "summary": "Используйте понятные русские имена и синонимы, удаляйте неиспользуемые объекты и сохраняйте предсказуемый порядок дерева.",
+      "contentPath": "articles/metadata-conventions.md",
+      "sourceUrl": "https://its.1c.ru/db/content/v8std/src/200/100/i8100467.htm"
+    }
+  ]
+}

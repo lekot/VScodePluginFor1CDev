@@ -891,6 +891,11 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.syntaxHelp",
+        "title": "Agent: Справка по синтаксису и стандартам 1С",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.skd.info",
         "title": "Agent: Информация о СКД",
         "category": "CDT 41 Agent"
@@ -1971,6 +1976,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.0.0",
+    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.80.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
@@ -1991,7 +1997,8 @@
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
     "js-yaml": "^4.1.1",
-    "playwright": "^1.50.0"
+    "playwright": "^1.50.0",
+    "sql.js": "^1.14.2"
   },
   "c8": {
     "include": [

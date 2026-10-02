@@ -56,6 +56,7 @@ docs/features/mcp-agent-adapter/*
 !docs/features/mcp-agent-adapter/spec.md
 !docs/features/mcp-agent-adapter/design.md
 shcntx_help.db
+!resources/help/shcntx_help.db
 .roo/
 .superpowers/
 
