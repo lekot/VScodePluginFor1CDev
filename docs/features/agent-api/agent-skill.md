@@ -1,7 +1,7 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **79** runtime-команд Agent API для программного
-управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, формами enterprise,
+Расширение CDT 41 для VS Code предоставляет **82** runtime-команды Agent API для программного
+управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
 
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **79 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **82 операции Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,11 +58,11 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 79 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 82 имени, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 79 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 82 индивидуальных имени операции с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
@@ -1065,7 +1065,39 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 ---
 
-### Формы (5 команд)
+### Статические операции над Form.xml (3 команды)
+
+Эти команды читают Form.xml из выбранной конфигурации; браузер, Chromium, ibsrv и информационная база не нужны. `configurationId` можно опустить только если доступна одна конфигурация. `formPath` всегда относительный и должен вести к `Forms/<Имя>/Ext/Form.xml` или `CommonForms/<Имя>/Ext/Form.xml`; абсолютные пути, выход за корень и символические ссылки отклоняются.
+
+#### `1c-metadata-tree.agent.forms.inspect`
+
+Прочитать структуру формы, реквизиты, команды и SHA-256 исходных байтов.
+
+```json
+{ "configurationId": "<id из listConfigurations>", "formPath": "Catalogs/Товары/Forms/ФормаЭлемента/Ext/Form.xml" }
+```
+
+Возвращает `{ formPath, rev, tree, attributes, commands }`. `tree` содержит корневой узел Form и вложенные элементы. `rev` — hex SHA-256 содержимого `Form.xml`; все пути в DTO относительные.
+
+#### `1c-metadata-tree.agent.forms.validate`
+
+Проверить XML формы, уникальность и числовой формат идентификаторов, имена, ссылки `DataPath` и `CommandName`, число `MainAttribute`, версию формата и обработчики событий/команд.
+
+```json
+{
+  "configurationId": "<id из listConfigurations>",
+  "formPath": "CommonForms/Редактор/Ext/Form.xml",
+  "formatVersion": "2.20"
+}
+```
+
+`formatVersion` необязателен; если он задан, проверяется совпадение с атрибутом `version` корневого `Form`. Поддерживаемые значения: `2.17`–`2.21`. Результат: `{ formPath, rev, valid, issues }`, где каждая диагностика содержит `code`, `severity`, `message` и относительный `path`. Отсутствующие companion-элементы и `AutoCommandBar` дают предупреждения: платформа может создавать их автоматически. Если рядом с `Form.xml` есть `Ext/Form/Module.bsl`, проверяется наличие объявленных обработчиков событий и команд; без этого файла проверка пропускается с предупреждением `MODULE_CHECK_SKIPPED`. Проверяется наличие объявления в модуле, а не компиляция BSL. Числовые ID расширения, включая диапазон `1000000+`, поддерживаются.
+
+#### `1c-metadata-tree.agent.forms.edit`
+
+Применить одну или несколько типизированных операций изменения формы. `dryRun` по умолчанию равен `false`; для записи передайте `ifRev` из inspect или предыдущего dry run. Предпросмотр не записывает файл и возвращает `{ formPath, dryRun: true, rev, plannedChanges: { files, summary, diff }, issues }`. При записи ревизия проверяется повторно через атомарный compare-and-swap; несовпадение возвращает `CONCURRENT_MODIFICATION_ERROR` и текущий `data.currentRev`. Результат записи содержит `previousRev` и новый `rev`. Перед сохранением XML повторно проверяется; новые ошибки валидации отклоняют запись, существующие ошибки можно исправлять постепенно.
+
+### Формы enterprise (5 команд)
 
 Запуск и управление веб-клиентом 1С для агентской работы с формами. Внутри расширения запускается ibsrv (при dbPath) + playwright (с автоустановкой chromium при первом вызове).
 

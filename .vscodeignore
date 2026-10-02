@@ -17,6 +17,7 @@ build/**
 .kiro/**
 BUGS/**
 docs/**
+!docs/third-party-notices.md
 mcp/**
 FormatSamples/**
 releases/

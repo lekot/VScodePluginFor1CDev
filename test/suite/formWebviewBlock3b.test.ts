@@ -38,8 +38,10 @@ suite('form webview Block 3B — groups & alignment (1CVIEWER-36)', () => {
     );
   });
 
-  test('JS: spacing → gap via applyPreviewContainerLayout', () => {
-    assert.ok(html.includes('function spacingKindToPxJs(k)'), 'pixel map for spacing');
+  test('JS: orientation-aware Taxi spacing → gap via applyPreviewContainerLayout', () => {
+    assert.ok(html.includes('function spacingKindToPxJs(k, orientation)'), 'orientation-aware pixel map for spacing');
+    assert.ok(html.includes("orientation === 'horizontal' ? 10 : 9"), 'single spacing uses 10px horizontally and 9px vertically');
+    assert.ok(html.includes("orientation === 'horizontal' ? 20 : 18"), 'double spacing scales each Taxi axis');
     assert.ok(html.includes('function applyPreviewContainerLayout(el, meta)'), 'applies gap + flex');
     assert.ok(html.includes("el.style.rowGap = r + 'px'"), 'vertical spacing → rowGap');
     assert.ok(html.includes("el.style.columnGap = c + 'px'"), 'horizontal spacing → columnGap');

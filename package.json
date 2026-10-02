@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.53.5",
+  "version": "0.53.6",
   "icon": "images/icon.png",
   "publisher": "Lekot",
   "license": "MIT",
@@ -873,6 +873,21 @@
       {
         "command": "1c-metadata-tree.agent.forms.shot",
         "title": "Agent: Снимок формы",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.forms.inspect",
+        "title": "Agent: Прочитать статическую форму",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.forms.validate",
+        "title": "Agent: Проверить статическую форму",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.forms.edit",
+        "title": "Agent: Изменить статическую форму",
         "category": "CDT 41 Agent"
       },
       {

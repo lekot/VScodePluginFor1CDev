@@ -153,6 +153,54 @@ suite('FormEditorProvider editable document lifecycle', () => {
     }
   });
 
+  test('provider saves a loaded Form.xml through the captured byte snapshot', async () => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-source-save-'));
+    try {
+      const formXmlPath = path.join(tempDir, 'Catalogs', 'Goods', 'Forms', 'MainForm', 'Ext', 'Form.xml');
+      const source = Buffer.from(
+        '\uFEFF<?xml version="1.0" encoding="UTF-8"?>\r\n'
+          + '<Form version="2.20">\r\n'
+          + '\t<!-- preserve through provider save -->\r\n'
+          + '\t<ChildItems>\r\n'
+          + '\t\t<InputField extra=\'keep\' name=\'Field1\' id=\'field-1\'>\r\n'
+          + '\t\t\t<DataPath>Before</DataPath>\r\n'
+          + '\t\t</InputField>\r\n'
+          + '\t</ChildItems>\r\n'
+          + '</Form>\r\n',
+        'utf8',
+      );
+      await fs.promises.mkdir(path.dirname(formXmlPath), { recursive: true });
+      await fs.promises.writeFile(path.join(tempDir, 'Configuration.xml'), '<Configuration/>', 'utf8');
+      await fs.promises.writeFile(formXmlPath, source);
+
+      const provider = new FormEditorProvider();
+      const uri = vscode.Uri.file(formXmlPath);
+      const document = await provider.openCustomDocument(uri);
+      const view = makePanel();
+      await provider.resolveCustomEditor(document, view.panel);
+      await view.receive({ type: 'load' });
+
+      await provider.saveCustomDocument(document, cancellation);
+      assert.deepStrictEqual(await fs.promises.readFile(formXmlPath), source, 'no-op save leaves every source byte intact');
+
+      await view.receive({ type: 'propertyChange', elementId: 'field-1', key: 'DataPath', value: 'After & safe' });
+      await provider.saveCustomDocument(document, cancellation);
+      const actual = await fs.promises.readFile(formXmlPath);
+      const xml = actual.toString('utf8');
+      assert.ok(actual.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])), 'BOM remains');
+      assert.ok(xml.includes('\r\n') && !xml.replace(/\r\n/g, '').includes('\n'), 'CRLF remains consistent');
+      assert.ok(xml.includes('<!-- preserve through provider save -->'), 'comment remains');
+      assert.ok(xml.includes("<InputField extra='keep' name='Field1' id='field-1'>"), 'unmodified tag bytes remain');
+      assert.ok(xml.includes('<DataPath>After &amp; safe</DataPath>'), 'UI property edit is spliced');
+
+      view.dispose();
+      document.dispose();
+      provider.dispose();
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('fails closed for generic save of an adopted CFE form', async () => {
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'form-editor-adopted-cfe-'));
     try {

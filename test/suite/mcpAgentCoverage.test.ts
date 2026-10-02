@@ -78,6 +78,9 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_forms_stop', 'forms.stop', 'writeOpen'),
   tool('cdt_forms_shot', 'forms.shot', 'writeOpen'),
   tool('cdt_forms_status', 'forms.status', 'readOpen'),
+  tool('cdt_form_inspect', 'forms.inspect', 'readClosed'),
+  tool('cdt_form_validate', 'forms.validate', 'readClosed'),
+  tool('cdt_form_edit', 'forms.edit', 'writeClosed'),
 
   tool('cdt_skd_compile', 'skd.compile', 'writeOpen'),
   tool('cdt_skd_info', 'skd.info', 'writeOpen'),
@@ -200,6 +203,14 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_forms_stop: {},
   cdt_forms_shot: { file: 'C:/temp/form.png' },
   cdt_forms_status: {},
+  cdt_form_inspect: { configurationId: 'cfg', formPath: 'Catalogs/Goods/Forms/Main/Ext/Form.xml' },
+  cdt_form_validate: { configurationId: 'cfg', formPath: 'CommonForms/Editor/Ext/Form.xml', formatVersion: '2.20' },
+  cdt_form_edit: {
+    configurationId: 'cfg',
+    formPath: 'Catalogs/Goods/Forms/Main/Ext/Form.xml',
+    operations: [{ type: 'setElementIdentity', element: { id: '1' }, name: 'Renamed', id: '2' }],
+    dryRun: true,
+  },
   cdt_skd_compile: { value: '{}', outputPath: 'C:/project/template.xml' },
   cdt_skd_info: { templatePath: 'C:/project/template.xml', mode: 'overview', name: 'main', batch: 1, limit: 10, offset: 0, outFile: 'C:/temp/info.json' },
   cdt_skd_edit: { templatePath: 'C:/project/template.xml', operation: 'add-field', value: '{}', dataSet: 'Main', variant: 'Default', noSelection: false },
@@ -325,6 +336,13 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'pullSelectedObjects empty objectIds', tool: 'cdt_pull_selected_objects', input: { objectIds: [] } },
   { label: 'formsStart missing url and dbPath', tool: 'cdt_forms_start', input: {} },
   { label: 'formsExec empty script', tool: 'cdt_forms_exec', input: { script: '' } },
+  { label: 'form inspect rejects traversal paths', tool: 'cdt_form_inspect', input: { formPath: 'Catalogs/Goods/Forms/../Other/Ext/Form.xml' } },
+  { label: 'form inspect rejects absolute paths', tool: 'cdt_form_inspect', input: { formPath: 'C:/outside/Forms/Main/Ext/Form.xml' } },
+  { label: 'form validate rejects arbitrary XML paths', tool: 'cdt_form_validate', input: { formPath: 'Catalogs/Goods/Object.xml' } },
+  { label: 'form validate restricts format version', tool: 'cdt_form_validate', input: { formPath: 'Catalogs/Goods/Forms/Main/Ext/Form.xml', formatVersion: '2.22' } },
+  { label: 'form edit rejects an empty operation list', tool: 'cdt_form_edit', input: { formPath: 'Catalogs/Goods/Forms/Main/Ext/Form.xml', operations: [] } },
+  { label: 'form edit requires a valid revision shape', tool: 'cdt_form_edit', input: { formPath: 'Catalogs/Goods/Forms/Main/Ext/Form.xml', operations: [{ type: 'removeElement', element: { id: '1' } }], ifRev: 'stale' } },
+  { label: 'form edit rejects an unknown edit operation', tool: 'cdt_form_edit', input: { formPath: 'Catalogs/Goods/Forms/Main/Ext/Form.xml', operations: [{ type: 'replaceAllXml', xml: '<Form/>' }] } },
   {
     label: 'external dump requires execution context',
     tool: 'cdt_dump_external_processor',
@@ -415,10 +433,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 79 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 79, 'test oracle must enumerate all 79 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 79);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 79);
+  test('operation registry has the exact 82 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 82, 'test oracle must enumerate all 82 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 82);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 82);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -474,8 +492,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 79);
-    assert.strictEqual(new Set(registered).size, 79);
+    assert.strictEqual(registered.length, 82);
+    assert.strictEqual(new Set(registered).size, 82);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -488,7 +506,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 79 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 82 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
