@@ -324,6 +324,109 @@ suite('BSL platform completion', () => {
     assert.ok(englishTypes.includes('ValueTable'));
   });
 
+  test('suggests BSL keywords by Russian and English prefixes with keyword priority', async () => {
+    const provider = new BslCompletionProvider(extensionRoot());
+    const russianLoopEnd = await complete(provider, 'КонецЦ');
+    const loopEnd = russianLoopEnd?.find(({ label }) => label === 'КонецЦикла');
+    assert.ok(loopEnd, 'КонецЦ should suggest КонецЦикла');
+    assert.strictEqual(loopEnd?.kind, vscode.CompletionItemKind.Keyword);
+    assert.strictEqual(loopEnd?.insertText, 'КонецЦикла');
+    assert.ok(loopEnd?.sortText?.startsWith('0_'), 'keyword items sort ahead of platform globals');
+
+    const englishLoopEnd = await complete(provider, 'endd');
+    assert.ok(labels(englishLoopEnd).includes('EndDo'), 'English keywords match case-insensitively');
+
+    const exceptionItems = await complete(provider, 'Исключ');
+    assert.strictEqual(labels(exceptionItems)[0], 'Исключение');
+    assert.strictEqual(
+      exceptionItems?.find(({ label }) => label === 'Исключение')?.kind,
+      vscode.CompletionItemKind.Keyword,
+    );
+    assert.ok(
+      exceptionItems?.find(({ label }) => label === 'Исключение')?.sortText?.startsWith('0_'),
+      'the exact exception keyword should sort ahead of similarly named platform globals',
+    );
+
+    for (const [prefix, expected] of [
+      ['КонецЕсли', 'КонецЕсли'],
+      ['КонецПоп', 'КонецПопытки'],
+      ['КонецПроц', 'КонецПроцедуры'],
+      ['EndIf', 'EndIf'],
+      ['EndTry', 'EndTry'],
+      ['EndProcedure', 'EndProcedure'],
+      ['EndFunction', 'EndFunction'],
+    ]) {
+      assert.ok(labels(await complete(provider, prefix)).includes(expected), `${prefix} should suggest ${expected}`);
+    }
+    assert.ok(labels(await complete(provider, 'КонецП')).includes('КонецПроцедуры'));
+
+    for (const keyword of [
+      'Если', 'Иначе', 'ИначеЕсли', 'Попытка', 'Исключение', 'Для', 'Каждого', 'While', 'Break', 'Return', 'Var',
+      'Новый', 'New', 'И', 'And', 'Или', 'Or', 'Не', 'Not', 'Истина', 'True', 'Ложь', 'False', 'Неопределено', 'Undefined', 'Null',
+    ]) {
+      assert.ok(labels(await complete(provider, keyword)).includes(keyword), `${keyword} should be suggested`);
+    }
+  });
+
+  test('suppresses keyword completions in comments, strings, and after a member dot', async () => {
+    const provider = new BslCompletionProvider(extensionRoot());
+    const comment = '// КонецЦ';
+    const string = 'Текст = "КонецЦ"';
+    assert.strictEqual(await complete(provider, comment), undefined);
+    assert.strictEqual(await complete(provider, string, string.indexOf('КонецЦ') + 'КонецЦ'.length), undefined);
+
+    const member = 'Новый Запрос("").КонецЦ';
+    const memberItems = await complete(provider, member);
+    assert.ok(!labels(memberItems).includes('КонецЦикла'));
+  });
+
+  test('does not suggest loop terminators that are absent from the BSL grammar', async () => {
+    const provider = new BslCompletionProvider(extensionRoot());
+    const russian = labels(await complete(provider, 'КонецПо'));
+    const english = labels(await complete(provider, 'EndWh'));
+    assert.ok(!russian.includes('КонецПока'));
+    assert.ok(!english.includes('EndWhile'));
+  });
+
+  test('suggests static BSL keywords when the bundled help index is unavailable', async () => {
+    const missingIndexRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-provider-empty-extension-'));
+    try {
+      const provider = new BslCompletionProvider(missingIndexRoot);
+      assert.ok(labels(await complete(provider, 'КонецЦ')).includes('КонецЦикла'));
+    } finally {
+      await fs.promises.rm(missingIndexRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('deduplicates a keyword against platform and local routine completions', async () => {
+    const provider = new BslCompletionProvider(extensionRoot());
+    const providerWithIndexes = provider as unknown as {
+      loadedIndex: Promise<unknown> | undefined;
+      localIndex: { getCurrentDocumentRoutines(document: vscode.TextDocument): readonly {
+        name: string;
+        kind: 'procedure';
+        exported: boolean;
+        parameterText: string;
+      }[] };
+    };
+    const platformDuplicate = {
+      name: 'Исключение',
+      kind: 'global',
+      article: { id: 1, name: 'Global context', path: 'Global context.html' },
+    };
+    providerWithIndexes.loadedIndex = Promise.resolve({
+      globalCandidates: [platformDuplicate],
+      globalCandidatesByFirstCharacter: new Map([['и', [platformDuplicate]]]),
+    });
+    providerWithIndexes.localIndex = {
+      getCurrentDocumentRoutines: () => [{ name: 'Исключение', kind: 'procedure', exported: false, parameterText: '' }],
+    };
+
+    const items = await complete(provider, 'Исключ');
+    assert.strictEqual(labels(items).filter((name) => name === 'Исключение').length, 1);
+    assert.strictEqual(items?.find(({ label }) => label === 'Исключение')?.kind, vscode.CompletionItemKind.Keyword);
+  });
+
   test('suggests members for a locally assigned Новый receiver and preserves call syntax', async () => {
     const provider = new BslCompletionProvider(extensionRoot());
     const text = [

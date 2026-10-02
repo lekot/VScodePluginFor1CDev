@@ -164,6 +164,7 @@ const CompletionItemKind = {
   Variable: 5,
   Class: 6,
   Property: 10,
+  Keyword: 14,
 } as const;
 
 class VSCodeEventEmitter<T> {

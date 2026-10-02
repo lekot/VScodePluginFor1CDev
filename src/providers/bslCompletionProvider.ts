@@ -11,6 +11,15 @@ import { BslLocalCompletionIndex, type BslLocalRoutineCandidate } from './bslLoc
 
 const MAX_CONTEXT_LINES = 200;
 const MAX_CONTEXT_CHARS = 16_384;
+const BSL_KEYWORDS = [
+  'Процедура', 'Procedure', 'Функция', 'Function', 'Перем', 'Var', 'Экспорт', 'Export', 'Знач', 'Val',
+  'КонецПроцедуры', 'EndProcedure', 'КонецФункции', 'EndFunction',
+  'Если', 'If', 'ИначеЕсли', 'ElsIf', 'Иначе', 'Else', 'Тогда', 'Then', 'КонецЕсли', 'EndIf',
+  'Попытка', 'Try', 'Исключение', 'Except', 'КонецПопытки', 'EndTry', 'ВызватьИсключение', 'Raise',
+  'Для', 'For', 'Каждого', 'Each', 'Из', 'In', 'По', 'To', 'Цикл', 'Do', 'Пока', 'While', 'КонецЦикла', 'EndDo',
+  'Прервать', 'Break', 'Продолжить', 'Continue', 'Возврат', 'Return', 'Новый', 'New',
+  'И', 'And', 'Или', 'Or', 'Не', 'Not', 'Истина', 'True', 'Ложь', 'False', 'Неопределено', 'Undefined', 'Null',
+] as const;
 
 type CompletionKind = 'global' | 'property' | 'method' | 'type';
 
@@ -432,6 +441,19 @@ function metadataCompletionItems(prefix: string, names: readonly string[], folde
     .map((name) => toMetadataCompletionItem(name, folderId));
 }
 
+function keywordCompletionItems(prefix: string): vscode.CompletionItem[] {
+  const foldedPrefix = normalizeIdentifier(prefix);
+  return BSL_KEYWORDS
+    .filter((name) => normalizeIdentifier(name).startsWith(foldedPrefix))
+    .map((name) => {
+      const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Keyword);
+      item.insertText = name;
+      item.detail = 'Ключевое слово BSL';
+      item.sortText = `0_${normalizeIdentifier(name)}`;
+      return item;
+    });
+}
+
 function candidatesForType(type: BslCompletionType): Candidate[] {
   return [
     ...type.properties.map((name) => ({ name, kind: 'property' as const, article: type.article })),
@@ -531,15 +553,30 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
         return undefined;
       }
       if (context.kind === 'global') {
-        const platformItems = matchingCandidates(
+        const keywordItems = keywordCompletionItems(context.prefix);
+        const seenNames = new Set(keywordItems.map(({ label }) => normalizeIdentifier(String(label))));
+        const platformCandidates = matchingCandidates(
           context.prefix,
           index.globalCandidates,
           index.globalCandidatesByFirstCharacter,
-        ).map(toCompletionItem);
-        const seenNames = new Set(platformItems.map(({ label }) => normalizeIdentifier(String(label))));
+        ).filter(({ name }) => {
+          const key = normalizeIdentifier(name);
+          if (seenNames.has(key)) {
+            return false;
+          }
+          seenNames.add(key);
+          return true;
+        });
         const localItems = localRoutineCompletionItems(context.prefix, this.localIndex.getCurrentDocumentRoutines(document), 'текущий модуль')
-          .filter(({ label }) => !seenNames.has(normalizeIdentifier(String(label))));
-        return [...platformItems, ...localItems];
+          .filter(({ label }) => {
+            const key = normalizeIdentifier(String(label));
+            if (seenNames.has(key)) {
+              return false;
+            }
+            seenNames.add(key);
+            return true;
+          });
+        return [...keywordItems, ...platformCandidates.map(toCompletionItem), ...localItems];
       }
       if (context.kind === 'type') {
         return matchingCandidates(context.prefix, index.typeCandidates, index.typeCandidatesByFirstCharacter)
@@ -553,7 +590,10 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
       return matchingCandidates(context.prefix, members, groupByFirstCharacter(members)).map(toCompletionItem);
     } catch {
       this.loadedIndex = undefined;
-      return undefined;
+      if (token.isCancellationRequested) {
+        return undefined;
+      }
+      return context.kind === 'global' ? keywordCompletionItems(context.prefix) : undefined;
     }
   }
 }

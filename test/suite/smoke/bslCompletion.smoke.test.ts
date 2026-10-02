@@ -6,8 +6,11 @@ import * as vscode from 'vscode';
 const EXTENSION_ID = 'Lekot.1c-metadata-tree-vscode';
 
 function labels(result: vscode.CompletionList | vscode.CompletionItem[] | undefined): string[] {
-  const items = Array.isArray(result) ? result : result?.items ?? [];
-  return items.map(({ label }) => typeof label === 'string' ? label : label.label);
+  return completionItems(result).map(({ label }) => typeof label === 'string' ? label : label.label);
+}
+
+function completionItems(result: vscode.CompletionList | vscode.CompletionItem[] | undefined): vscode.CompletionItem[] {
+  return Array.isArray(result) ? result : result?.items ?? [];
 }
 
 suite('Smoke: BSL completion', () => {
@@ -27,6 +30,9 @@ suite('Smoke: BSL completion', () => {
       '',
       'Новый Зап',
       'ЛокальнаяП',
+      'КонецЦ',
+      'КонецП',
+      'Исключ',
     ].join('\n');
     const filePath = path.join(
       workspaceFolder.uri.fsPath,
@@ -49,6 +55,31 @@ suite('Smoke: BSL completion', () => {
         vscode.CompletionList | vscode.CompletionItem[]
       >('vscode.executeCompletionItemProvider', document.uri, new vscode.Position(4, 'ЛокальнаяП'.length));
       assert.ok(labels(localItems).includes('ЛокальнаяПроцедура'), 'completion should include a routine parsed from the current module');
+
+      const loopEndItems = await vscode.commands.executeCommand<
+        vscode.CompletionList | vscode.CompletionItem[]
+      >('vscode.executeCompletionItemProvider', document.uri, new vscode.Position(5, 'КонецЦ'.length));
+      assert.ok(labels(loopEndItems).includes('КонецЦикла'), 'completion should suggest the BSL loop terminator');
+
+      const procedureEndItems = await vscode.commands.executeCommand<
+        vscode.CompletionList | vscode.CompletionItem[]
+      >('vscode.executeCompletionItemProvider', document.uri, new vscode.Position(6, 'КонецП'.length));
+      assert.ok(labels(procedureEndItems).includes('КонецПроцедуры'), 'completion should suggest a BSL routine terminator');
+
+      const exceptionResult = await vscode.commands.executeCommand<
+        vscode.CompletionList | vscode.CompletionItem[]
+      >('vscode.executeCompletionItemProvider', document.uri, new vscode.Position(7, 'Исключ'.length));
+      const exceptionItems = completionItems(exceptionResult);
+      const exceptionKeyword = exceptionItems.find(({ label }) =>
+        (typeof label === 'string' ? label : label.label) === 'Исключение',
+      );
+      assert.ok(exceptionKeyword, 'completion should suggest the BSL exception branch');
+      assert.ok(exceptionKeyword?.sortText?.startsWith('0_'), 'the exception keyword should sort ahead of platform globals');
+      const otherPlatformItems = exceptionItems.filter((item) => item.sortText && !item.sortText.startsWith('0_'));
+      assert.ok(
+        otherPlatformItems.every((item) => exceptionKeyword?.sortText! < item.sortText!),
+        'the exception keyword should precede similarly prefixed platform names',
+      );
     } finally {
       if (document && vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
