@@ -121,6 +121,7 @@ export const coreSuiteFiles: string[] = [
   'suite/deployLockedObjectsFilter.test.js',
   'suite/deploySupportIntegration.test.js',
   'suite/bslExpansion.test.js',
+  'suite/bslIndentationConfiguration.test.js',
   'suite/deployDedupCache.test.js',
   'suite/bindingStorage.test.js',
   'suite/infobaseCommands.test.js',
