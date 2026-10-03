@@ -35,15 +35,26 @@ suite('Syntax help UI', () => {
     assert.ok(!html.includes('href="javascript:'));
     assert.ok(!html.includes('<img '));
     assert.ok(!html.includes('src="https://example.com/image.png"'));
-    assert.ok(html.includes('https://its.1c.ru/db/v8std/content/1/hdoc'));
+    const sourceFooter = html.match(/<footer><a href="[^"]+" target="_blank" rel="noopener noreferrer">Открыть источник на ИТС<\/a><\/footer>/)?.[0];
+    assert.strictEqual(sourceFooter, '<footer><a href="https://its.1c.ru/db/v8std/content/1/hdoc" target="_blank" rel="noopener noreferrer">Открыть источник на ИТС</a></footer>');
     assert.ok(html.includes('href="#" data-syntax-help-id="syntax:2"'));
     assert.ok(!html.includes('href="bsl-help:'));
     assert.ok(!html.includes('data-syntax-help-id="javascript:'));
     assert.match(html, /script-src 'nonce-[^']+'/);
     assert.match(html, /<script nonce="[^"]+">/);
 
-    const unsafeSource = renderSyntaxHelpHtml({ ...article, sourceUrl: 'javascript:alert(4)' }, 'vscode-webview://test');
-    assert.ok(!unsafeSource.includes('href="javascript:'));
+    const unsafeSourceUrls = [
+      'javascript:alert(4)',
+      'https://attacker.example/https://its.1c.ru/db/v8std/content/1/hdoc',
+      'https://its.1c.ru.attacker.example/db/v8std/content/1/hdoc',
+      'https://attacker.its.1c.ru/db/v8std/content/1/hdoc',
+      'https://its.1c.ru@attacker.example/db/v8std/content/1/hdoc',
+    ];
+    for (const sourceUrl of unsafeSourceUrls) {
+      const unsafeSource = renderSyntaxHelpHtml({ ...article, sourceUrl }, 'vscode-webview://test');
+      assert.ok(!unsafeSource.includes('<footer><a href='), `Unexpected source link for ${sourceUrl}`);
+      assert.ok(!unsafeSource.includes('Открыть источник на ИТС'), `Unexpected source label for ${sourceUrl}`);
+    }
   });
 
   test('renders an escaped context banner for a matched member inside its parent article', () => {
