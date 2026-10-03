@@ -27,7 +27,19 @@ async function main() {
     const sourceSha256 = crypto.createHash('sha256').update(databaseBytes).digest('hex');
     const completionIndex = buildBslCompletionIndex(nodes, sourceSha256);
     const outputPath = path.join(extensionRoot, 'resources', 'help', 'bsl-completion-index.json');
-    fs.writeFileSync(outputPath, `${JSON.stringify(completionIndex, null, 2)}\n`, 'utf8');
+    const prettyJson = JSON.stringify(completionIndex, null, 2);
+    const compactJson = prettyJson.replace(
+      /^([ \t]*)"bilingualPairIndices": \[\n([\s\S]*?)^\1\]/gm,
+      (match, indentation, body) => {
+        const pairs = [...body.matchAll(/^[ \t]*\[\n[ \t]*(\d+),\n[ \t]*(\d+)\n[ \t]*\](?:,)?[ \t]*$/gm)];
+        if (body.trim() && pairs.length === 0) {
+          throw new Error('Could not compact BSL completion language alias indices.');
+        }
+        return `${indentation}"bilingualPairIndices": [${pairs.map(([, russian, english]) =>
+          `[${russian}, ${english}]`).join(', ')}]`;
+      },
+    );
+    fs.writeFileSync(outputPath, `${compactJson}\n`, 'utf8');
     const stats = fs.statSync(outputPath);
     console.log(`Generated BSL completion index (${stats.size} bytes, ${completionIndex.types.length} types).`);
   } finally {

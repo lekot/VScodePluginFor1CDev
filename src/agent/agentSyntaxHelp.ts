@@ -4,12 +4,14 @@ import type { AgentResult } from './types';
 import { loadSyntaxHelpDatabase, SyntaxHelpDatabaseError } from './syntaxHelpDatabase';
 
 export type SyntaxHelpSource = 'syntax' | 'standards' | 'all';
-export type SyntaxHelpAction = 'search' | 'get' | 'children';
+export type SyntaxHelpAction = 'search' | 'searchLine' | 'get' | 'children';
 
 export interface SyntaxHelpParams {
   source?: SyntaxHelpSource;
   action?: SyntaxHelpAction;
   query?: string;
+  line?: string;
+  cursorColumn?: number;
   id?: string | number;
   parentId?: string | number | null;
   limit?: number;
@@ -48,10 +50,12 @@ interface KnowledgeNode {
   readonly name: string;
   readonly path: string;
   readonly content: string;
+  readonly displayContent?: string;
   readonly sourceUrl?: string;
   readonly searchName: string;
   readonly searchPath: string;
   readonly searchContent: string;
+  readonly platformMemberLines: ReadonlyMap<string, string>;
 }
 
 interface StandardsManifest {
@@ -72,6 +76,7 @@ type ValidatedSyntaxHelpParams = Omit<SyntaxHelpParams, 'source' | 'action'> & {
   source: SyntaxHelpSource;
 } & (
   | { action: 'search' }
+  | { action: 'searchLine' }
   | { action: 'get' }
   | { action: 'children' }
 );
@@ -140,6 +145,34 @@ function normalizeKnowledgeText(value: string): string {
     .replace(/<\/?(?:a|b|strong|em|i|u|span|font|code|pre|p|div|ul|ol|li|table|thead|tbody|tr|td|th|h[1-6]|section|article|sup|sub)\b[^>]*>/gi, ' '));
 }
 
+const PLATFORM_MEMBER_LINE = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*(?:\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\))?\s*$/u;
+const PLATFORM_MEMBER_SECTIONS = new Set(['свойства', 'методы', 'properties', 'methods']);
+const PLATFORM_SECTION_HEADING = /^[\p{L}_][\p{L}\p{N}_ ]*:\s*$/u;
+
+function platformMemberLinesOf(normalizedContent: string): ReadonlyMap<string, string> {
+  if (!/(?:свойства|методы|properties|methods)/iu.test(normalizedContent)) { return new Map(); }
+  const members = new Map<string, string>();
+  let inMemberSection = false;
+  for (const rawLine of normalizedContent.split('\n')) {
+    const line = rawLine.replace(/[\t ]+/g, ' ').trim();
+    const heading = line.replace(/^#+\s*/u, '').replace(/:$/u, '').trim();
+    if (PLATFORM_MEMBER_SECTIONS.has(fold(heading))) {
+      inMemberSection = true;
+      continue;
+    }
+    if (PLATFORM_SECTION_HEADING.test(line)) {
+      inMemberSection = false;
+      continue;
+    }
+    if (!inMemberSection) { continue; }
+    const match = PLATFORM_MEMBER_LINE.exec(line);
+    if (!match) { continue; }
+    members.set(fold(match[1]), line);
+    if (match[2] !== undefined) { members.set(fold(match[2]), line); }
+  }
+  return members;
+}
+
 function excerpt(text: string, query: string, maxLength: number): string {
   const clean = normalizeKnowledgeText(text).replace(/[\t ]+/g, ' ').replace(/\n+/g, ' ').trim();
   if (clean.length <= maxLength) { return clean; }
@@ -160,7 +193,9 @@ function createNode(
   itemPath: string,
   content: string,
   sourceUrl?: string,
+  displayContent?: string,
 ): KnowledgeNode {
+  const normalizedContent = normalizeKnowledgeText(content);
   return {
     id,
     source,
@@ -168,10 +203,12 @@ function createNode(
     name,
     path: itemPath,
     content,
+    ...(displayContent ? { displayContent } : {}),
     ...(sourceUrl ? { sourceUrl } : {}),
     searchName: fold(name),
     searchPath: fold(itemPath),
-    searchContent: fold(normalizeKnowledgeText(content)),
+    searchContent: fold(normalizedContent),
+    platformMemberLines: source === 'syntax' ? platformMemberLinesOf(normalizedContent) : new Map(),
   };
 }
 
@@ -180,7 +217,7 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'Arguments must be an object.') };
   }
   const params = value as SyntaxHelpParams;
-  const allowedKeys = new Set(['source', 'action', 'query', 'id', 'parentId', 'limit', 'snippetLength']);
+  const allowedKeys = new Set(['source', 'action', 'query', 'line', 'cursorColumn', 'id', 'parentId', 'limit', 'snippetLength']);
   if (Object.keys(params).some((key) => !allowedKeys.has(key))) {
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'Arguments contain an unsupported property.') };
   }
@@ -189,11 +226,17 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
   if (source !== 'syntax' && source !== 'standards' && source !== 'all') {
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'source must be syntax, standards, or all.') };
   }
-  if (action !== 'search' && action !== 'get' && action !== 'children') {
-    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'action must be search, get, or children.') };
+  if (action !== 'search' && action !== 'searchLine' && action !== 'get' && action !== 'children') {
+    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'action must be search, searchLine, get, or children.') };
   }
   if (params.query !== undefined && (typeof params.query !== 'string' || params.query.trim().length === 0 || params.query.length > 500)) {
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'query must contain 1 to 500 characters.') };
+  }
+  if (params.line !== undefined && (typeof params.line !== 'string' || params.line.length === 0 || params.line.length > 2000)) {
+    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'line must contain 1 to 2000 characters.') };
+  }
+  if (params.cursorColumn !== undefined && (!Number.isSafeInteger(params.cursorColumn) || params.cursorColumn < 0)) {
+    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'cursorColumn must be a non-negative integer.') };
   }
   if (params.id !== undefined && !((typeof params.id === 'string' && params.id.trim().length > 0 && params.id.length <= 200)
     || (typeof params.id === 'number' && Number.isSafeInteger(params.id) && params.id > 0))) {
@@ -214,8 +257,16 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
 
   if (action === 'search') {
     if (!params.query) { return { error: new KnowledgeError('INVALID_ARGUMENTS', 'query is required for search.') }; }
-    if (params.id !== undefined || params.parentId !== undefined) {
-      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'id and parentId are only valid for get or children.') };
+    if (params.id !== undefined || params.parentId !== undefined || params.line !== undefined || params.cursorColumn !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'search does not accept id, parentId, line, or cursorColumn.') };
+    }
+  } else if (action === 'searchLine') {
+    if (params.line === undefined) { return { error: new KnowledgeError('INVALID_ARGUMENTS', 'line is required for searchLine.') }; }
+    if (params.cursorColumn !== undefined && params.cursorColumn > params.line.length) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'cursorColumn cannot exceed the line length.') };
+    }
+    if (params.query !== undefined || params.id !== undefined || params.parentId !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'searchLine does not accept query, id, or parentId.') };
     }
   } else if (action === 'get') {
     if (params.id !== undefined && params.query !== undefined) {
@@ -224,12 +275,14 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
     if (params.id === undefined && !params.query) {
       return { error: new KnowledgeError('INVALID_ARGUMENTS', 'get requires id or query.') };
     }
-    if (params.parentId !== undefined || params.limit !== undefined || params.snippetLength !== undefined) {
-      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'parentId, limit, and snippetLength are not valid for get.') };
+    if (params.parentId !== undefined || params.limit !== undefined || params.snippetLength !== undefined
+      || params.line !== undefined || params.cursorColumn !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'parentId, limit, snippetLength, line, and cursorColumn are not valid for get.') };
     }
   } else {
-    if (params.id !== undefined || params.query !== undefined || params.snippetLength !== undefined) {
-      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'id, query, and snippetLength are not valid for children.') };
+    if (params.id !== undefined || params.query !== undefined || params.snippetLength !== undefined
+      || params.line !== undefined || params.cursorColumn !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'id, query, snippetLength, line, and cursorColumn are not valid for children.') };
     }
   }
   return { params: { ...params, source, action } as ValidatedSyntaxHelpParams };
@@ -245,13 +298,120 @@ function compareNodes(left: KnowledgeNode, right: KnowledgeNode): number {
     || codepointCompare(left.id, right.id);
 }
 
+const BILINGUAL_ARTICLE_NAME = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\)\s*$/u;
+
+function matchesExactArticleName(node: KnowledgeNode, query: string): boolean {
+  if (node.searchName === query) { return true; }
+  const bilingualName = BILINGUAL_ARTICLE_NAME.exec(node.name);
+  return bilingualName !== null
+    && (fold(bilingualName[1]) === query || fold(bilingualName[2]) === query);
+}
+
 function rankNode(node: KnowledgeNode, query: string): number | null {
-  if (node.searchName === query) { return 0; }
+  if (matchesExactArticleName(node, query)) { return 0; }
   if (node.searchName.startsWith(query)) { return 1; }
   if (node.searchName.includes(query)) { return 2; }
   if (node.searchPath.includes(query)) { return 3; }
   if (node.searchContent.includes(query)) { return 4; }
   return null;
+}
+
+function findPlatformMemberLine(node: KnowledgeNode, query: string): string | undefined {
+  return node.platformMemberLines.get(query);
+}
+
+const BSL_KEYWORDS = new Set([
+  'and', 'break', 'continue', 'do', 'each', 'else', 'elseif', 'elsif', 'enddo', 'endif', 'endfunction',
+  'endprocedure', 'endtry', 'except', 'export', 'false', 'for', 'function', 'if', 'in', 'new', 'not',
+  'null', 'or', 'procedure', 'raise', 'return', 'then', 'to', 'true', 'try', 'undefined', 'val', 'var',
+  'while', 'асинх', 'вызватьисключение', 'возврат', 'для', 'каждого', 'из', 'если', 'иначе', 'иначеесли',
+  'истина', 'конецесли', 'конецпопытки', 'конецпроцедуры', 'конецфункции', 'конеццикла', 'ложь',
+  'неопределено', 'новый', 'по', 'пока', 'попытка', 'прервать', 'продолжить', 'процедура', 'знач',
+  'тогда', 'функция', 'цикл', 'экспорт', 'исключение', 'и', 'или', 'не',
+]);
+
+const MAX_LINE_TERMS = 8;
+const BSL_IDENTIFIER_AT_CURSOR = /[\p{L}_][\p{L}\p{N}_]*/uy;
+
+interface LineIdentifier {
+  readonly value: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+function scanLineIdentifiers(line: string): LineIdentifier[] {
+  const identifiers: LineIdentifier[] = [];
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (quote) {
+      if (character === quote) {
+        if (line[index + 1] === quote) {
+          index += 1;
+        } else {
+          quote = undefined;
+        }
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '/' && line[index + 1] === '/') { break; }
+    BSL_IDENTIFIER_AT_CURSOR.lastIndex = index;
+    const match = BSL_IDENTIFIER_AT_CURSOR.exec(line);
+    if (match) {
+      identifiers.push({ value: match[0], start: index, end: index + match[0].length });
+      index = index + match[0].length - 1;
+    }
+  }
+  return identifiers;
+}
+
+function distanceFromCursor(identifier: LineIdentifier, cursorColumn: number): number {
+  if (cursorColumn >= identifier.start && cursorColumn <= identifier.end) { return 0; }
+  return cursorColumn < identifier.start
+    ? identifier.start - cursorColumn
+    : cursorColumn - identifier.end;
+}
+
+function extractLineTerms(line: string, cursorColumn: number): string[] {
+  const identifiers = scanLineIdentifiers(line)
+    .filter((identifier) => !BSL_KEYWORDS.has(fold(identifier.value)))
+    .sort((left, right) => {
+      const distance = distanceFromCursor(left, cursorColumn) - distanceFromCursor(right, cursorColumn);
+      if (distance !== 0) { return distance; }
+      const leftIsBeforeCursor = left.end <= cursorColumn;
+      const rightIsBeforeCursor = right.end <= cursorColumn;
+      if (leftIsBeforeCursor !== rightIsBeforeCursor) { return leftIsBeforeCursor ? -1 : 1; }
+      return left.start - right.start;
+    });
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const identifier of identifiers) {
+    const key = fold(identifier.value);
+    if (seen.has(key)) { continue; }
+    seen.add(key);
+    terms.push(identifier.value);
+    if (terms.length === MAX_LINE_TERMS) { break; }
+  }
+  return terms;
+}
+
+function nearestIdentifierIsCall(line: string, term: string, cursorColumn: number): boolean {
+  const query = fold(term);
+  const nearest = scanLineIdentifiers(line)
+    .filter((identifier) => fold(identifier.value) === query)
+    .sort((left, right) => {
+      const distance = distanceFromCursor(left, cursorColumn) - distanceFromCursor(right, cursorColumn);
+      if (distance !== 0) { return distance; }
+      const leftIsBeforeCursor = left.end <= cursorColumn;
+      const rightIsBeforeCursor = right.end <= cursorColumn;
+      if (leftIsBeforeCursor !== rightIsBeforeCursor) { return leftIsBeforeCursor ? -1 : 1; }
+      return left.start - right.start;
+    })[0];
+  return nearest !== undefined && /^\s*\(/u.test(line.slice(nearest.end));
 }
 
 function publicCandidate(node: KnowledgeNode): SyntaxHelpChildItem {
@@ -278,6 +438,7 @@ export class AgentSyntaxHelpOperations {
     try {
       const nodes = await (this.loadedKnowledge ??= this.loadKnowledge());
       if (params.action === 'search') { return { success: true, data: this.search(nodes, params) }; }
+      if (params.action === 'searchLine') { return { success: true, data: this.searchLine(nodes, params) }; }
       if (params.action === 'get') { return this.get(nodes, params); }
       return this.children(nodes, params);
     } catch (error) {
@@ -304,6 +465,8 @@ export class AgentSyntaxHelpOperations {
       node.name,
       node.path,
       node.content,
+      undefined,
+      node.renderedContent,
     ));
     const standardsNodes = await this.readStandards(root);
     const allNodes = [...syntaxNodes, ...standardsNodes];
@@ -384,11 +547,24 @@ export class AgentSyntaxHelpOperations {
 
   private search(nodes: KnowledgeNode[], params: Extract<ValidatedSyntaxHelpParams, { action: 'search' }>): Record<string, unknown> {
     const query = fold(params.query!.trim());
+    const exactArticleNodes = nodes.filter((node) => sourceAllows(params.source, node.source)
+      && node.parentId !== null && matchesExactArticleName(node, query));
+    const exactArticleIds = new Set(exactArticleNodes.map((node) => node.id));
+    const exactArticleParentIds = new Set(exactArticleNodes.map((node) => node.parentId!));
+    const exactArticleSources = new Set(exactArticleNodes.map((node) => node.source));
+    const exactMethodArticleIds = new Set(exactArticleNodes
+      .filter((node) => /(?:^|\/)methods\//u.test(node.searchPath))
+      .map((node) => node.id));
     const selected = nodes
       .filter((node) => sourceAllows(params.source, node.source))
       .map((node) => ({ node, rank: rankNode(node, query) }))
       .filter((entry): entry is { node: KnowledgeNode; rank: number } => entry.rank !== null)
-      .sort((left, right) => left.rank - right.rank || compareNodes(left.node, right.node));
+      .filter(({ node, rank }) => !exactArticleSources.has(node.source)
+        || (rank < 4 || exactArticleIds.has(node.id))
+          && !(exactArticleParentIds.has(node.id) && findPlatformMemberLine(node, query) !== undefined))
+      .sort((left, right) => left.rank - right.rank
+        || Number(exactMethodArticleIds.has(right.node.id)) - Number(exactMethodArticleIds.has(left.node.id))
+        || compareNodes(left.node, right.node));
     const limit = params.limit ?? 10;
     const snippetLength = params.snippetLength ?? 300;
     return {
@@ -407,6 +583,74 @@ export class AgentSyntaxHelpOperations {
     };
   }
 
+  private searchLine(
+    nodes: KnowledgeNode[],
+    params: Extract<ValidatedSyntaxHelpParams, { action: 'searchLine' }>,
+  ): Record<string, unknown> {
+    const line = params.line!;
+    const terms = extractLineTerms(line, params.cursorColumn ?? line.length);
+    const nearestQuery = terms.length > 0 ? fold(terms[0]) : undefined;
+    const exactNearestArticles = nearestQuery === undefined ? [] : nodes.filter((node) =>
+      sourceAllows(params.source, node.source) && node.parentId !== null && matchesExactArticleName(node, nearestQuery));
+    const exactNearestArticleIds = new Set(exactNearestArticles.map((node) => node.id));
+    const nearestTermIsCall = terms.length > 0 && nearestIdentifierIsCall(line, terms[0], params.cursorColumn ?? line.length);
+    const exactNearestMethodArticleIds = new Set(nearestTermIsCall
+      ? exactNearestArticles.filter((node) => /(?:^|\/)methods\//u.test(node.searchPath)).map((node) => node.id)
+      : []);
+    const exactNearestParentIds = new Set(exactNearestArticles.map((node) => node.parentId));
+    const bestMatches = new Map<string, {
+      node: KnowledgeNode;
+      termIndex: number;
+      rank: number;
+      query: string;
+      memberLine?: string;
+    }>();
+    const nearestTermExactSources = new Set<'syntax' | 'standards'>();
+    terms.forEach((term, termIndex) => {
+      const query = fold(term);
+      for (const node of nodes) {
+        if (!sourceAllows(params.source, node.source)) { continue; }
+        const articleRank = rankNode(node, query);
+        const memberLine = findPlatformMemberLine(node, query);
+        if (termIndex === 0 && memberLine !== undefined && exactNearestParentIds.has(node.id)) { continue; }
+        if (termIndex === 0 && (articleRank === 0 || memberLine !== undefined)) {
+          nearestTermExactSources.add(node.source);
+        }
+        if (articleRank === null && memberLine === undefined) { continue; }
+        const rank = exactNearestMethodArticleIds.has(node.id)
+          ? -2
+          : exactNearestArticleIds.has(node.id)
+            ? -1
+          : memberLine === undefined ? articleRank! : exactNearestArticles.length > 0 ? 1 : 0;
+        const existing = bestMatches.get(node.id);
+        if (!existing || rank < existing.rank || (rank === existing.rank && termIndex < existing.termIndex)) {
+          bestMatches.set(node.id, { node, termIndex, rank, query: term, ...(memberLine ? { memberLine } : {}) });
+        }
+      }
+    });
+    const selected = [...bestMatches.values()]
+      .filter(({ node, rank }) => !nearestTermExactSources.has(node.source) || rank < 4)
+      .sort((left, right) =>
+      left.rank - right.rank || left.termIndex - right.termIndex || compareNodes(left.node, right.node));
+    const limit = params.limit ?? 10;
+    const snippetLength = params.snippetLength ?? 300;
+    return {
+      line,
+      terms,
+      source: params.source,
+      total: selected.length,
+      limit,
+      hasMore: selected.length > limit,
+      items: selected.slice(0, limit).map(({ node, query, memberLine }) => ({
+        id: node.id,
+        source: node.source,
+        name: memberLine ?? node.name,
+        path: node.path,
+        snippet: excerpt(memberLine ?? node.content, query, snippetLength),
+      } satisfies SyntaxHelpItem)),
+    };
+  }
+
   private get(nodes: KnowledgeNode[], params: Extract<ValidatedSyntaxHelpParams, { action: 'get' }>): AgentResult<unknown> {
     let candidates: KnowledgeNode[];
     if (params.id !== undefined) {
@@ -417,8 +661,11 @@ export class AgentSyntaxHelpOperations {
       candidates = candidate && sourceAllows(params.source, candidate.source) ? [candidate] : [];
     } else {
       const query = fold(params.query!.trim());
-      candidates = nodes.filter((node) => sourceAllows(params.source, node.source)
+      const exactNameOrPathCandidates = nodes.filter((node) => sourceAllows(params.source, node.source)
         && (fold(node.name) === query || fold(node.path) === query || node.id === params.query));
+      candidates = exactNameOrPathCandidates.length > 0
+        ? exactNameOrPathCandidates
+        : nodes.filter((node) => sourceAllows(params.source, node.source) && matchesExactArticleName(node, query));
     }
     if (candidates.length === 0) {
       return { success: false, code: 'KNOWLEDGE_ITEM_NOT_FOUND', error: 'Knowledge item was not found.' };
@@ -433,7 +680,9 @@ export class AgentSyntaxHelpOperations {
       };
     }
     const item = candidates[0];
-    const markdownBody = normalizeKnowledgeText(item.content).replace(/^\s+/, '');
+    const markdownBody = item.displayContent
+      ? item.displayContent.replace(/^\s+/, '')
+      : normalizeKnowledgeText(item.content).replace(/^\s+/, '');
     const firstLine = markdownBody.split('\n', 1)[0]?.trim();
     return {
       success: true,

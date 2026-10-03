@@ -6,6 +6,8 @@
  * all existing consumers compile without changes.
  */
 export interface TreeNodeProperties {
+  /** Normalized primary language used for BSL completion on this configuration root. */
+  bslLanguage?: 'ru' | 'en';
   /** Synonym (human-readable name) of the metadata object. */
   synonym?: string;
   /** Comment for the metadata object. */

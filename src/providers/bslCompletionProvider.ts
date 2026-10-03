@@ -3,23 +3,29 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   isBslCompletionIndex,
+  type BslCompletionLanguageAliases,
   type BslCompletionIndex,
   type BslCompletionType,
   type CompletionArticleReference,
 } from './bslCompletionIndex';
 import { BslLocalCompletionIndex, type BslLocalRoutineCandidate } from './bslLocalCompletionIndex';
+import type { BslCompletionLanguage } from '../parsers/configurationBslLanguage';
 
 const MAX_CONTEXT_LINES = 200;
 const MAX_CONTEXT_CHARS = 16_384;
-const BSL_KEYWORDS = [
-  'Процедура', 'Procedure', 'Функция', 'Function', 'Перем', 'Var', 'Экспорт', 'Export', 'Знач', 'Val',
-  'КонецПроцедуры', 'EndProcedure', 'КонецФункции', 'EndFunction',
-  'Если', 'If', 'ИначеЕсли', 'ElsIf', 'Иначе', 'Else', 'Тогда', 'Then', 'КонецЕсли', 'EndIf',
-  'Попытка', 'Try', 'Исключение', 'Except', 'КонецПопытки', 'EndTry', 'ВызватьИсключение', 'Raise',
-  'Для', 'For', 'Каждого', 'Each', 'Из', 'In', 'По', 'To', 'Цикл', 'Do', 'Пока', 'While', 'КонецЦикла', 'EndDo',
-  'Прервать', 'Break', 'Продолжить', 'Continue', 'Возврат', 'Return', 'Новый', 'New',
-  'И', 'And', 'Или', 'Or', 'Не', 'Not', 'Истина', 'True', 'Ложь', 'False', 'Неопределено', 'Undefined', 'Null',
+const RUSSIAN_BSL_KEYWORDS = [
+  'Процедура', 'Функция', 'Перем', 'Экспорт', 'Знач', 'КонецПроцедуры', 'КонецФункции',
+  'Если', 'ИначеЕсли', 'Иначе', 'Тогда', 'КонецЕсли', 'Попытка', 'Исключение', 'КонецПопытки',
+  'ВызватьИсключение', 'Для', 'Каждого', 'Из', 'По', 'Цикл', 'Пока', 'КонецЦикла', 'Прервать',
+  'Продолжить', 'Возврат', 'Новый', 'И', 'Или', 'Не', 'Истина', 'Ложь', 'Неопределено',
 ] as const;
+const ENGLISH_BSL_KEYWORDS = [
+  'Procedure', 'Function', 'Var', 'Export', 'Val', 'EndProcedure', 'EndFunction', 'If', 'ElsIf',
+  'Else', 'Then', 'EndIf', 'Try', 'Except', 'EndTry', 'Raise', 'For', 'Each', 'In', 'To', 'Do',
+  'While', 'EndDo', 'Break', 'Continue', 'Return', 'New', 'And', 'Or', 'Not', 'True', 'False', 'Undefined',
+] as const;
+const SHARED_BSL_KEYWORDS = ['Null'] as const;
+const EMPTY_LANGUAGE_ALIASES: BslCompletionLanguageAliases = { bilingualPairIndices: [] };
 
 type CompletionKind = 'property' | 'method' | 'type';
 
@@ -31,16 +37,16 @@ interface Candidate {
 }
 
 interface RuntimeIndex {
-  readonly globalCandidates: readonly Candidate[];
-  readonly globalCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
-  readonly typeCandidates: readonly Candidate[];
-  readonly typeCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
+  readonly globalCandidatesByLanguage: Readonly<Record<BslCompletionLanguage, readonly Candidate[]>>;
+  readonly globalCandidatesByFirstCharacterByLanguage: Readonly<Record<BslCompletionLanguage, ReadonlyMap<string, readonly Candidate[]>>>;
+  readonly typeCandidatesByLanguage: Readonly<Record<BslCompletionLanguage, readonly Candidate[]>>;
+  readonly typeCandidatesByFirstCharacterByLanguage: Readonly<Record<BslCompletionLanguage, ReadonlyMap<string, readonly Candidate[]>>>;
   readonly typesByAlias: ReadonlyMap<string, readonly BslCompletionType[]>;
   readonly metadataCollectionFolders: ReadonlyMap<string, string>;
-  readonly catalogManagerCandidates: readonly Candidate[];
-  readonly catalogManagerCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
-  readonly catalogObjectCandidates: readonly Candidate[];
-  readonly catalogObjectCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
+  readonly catalogManagerCandidatesByLanguage: Readonly<Record<BslCompletionLanguage, readonly Candidate[]>>;
+  readonly catalogManagerCandidatesByFirstCharacterByLanguage: Readonly<Record<BslCompletionLanguage, ReadonlyMap<string, readonly Candidate[]>>>;
+  readonly catalogObjectCandidatesByLanguage: Readonly<Record<BslCompletionLanguage, readonly Candidate[]>>;
+  readonly catalogObjectCandidatesByFirstCharacterByLanguage: Readonly<Record<BslCompletionLanguage, ReadonlyMap<string, readonly Candidate[]>>>;
   readonly catalogApiAvailable: boolean;
 }
 
@@ -78,6 +84,7 @@ export type LoadedTypeObjectsResult =
 
 export interface BslMetadataCompletionReader {
   getLoadedTypeObjectsForResource(resourcePath: string, folderId: string): LoadedTypeObjectsResult;
+  getLanguageForResource?(resourcePath: string): BslCompletionLanguage;
 }
 
 type MetadataCompletionReaderProvider = () => BslMetadataCompletionReader | null | undefined;
@@ -114,10 +121,41 @@ function uniqueCandidates(candidates: readonly Candidate[]): Candidate[] {
   return [...unique.values()];
 }
 
+function filterCandidatesForLanguage(
+  candidates: readonly Candidate[],
+  aliases: BslCompletionLanguageAliases,
+  language: BslCompletionLanguage,
+): Candidate[] {
+  const oppositeIndices = new Set(aliases.bilingualPairIndices.map(([russianIndex, englishIndex]) =>
+    language === 'en' ? russianIndex : englishIndex));
+  const preferredIndices = new Set(aliases.bilingualPairIndices.map(([russianIndex, englishIndex]) =>
+    language === 'en' ? englishIndex : russianIndex));
+  return candidates.filter((_, index) => !oppositeIndices.has(index) || preferredIndices.has(index));
+}
+
+function candidatesByLanguage(
+  candidates: readonly Candidate[],
+  aliases: BslCompletionLanguageAliases,
+): Record<BslCompletionLanguage, readonly Candidate[]> {
+  return {
+    ru: filterCandidatesForLanguage(candidates, aliases, 'ru'),
+    en: filterCandidatesForLanguage(candidates, aliases, 'en'),
+  };
+}
+
+function firstCharacterGroupsByLanguage(
+  candidates: Readonly<Record<BslCompletionLanguage, readonly Candidate[]>>,
+): Record<BslCompletionLanguage, ReadonlyMap<string, readonly Candidate[]>> {
+  return {
+    ru: groupByFirstCharacter(candidates.ru),
+    en: groupByFirstCharacter(candidates.en),
+  };
+}
+
 function createRuntimeIndex(index: BslCompletionIndex): RuntimeIndex {
   const globalArticle = index.global.article;
   const zeroArgumentMethods = new Set(index.global.zeroArgumentMethods.map(normalizeIdentifier));
-  const globalCandidates = uniqueCandidates([
+  const allGlobalCandidates = uniqueCandidates([
     ...index.global.properties.map((name) => ({ name, kind: 'property' as const, article: globalArticle })),
     ...index.global.methods.map((name) => ({
       name,
@@ -126,11 +164,17 @@ function createRuntimeIndex(index: BslCompletionIndex): RuntimeIndex {
       zeroArgument: zeroArgumentMethods.has(normalizeIdentifier(name)),
     })),
   ]);
-  const typeCandidates = uniqueCandidates(index.types.flatMap((type) => type.aliases.map((name) => ({
-    name,
-    kind: 'type' as const,
-    article: type.article,
-  }))));
+  const globalCandidates = candidatesByLanguage(allGlobalCandidates, index.global.languageAliases);
+  const typeCandidatesByLanguage: Record<BslCompletionLanguage, Candidate[]> = { ru: [], en: [] };
+  for (const type of index.types) {
+    const aliases = uniqueCandidates(type.aliases.map((name) => ({
+      name,
+      kind: 'type' as const,
+      article: type.article,
+    })));
+    typeCandidatesByLanguage.ru.push(...filterCandidatesForLanguage(aliases, type.aliasLanguageAliases, 'ru'));
+    typeCandidatesByLanguage.en.push(...filterCandidatesForLanguage(aliases, type.aliasLanguageAliases, 'en'));
+  }
   const catalogManagerCandidates = uniqueCandidates(index.catalogApi ? [
     ...index.catalogApi.manager.properties.map((name) => ({
       name,
@@ -155,6 +199,14 @@ function createRuntimeIndex(index: BslCompletionIndex): RuntimeIndex {
       article: index.catalogApi!.object.article,
     })),
   ] : []);
+  const managerCandidatesByLanguage = candidatesByLanguage(
+    catalogManagerCandidates,
+    index.catalogApi?.manager.languageAliases ?? EMPTY_LANGUAGE_ALIASES,
+  );
+  const objectCandidatesByLanguage = candidatesByLanguage(
+    catalogObjectCandidates,
+    index.catalogApi?.object.languageAliases ?? EMPTY_LANGUAGE_ALIASES,
+  );
   const mutableTypesByAlias = new Map<string, BslCompletionType[]>();
   for (const type of index.types) {
     for (const alias of type.aliases) {
@@ -173,16 +225,16 @@ function createRuntimeIndex(index: BslCompletionIndex): RuntimeIndex {
     }
   }
   return {
-    globalCandidates,
-    globalCandidatesByFirstCharacter: groupByFirstCharacter(globalCandidates),
-    typeCandidates,
-    typeCandidatesByFirstCharacter: groupByFirstCharacter(typeCandidates),
+    globalCandidatesByLanguage: globalCandidates,
+    globalCandidatesByFirstCharacterByLanguage: firstCharacterGroupsByLanguage(globalCandidates),
+    typeCandidatesByLanguage,
+    typeCandidatesByFirstCharacterByLanguage: firstCharacterGroupsByLanguage(typeCandidatesByLanguage),
     typesByAlias: mutableTypesByAlias,
     metadataCollectionFolders,
-    catalogManagerCandidates,
-    catalogManagerCandidatesByFirstCharacter: groupByFirstCharacter(catalogManagerCandidates),
-    catalogObjectCandidates,
-    catalogObjectCandidatesByFirstCharacter: groupByFirstCharacter(catalogObjectCandidates),
+    catalogManagerCandidatesByLanguage: managerCandidatesByLanguage,
+    catalogManagerCandidatesByFirstCharacterByLanguage: firstCharacterGroupsByLanguage(managerCandidatesByLanguage),
+    catalogObjectCandidatesByLanguage: objectCandidatesByLanguage,
+    catalogObjectCandidatesByFirstCharacterByLanguage: firstCharacterGroupsByLanguage(objectCandidatesByLanguage),
     catalogApiAvailable: index.catalogApi !== undefined,
   };
 }
@@ -630,9 +682,10 @@ function commonModuleCompletionItems(prefix: string, names: readonly string[]): 
   return items;
 }
 
-function keywordCompletionItems(prefix: string): vscode.CompletionItem[] {
+function keywordCompletionItems(prefix: string, language: BslCompletionLanguage): vscode.CompletionItem[] {
   const foldedPrefix = normalizeIdentifier(prefix);
-  return BSL_KEYWORDS
+  const keywords = language === 'en' ? ENGLISH_BSL_KEYWORDS : RUSSIAN_BSL_KEYWORDS;
+  return [...keywords, ...SHARED_BSL_KEYWORDS]
     .filter((name) => normalizeIdentifier(name).startsWith(foldedPrefix))
     .map((name) => {
       const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Keyword);
@@ -648,10 +701,11 @@ function globalCompletionItems(
   platformCandidates: readonly Candidate[],
   localRoutines: readonly BslLocalRoutineCandidate[],
   commonModuleNames: readonly string[],
+  language: BslCompletionLanguage,
   hasFollowingOpenParen = false,
 ): vscode.CompletionItem[] {
   const candidates = [
-    ...keywordCompletionItems(prefix),
+    ...keywordCompletionItems(prefix, language),
     ...platformCandidates.map((candidate) => toCompletionItem(candidate, hasFollowingOpenParen)),
     ...localRoutineCompletionItems(prefix, localRoutines, 'текущий модуль', hasFollowingOpenParen),
     ...commonModuleCompletionItems(prefix, commonModuleNames),
@@ -730,15 +784,26 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
     }
 
     const hasFollowingOpenParen = currentLine[character] === '(';
+    const resourcePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
+    let metadataReader: BslMetadataCompletionReader | undefined;
+    if (resourcePath) {
+      try {
+        metadataReader = this.getMetadataCompletionReader?.() ?? undefined;
+      } catch {
+        // Metadata lookup is optional; completion defaults to Russian when the reader is unavailable.
+      }
+    }
+    let language: BslCompletionLanguage = 'ru';
+    try {
+      language = metadataReader?.getLanguageForResource?.(resourcePath) === 'en' ? 'en' : 'ru';
+    } catch {
+      language = 'ru';
+    }
     let commonModuleNames: readonly string[] = [];
     if (context.kind === 'global') {
-      const resourcePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
       if (resourcePath) {
         try {
-          const result = this.getMetadataCompletionReader?.()?.getLoadedTypeObjectsForResource(
-            resourcePath,
-            'CommonModules',
-          );
+          const result = metadataReader?.getLoadedTypeObjectsForResource(resourcePath, 'CommonModules');
           if (result?.status === 'loaded') {
             commonModuleNames = result.names;
           }
@@ -778,12 +843,11 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
           }
         }
         if (metadataFolder) {
-          const resourcePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
           if (!resourcePath || token.isCancellationRequested) {
             return token.isCancellationRequested ? undefined : [];
           }
           try {
-            const result = this.getMetadataCompletionReader?.()?.getLoadedTypeObjectsForResource(resourcePath, metadataFolder);
+            const result = metadataReader?.getLoadedTypeObjectsForResource(resourcePath, metadataFolder);
             if (token.isCancellationRequested) {
               return undefined;
             }
@@ -826,19 +890,24 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
       if (context.kind === 'global') {
         const platformCandidates = matchingCandidates(
           context.prefix,
-          index.globalCandidates,
-          index.globalCandidatesByFirstCharacter,
+          index.globalCandidatesByLanguage[language],
+          index.globalCandidatesByFirstCharacterByLanguage[language],
         );
         return globalCompletionItems(
           context.prefix,
           platformCandidates,
           this.localIndex.getCurrentDocumentRoutines(document),
           commonModuleNames,
+          language,
           hasFollowingOpenParen,
         );
       }
       if (context.kind === 'type') {
-        return matchingCandidates(context.prefix, index.typeCandidates, index.typeCandidatesByFirstCharacter)
+        return matchingCandidates(
+          context.prefix,
+          index.typeCandidatesByLanguage[language],
+          index.typeCandidatesByFirstCharacterByLanguage[language],
+        )
           .map((candidate) => toCompletionItem(candidate, hasFollowingOpenParen));
       }
       if (catalogRole && catalogName) {
@@ -857,8 +926,8 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
           return undefined;
         }
         const candidates = catalogRole === 'manager'
-          ? index.catalogManagerCandidates
-          : index.catalogObjectCandidates;
+          ? index.catalogManagerCandidatesByLanguage[language]
+          : index.catalogObjectCandidatesByLanguage[language];
         return catalogCompletionItems(
           context.prefix,
           candidates,
@@ -871,7 +940,11 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
       if (!types || types.length !== 1) {
         return [];
       }
-      const members = uniqueCandidates(candidatesForType(types[0]));
+      const members = filterCandidatesForLanguage(
+        uniqueCandidates(candidatesForType(types[0])),
+        types[0].memberLanguageAliases,
+        language,
+      );
       return matchingCandidates(context.prefix, members, groupByFirstCharacter(members))
         .map((candidate) => toCompletionItem(candidate, hasFollowingOpenParen));
     } catch {
@@ -880,7 +953,7 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
         return undefined;
       }
       return context.kind === 'global'
-        ? globalCompletionItems(context.prefix, [], [], commonModuleNames, hasFollowingOpenParen)
+        ? globalCompletionItems(context.prefix, [], [], commonModuleNames, language, hasFollowingOpenParen)
         : undefined;
     }
   }

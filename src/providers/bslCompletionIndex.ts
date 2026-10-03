@@ -6,17 +6,36 @@ export interface CompletionArticleReference {
   readonly path: string;
 }
 
+export interface BslCompletionAliasPair {
+  readonly russian: string;
+  readonly english: string;
+}
+
+/** Alias provenance used to hide only the opposite side of known bilingual pairs. */
+export interface BslCompletionLanguageAliases {
+  /** [Russian alias index, English alias index] in the owning candidate list. */
+  readonly bilingualPairIndices: readonly (readonly [number, number])[];
+}
+
+interface ParsedBslCompletionLanguageAliases {
+  readonly bilingualPairs: readonly BslCompletionAliasPair[];
+  readonly unpairedAliases: readonly string[];
+}
+
 export interface BslCompletionType {
   readonly aliases: readonly string[];
+  readonly aliasLanguageAliases: BslCompletionLanguageAliases;
   readonly article: CompletionArticleReference;
   readonly properties: readonly string[];
   readonly methods: readonly string[];
+  readonly memberLanguageAliases: BslCompletionLanguageAliases;
 }
 
 export interface BslCompletionMetadataMembers {
   readonly article: CompletionArticleReference;
   readonly properties: readonly string[];
   readonly methods: readonly string[];
+  readonly languageAliases: BslCompletionLanguageAliases;
 }
 
 export interface BslCompletionCatalogApi {
@@ -37,6 +56,7 @@ export interface BslCompletionIndex {
     readonly properties: readonly string[];
     readonly methods: readonly string[];
     readonly zeroArgumentMethods: readonly string[];
+    readonly languageAliases: BslCompletionLanguageAliases;
   };
   readonly types: readonly BslCompletionType[];
   readonly metadataCollections: readonly BslCompletionMetadataCollection[];
@@ -56,6 +76,8 @@ export interface ParsedCompletionSections {
   readonly properties: readonly string[];
   readonly methods: readonly string[];
   readonly hasConstructors: boolean;
+  readonly propertyLanguageAliases: ParsedBslCompletionLanguageAliases;
+  readonly methodLanguageAliases: ParsedBslCompletionLanguageAliases;
 }
 
 const identifierPattern = /^[\p{L}_][\p{L}\p{N}_]*$/u;
@@ -72,6 +94,12 @@ const sectionPatterns: ReadonlyArray<{ section: SectionName; pattern: RegExp }> 
 
 function normalizeIdentifier(value: string): string {
   return value.normalize('NFC').toLocaleLowerCase('ru-RU');
+}
+
+function identifierLanguage(value: string): 'ru' | 'en' | undefined {
+  const hasCyrillic = /\p{Script=Cyrillic}/u.test(value);
+  const hasLatin = /\p{Script=Latin}/u.test(value);
+  return hasCyrillic === hasLatin ? undefined : hasCyrillic ? 'ru' : 'en';
 }
 
 function compareFolded(left: string, right: string): number {
@@ -94,17 +122,17 @@ function normalizeArticleText(value: string): string {
     .replace(/&amp;/gi, '&');
 }
 
-function parseAliases(line: string): string[] {
+function parseAliasLine(line: string): { aliases: string[]; pair?: BslCompletionAliasPair } {
   const trimmed = line.trim();
   if (!trimmed) {
-    return [];
+    return { aliases: [] };
   }
   const aliasMatch = /^(.*?)\s*\(([^()]*)\)\s*$/u.exec(trimmed);
   const aliases = aliasMatch
     ? [aliasMatch[1].trim(), aliasMatch[2].trim()]
     : [trimmed];
   const seen = new Set<string>();
-  return aliases.filter((alias) => {
+  const validAliases = aliases.filter((alias) => {
     if (!identifierPattern.test(alias)) {
       return false;
     }
@@ -115,6 +143,21 @@ function parseAliases(line: string): string[] {
     seen.add(folded);
     return true;
   });
+  if (validAliases.length === 2) {
+    const firstLanguage = identifierLanguage(validAliases[0]);
+    const secondLanguage = identifierLanguage(validAliases[1]);
+    if (firstLanguage === 'ru' && secondLanguage === 'en') {
+      return { aliases: validAliases, pair: { russian: validAliases[0], english: validAliases[1] } };
+    }
+    if (firstLanguage === 'en' && secondLanguage === 'ru') {
+      return { aliases: validAliases, pair: { russian: validAliases[1], english: validAliases[0] } };
+    }
+  }
+  return { aliases: validAliases };
+}
+
+function parseAliases(line: string): string[] {
+  return parseAliasLine(line).aliases;
 }
 
 function sectionFor(line: string): SectionName | undefined {
@@ -140,6 +183,16 @@ export function parseCompletionSections(content: string): ParsedCompletionSectio
     methods: new Set(),
     constructors: new Set(),
   };
+  const pairs: Record<SectionName, BslCompletionAliasPair[]> = {
+    properties: [],
+    methods: [],
+    constructors: [],
+  };
+  const unpairedAliases: Record<SectionName, string[]> = {
+    properties: [],
+    methods: [],
+    constructors: [],
+  };
 
   for (const line of normalizeArticleText(content).split('\n')) {
     const heading = sectionFor(line);
@@ -155,7 +208,13 @@ export function parseCompletionSections(content: string): ParsedCompletionSectio
     if (!activeSection) {
       continue;
     }
-    for (const name of parseAliases(line)) {
+    const parsedLine = parseAliasLine(line);
+    if (parsedLine.pair) {
+      pairs[activeSection].push(parsedLine.pair);
+    } else {
+      unpairedAliases[activeSection].push(...parsedLine.aliases);
+    }
+    for (const name of parsedLine.aliases) {
       const folded = normalizeIdentifier(name);
       if (!seen[activeSection].has(folded)) {
         seen[activeSection].add(folded);
@@ -168,6 +227,8 @@ export function parseCompletionSections(content: string): ParsedCompletionSectio
     properties: values.properties,
     methods: values.methods,
     hasConstructors,
+    propertyLanguageAliases: languageAliases(pairs.properties, unpairedAliases.properties),
+    methodLanguageAliases: languageAliases(pairs.methods, unpairedAliases.methods),
   };
 }
 
@@ -180,6 +241,66 @@ function uniqueSorted(values: readonly string[]): string[] {
     }
   }
   return [...unique.values()].sort(compareFolded);
+}
+
+function languageAliases(
+  pairs: readonly BslCompletionAliasPair[],
+  unpairedAliases: readonly string[],
+): ParsedBslCompletionLanguageAliases {
+  const uniquePairs = new Map<string, BslCompletionAliasPair>();
+  for (const pair of pairs) {
+    const key = `${normalizeIdentifier(pair.russian)}\u0000${normalizeIdentifier(pair.english)}`;
+    if (!uniquePairs.has(key)) {
+      uniquePairs.set(key, pair);
+    }
+  }
+  const unpaired = new Set(unpairedAliases.map(normalizeIdentifier));
+  const bilingualPairs = [...uniquePairs.values()]
+    .filter(({ russian, english }) => !unpaired.has(normalizeIdentifier(russian))
+      && !unpaired.has(normalizeIdentifier(english)))
+    .sort((left, right) => compareFolded(left.russian, right.russian) || compareFolded(left.english, right.english));
+  return { bilingualPairs, unpairedAliases: uniqueSorted(unpairedAliases) };
+}
+
+function combineLanguageAliases(...entries: readonly ParsedBslCompletionLanguageAliases[]): ParsedBslCompletionLanguageAliases {
+  return languageAliases(
+    entries.flatMap(({ bilingualPairs }) => bilingualPairs),
+    entries.flatMap(({ unpairedAliases }) => unpairedAliases),
+  );
+}
+
+function aliasLanguageAliases(aliasLine: string): ParsedBslCompletionLanguageAliases {
+  const parsed = parseAliasLine(aliasLine);
+  return languageAliases(parsed.pair ? [parsed.pair] : [], parsed.pair ? [] : parsed.aliases);
+}
+
+function candidateAliasOrder(...lists: readonly (readonly string[])[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const name of lists.flat()) {
+    const key = normalizeIdentifier(name);
+    if (!seen.has(key)) {
+      seen.add(key);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function indexLanguageAliases(
+  aliases: ParsedBslCompletionLanguageAliases,
+  aliasOrder: readonly string[],
+): BslCompletionLanguageAliases {
+  const positions = new Map(aliasOrder.map((name, index) => [normalizeIdentifier(name), index]));
+  return {
+    bilingualPairIndices: aliases.bilingualPairs.flatMap(({ russian, english }) => {
+      const russianIndex = positions.get(normalizeIdentifier(russian));
+      const englishIndex = positions.get(normalizeIdentifier(english));
+      return russianIndex === undefined || englishIndex === undefined
+        ? []
+        : [[russianIndex, englishIndex] as const];
+    }),
+  };
 }
 
 function metadataCollectionsFromGlobalProperties(content: string): BslCompletionMetadataCollection[] {
@@ -234,6 +355,9 @@ export function buildBslCompletionIndex(
     throw new Error('The platform syntax database has no global context article (id 1).');
   }
   const globalSections = parseCompletionSections(globalNode.content);
+  const globalProperties = uniqueSorted(globalSections.properties);
+  const globalMethods = uniqueSorted(globalSections.methods);
+  const globalAliasOrder = candidateAliasOrder(globalProperties, globalMethods);
   const metadataCollections = metadataCollectionsFromGlobalProperties(globalNode.content);
   const catalogApi = catalogApiFromNodes(nodes);
   const types = nodes.flatMap((node): BslCompletionType[] => {
@@ -245,11 +369,18 @@ export function buildBslCompletionIndex(
     if (articleAliases.length === 0) {
       return [];
     }
+    const properties = uniqueSorted(sections.properties);
+    const methods = uniqueSorted(sections.methods);
     return [{
       aliases: articleAliases,
+      aliasLanguageAliases: indexLanguageAliases(aliasLanguageAliases(node.name), articleAliases),
       article: { id: node.id, name: node.name, path: node.path },
-      properties: uniqueSorted(sections.properties),
-      methods: uniqueSorted(sections.methods),
+      properties,
+      methods,
+      memberLanguageAliases: indexLanguageAliases(combineLanguageAliases(
+        sections.propertyLanguageAliases,
+        sections.methodLanguageAliases,
+      ), candidateAliasOrder(properties, methods)),
     }];
   });
   types.sort((left, right) => compareFolded(left.article.name, right.article.name) || left.article.id - right.article.id);
@@ -257,10 +388,14 @@ export function buildBslCompletionIndex(
     sourceSha256,
     global: {
       article: { id: globalNode.id, name: globalNode.name, path: globalNode.path },
-      properties: uniqueSorted(globalSections.properties),
-      methods: uniqueSorted(globalSections.methods),
+      properties: globalProperties,
+      methods: globalMethods,
       zeroArgumentMethods: uniqueSorted(globalSections.methods.filter((name) =>
         ZERO_ARGUMENT_GLOBAL_METHODS.has(normalizeIdentifier(name)))),
+      languageAliases: indexLanguageAliases(combineLanguageAliases(
+        globalSections.propertyLanguageAliases,
+        globalSections.methodLanguageAliases,
+      ), globalAliasOrder),
     },
     types,
     metadataCollections,
@@ -281,10 +416,16 @@ function catalogApiFromNodes(nodes: readonly SyntaxHelpDatabaseNodeForIndex[]): 
   }
   const members = (node: SyntaxHelpDatabaseNodeForIndex): BslCompletionMetadataMembers => {
     const sections = parseCompletionSections(node.content);
+    const properties = uniqueSorted(sections.properties);
+    const methods = uniqueSorted(sections.methods);
     return {
       article: { id: node.id, name: node.name, path: node.path.replace(/\\/g, '/') },
-      properties: uniqueSorted(sections.properties),
-      methods: uniqueSorted(sections.methods),
+      properties,
+      methods,
+      languageAliases: indexLanguageAliases(combineLanguageAliases(
+        sections.propertyLanguageAliases,
+        sections.methodLanguageAliases,
+      ), candidateAliasOrder(properties, methods)),
     };
   };
   return {
@@ -306,6 +447,52 @@ function isArticleReference(value: unknown): value is CompletionArticleReference
 
 function isIdentifierList(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string' && identifierPattern.test(entry));
+}
+
+function aliasCandidateOrder(...lists: readonly (readonly string[])[]): string[] {
+  const seen = new Set<string>();
+  const aliases: string[] = [];
+  for (const name of lists.flat()) {
+    const key = normalizeIdentifier(name);
+    if (!seen.has(key)) {
+      seen.add(key);
+      aliases.push(name);
+    }
+  }
+  return aliases;
+}
+
+function isBslCompletionLanguageAliases(
+  value: unknown,
+  candidateNames: readonly string[],
+): value is BslCompletionLanguageAliases {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const aliases = value as Partial<BslCompletionLanguageAliases>;
+  if (!Array.isArray(aliases.bilingualPairIndices)) {
+    return false;
+  }
+  const seenPairs = new Set<string>();
+  for (const pair of aliases.bilingualPairIndices) {
+    if (!Array.isArray(pair) || pair.length !== 2
+      || !Number.isSafeInteger(pair[0]) || pair[0] < 0 || pair[0] >= candidateNames.length
+      || !Number.isSafeInteger(pair[1]) || pair[1] < 0 || pair[1] >= candidateNames.length
+      || pair[0] === pair[1]) {
+      return false;
+    }
+    const russian = candidateNames[pair[0]];
+    const english = candidateNames[pair[1]];
+    if (identifierLanguage(russian) !== 'ru' || identifierLanguage(english) !== 'en') {
+      return false;
+    }
+    const key = `${pair[0]}\u0000${pair[1]}`;
+    if (seenPairs.has(key)) {
+      return false;
+    }
+    seenPairs.add(key);
+  }
+  return true;
 }
 
 function isMetadataCollectionList(value: unknown): value is readonly BslCompletionMetadataCollection[] {
@@ -358,13 +545,18 @@ export function isBslCompletionIndex(value: unknown): value is BslCompletionInde
     && Boolean(global) && isArticleReference(global?.article)
     && isIdentifierList(global?.properties) && isIdentifierList(global?.methods)
     && isIdentifierList(global?.zeroArgumentMethods)
+    && isBslCompletionLanguageAliases(global?.languageAliases,
+      aliasCandidateOrder(global?.properties ?? [], global?.methods ?? []))
     && global?.zeroArgumentMethods.every((name) => global.methods.some((method) =>
       normalizeIdentifier(method) === normalizeIdentifier(name)))
     && isMetadataCollectionList(index.metadataCollections)
     && Array.isArray(index.types) && index.types.every((type) => Boolean(type)
       && isArticleReference(type.article)
       && isIdentifierList(type.aliases) && type.aliases.length > 0
-      && isIdentifierList(type.properties) && isIdentifierList(type.methods)))) {
+      && isBslCompletionLanguageAliases(type.aliasLanguageAliases, type.aliases)
+      && isIdentifierList(type.properties) && isIdentifierList(type.methods)
+      && isBslCompletionLanguageAliases(type.memberLanguageAliases,
+        aliasCandidateOrder(type.properties, type.methods))))) {
     return false;
   }
   const catalogApi = index.catalogApi;
@@ -374,8 +566,12 @@ export function isBslCompletionIndex(value: unknown): value is BslCompletionInde
     && catalogApi.manager.article.id === CATALOG_API_ARTICLES.manager.id
     && catalogApi.manager.article.path === CATALOG_API_ARTICLES.manager.path
     && isIdentifierList(catalogApi.manager.properties) && isIdentifierList(catalogApi.manager.methods)
+    && isBslCompletionLanguageAliases(catalogApi.manager.languageAliases,
+      aliasCandidateOrder(catalogApi.manager.properties, catalogApi.manager.methods))
     && isArticleReference(catalogApi.object?.article)
     && catalogApi.object.article.id === CATALOG_API_ARTICLES.object.id
     && catalogApi.object.article.path === CATALOG_API_ARTICLES.object.path
-    && isIdentifierList(catalogApi.object.properties) && isIdentifierList(catalogApi.object.methods);
+    && isIdentifierList(catalogApi.object.properties) && isIdentifierList(catalogApi.object.methods)
+    && isBslCompletionLanguageAliases(catalogApi.object.languageAliases,
+      aliasCandidateOrder(catalogApi.object.properties, catalogApi.object.methods));
 }

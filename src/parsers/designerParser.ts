@@ -17,6 +17,7 @@ import {
 } from './xmlChildObjects';
 import { buildSubsystemTree } from './subsystemTreeBuilder';
 import { CONFIGURATION_XML } from '../constants/fileNames';
+import { resolveDesignerBslLanguage } from './configurationBslLanguage';
 import { STANDARD_MODULES } from '../constants/moduleTypes';
 import {
   extractExtensionProperties,
@@ -77,7 +78,7 @@ export class DesignerParser {
       id: 'root',
       name: 'Configuration',
       type: MetadataType.Configuration,
-      properties: {},
+      properties: { bslLanguage: 'ru' },
       children: [],
       filePath: this.getConfigurationXmlPath(configPath),
     };
@@ -87,6 +88,7 @@ export class DesignerParser {
       const configXmlPath = this.getConfigurationXmlPath(configPath);
       await fs.promises.access(configXmlPath);
       const configXml = await XmlParser.parseFileAsync(configXmlPath);
+      rootNode.properties.bslLanguage = await resolveDesignerBslLanguage(configPath, configXml);
       const extProps = extractExtensionProperties(configXml);
       if (extProps.extensionPurpose !== undefined) {
         rootNode.properties.extensionPurpose = extProps.extensionPurpose;
@@ -136,7 +138,7 @@ export class DesignerParser {
       id: 'root',
       name: 'Configuration',
       type: MetadataType.Configuration,
-      properties: {},
+      properties: { bslLanguage: 'ru' },
       children: [],
       filePath: this.getConfigurationXmlPath(configPath),
     };
@@ -146,6 +148,7 @@ export class DesignerParser {
       const configXmlPath = this.getConfigurationXmlPath(configPath);
       await fs.promises.access(configXmlPath);
       const configXml = await XmlParser.parseFileAsync(configXmlPath);
+      rootNode.properties.bslLanguage = await resolveDesignerBslLanguage(configPath, configXml);
       const extProps = extractExtensionProperties(configXml);
       if (extProps.extensionPurpose !== undefined) {
         rootNode.properties.extensionPurpose = extProps.extensionPurpose;

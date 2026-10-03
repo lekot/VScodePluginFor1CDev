@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.54.1",
+  "version": "0.54.5",
   "icon": "images/icon.png",
   "publisher": "Lekot",
   "license": "MIT",
@@ -124,6 +124,16 @@
       {
         "command": "1c-metadata-tree.openBslModule",
         "title": "Открыть модуль BSL",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.showSyntaxHelp",
+        "title": "Справка по строке",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.searchSyntaxHelp",
+        "title": "Найти в справке",
         "category": "CDT 41"
       },
       {
@@ -1718,6 +1728,12 @@
     },
     "keybindings": [
       {
+        "command": "1c-metadata-tree.showSyntaxHelp",
+        "key": "ctrl+f1",
+        "mac": "ctrl+f1",
+        "when": "editorTextFocus && resourceLangId == bsl"
+      },
+      {
         "command": "1c-metadata-tree.queryBuilder",
         "key": "ctrl+alt+q",
         "mac": "cmd+alt+q",
@@ -1975,6 +1991,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/glob": "^8.0.0",
     "@types/js-yaml": "^4.0.9",
+    "@types/markdown-it": "^14.2.0",
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.0.0",
     "@types/sql.js": "^1.4.11",
@@ -1998,6 +2015,7 @@
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
     "js-yaml": "^4.1.1",
+    "markdown-it": "^14.3.2",
     "playwright": "^1.50.0",
     "sql.js": "^1.14.2"
   },

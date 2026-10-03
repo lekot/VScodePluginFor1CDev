@@ -49,6 +49,7 @@ import { normalizeConfigRelativePath } from '../bindings/bindingPathUtils';
 import { CONFIGURATION_XML } from '../constants/fileNames';
 import { Logger } from '../utils/logger';
 import { registerConfigurationRepositoryCommands } from './configurationRepositoryCommands';
+import { registerSyntaxHelpCommands } from '../providers/syntaxHelpProvider';
 
 export type RegisterAllCommandsArgs = {
   context: vscode.ExtensionContext;
@@ -182,6 +183,7 @@ export async function registerAllCommands({
     ...registerConfigurationCompareCommands({ context, state }),
     ...registerCfCommands({ state }),
     ...registerEditorCommands({ state, context }),
+    ...registerSyntaxHelpCommands(),
     ...registerElementCommands({
       state,
       loadMetadataTree: lifecycle.loadMetadataTree,
