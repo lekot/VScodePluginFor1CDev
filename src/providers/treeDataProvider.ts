@@ -717,7 +717,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       .sort((left, right) => right.configPath.length - left.configPath.length);
 
     const selectedRoot = matchingRoots[0]?.root;
-    const typeFolder = selectedRoot?.children?.find((child) => child.id === folderId);
+    const typeFolder = selectedRoot ? this.findTypeFolderNode(selectedRoot, folderId) : undefined;
     if (!typeFolder || (typeFolder.properties as Record<string, unknown>)._indexLoaded !== true) {
       return { status: 'notLoaded' };
     }

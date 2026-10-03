@@ -19,6 +19,9 @@ import {
   type SyntaxHelpDatabaseNodeForIndex,
 } from '../../src/providers/bslCompletionIndex';
 import { BslLocalCompletionIndex } from '../../src/providers/bslLocalCompletionIndex';
+import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { ConfigFormat } from '../../src/parsers/formatDetector';
+import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 const TEST_HASH = '0'.repeat(64);
@@ -462,6 +465,122 @@ suite('BSL platform completion', () => {
     const provider = new BslCompletionProvider(extensionRoot());
 
     assert.ok(labels(await completeWithLocalDocument(provider, document, text)).includes('ЛокальнаяФункция'));
+  });
+
+  test('suggests only loaded CommonModule names for bare identifiers and deduplicates other globals', async () => {
+    const configRoot = path.resolve(os.tmpdir(), `bsl-completion-tree-${process.pid}-${Date.now()}`);
+    const commonModules: TreeNode = {
+      id: 'CommonModules',
+      name: 'Общие модули',
+      type: MetadataType.CommonModule,
+      properties: { _indexLoaded: true } as TreeNode['properties'],
+      children: [
+        ...['мойМодульэ', 'МОЙМОДУЛЬЭ', 'мойМодульЕщё', 'Документы', 'Если', 'ЛокальнаяПроцедура']
+          .map((name) => ({ id: `CommonModules.${name}`, name, type: MetadataType.CommonModule, properties: {} })),
+      ],
+    };
+    const root: TreeNode = {
+      id: 'completion-tree-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [commonModules],
+    };
+    const tree = new MetadataTreeDataProvider();
+    tree.setRootNode(root, { configPath: configRoot, format: ConfigFormat.Designer });
+    const provider = new BslCompletionProvider(extensionRoot(), () => tree);
+    const documentPath = path.join(configRoot, 'CommonModules', 'Caller', 'Ext', 'Module.bsl');
+    const source = 'Процедура ЛокальнаяПроцедура()\nКонецПроцедуры\nмойМодул';
+    const document = localDocument(documentPath, source);
+    const typedItems = await completeWithLocalDocument(provider, document, source);
+    const typedLabels = labels(typedItems);
+
+    assert.ok(typedLabels.includes('мойМодульэ'), 'loaded CommonModules should match a partial Cyrillic prefix');
+    assert.ok(typedLabels.includes('мойМодульЕщё'), 'matching should use a case-folded prefix');
+    assert.strictEqual(typedLabels.filter((name) => name.toLocaleLowerCase('ru-RU') === 'моймодульэ').length, 1);
+    const commonModuleItem = typedItems?.find(({ label }) => label === 'мойМодульэ');
+    assert.strictEqual(commonModuleItem?.kind, vscode.CompletionItemKind.Module);
+    assert.strictEqual(commonModuleItem?.detail, 'Общий модуль метаданных');
+    assert.ok(!typedLabels.includes('Документы'), 'unrelated module names should be filtered by prefix');
+
+    const allItems = await completeWithLocalDocument(provider, document, source, source.indexOf('мойМодул'));
+    for (const name of ['Если', 'Документы', 'ЛокальнаяПроцедура']) {
+      assert.strictEqual(labels(allItems).filter((item) => item === name).length, 1, `${name} should be deduplicated`);
+    }
+    assert.strictEqual(allItems?.find(({ label }) => label === 'Если')?.kind, vscode.CompletionItemKind.Keyword);
+    assert.strictEqual(allItems?.find(({ label }) => label === 'Документы')?.kind, vscode.CompletionItemKind.Variable);
+
+    const unrelatedDocument = localDocument(
+      path.join(path.dirname(configRoot), 'UnrelatedWorkspace', 'CommonModules', 'Caller', 'Module.bsl'),
+      'мойМодул',
+    );
+    assert.ok(
+      !labels(await completeWithLocalDocument(provider, unrelatedDocument, 'мойМодул')).includes('мойМодульэ'),
+      'a resource outside the loaded configuration must not see its CommonModules',
+    );
+
+    const coldTree = new MetadataTreeDataProvider();
+    coldTree.setRootNode({ ...root, id: 'cold-completion-tree-root', children: [{ ...commonModules, properties: {} }] }, {
+      configPath: configRoot,
+      format: ConfigFormat.Designer,
+    });
+    const coldProvider = new BslCompletionProvider(extensionRoot(), () => coldTree);
+    assert.ok(
+      !labels(await completeWithLocalDocument(coldProvider, document, 'мойМодул')).includes('мойМодульэ'),
+      'an unloaded CommonModules folder must not be loaded as a side effect or suggested',
+    );
+  });
+
+  test('keeps global completions available when the loaded metadata reader throws', async () => {
+    const provider = new BslCompletionProvider(extensionRoot(), () => ({
+      getLoadedTypeObjectsForResource: () => { throw new Error('tree disposed'); },
+    }));
+    const text = 'Докум';
+    const document = localDocument(path.join(os.tmpdir(), 'ThrowingMetadataReader.bsl'), text);
+
+    assert.ok(labels(await completeWithLocalDocument(provider, document, text)).includes('Документы'));
+  });
+
+  test('completes Модуль.Метод without inserting global CommonModule names in member context', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-provider-cyrillic-module-member-'));
+    let treeLookups = 0;
+    try {
+      await createConfigurationRoot(root);
+      await writeCommonModule(root, 'Модуль', [
+        'Процедура МетодПроверки() Экспорт',
+        'КонецПроцедуры',
+      ].join('\n'));
+      setWorkspaceRoots(root);
+      const reader = {
+        getLoadedTypeObjectsForResource: () => {
+          treeLookups += 1;
+          return { status: 'loaded' as const, names: ['Модуль'] };
+        },
+      };
+      const provider = new BslCompletionProvider(extensionRoot(), () => reader);
+      const text = 'Модуль.Мет';
+      const document = localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), text);
+
+      assert.deepStrictEqual(labels(await completeWithLocalDocument(provider, document, text)), ['МетодПроверки']);
+      assert.strictEqual(treeLookups, 0, 'member completion must not query global CommonModule names');
+    } finally {
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('suggests loaded CommonModule names when the platform help index is unavailable', async () => {
+    const missingIndexRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-provider-no-index-common-modules-'));
+    try {
+      const provider = new BslCompletionProvider(missingIndexRoot, () => ({
+        getLoadedTypeObjectsForResource: () => ({ status: 'loaded', names: ['мойМодульэ'] }),
+      }));
+      const text = 'мойМодул';
+      const document = localDocument(path.join(os.tmpdir(), 'LoadedCommonModuleWithoutHelp.bsl'), text);
+
+      assert.ok(labels(await completeWithLocalDocument(provider, document, text)).includes('мойМодульэ'));
+    } finally {
+      await fs.promises.rm(missingIndexRoot, { recursive: true, force: true });
+    }
   });
 
   test('skips huge current documents before getText while retaining platform completions', async () => {

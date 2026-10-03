@@ -92,6 +92,42 @@ suite('MetadataTreeDataProvider Test Suite', () => {
     );
   });
 
+  test('read-only completion lookup recognizes a loaded R5 type folder under Common', () => {
+    const configPath = path.resolve('completion-common-group-config');
+    const commonModules: TreeNode = {
+      id: 'CommonModules',
+      name: 'Общие модули',
+      type: MetadataType.CommonModule,
+      properties: { _indexLoaded: true } as TreeNode['properties'],
+      children: [{ id: 'CommonModules.Orders', name: 'Orders', type: MetadataType.CommonModule, properties: {} }],
+    };
+    const commonGroup: TreeNode = {
+      id: 'Common',
+      name: 'Общие',
+      type: MetadataType.Unknown,
+      properties: {},
+      children: [commonModules],
+    };
+    const root: TreeNode = {
+      id: 'completion-common-group-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [commonGroup],
+    };
+    commonGroup.parent = root;
+    commonModules.parent = commonGroup;
+    provider.setRootNode(root, { configPath, format: ConfigFormat.Designer });
+
+    assert.deepStrictEqual(
+      provider.getLoadedTypeObjectsForResource(
+        path.join(configPath, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'),
+        'CommonModules',
+      ),
+      { status: 'loaded', names: ['Orders'] },
+    );
+  });
+
   test('read-only completion lookup reports cold, invalidated, and replaced type indexes', () => {
     const configPath = path.resolve('completion-config-reload');
     const unloadedCatalogs: TreeNode = {

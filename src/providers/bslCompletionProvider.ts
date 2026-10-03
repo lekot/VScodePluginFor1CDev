@@ -419,6 +419,14 @@ function toMetadataCompletionItem(name: string, folderId: string): vscode.Comple
   return item;
 }
 
+function toCommonModuleCompletionItem(name: string): vscode.CompletionItem {
+  const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Module);
+  item.insertText = name;
+  item.detail = 'Общий модуль метаданных';
+  item.sortText = normalizeIdentifier(name);
+  return item;
+}
+
 function metadataFolderForReceiver(receiver: string, index: RuntimeIndex): string | undefined {
   return index.metadataCollectionFolders.get(normalizeIdentifier(receiver));
 }
@@ -441,6 +449,21 @@ function metadataCompletionItems(prefix: string, names: readonly string[], folde
     .map((name) => toMetadataCompletionItem(name, folderId));
 }
 
+function commonModuleCompletionItems(prefix: string, names: readonly string[]): vscode.CompletionItem[] {
+  const foldedPrefix = normalizeIdentifier(prefix);
+  const seen = new Set<string>();
+  const items: vscode.CompletionItem[] = [];
+  for (const name of names) {
+    const key = normalizeIdentifier(name);
+    if (!key.startsWith(foldedPrefix) || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    items.push(toCommonModuleCompletionItem(name));
+  }
+  return items;
+}
+
 function keywordCompletionItems(prefix: string): vscode.CompletionItem[] {
   const foldedPrefix = normalizeIdentifier(prefix);
   return BSL_KEYWORDS
@@ -452,6 +475,29 @@ function keywordCompletionItems(prefix: string): vscode.CompletionItem[] {
       item.sortText = `0_${normalizeIdentifier(name)}`;
       return item;
     });
+}
+
+function globalCompletionItems(
+  prefix: string,
+  platformCandidates: readonly Candidate[],
+  localRoutines: readonly BslLocalRoutineCandidate[],
+  commonModuleNames: readonly string[],
+): vscode.CompletionItem[] {
+  const candidates = [
+    ...keywordCompletionItems(prefix),
+    ...platformCandidates.map(toCompletionItem),
+    ...localRoutineCompletionItems(prefix, localRoutines, 'текущий модуль'),
+    ...commonModuleCompletionItems(prefix, commonModuleNames),
+  ];
+  const seen = new Set<string>();
+  return candidates.filter(({ label }) => {
+    const key = normalizeIdentifier(String(label));
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function candidatesForType(type: BslCompletionType): Candidate[] {
@@ -491,6 +537,24 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
     const context = completionContext(currentLinePrefix);
     if (!context) {
       return undefined;
+    }
+
+    let commonModuleNames: readonly string[] = [];
+    if (context.kind === 'global') {
+      const resourcePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
+      if (resourcePath) {
+        try {
+          const result = this.getMetadataCompletionReader?.()?.getLoadedTypeObjectsForResource(
+            resourcePath,
+            'CommonModules',
+          );
+          if (result?.status === 'loaded') {
+            commonModuleNames = result.names;
+          }
+        } catch {
+          // Tree lookup is read-only and optional; keep keyword/platform completion available on failure.
+        }
+      }
     }
 
     let inferredTypeName = context.typeName;
@@ -553,30 +617,17 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
         return undefined;
       }
       if (context.kind === 'global') {
-        const keywordItems = keywordCompletionItems(context.prefix);
-        const seenNames = new Set(keywordItems.map(({ label }) => normalizeIdentifier(String(label))));
         const platformCandidates = matchingCandidates(
           context.prefix,
           index.globalCandidates,
           index.globalCandidatesByFirstCharacter,
-        ).filter(({ name }) => {
-          const key = normalizeIdentifier(name);
-          if (seenNames.has(key)) {
-            return false;
-          }
-          seenNames.add(key);
-          return true;
-        });
-        const localItems = localRoutineCompletionItems(context.prefix, this.localIndex.getCurrentDocumentRoutines(document), 'текущий модуль')
-          .filter(({ label }) => {
-            const key = normalizeIdentifier(String(label));
-            if (seenNames.has(key)) {
-              return false;
-            }
-            seenNames.add(key);
-            return true;
-          });
-        return [...keywordItems, ...platformCandidates.map(toCompletionItem), ...localItems];
+        );
+        return globalCompletionItems(
+          context.prefix,
+          platformCandidates,
+          this.localIndex.getCurrentDocumentRoutines(document),
+          commonModuleNames,
+        );
       }
       if (context.kind === 'type') {
         return matchingCandidates(context.prefix, index.typeCandidates, index.typeCandidatesByFirstCharacter)
@@ -593,7 +644,9 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
       if (token.isCancellationRequested) {
         return undefined;
       }
-      return context.kind === 'global' ? keywordCompletionItems(context.prefix) : undefined;
+      return context.kind === 'global'
+        ? globalCompletionItems(context.prefix, [], [], commonModuleNames)
+        : undefined;
     }
   }
 }

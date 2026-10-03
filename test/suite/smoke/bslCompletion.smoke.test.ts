@@ -13,6 +13,20 @@ function completionItems(result: vscode.CompletionList | vscode.CompletionItem[]
   return Array.isArray(result) ? result : result?.items ?? [];
 }
 
+function assertPathIsWithin(parentPath: string, targetPath: string): void {
+  const parent = path.resolve(parentPath);
+  const target = path.resolve(targetPath);
+  const relative = path.relative(parent, target);
+  if (
+    relative === ''
+    || relative === '..'
+    || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative)
+  ) {
+    throw new Error(`Refusing to remove path outside its expected parent: ${target}`);
+  }
+}
+
 suite('Smoke: BSL completion', () => {
   test('returns static platform and current-module suggestions in a metadata workspace', async function () {
     this.timeout(25000);
@@ -24,6 +38,14 @@ suite('Smoke: BSL completion', () => {
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     assert.ok(workspaceFolder, 'Smoke requires the metadata fixture workspace');
+    const commonModuleWorkspace = vscode.workspace.workspaceFolders?.find(({ uri }) =>
+      fs.existsSync(path.join(uri.fsPath, 'CommonModules', 'мойМодульэ.xml')),
+    );
+    const commonModuleName = 'мойМодульэ';
+    const callerName = `CompletionCaller${process.pid}`;
+    const callerRoot = commonModuleWorkspace
+      ? path.join(commonModuleWorkspace.uri.fsPath, 'CommonModules', callerName)
+      : undefined;
     const source = [
       'Процедура ЛокальнаяПроцедура(Первый, Второй)',
       'КонецПроцедуры',
@@ -36,14 +58,15 @@ suite('Smoke: BSL completion', () => {
       '',
       'Новый Структура("Код", 1,',
       'ЛокальнаяПроцедура(1,',
+      'мойМодул',
     ].join('\n');
-    const filePath = path.join(
-      workspaceFolder.uri.fsPath,
-      `.bsl-completion-smoke-${process.pid}-${Date.now()}.bsl`,
-    );
+    const filePath = callerRoot
+      ? path.join(callerRoot, 'Ext', 'Module.bsl')
+      : path.join(workspaceFolder?.uri.fsPath ?? '', `.bsl-completion-smoke-${process.pid}-${Date.now()}.bsl`);
     let document: vscode.TextDocument | undefined;
 
     try {
+      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
       await fs.promises.writeFile(filePath, source, 'utf8');
       document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
       assert.strictEqual(document.languageId, 'bsl', 'temporary .bsl file must use the BSL language selector');
@@ -107,11 +130,49 @@ suite('Smoke: BSL completion', () => {
         'signature help should read parameters from the current unsaved module',
       );
       assert.strictEqual(routineHelp?.activeParameter, 1);
+
+      if (commonModuleWorkspace) {
+        await vscode.commands.executeCommand('1c-metadata-tree.refresh');
+        assert.strictEqual(
+          await vscode.commands.executeCommand<boolean>('1c-metadata-tree.getTreeReadyForTest'),
+          true,
+          'metadata tree root should be loaded before revealing the CommonModule',
+        );
+        await vscode.window.showTextDocument(document);
+        await vscode.commands.executeCommand('1c-metadata-tree.revealActiveFileInTree');
+
+        const commonModulePrefix = 'мойМодул';
+        const commonModuleOffset = document.getText().lastIndexOf(commonModulePrefix) + commonModulePrefix.length;
+        assert.ok(commonModuleOffset >= commonModulePrefix.length, 'BSL document should contain the CommonModule prefix');
+        const commonModulePosition = document.positionAt(commonModuleOffset);
+        assert.strictEqual(
+          document.lineAt(commonModulePosition.line).text.slice(0, commonModulePosition.character),
+          commonModulePrefix,
+          'completion cursor should be immediately after the screenshot prefix',
+        );
+        const commonModuleResult = await vscode.commands.executeCommand<
+          vscode.CompletionList | vscode.CompletionItem[]
+        >('vscode.executeCompletionItemProvider', document.uri, commonModulePosition);
+        const commonModuleItems = completionItems(commonModuleResult);
+        const commonModule = commonModuleItems.find(({ label }) =>
+          (typeof label === 'string' ? label : label.label) === commonModuleName,
+        );
+        assert.ok(
+          commonModule,
+          `completion should include loaded мойМодульэ by мойМодул; got: ${labels(commonModuleResult).join(', ')}`,
+        );
+        assert.strictEqual(commonModule?.kind, vscode.CompletionItemKind.Module);
+        assert.strictEqual(commonModule?.detail, 'Общий модуль метаданных');
+      }
     } finally {
       if (document && vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) {
         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
       }
       await fs.promises.unlink(filePath).catch(() => undefined);
+      if (callerRoot && commonModuleWorkspace) {
+        assertPathIsWithin(path.join(commonModuleWorkspace.uri.fsPath, 'CommonModules'), callerRoot);
+        await fs.promises.rm(callerRoot, { recursive: true, force: true });
+      }
     }
   });
 });
