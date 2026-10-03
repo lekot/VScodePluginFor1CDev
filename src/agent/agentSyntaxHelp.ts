@@ -295,8 +295,17 @@ function compareNodes(left: KnowledgeNode, right: KnowledgeNode): number {
     || codepointCompare(left.id, right.id);
 }
 
+const BILINGUAL_ARTICLE_NAME = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\)\s*$/u;
+
+function matchesExactArticleName(node: KnowledgeNode, query: string): boolean {
+  if (node.searchName === query) { return true; }
+  const bilingualName = BILINGUAL_ARTICLE_NAME.exec(node.name);
+  return bilingualName !== null
+    && (fold(bilingualName[1]) === query || fold(bilingualName[2]) === query);
+}
+
 function rankNode(node: KnowledgeNode, query: string): number | null {
-  if (node.searchName === query) { return 0; }
+  if (matchesExactArticleName(node, query)) { return 0; }
   if (node.searchName.startsWith(query)) { return 1; }
   if (node.searchName.includes(query)) { return 2; }
   if (node.searchPath.includes(query)) { return 3; }
@@ -385,6 +394,21 @@ function extractLineTerms(line: string, cursorColumn: number): string[] {
     if (terms.length === MAX_LINE_TERMS) { break; }
   }
   return terms;
+}
+
+function nearestIdentifierIsCall(line: string, term: string, cursorColumn: number): boolean {
+  const query = fold(term);
+  const nearest = scanLineIdentifiers(line)
+    .filter((identifier) => fold(identifier.value) === query)
+    .sort((left, right) => {
+      const distance = distanceFromCursor(left, cursorColumn) - distanceFromCursor(right, cursorColumn);
+      if (distance !== 0) { return distance; }
+      const leftIsBeforeCursor = left.end <= cursorColumn;
+      const rightIsBeforeCursor = right.end <= cursorColumn;
+      if (leftIsBeforeCursor !== rightIsBeforeCursor) { return leftIsBeforeCursor ? -1 : 1; }
+      return left.start - right.start;
+    })[0];
+  return nearest !== undefined && /^\s*\(/u.test(line.slice(nearest.end));
 }
 
 function publicCandidate(node: KnowledgeNode): SyntaxHelpChildItem {
@@ -518,11 +542,24 @@ export class AgentSyntaxHelpOperations {
 
   private search(nodes: KnowledgeNode[], params: Extract<ValidatedSyntaxHelpParams, { action: 'search' }>): Record<string, unknown> {
     const query = fold(params.query!.trim());
+    const exactArticleNodes = nodes.filter((node) => sourceAllows(params.source, node.source)
+      && node.parentId !== null && matchesExactArticleName(node, query));
+    const exactArticleIds = new Set(exactArticleNodes.map((node) => node.id));
+    const exactArticleParentIds = new Set(exactArticleNodes.map((node) => node.parentId!));
+    const exactArticleSources = new Set(exactArticleNodes.map((node) => node.source));
+    const exactMethodArticleIds = new Set(exactArticleNodes
+      .filter((node) => /(?:^|\/)methods\//u.test(node.searchPath))
+      .map((node) => node.id));
     const selected = nodes
       .filter((node) => sourceAllows(params.source, node.source))
       .map((node) => ({ node, rank: rankNode(node, query) }))
       .filter((entry): entry is { node: KnowledgeNode; rank: number } => entry.rank !== null)
-      .sort((left, right) => left.rank - right.rank || compareNodes(left.node, right.node));
+      .filter(({ node, rank }) => !exactArticleSources.has(node.source)
+        || (rank < 4 || exactArticleIds.has(node.id))
+          && !(exactArticleParentIds.has(node.id) && findPlatformMemberLine(node, query) !== undefined))
+      .sort((left, right) => left.rank - right.rank
+        || Number(exactMethodArticleIds.has(right.node.id)) - Number(exactMethodArticleIds.has(left.node.id))
+        || compareNodes(left.node, right.node));
     const limit = params.limit ?? 10;
     const snippetLength = params.snippetLength ?? 300;
     return {
@@ -547,6 +584,15 @@ export class AgentSyntaxHelpOperations {
   ): Record<string, unknown> {
     const line = params.line!;
     const terms = extractLineTerms(line, params.cursorColumn ?? line.length);
+    const nearestQuery = terms.length > 0 ? fold(terms[0]) : undefined;
+    const exactNearestArticles = nearestQuery === undefined ? [] : nodes.filter((node) =>
+      sourceAllows(params.source, node.source) && node.parentId !== null && matchesExactArticleName(node, nearestQuery));
+    const exactNearestArticleIds = new Set(exactNearestArticles.map((node) => node.id));
+    const nearestTermIsCall = terms.length > 0 && nearestIdentifierIsCall(line, terms[0], params.cursorColumn ?? line.length);
+    const exactNearestMethodArticleIds = new Set(nearestTermIsCall
+      ? exactNearestArticles.filter((node) => /(?:^|\/)methods\//u.test(node.searchPath)).map((node) => node.id)
+      : []);
+    const exactNearestParentIds = new Set(exactNearestArticles.map((node) => node.parentId));
     const bestMatches = new Map<string, {
       node: KnowledgeNode;
       termIndex: number;
@@ -554,18 +600,23 @@ export class AgentSyntaxHelpOperations {
       query: string;
       memberLine?: string;
     }>();
-    let nearestTermHasExactHit = false;
+    const nearestTermExactSources = new Set<'syntax' | 'standards'>();
     terms.forEach((term, termIndex) => {
       const query = fold(term);
       for (const node of nodes) {
         if (!sourceAllows(params.source, node.source)) { continue; }
         const articleRank = rankNode(node, query);
         const memberLine = findPlatformMemberLine(node, query);
+        if (termIndex === 0 && memberLine !== undefined && exactNearestParentIds.has(node.id)) { continue; }
         if (termIndex === 0 && (articleRank === 0 || memberLine !== undefined)) {
-          nearestTermHasExactHit = true;
+          nearestTermExactSources.add(node.source);
         }
         if (articleRank === null && memberLine === undefined) { continue; }
-        const rank = memberLine === undefined ? articleRank! : 0;
+        const rank = exactNearestMethodArticleIds.has(node.id)
+          ? -2
+          : exactNearestArticleIds.has(node.id)
+            ? -1
+          : memberLine === undefined ? articleRank! : exactNearestArticles.length > 0 ? 1 : 0;
         const existing = bestMatches.get(node.id);
         if (!existing || rank < existing.rank || (rank === existing.rank && termIndex < existing.termIndex)) {
           bestMatches.set(node.id, { node, termIndex, rank, query: term, ...(memberLine ? { memberLine } : {}) });
@@ -573,7 +624,7 @@ export class AgentSyntaxHelpOperations {
       }
     });
     const selected = [...bestMatches.values()]
-      .filter(({ rank }) => !nearestTermHasExactHit || rank < 4)
+      .filter(({ node, rank }) => !nearestTermExactSources.has(node.source) || rank < 4)
       .sort((left, right) =>
       left.rank - right.rank || left.termIndex - right.termIndex || compareNodes(left.node, right.node));
     const limit = params.limit ?? 10;
@@ -605,8 +656,11 @@ export class AgentSyntaxHelpOperations {
       candidates = candidate && sourceAllows(params.source, candidate.source) ? [candidate] : [];
     } else {
       const query = fold(params.query!.trim());
-      candidates = nodes.filter((node) => sourceAllows(params.source, node.source)
+      const exactNameOrPathCandidates = nodes.filter((node) => sourceAllows(params.source, node.source)
         && (fold(node.name) === query || fold(node.path) === query || node.id === params.query));
+      candidates = exactNameOrPathCandidates.length > 0
+        ? exactNameOrPathCandidates
+        : nodes.filter((node) => sourceAllows(params.source, node.source) && matchesExactArticleName(node, query));
     }
     if (candidates.length === 0) {
       return { success: false, code: 'KNOWLEDGE_ITEM_NOT_FOUND', error: 'Knowledge item was not found.' };

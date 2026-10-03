@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import initSqlJs from 'sql.js';
 import '../helpers/vscodeStubRegister';
 import { AgentSyntaxHelpOperations } from '../../src/agent/agentSyntaxHelp';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
@@ -20,7 +21,77 @@ function dataOf<T>(result: { success: boolean; data?: T; code?: string }): T {
   return result.data as T;
 }
 
-suite('AgentSyntaxHelpOperations', () => {
+interface FixtureArticle {
+  readonly name: string;
+  readonly path: string;
+  readonly content: string;
+}
+
+async function createSyntaxHelpFixture(articles: readonly FixtureArticle[] = []): Promise<{
+  readonly extensionPath: string;
+  readonly operations: AgentSyntaxHelpOperations;
+  readonly articleIds: readonly string[];
+  dispose(): Promise<void>;
+}> {
+  const extensionPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'syntax-help-articles-'));
+  try {
+    const helpPath = path.join(extensionPath, 'resources', 'help');
+    const standardsPath = path.join(extensionPath, 'resources', 'standards');
+    const wasmPath = path.join(extensionPath, 'node_modules', 'sql.js', 'dist');
+    await fs.promises.mkdir(helpPath, { recursive: true });
+    await fs.promises.mkdir(standardsPath, { recursive: true });
+    await fs.promises.mkdir(wasmPath, { recursive: true });
+    await fs.promises.copyFile(
+      path.join(extensionRoot(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
+      path.join(wasmPath, 'sql-wasm.wasm'),
+    );
+    await fs.promises.writeFile(path.join(standardsPath, 'manifest.json'), JSON.stringify({
+      version: 1,
+      entries: [{ slug: 'fixture-standard', name: 'Fixture standard', path: 'fixture.md', summary: 'Fixture content.' }],
+    }));
+
+    const databasePath = path.join(helpPath, 'shcntx_help.db');
+    const SQL = await initSqlJs({
+      locateFile: (file) => path.join(extensionRoot(), 'node_modules', 'sql.js', 'dist', file),
+    });
+    const database = new SQL.Database();
+    database.run('CREATE TABLE nodes (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL)');
+    database.run(
+      'INSERT INTO nodes (id, parent_id, name, path, content) VALUES (1, NULL, ?, ?, ?)',
+      [
+        'Глобальный контекст',
+        'Global context.html',
+        'Глобальный контекст\n\nМетоды:\nТекущаяДата (CurrentDate)\nВвестиДатуАсинх (InputDateAsync)\n\nСобытия:\nПередЗаписью (BeforeWrite)',
+      ],
+    );
+    const maxId = database.exec('SELECT MAX(id) FROM nodes')[0]?.values[0]?.[0];
+    assert.strictEqual(typeof maxId, 'number');
+    const articleIds: string[] = [];
+    articles.forEach((article, index) => {
+      const id = (maxId as number) + index + 1;
+      database.run(
+        'INSERT INTO nodes (id, parent_id, name, path, content) VALUES (?, 1, ?, ?, ?)',
+        [id, article.name, article.path, article.content],
+      );
+      articleIds.push(`syntax:${id}`);
+    });
+    await fs.promises.writeFile(databasePath, Buffer.from(database.export()));
+    database.close();
+
+    return {
+      extensionPath,
+      operations: new AgentSyntaxHelpOperations(extensionPath),
+      articleIds,
+      dispose: () => fs.promises.rm(extensionPath, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await fs.promises.rm(extensionPath, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+suite('AgentSyntaxHelpOperations', function () {
+  this.timeout(15000);
   const operations = new AgentSyntaxHelpOperations(extensionRoot());
 
   test('MCP dispatcher reaches the registered Agent command and reads the bundled SQLite database', async () => {
@@ -87,7 +158,7 @@ suite('AgentSyntaxHelpOperations', () => {
   });
 
   test('searches syntax and standards case-insensitively and treats SQL wildcard characters literally', async () => {
-    const crossSource = dataOf(await operations.execute({ query: 'МОДУЛ', source: 'all' })) as {
+    const crossSource = dataOf(await operations.execute({ query: 'МОДУЛ', source: 'all', limit: 50 })) as {
       items: Array<{ source: string }>;
     };
     assert.ok(crossSource.items.some((item) => item.source === 'syntax'));
@@ -149,6 +220,118 @@ suite('AgentSyntaxHelpOperations', () => {
     assert.ok(byName.markdown.startsWith('# Транзакции и блокировки\n'));
     assert.strictEqual(byName.markdown.match(/^# Транзакции и блокировки$/gm)?.length, 1);
     assert.match(byName.sourceUrl ?? '', /^https:\/\/its\.1c\.ru\//);
+  });
+
+  test('matches bilingual standalone articles in search, get, searchLine, and children', async () => {
+    const fixture = await createSyntaxHelpFixture([
+      {
+        name: 'ТекущаяДата (CurrentDate)',
+        path: 'Global context/methods/catalog4840/CurrentDate956.html',
+        content: 'ТекущаяДата()\n\nВозвращаемое значение: Дата.\n\nОписание:\nВозвращает текущую дату сервера.',
+      },
+      {
+        name: 'ТестовыйМетод (SharedAlias)',
+        path: 'Global context/methods/catalog9999/TestMethod1.html',
+        content: 'ТестовыйМетод()\n\nПервый тестовый метод.',
+      },
+      {
+        name: 'ДругойМетод (SharedAlias)',
+        path: 'Global context/methods/catalog9999/OtherMethod2.html',
+        content: 'ДругойМетод()\n\nВторой тестовый метод.',
+      },
+    ]);
+    try {
+      const currentDateId = fixture.articleIds[0];
+      for (const query of ['ТекущаяДата', 'CurrentDate']) {
+        const search = dataOf(await fixture.operations.execute({
+          action: 'search', query, source: 'syntax', limit: 10,
+        })) as { items: Array<{ id: string; name: string; snippet: string }> };
+        assert.strictEqual(search.items[0]?.id, currentDateId, `The ${query} alias should rank as an exact article name.`);
+        assert.ok(search.items.every(({ id }) => id !== 'syntax:1'), 'The parent Global context article is redundant for an exact standalone article.');
+        assert.ok(search.items.every(({ id }) => id === currentDateId), 'Content-only matches should be suppressed for an exact standalone article.');
+        assert.match(search.items[0].snippet, /ТекущаяДата\(\)/);
+        assert.match(search.items[0].snippet, /Возвращает текущую дату сервера/);
+        assert.ok(!search.items[0].snippet.includes('ДругойМетод'), 'The snippet should come from the detailed article only.');
+
+        const article = dataOf(await fixture.operations.execute({ action: 'get', query, source: 'syntax' })) as {
+          id: string;
+          markdown: string;
+        };
+        assert.strictEqual(article.id, currentDateId);
+        assert.match(article.markdown, /ТекущаяДата\(\)/);
+        assert.match(article.markdown, /Возвращает текущую дату сервера/);
+      }
+
+      for (const [line, identifier] of [
+        ['ТекущаяДата();', 'ТекущаяДата'],
+        ['CurrentDate();', 'CurrentDate'],
+      ]) {
+        const result = dataOf(await fixture.operations.execute({
+          action: 'searchLine', line, cursorColumn: line.indexOf(identifier) + 2, source: 'syntax', limit: 10,
+        })) as { items: Array<{ id: string; name: string; snippet: string }> };
+        assert.strictEqual(result.items[0]?.id, currentDateId, JSON.stringify(result.items));
+        assert.ok(result.items.every(({ id }) => id !== 'syntax:1'), 'The parent member-line pseudo-hit should be hidden.');
+        assert.ok(result.items.every(({ name }) => name === 'ТекущаяДата (CurrentDate)'), `Only exact member/article matches should remain ahead of broad content noise: ${JSON.stringify(result.items)}`);
+        assert.match(result.items[0].snippet, /Возвращает текущую дату сервера/);
+      }
+
+      const children = dataOf(await fixture.operations.execute({
+        action: 'children', source: 'syntax', parentId: 1, limit: 50,
+      })) as { items: Array<{ id: string; name: string; hasChildren: boolean }> };
+      const currentDateChild = children.items.find(({ id }) => id === currentDateId);
+      assert.strictEqual(currentDateChild?.name, 'ТекущаяДата (CurrentDate)');
+      assert.strictEqual(currentDateChild?.hasChildren, false);
+
+      const ambiguousAlias = await fixture.operations.execute({ action: 'get', source: 'syntax', query: 'SharedAlias' });
+      assert.strictEqual(ambiguousAlias.code, 'KNOWLEDGE_ITEM_AMBIGUOUS');
+      assert.strictEqual((ambiguousAlias.data as { candidates: unknown[] }).candidates.length, 2);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test('uses the bundled CurrentDate method for calls and keeps non-unique alias lookup ambiguous', async () => {
+    const methodPath = 'Global context/methods/catalog4840/CurrentDate956.html';
+    const method = dataOf(await operations.execute({ action: 'get', source: 'syntax', query: methodPath })) as {
+      id: string;
+      path: string;
+      markdown: string;
+    };
+    assert.strictEqual(method.id, 'syntax:2986');
+    assert.strictEqual(method.path, methodPath);
+    assert.match(method.markdown, /ТекущаяДата\(\)/);
+    assert.match(method.markdown, /Возвращаемое значение/);
+
+    for (const query of ['ТекущаяДата', 'CurrentDate']) {
+      const search = dataOf(await operations.execute({ action: 'search', source: 'syntax', query, limit: 5 })) as {
+        items: Array<{ id: string; path: string }>;
+      };
+      assert.strictEqual(search.items[0]?.id, method.id);
+      assert.ok(search.items.every(({ id }) => id !== 'syntax:1'), 'The parent Global context article should be suppressed.');
+
+      const line = `${query}   ( );`;
+      const call = dataOf(await operations.execute({
+        action: 'searchLine', line, cursorColumn: line.indexOf(query) + 2, source: 'syntax', limit: 10,
+      })) as { items: Array<{ id: string; path: string; snippet: string }> };
+      assert.strictEqual(call.items[0]?.id, method.id, 'A method call should rank the global method article first.');
+      assert.ok(call.items.every(({ id }) => id !== 'syntax:1'), 'The parent Global context pseudo-hit should be suppressed.');
+      assert.match(call.items[0].snippet, /Возвращаемое значение/);
+    }
+
+    const propertyLine = 'ПолеКалендаря.ТекущаяДата';
+    const propertyContext = dataOf(await operations.execute({
+      action: 'searchLine', line: propertyLine, cursorColumn: propertyLine.indexOf('ТекущаяДата') + 2, source: 'syntax', limit: 10,
+    })) as { items: Array<{ id: string; path: string }> };
+    assert.ok(propertyContext.items.some(({ id, path }) => id === 'syntax:12809' && path.includes('/properties/')));
+    assert.ok(propertyContext.items.some(({ id }) => id === method.id));
+
+    for (const query of ['ТекущаяДата', 'CurrentDate']) {
+      const ambiguous = await operations.execute({ action: 'get', source: 'syntax', query });
+      assert.strictEqual(ambiguous.code, 'KNOWLEDGE_ITEM_AMBIGUOUS');
+      const candidateIds = (ambiguous.data as { candidates: Array<{ id: string }> }).candidates.map(({ id }) => id);
+      assert.ok(candidateIds.includes(method.id));
+      assert.ok(candidateIds.includes('syntax:12809'));
+    }
   });
 
   test('children stay inside their selected source and search bounds snippets and results', async () => {
@@ -221,33 +404,37 @@ suite('AgentSyntaxHelpOperations', () => {
     });
   });
 
-  test('searchLine surfaces an exact platform member line and keeps broad content fallback without an exact hit', async () => {
-    const line = 'ТекущаяДата;';
-    const exact = dataOf(await operations.execute({
-      action: 'searchLine', line, cursorColumn: line.indexOf('ТекущаяДата') + 3, source: 'syntax',
-    })) as { items: Array<{ id: string; name: string; path: string; snippet: string }> };
-    const member = exact.items.find(({ id }) => id === 'syntax:1');
+  test('searchLine preserves parent member fallback when no standalone article exists', async () => {
+    const fixture = await createSyntaxHelpFixture();
+    try {
+      const line = 'ВвестиДатуАсинх;';
+      const exact = dataOf(await fixture.operations.execute({
+        action: 'searchLine', line, cursorColumn: line.indexOf('ВвестиДатуАсинх') + 3, source: 'syntax',
+      })) as { items: Array<{ id: string; name: string; path: string; snippet: string }> };
+      const member = exact.items.find(({ id }) => id === 'syntax:1');
 
-    assert.ok(member, 'The parent platform article should be returned for the exact member line.');
-    assert.strictEqual(member.path, 'Global context.html');
-    assert.match(member.name, /ТекущаяДата/);
-    assert.match(member.name, /CurrentDate/);
-    assert.ok(!member.snippet.includes('СтрЧислоВхождений'), 'The snippet should focus on the matching member line.');
-    assert.match(member.snippet, /ТекущаяДата \(CurrentDate\)/);
-    assert.ok(exact.items.every(({ name }) => name === 'ТекущаяДата (CurrentDate)'), 'Broad content-only hits should be hidden after an exact member hit.');
+      assert.ok(member, 'The parent platform article should be returned for a member without a standalone article.');
+      assert.strictEqual(member.path, 'Global context.html');
+      assert.match(member.name, /ВвестиДатуАсинх/);
+      assert.match(member.name, /InputDateAsync/);
+      assert.match(member.snippet, /ВвестиДатуАсинх \(InputDateAsync\)/);
+      assert.ok(exact.items.every(({ name }) => name === member.name), 'Broad content-only hits should be hidden after an exact member hit.');
 
-    const fallbackLine = 'Окружение = Контекст;';
-    const fallback = dataOf(await operations.execute({
-      action: 'searchLine', line: fallbackLine, cursorColumn: fallbackLine.indexOf('Контекст') + 2, source: 'syntax',
-    })) as { items: Array<{ name: string; snippet: string }> };
-    assert.ok(fallback.items.length > 0, 'Broad content matches should remain when the nearest term has no exact hit.');
+      const fallbackLine = 'Окружение = Контекст;';
+      const fallback = dataOf(await fixture.operations.execute({
+        action: 'searchLine', line: fallbackLine, cursorColumn: fallbackLine.indexOf('Контекст') + 2, source: 'syntax',
+      })) as { items: Array<{ name: string; snippet: string }> };
+      assert.ok(fallback.items.length > 0, 'Broad content matches should remain when the nearest term has no exact hit.');
 
-    const eventLine = 'Объект.ПередЗаписью;';
-    const eventResults = dataOf(await operations.execute({
-      action: 'searchLine', line: eventLine, cursorColumn: eventLine.indexOf('ПередЗаписью') + 4, source: 'syntax',
-    })) as { items: Array<{ name: string; snippet: string }> };
-    assert.ok(eventResults.items.length > 0, 'A standalone event in an Events section should use broad content fallback.');
-    assert.ok(eventResults.items.every(({ name }) => name !== 'ПередЗаписью (BeforeWrite)'));
+      const eventLine = 'Объект.ПередЗаписью;';
+      const eventResults = dataOf(await fixture.operations.execute({
+        action: 'searchLine', line: eventLine, cursorColumn: eventLine.indexOf('ПередЗаписью') + 4, source: 'syntax',
+      })) as { items: Array<{ name: string; snippet: string }> };
+      assert.ok(eventResults.items.length > 0, 'An event with no standalone article should use broad content fallback.');
+      assert.ok(eventResults.items.every(({ name }) => name !== 'ПередЗаписью (BeforeWrite)'));
+    } finally {
+      await fixture.dispose();
+    }
   });
 
   test('searchLine validates its line context and refuses unrelated search arguments', async () => {
