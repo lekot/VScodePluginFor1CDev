@@ -4,6 +4,12 @@ on:
   release:
     types:
       - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published GitHub release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,7 +25,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.release.tag_name }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -33,16 +39,17 @@ jobs:
         id: release-vsix
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
           VSIX_PATH: ${{ runner.temp }}/marketplace-release.vsix
         run: node scripts/prepare-marketplace-release.cjs
 
       - name: Verify vsce version
         run: |
-          version="$(npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce --version)"
-          if [ "$version" != "4.0.0" ]; then
-            echo "::error::Expected @vscode/vsce 4.0.0, got $version"
+          version="$(npm exec --yes --package=@vscode/vsce@4.0.1-1 -- vsce --version)"
+          if [ "$version" != "4.0.1-1" ]; then
+            echo "::error::Expected @vscode/vsce 4.0.1-1, got $version"
             exit 1
           fi
 
@@ -50,7 +57,7 @@ jobs:
         env:
           VSIX_PATH: ${{ steps.release-vsix.outputs.vsix_path }}
         run: |
-          if npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce publish --oidc --packagePath "$VSIX_PATH" --skip-duplicate; then
+          if npm exec --yes --package=@vscode/vsce@4.0.1-1 -- vsce publish --oidc --packagePath "$VSIX_PATH" --skip-duplicate; then
             exit 0
           else
             status=$?

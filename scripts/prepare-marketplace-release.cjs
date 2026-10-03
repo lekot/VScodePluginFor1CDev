@@ -61,6 +61,35 @@ function validatePackagedManifest(rootManifest, packagedManifest, releaseTag) {
   }
 }
 
+async function resolveRelease(event, releaseTag, repository, token, request = fetch) {
+  if (event.release) {
+    return event.release;
+  }
+  if (!repository || !token) {
+    fail('GITHUB_REPOSITORY and GITHUB_TOKEN are required to resolve a manually selected release.');
+  }
+
+  const repositoryParts = repository.split('/');
+  if (repositoryParts.length !== 2 || repositoryParts.some(part => !part)) {
+    fail('GITHUB_REPOSITORY must have the owner/repository format.');
+  }
+
+  const apiUrl = 'https://api.github.com/repos/' + repository + '/releases/tags/' + encodeURIComponent(releaseTag);
+  const response = await request(apiUrl, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: 'Bearer ' + token,
+      'X-GitHub-Api-Version': '2022-11-28'
+    }
+  });
+  if (!response.ok) {
+    const details = (await response.text()).slice(0, 1000);
+    fail('GitHub release lookup failed with HTTP ' + response.status + (details ? ': ' + details : '.'));
+  }
+
+  return response.json();
+}
+
 function readPackagedManifest(vsixPath) {
   const result = spawnSync('unzip', ['-p', vsixPath, 'extension/package.json'], {
     encoding: 'utf8',
@@ -116,7 +145,8 @@ async function main() {
 
   const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
   const rootManifest = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-  const asset = selectReleaseAsset(event.release, releaseTag, rootManifest);
+  const release = await resolveRelease(event, releaseTag, process.env.GITHUB_REPOSITORY, token);
+  const asset = selectReleaseAsset(release, releaseTag, rootManifest);
 
   await downloadReleaseAsset(asset, token, outputPath);
   const packagedManifest = readPackagedManifest(outputPath);
@@ -138,6 +168,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  resolveRelease,
   selectReleaseAsset,
   validatePackagedManifest
 };

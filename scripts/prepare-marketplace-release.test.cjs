@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { selectReleaseAsset, validatePackagedManifest } = require('./prepare-marketplace-release.cjs');
+const { resolveRelease, selectReleaseAsset, validatePackagedManifest } = require('./prepare-marketplace-release.cjs');
 
 const rootManifest = {
   name: '1c-metadata-tree-vscode',
@@ -25,6 +25,36 @@ function makeAsset(name) {
     size: 123
   };
 }
+
+test('resolves a manually selected published release through the GitHub API', async () => {
+  const expectedRelease = makeRelease([makeAsset('1c-metadata-tree-vscode-0.54.0.vsix')]);
+  let requestedUrl;
+  let requestedHeaders;
+  const resolved = await resolveRelease({}, 'v0.54.0', 'lekot/VScodePluginFor1CDev', 'test-token', async (url, options) => {
+    requestedUrl = url;
+    requestedHeaders = options.headers;
+    return {
+      ok: true,
+      json: async () => expectedRelease
+    };
+  });
+
+  assert.equal(requestedUrl, 'https://api.github.com/repos/lekot/VScodePluginFor1CDev/releases/tags/v0.54.0');
+  assert.equal(requestedHeaders.Authorization, 'Bearer test-token');
+  assert.equal(resolved, expectedRelease);
+});
+
+test('uses release event payload without making a second GitHub API request', async () => {
+  const eventRelease = makeRelease([]);
+  let requestCount = 0;
+
+  const resolved = await resolveRelease({ release: eventRelease }, 'v0.54.0', undefined, undefined, async () => {
+    requestCount++;
+  });
+
+  assert.equal(resolved, eventRelease);
+  assert.equal(requestCount, 0);
+});
 
 test('selects the sole VSIX whose name matches the checked-out package version', () => {
   const expected = makeAsset('1c-metadata-tree-vscode-0.54.0.vsix');
