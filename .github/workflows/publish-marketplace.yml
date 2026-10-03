@@ -56,11 +56,5 @@ jobs:
       - name: Publish the release artifact
         env:
           VSIX_PATH: ${{ steps.release-vsix.outputs.vsix_path }}
-        run: |
-          if npm exec --yes --package=@vscode/vsce@4.0.1-1 -- vsce publish --oidc --packagePath "$VSIX_PATH" --skip-duplicate; then
-            exit 0
-          else
-            status=$?
-            echo "::error::Marketplace publication failed. If authentication failed, configure the Marketplace trusted-publishing policy for this GitHub repository and .github/workflows/publish-marketplace.yml."
-            exit "$status"
-          fi
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: node scripts/publish-marketplace-release.cjs
