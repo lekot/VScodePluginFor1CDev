@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import sqlite3
 import unittest
 import zipfile
@@ -54,6 +55,38 @@ class ArticleExtractionTests(unittest.TestCase):
 
 
 class ImportBehaviorTests(unittest.TestCase):
+    def test_import_preserves_resolved_article_links_in_order_without_enabling_external_targets(self) -> None:
+        archive = make_zip({
+            "objects/catalog.html": b'''<body><p>Before <a href="methods/first.html">Same label</a>, then
+              <a href="methods/second.html">Same label</a>. External <a href="https://example.test/x">outside</a>.
+              Unsafe <a href="javascript:alert(1)">run</a>.</p></body>''',
+            "objects/methods/first.html": b'''<body><h1 class="V8SH_pagetitle">First method</h1>
+              <p>See <a href="second.html">peer</a>.</p></body>''',
+            "objects/methods/second.html": b'<body><h1 class="V8SH_pagetitle">Second method</h1><p>Target.</p></body>',
+        })
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE nodes (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT NOT NULL, path TEXT NOT NULL, content TEXT)")
+        base_rows = [(1, None, "Catalog", "catalog.html", "unchanged search content")]
+        connection.executemany("INSERT INTO nodes VALUES (?, ?, ?, ?, ?)", base_rows)
+        connection.commit()
+
+        importer.append_articles(connection, base_rows, archive, enforce_pinned_counts=False)
+
+        self.assertEqual(connection.execute("SELECT id, parent_id, name, path, content FROM nodes ORDER BY id").fetchall()[:1], base_rows)
+        markdown = connection.execute("SELECT markdown FROM article_markdown WHERE node_id = 1").fetchone()[0]
+        self.assertIn("Before [Same label](bsl-help:syntax:2), then", markdown)
+        self.assertIn("[Same label](bsl-help:syntax:3)", markdown)
+        self.assertLess(markdown.index("bsl-help:syntax:2"), markdown.index("bsl-help:syntax:3"))
+        self.assertIn("External outside.", markdown)
+        self.assertIn("Unsafe run.", markdown)
+        self.assertNotIn("https://example.test", markdown)
+        self.assertNotIn("javascript:", markdown)
+
+        method_markdown = connection.execute("SELECT markdown FROM article_markdown WHERE node_id = 2").fetchone()[0]
+        self.assertIn("[peer](bsl-help:syntax:3)", method_markdown)
+        archive.close()
+        connection.close()
+
     def test_first_existing_reference_is_parent_and_unreferenced_page_is_root(self) -> None:
         archive = make_zip({
             "objects/root.html": b'<body><a href="articles/leaf.html">Leaf</a></body>',
@@ -116,6 +149,22 @@ class ImportBehaviorTests(unittest.TestCase):
         try:
             self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(connection.execute("SELECT count(*) FROM nodes").fetchone()[0], 24_787)
+            linked_rows = connection.execute("SELECT node_id, markdown FROM article_markdown ORDER BY node_id").fetchall()
+            self.assertGreater(len(linked_rows), 0)
+            self.assertTrue(any(node_id <= 2673 for node_id, _markdown in linked_rows))
+            node_ids = {row[0] for row in connection.execute("SELECT id FROM nodes")}
+            link_targets = {
+                int(match.group(1))
+                for _node_id, markdown in linked_rows
+                for match in re.finditer(r"bsl-help:syntax:(\d+)", markdown)
+            }
+            self.assertTrue(link_targets)
+            self.assertTrue(link_targets <= node_ids)
+            self.assertTrue(any(
+                node_id <= 2673 and target_id > 2673
+                for node_id, markdown in linked_rows
+                for target_id in (int(match.group(1)) for match in re.finditer(r"bsl-help:syntax:(\d+)", markdown))
+            ))
             article = connection.execute(
                 "SELECT name, content FROM nodes WHERE path = ?",
                 ("Global context/methods/catalog4840/CurrentDate956.html",),

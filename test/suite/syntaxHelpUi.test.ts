@@ -17,13 +17,13 @@ function registeredHandler(command: string): (...args: unknown[]) => unknown {
 }
 
 suite('Syntax help UI', () => {
-  test('renders article Markdown with HTML, image, unsafe link, and source URL restrictions', () => {
+  test('renders only validated internal article IDs as non-navigating links and restricts other content', () => {
     const article: SyntaxHelpArticle = {
       id: 'syntax:1',
       source: 'syntax',
       name: '</title><script>alert(1)</script>',
       path: 'Global context.html',
-      markdown: '# Справка\n\n<script>alert(2)</script>\n\n[опасная](javascript:alert(3))\n\n![картинка](https://example.com/image.png)',
+      markdown: '# Справка\n\n<script>alert(2)</script>\n\n[опасная](javascript:alert(3))\n\n![картинка](https://example.com/image.png)\n\n[внутренняя](bsl-help:syntax:2) [ошибка](bsl-help:javascript:alert(1))',
       sourceUrl: 'https://its.1c.ru/db/v8std/content/1/hdoc',
     };
 
@@ -36,6 +36,11 @@ suite('Syntax help UI', () => {
     assert.ok(!html.includes('<img '));
     assert.ok(!html.includes('src="https://example.com/image.png"'));
     assert.ok(html.includes('https://its.1c.ru/db/v8std/content/1/hdoc'));
+    assert.ok(html.includes('href="#" data-syntax-help-id="syntax:2"'));
+    assert.ok(!html.includes('href="bsl-help:'));
+    assert.ok(!html.includes('data-syntax-help-id="javascript:'));
+    assert.match(html, /script-src 'nonce-[^']+'/);
+    assert.match(html, /<script nonce="[^"]+">/);
 
     const unsafeSource = renderSyntaxHelpHtml({ ...article, sourceUrl: 'javascript:alert(4)' }, 'vscode-webview://test');
     assert.ok(!unsafeSource.includes('href="javascript:'));
@@ -145,7 +150,7 @@ suite('Syntax help UI', () => {
     }
   });
 
-  test('manual search opens the selected article in one reusable script-free panel', async () => {
+  test('manual search opens a reusable script-enabled panel and internal navigation stays in that panel', async () => {
     resetVscodeTestState();
     const item: SyntaxHelpItem = {
       id: 'syntax:1',
@@ -164,9 +169,21 @@ suite('Syntax help UI', () => {
     let panelFactoryCalls = 0;
     let revealCalls = 0;
     let disposeListener: (() => void) | undefined;
+    let webviewMessageListener: ((message: unknown) => unknown) | undefined;
+    const linkedArticle: SyntaxHelpArticle = {
+      id: 'syntax:2', source: 'syntax', name: 'Связанная статья', path: 'methods/Linked.html',
+      markdown: '# Связанная статья\n\nTarget content.',
+    };
     const panel = {
       title: '',
-      webview: { cspSource: 'vscode-webview://test', html: '' },
+      webview: {
+        cspSource: 'vscode-webview://test',
+        html: '',
+        onDidReceiveMessage: (listener: (message: unknown) => unknown) => {
+          webviewMessageListener = listener;
+          return { dispose: () => { webviewMessageListener = undefined; } };
+        },
+      },
       reveal: () => { revealCalls += 1; },
       onDidDispose: (listener: () => void) => { disposeListener = listener; return { dispose: () => undefined }; },
       dispose: () => { disposeListener?.(); },
@@ -177,17 +194,17 @@ suite('Syntax help UI', () => {
     const originalCreateWebviewPanel = windowObject.createWebviewPanel;
     windowObject.createWebviewPanel = ((_type, _title, _column, options) => {
       panelFactoryCalls += 1;
-      assert.strictEqual(options?.enableScripts, false);
+      assert.strictEqual(options?.enableScripts, true);
       assert.deepStrictEqual(options?.localResourceRoots, []);
       return panel as unknown as vscode.WebviewPanel;
     }) as typeof vscode.window.createWebviewPanel;
     const disposables = registerSyntaxHelpCommands();
     setExecuteCommandHandler(async (_command, args) => {
-      const params = args as { action: string };
+      const params = args as { action: string; id?: string };
       if (params.action === 'search') {
         return { success: true, data: { query: 'Транзакции', total: 1, limit: 50, hasMore: false, items: [item] } };
       }
-      return { success: true, data: article };
+      return { success: true, data: params.id === linkedArticle.id ? linkedArticle : article };
     });
     vscodeTestState.inputBoxQueue.push('ТекущаяДата', 'CurrentDate');
     vscodeTestState.quickPickQueue.push(
@@ -201,13 +218,32 @@ suite('Syntax help UI', () => {
       assert.ok(panel.webview.html.includes('Правила работы.'));
       assert.ok(panel.webview.html.includes('Найденный элемент: <strong>ТекущаяДата (CurrentDate)</strong>'));
       assert.ok(panel.webview.html.includes('Статья справки: <strong>Глобальный контекст</strong>'));
+      assert.ok(typeof webviewMessageListener === 'function');
+      await webviewMessageListener!({ type: 'openArticle', targetId: linkedArticle.id });
+      assert.strictEqual(panel.title, linkedArticle.name);
+      assert.ok(panel.webview.html.includes('Target content.'));
+      assert.ok(panel.webview.html.includes('id="syntax-help-back"'));
+      const getCalls = vscodeTestState.executeCommandHistory.filter(({ args }) =>
+        (args as { action?: string })?.action === 'get');
+      const linkedGet = getCalls[getCalls.length - 1];
+      assert.deepStrictEqual(linkedGet?.args, { action: 'get', id: linkedArticle.id, source: 'syntax' });
+
+      await webviewMessageListener!({ type: 'openArticle', targetId: 'javascript:alert(1)' });
+      await webviewMessageListener!({ type: 'openArticle', targetId: linkedArticle.id, extra: true });
+      assert.strictEqual(vscodeTestState.executeCommandHistory.filter(({ args }) =>
+        (args as { action?: string })?.action === 'get').length, 2);
+
+      await webviewMessageListener!({ type: 'back' });
+      assert.strictEqual(panel.title, article.name);
+      assert.ok(panel.webview.html.includes('Правила работы.'));
+      assert.ok(!panel.webview.html.includes('id="syntax-help-back"'));
 
       await registeredHandler(SEARCH_SYNTAX_HELP_COMMAND)();
       assert.strictEqual(panelFactoryCalls, 1);
       assert.strictEqual(revealCalls, 1);
       assert.strictEqual(panel.title, article.name);
       assert.strictEqual(vscodeTestState.executeCommandHistory.filter(({ args }) =>
-        (args as { action?: string })?.action === 'get').length, 2);
+        (args as { action?: string })?.action === 'get').length, 3);
     } finally {
       disposables.forEach((disposable) => disposable.dispose());
       windowObject.createWebviewPanel = originalCreateWebviewPanel;

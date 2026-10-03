@@ -25,6 +25,7 @@ interface FixtureArticle {
   readonly name: string;
   readonly path: string;
   readonly content: string;
+  readonly renderedContent?: string;
 }
 
 async function createSyntaxHelpFixture(articles: readonly FixtureArticle[] = []): Promise<{
@@ -56,6 +57,7 @@ async function createSyntaxHelpFixture(articles: readonly FixtureArticle[] = [])
     });
     const database = new SQL.Database();
     database.run('CREATE TABLE nodes (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT NOT NULL, path TEXT NOT NULL, content TEXT NOT NULL)');
+    database.run('CREATE TABLE article_markdown (node_id INTEGER PRIMARY KEY, markdown TEXT NOT NULL)');
     database.run(
       'INSERT INTO nodes (id, parent_id, name, path, content) VALUES (1, NULL, ?, ?, ?)',
       [
@@ -73,6 +75,9 @@ async function createSyntaxHelpFixture(articles: readonly FixtureArticle[] = [])
         'INSERT INTO nodes (id, parent_id, name, path, content) VALUES (?, 1, ?, ?, ?)',
         [id, article.name, article.path, article.content],
       );
+      if (article.renderedContent !== undefined) {
+        database.run('INSERT INTO article_markdown (node_id, markdown) VALUES (?, ?)', [id, article.renderedContent]);
+      }
       articleIds.push(`syntax:${id}`);
     });
     await fs.promises.writeFile(databasePath, Buffer.from(database.export()));
@@ -285,6 +290,30 @@ suite('AgentSyntaxHelpOperations', function () {
       const ambiguousAlias = await fixture.operations.execute({ action: 'get', source: 'syntax', query: 'SharedAlias' });
       assert.strictEqual(ambiguousAlias.code, 'KNOWLEDGE_ITEM_AMBIGUOUS');
       assert.strictEqual((ambiguousAlias.data as { candidates: unknown[] }).candidates.length, 2);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  test('uses linked display content for get while search keeps the original content', async () => {
+    const fixture = await createSyntaxHelpFixture([
+      {
+        name: 'Первый метод', path: 'Global context/methods/First.html',
+        content: 'SearchOnlyTerm()', renderedContent: 'Read [Второй метод](bsl-help:syntax:3).',
+      },
+      { name: 'Второй метод', path: 'Global context/methods/Second.html', content: 'Target.' },
+    ]);
+    try {
+      const search = dataOf(await fixture.operations.execute({
+        action: 'search', query: 'SearchOnlyTerm', source: 'syntax', limit: 10,
+      })) as { items: Array<{ id: string; snippet: string }> };
+      assert.strictEqual(search.items[0]?.id, 'syntax:2');
+      assert.match(search.items[0]?.snippet ?? '', /SearchOnlyTerm/);
+      const article = dataOf(await fixture.operations.execute({
+        action: 'get', id: 'syntax:2', source: 'syntax',
+      })) as { markdown: string };
+      assert.match(article.markdown, /Read \[Второй метод\]\(bsl-help:syntax:3\)\./);
+      assert.doesNotMatch(article.markdown, /SearchOnlyTerm/);
     } finally {
       await fixture.dispose();
     }

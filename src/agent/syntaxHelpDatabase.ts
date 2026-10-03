@@ -8,6 +8,7 @@ export interface SyntaxHelpDatabaseNode {
   readonly name: string;
   readonly path: string;
   readonly content: string;
+  readonly renderedContent?: string;
 }
 
 export class SyntaxHelpDatabaseError extends Error {
@@ -56,15 +57,24 @@ function readNodes(SQL: SqlJsStatic, bytes: Uint8Array): readonly SyntaxHelpData
     if (integrity[0]?.values[0]?.[0] !== 'ok') {
       throw new SyntaxHelpDatabaseError('The syntax database failed its integrity check.');
     }
-    const rows = database.exec('SELECT id, parent_id, name, path, content FROM nodes ORDER BY id');
+    const hasArticleMarkdown = database.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'article_markdown'",
+    )[0]?.values.length === 1;
+    const rows = database.exec(hasArticleMarkdown
+      ? 'SELECT n.id, n.parent_id, n.name, n.path, n.content, a.markdown FROM nodes AS n LEFT JOIN article_markdown AS a ON a.node_id = n.id ORDER BY n.id'
+      : 'SELECT id, parent_id, name, path, content FROM nodes ORDER BY id');
     const table = rows[0];
-    if (!table || table.columns.join(',') !== 'id,parent_id,name,path,content' || table.values.length === 0) {
+    const expectedColumns = hasArticleMarkdown
+      ? 'id,parent_id,name,path,content,markdown'
+      : 'id,parent_id,name,path,content';
+    if (!table || table.columns.join(',') !== expectedColumns || table.values.length === 0) {
       throw new SyntaxHelpDatabaseError('The syntax database has an unexpected schema.');
     }
     return table.values.map((row) => {
-      const [id, parentId, name, itemPath, content] = row;
+      const [id, parentId, name, itemPath, content, renderedContent] = row;
       if (typeof id !== 'number' || (parentId !== null && typeof parentId !== 'number')
         || typeof name !== 'string' || typeof itemPath !== 'string' || typeof content !== 'string'
+        || (hasArticleMarkdown && renderedContent !== null && typeof renderedContent !== 'string')
         || !Number.isSafeInteger(id) || id <= 0 || !itemPath || itemPath.startsWith('/') || itemPath.includes('..')) {
         throw new SyntaxHelpDatabaseError('The syntax database contains an invalid node.');
       }
@@ -74,6 +84,7 @@ function readNodes(SQL: SqlJsStatic, bytes: Uint8Array): readonly SyntaxHelpData
         name,
         path: itemPath.replace(/\\/g, '/'),
         content,
+        ...(typeof renderedContent === 'string' ? { renderedContent } : {}),
       } satisfies SyntaxHelpDatabaseNode;
     });
   } catch (error) {

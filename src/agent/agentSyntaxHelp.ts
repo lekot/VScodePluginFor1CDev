@@ -50,6 +50,7 @@ interface KnowledgeNode {
   readonly name: string;
   readonly path: string;
   readonly content: string;
+  readonly displayContent?: string;
   readonly sourceUrl?: string;
   readonly searchName: string;
   readonly searchPath: string;
@@ -192,6 +193,7 @@ function createNode(
   itemPath: string,
   content: string,
   sourceUrl?: string,
+  displayContent?: string,
 ): KnowledgeNode {
   const normalizedContent = normalizeKnowledgeText(content);
   return {
@@ -201,6 +203,7 @@ function createNode(
     name,
     path: itemPath,
     content,
+    ...(displayContent ? { displayContent } : {}),
     ...(sourceUrl ? { sourceUrl } : {}),
     searchName: fold(name),
     searchPath: fold(itemPath),
@@ -462,6 +465,8 @@ export class AgentSyntaxHelpOperations {
       node.name,
       node.path,
       node.content,
+      undefined,
+      node.renderedContent,
     ));
     const standardsNodes = await this.readStandards(root);
     const allNodes = [...syntaxNodes, ...standardsNodes];
@@ -675,7 +680,9 @@ export class AgentSyntaxHelpOperations {
       };
     }
     const item = candidates[0];
-    const markdownBody = normalizeKnowledgeText(item.content).replace(/^\s+/, '');
+    const markdownBody = item.displayContent
+      ? item.displayContent.replace(/^\s+/, '')
+      : normalizeKnowledgeText(item.content).replace(/^\s+/, '');
     const firstLine = markdownBody.split('\n', 1)[0]?.trim();
     return {
       success: true,

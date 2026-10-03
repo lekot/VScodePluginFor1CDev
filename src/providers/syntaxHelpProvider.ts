@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import MarkdownIt from 'markdown-it';
 import type { SyntaxHelpArticle, SyntaxHelpItem, SyntaxHelpSource } from '../agent/agentSyntaxHelp';
@@ -23,6 +24,11 @@ interface SyntaxHelpPick extends vscode.QuickPickItem {
   readonly item: SyntaxHelpItem;
 }
 
+interface SyntaxHelpNavigationEntry {
+  readonly article: SyntaxHelpArticle;
+  readonly matchedName?: string;
+}
+
 function getSearchLineContext(line: string, cursorColumn: number): { line: string; cursorColumn: number } {
   const boundedCursor = Math.max(0, Math.min(cursorColumn, line.length));
   if (line.length <= MAX_SEARCH_LINE_LENGTH) { return { line, cursorColumn: boundedCursor }; }
@@ -43,8 +49,14 @@ const markdown = new MarkdownIt({
   breaks: false,
 });
 
+function internalSyntaxHelpId(href: string): string | undefined {
+  const match = /^bsl-help:syntax:([1-9]\d*)$/.exec(href);
+  return match && Number.isSafeInteger(Number(match[1])) ? `syntax:${match[1]}` : undefined;
+}
+
 markdown.validateLink = (href: string): boolean => {
   if (href.startsWith('#')) { return true; }
+  if (internalSyntaxHelpId(href)) { return true; }
   try {
     return new URL(href).protocol === 'https:';
   } catch {
@@ -58,6 +70,11 @@ markdown.renderer.rules.image = (tokens, index): string => {
 const defaultLinkOpen = markdown.renderer.rules.link_open;
 markdown.renderer.rules.link_open = (tokens, index, options, environment, renderer): string => {
   const href = tokens[index].attrGet('href') ?? '';
+  const targetId = internalSyntaxHelpId(href);
+  if (targetId) {
+    tokens[index].attrSet('href', '#');
+    tokens[index].attrSet('data-syntax-help-id', targetId);
+  }
   if (href.startsWith('https://')) {
     tokens[index].attrSet('target', '_blank');
     tokens[index].attrSet('rel', 'noopener noreferrer');
@@ -89,7 +106,13 @@ function safeSourceUrl(value: string | undefined): string | undefined {
   }
 }
 
-export function renderSyntaxHelpHtml(article: SyntaxHelpArticle, cspSource: string, matchedName?: string): string {
+export function renderSyntaxHelpHtml(
+  article: SyntaxHelpArticle,
+  cspSource: string,
+  matchedName?: string,
+  canGoBack = false,
+): string {
+  const nonce = randomBytes(18).toString('base64');
   const sourceUrl = safeSourceUrl(article.sourceUrl);
   const sourceLink = sourceUrl
     ? `<footer><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Открыть источник на ИТС</a></footer>`
@@ -97,12 +120,28 @@ export function renderSyntaxHelpHtml(article: SyntaxHelpArticle, cspSource: stri
   const matchContext = matchedName && matchedName !== article.name
     ? `<aside class="match-context"><div>Найденный элемент: <strong>${escapeHtml(matchedName)}</strong></div><div>Статья справки: <strong>${escapeHtml(article.name)}</strong></div></aside>`
     : '';
+  const backButton = canGoBack ? '<button id="syntax-help-back" type="button">← Назад</button>' : '';
+  const navigationScript = `<script nonce="${nonce}">
+    const syntaxHelpApi = acquireVsCodeApi();
+    document.addEventListener('click', (event) => {
+      const element = event.target instanceof Element ? event.target.closest('a[data-syntax-help-id]') : null;
+      if (!element) return;
+      const targetId = element.getAttribute('data-syntax-help-id') || '';
+      const match = /^syntax:([1-9]\\d*)$/.exec(targetId);
+      if (!match || !Number.isSafeInteger(Number(match[1]))) return;
+      event.preventDefault();
+      syntaxHelpApi.postMessage({ type: 'openArticle', targetId });
+    });
+    document.getElementById('syntax-help-back')?.addEventListener('click', () => {
+      syntaxHelpApi.postMessage({ type: 'back' });
+    });
+  </script>`;
   return `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${escapeHtml(cspSource)} 'unsafe-inline'; font-src ${escapeHtml(cspSource)}; img-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${escapeHtml(cspSource)} 'unsafe-inline'; font-src ${escapeHtml(cspSource)}; img-src 'none'; base-uri 'none'; form-action 'none'">
   <title>${escapeHtml(article.name)}</title>
   <style>
     :root { color-scheme: light dark; }
@@ -121,18 +160,28 @@ export function renderSyntaxHelpHtml(article: SyntaxHelpArticle, cspSource: stri
     th { background: var(--vscode-textCodeBlock-background); }
     footer { border-top: 1px solid var(--vscode-panel-border); margin-top: 2rem; padding-top: 1rem; }
     .image-alt { color: var(--vscode-descriptionForeground); font-style: italic; }
+    .article-navigation { max-width: 900px; margin: 0 auto; padding-top: 1rem; }
+    .article-navigation button { color: var(--vscode-textLink-foreground); background: transparent; border: 0; padding: .3rem 0; cursor: pointer; font: inherit; }
     .match-context { margin: 1rem 0; padding: .65rem .9rem; border-left: 3px solid var(--vscode-focusBorder); background: var(--vscode-textCodeBlock-background); }
     .match-context div + div { margin-top: .2rem; color: var(--vscode-descriptionForeground); }
   </style>
 </head>
 <body>
+  ${backButton ? `<nav class="article-navigation">${backButton}</nav>` : ''}
   <main>${matchContext}<article>${markdown.render(article.markdown)}</article>${sourceLink}</main>
+  ${navigationScript}
 </body>
 </html>`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSyntaxArticleId(value: unknown): value is string {
+  if (typeof value !== 'string') { return false; }
+  const match = /^syntax:([1-9]\d*)$/.exec(value);
+  return match !== null && Number.isSafeInteger(Number(match[1]));
 }
 
 function searchDataOf(value: unknown): SyntaxHelpSearchData | undefined {
@@ -170,6 +219,7 @@ function makePick(item: SyntaxHelpItem): SyntaxHelpPick {
 
 export class SyntaxHelpProvider {
   private panel: vscode.WebviewPanel | undefined;
+  private articleHistory: SyntaxHelpNavigationEntry[] = [];
 
   async showAtCursor(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
@@ -201,6 +251,7 @@ export class SyntaxHelpProvider {
   dispose(): void {
     this.panel?.dispose();
     this.panel = undefined;
+    this.articleHistory = [];
   }
 
   private async promptForQuery(): Promise<string | undefined> {
@@ -269,43 +320,81 @@ export class SyntaxHelpProvider {
   }
 
   private async openSelectedArticle(item: SyntaxHelpItem): Promise<void> {
+    const article = await this.fetchArticle(item.id, item.source as SyntaxHelpSource);
+    if (article) { this.showArticle(article, item.name); }
+  }
+
+  private async fetchArticle(id: string, source: SyntaxHelpSource): Promise<SyntaxHelpArticle | undefined> {
     let result: unknown;
     try {
       result = await vscode.commands.executeCommand<unknown>(AGENT_SYNTAX_HELP_COMMAND, {
         action: 'get',
-        id: item.id,
-        source: item.source as SyntaxHelpSource,
+        id,
+        source,
       });
     } catch (error) {
       await vscode.window.showErrorMessage(`Не удалось открыть статью справки: ${this.errorMessage(error)}`);
-      return;
+      return undefined;
     }
     const article = articleOf(result);
     if (!article) {
       await vscode.window.showErrorMessage(`Не удалось открыть статью справки: ${errorOf(result) ?? 'статья не найдена.'}`);
-      return;
+      return undefined;
     }
-    this.showArticle(article, item.name);
+    return article;
   }
 
   private showArticle(article: SyntaxHelpArticle, matchedName?: string): void {
-    if (this.panel) {
-      this.panel.title = article.name;
-      this.panel.webview.html = renderSyntaxHelpHtml(article, this.panel.webview.cspSource, matchedName);
-      this.panel.reveal(vscode.ViewColumn.Beside);
+    this.articleHistory = [{ article, ...(matchedName ? { matchedName } : {}) }];
+    const shouldReveal = this.panel !== undefined;
+    if (!this.panel) {
+      const panel = vscode.window.createWebviewPanel(
+        SYNTAX_HELP_PANEL_TYPE,
+        article.name,
+        vscode.ViewColumn.Beside,
+        { enableScripts: true, retainContextWhenHidden: false, localResourceRoots: [] },
+      );
+      this.panel = panel;
+      panel.onDidDispose(() => {
+        if (this.panel === panel) {
+          this.panel = undefined;
+          this.articleHistory = [];
+        }
+      });
+      panel.webview.onDidReceiveMessage((message: unknown) => this.handleWebviewMessage(panel, message));
+    }
+    this.renderCurrentArticle(shouldReveal);
+  }
+
+  private async handleWebviewMessage(panel: vscode.WebviewPanel, value: unknown): Promise<void> {
+    if (this.panel !== panel || !isRecord(value)) { return; }
+    const keys = Object.keys(value);
+    if (value.type === 'back' && keys.length === 1) {
+      if (this.articleHistory.length < 2) { return; }
+      this.articleHistory.pop();
+      this.renderCurrentArticle();
       return;
     }
-    const panel = vscode.window.createWebviewPanel(
-      SYNTAX_HELP_PANEL_TYPE,
-      article.name,
-      vscode.ViewColumn.Beside,
-      { enableScripts: false, retainContextWhenHidden: false, localResourceRoots: [] },
+    if (value.type !== 'openArticle' || keys.length !== 2 || !keys.includes('targetId')
+      || !isSyntaxArticleId(value.targetId)) { return; }
+    const article = await this.fetchArticle(value.targetId, 'syntax');
+    if (!article || this.panel !== panel) { return; }
+    this.articleHistory.push({ article });
+    this.renderCurrentArticle();
+  }
+
+  private renderCurrentArticle(reveal = false): void {
+    const panel = this.panel;
+    const current = this.articleHistory[this.articleHistory.length - 1];
+    if (!panel || !current) { return; }
+    panel.title = current.article.name;
+    panel.webview.html = renderSyntaxHelpHtml(
+      current.article,
+      panel.webview.cspSource,
+      current.matchedName,
+      this.articleHistory.length > 1,
     );
-    this.panel = panel;
-    panel.onDidDispose(() => {
-      if (this.panel === panel) { this.panel = undefined; }
-    });
-    panel.webview.html = renderSyntaxHelpHtml(article, panel.webview.cspSource, matchedName);
+    if (reveal) { panel.reveal(vscode.ViewColumn.Beside); }
   }
 
   private errorMessage(error: unknown): string {

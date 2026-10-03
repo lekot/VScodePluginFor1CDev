@@ -41,6 +41,8 @@ class ParsedArticle:
     title: str
     content: str
     hrefs: tuple[str, ...]
+    marked_content: str
+    links: tuple[tuple[int, str], ...]
 
 
 @dataclass
@@ -55,6 +57,7 @@ class _Frame:
     hidden: bool
     capture: _Capture | None = None
     chapter: bool = False
+    link_marker: int | None = None
 
 
 class _ArticleParser(html.parser.HTMLParser):
@@ -74,6 +77,15 @@ class _ArticleParser(html.parser.HTMLParser):
         self._text: list[str] = []
         self._captures: dict[str, list[str]] = defaultdict(list)
         self.hrefs: list[str] = []
+        self.links: list[tuple[int, str]] = []
+
+    @staticmethod
+    def _link_start(marker: int) -> str:
+        return f"\ue000SHL{marker}\ue001"
+
+    @staticmethod
+    def _link_end(marker: int) -> str:
+        return f"\ue002SHL{marker}\ue003"
 
     def _hidden(self) -> bool:
         return any(frame.hidden for frame in self._frames)
@@ -96,10 +108,14 @@ class _ArticleParser(html.parser.HTMLParser):
         if not hidden and tag in {"br", "hr"}:
             self._separator("\n")
 
+        link_marker: int | None = None
         if not hidden and tag == "a":
             href = attributes.get("href")
             if href:
                 self.hrefs.append(href)
+                link_marker = len(self.links)
+                self.links.append((link_marker, href))
+                self._text.append(self._link_start(link_marker))
 
         capture: _Capture | None = None
         target = next((name for name in ("V8SH_heading", "V8SH_pagetitle", "V8SH_title") if name in class_names), None)
@@ -109,7 +125,7 @@ class _ArticleParser(html.parser.HTMLParser):
             capture = _Capture("html_title", [])
 
         if tag not in self._VOID_TAGS:
-            self._frames.append(_Frame(tag, hidden, capture, chapter))
+            self._frames.append(_Frame(tag, hidden, capture, chapter, link_marker))
         elif capture:
             self._captures[capture.target].append("")
 
@@ -134,6 +150,8 @@ class _ArticleParser(html.parser.HTMLParser):
         closing = self._frames[matching_index:]
         del self._frames[matching_index:]
         for frame in reversed(closing):
+            if frame.link_marker is not None:
+                self._text.append(self._link_end(frame.link_marker))
             if frame.capture:
                 self._captures[frame.capture.target].append("".join(frame.capture.chunks))
 
@@ -149,6 +167,8 @@ class _ArticleParser(html.parser.HTMLParser):
         self.close()
         while self._frames:
             frame = self._frames.pop()
+            if frame.link_marker is not None:
+                self._text.append(self._link_end(frame.link_marker))
             if frame.capture:
                 self._captures[frame.capture.target].append("".join(frame.capture.chunks))
 
@@ -158,8 +178,15 @@ class _ArticleParser(html.parser.HTMLParser):
             title = next((value for value in candidates if value), "")
             if title:
                 break
-        content = normalize_article_text("".join(self._text))
-        return ParsedArticle(title=title, content=content, hrefs=tuple(self.hrefs))
+        marked_content = normalize_article_text("".join(self._text))
+        content = normalize_article_text(re.sub(r"\ue000SHL\d+\ue001|\ue002SHL\d+\ue003", "", marked_content))
+        return ParsedArticle(
+            title=title,
+            content=content,
+            hrefs=tuple(self.hrefs),
+            marked_content=marked_content,
+            links=tuple(self.links),
+        )
 
 
 def normalize_inline(value: str) -> str:
@@ -190,9 +217,15 @@ def parse_article(path: str, raw_html: bytes) -> ParsedArticle:
     parser.feed(source)
     parsed = parser.finish()
     if not parsed.title:
-        parsed = ParsedArticle(title=Path(path).stem, content=parsed.content, hrefs=parsed.hrefs)
+        parsed = ParsedArticle(
+            title=Path(path).stem, content=parsed.content, hrefs=parsed.hrefs,
+            marked_content=parsed.marked_content, links=parsed.links,
+        )
     if not parsed.content:
-        parsed = ParsedArticle(title=parsed.title, content=parsed.title, hrefs=parsed.hrefs)
+        parsed = ParsedArticle(
+            title=parsed.title, content=parsed.title, hrefs=parsed.hrefs,
+            marked_content=parsed.title, links=parsed.links,
+        )
     return parsed
 
 
@@ -352,6 +385,75 @@ def expected_added_rows(
     return appended, orphan_count
 
 
+def _escape_markdown_link_label(value: str) -> str:
+    return re.sub(r"([\\\[\]])", r"\\\1", normalize_inline(value))
+
+
+def linked_markdown(article: ParsedArticle, page_path: str, node_id_by_path: dict[str, int]) -> str:
+    """Replace marked visible anchors with links to known article IDs only."""
+    markdown = article.marked_content
+    for marker, href in article.links:
+        start = f"\ue000SHL{marker}\ue001"
+        end = f"\ue002SHL{marker}\ue003"
+        start_index = markdown.find(start)
+        end_index = markdown.find(end, start_index + len(start)) if start_index >= 0 else -1
+        if start_index < 0 or end_index < 0:
+            continue
+        label = markdown[start_index + len(start):end_index]
+        target_path = resolve_internal_href(page_path, href)
+        target_id = node_id_by_path.get(target_path) if target_path is not None else None
+        visible_label = _escape_markdown_link_label(label)
+        replacement = (
+            f"[{visible_label}](bsl-help:syntax:{target_id})"
+            if target_id is not None and visible_label
+            else visible_label
+        )
+        markdown = markdown[:start_index] + replacement + markdown[end_index + len(end):]
+    return normalize_article_text(re.sub(r"\ue000SHL\d+\ue001|\ue002SHL\d+\ue003", "", markdown))
+
+
+def expected_article_markdown_rows(
+    rows: list[tuple[int, int | None, str, str, str]],
+    archive: zipfile.ZipFile,
+    members: dict[str, zipfile.ZipInfo],
+) -> list[tuple[int, str]]:
+    node_id_by_path = {row[3]: row[0] for row in rows}
+    rendered: list[tuple[int, str]] = []
+    for node_id, _parent_id, _name, page_path, _content in rows:
+        info = members.get(page_path)
+        if info is None:
+            raise ValueError(f"Article path is absent from the pinned archive: {page_path!r}")
+        article = parse_article(page_path, archive.read(info))
+        markdown = linked_markdown(article, page_path, node_id_by_path)
+        if "bsl-help:syntax:" in markdown:
+            rendered.append((node_id, markdown))
+    return rendered
+
+
+def ensure_article_markdown_table(
+    connection: sqlite3.Connection,
+    rows: list[tuple[int, int | None, str, str, str]],
+    archive: zipfile.ZipFile,
+    members: dict[str, zipfile.ZipInfo],
+) -> bool:
+    """Create missing link content for an older enriched DB, otherwise verify it."""
+    expected = expected_article_markdown_rows(rows, archive, members)
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'article_markdown'"
+    ).fetchone() is not None
+    if not table_exists:
+        connection.execute(
+            "CREATE TABLE article_markdown (node_id INTEGER PRIMARY KEY, markdown TEXT NOT NULL, "
+            "FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE)"
+        )
+        connection.executemany("INSERT INTO article_markdown (node_id, markdown) VALUES (?, ?)", expected)
+        return True
+    actual = connection.execute("SELECT node_id, markdown FROM article_markdown ORDER BY node_id").fetchall()
+    if actual != expected:
+        raise ValueError("The database article links do not match the pinned source archive.")
+    return False
+
+
 def validate_hierarchy(rows: list[tuple[int, int | None, str, str, str]]) -> None:
     parent_by_id = {row[0]: row[1] for row in rows}
     for node_id, parent_id in parent_by_id.items():
@@ -397,6 +499,7 @@ def append_articles(
             raise ValueError("Appending articles changed one or more baseline rows.")
         if rows_after[len(base_rows):] != additions:
             raise ValueError("The appended article rows do not match the deterministic import plan.")
+        ensure_article_markdown_table(connection, rows_after, archive, members)
         validate_hierarchy(rows_after)
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         if not integrity or integrity[0] != "ok":
@@ -462,7 +565,19 @@ def main() -> int:
                 if len(rows) <= BASELINE_ROW_COUNT:
                     raise ValueError("The database file hash is not the pinned baseline hash.")
                 added, linked, orphans = verify_enriched_database(rows, base_rows, archive)
-                result = "Already enriched"
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    created_article_markdown = ensure_article_markdown_table(
+                        connection, rows, archive, object_html_infos(archive),
+                    )
+                    integrity = connection.execute("PRAGMA integrity_check").fetchone()
+                    if not integrity or integrity[0] != "ok":
+                        raise ValueError(f"SQLite integrity check failed: {integrity!r}")
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+                result = "Updated enriched database with linked article content" if created_article_markdown else "Already enriched"
             final_rows = read_nodes(connection)
             if len(final_rows) != BASELINE_ROW_COUNT + EXPECTED_ADDED_PAGE_COUNT:
                 raise ValueError(f"Unexpected final row count: {len(final_rows)}")
