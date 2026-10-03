@@ -2,7 +2,7 @@
   "name": "1c-metadata-tree-vscode",
   "displayName": "CDT 41 (Community Development Tools for 1C)",
   "description": "Community Development Tools for 1C: visualize and edit 1C:Enterprise configuration metadata tree (EDT & Designer XML).",
-  "version": "0.53.6",
+  "version": "0.54.0",
   "icon": "images/icon.png",
   "publisher": "Lekot",
   "license": "MIT",
@@ -888,6 +888,11 @@
       {
         "command": "1c-metadata-tree.agent.forms.edit",
         "title": "Agent: Изменить статическую форму",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.syntaxHelp",
+        "title": "Agent: Справка по синтаксису и стандартам 1С",
         "category": "CDT 41 Agent"
       },
       {
@@ -1947,6 +1952,7 @@
     "package": "node node_modules/@vscode/vsce/vsce package",
     "copy:webviews": "node scripts/copy-webviews.js",
     "bundle:query-builder-visitor": "node scripts/bundle-query-builder-visitor.js",
+    "generate:bsl-completion-index": "npm run compile && node scripts/generate-bsl-completion-index.js",
     "compile": "tsc -p ./ && node scripts/bundle-session-router.js && node scripts/copy-webviews.js",
     "verify:session-router-bundle": "node scripts/verify-session-router-bundle.js",
     "watch": "tsc -watch -p ./",
@@ -1971,6 +1977,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.0",
     "@types/node": "^20.0.0",
+    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.80.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
@@ -1991,7 +1998,8 @@
     "fast-xml-parser": "^4.3.0",
     "iconv-lite": "^0.6.3",
     "js-yaml": "^4.1.1",
-    "playwright": "^1.50.0"
+    "playwright": "^1.50.0",
+    "sql.js": "^1.14.2"
   },
   "c8": {
     "include": [

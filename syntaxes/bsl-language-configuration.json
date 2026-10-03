@@ -23,7 +23,7 @@
     }
   },
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(Процедура|Procedure|Функция|Function|Если|If|Иначе|Else|ИначеЕсли|ElsIf|Пока|While|Для|For|Попытка|Try|Исключение|Except)\\b",
-    "decreaseIndentPattern": "^\\s*(КонецПроцедуры|EndProcedure|КонецФункции|EndFunction|КонецЕсли|EndIf|Иначе|Else|ИначеЕсли|ElsIf|КонецЦикла|EndDo|КонецПопытки|EndTry|Исключение|Except)\\b"
+    "increaseIndentPattern": "^\\s*(?:(?:Процедура|Procedure|Функция|Function)(?=$|[^A-Za-z0-9_А-Яа-яЁё])|(?:Если|If)(?=$|[^A-Za-z0-9_А-Яа-яЁё])(?:(?:\"(?:[^\"]|\"\")*\")|(?!//).)*?(?:Тогда|Then)(?=$|[^A-Za-z0-9_А-Яа-яЁё])(?=\\s*(?://.*)?$)|(?:ИначеЕсли|ElsIf)(?=$|[^A-Za-z0-9_А-Яа-яЁё])|(?:Иначе|Else|Попытка|Try|Исключение|Except)(?=$|[^A-Za-z0-9_А-Яа-яЁё])|(?:Пока|While|Для|For)(?=$|[^A-Za-z0-9_А-Яа-яЁё])(?:(?:\"(?:[^\"]|\"\")*\")|(?!//).)*?(?:Цикл|Do)(?=$|[^A-Za-z0-9_А-Яа-яЁё])(?=\\s*(?://.*)?$))",
+    "decreaseIndentPattern": "^\\s*(?:КонецПроцедуры|EndProcedure|КонецФункции|EndFunction|КонецЕсли|EndIf|Иначе|Else|ИначеЕсли|ElsIf|КонецЦикла|EndDo|КонецПопытки|EndTry|Исключение|Except)(?=$|[^A-Za-z0-9_А-Яа-яЁё])"
   }
 }

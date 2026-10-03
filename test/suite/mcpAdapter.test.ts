@@ -70,12 +70,12 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('legacy opt-in registers all 82 operations alongside the seven compact tools', () => {
+  test('legacy opt-in registers all 83 operations alongside the seven compact tools', () => {
     const previous = process.env.CDT_MCP_LEGACY_TOOLS;
     process.env.CDT_MCP_LEGACY_TOOLS = '1';
     try {
       const tools = captureRegisteredTools(async () => ({ success: true }));
-      assert.strictEqual(tools.length, 89);
+      assert.strictEqual(tools.length, 90);
       assert.deepStrictEqual(
         tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
         MCP_TOOL_CATALOG.map(({ name }) => name),
@@ -94,7 +94,7 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('cdt_catalog lists all operations and serializes all 82 input schemas', async () => {
+  test('cdt_catalog lists all operations and serializes all 83 input schemas', async () => {
     const tools = captureRegisteredTools(async () => {
       assert.fail('cdt_catalog must not dispatch Agent commands');
     });
@@ -109,7 +109,7 @@ suite('MCP adapter: tool contract', () => {
       listed.data.operations.map(({ name, profile }) => ({ name, profile })),
       MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
     );
-    assert.strictEqual(listed.data.operations.length, 82);
+    assert.strictEqual(listed.data.operations.length, 83);
 
     for (const operation of MCP_OPERATION_CATALOG) {
       const result = await catalog.handler({ operation: operation.name }, { signal: signal() });
@@ -204,6 +204,26 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
     const result = await write.handler({
       operation: 'cdt_create_object',
       arguments: { type: 'Catalog', name: 'Goods', unexpected: true },
+    }, { signal: signal() });
+
+    assert.strictEqual(dispatched, false);
+    assert.strictEqual(result.isError, true);
+    assert.strictEqual(
+      (result.structuredContent as unknown as { code: string }).code,
+      'INVALID_ARGUMENTS',
+    );
+  });
+
+  test('syntax help rejects conflicting get selectors before Agent dispatch', async () => {
+    let dispatched = false;
+    const tools = captureRegisteredTools(async () => {
+      dispatched = true;
+      return { success: true };
+    });
+    const read = tools.find(({ name }) => name === 'cdt_read')!;
+    const result = await read.handler({
+      operation: 'cdt_syntax_help',
+      arguments: { action: 'get', id: 1, query: 'different item' },
     }, { signal: signal() });
 
     assert.strictEqual(dispatched, false);

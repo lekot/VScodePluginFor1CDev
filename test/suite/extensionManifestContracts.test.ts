@@ -30,7 +30,7 @@ interface PackageManifest {
 }
 
 suite('extension manifest contracts', () => {
-  test('activates for 1C workspace markers and the explicit BSL debug resolver', () => {
+  test('activates for 1C workspace markers and the explicit BSL debug resolver, not standalone BSL files', () => {
     const pkg = readPackageJson();
     const expectedActivationEvents = [
       'workspaceContains:**/Configuration.xml',
@@ -47,6 +47,7 @@ suite('extension manifest contracts', () => {
     );
     assert.ok(!pkg.activationEvents.includes('onStartupFinished'));
     assert.ok(!pkg.activationEvents.includes('workspaceContains:**/.project'));
+    assert.ok(!pkg.activationEvents.includes('onLanguage:bsl'));
   });
 
   test('declares virtual workspaces unsupported because metadata access is filesystem based', () => {
@@ -90,8 +91,8 @@ suite('extension manifest contracts', () => {
         .filter((command: string) => command.startsWith('1c-metadata-tree.agent.')),
     );
 
-    assert.strictEqual(registered.size, 82, 'Includes the roles.setRights and three static form Agent API commands.');
-    assert.strictEqual(contributed.size, 82, 'Manifest must contribute exactly the documented Agent API.');
+    assert.strictEqual(registered.size, 83, 'Includes the roles.setRights, three static form commands, and syntax-help command.');
+    assert.strictEqual(contributed.size, 83, 'Manifest must contribute exactly the documented Agent API.');
     assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
   });
 

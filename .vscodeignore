@@ -38,6 +38,7 @@ mcp-*.md
 **/*.map
 **/*.ts
 shcntx_help.db
+!resources/help/shcntx_help.db
 DEVELOPING.md
 node_modules/@types/**
 node_modules/@typescript-eslint/**
@@ -59,6 +60,9 @@ node_modules/**/CHANGELOG*
 node_modules/**/*.map
 node_modules/**/*.d.ts
 node_modules/**/*.d.ts.map
+node_modules/sql.js/dist/*
+!node_modules/sql.js/dist/sql-wasm.js
+!node_modules/sql.js/dist/sql-wasm.wasm
 coverage/tmp/**
 .playwright-mcp/
 smoke-avansovyotchet-console.log

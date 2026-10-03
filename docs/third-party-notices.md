@@ -1,5 +1,37 @@
 # Third-party notices
 
+## Bundled syntax help database
+
+`resources/help/shcntx_help.db` is the project owner's own compilation of 2,673 1C platform help entries. It was provided by the owner for bundling with this extension. The extension reads the SQLite data in memory and does not include an upstream syntax-help implementation. `resources/standards/` contains original practical notes written for this project; the notes link to official 1C ITS pages and do not reproduce their text.
+
+## sql.js
+
+The extension uses sql.js 1.14.2, an in-memory SQLite/WASM library, under the MIT License. Its license text is included with the packaged dependency at `node_modules/sql.js/LICENSE`.
+
+```text
+MIT License
+
+Copyright (c) 2017 sql.js authors (see AUTHORS)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## BslEdit form editor adaptations
 
 `src/formEditor/formXmlTextEditor.ts` adapts the source-offset scanner and splice approach from BslEdit v2.0.0, `packages/1c-preview-core/browser/form-edit.js`. `src/formEditor/formWebviewHtml.ts` adapts selected Taxi thin-client palette, control metrics, and CSS treatments from `packages/1c-preview-core/browser/viewer.css` and the semantic preview structure in `form-preview.js` ([repository](https://github.com/alonehobo/BslEdit)). The form preview keeps its own markup and contains no BslEdit platform PNGs or other platform artwork. The MIT notice from BslEdit is reproduced below.

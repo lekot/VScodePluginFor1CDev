@@ -14,6 +14,7 @@ import { SUPPORT_TOOLS } from './catalog/supportTools';
 import { EXTERNAL_PROCESSOR_MCP_TOOLS } from './catalog/externalProcessorTools';
 import { CFE_PROJECT_TOOLS } from './catalog/cfeProjectTools';
 import { ROLE_RIGHTS_TOOLS } from './catalog/roleRightsTools';
+import { SYNTAX_HELP_TOOLS } from './catalog/syntaxHelpTools';
 import type { McpToolAnnotations, McpToolDefinition } from './catalog/types';
 import {
   READ_CLOSED,
@@ -84,6 +85,7 @@ function profileForAnnotations(annotations: McpToolAnnotations): McpToolProfile 
 export const MCP_OPERATION_CATALOG: readonly McpOperationDefinition[] = [
   ...LEGACY_MCP_TOOL_CATALOG,
   ...ROLE_RIGHTS_TOOLS,
+  ...SYNTAX_HELP_TOOLS,
 ].map((tool) => ({ ...tool, profile: profileForAnnotations(tool.annotations) }));
 
 const operationByName = new Map(MCP_OPERATION_CATALOG.map((operation) => [operation.name, operation]));

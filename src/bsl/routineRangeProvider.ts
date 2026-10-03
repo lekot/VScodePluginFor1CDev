@@ -9,12 +9,8 @@ import {
 } from './bslRoutineTypes';
 
 const IDENTIFIER = '[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*';
-const DECL_RE = new RegExp(
-  `^\\s*(Процедура|Функция|Procedure|Function)\\s+(${IDENTIFIER})\\s*\\(([^)]*)\\)`,
-  'i'
-);
-const INCOMPLETE_DECL_RE = new RegExp(
-  `^\\s*(Процедура|Функция|Procedure|Function)\\s+(${IDENTIFIER})\\s*\\(([^)]*)$`,
+const DECL_HEAD_RE = new RegExp(
+  `^\\s*(Процедура|Функция|Procedure|Function)\\s+(${IDENTIFIER})\\s*\\(`,
   'i'
 );
 const END_RE = /^\s*(КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)(?:\s|$)/i;
@@ -32,7 +28,8 @@ interface OpenRoutine {
   parameterText: string;
 }
 
-interface MultilineSignature {
+interface RoutineSignature {
+  complete: boolean;
   endIndex: number;
   signatureRange: BslTextRange;
   exported: boolean;
@@ -62,9 +59,7 @@ export function parseBslRoutines(source: string): BslRoutineParseResult {
       continue;
     }
 
-    const completeDecl = DECL_RE.exec(line);
-    const incompleteDecl = completeDecl ? null : INCOMPLETE_DECL_RE.exec(line);
-    const decl = completeDecl ?? incompleteDecl;
+    const decl = DECL_HEAD_RE.exec(line);
     if (decl) {
       if (active) {
         diagnostics.push({
@@ -78,25 +73,16 @@ export function parseBslRoutines(source: string): BslRoutineParseResult {
       }
 
       const kind = parseRoutineKind(decl[1]);
-      let missingClosingParen = incompleteDecl !== null;
-      let signatureRange = lineRange(lines[index], lineNo);
-      let exported = EXPORT_RE.test(line);
-      let parameterText = decl[3];
+      const signature = readRoutineSignature(lines, strippedLines, index, decl[0].length);
+      const missingClosingParen = !signature.complete;
+      const signatureRange = signature.complete
+        ? signature.signatureRange
+        : lineRange(lines[index], lineNo);
+      const exported = signature.complete && signature.exported;
+      const parameterText = signature.parameterText;
       const startColumn = firstNonWhitespaceColumn(lines[index]);
-      if (incompleteDecl) {
-        const multilineSignature = readMultilineSignature(
-          lines,
-          strippedLines,
-          index,
-          parameterText
-        );
-        if (multilineSignature) {
-          missingClosingParen = false;
-          signatureRange = multilineSignature.signatureRange;
-          exported = multilineSignature.exported;
-          parameterText = multilineSignature.parameterText;
-          index = multilineSignature.endIndex;
-        }
+      if (signature.complete) {
+        index = signature.endIndex;
       }
       active = {
         name: decl[2],
@@ -180,30 +166,32 @@ export function findBslRoutineAtLine(source: string, line: number): BslRoutineIn
   );
 }
 
-function readMultilineSignature(
+function readRoutineSignature(
   lines: string[],
   strippedLines: string[],
   startIndex: number,
-  initialParameterText: string
-): MultilineSignature | undefined {
-  let depth = 1 + countParenDelta(initialParameterText);
-  const parameterLines = [initialParameterText];
+  parameterStartColumn: number,
+): RoutineSignature {
+  let depth = 1;
+  const parameterParts: string[] = [];
 
-  for (let index = startIndex + 1; index < strippedLines.length; index++) {
+  for (let index = startIndex; index < strippedLines.length; index++) {
     const line = strippedLines[index];
-    if (END_RE.test(line) || DECL_RE.test(line) || INCOMPLETE_DECL_RE.test(line)) {
-      return undefined;
+    if (index > startIndex && (END_RE.test(line) || DECL_HEAD_RE.test(line))) {
+      break;
     }
 
-    for (let column = 0; column < line.length; column++) {
+    const startColumn = index === startIndex ? parameterStartColumn : 0;
+    for (let column = startColumn; column < line.length; column++) {
       const ch = line[column];
       if (ch === '(') {
         depth++;
       } else if (ch === ')') {
         depth--;
         if (depth === 0) {
-          parameterLines.push(line.slice(0, column));
+          parameterParts.push(lines[index].slice(startColumn, column));
           return {
+            complete: true,
             endIndex: index,
             signatureRange: {
               startLine: startIndex + 1,
@@ -212,16 +200,22 @@ function readMultilineSignature(
               endColumn: endColumnForLine(lines, index + 1),
             },
             exported: EXPORT_RE.test(line),
-            parameterText: parameterLines.join('\n'),
+            parameterText: stripCommentsPreservingStrings(parameterParts.join('\n')).trim(),
           };
         }
       }
     }
 
-    parameterLines.push(line);
+    parameterParts.push(lines[index].slice(startColumn));
   }
 
-  return undefined;
+  return {
+    complete: false,
+    endIndex: startIndex,
+    signatureRange: lineRange(lines[startIndex], startIndex + 1),
+    exported: false,
+    parameterText: stripCommentsPreservingStrings(parameterParts.join('\n')).trim(),
+  };
 }
 
 function closeRoutine(active: OpenRoutine, lines: string[], endLine: number): BslRoutineInfo {
@@ -260,18 +254,6 @@ function closeRoutine(active: OpenRoutine, lines: string[], endLine: number): Bs
 
 function parseRoutineKind(keyword: string): BslRoutineKind {
   return /^Функция$/i.test(keyword) || /^Function$/i.test(keyword) ? 'function' : 'procedure';
-}
-
-function countParenDelta(text: string): number {
-  let delta = 0;
-  for (const ch of text) {
-    if (ch === '(') {
-      delta++;
-    } else if (ch === ')') {
-      delta--;
-    }
-  }
-  return delta;
 }
 
 function hashBody(lines: string[], startLine: number, endLine: number): string {
@@ -331,6 +313,34 @@ function stripStringsAndComments(line: string): string {
       continue;
     }
     result += inString ? ' ' : ch;
+  }
+  return result;
+}
+
+function stripCommentsPreservingStrings(text: string): string {
+  let result = '';
+  let inString = false;
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index];
+    const next = text[index + 1];
+    if (!inString && ch === '/' && next === '/') {
+      while (index < text.length && text[index] !== '\n') {
+        index++;
+      }
+      if (index < text.length) {
+        result += '\n';
+      }
+      continue;
+    }
+    if (ch === '"') {
+      if (inString && next === '"') {
+        result += '""';
+        index++;
+        continue;
+      }
+      inString = !inString;
+    }
+    result += ch;
   }
   return result;
 }

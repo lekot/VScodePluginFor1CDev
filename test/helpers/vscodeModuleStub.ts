@@ -143,6 +143,67 @@ class SourceBreakpoint extends Breakpoint {
   }
 }
 
+class SnippetString {
+  constructor(public readonly value: string) {}
+
+  toString(): string {
+    return this.value;
+  }
+}
+
+class CompletionItem {
+  insertText?: string | SnippetString;
+  detail?: string;
+  documentation?: string | { value: string };
+  sortText?: string;
+
+  constructor(
+    public readonly label: string,
+    public readonly kind?: number,
+  ) {}
+}
+
+class ParameterInformation {
+  constructor(
+    public label: string | [number, number],
+    public documentation?: string,
+  ) {}
+}
+
+class SignatureInformation {
+  parameters: ParameterInformation[] = [];
+  activeParameter?: number;
+
+  constructor(
+    public label: string,
+    public documentation?: string,
+  ) {}
+}
+
+class SignatureHelp {
+  signatures: SignatureInformation[] = [];
+  activeSignature = 0;
+  activeParameter = 0;
+}
+
+const CompletionItemKind = {
+  Text: 0,
+  Method: 1,
+  Function: 2,
+  Constructor: 3,
+  Field: 4,
+  Variable: 5,
+  Class: 6,
+  Property: 10,
+  Keyword: 14,
+} as const;
+
+const SignatureHelpTriggerKind = {
+  Invoke: 1,
+  TriggerCharacter: 2,
+  ContentChange: 3,
+} as const;
+
 class VSCodeEventEmitter<T> {
   private listeners: Array<(e: T) => void> = [];
   readonly event = (listener: (e: T) => void) => {
@@ -231,6 +292,18 @@ export const vscodeTestState = {
   registeredCommandIds: [] as string[],
   /** Хэндлеры зарегистрированных команд по id (P7a-7). */
   registeredCommandHandlers: new Map<string, (...args: unknown[]) => unknown>(),
+  registeredCompletionProviders: [] as Array<{
+    selector: unknown;
+    provider: unknown;
+    triggerCharacters: string[];
+    disposed: boolean;
+  }>,
+  registeredSignatureHelpProviders: [] as Array<{
+    selector: unknown;
+    provider: unknown;
+    triggerCharacters: string[];
+    disposed: boolean;
+  }>,
   /** When set, `showInformationMessage` returns this instead of `undefined`. */
   informationMessageResult: undefined as string | undefined,
   executedCommands: [] as unknown[][],
@@ -519,6 +592,8 @@ export function resetVscodeTestState(): void {
   vscodeTestState.workspaceConfig = {};
   vscodeTestState.registeredCommandIds = [];
   vscodeTestState.registeredCommandHandlers = new Map();
+  vscodeTestState.registeredCompletionProviders = [];
+  vscodeTestState.registeredSignatureHelpProviders = [];
   vscodeTestState.vscodeVersion = undefined;
   vscodeTestState.filesReadonlyIncludeUpdateThrows = false;
   vscodeTestState.informationMessageResult = undefined;
@@ -780,6 +855,35 @@ const commandsStub = {
   },
 };
 
+const languagesStub = {
+  registerCompletionItemProvider: (
+    selector: unknown,
+    provider: unknown,
+    ...triggerCharacters: string[]
+  ): { dispose: () => void } => {
+    const registration = { selector, provider, triggerCharacters, disposed: false };
+    vscodeTestState.registeredCompletionProviders.push(registration);
+    return {
+      dispose: () => {
+        registration.disposed = true;
+      },
+    };
+  },
+  registerSignatureHelpProvider: (
+    selector: unknown,
+    provider: unknown,
+    ...triggerCharacters: string[]
+  ): { dispose: () => void } => {
+    const registration = { selector, provider, triggerCharacters, disposed: false };
+    vscodeTestState.registeredSignatureHelpProviders.push(registration);
+    return {
+      dispose: () => {
+        registration.disposed = true;
+      },
+    };
+  },
+};
+
 const envStub = {
   openExternal: async (target: { toString(): string }): Promise<boolean> => {
     vscodeTestState.openExternalLog.push(target.toString());
@@ -843,7 +947,15 @@ const vscodeStub = {
   WorkspaceEdit,
   Breakpoint,
   SourceBreakpoint,
+  CompletionItem,
+  CompletionItemKind,
+  SnippetString,
+  ParameterInformation,
+  SignatureInformation,
+  SignatureHelp,
+  SignatureHelpTriggerKind,
   commands: commandsStub,
+  languages: languagesStub,
   env: envStub,
   Disposable,
   window: windowStub,
