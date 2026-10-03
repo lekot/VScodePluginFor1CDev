@@ -16,6 +16,7 @@ import {
 } from './utilityCommands';
 import { registerExtensionCommands } from '../extensionSupport/extensionCommands';
 import { registerCfeProjectCommands } from '../extensionSupport/cfeProject/cfeProjectCommands';
+import { registerConfigurationProjectCommands } from '../configurationProject/configurationProjectCommands';
 import { registerAgentCommands } from '../agent/agentCommands';
 import { DebugSessionRegistry } from '../agent/debugSessionRegistry';
 import { activateAgentBridge } from '../agent/agentBridgeActivation';
@@ -120,6 +121,10 @@ export async function registerAllCommands({
     context,
     state,
     getConfigurationRegistry,
+    refreshTree: lifecycle.loadMetadataTree,
+  });
+  registerConfigurationProjectCommands({
+    context,
     refreshTree: lifecycle.loadMetadataTree,
   });
   registerExtensionCommands({

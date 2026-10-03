@@ -536,6 +536,12 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.configuration.createProject",
+        "title": "Создать проект основной конфигурации",
+        "category": "CDT 41",
+        "icon": "$(new-folder)"
+      },
+      {
         "command": "1c-metadata-tree.navigateToMainObject",
         "title": "Перейти к объекту конфигурации",
         "category": "CDT 41"
@@ -1152,6 +1158,11 @@
       ],
       "view/title": [
         {
+          "command": "1c-metadata-tree.configuration.createProject",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation"
+        },
+        {
           "command": "1c-metadata-tree.refresh",
           "when": "view == 1c-metadata-tree",
           "group": "navigation"
@@ -1655,6 +1666,12 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "1c-metadata-tree",
+        "contents": "В workspace пока нет конфигурации. [Создать пустой проект](command:1c-metadata-tree.configuration.createProject) или откройте папку существующей конфигурации."
+      }
+    ],
     "configuration": {
       "title": "CDT 41",
       "properties": {
