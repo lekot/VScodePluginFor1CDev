@@ -90,6 +90,16 @@ function labels(items: vscode.CompletionItem[] | undefined): string[] {
   return (items ?? []).map((item) => item.label as string);
 }
 
+function insertedText(item: vscode.CompletionItem | undefined): string | undefined {
+  const insertText = item?.insertText;
+  if (typeof insertText === 'string') {
+    return insertText;
+  }
+  return insertText && typeof insertText === 'object' && 'value' in insertText
+    ? String((insertText as { value: unknown }).value)
+    : undefined;
+}
+
 function trackedDocument(lines: string[]): {
   document: vscode.TextDocument;
   getLineReads(): number;
@@ -144,6 +154,21 @@ async function writeCommonModule(root: string, moduleName: string, source: strin
   const modulePath = edt
     ? path.join(root, 'src', 'CommonModules', moduleName, 'Module.bsl')
     : path.join(root, 'CommonModules', moduleName, 'Ext', 'Module.bsl');
+  await fs.promises.mkdir(path.dirname(modulePath), { recursive: true });
+  await fs.promises.writeFile(modulePath, source, 'utf8');
+  return modulePath;
+}
+
+async function writeCatalogModule(
+  root: string,
+  catalogName: string,
+  moduleName: 'ManagerModule' | 'ObjectModule',
+  source: string,
+  edt = false,
+): Promise<string> {
+  const modulePath = edt
+    ? path.join(root, 'src', 'Catalogs', catalogName, `${moduleName}.bsl`)
+    : path.join(root, 'Catalogs', catalogName, 'Ext', `${moduleName}.bsl`);
   await fs.promises.mkdir(path.dirname(modulePath), { recursive: true });
   await fs.promises.writeFile(modulePath, source, 'utf8');
   return modulePath;
@@ -244,6 +269,48 @@ suite('BSL platform completion', () => {
     assert.strictEqual(index.types.some(({ aliases }) => aliases.includes('NoConstructorType')), false);
   });
 
+  test('indexes global zero-argument methods and Catalog manager/object article members', () => {
+    const nodes: SyntaxHelpDatabaseNodeForIndex[] = [
+      {
+        id: 1,
+        name: 'Глобальный контекст',
+        path: 'Global context.html',
+        content: 'Свойства:\nРабочаяДата (WorkingDate)\nМетоды:\nТекущаяДата (CurrentDate)\nСообщить (Message)',
+      },
+      {
+        id: 1647,
+        name: 'СправочникМенеджер.&lt;Имя справочника&gt; (CatalogManager.&lt;Catalog name&gt;)',
+        path: 'catalog125/catalog126/object128.html',
+        content: 'Свойства:\nПредопределенныйЭлемент (PredefinedItem)\nМетоды:\nСоздатьЭлемент (CreateItem)\nСоздатьГруппу (CreateFolder)',
+      },
+      {
+        id: 1648,
+        name: 'СправочникОбъект.&lt;Имя справочника&gt; (CatalogObject.&lt;Catalog name&gt;)',
+        path: 'catalog125/catalog126/object130.html',
+        content: 'Свойства:\nКод (Code)\nМетоды:\nЗаписать (Write)\nУдалить (Delete)',
+      },
+    ];
+    const index = buildBslCompletionIndex(nodes, TEST_HASH) as typeof buildBslCompletionIndex extends (...args: never[]) => infer T
+      ? T & {
+        global: { zeroArgumentMethods?: readonly string[] };
+        catalogApi?: {
+          folderId: string;
+          manager: { article: { id: number; path: string }; methods: readonly string[] };
+          object: { article: { id: number; path: string }; methods: readonly string[] };
+        };
+      }
+      : never;
+
+    assert.deepStrictEqual(index.global.zeroArgumentMethods, ['CurrentDate', 'ТекущаяДата']);
+    assert.strictEqual(index.catalogApi?.folderId, 'Catalogs');
+    assert.strictEqual(index.catalogApi?.manager.article.id, 1647);
+    assert.strictEqual(index.catalogApi?.manager.article.path, 'catalog125/catalog126/object128.html');
+    assert.deepStrictEqual(index.catalogApi?.manager.methods, ['CreateFolder', 'CreateItem', 'СоздатьГруппу', 'СоздатьЭлемент']);
+    assert.strictEqual(index.catalogApi?.object.article.id, 1648);
+    assert.strictEqual(index.catalogApi?.object.article.path, 'catalog125/catalog126/object130.html');
+    assert.deepStrictEqual(index.catalogApi?.object.methods, ['Delete', 'Write', 'Записать', 'Удалить']);
+  });
+
   test('tracked compact JSON exactly matches the bundled syntax database and its checksum', async () => {
     const indexPath = path.join(extensionRoot(), 'resources', 'help', 'bsl-completion-index.json');
     const databaseBytes = await fs.promises.readFile(path.join(extensionRoot(), 'resources', 'help', 'shcntx_help.db'));
@@ -306,6 +373,26 @@ suite('BSL platform completion', () => {
         JSON.stringify(metadataCollections),
       );
     }
+  });
+
+  test('rejects invalid zero-argument lists and mismatched Catalog syntax article references', async () => {
+    const indexPath = path.join(extensionRoot(), 'resources', 'help', 'bsl-completion-index.json');
+    const base = JSON.parse(await fs.promises.readFile(indexPath, 'utf8')) as Record<string, unknown>;
+    const global = base.global as Record<string, unknown>;
+    const catalogApi = base.catalogApi as Record<string, unknown>;
+    const manager = catalogApi.manager as Record<string, unknown>;
+
+    assert.strictEqual(
+      isBslCompletionIndex({ ...base, global: { ...global, zeroArgumentMethods: ['UnknownZeroMethod'] } }),
+      false,
+    );
+    assert.strictEqual(
+      isBslCompletionIndex({
+        ...base,
+        catalogApi: { ...catalogApi, manager: { ...manager, article: { ...(manager.article as object), id: 99 } } },
+      }),
+      false,
+    );
   });
 
   test('memoizes the compact index by extension path', async () => {
@@ -443,10 +530,192 @@ suite('BSL platform completion', () => {
 
     assert.ok(matches.includes('Выполнить'));
     assert.ok(matches.includes('ВыполнитьПакет'));
-    assert.ok(items?.every((item) => !String(item.insertText).endsWith('()')));
+    assert.strictEqual(insertedText(items?.find((item) => item.label === 'Выполнить')), 'Выполнить($0)');
+    assert.strictEqual(insertedText(items?.find((item) => item.label === 'ВыполнитьПакет')), 'ВыполнитьПакет($0)');
     const method = items?.find((item) => item.label === 'Выполнить');
     assert.ok(method?.documentation?.toString().includes('syntax:2459'));
     assert.strictEqual(method?.detail, 'Метод платформы • Запрос (Query)');
+  });
+
+  test('inserts callable platform and local completions with parentheses and avoids an existing opening parenthesis', async () => {
+    const provider = new BslCompletionProvider(extensionRoot());
+    const globalItems = await complete(provider, 'ТекущаяД');
+    assert.strictEqual(insertedText(globalItems?.find((item) => item.label === 'ТекущаяДата')), 'ТекущаяДата()$0');
+    assert.strictEqual(globalItems?.find((item) => item.label === 'ТекущаяДата')?.kind, vscode.CompletionItemKind.Method);
+    assert.strictEqual(labels(await complete(provider, 'РабочаяД')).includes('РабочаяДата'), true);
+    const englishItems = await complete(provider, 'CurrentD');
+    assert.strictEqual(insertedText(englishItems?.find((item) => item.label === 'CurrentDate')), 'CurrentDate()$0');
+    const messageItems = await complete(provider, 'Сообщ');
+    assert.strictEqual(insertedText(messageItems?.find((item) => item.label === 'Сообщить')), 'Сообщить($0)');
+
+    const existingParenText = 'ТекущаяДата(';
+    const existingParenItems = await complete(provider, existingParenText, 'ТекущаяДата'.length);
+    assert.strictEqual(insertedText(existingParenItems?.find((item) => item.label === 'ТекущаяДата')), 'ТекущаяДата');
+
+    const localText = [
+      'Процедура LocalZero() Экспорт',
+      'КонецПроцедуры',
+      'Функция LocalWithArgument(Value) Экспорт',
+      'КонецФункции',
+      '  Local',
+    ].join('\n');
+    const document = localDocument(path.join(os.tmpdir(), 'LocalCalls.bsl'), localText);
+    const localItems = await completeWithLocalDocument(provider, document, localText);
+    assert.strictEqual(insertedText(localItems?.find((item) => item.label === 'LocalZero')), 'LocalZero()$0');
+    assert.strictEqual(insertedText(localItems?.find((item) => item.label === 'LocalWithArgument')), 'LocalWithArgument($0)');
+
+    const localExistingParen = localText.replace('  Local', '  LocalZero(');
+    const localExistingDocument = localDocument(path.join(os.tmpdir(), 'LocalCallsExistingParen.bsl'), localExistingParen);
+    const localExistingItems = await completeWithLocalDocument(
+      provider,
+      localExistingDocument,
+      localExistingParen,
+      localExistingParen.indexOf('LocalZero(') + 'LocalZero'.length,
+    );
+    assert.strictEqual(insertedText(localExistingItems?.find((item) => item.label === 'LocalZero')), 'LocalZero');
+  });
+
+  test('completes Catalog manager and object platform methods plus exported routines from exact modules', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-catalog-members-'));
+    const catalogName = 'Справочник55';
+    try {
+      await createConfigurationRoot(root);
+      await writeCatalogModule(root, catalogName, 'ManagerModule', [
+        'Процедура ОткрытьФормуМенеджера(FormName) Экспорт',
+        'КонецПроцедуры',
+        'Процедура ПриватнаяФункцияМенеджера()',
+        'КонецПроцедуры',
+      ].join('\n'));
+      await writeCatalogModule(root, catalogName, 'ObjectModule', [
+        'Функция ЭкспортнаяФункцияОбъекта(Value) Экспорт',
+        'КонецФункции',
+        'Процедура ПриватнаяФункцияОбъекта()',
+        'КонецПроцедуры',
+      ].join('\n'));
+      setWorkspaceRoots(root);
+      const reader = () => ({
+        getLoadedTypeObjectsForResource: (_resourcePath: string, folderId: string) => folderId === 'Catalogs'
+          ? { status: 'loaded' as const, names: [catalogName] }
+          : { status: 'notLoaded' as const },
+      });
+      const provider = new BslCompletionProvider(extensionRoot(), reader);
+
+      const managerText = [
+        'Процедура ВызватьМенеджер()',
+        `  Справочники.${catalogName}.`,
+        'КонецПроцедуры',
+      ].join('\n');
+      const managerDocument = localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), managerText);
+      const managerItems = await completeWithLocalDocument(provider, managerDocument, managerText, managerText.indexOf(`Справочники.${catalogName}.`) + `Справочники.${catalogName}.`.length);
+      const managerNames = labels(managerItems);
+      assert.ok(managerNames.includes('СоздатьЭлемент'));
+      assert.ok(managerNames.includes('СоздатьГруппу'));
+      assert.ok(managerNames.includes('ОткрытьФормуМенеджера'));
+      assert.ok(!managerNames.includes('ПриватнаяФункцияМенеджера'));
+
+      const assignedManagerText = [
+        'Процедура ВызватьМенеджер()',
+        `  Объект = Справочники.${catalogName}.Создать`,
+        'КонецПроцедуры',
+      ].join('\n');
+      const assignedManagerDocument = localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), assignedManagerText);
+      const assignedManagerItems = await completeWithLocalDocument(
+        provider,
+        assignedManagerDocument,
+        assignedManagerText,
+        assignedManagerText.indexOf(`Справочники.${catalogName}.Создать`) + `Справочники.${catalogName}.Создать`.length,
+      );
+      assert.ok(labels(assignedManagerItems).includes('СоздатьЭлемент'), 'completion follows the Catalog manager tail after an assignment equals sign');
+
+      const longChainText = `Объект = Вызов.Справочники.${catalogName}.Создать`;
+      const longChainItems = await completeWithLocalDocument(
+        provider,
+        localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), longChainText),
+        longChainText,
+      );
+      assert.ok(!labels(longChainItems).includes('СоздатьЭлемент'), 'a Catalog-like pair nested in a longer receiver chain is not assumed to be a global collection');
+
+      const invalidManagerText = `Справочники.ДругойСправочник.`;
+      const invalidManagerItems = await completeWithLocalDocument(
+        provider,
+        localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), invalidManagerText),
+        invalidManagerText,
+      );
+      assert.deepStrictEqual(labels(invalidManagerItems), [], 'a loaded Catalogs tree rejects names absent from its index');
+
+      const objectText = [
+        'Процедура ВызватьОбъект()',
+        `  Obj = Справочники.${catalogName}.СоздатьЭлемент();`,
+        '  Obj.',
+        'КонецПроцедуры',
+      ].join('\n');
+      const objectDocument = localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), objectText);
+      const objectItems = await completeWithLocalDocument(provider, objectDocument, objectText, objectText.indexOf('  Obj.') + '  Obj.'.length);
+      const objectNames = labels(objectItems);
+      assert.ok(objectNames.includes('Записать'));
+      assert.ok(objectNames.includes('ЭкспортнаяФункцияОбъекта'));
+      assert.ok(!objectNames.includes('ПриватнаяФункцияОбъекта'));
+      assert.ok(!objectNames.includes('ОткрытьФормуМенеджера'));
+
+      const objectLookupText = [
+        'Процедура ВызватьОбъект()',
+        `  Obj = Справочники.${catalogName}.НайтиПоКоду("code").ПолучитьОбъект();`,
+        '  Obj.',
+        'КонецПроцедуры',
+      ].join('\n');
+      const objectLookupDocument = localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'), objectLookupText);
+      const objectLookupItems = await completeWithLocalDocument(
+        provider,
+        objectLookupDocument,
+        objectLookupText,
+        objectLookupText.indexOf('  Obj.') + '  Obj.'.length,
+      );
+      assert.ok(labels(objectLookupItems).includes('Записать'), 'a CatalogManager reference followed by ПолучитьОбъект proves the CatalogObject role');
+
+      const thisObjectText = [
+        'Функция ЭкспортнаяФункцияОбъекта(Value) Экспорт',
+        'КонецФункции',
+        'Процедура ВызватьОбъект()',
+        '  ЭтотОбъект.',
+        'КонецПроцедуры',
+      ].join('\n');
+      const thisObjectPath = path.join(root, 'Catalogs', catalogName, 'Ext', 'ObjectModule.bsl');
+      await fs.promises.mkdir(path.dirname(thisObjectPath), { recursive: true });
+      await fs.promises.writeFile(thisObjectPath, thisObjectText, 'utf8');
+      const thisObjectDocument = localDocument(thisObjectPath, thisObjectText);
+      const thisObjectItems = await completeWithLocalDocument(provider, thisObjectDocument, thisObjectText, thisObjectText.indexOf('  ЭтотОбъект.') + '  ЭтотОбъект.'.length);
+      assert.ok(labels(thisObjectItems).includes('Записать'));
+      assert.ok(labels(thisObjectItems).includes('ЭкспортнаяФункцияОбъекта'));
+
+      const englishThisObjectText = thisObjectText.replace('ЭтотОбъект.', 'ThisObject.');
+      const englishThisObjectDocument = localDocument(thisObjectPath, englishThisObjectText);
+      const englishThisObjectItems = await completeWithLocalDocument(
+        provider,
+        englishThisObjectDocument,
+        englishThisObjectText,
+        englishThisObjectText.indexOf('  ThisObject.') + '  ThisObject.'.length,
+      );
+      assert.ok(labels(englishThisObjectItems).includes('Записать'));
+
+      const invalidSources = [
+        `Процедура ЛожныйТип()\n  // Obj = Справочники.${catalogName}.СоздатьЭлемент()\n  Obj.\nКонецПроцедуры`,
+        `Процедура ЛожныйТип()\n  Obj = "Справочники.${catalogName}.СоздатьЭлемент()"\n  Obj.\nКонецПроцедуры`,
+        `Процедура ЛожныйТип()\n  Obj = Обёртка(Справочники.${catalogName}.СоздатьЭлемент())\n  Obj.\nКонецПроцедуры`,
+        `Процедура ЛожныйТип()\n  Obj = Справочники.${catalogName}.НайтиПоКоду("code")\n  Obj.\nКонецПроцедуры`,
+      ];
+      for (const [index, invalidSource] of invalidSources.entries()) {
+        const invalidDocument = localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', `Invalid${index}.bsl`), invalidSource);
+        const invalidItems = await completeWithLocalDocument(
+          provider,
+          invalidDocument,
+          invalidSource,
+          invalidSource.indexOf('  Obj.') + '  Obj.'.length,
+        );
+        assert.ok(!labels(invalidItems).includes('Записать'), 'comments, strings, and nested arbitrary expressions do not infer CatalogObject');
+      }
+    } finally {
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
   });
 
   test('supports direct Новый receiver member completion', async () => {
@@ -508,7 +777,7 @@ suite('BSL platform completion', () => {
       assert.strictEqual(labels(allItems).filter((item) => item === name).length, 1, `${name} should be deduplicated`);
     }
     assert.strictEqual(allItems?.find(({ label }) => label === 'Если')?.kind, vscode.CompletionItemKind.Keyword);
-    assert.strictEqual(allItems?.find(({ label }) => label === 'Документы')?.kind, vscode.CompletionItemKind.Variable);
+    assert.strictEqual(allItems?.find(({ label }) => label === 'Документы')?.kind, vscode.CompletionItemKind.Property);
 
     const unrelatedDocument = localDocument(
       path.join(path.dirname(configRoot), 'UnrelatedWorkspace', 'CommonModules', 'Caller', 'Module.bsl'),
@@ -1023,6 +1292,74 @@ suite('BSL local completion index', () => {
       );
     } finally {
       await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reads CatalogManager from Designer and CatalogObject from an exact EDT path', async () => {
+    const designerRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-catalog-designer-'));
+    const edtRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-catalog-edt-'));
+    try {
+      await createConfigurationRoot(designerRoot);
+      await createConfigurationRoot(edtRoot);
+      await writeCatalogModule(designerRoot, 'Goods', 'ManagerModule', [
+        'Procedure DesignerManagerExport() Экспорт',
+        'EndProcedure',
+        'Procedure DesignerManagerPrivate()',
+        'EndProcedure',
+      ].join('\n'));
+      await writeCatalogModule(edtRoot, 'Goods', 'ObjectModule', [
+        'Function EdtObjectExport() Экспорт',
+        'EndFunction',
+        'Function EdtObjectPrivate()',
+        'EndFunction',
+      ].join('\n'), true);
+      setWorkspaceRoots(designerRoot, edtRoot);
+      const index = new BslLocalCompletionIndex();
+      const designerDocument = localDocument(
+        path.join(designerRoot, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'),
+        'Procedure Caller()\nEndProcedure',
+      );
+      const edtDocument = localDocument(
+        path.join(edtRoot, 'src', 'Catalogs', 'Caller', 'ObjectModule.bsl'),
+        'Procedure Caller()\nEndProcedure',
+      );
+
+      assert.deepStrictEqual(
+        (await index.getCatalogModuleRoutines(designerDocument, 'Goods', 'ManagerModule')).map(({ name }) => name),
+        ['DesignerManagerExport'],
+      );
+      assert.deepStrictEqual(
+        (await index.getCatalogModuleRoutines(edtDocument, 'Goods', 'ObjectModule')).map(({ name }) => name),
+        ['EdtObjectExport'],
+      );
+    } finally {
+      await fs.promises.rm(designerRoot, { recursive: true, force: true });
+      await fs.promises.rm(edtRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('prefers an extension Catalog module with the same object name as the base configuration', async () => {
+    const workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-catalog-extension-'));
+    const mainRoot = path.join(workspace, 'main');
+    const extensionRoot = path.join(workspace, 'extension');
+    try {
+      await createConfigurationRoot(mainRoot);
+      await createConfigurationRoot(extensionRoot, true);
+      await writeCatalogModule(mainRoot, 'Goods', 'ManagerModule', 'Procedure BaseManager() Экспорт\nEndProcedure');
+      await writeCatalogModule(extensionRoot, 'Goods', 'ManagerModule', 'Procedure ExtensionManager() Экспорт\nEndProcedure');
+      setWorkspaceRoots(mainRoot, extensionRoot);
+      const document = localDocument(
+        path.join(mainRoot, 'CommonModules', 'Caller', 'Ext', 'Module.bsl'),
+        'Procedure Caller()\nEndProcedure',
+      );
+      const index = new BslLocalCompletionIndex();
+
+      assert.deepStrictEqual(
+        (await index.getCatalogModuleRoutines(document, 'Goods', 'ManagerModule')).map(({ name }) => name),
+        ['ExtensionManager'],
+      );
+    } finally {
+      await fs.promises.rm(workspace, { recursive: true, force: true });
     }
   });
 

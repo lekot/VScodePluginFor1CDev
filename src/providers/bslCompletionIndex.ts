@@ -13,6 +13,18 @@ export interface BslCompletionType {
   readonly methods: readonly string[];
 }
 
+export interface BslCompletionMetadataMembers {
+  readonly article: CompletionArticleReference;
+  readonly properties: readonly string[];
+  readonly methods: readonly string[];
+}
+
+export interface BslCompletionCatalogApi {
+  readonly folderId: 'Catalogs';
+  readonly manager: BslCompletionMetadataMembers;
+  readonly object: BslCompletionMetadataMembers;
+}
+
 export interface BslCompletionMetadataCollection {
   readonly aliases: readonly string[];
   readonly folderId: string;
@@ -24,9 +36,11 @@ export interface BslCompletionIndex {
     readonly article: CompletionArticleReference;
     readonly properties: readonly string[];
     readonly methods: readonly string[];
+    readonly zeroArgumentMethods: readonly string[];
   };
   readonly types: readonly BslCompletionType[];
   readonly metadataCollections: readonly BslCompletionMetadataCollection[];
+  readonly catalogApi?: BslCompletionCatalogApi;
 }
 
 export interface SyntaxHelpDatabaseNodeForIndex {
@@ -45,6 +59,11 @@ export interface ParsedCompletionSections {
 }
 
 const identifierPattern = /^[\p{L}_][\p{L}\p{N}_]*$/u;
+const ZERO_ARGUMENT_GLOBAL_METHODS = new Set(['CurrentDate', 'ТекущаяДата'].map(normalizeIdentifier));
+const CATALOG_API_ARTICLES = {
+  manager: { id: 1647, path: 'catalog125/catalog126/object128.html' },
+  object: { id: 1648, path: 'catalog125/catalog126/object130.html' },
+} as const;
 const sectionPatterns: ReadonlyArray<{ section: SectionName; pattern: RegExp }> = [
   { section: 'properties', pattern: /^(?:Свойства|Properties)\s*:\s*$/iu },
   { section: 'methods', pattern: /^(?:Методы|Methods)\s*:\s*$/iu },
@@ -216,6 +235,7 @@ export function buildBslCompletionIndex(
   }
   const globalSections = parseCompletionSections(globalNode.content);
   const metadataCollections = metadataCollectionsFromGlobalProperties(globalNode.content);
+  const catalogApi = catalogApiFromNodes(nodes);
   const types = nodes.flatMap((node): BslCompletionType[] => {
     const sections = parseCompletionSections(node.content);
     if (!sections.hasConstructors) {
@@ -239,9 +259,38 @@ export function buildBslCompletionIndex(
       article: { id: globalNode.id, name: globalNode.name, path: globalNode.path },
       properties: uniqueSorted(globalSections.properties),
       methods: uniqueSorted(globalSections.methods),
+      zeroArgumentMethods: uniqueSorted(globalSections.methods.filter((name) =>
+        ZERO_ARGUMENT_GLOBAL_METHODS.has(normalizeIdentifier(name)))),
     },
     types,
     metadataCollections,
+    ...(catalogApi ? { catalogApi } : {}),
+  };
+}
+
+function catalogApiFromNodes(nodes: readonly SyntaxHelpDatabaseNodeForIndex[]): BslCompletionCatalogApi | undefined {
+  const managerNode = nodes.find(({ id }) => id === CATALOG_API_ARTICLES.manager.id);
+  const objectNode = nodes.find(({ id }) => id === CATALOG_API_ARTICLES.object.id);
+  if (!managerNode && !objectNode) {
+    return undefined;
+  }
+  if (!managerNode || !objectNode
+    || managerNode.path.replace(/\\/g, '/') !== CATALOG_API_ARTICLES.manager.path
+    || objectNode.path.replace(/\\/g, '/') !== CATALOG_API_ARTICLES.object.path) {
+    throw new Error('The platform syntax database has unexpected CatalogManager/CatalogObject articles.');
+  }
+  const members = (node: SyntaxHelpDatabaseNodeForIndex): BslCompletionMetadataMembers => {
+    const sections = parseCompletionSections(node.content);
+    return {
+      article: { id: node.id, name: node.name, path: node.path.replace(/\\/g, '/') },
+      properties: uniqueSorted(sections.properties),
+      methods: uniqueSorted(sections.methods),
+    };
+  };
+  return {
+    folderId: 'Catalogs',
+    manager: members(managerNode),
+    object: members(objectNode),
   };
 }
 
@@ -305,12 +354,28 @@ export function isBslCompletionIndex(value: unknown): value is BslCompletionInde
   }
   const index = value as Partial<BslCompletionIndex>;
   const global = index.global;
-  return typeof index.sourceSha256 === 'string' && /^[a-f0-9]{64}$/.test(index.sourceSha256)
+  if (!(typeof index.sourceSha256 === 'string' && /^[a-f0-9]{64}$/.test(index.sourceSha256)
     && Boolean(global) && isArticleReference(global?.article)
     && isIdentifierList(global?.properties) && isIdentifierList(global?.methods)
+    && isIdentifierList(global?.zeroArgumentMethods)
+    && global?.zeroArgumentMethods.every((name) => global.methods.some((method) =>
+      normalizeIdentifier(method) === normalizeIdentifier(name)))
     && isMetadataCollectionList(index.metadataCollections)
     && Array.isArray(index.types) && index.types.every((type) => Boolean(type)
       && isArticleReference(type.article)
       && isIdentifierList(type.aliases) && type.aliases.length > 0
-      && isIdentifierList(type.properties) && isIdentifierList(type.methods));
+      && isIdentifierList(type.properties) && isIdentifierList(type.methods)))) {
+    return false;
+  }
+  const catalogApi = index.catalogApi;
+  return catalogApi === undefined || Boolean(catalogApi)
+    && catalogApi.folderId === 'Catalogs'
+    && isArticleReference(catalogApi.manager?.article)
+    && catalogApi.manager.article.id === CATALOG_API_ARTICLES.manager.id
+    && catalogApi.manager.article.path === CATALOG_API_ARTICLES.manager.path
+    && isIdentifierList(catalogApi.manager.properties) && isIdentifierList(catalogApi.manager.methods)
+    && isArticleReference(catalogApi.object?.article)
+    && catalogApi.object.article.id === CATALOG_API_ARTICLES.object.id
+    && catalogApi.object.article.path === CATALOG_API_ARTICLES.object.path
+    && isIdentifierList(catalogApi.object.properties) && isIdentifierList(catalogApi.object.methods);
 }

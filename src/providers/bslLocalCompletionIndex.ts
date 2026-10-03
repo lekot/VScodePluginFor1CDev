@@ -195,6 +195,31 @@ export class BslLocalCompletionIndex {
     }
 
     const candidatePaths = await this.getCandidatePaths(document, moduleName);
+    return this.readExportedRoutines(candidatePaths, token);
+  }
+
+  /**
+   * Reads only Catalogs/<name>/ManagerModule.bsl or ObjectModule.bsl from Designer/CFE and EDT roots.
+   * It checks at most eight exact paths, returns exports only, and shares the mtime/size cache with
+   * CommonModule completion.
+   */
+  async getCatalogModuleRoutines(
+    document: vscode.TextDocument,
+    catalogName: string,
+    moduleKind: 'ManagerModule' | 'ObjectModule',
+    token?: vscode.CancellationToken,
+  ): Promise<readonly BslLocalRoutineCandidate[]> {
+    if (!IDENTIFIER_RE.test(catalogName) || token?.isCancellationRequested) {
+      return [];
+    }
+    const candidatePaths = await this.getCatalogModulePaths(document, catalogName, moduleKind);
+    return this.readExportedRoutines(candidatePaths, token);
+  }
+
+  private async readExportedRoutines(
+    candidatePaths: readonly string[],
+    token?: vscode.CancellationToken,
+  ): Promise<readonly BslLocalRoutineCandidate[]> {
     if (token?.isCancellationRequested) {
       return [];
     }
@@ -252,6 +277,28 @@ export class BslLocalCompletionIndex {
   }
 
   private async getCandidatePaths(document: vscode.TextDocument, moduleName: string): Promise<readonly string[]> {
+    const orderedRoots = await this.getOrderedRoots(document);
+    return orderedRoots.flatMap((root) => [
+      path.join(root, 'CommonModules', moduleName, 'Ext', 'Module.bsl'),
+      path.join(root, 'CommonModules', moduleName, 'Ext', 'Module', 'Module.bsl'),
+      path.join(root, 'src', 'CommonModules', moduleName, 'Module.bsl'),
+    ]).slice(0, MAX_CANDIDATE_PATHS);
+  }
+
+  private async getCatalogModulePaths(
+    document: vscode.TextDocument,
+    catalogName: string,
+    moduleKind: 'ManagerModule' | 'ObjectModule',
+  ): Promise<readonly string[]> {
+    const orderedRoots = await this.getOrderedRoots(document);
+    const moduleFile = `${moduleKind}.bsl`;
+    return orderedRoots.flatMap((root) => [
+      path.join(root, 'Catalogs', catalogName, 'Ext', moduleFile),
+      path.join(root, 'src', 'Catalogs', catalogName, moduleFile),
+    ]).slice(0, MAX_CANDIDATE_PATHS);
+  }
+
+  private async getOrderedRoots(document: vscode.TextDocument): Promise<readonly string[]> {
     const identity = this.documentIdentity(document);
     if (!identity) {
       return [];
@@ -261,36 +308,31 @@ export class BslLocalCompletionIndex {
       .map(normalizePath);
     const workspaceSignature = workspaceRoots.join(path.delimiter);
     const cached = this.rootsByDocument.get(identity);
-    let orderedRoots: readonly string[];
     if (cached?.workspaceSignature === workspaceSignature) {
       this.touch(this.rootsByDocument, identity, cached);
-      orderedRoots = cached.roots;
-    } else {
-      const currentRoot = this.configurationRootForDocument(identity, workspaceRoots);
-      const roots = [...new Set([
-        ...(currentRoot ? [currentRoot] : []),
-        ...workspaceRoots,
-      ])].slice(0, MAX_ROOTS);
-      const extensionNames = await Promise.all(roots.map((root) => this.extensionNameForRoot(root)));
-      const currentIndex = currentRoot
-        ? roots.findIndex((root) => normalizePath(root) === normalizePath(currentRoot))
-        : -1;
-      const currentIsExtension = currentIndex >= 0 && extensionNames[currentIndex] !== '';
-      const extensionRoots = roots.filter((_root, index) => extensionNames[index] !== '' && index !== currentIndex);
-      const regularRoots = roots.filter((_root, index) => extensionNames[index] === '' && index !== currentIndex);
-      orderedRoots = [
-        ...(currentIsExtension && currentRoot ? [currentRoot] : []),
-        ...extensionRoots,
-        ...(!currentIsExtension && currentRoot ? [currentRoot] : []),
-        ...regularRoots,
-      ].slice(0, MAX_ROOTS);
-      this.setBounded(this.rootsByDocument, identity, { workspaceSignature, roots: orderedRoots }, MAX_DOCUMENT_CACHE_ENTRIES);
+      return cached.roots;
     }
-    return orderedRoots.flatMap((root) => [
-      path.join(root, 'CommonModules', moduleName, 'Ext', 'Module.bsl'),
-      path.join(root, 'CommonModules', moduleName, 'Ext', 'Module', 'Module.bsl'),
-      path.join(root, 'src', 'CommonModules', moduleName, 'Module.bsl'),
-    ]).slice(0, MAX_CANDIDATE_PATHS);
+
+    const currentRoot = this.configurationRootForDocument(identity, workspaceRoots);
+    const roots = [...new Set([
+      ...(currentRoot ? [currentRoot] : []),
+      ...workspaceRoots,
+    ])].slice(0, MAX_ROOTS);
+    const extensionNames = await Promise.all(roots.map((root) => this.extensionNameForRoot(root)));
+    const currentIndex = currentRoot
+      ? roots.findIndex((root) => normalizePath(root) === normalizePath(currentRoot))
+      : -1;
+    const currentIsExtension = currentIndex >= 0 && extensionNames[currentIndex] !== '';
+    const extensionRoots = roots.filter((_root, index) => extensionNames[index] !== '' && index !== currentIndex);
+    const regularRoots = roots.filter((_root, index) => extensionNames[index] === '' && index !== currentIndex);
+    const orderedRoots = [
+      ...(currentIsExtension && currentRoot ? [currentRoot] : []),
+      ...extensionRoots,
+      ...(!currentIsExtension && currentRoot ? [currentRoot] : []),
+      ...regularRoots,
+    ].slice(0, MAX_ROOTS);
+    this.setBounded(this.rootsByDocument, identity, { workspaceSignature, roots: orderedRoots }, MAX_DOCUMENT_CACHE_ENTRIES);
+    return orderedRoots;
   }
 
   private configurationRootForDocument(documentPath: string, workspaceRoots: readonly string[]): string | undefined {

@@ -13,6 +13,18 @@ function completionItems(result: vscode.CompletionList | vscode.CompletionItem[]
   return Array.isArray(result) ? result : result?.items ?? [];
 }
 
+function insertedText(item: vscode.CompletionItem | undefined): string | undefined {
+  const insertText = item?.insertText;
+  return typeof insertText === 'string' ? insertText : insertText?.value;
+}
+
+async function revealMetadataFile(filePath: string): Promise<void> {
+  const metadataDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+  await vscode.window.showTextDocument(metadataDocument);
+  await vscode.commands.executeCommand('1c-metadata-tree.revealActiveFileInTree');
+  await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+}
+
 function assertPathIsWithin(parentPath: string, targetPath: string): void {
   const parent = path.resolve(parentPath);
   const target = path.resolve(targetPath);
@@ -42,6 +54,9 @@ suite('Smoke: BSL completion', () => {
       fs.existsSync(path.join(uri.fsPath, 'CommonModules', 'мойМодульэ.xml')),
     );
     const commonModuleName = 'мойМодульэ';
+    const catalogWorkspace = vscode.workspace.workspaceFolders?.find(({ uri }) =>
+      fs.existsSync(path.join(uri.fsPath, 'Catalogs', 'TestCatalog1.xml')),
+    );
     const callerName = `CompletionCaller${process.pid}`;
     const callerRoot = commonModuleWorkspace
       ? path.join(commonModuleWorkspace.uri.fsPath, 'CommonModules', callerName)
@@ -59,6 +74,8 @@ suite('Smoke: BSL completion', () => {
       'Новый Структура("Код", 1,',
       'ЛокальнаяПроцедура(1,',
       'мойМодул',
+      'ТекущаяД',
+      'Справочники.TestCatalog1.Созд',
     ].join('\n');
     const filePath = callerRoot
       ? path.join(callerRoot, 'Ext', 'Module.bsl')
@@ -131,6 +148,34 @@ suite('Smoke: BSL completion', () => {
       );
       assert.strictEqual(routineHelp?.activeParameter, 1);
 
+      const currentDateResult = await vscode.commands.executeCommand<
+        vscode.CompletionList | vscode.CompletionItem[]
+      >('vscode.executeCompletionItemProvider', document.uri, new vscode.Position(12, 'ТекущаяД'.length));
+      const currentDate = completionItems(currentDateResult).find(({ label }) =>
+        (typeof label === 'string' ? label : label.label) === 'ТекущаяДата',
+      );
+      assert.strictEqual(insertedText(currentDate), 'ТекущаяДата()$0', 'zero-argument platform methods should insert a closed call snippet');
+
+      if (catalogWorkspace) {
+        await vscode.commands.executeCommand('1c-metadata-tree.refresh');
+        assert.strictEqual(
+          await vscode.commands.executeCommand<boolean>('1c-metadata-tree.getTreeReadyForTest'),
+          true,
+          'metadata tree must load Catalogs before catalog member completion',
+        );
+        await revealMetadataFile(path.join(catalogWorkspace.uri.fsPath, 'Catalogs', 'TestCatalog1.xml'));
+        await vscode.window.showTextDocument(document);
+        const catalogPrefix = 'Справочники.TestCatalog1.Созд';
+        const catalogOffset = document.getText().lastIndexOf(catalogPrefix) + catalogPrefix.length;
+        const catalogPosition = document.positionAt(catalogOffset);
+        const catalogResult = await vscode.commands.executeCommand<
+          vscode.CompletionList | vscode.CompletionItem[]
+        >('vscode.executeCompletionItemProvider', document.uri, catalogPosition);
+        const catalogLabels = labels(catalogResult);
+        assert.ok(catalogLabels.includes('СоздатьЭлемент'), `CatalogManager article should suggest СоздатьЭлемент; got: ${catalogLabels.join(', ')}`);
+        assert.ok(catalogLabels.includes('СоздатьГруппу'), `CatalogManager article should suggest СоздатьГруппу; got: ${catalogLabels.join(', ')}`);
+      }
+
       if (commonModuleWorkspace) {
         await vscode.commands.executeCommand('1c-metadata-tree.refresh');
         assert.strictEqual(
@@ -138,6 +183,7 @@ suite('Smoke: BSL completion', () => {
           true,
           'metadata tree root should be loaded before revealing the CommonModule',
         );
+        await revealMetadataFile(path.join(commonModuleWorkspace.uri.fsPath, 'CommonModules', `${commonModuleName}.xml`));
         await vscode.window.showTextDocument(document);
         await vscode.commands.executeCommand('1c-metadata-tree.revealActiveFileInTree');
 

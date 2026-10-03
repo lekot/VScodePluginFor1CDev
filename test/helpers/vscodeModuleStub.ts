@@ -143,8 +143,16 @@ class SourceBreakpoint extends Breakpoint {
   }
 }
 
+class SnippetString {
+  constructor(public readonly value: string) {}
+
+  toString(): string {
+    return this.value;
+  }
+}
+
 class CompletionItem {
-  insertText?: string;
+  insertText?: string | SnippetString;
   detail?: string;
   documentation?: string | { value: string };
   sortText?: string;
@@ -941,6 +949,7 @@ const vscodeStub = {
   SourceBreakpoint,
   CompletionItem,
   CompletionItemKind,
+  SnippetString,
   ParameterInformation,
   SignatureInformation,
   SignatureHelp,

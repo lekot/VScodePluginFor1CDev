@@ -21,12 +21,13 @@ const BSL_KEYWORDS = [
   'И', 'And', 'Или', 'Or', 'Не', 'Not', 'Истина', 'True', 'Ложь', 'False', 'Неопределено', 'Undefined', 'Null',
 ] as const;
 
-type CompletionKind = 'global' | 'property' | 'method' | 'type';
+type CompletionKind = 'property' | 'method' | 'type';
 
 interface Candidate {
   readonly name: string;
   readonly kind: CompletionKind;
   readonly article: CompletionArticleReference;
+  readonly zeroArgument?: boolean;
 }
 
 interface RuntimeIndex {
@@ -36,6 +37,11 @@ interface RuntimeIndex {
   readonly typeCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
   readonly typesByAlias: ReadonlyMap<string, readonly BslCompletionType[]>;
   readonly metadataCollectionFolders: ReadonlyMap<string, string>;
+  readonly catalogManagerCandidates: readonly Candidate[];
+  readonly catalogManagerCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
+  readonly catalogObjectCandidates: readonly Candidate[];
+  readonly catalogObjectCandidatesByFirstCharacter: ReadonlyMap<string, readonly Candidate[]>;
+  readonly catalogApiAvailable: boolean;
 }
 
 interface MaskedLine {
@@ -45,6 +51,8 @@ interface MaskedLine {
 
 interface MemberContext {
   readonly receiver?: string;
+  readonly metadataCollection?: string;
+  readonly metadataObjectName?: string;
   readonly filter: string;
   readonly dotOffset: number;
 }
@@ -54,10 +62,13 @@ interface CompletionContext {
   readonly prefix: string;
   readonly typeName?: string;
   readonly receiver?: string;
+  readonly metadataCollection?: string;
+  readonly metadataObjectName?: string;
 }
 
 interface ReceiverInference {
   readonly typeName?: string;
+  readonly catalogObjectName?: string;
   readonly assigned: boolean;
 }
 
@@ -105,15 +116,45 @@ function uniqueCandidates(candidates: readonly Candidate[]): Candidate[] {
 
 function createRuntimeIndex(index: BslCompletionIndex): RuntimeIndex {
   const globalArticle = index.global.article;
+  const zeroArgumentMethods = new Set(index.global.zeroArgumentMethods.map(normalizeIdentifier));
   const globalCandidates = uniqueCandidates([
-    ...index.global.properties.map((name) => ({ name, kind: 'global' as const, article: globalArticle })),
-    ...index.global.methods.map((name) => ({ name, kind: 'global' as const, article: globalArticle })),
+    ...index.global.properties.map((name) => ({ name, kind: 'property' as const, article: globalArticle })),
+    ...index.global.methods.map((name) => ({
+      name,
+      kind: 'method' as const,
+      article: globalArticle,
+      zeroArgument: zeroArgumentMethods.has(normalizeIdentifier(name)),
+    })),
   ]);
   const typeCandidates = uniqueCandidates(index.types.flatMap((type) => type.aliases.map((name) => ({
     name,
     kind: 'type' as const,
     article: type.article,
   }))));
+  const catalogManagerCandidates = uniqueCandidates(index.catalogApi ? [
+    ...index.catalogApi.manager.properties.map((name) => ({
+      name,
+      kind: 'property' as const,
+      article: index.catalogApi!.manager.article,
+    })),
+    ...index.catalogApi.manager.methods.map((name) => ({
+      name,
+      kind: 'method' as const,
+      article: index.catalogApi!.manager.article,
+    })),
+  ] : []);
+  const catalogObjectCandidates = uniqueCandidates(index.catalogApi ? [
+    ...index.catalogApi.object.properties.map((name) => ({
+      name,
+      kind: 'property' as const,
+      article: index.catalogApi!.object.article,
+    })),
+    ...index.catalogApi.object.methods.map((name) => ({
+      name,
+      kind: 'method' as const,
+      article: index.catalogApi!.object.article,
+    })),
+  ] : []);
   const mutableTypesByAlias = new Map<string, BslCompletionType[]>();
   for (const type of index.types) {
     for (const alias of type.aliases) {
@@ -138,6 +179,11 @@ function createRuntimeIndex(index: BslCompletionIndex): RuntimeIndex {
     typeCandidatesByFirstCharacter: groupByFirstCharacter(typeCandidates),
     typesByAlias: mutableTypesByAlias,
     metadataCollectionFolders,
+    catalogManagerCandidates,
+    catalogManagerCandidatesByFirstCharacter: groupByFirstCharacter(catalogManagerCandidates),
+    catalogObjectCandidates,
+    catalogObjectCandidatesByFirstCharacter: groupByFirstCharacter(catalogObjectCandidates),
+    catalogApiAvailable: index.catalogApi !== undefined,
   };
 }
 
@@ -212,6 +258,15 @@ function memberContext(prefix: string): MemberContext | undefined {
   const receiverText = prefix.slice(0, dotOffset).trimEnd();
   const statementStart = Math.max(receiverText.lastIndexOf(';'), receiverText.lastIndexOf('\n'), receiverText.lastIndexOf('\r')) + 1;
   const receiverExpression = receiverText.slice(statementStart).trim();
+  const metadataMatch = /^(?:[\p{L}_][\p{L}\p{N}_]*\s*=\s*)?(Справочники|Catalogs)\s*\.\s*([\p{L}_][\p{L}\p{N}_]*)$/iu.exec(receiverExpression);
+  if (metadataMatch) {
+    return {
+      metadataCollection: metadataMatch[1],
+      metadataObjectName: metadataMatch[2],
+      filter: match[1] ?? '',
+      dotOffset,
+    };
+  }
   const receiver = /^([\p{L}_][\p{L}\p{N}_]*)$/u.exec(receiverExpression)?.[1];
   return { ...(receiver ? { receiver } : {}), filter: match[1] ?? '', dotOffset };
 }
@@ -254,6 +309,8 @@ function completionContext(prefix: string): CompletionContext | undefined {
       prefix: member.filter,
       ...(typeName ? { typeName } : {}),
       ...(member.receiver ? { receiver: member.receiver } : {}),
+      ...(member.metadataCollection ? { metadataCollection: member.metadataCollection } : {}),
+      ...(member.metadataObjectName ? { metadataObjectName: member.metadataObjectName } : {}),
     };
   }
   const typeContext = /(?:^|[^\p{L}\p{N}_])(?:Новый|New)\s+([\p{L}_][\p{L}\p{N}_]*)?$/iu.exec(masked.text);
@@ -282,6 +339,51 @@ function currentProcedureBoundary(line: string): 'start' | 'end' | undefined {
     return 'end';
   }
   return undefined;
+}
+
+const CATALOG_OBJECT_CREATORS = new Set([
+  'СоздатьЭлемент', 'CreateItem', 'СоздатьГруппу', 'CreateFolder',
+].map(normalizeIdentifier));
+const CATALOG_REFERENCE_FINDERS = new Set([
+  'НайтиПоКоду', 'FindByCode', 'НайтиПоНаименованию', 'FindByDescription',
+  'НайтиПоРеквизиту', 'FindByAttribute', 'ПолучитьСсылку', 'GetRef', 'ПустаяСсылка', 'EmptyRef',
+].map(normalizeIdentifier));
+
+function matchingCallClose(source: string, openingIndex: number): number | undefined {
+  let depth = 0;
+  for (let index = openingIndex; index < source.length; index += 1) {
+    if (source[index] === '(') {
+      depth += 1;
+    } else if (source[index] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
+}
+
+function catalogObjectFromExpression(expression: string): string | undefined {
+  const call = /^\s*(?:Справочники|Catalogs)\s*\.\s*([\p{L}_][\p{L}\p{N}_]*)\s*\.\s*([\p{L}_][\p{L}\p{N}_]*)\s*\(/iu.exec(expression);
+  if (!call) {
+    return undefined;
+  }
+  const openingIndex = call[0].lastIndexOf('(');
+  const closingIndex = matchingCallClose(expression, openingIndex);
+  if (closingIndex === undefined) {
+    return undefined;
+  }
+  const suffix = expression.slice(closingIndex + 1).trim();
+  const hasGetObject = /^(?:\.\s*(?:ПолучитьОбъект|GetObject)\s*\(\s*\))$/iu.test(suffix);
+  if (suffix !== '' && !hasGetObject) {
+    return undefined;
+  }
+  const method = normalizeIdentifier(call[2]);
+  if (CATALOG_OBJECT_CREATORS.has(method) && !hasGetObject) {
+    return call[1];
+  }
+  return CATALOG_REFERENCE_FINDERS.has(method) && hasGetObject ? call[1] : undefined;
 }
 
 function inferredTypeForReceiver(
@@ -319,6 +421,7 @@ function inferredTypeForReceiver(
   }
 
   const assignments = new Map<string, string>();
+  const catalogObjects = new Map<string, string>();
   const assignedVariables = new Set<string>();
   for (const rawLine of reverseLines.reverse()) {
     const line = maskLine(rawLine).text;
@@ -329,18 +432,26 @@ function inferredTypeForReceiver(
       }
       const variable = normalizeIdentifier(assignment[1]);
       assignedVariables.add(variable);
+      const catalogObjectName = catalogObjectFromExpression(assignment[2]);
       const constructor = /^\s*(?:Новый|New)\s+([\p{L}_][\p{L}\p{N}_]*)\s*\(/iu.exec(assignment[2]);
-      if (constructor) {
+      if (catalogObjectName) {
+        catalogObjects.set(variable, catalogObjectName);
+        assignments.delete(variable);
+      } else if (constructor) {
         assignments.set(variable, normalizeIdentifier(constructor[1]));
+        catalogObjects.delete(variable);
       } else {
         assignments.delete(variable);
+        catalogObjects.delete(variable);
       }
     }
   }
   const normalizedReceiver = normalizeIdentifier(receiver);
   const typeName = assignments.get(normalizedReceiver);
+  const catalogObjectName = catalogObjects.get(normalizedReceiver);
   return {
     ...(typeName ? { typeName } : {}),
+    ...(catalogObjectName ? { catalogObjectName } : {}),
     assigned: assignedVariables.has(normalizedReceiver),
   };
 }
@@ -357,23 +468,28 @@ function matchingCandidates(
   return candidates.filter(({ name }) => normalizeIdentifier(name).startsWith(foldedPrefix));
 }
 
-function toCompletionItem(candidate: Candidate): vscode.CompletionItem {
+function callInsertText(name: string, zeroArgument: boolean, hasFollowingOpenParen: boolean): vscode.SnippetString | string {
+  if (hasFollowingOpenParen) {
+    return name;
+  }
+  return new vscode.SnippetString(zeroArgument ? `${name}()$0` : `${name}($0)`);
+}
+
+function toCompletionItem(candidate: Candidate, hasFollowingOpenParen = false): vscode.CompletionItem {
   const kind = candidate.kind === 'method'
     ? vscode.CompletionItemKind.Method
     : candidate.kind === 'property'
       ? vscode.CompletionItemKind.Property
-      : candidate.kind === 'type'
-        ? vscode.CompletionItemKind.Class
-        : vscode.CompletionItemKind.Variable;
+      : vscode.CompletionItemKind.Class;
   const item = new vscode.CompletionItem(candidate.name, kind);
-  item.insertText = candidate.name;
+  item.insertText = candidate.kind === 'method'
+    ? callInsertText(candidate.name, candidate.zeroArgument === true, hasFollowingOpenParen)
+    : candidate.name;
   item.detail = candidate.kind === 'method'
     ? `Метод платформы • ${candidate.article.name}`
     : candidate.kind === 'property'
       ? `Свойство платформы • ${candidate.article.name}`
-      : candidate.kind === 'type'
-        ? 'Тип платформы с конструктором'
-        : 'Глобальное имя платформы';
+      : 'Тип платформы с конструктором';
   item.documentation = `Статья справки платформы: «${candidate.article.name}» (syntax:${candidate.article.id}, ${candidate.article.path}).`;
   item.sortText = normalizeIdentifier(candidate.name);
   return item;
@@ -392,12 +508,13 @@ function hasUnsafeParameterControlCharacters(value: string): boolean {
 function toLocalRoutineCompletionItem(
   candidate: BslLocalRoutineCandidate,
   sourceLabel: string,
+  hasFollowingOpenParen = false,
 ): vscode.CompletionItem {
   const item = new vscode.CompletionItem(
     candidate.name,
     candidate.kind === 'function' ? vscode.CompletionItemKind.Function : vscode.CompletionItemKind.Method,
   );
-  item.insertText = candidate.name;
+  item.insertText = callInsertText(candidate.name, candidate.parameterText.trim() === '', hasFollowingOpenParen);
   const kindLabel = candidate.kind === 'function' ? 'Функция' : 'Процедура';
   const parameterText = candidate.parameterText;
   const safeParameterText = parameterText.length <= 160
@@ -431,15 +548,64 @@ function metadataFolderForReceiver(receiver: string, index: RuntimeIndex): strin
   return index.metadataCollectionFolders.get(normalizeIdentifier(receiver));
 }
 
+function isLoadedCatalogNameAvailable(
+  document: vscode.TextDocument,
+  catalogName: string,
+  readerProvider: MetadataCompletionReaderProvider | undefined,
+): boolean {
+  const resourcePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
+  if (!resourcePath) {
+    return true;
+  }
+  try {
+    const result = readerProvider?.()?.getLoadedTypeObjectsForResource(resourcePath, 'Catalogs');
+    return result?.status !== 'loaded'
+      || result.names.some((name) => normalizeIdentifier(name) === normalizeIdentifier(catalogName));
+  } catch {
+    return true;
+  }
+}
+
+function catalogObjectModuleName(document: vscode.TextDocument): string | undefined {
+  const filePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
+  if (!filePath) {
+    return undefined;
+  }
+  const parts = path.resolve(filePath).split(path.sep).filter(Boolean);
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    if (normalizeIdentifier(parts[index]) !== 'catalogs') {
+      continue;
+    }
+    const catalogName = parts[index + 1];
+    const designerModule = normalizeIdentifier(parts[index + 2] ?? '') === 'ext'
+      && normalizeIdentifier(parts[index + 3] ?? '') === 'objectmodule.bsl'
+      && index + 4 === parts.length;
+    const edtModule = normalizeIdentifier(parts[index + 2] ?? '') === 'objectmodule.bsl'
+      && index + 3 === parts.length;
+    if ((designerModule || edtModule) && IDENTIFIER_FOR_METADATA.test(catalogName)) {
+      return catalogName;
+    }
+  }
+  return undefined;
+}
+
+const IDENTIFIER_FOR_METADATA = /^[\p{L}_][\p{L}\p{N}_]*$/u;
+
+function isThisObjectReceiver(receiver: string): boolean {
+  const normalized = normalizeIdentifier(receiver);
+  return normalized === normalizeIdentifier('ЭтотОбъект') || normalized === 'thisobject';
+}
+
 function localRoutineCompletionItems(
   prefix: string,
   routines: readonly BslLocalRoutineCandidate[],
   sourceLabel: string,
+  hasFollowingOpenParen = false,
 ): vscode.CompletionItem[] {
   const foldedPrefix = normalizeIdentifier(prefix);
   return routines
     .filter(({ name }) => normalizeIdentifier(name).startsWith(foldedPrefix))
-    .map((routine) => toLocalRoutineCompletionItem(routine, sourceLabel));
+    .map((routine) => toLocalRoutineCompletionItem(routine, sourceLabel, hasFollowingOpenParen));
 }
 
 function metadataCompletionItems(prefix: string, names: readonly string[], folderId: string): vscode.CompletionItem[] {
@@ -482,11 +648,12 @@ function globalCompletionItems(
   platformCandidates: readonly Candidate[],
   localRoutines: readonly BslLocalRoutineCandidate[],
   commonModuleNames: readonly string[],
+  hasFollowingOpenParen = false,
 ): vscode.CompletionItem[] {
   const candidates = [
     ...keywordCompletionItems(prefix),
-    ...platformCandidates.map(toCompletionItem),
-    ...localRoutineCompletionItems(prefix, localRoutines, 'текущий модуль'),
+    ...platformCandidates.map((candidate) => toCompletionItem(candidate, hasFollowingOpenParen)),
+    ...localRoutineCompletionItems(prefix, localRoutines, 'текущий модуль', hasFollowingOpenParen),
     ...commonModuleCompletionItems(prefix, commonModuleNames),
   ];
   const seen = new Set<string>();
@@ -498,6 +665,29 @@ function globalCompletionItems(
     seen.add(key);
     return true;
   });
+}
+
+function catalogCompletionItems(
+  prefix: string,
+  candidates: readonly Candidate[],
+  routines: readonly BslLocalRoutineCandidate[],
+  sourceLabel: string,
+  hasFollowingOpenParen: boolean,
+): vscode.CompletionItem[] {
+  const platformItems = matchingCandidates(prefix, candidates, groupByFirstCharacter(candidates));
+  const seen = new Set(platformItems.map(({ name }) => normalizeIdentifier(name)));
+  return [
+    ...platformItems.map((candidate) => toCompletionItem(candidate, hasFollowingOpenParen)),
+    ...localRoutineCompletionItems(prefix, routines, sourceLabel, hasFollowingOpenParen)
+      .filter(({ label }) => {
+        const key = normalizeIdentifier(String(label));
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      }),
+  ];
 }
 
 function candidatesForType(type: BslCompletionType): Candidate[] {
@@ -539,6 +729,7 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
       return undefined;
     }
 
+    const hasFollowingOpenParen = currentLine[character] === '(';
     let commonModuleNames: readonly string[] = [];
     if (context.kind === 'global') {
       const resourcePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
@@ -558,56 +749,72 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
     }
 
     let inferredTypeName = context.typeName;
-    if (context.kind === 'member' && !inferredTypeName) {
+    let catalogName = context.metadataObjectName;
+    let catalogRole: 'manager' | 'object' | undefined = context.metadataObjectName ? 'manager' : undefined;
+    let currentCatalogObjectModule = false;
+    if (context.kind === 'member' && !catalogRole && !inferredTypeName) {
       const receiver = context.receiver;
-      let metadataFolder: string | undefined;
-      if (receiver) {
-        let index: RuntimeIndex | undefined;
-        try {
-          index = await (this.loadedIndex ??= loadBslCompletionIndex(this.extensionPath));
-        } catch {
-          this.loadedIndex = undefined;
+      if (receiver && isThisObjectReceiver(receiver)) {
+        catalogName = catalogObjectModuleName(document);
+        if (!catalogName) {
+          return [];
         }
-        if (token.isCancellationRequested) {
-          return undefined;
-        }
-        if (index) {
-          metadataFolder = metadataFolderForReceiver(receiver, index);
-        }
-      }
-      if (metadataFolder) {
-        const resourcePath = document.uri.scheme === 'file' ? document.uri.fsPath : '';
-        if (!resourcePath || token.isCancellationRequested) {
-          return token.isCancellationRequested ? undefined : [];
-        }
-        try {
-          const result = this.getMetadataCompletionReader?.()?.getLoadedTypeObjectsForResource(resourcePath, metadataFolder);
+        catalogRole = 'object';
+        currentCatalogObjectModule = true;
+      } else {
+        let metadataFolder: string | undefined;
+        if (receiver) {
+          let index: RuntimeIndex | undefined;
+          try {
+            index = await (this.loadedIndex ??= loadBslCompletionIndex(this.extensionPath));
+          } catch {
+            this.loadedIndex = undefined;
+          }
           if (token.isCancellationRequested) {
             return undefined;
           }
-          return result?.status === 'loaded'
-            ? metadataCompletionItems(context.prefix, result.names, metadataFolder)
-            : [];
-        } catch {
-          return [];
+          if (index) {
+            metadataFolder = metadataFolderForReceiver(receiver, index);
+          }
         }
-      }
-      const receiverInference = receiver
-        ? inferredTypeForReceiver(document, position, currentLinePrefix, receiver)
-        : { assigned: false };
-      inferredTypeName = receiverInference.typeName;
-      if (!inferredTypeName) {
-        if (!receiver || receiverInference.assigned) {
-          return [];
+        if (metadataFolder) {
+          const resourcePath = document.uri?.scheme === 'file' ? document.uri.fsPath : '';
+          if (!resourcePath || token.isCancellationRequested) {
+            return token.isCancellationRequested ? undefined : [];
+          }
+          try {
+            const result = this.getMetadataCompletionReader?.()?.getLoadedTypeObjectsForResource(resourcePath, metadataFolder);
+            if (token.isCancellationRequested) {
+              return undefined;
+            }
+            return result?.status === 'loaded'
+              ? metadataCompletionItems(context.prefix, result.names, metadataFolder)
+              : [];
+          } catch {
+            return [];
+          }
         }
-        if (token.isCancellationRequested) {
-          return undefined;
+        const receiverInference = receiver
+          ? inferredTypeForReceiver(document, position, currentLinePrefix, receiver)
+          : { assigned: false };
+        inferredTypeName = receiverInference.typeName;
+        if (receiverInference.catalogObjectName) {
+          catalogName = receiverInference.catalogObjectName;
+          catalogRole = 'object';
         }
-        const routines = await this.localIndex.getCommonModuleRoutines(document, receiver, token);
-        if (token.isCancellationRequested) {
-          return undefined;
+        if (!inferredTypeName && !catalogRole) {
+          if (!receiver || receiverInference.assigned) {
+            return [];
+          }
+          if (token.isCancellationRequested) {
+            return undefined;
+          }
+          const routines = await this.localIndex.getCommonModuleRoutines(document, receiver, token);
+          if (token.isCancellationRequested) {
+            return undefined;
+          }
+          return localRoutineCompletionItems(context.prefix, routines, `Общий модуль ${receiver}`, hasFollowingOpenParen);
         }
-        return localRoutineCompletionItems(context.prefix, routines, `Общий модуль ${receiver}`);
       }
     }
 
@@ -627,25 +834,53 @@ export class BslCompletionProvider implements vscode.CompletionItemProvider {
           platformCandidates,
           this.localIndex.getCurrentDocumentRoutines(document),
           commonModuleNames,
+          hasFollowingOpenParen,
         );
       }
       if (context.kind === 'type') {
         return matchingCandidates(context.prefix, index.typeCandidates, index.typeCandidatesByFirstCharacter)
-          .map(toCompletionItem);
+          .map((candidate) => toCompletionItem(candidate, hasFollowingOpenParen));
+      }
+      if (catalogRole && catalogName) {
+        if (!index.catalogApiAvailable || !isLoadedCatalogNameAvailable(document, catalogName, this.getMetadataCompletionReader)) {
+          return [];
+        }
+        const routines = catalogRole === 'object' && currentCatalogObjectModule
+          ? this.localIndex.getCurrentDocumentRoutines(document).filter(({ exported }) => exported)
+          : await this.localIndex.getCatalogModuleRoutines(
+            document,
+            catalogName,
+            catalogRole === 'manager' ? 'ManagerModule' : 'ObjectModule',
+            token,
+          );
+        if (token.isCancellationRequested) {
+          return undefined;
+        }
+        const candidates = catalogRole === 'manager'
+          ? index.catalogManagerCandidates
+          : index.catalogObjectCandidates;
+        return catalogCompletionItems(
+          context.prefix,
+          candidates,
+          routines,
+          `модуль ${catalogRole === 'manager' ? 'менеджера' : 'объекта'} справочника ${catalogName}`,
+          hasFollowingOpenParen,
+        );
       }
       const types = index.typesByAlias.get(normalizeIdentifier(inferredTypeName ?? ''));
       if (!types || types.length !== 1) {
         return [];
       }
       const members = uniqueCandidates(candidatesForType(types[0]));
-      return matchingCandidates(context.prefix, members, groupByFirstCharacter(members)).map(toCompletionItem);
+      return matchingCandidates(context.prefix, members, groupByFirstCharacter(members))
+        .map((candidate) => toCompletionItem(candidate, hasFollowingOpenParen));
     } catch {
       this.loadedIndex = undefined;
       if (token.isCancellationRequested) {
         return undefined;
       }
       return context.kind === 'global'
-        ? globalCompletionItems(context.prefix, [], [], commonModuleNames)
+        ? globalCompletionItems(context.prefix, [], [], commonModuleNames, hasFollowingOpenParen)
         : undefined;
     }
   }
