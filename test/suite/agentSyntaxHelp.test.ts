@@ -59,6 +59,28 @@ suite('AgentSyntaxHelpOperations', () => {
       assert.strictEqual(agentResult.data?.items[0]?.source, 'syntax');
       assert.strictEqual(agentResult.data?.items[0]?.name, 'Глобальный контекст');
       assert.ok(vscodeTestState.executeCommandHistory.some(({ name }) => name === '1c-metadata-tree.agent.syntaxHelp'));
+
+      const line = 'Результат = Новый Структура("Форма", Обработка.Данные.Получить()); // Справочники';
+      const lineResult = await registeredTools.find(({ name }) => name === 'cdt_read')!.handler({
+        operation: 'cdt_syntax_help',
+        arguments: {
+          action: 'searchLine',
+          line,
+          cursorColumn: line.indexOf('Получить'),
+          source: 'syntax',
+          limit: 5,
+        },
+      }, { signal: new AbortController().signal });
+      const lineAgentResult = lineResult.structuredContent as unknown as {
+        success: boolean;
+        data?: { line: string; terms: string[]; items: Array<{ id: string }> };
+      };
+      assert.strictEqual(lineAgentResult.success, true);
+      assert.strictEqual(lineAgentResult.data?.line, line);
+      assert.strictEqual(lineAgentResult.data?.terms[0], 'Получить');
+      assert.ok(!lineAgentResult.data?.terms.includes('Форма'), 'Quoted text must not become a search term.');
+      assert.ok(!lineAgentResult.data?.terms.includes('Справочники'), 'Comment text must not become a search term.');
+      assert.ok(lineAgentResult.data?.items.length);
     } finally {
       resetVscodeTestState();
     }
@@ -151,6 +173,70 @@ suite('AgentSyntaxHelpOperations', () => {
     assert.ok(bounded.items[0].snippet.length <= 40);
     assert.ok(bounded.total > bounded.limit);
     assert.strictEqual(bounded.hasMore, true);
+  });
+
+  test('searches identifiers from the current BSL line while excluding keywords, quoted literals, and comments', async () => {
+    const line = 'Результат = Новый Структура("ОткрытьФорму", Обработка.Данные.Получить()); // СправочникОбъект';
+    const result = dataOf(await operations.execute({
+      action: 'searchLine',
+      line,
+      cursorColumn: line.indexOf('Получить'),
+      source: 'syntax',
+      limit: 5,
+    })) as { line: string; terms: string[]; source: string; total: number; items: Array<{ id: string }> };
+
+    assert.strictEqual(result.line, line);
+    assert.strictEqual(result.source, 'syntax');
+    assert.strictEqual(result.terms[0], 'Получить');
+    assert.ok(!result.terms.includes('Новый'), 'BSL syntax keywords must not dominate contextual searches.');
+    assert.ok(!result.terms.includes('ОткрытьФорму'), 'Identifiers inside quoted literals must be ignored.');
+    assert.ok(!result.terms.includes('СправочникОбъект'), 'Identifiers inside comments must be ignored.');
+    assert.ok(result.items.length > 0);
+    assert.ok(result.items.length <= 5);
+
+    const exactFirst = dataOf(await operations.execute({
+      action: 'searchLine',
+      line: 'Значение = Форма;',
+      cursorColumn: 2,
+      source: 'syntax',
+      limit: 5,
+    })) as { terms: string[]; items: Array<{ name: string }> };
+    assert.strictEqual(exactFirst.items[0].name, 'Форма', 'An exact API entry under the cursor must lead generic content matches.');
+
+    const inString = await operations.execute({
+      action: 'searchLine',
+      line: "Сообщить('СправочникОбъект');",
+      cursorColumn: 14,
+      source: 'syntax',
+    });
+    const stringData = dataOf(inString) as { terms: string[]; total: number; items: unknown[] };
+    assert.deepStrictEqual(stringData.terms, ['Сообщить']);
+    assert.ok(stringData.total > 0);
+
+    const commentOnly = await operations.execute({
+      action: 'searchLine', line: '// СправочникОбъект', cursorColumn: 10,
+    });
+    assert.deepStrictEqual(dataOf(commentOnly), {
+      line: '// СправочникОбъект', terms: [], source: 'all', total: 0, limit: 10, hasMore: false, items: [],
+    });
+  });
+
+  test('searchLine validates its line context and refuses unrelated search arguments', async () => {
+    for (const invalid of [
+      { action: 'searchLine' },
+      { action: 'searchLine', line: '' },
+      { action: 'searchLine', line: 'Сообщить(1);', cursorColumn: -1 },
+      { action: 'searchLine', line: 'Сообщить(1);', cursorColumn: 99 },
+      { action: 'searchLine', line: 'Сообщить(1);', cursorColumn: 1.5 },
+      { action: 'searchLine', line: 'a'.repeat(2001) },
+      { action: 'searchLine', line: 'Сообщить(1);', query: 'Сообщить' },
+      { action: 'searchLine', line: 'Сообщить(1);', id: 'syntax:1' },
+      { action: 'searchLine', line: 'Сообщить(1);', parentId: null },
+    ]) {
+      const result = await operations.execute(invalid);
+      assert.strictEqual(result.success, false, JSON.stringify(invalid));
+      assert.strictEqual(result.code, 'INVALID_ARGUMENTS', JSON.stringify(invalid));
+    }
   });
 
   test('reports ambiguous exact names and rejects conflicting direct Agent arguments', async () => {

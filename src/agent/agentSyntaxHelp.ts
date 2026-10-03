@@ -4,12 +4,14 @@ import type { AgentResult } from './types';
 import { loadSyntaxHelpDatabase, SyntaxHelpDatabaseError } from './syntaxHelpDatabase';
 
 export type SyntaxHelpSource = 'syntax' | 'standards' | 'all';
-export type SyntaxHelpAction = 'search' | 'get' | 'children';
+export type SyntaxHelpAction = 'search' | 'searchLine' | 'get' | 'children';
 
 export interface SyntaxHelpParams {
   source?: SyntaxHelpSource;
   action?: SyntaxHelpAction;
   query?: string;
+  line?: string;
+  cursorColumn?: number;
   id?: string | number;
   parentId?: string | number | null;
   limit?: number;
@@ -72,6 +74,7 @@ type ValidatedSyntaxHelpParams = Omit<SyntaxHelpParams, 'source' | 'action'> & {
   source: SyntaxHelpSource;
 } & (
   | { action: 'search' }
+  | { action: 'searchLine' }
   | { action: 'get' }
   | { action: 'children' }
 );
@@ -180,7 +183,7 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'Arguments must be an object.') };
   }
   const params = value as SyntaxHelpParams;
-  const allowedKeys = new Set(['source', 'action', 'query', 'id', 'parentId', 'limit', 'snippetLength']);
+  const allowedKeys = new Set(['source', 'action', 'query', 'line', 'cursorColumn', 'id', 'parentId', 'limit', 'snippetLength']);
   if (Object.keys(params).some((key) => !allowedKeys.has(key))) {
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'Arguments contain an unsupported property.') };
   }
@@ -189,11 +192,17 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
   if (source !== 'syntax' && source !== 'standards' && source !== 'all') {
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'source must be syntax, standards, or all.') };
   }
-  if (action !== 'search' && action !== 'get' && action !== 'children') {
-    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'action must be search, get, or children.') };
+  if (action !== 'search' && action !== 'searchLine' && action !== 'get' && action !== 'children') {
+    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'action must be search, searchLine, get, or children.') };
   }
   if (params.query !== undefined && (typeof params.query !== 'string' || params.query.trim().length === 0 || params.query.length > 500)) {
     return { error: new KnowledgeError('INVALID_ARGUMENTS', 'query must contain 1 to 500 characters.') };
+  }
+  if (params.line !== undefined && (typeof params.line !== 'string' || params.line.length === 0 || params.line.length > 2000)) {
+    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'line must contain 1 to 2000 characters.') };
+  }
+  if (params.cursorColumn !== undefined && (!Number.isSafeInteger(params.cursorColumn) || params.cursorColumn < 0)) {
+    return { error: new KnowledgeError('INVALID_ARGUMENTS', 'cursorColumn must be a non-negative integer.') };
   }
   if (params.id !== undefined && !((typeof params.id === 'string' && params.id.trim().length > 0 && params.id.length <= 200)
     || (typeof params.id === 'number' && Number.isSafeInteger(params.id) && params.id > 0))) {
@@ -214,8 +223,16 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
 
   if (action === 'search') {
     if (!params.query) { return { error: new KnowledgeError('INVALID_ARGUMENTS', 'query is required for search.') }; }
-    if (params.id !== undefined || params.parentId !== undefined) {
-      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'id and parentId are only valid for get or children.') };
+    if (params.id !== undefined || params.parentId !== undefined || params.line !== undefined || params.cursorColumn !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'search does not accept id, parentId, line, or cursorColumn.') };
+    }
+  } else if (action === 'searchLine') {
+    if (params.line === undefined) { return { error: new KnowledgeError('INVALID_ARGUMENTS', 'line is required for searchLine.') }; }
+    if (params.cursorColumn !== undefined && params.cursorColumn > params.line.length) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'cursorColumn cannot exceed the line length.') };
+    }
+    if (params.query !== undefined || params.id !== undefined || params.parentId !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'searchLine does not accept query, id, or parentId.') };
     }
   } else if (action === 'get') {
     if (params.id !== undefined && params.query !== undefined) {
@@ -224,12 +241,14 @@ function validateParams(value: unknown): { params?: ValidatedSyntaxHelpParams; e
     if (params.id === undefined && !params.query) {
       return { error: new KnowledgeError('INVALID_ARGUMENTS', 'get requires id or query.') };
     }
-    if (params.parentId !== undefined || params.limit !== undefined || params.snippetLength !== undefined) {
-      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'parentId, limit, and snippetLength are not valid for get.') };
+    if (params.parentId !== undefined || params.limit !== undefined || params.snippetLength !== undefined
+      || params.line !== undefined || params.cursorColumn !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'parentId, limit, snippetLength, line, and cursorColumn are not valid for get.') };
     }
   } else {
-    if (params.id !== undefined || params.query !== undefined || params.snippetLength !== undefined) {
-      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'id, query, and snippetLength are not valid for children.') };
+    if (params.id !== undefined || params.query !== undefined || params.snippetLength !== undefined
+      || params.line !== undefined || params.cursorColumn !== undefined) {
+      return { error: new KnowledgeError('INVALID_ARGUMENTS', 'id, query, snippetLength, line, and cursorColumn are not valid for children.') };
     }
   }
   return { params: { ...params, source, action } as ValidatedSyntaxHelpParams };
@@ -252,6 +271,85 @@ function rankNode(node: KnowledgeNode, query: string): number | null {
   if (node.searchPath.includes(query)) { return 3; }
   if (node.searchContent.includes(query)) { return 4; }
   return null;
+}
+
+const BSL_KEYWORDS = new Set([
+  'and', 'break', 'continue', 'do', 'each', 'else', 'elseif', 'elsif', 'enddo', 'endif', 'endfunction',
+  'endprocedure', 'endtry', 'except', 'export', 'false', 'for', 'function', 'if', 'in', 'new', 'not',
+  'null', 'or', 'procedure', 'raise', 'return', 'then', 'to', 'true', 'try', 'undefined', 'val', 'var',
+  'while', 'асинх', 'вызватьисключение', 'возврат', 'для', 'каждого', 'из', 'если', 'иначе', 'иначеесли',
+  'истина', 'конецесли', 'конецпопытки', 'конецпроцедуры', 'конецфункции', 'конеццикла', 'ложь',
+  'неопределено', 'новый', 'по', 'пока', 'попытка', 'прервать', 'продолжить', 'процедура', 'знач',
+  'тогда', 'функция', 'цикл', 'экспорт', 'исключение', 'и', 'или', 'не',
+]);
+
+const MAX_LINE_TERMS = 8;
+const BSL_IDENTIFIER_AT_CURSOR = /[\p{L}_][\p{L}\p{N}_]*/uy;
+
+interface LineIdentifier {
+  readonly value: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+function scanLineIdentifiers(line: string): LineIdentifier[] {
+  const identifiers: LineIdentifier[] = [];
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (quote) {
+      if (character === quote) {
+        if (line[index + 1] === quote) {
+          index += 1;
+        } else {
+          quote = undefined;
+        }
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '/' && line[index + 1] === '/') { break; }
+    BSL_IDENTIFIER_AT_CURSOR.lastIndex = index;
+    const match = BSL_IDENTIFIER_AT_CURSOR.exec(line);
+    if (match) {
+      identifiers.push({ value: match[0], start: index, end: index + match[0].length });
+      index = index + match[0].length - 1;
+    }
+  }
+  return identifiers;
+}
+
+function distanceFromCursor(identifier: LineIdentifier, cursorColumn: number): number {
+  if (cursorColumn >= identifier.start && cursorColumn <= identifier.end) { return 0; }
+  return cursorColumn < identifier.start
+    ? identifier.start - cursorColumn
+    : cursorColumn - identifier.end;
+}
+
+function extractLineTerms(line: string, cursorColumn: number): string[] {
+  const identifiers = scanLineIdentifiers(line)
+    .filter((identifier) => !BSL_KEYWORDS.has(fold(identifier.value)))
+    .sort((left, right) => {
+      const distance = distanceFromCursor(left, cursorColumn) - distanceFromCursor(right, cursorColumn);
+      if (distance !== 0) { return distance; }
+      const leftIsBeforeCursor = left.end <= cursorColumn;
+      const rightIsBeforeCursor = right.end <= cursorColumn;
+      if (leftIsBeforeCursor !== rightIsBeforeCursor) { return leftIsBeforeCursor ? -1 : 1; }
+      return left.start - right.start;
+    });
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const identifier of identifiers) {
+    const key = fold(identifier.value);
+    if (seen.has(key)) { continue; }
+    seen.add(key);
+    terms.push(identifier.value);
+    if (terms.length === MAX_LINE_TERMS) { break; }
+  }
+  return terms;
 }
 
 function publicCandidate(node: KnowledgeNode): SyntaxHelpChildItem {
@@ -278,6 +376,7 @@ export class AgentSyntaxHelpOperations {
     try {
       const nodes = await (this.loadedKnowledge ??= this.loadKnowledge());
       if (params.action === 'search') { return { success: true, data: this.search(nodes, params) }; }
+      if (params.action === 'searchLine') { return { success: true, data: this.searchLine(nodes, params) }; }
       if (params.action === 'get') { return this.get(nodes, params); }
       return this.children(nodes, params);
     } catch (error) {
@@ -403,6 +502,46 @@ export class AgentSyntaxHelpOperations {
         name: node.name,
         path: node.path,
         snippet: excerpt(node.content, params.query!.trim(), snippetLength),
+      } satisfies SyntaxHelpItem)),
+    };
+  }
+
+  private searchLine(
+    nodes: KnowledgeNode[],
+    params: Extract<ValidatedSyntaxHelpParams, { action: 'searchLine' }>,
+  ): Record<string, unknown> {
+    const line = params.line!;
+    const terms = extractLineTerms(line, params.cursorColumn ?? line.length);
+    const bestMatches = new Map<string, { node: KnowledgeNode; termIndex: number; rank: number; query: string }>();
+    terms.forEach((term, termIndex) => {
+      const query = fold(term);
+      for (const node of nodes) {
+        if (!sourceAllows(params.source, node.source)) { continue; }
+        const rank = rankNode(node, query);
+        if (rank === null) { continue; }
+        const existing = bestMatches.get(node.id);
+        if (!existing || rank < existing.rank || (rank === existing.rank && termIndex < existing.termIndex)) {
+          bestMatches.set(node.id, { node, termIndex, rank, query: term });
+        }
+      }
+    });
+    const selected = [...bestMatches.values()].sort((left, right) =>
+      left.rank - right.rank || left.termIndex - right.termIndex || compareNodes(left.node, right.node));
+    const limit = params.limit ?? 10;
+    const snippetLength = params.snippetLength ?? 300;
+    return {
+      line,
+      terms,
+      source: params.source,
+      total: selected.length,
+      limit,
+      hasMore: selected.length > limit,
+      items: selected.slice(0, limit).map(({ node, query }) => ({
+        id: node.id,
+        source: node.source,
+        name: node.name,
+        path: node.path,
+        snippet: excerpt(node.content, query, snippetLength),
       } satisfies SyntaxHelpItem)),
     };
   }
