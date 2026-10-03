@@ -20,9 +20,11 @@ interface PackageManifest {
   readonly capabilities?: { readonly virtualWorkspaces?: { readonly supported?: boolean } };
   readonly contributes: {
     readonly views: { readonly explorer: unknown };
-    readonly commands: ReadonlyArray<{ readonly command: string; readonly title?: string; readonly category?: string }>;
+    readonly viewsWelcome: ReadonlyArray<{ readonly view: string; readonly contents: string }>;
+    readonly commands: ReadonlyArray<{ readonly command: string; readonly title?: string; readonly category?: string; readonly icon?: string }>;
     readonly menus: {
       readonly commandPalette: ReadonlyArray<{ readonly command: string; readonly when?: string }>;
+      readonly 'view/title': ReadonlyArray<{ readonly command: string; readonly when?: string; readonly group?: string }>;
       readonly 'view/item/context': unknown;
       readonly 'explorer/context': unknown;
     };
@@ -65,6 +67,22 @@ suite('extension manifest contracts', () => {
       assert.strictEqual(view.visibility, 'collapsed');
       assert.ok(!Object.prototype.hasOwnProperty.call(view, 'when'));
     }
+  });
+
+  test('base configuration creation is available from the palette, tree title and empty state', () => {
+    const pkg = readPackageJson();
+    const commandId = '1c-metadata-tree.configuration.createProject';
+    assert.ok(pkg.contributes.commands.some((entry) => entry.command === commandId));
+    assert.ok(!pkg.contributes.menus.commandPalette.some(
+      (entry) => entry.command === commandId && entry.when === 'false',
+    ));
+    assert.deepStrictEqual(
+      pkg.contributes.menus['view/title'].find((entry) => entry.command === commandId),
+      { command: commandId, when: 'view == 1c-metadata-tree', group: 'navigation' },
+    );
+    const welcome = pkg.contributes.viewsWelcome.find((entry) => entry.view === '1c-metadata-tree');
+    assert.ok(welcome);
+    assert.ok(welcome.contents.includes(`command:${commandId}`));
   });
 
   test('test-only commands are absent from command and palette contributions', () => {
