@@ -41,6 +41,22 @@ suite('Syntax help UI', () => {
     assert.ok(!unsafeSource.includes('href="javascript:'));
   });
 
+  test('renders an escaped context banner for a matched member inside its parent article', () => {
+    const article: SyntaxHelpArticle = {
+      id: 'syntax:1', source: 'syntax', name: 'Глобальный контекст', path: 'Global context.html',
+      markdown: '# Глобальный контекст\n\nСтатья справки.',
+    };
+
+    const html = renderSyntaxHelpHtml(article, 'vscode-webview://test', 'ТекущаяДата (CurrentDate) <script>alert(1)</script>');
+    const sameNameHtml = renderSyntaxHelpHtml(article, 'vscode-webview://test', article.name);
+
+    assert.ok(html.includes('Найденный элемент'));
+    assert.ok(html.includes('ТекущаяДата (CurrentDate) &lt;script&gt;alert(1)&lt;/script&gt;'));
+    assert.ok(html.includes('Статья справки: <strong>Глобальный контекст</strong>'));
+    assert.ok(!html.includes('<script>'));
+    assert.ok(!sameNameHtml.includes('Найденный элемент'));
+  });
+
   test('Ctrl+F1 sends the complete active BSL line and cursor column to the shared Agent command', async () => {
     resetVscodeTestState();
     const line = 'Сообщить(ТекущийЭлемент);';
@@ -132,18 +148,18 @@ suite('Syntax help UI', () => {
   test('manual search opens the selected article in one reusable script-free panel', async () => {
     resetVscodeTestState();
     const item: SyntaxHelpItem = {
-      id: 'standards:transactions-and-locks',
-      source: 'standards',
-      name: 'Транзакции и блокировки',
-      path: 'resources/standards/transactions-and-locks.md',
-      snippet: 'НачатьТранзакцию и блокировки данных',
+      id: 'syntax:1',
+      source: 'syntax',
+      name: 'ТекущаяДата (CurrentDate)',
+      path: 'Global context.html',
+      snippet: 'ТекущаяДата (CurrentDate)',
     };
     const article: SyntaxHelpArticle = {
       id: item.id,
       source: item.source,
-      name: item.name,
+      name: 'Глобальный контекст',
       path: item.path,
-      markdown: '# Транзакции и блокировки\n\nПравила работы.',
+      markdown: '# Глобальный контекст\n\nПравила работы.',
     };
     let panelFactoryCalls = 0;
     let revealCalls = 0;
@@ -173,7 +189,7 @@ suite('Syntax help UI', () => {
       }
       return { success: true, data: article };
     });
-    vscodeTestState.inputBoxQueue.push('Транзакции', 'Блокировки');
+    vscodeTestState.inputBoxQueue.push('ТекущаяДата', 'CurrentDate');
     vscodeTestState.quickPickQueue.push(
       { label: item.name, description: item.path, detail: item.snippet, item },
       { label: item.name, description: item.path, detail: item.snippet, item },
@@ -183,6 +199,8 @@ suite('Syntax help UI', () => {
       await registeredHandler(SEARCH_SYNTAX_HELP_COMMAND)();
       assert.strictEqual(panelFactoryCalls, 1);
       assert.ok(panel.webview.html.includes('Правила работы.'));
+      assert.ok(panel.webview.html.includes('Найденный элемент: <strong>ТекущаяДата (CurrentDate)</strong>'));
+      assert.ok(panel.webview.html.includes('Статья справки: <strong>Глобальный контекст</strong>'));
 
       await registeredHandler(SEARCH_SYNTAX_HELP_COMMAND)();
       assert.strictEqual(panelFactoryCalls, 1);

@@ -76,6 +76,7 @@ suite('Smoke: BSL completion', () => {
       'мойМодул',
       'ТекущаяД',
       'Справочники.TestCatalog1.Созд',
+      'Current',
     ].join('\n');
     const filePath = callerRoot
       ? path.join(callerRoot, 'Ext', 'Module.bsl')
@@ -156,6 +157,13 @@ suite('Smoke: BSL completion', () => {
       );
       assert.strictEqual(insertedText(currentDate), 'ТекущаяДата()$0', 'zero-argument platform methods should insert a closed call snippet');
 
+      const currentPrefix = 'Current';
+      const currentOffset = document.getText().lastIndexOf(currentPrefix) + currentPrefix.length;
+      const currentItems = await vscode.commands.executeCommand<
+        vscode.CompletionList | vscode.CompletionItem[]
+      >('vscode.executeCompletionItemProvider', document.uri, document.positionAt(currentOffset));
+      assert.ok(!labels(currentItems).includes('CurrentDate'), 'Russian configuration should not suggest the English global CurrentDate alias');
+
       if (catalogWorkspace) {
         await vscode.commands.executeCommand('1c-metadata-tree.refresh');
         assert.strictEqual(
@@ -165,7 +173,7 @@ suite('Smoke: BSL completion', () => {
         );
         await revealMetadataFile(path.join(catalogWorkspace.uri.fsPath, 'Catalogs', 'TestCatalog1.xml'));
         await vscode.window.showTextDocument(document);
-        const catalogPrefix = 'Справочники.TestCatalog1.Созд';
+        const catalogPrefix = 'Справочники.TestCatalog1.';
         const catalogOffset = document.getText().lastIndexOf(catalogPrefix) + catalogPrefix.length;
         const catalogPosition = document.positionAt(catalogOffset);
         const catalogResult = await vscode.commands.executeCommand<
@@ -174,6 +182,8 @@ suite('Smoke: BSL completion', () => {
         const catalogLabels = labels(catalogResult);
         assert.ok(catalogLabels.includes('СоздатьЭлемент'), `CatalogManager article should suggest СоздатьЭлемент; got: ${catalogLabels.join(', ')}`);
         assert.ok(catalogLabels.includes('СоздатьГруппу'), `CatalogManager article should suggest СоздатьГруппу; got: ${catalogLabels.join(', ')}`);
+        assert.ok(catalogLabels.includes('ВыбратьПоСсылкам'), `Russian CatalogManager should suggest ВыбратьПоСсылкам; got: ${catalogLabels.join(', ')}`);
+        assert.ok(!catalogLabels.includes('SelectByRefs'), `Russian CatalogManager should hide SelectByRefs; got: ${catalogLabels.join(', ')}`);
       }
 
       if (commonModuleWorkspace) {

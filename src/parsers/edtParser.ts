@@ -21,6 +21,7 @@ import {
   extractObjectBelonging,
 } from '../extensionSupport/extensionXmlParser';
 import { STANDARD_MODULES } from '../constants/moduleTypes';
+import { resolveEdtBslLanguage } from './configurationBslLanguage';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -49,7 +50,7 @@ export class EdtParser {
         id: 'root',
         name: 'Configuration',
         type: MetadataType.Configuration,
-        properties: {},
+        properties: { bslLanguage: 'ru' },
         children: [],
         filePath: path.join(srcPath, 'Configuration', 'Configuration.mdo'),
       };
@@ -59,6 +60,7 @@ export class EdtParser {
         const configMdoPath = path.join(srcPath, 'Configuration', 'Configuration.mdo');
         await fs.promises.access(configMdoPath);
         const configXml = await XmlParser.parseFileAsync(configMdoPath);
+        rootNode.properties.bslLanguage = resolveEdtBslLanguage(configXml);
         const extProps = extractExtensionProperties(configXml);
         if (extProps.extensionPurpose !== undefined) {
           rootNode.properties.extensionPurpose = extProps.extensionPurpose;
@@ -119,7 +121,7 @@ export class EdtParser {
       id: 'root',
       name: 'Configuration',
       type: MetadataType.Configuration,
-      properties: {},
+      properties: { bslLanguage: 'ru' },
       children: [],
       filePath: path.join(srcPath, 'Configuration', 'Configuration.mdo'),
     };
@@ -129,6 +131,7 @@ export class EdtParser {
       const configMdoPath = path.join(srcPath, 'Configuration', 'Configuration.mdo');
       await fs.promises.access(configMdoPath);
       const configXml = await XmlParser.parseFileAsync(configMdoPath);
+      rootNode.properties.bslLanguage = resolveEdtBslLanguage(configXml);
       const extProps = extractExtensionProperties(configXml);
       if (extProps.extensionPurpose !== undefined) {
         rootNode.properties.extensionPurpose = extProps.extensionPurpose;

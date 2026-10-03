@@ -34,7 +34,7 @@ suite('Smoke: BSL syntax help', () => {
     const cursorColumn = line.indexOf('Форма');
     const result = await vscode.commands.executeCommand<{
       success: boolean;
-      data?: { line: string; terms: string[]; items: Array<{ name: string }> };
+      data?: { line: string; terms: string[]; items: Array<{ id: string; source: string; name: string; path: string; snippet: string }> };
       error?: string;
     }>(AGENT_SYNTAX_HELP_COMMAND, {
       action: 'searchLine', line, cursorColumn, source: 'syntax', limit: 5,
@@ -42,6 +42,24 @@ suite('Smoke: BSL syntax help', () => {
     assert.strictEqual(result.success, true, result.error);
     assert.strictEqual(result.data?.line, line);
     assert.strictEqual(result.data?.terms[0], 'Форма');
-    assert.strictEqual(result.data?.items[0]?.name, 'Форма');
+
+    const match = result.data?.items[0];
+    assert.ok(match, 'The exact platform member should be surfaced.');
+    assert.deepStrictEqual(match, {
+      id: 'syntax:883',
+      source: 'syntax',
+      name: 'Форма (Form)',
+      path: 'catalog63/catalog272/catalog1506/object1522.html',
+      snippet: 'Форма (Form)',
+    });
+
+    const parentArticle = await vscode.commands.executeCommand<{
+      success: boolean;
+      data?: { id: string; path: string };
+      error?: string;
+    }>(AGENT_SYNTAX_HELP_COMMAND, { action: 'get', id: match.id, source: 'syntax' });
+    assert.strictEqual(parentArticle.success, true, parentArticle.error);
+    assert.strictEqual(parentArticle.data?.id, match.id);
+    assert.strictEqual(parentArticle.data?.path, match.path);
   });
 });

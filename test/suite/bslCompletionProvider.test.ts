@@ -20,11 +20,33 @@ import {
 } from '../../src/providers/bslCompletionIndex';
 import { BslLocalCompletionIndex } from '../../src/providers/bslLocalCompletionIndex';
 import { MetadataTreeDataProvider } from '../../src/providers/treeDataProvider';
+import { DesignerParser } from '../../src/parsers/designerParser';
+import { EdtParser } from '../../src/parsers/edtParser';
 import { ConfigFormat } from '../../src/parsers/formatDetector';
 import { MetadataType, type TreeNode } from '../../src/models/treeNode';
+import { loadTreeFromCache, saveTreeToCache } from '../../src/utils/diskCache';
 import { resetVscodeTestState, vscodeTestState } from '../helpers/vscodeModuleStub';
 
 const TEST_HASH = '0'.repeat(64);
+
+function indexedBilingualPairs(
+  pairs: readonly (readonly [number, number])[],
+  candidateLists: readonly (readonly string[])[],
+): { russian: string; english: string }[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const name of candidateLists.flat()) {
+    const key = name.normalize('NFC').toLocaleLowerCase('ru-RU');
+    if (!seen.has(key)) {
+      seen.add(key);
+      names.push(name);
+    }
+  }
+  return pairs.map(([russianIndex, englishIndex]) => ({
+    russian: names[russianIndex],
+    english: names[englishIndex],
+  }));
+}
 
 const EXPECTED_METADATA_COLLECTION_FOLDERS = [
   'AccumulationRegisters',
@@ -141,6 +163,25 @@ async function completeWithLocalDocument(
   );
 }
 
+async function completeWithLanguage(
+  provider: BslCompletionProvider,
+  text: string,
+  offset = text.length,
+): Promise<vscode.CompletionItem[] | undefined> {
+  const document = localDocument(path.join(os.tmpdir(), 'LanguageCompletion.bsl'), text);
+  return completeWithLocalDocument(provider, document, text, offset);
+}
+
+function languageReader(language: 'ru' | 'en'): () => {
+  getLoadedTypeObjectsForResource: () => { status: 'notLoaded' };
+  getLanguageForResource: () => 'ru' | 'en';
+} {
+  return () => ({
+    getLoadedTypeObjectsForResource: () => ({ status: 'notLoaded' }),
+    getLanguageForResource: () => language,
+  });
+}
+
 async function createConfigurationRoot(root: string, extension = false): Promise<void> {
   await fs.promises.mkdir(root, { recursive: true });
   const belonging = extension ? '<ObjectBelonging>Adopted</ObjectBelonging>' : '';
@@ -232,6 +273,14 @@ suite('BSL platform completion', () => {
     assert.deepStrictEqual(parsed.properties, ['Имя', 'Name']);
     assert.deepStrictEqual(parsed.methods, ['Выполнить', 'Execute']);
     assert.strictEqual(parsed.hasConstructors, true);
+    assert.deepStrictEqual(parsed.propertyLanguageAliases, {
+      bilingualPairs: [],
+      unpairedAliases: ['Имя'],
+    });
+    assert.deepStrictEqual(parsed.methodLanguageAliases, {
+      bilingualPairs: [{ russian: 'Выполнить', english: 'Execute' }],
+      unpairedAliases: [],
+    });
   });
 
   test('indexes globals from id 1 and only constructor-bearing syntax articles as types', () => {
@@ -240,7 +289,7 @@ suite('BSL platform completion', () => {
         id: 1,
         name: 'Глобальный контекст',
         path: 'Global context.html',
-        content: 'Свойства:\nДокументы (Documents)\n\nМетоды:\nСообщить (Message)\nОписание:\nНеГлобальное',
+        content: 'Свойства:\nДокументы (Documents)\nТолькоРусское\nNull\n\nМетоды:\nСообщить (Message)\nОписание:\nНеГлобальное',
       },
       {
         id: 2,
@@ -267,6 +316,29 @@ suite('BSL platform completion', () => {
     assert.ok(typeNames.includes('ТаблицаЗначений'));
     assert.strictEqual(typeNames.length, 2);
     assert.strictEqual(index.types.some(({ aliases }) => aliases.includes('NoConstructorType')), false);
+    const globalPairs = indexedBilingualPairs(index.global.languageAliases.bilingualPairIndices, [
+      index.global.properties,
+      index.global.methods,
+    ]);
+    assert.deepStrictEqual(globalPairs, [
+      { russian: 'Документы', english: 'Documents' },
+      { russian: 'Сообщить', english: 'Message' },
+    ]);
+    const pairedGlobals = globalPairs.flatMap(({ russian, english }) => [russian, english]);
+    assert.ok(!pairedGlobals.includes('Null'), 'monolingual platform identifiers are never filtered');
+    assert.ok(!pairedGlobals.includes('ТолькоРусское'), 'unpaired localized identifiers remain available');
+    assert.deepStrictEqual(indexedBilingualPairs(index.types[0].aliasLanguageAliases.bilingualPairIndices, [
+      index.types[0].aliases,
+    ]), [
+      { russian: 'ТаблицаЗначений', english: 'ValueTable' },
+    ]);
+    assert.deepStrictEqual(indexedBilingualPairs(index.types[0].memberLanguageAliases.bilingualPairIndices, [
+      index.types[0].properties,
+      index.types[0].methods,
+    ]), [
+      { russian: 'Добавить', english: 'Add' },
+      { russian: 'Колонки', english: 'Columns' },
+    ]);
   });
 
   test('indexes global zero-argument methods and Catalog manager/object article members', () => {
@@ -323,13 +395,187 @@ suite('BSL platform completion', () => {
     try {
       const rebuilt = buildBslCompletionIndex(nodes, expectedHash);
       assert.strictEqual(
-        `${JSON.stringify(rebuilt, null, 2)}\n`,
-        await fs.promises.readFile(indexPath, 'utf8'),
+        JSON.stringify(JSON.parse(await fs.promises.readFile(indexPath, 'utf8'))),
+        JSON.stringify(rebuilt),
         'Regenerate the static BSL completion index when the database or parser changes.',
       );
     } finally {
       database.close();
     }
+  });
+
+  test('filters only opposite-language platform aliases and keywords, preserving shared and user-authored names', async () => {
+    const enProvider = new BslCompletionProvider(extensionRoot(), () => ({
+      getLanguageForResource: () => 'en',
+      getLoadedTypeObjectsForResource: () => ({ status: 'notLoaded' }),
+    }));
+    const ruProvider = new BslCompletionProvider(extensionRoot(), () => ({
+      getLanguageForResource: () => 'ru',
+      getLoadedTypeObjectsForResource: () => ({ status: 'notLoaded' }),
+    }));
+
+    const englishKeywords = labels(await completeWithLanguage(enProvider, 'Proc'));
+    assert.ok(englishKeywords.includes('Procedure'));
+    assert.ok(!englishKeywords.includes('Процедура'));
+    const russianKeywords = labels(await completeWithLanguage(ruProvider, 'Проц'));
+    assert.ok(russianKeywords.includes('Процедура'));
+    assert.ok(!russianKeywords.includes('Procedure'));
+    assert.ok(labels(await completeWithLanguage(enProvider, 'Null')).includes('Null'));
+    assert.ok(labels(await completeWithLanguage(ruProvider, 'Null')).includes('Null'));
+
+    const englishGlobals = labels(await completeWithLanguage(enProvider, 'Docum'));
+    assert.ok(englishGlobals.includes('Documents'));
+    assert.ok(!englishGlobals.includes('Документы'));
+    const russianGlobals = labels(await completeWithLanguage(ruProvider, 'Докум'));
+    assert.ok(russianGlobals.includes('Документы'));
+    assert.ok(!russianGlobals.includes('Documents'));
+
+    const configRoot = path.resolve(os.tmpdir(), `bsl-completion-en-user-names-${process.pid}-${Date.now()}`);
+    const commonModules: TreeNode = {
+      id: 'CommonModules',
+      name: 'Общие модули',
+      type: MetadataType.CommonModule,
+      properties: { _indexLoaded: true } as TreeNode['properties'],
+      children: [{ id: 'CommonModules.МойМодуль', name: 'МойМодуль', type: MetadataType.CommonModule, properties: {} }],
+    };
+    const root: TreeNode = {
+      id: 'english-config-root',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: { bslLanguage: 'en' },
+      children: [commonModules],
+    };
+    const tree = new MetadataTreeDataProvider();
+    tree.setRootNode(root, { configPath: configRoot, format: ConfigFormat.Designer });
+    const englishUserNames = new BslCompletionProvider(extensionRoot(), () => tree);
+    const documentPath = path.join(configRoot, 'CommonModules', 'Caller', 'Ext', 'Module.bsl');
+    const source = 'Процедура МояЛокальнаяПроцедура() Экспорт\nКонецПроцедуры\nМойМод';
+    const document = localDocument(documentPath, source);
+    const authoredLabels = labels(await completeWithLocalDocument(englishUserNames, document, source));
+    assert.ok(authoredLabels.includes('МойМодуль'), 'metadata names remain in their authored language');
+    const localSource = source.replace('МойМод', 'МояЛок');
+    const localDocumentForRoutine = localDocument(documentPath, localSource);
+    assert.ok(
+      labels(await completeWithLocalDocument(englishUserNames, localDocumentForRoutine, localSource))
+        .includes('МояЛокальнаяПроцедура'),
+      'local routine names remain in their authored language',
+    );
+  });
+
+  test('resolves Designer and EDT primary languages while defaulting missing or malformed values to Russian', async () => {
+    const designerRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-language-designer-'));
+    const edtRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-language-edt-'));
+    try {
+      await fs.promises.mkdir(path.join(designerRoot, 'Languages'), { recursive: true });
+      await fs.promises.writeFile(
+        path.join(designerRoot, 'Configuration.xml'),
+        '<MetaDataObject><Configuration><Properties><DefaultLanguage>Language.English</DefaultLanguage></Properties></Configuration></MetaDataObject>',
+        'utf8',
+      );
+      await fs.promises.writeFile(
+        path.join(designerRoot, 'Languages', 'English.xml'),
+        '<MetaDataObject><Language><Properties><LanguageCode>en-US</LanguageCode></Properties></Language></MetaDataObject>',
+        'utf8',
+      );
+      const designer = await DesignerParser.parseStructureOnly(designerRoot);
+      assert.strictEqual(designer.properties.bslLanguage, 'en');
+
+      await fs.promises.writeFile(
+        path.join(designerRoot, 'Configuration.xml'),
+        '<MetaDataObject><Configuration><Properties><DefaultLanguage>Language.Missing</DefaultLanguage></Properties></Configuration></MetaDataObject>',
+        'utf8',
+      );
+      const missingDesignerLanguage = await DesignerParser.parseStructureOnly(designerRoot);
+      assert.strictEqual(missingDesignerLanguage.properties.bslLanguage, 'ru');
+
+      const edtConfiguration = path.join(edtRoot, 'src', 'Configuration');
+      await fs.promises.mkdir(edtConfiguration, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(edtConfiguration, 'Configuration.mdo'),
+        '<Configuration><defaultLanguage>Language.English</defaultLanguage><languages><name>Russian</name><languageCode>ru</languageCode></languages><languages><name>English</name><languageCode>en-GB</languageCode></languages></Configuration>',
+        'utf8',
+      );
+      const edt = await EdtParser.parseStructureOnly(edtRoot);
+      assert.strictEqual(edt.properties.bslLanguage, 'en');
+
+      await fs.promises.writeFile(
+        path.join(edtConfiguration, 'Configuration.mdo'),
+        '<Configuration><defaultLanguage>Language.English</defaultLanguage><languages><name>English</name><languageCode>en-</languageCode></languages></Configuration>',
+        'utf8',
+      );
+      const malformedEdtLanguage = await EdtParser.parseStructureOnly(edtRoot);
+      assert.strictEqual(malformedEdtLanguage.properties.bslLanguage, 'ru');
+    } finally {
+      await fs.promises.rm(designerRoot, { recursive: true, force: true });
+      await fs.promises.rm(edtRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('rebuilds legacy configuration caches without BSL language metadata', async () => {
+    const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'bsl-language-cache-'));
+    const configPath = path.join(tempRoot, 'configuration');
+    const globalStoragePath = path.join(tempRoot, 'storage');
+    await fs.promises.mkdir(configPath, { recursive: true });
+    await fs.promises.writeFile(path.join(configPath, 'Configuration.xml'), '<Configuration/>');
+    const root: TreeNode = {
+      id: 'configuration-language-cache',
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: {},
+      children: [],
+    };
+
+    try {
+      await saveTreeToCache(globalStoragePath, configPath, root);
+      assert.strictEqual(await loadTreeFromCache(globalStoragePath, configPath), null);
+
+      root.properties = { bslLanguage: 'en' };
+      await saveTreeToCache(globalStoragePath, configPath, root);
+      assert.strictEqual((await loadTreeFromCache(globalStoragePath, configPath))?.properties.bslLanguage, 'en');
+    } finally {
+      await fs.promises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('chooses the most-specific configuration language for BSL resources in multi-root trees', async () => {
+    const parentPath = path.resolve(os.tmpdir(), `bsl-language-roots-${process.pid}-${Date.now()}`);
+    const nestedPath = path.join(parentPath, 'Nested');
+    const rootNode = (id: string, language: 'ru' | 'en'): TreeNode => ({
+      id,
+      name: 'Configuration',
+      type: MetadataType.Configuration,
+      properties: { bslLanguage: language },
+      children: [],
+    });
+    const provider = new MetadataTreeDataProvider();
+    const parent = rootNode('parent-language-root', 'en');
+    const nested = rootNode('nested-language-root', 'ru');
+    provider.setRootNodes([parent, nested], new Map([
+      [parent.id, { configPath: parentPath, format: ConfigFormat.Designer }],
+      [nested.id, { configPath: nestedPath, format: ConfigFormat.Designer }],
+    ]));
+
+    assert.strictEqual(provider.getLanguageForResource(path.join(parentPath, 'CommonModules', 'A', 'Module.bsl')), 'en');
+    assert.strictEqual(provider.getLanguageForResource(path.join(nestedPath, 'CommonModules', 'A', 'Module.bsl')), 'ru');
+    assert.strictEqual(provider.getLanguageForResource(path.join(`${parentPath}-outside`, 'Module.bsl')), 'ru');
+
+    const completionProvider = new BslCompletionProvider(extensionRoot(), () => provider);
+    const englishDocumentPath = path.join(parentPath, 'CommonModules', 'A', 'Module.bsl');
+    const russianDocumentPath = path.join(nestedPath, 'CommonModules', 'A', 'Module.bsl');
+    const englishCompletions = labels(await completeWithLocalDocument(
+      completionProvider,
+      localDocument(englishDocumentPath, 'Docum'),
+      'Docum',
+    ));
+    const russianCompletions = labels(await completeWithLocalDocument(
+      completionProvider,
+      localDocument(russianDocumentPath, 'Докум'),
+      'Докум',
+    ));
+    assert.ok(englishCompletions.includes('Documents'));
+    assert.ok(!englishCompletions.includes('Документы'));
+    assert.ok(russianCompletions.includes('Документы'));
+    assert.ok(!russianCompletions.includes('Documents'));
   });
 
   test('derives every supported metadata collection from global context properties', async () => {
@@ -403,19 +649,23 @@ suite('BSL platform completion', () => {
 
   test('suggests global entries and constructor types from the bundled index', async () => {
     const provider = new BslCompletionProvider(extensionRoot());
+    const englishProvider = new BslCompletionProvider(extensionRoot(), languageReader('en'));
     const globals = labels(await complete(provider, 'Докум'));
     assert.ok(globals.includes('Документы'));
-    assert.ok(labels(await complete(provider, 'Docum')).includes('Documents'));
+    const englishGlobals = labels(await completeWithLanguage(englishProvider, 'Docum'));
+    assert.ok(englishGlobals.includes('Documents'));
+    assert.ok(!englishGlobals.includes('Документы'));
 
     const types = labels(await complete(provider, 'Новый Табли'));
     assert.ok(types.includes('ТаблицаЗначений'));
 
-    const englishTypes = labels(await complete(provider, 'New Val'));
+    const englishTypes = labels(await completeWithLanguage(englishProvider, 'New Val'));
     assert.ok(englishTypes.includes('ValueTable'));
   });
 
   test('suggests BSL keywords by Russian and English prefixes with keyword priority', async () => {
     const provider = new BslCompletionProvider(extensionRoot());
+    const englishProvider = new BslCompletionProvider(extensionRoot(), languageReader('en'));
     const russianLoopEnd = await complete(provider, 'КонецЦ');
     const loopEnd = russianLoopEnd?.find(({ label }) => label === 'КонецЦикла');
     assert.ok(loopEnd, 'КонецЦ should suggest КонецЦикла');
@@ -423,7 +673,7 @@ suite('BSL platform completion', () => {
     assert.strictEqual(loopEnd?.insertText, 'КонецЦикла');
     assert.ok(loopEnd?.sortText?.startsWith('0_'), 'keyword items sort ahead of platform globals');
 
-    const englishLoopEnd = await complete(provider, 'endd');
+    const englishLoopEnd = await completeWithLanguage(englishProvider, 'endd');
     assert.ok(labels(englishLoopEnd).includes('EndDo'), 'English keywords match case-insensitively');
 
     const exceptionItems = await complete(provider, 'Исключ');
@@ -441,21 +691,39 @@ suite('BSL platform completion', () => {
       ['КонецЕсли', 'КонецЕсли'],
       ['КонецПоп', 'КонецПопытки'],
       ['КонецПроц', 'КонецПроцедуры'],
+    ]) {
+      assert.ok(labels(await complete(provider, prefix)).includes(expected), `${prefix} should suggest ${expected}`);
+    }
+    for (const [prefix, expected] of [
       ['EndIf', 'EndIf'],
       ['EndTry', 'EndTry'],
       ['EndProcedure', 'EndProcedure'],
       ['EndFunction', 'EndFunction'],
     ]) {
-      assert.ok(labels(await complete(provider, prefix)).includes(expected), `${prefix} should suggest ${expected}`);
+      assert.ok(
+        labels(await completeWithLanguage(englishProvider, prefix)).includes(expected),
+        `${prefix} should suggest ${expected}`,
+      );
     }
     assert.ok(labels(await complete(provider, 'КонецП')).includes('КонецПроцедуры'));
 
     for (const keyword of [
-      'Если', 'Иначе', 'ИначеЕсли', 'Попытка', 'Исключение', 'Для', 'Каждого', 'While', 'Break', 'Return', 'Var',
-      'Новый', 'New', 'И', 'And', 'Или', 'Or', 'Не', 'Not', 'Истина', 'True', 'Ложь', 'False', 'Неопределено', 'Undefined', 'Null',
+      'Если', 'Иначе', 'ИначеЕсли', 'Попытка', 'Исключение', 'Для', 'Каждого', 'Новый', 'И', 'Или', 'Не',
+      'Истина', 'Ложь', 'Неопределено',
     ]) {
       assert.ok(labels(await complete(provider, keyword)).includes(keyword), `${keyword} should be suggested`);
     }
+    for (const keyword of [
+      'If', 'Else', 'ElsIf', 'Try', 'Except', 'For', 'Each', 'While', 'Break', 'Return', 'Var', 'New', 'And', 'Or',
+      'Not', 'True', 'False', 'Undefined',
+    ]) {
+      assert.ok(
+        labels(await completeWithLanguage(englishProvider, keyword)).includes(keyword),
+        `${keyword} should be suggested`,
+      );
+    }
+    assert.ok(labels(await complete(provider, 'Null')).includes('Null'));
+    assert.ok(labels(await completeWithLanguage(englishProvider, 'Null')).includes('Null'));
   });
 
   test('suppresses keyword completions in comments, strings, and after a member dot', async () => {
@@ -505,8 +773,11 @@ suite('BSL platform completion', () => {
       article: { id: 1, name: 'Global context', path: 'Global context.html' },
     };
     providerWithIndexes.loadedIndex = Promise.resolve({
-      globalCandidates: [platformDuplicate],
-      globalCandidatesByFirstCharacter: new Map([['и', [platformDuplicate]]]),
+      globalCandidatesByLanguage: { ru: [platformDuplicate], en: [] },
+      globalCandidatesByFirstCharacterByLanguage: {
+        ru: new Map([['и', [platformDuplicate]]]),
+        en: new Map(),
+      },
     });
     providerWithIndexes.localIndex = {
       getCurrentDocumentRoutines: () => [{ name: 'Исключение', kind: 'procedure', exported: false, parameterText: '' }],
@@ -539,11 +810,12 @@ suite('BSL platform completion', () => {
 
   test('inserts callable platform and local completions with parentheses and avoids an existing opening parenthesis', async () => {
     const provider = new BslCompletionProvider(extensionRoot());
+    const englishProvider = new BslCompletionProvider(extensionRoot(), languageReader('en'));
     const globalItems = await complete(provider, 'ТекущаяД');
     assert.strictEqual(insertedText(globalItems?.find((item) => item.label === 'ТекущаяДата')), 'ТекущаяДата()$0');
     assert.strictEqual(globalItems?.find((item) => item.label === 'ТекущаяДата')?.kind, vscode.CompletionItemKind.Method);
     assert.strictEqual(labels(await complete(provider, 'РабочаяД')).includes('РабочаяДата'), true);
-    const englishItems = await complete(provider, 'CurrentD');
+    const englishItems = await completeWithLanguage(englishProvider, 'CurrentD');
     assert.strictEqual(insertedText(englishItems?.find((item) => item.label === 'CurrentDate')), 'CurrentDate()$0');
     const messageItems = await complete(provider, 'Сообщ');
     assert.strictEqual(insertedText(messageItems?.find((item) => item.label === 'Сообщить')), 'Сообщить($0)');
@@ -593,12 +865,14 @@ suite('BSL platform completion', () => {
         'КонецПроцедуры',
       ].join('\n'));
       setWorkspaceRoots(root);
-      const reader = () => ({
+      const reader = (language: 'ru' | 'en') => ({
         getLoadedTypeObjectsForResource: (_resourcePath: string, folderId: string) => folderId === 'Catalogs'
           ? { status: 'loaded' as const, names: [catalogName] }
           : { status: 'notLoaded' as const },
+        getLanguageForResource: () => language,
       });
-      const provider = new BslCompletionProvider(extensionRoot(), reader);
+      const provider = new BslCompletionProvider(extensionRoot(), () => reader('ru'));
+      const englishProvider = new BslCompletionProvider(extensionRoot(), () => reader('en'));
 
       const managerText = [
         'Процедура ВызватьМенеджер()',
@@ -612,6 +886,18 @@ suite('BSL platform completion', () => {
       assert.ok(managerNames.includes('СоздатьГруппу'));
       assert.ok(managerNames.includes('ОткрытьФормуМенеджера'));
       assert.ok(!managerNames.includes('ПриватнаяФункцияМенеджера'));
+
+      const englishManagerText = `Catalogs.${catalogName}.`;
+      const englishManagerItems = await completeWithLocalDocument(
+        englishProvider,
+        localDocument(path.join(root, 'CommonModules', 'Caller', 'Ext', 'EnglishModule.bsl'), englishManagerText),
+        englishManagerText,
+      );
+      const englishManagerNames = labels(englishManagerItems);
+      assert.ok(englishManagerNames.includes('CreateItem'));
+      assert.ok(englishManagerNames.includes('CreateFolder'));
+      assert.ok(!englishManagerNames.includes('СоздатьЭлемент'));
+      assert.ok(englishManagerNames.includes('ОткрытьФормуМенеджера'), 'authored exports remain unchanged');
 
       const assignedManagerText = [
         'Процедура ВызватьМенеджер()',

@@ -89,10 +89,13 @@ function safeSourceUrl(value: string | undefined): string | undefined {
   }
 }
 
-export function renderSyntaxHelpHtml(article: SyntaxHelpArticle, cspSource: string): string {
+export function renderSyntaxHelpHtml(article: SyntaxHelpArticle, cspSource: string, matchedName?: string): string {
   const sourceUrl = safeSourceUrl(article.sourceUrl);
   const sourceLink = sourceUrl
     ? `<footer><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Открыть источник на ИТС</a></footer>`
+    : '';
+  const matchContext = matchedName && matchedName !== article.name
+    ? `<aside class="match-context"><div>Найденный элемент: <strong>${escapeHtml(matchedName)}</strong></div><div>Статья справки: <strong>${escapeHtml(article.name)}</strong></div></aside>`
     : '';
   return `<!DOCTYPE html>
 <html lang="ru">
@@ -118,10 +121,12 @@ export function renderSyntaxHelpHtml(article: SyntaxHelpArticle, cspSource: stri
     th { background: var(--vscode-textCodeBlock-background); }
     footer { border-top: 1px solid var(--vscode-panel-border); margin-top: 2rem; padding-top: 1rem; }
     .image-alt { color: var(--vscode-descriptionForeground); font-style: italic; }
+    .match-context { margin: 1rem 0; padding: .65rem .9rem; border-left: 3px solid var(--vscode-focusBorder); background: var(--vscode-textCodeBlock-background); }
+    .match-context div + div { margin-top: .2rem; color: var(--vscode-descriptionForeground); }
   </style>
 </head>
 <body>
-  <main><article>${markdown.render(article.markdown)}</article>${sourceLink}</main>
+  <main>${matchContext}<article>${markdown.render(article.markdown)}</article>${sourceLink}</main>
 </body>
 </html>`;
 }
@@ -280,13 +285,13 @@ export class SyntaxHelpProvider {
       await vscode.window.showErrorMessage(`Не удалось открыть статью справки: ${errorOf(result) ?? 'статья не найдена.'}`);
       return;
     }
-    this.showArticle(article);
+    this.showArticle(article, item.name);
   }
 
-  private showArticle(article: SyntaxHelpArticle): void {
+  private showArticle(article: SyntaxHelpArticle, matchedName?: string): void {
     if (this.panel) {
       this.panel.title = article.name;
-      this.panel.webview.html = renderSyntaxHelpHtml(article, this.panel.webview.cspSource);
+      this.panel.webview.html = renderSyntaxHelpHtml(article, this.panel.webview.cspSource, matchedName);
       this.panel.reveal(vscode.ViewColumn.Beside);
       return;
     }
@@ -300,7 +305,7 @@ export class SyntaxHelpProvider {
     panel.onDidDispose(() => {
       if (this.panel === panel) { this.panel = undefined; }
     });
-    panel.webview.html = renderSyntaxHelpHtml(article, panel.webview.cspSource);
+    panel.webview.html = renderSyntaxHelpHtml(article, panel.webview.cspSource, matchedName);
   }
 
   private errorMessage(error: unknown): string {

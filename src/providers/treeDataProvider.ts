@@ -694,6 +694,26 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
     if (!resourcePath || !folderId) {
       return { status: 'notLoaded' };
     }
+    const selectedRoot = this.findConfigurationRootForResource(resourcePath);
+    const typeFolder = selectedRoot ? this.findTypeFolderNode(selectedRoot, folderId) : undefined;
+    if (!typeFolder || (typeFolder.properties as Record<string, unknown>)._indexLoaded !== true) {
+      return { status: 'notLoaded' };
+    }
+    return {
+      status: 'loaded',
+      names: (typeFolder.children ?? []).map(({ name }) => name),
+    };
+  }
+
+  /** Returns the normalized primary BSL language for a resource in the most-specific loaded root. */
+  getLanguageForResource(resourcePath: string): 'ru' | 'en' {
+    return this.findConfigurationRootForResource(resourcePath)?.properties.bslLanguage === 'en' ? 'en' : 'ru';
+  }
+
+  private findConfigurationRootForResource(resourcePath: string): TreeNode | undefined {
+    if (!resourcePath) {
+      return undefined;
+    }
     const targetPath = path.resolve(resourcePath);
     const matchingRoots = this.rootNodes
       .map((root) => {
@@ -715,16 +735,7 @@ export class MetadataTreeDataProvider implements vscode.TreeDataProvider<TreeNod
       })
       .filter((candidate): candidate is { root: TreeNode; configPath: string } => candidate !== undefined)
       .sort((left, right) => right.configPath.length - left.configPath.length);
-
-    const selectedRoot = matchingRoots[0]?.root;
-    const typeFolder = selectedRoot ? this.findTypeFolderNode(selectedRoot, folderId) : undefined;
-    if (!typeFolder || (typeFolder.properties as Record<string, unknown>)._indexLoaded !== true) {
-      return { status: 'notLoaded' };
-    }
-    return {
-      status: 'loaded',
-      names: (typeFolder.children ?? []).map(({ name }) => name),
-    };
+    return matchingRoots[0]?.root;
   }
 
   /** Atomically replaces one loaded configuration root and preserves every other root/context. */

@@ -54,6 +54,7 @@ interface KnowledgeNode {
   readonly searchName: string;
   readonly searchPath: string;
   readonly searchContent: string;
+  readonly platformMemberLines: ReadonlyMap<string, string>;
 }
 
 interface StandardsManifest {
@@ -143,6 +144,34 @@ function normalizeKnowledgeText(value: string): string {
     .replace(/<\/?(?:a|b|strong|em|i|u|span|font|code|pre|p|div|ul|ol|li|table|thead|tbody|tr|td|th|h[1-6]|section|article|sup|sub)\b[^>]*>/gi, ' '));
 }
 
+const PLATFORM_MEMBER_LINE = /^\s*([\p{L}_][\p{L}\p{N}_]*)\s*(?:\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\))?\s*$/u;
+const PLATFORM_MEMBER_SECTIONS = new Set(['свойства', 'методы', 'properties', 'methods']);
+const PLATFORM_SECTION_HEADING = /^[\p{L}_][\p{L}\p{N}_ ]*:\s*$/u;
+
+function platformMemberLinesOf(normalizedContent: string): ReadonlyMap<string, string> {
+  if (!/(?:свойства|методы|properties|methods)/iu.test(normalizedContent)) { return new Map(); }
+  const members = new Map<string, string>();
+  let inMemberSection = false;
+  for (const rawLine of normalizedContent.split('\n')) {
+    const line = rawLine.replace(/[\t ]+/g, ' ').trim();
+    const heading = line.replace(/^#+\s*/u, '').replace(/:$/u, '').trim();
+    if (PLATFORM_MEMBER_SECTIONS.has(fold(heading))) {
+      inMemberSection = true;
+      continue;
+    }
+    if (PLATFORM_SECTION_HEADING.test(line)) {
+      inMemberSection = false;
+      continue;
+    }
+    if (!inMemberSection) { continue; }
+    const match = PLATFORM_MEMBER_LINE.exec(line);
+    if (!match) { continue; }
+    members.set(fold(match[1]), line);
+    if (match[2] !== undefined) { members.set(fold(match[2]), line); }
+  }
+  return members;
+}
+
 function excerpt(text: string, query: string, maxLength: number): string {
   const clean = normalizeKnowledgeText(text).replace(/[\t ]+/g, ' ').replace(/\n+/g, ' ').trim();
   if (clean.length <= maxLength) { return clean; }
@@ -164,6 +193,7 @@ function createNode(
   content: string,
   sourceUrl?: string,
 ): KnowledgeNode {
+  const normalizedContent = normalizeKnowledgeText(content);
   return {
     id,
     source,
@@ -174,7 +204,8 @@ function createNode(
     ...(sourceUrl ? { sourceUrl } : {}),
     searchName: fold(name),
     searchPath: fold(itemPath),
-    searchContent: fold(normalizeKnowledgeText(content)),
+    searchContent: fold(normalizedContent),
+    platformMemberLines: source === 'syntax' ? platformMemberLinesOf(normalizedContent) : new Map(),
   };
 }
 
@@ -271,6 +302,10 @@ function rankNode(node: KnowledgeNode, query: string): number | null {
   if (node.searchPath.includes(query)) { return 3; }
   if (node.searchContent.includes(query)) { return 4; }
   return null;
+}
+
+function findPlatformMemberLine(node: KnowledgeNode, query: string): string | undefined {
+  return node.platformMemberLines.get(query);
 }
 
 const BSL_KEYWORDS = new Set([
@@ -512,20 +547,34 @@ export class AgentSyntaxHelpOperations {
   ): Record<string, unknown> {
     const line = params.line!;
     const terms = extractLineTerms(line, params.cursorColumn ?? line.length);
-    const bestMatches = new Map<string, { node: KnowledgeNode; termIndex: number; rank: number; query: string }>();
+    const bestMatches = new Map<string, {
+      node: KnowledgeNode;
+      termIndex: number;
+      rank: number;
+      query: string;
+      memberLine?: string;
+    }>();
+    let nearestTermHasExactHit = false;
     terms.forEach((term, termIndex) => {
       const query = fold(term);
       for (const node of nodes) {
         if (!sourceAllows(params.source, node.source)) { continue; }
-        const rank = rankNode(node, query);
-        if (rank === null) { continue; }
+        const articleRank = rankNode(node, query);
+        const memberLine = findPlatformMemberLine(node, query);
+        if (termIndex === 0 && (articleRank === 0 || memberLine !== undefined)) {
+          nearestTermHasExactHit = true;
+        }
+        if (articleRank === null && memberLine === undefined) { continue; }
+        const rank = memberLine === undefined ? articleRank! : 0;
         const existing = bestMatches.get(node.id);
         if (!existing || rank < existing.rank || (rank === existing.rank && termIndex < existing.termIndex)) {
-          bestMatches.set(node.id, { node, termIndex, rank, query: term });
+          bestMatches.set(node.id, { node, termIndex, rank, query: term, ...(memberLine ? { memberLine } : {}) });
         }
       }
     });
-    const selected = [...bestMatches.values()].sort((left, right) =>
+    const selected = [...bestMatches.values()]
+      .filter(({ rank }) => !nearestTermHasExactHit || rank < 4)
+      .sort((left, right) =>
       left.rank - right.rank || left.termIndex - right.termIndex || compareNodes(left.node, right.node));
     const limit = params.limit ?? 10;
     const snippetLength = params.snippetLength ?? 300;
@@ -536,12 +585,12 @@ export class AgentSyntaxHelpOperations {
       total: selected.length,
       limit,
       hasMore: selected.length > limit,
-      items: selected.slice(0, limit).map(({ node, query }) => ({
+      items: selected.slice(0, limit).map(({ node, query, memberLine }) => ({
         id: node.id,
         source: node.source,
-        name: node.name,
+        name: memberLine ?? node.name,
         path: node.path,
-        snippet: excerpt(node.content, query, snippetLength),
+        snippet: excerpt(memberLine ?? node.content, query, snippetLength),
       } satisfies SyntaxHelpItem)),
     };
   }

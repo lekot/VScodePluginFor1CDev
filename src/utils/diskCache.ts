@@ -67,9 +67,17 @@ export async function loadTreeFromCache(
       Logger.debug('Cache invalidated: Configuration.xml not accessible');
       return null;
     }
-    
+
     const root = deserializeTree(entry.tree);
-    
+
+    // Language metadata was added to Configuration roots after the initial cache format.
+    // Rebuild older roots once so language-sensitive providers can use cached lookups only.
+    if (root.type === MetadataType.Configuration
+      && root.properties?.bslLanguage !== 'ru' && root.properties?.bslLanguage !== 'en') {
+      Logger.info('Cache invalidated: Configuration root is missing its BSL language');
+      return null;
+    }
+
     // MIGRATION: Normalize filePath for Configuration root nodes loaded from cache
     // Old cache may have filePath = directory or ConfigDumpInfo.xml; normalize to Configuration.xml in configDir
     if (root.type === MetadataType.Configuration && root.filePath) {

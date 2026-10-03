@@ -197,11 +197,11 @@ suite('AgentSyntaxHelpOperations', () => {
     const exactFirst = dataOf(await operations.execute({
       action: 'searchLine',
       line: 'Значение = Форма;',
-      cursorColumn: 2,
+      cursorColumn: 'Значение = Форма;'.indexOf('Форма') + 2,
       source: 'syntax',
       limit: 5,
     })) as { terms: string[]; items: Array<{ name: string }> };
-    assert.strictEqual(exactFirst.items[0].name, 'Форма', 'An exact API entry under the cursor must lead generic content matches.');
+    assert.match(exactFirst.items[0].name, /^Форма(?: \(Form\))?$/, 'An exact API entry under the cursor must lead generic content matches.');
 
     const inString = await operations.execute({
       action: 'searchLine',
@@ -219,6 +219,35 @@ suite('AgentSyntaxHelpOperations', () => {
     assert.deepStrictEqual(dataOf(commentOnly), {
       line: '// СправочникОбъект', terms: [], source: 'all', total: 0, limit: 10, hasMore: false, items: [],
     });
+  });
+
+  test('searchLine surfaces an exact platform member line and keeps broad content fallback without an exact hit', async () => {
+    const line = 'ТекущаяДата;';
+    const exact = dataOf(await operations.execute({
+      action: 'searchLine', line, cursorColumn: line.indexOf('ТекущаяДата') + 3, source: 'syntax',
+    })) as { items: Array<{ id: string; name: string; path: string; snippet: string }> };
+    const member = exact.items.find(({ id }) => id === 'syntax:1');
+
+    assert.ok(member, 'The parent platform article should be returned for the exact member line.');
+    assert.strictEqual(member.path, 'Global context.html');
+    assert.match(member.name, /ТекущаяДата/);
+    assert.match(member.name, /CurrentDate/);
+    assert.ok(!member.snippet.includes('СтрЧислоВхождений'), 'The snippet should focus on the matching member line.');
+    assert.match(member.snippet, /ТекущаяДата \(CurrentDate\)/);
+    assert.ok(exact.items.every(({ name }) => name === 'ТекущаяДата (CurrentDate)'), 'Broad content-only hits should be hidden after an exact member hit.');
+
+    const fallbackLine = 'Окружение = Контекст;';
+    const fallback = dataOf(await operations.execute({
+      action: 'searchLine', line: fallbackLine, cursorColumn: fallbackLine.indexOf('Контекст') + 2, source: 'syntax',
+    })) as { items: Array<{ name: string; snippet: string }> };
+    assert.ok(fallback.items.length > 0, 'Broad content matches should remain when the nearest term has no exact hit.');
+
+    const eventLine = 'Объект.ПередЗаписью;';
+    const eventResults = dataOf(await operations.execute({
+      action: 'searchLine', line: eventLine, cursorColumn: eventLine.indexOf('ПередЗаписью') + 4, source: 'syntax',
+    })) as { items: Array<{ name: string; snippet: string }> };
+    assert.ok(eventResults.items.length > 0, 'A standalone event in an Events section should use broad content fallback.');
+    assert.ok(eventResults.items.every(({ name }) => name !== 'ПередЗаписью (BeforeWrite)'));
   });
 
   test('searchLine validates its line context and refuses unrelated search arguments', async () => {
