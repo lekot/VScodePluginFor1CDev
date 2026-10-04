@@ -5,12 +5,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import type * as vscode from 'vscode';
 import { terminateChildProcess } from './processLifecycle';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const RING_BUFFER_MAX_BYTES = 256 * 1024;
 const TIMEOUT_TERM_WAIT_MS = 1_000;
 const TIMEOUT_KILL_WAIT_MS = 1_000;
+const CANCEL_TERM_WAIT_MS = 1_000;
+const CANCEL_KILL_WAIT_MS = 1_000;
 
 export interface RunFormsOptions {
     /** Корень расширения (extensionContext.extensionPath). */
@@ -25,6 +28,8 @@ export interface RunFormsOptions {
     stdin?: string;
     /** Таймаут в мс (default 30000). */
     timeoutMs?: number;
+    /** Cancellation token for a foreground forms command process. */
+    token?: vscode.CancellationToken;
     /**
      * Если задан — функция-предикат по накопленному stdout.
      * При первом возврате true промис резолвится, процесс ОТКРЕПЛЯЕТСЯ и живёт в фоне
@@ -42,6 +47,12 @@ export interface RunFormsResult {
     detachedProc?: import('child_process').ChildProcess;
     /** Timed-out child that survived TERM→KILL. The caller must retain ownership and retry cleanup. */
     unclosedProc?: import('child_process').ChildProcess;
+    /** Cancellation was requested while the runner process was active. */
+    cancelled?: boolean;
+    /** The process may have performed effects before it settled. */
+    effectPossible?: boolean;
+    /** The command timed out after process startup. */
+    timedOut?: boolean;
 }
 
 /**
@@ -50,6 +61,9 @@ export interface RunFormsResult {
  * (playwright задекларирован в dependencies расширения, не нужен отдельный npm install).
  */
 export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsResult> {
+    if (opts.token?.isCancellationRequested) {
+        return { output: '', stderr: '', exitCode: -2, cancelled: true, effectPossible: false };
+    }
     const scriptPath = path.join(opts.extensionPath, 'resources', 'web-test', 'run.mjs');
 
     if (!fs.existsSync(scriptPath)) {
@@ -59,6 +73,9 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const nodeModulesPath = path.join(opts.extensionPath, 'node_modules');
     await fs.promises.mkdir(path.dirname(opts.sessionFilePath), { recursive: true });
+    if (opts.token?.isCancellationRequested) {
+        return { output: '', stderr: '', exitCode: -2, cancelled: true, effectPossible: false };
+    }
 
     return new Promise<RunFormsResult>((resolve, reject) => {
         let outBuf: Buffer = Buffer.alloc(0);
@@ -67,7 +84,11 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
         let errTruncated = false;
         let settled = false;
         let timedOut = false;
+        let cancelled = false;
+        let stopping = false;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const cancellationHolder: { value: vscode.Disposable | undefined } = { value: undefined };
+        let termination: Promise<void> | undefined;
 
         const appendRing = (
             chunk: Buffer | string,
@@ -86,14 +107,23 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
             return [Buffer.from(combined.subarray(start)), true];
         };
 
-        const finish = (code: number) => {
-            if (settled || timedOut) { return; }
+        const finish = (code: number, unclosedProc?: import('child_process').ChildProcess) => {
+            if (settled) { return; }
             settled = true;
             if (timeoutHandle !== undefined) {
                 clearTimeout(timeoutHandle);
                 timeoutHandle = undefined;
             }
-            resolve({ output: outBuf.toString('utf8'), stderr: errBuf.toString('utf8'), exitCode: code });
+            cancellationHolder.value?.dispose();
+            resolve({
+                output: outBuf.toString('utf8'),
+                stderr: `${errBuf.toString('utf8')}${timedOut ? '\n[timeout]' : cancelled ? '\n[cancelled]' : ''}${unclosedProc ? '\n[process did not exit]' : ''}`,
+                exitCode: timedOut ? 124 : code,
+                effectPossible: true,
+                ...(cancelled ? { cancelled: true } : {}),
+                ...(timedOut ? { timedOut: true } : {}),
+                ...(unclosedProc ? { unclosedProc } : {}),
+            });
         };
 
         const proc = spawn(process.execPath, [scriptPath, opts.command, ...opts.args], {
@@ -117,6 +147,7 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
                     clearTimeout(timeoutHandle);
                     timeoutHandle = undefined;
                 }
+                cancellationHolder.value?.dispose();
                 // Keep draining bounded buffers. Removing listeners can fill the
                 // child pipes and block the long-lived HTTP server.
                 proc.unref();
@@ -125,6 +156,7 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
                     stderr: errBuf.toString('utf8'),
                     exitCode: 0,
                     detachedProc: proc,
+                    effectPossible: true,
                 });
             }
         });
@@ -133,10 +165,34 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
             [errBuf, errTruncated] = appendRing(chunk, errBuf, errTruncated);
         });
 
+        const stop = (reason: 'cancelled' | 'timedOut'): void => {
+            if (settled || stopping) { return; }
+            stopping = true;
+            cancelled = reason === 'cancelled';
+            timedOut = reason === 'timedOut';
+            termination = terminateChildProcess(
+                proc,
+                'forms runner',
+                reason === 'cancelled' ? CANCEL_TERM_WAIT_MS : TIMEOUT_TERM_WAIT_MS,
+                reason === 'cancelled' ? CANCEL_KILL_WAIT_MS : TIMEOUT_KILL_WAIT_MS,
+            ).then(
+                () => finish(reason === 'cancelled' ? -2 : 124),
+                () => {
+                    proc.unref();
+                    finish(reason === 'cancelled' ? -2 : 124, proc);
+                },
+            );
+            void termination;
+        };
+
+        cancellationHolder.value = opts.token?.onCancellationRequested(() => stop('cancelled'));
+        if (opts.token?.isCancellationRequested) { stop('cancelled'); }
+
         proc.on('error', (err) => {
-            if (!settled && !timedOut) {
+            if (!settled && !stopping) {
                 settled = true;
                 if (timeoutHandle !== undefined) { clearTimeout(timeoutHandle); }
+                cancellationHolder.value?.dispose();
                 reject(err);
             }
         });
@@ -146,35 +202,8 @@ export async function runFormsScript(opts: RunFormsOptions): Promise<RunFormsRes
         });
 
         timeoutHandle = setTimeout(() => {
-            if (!settled) {
-                timedOut = true;
-                timeoutHandle = undefined;
-                void terminateChildProcess(
-                    proc,
-                    'forms runner',
-                    TIMEOUT_TERM_WAIT_MS,
-                    TIMEOUT_KILL_WAIT_MS,
-                ).then(
-                    () => {
-                        settled = true;
-                        resolve({
-                            output: outBuf.toString('utf8'),
-                            stderr: `${errBuf.toString('utf8')}\n[timeout]`,
-                            exitCode: 124,
-                        });
-                    },
-                    () => {
-                        settled = true;
-                        proc.unref();
-                        resolve({
-                            output: outBuf.toString('utf8'),
-                            stderr: `${errBuf.toString('utf8')}\n[timeout: process did not exit]`,
-                            exitCode: 124,
-                            unclosedProc: proc,
-                        });
-                    },
-                );
-            }
+            timeoutHandle = undefined;
+            stop('timedOut');
         }, timeoutMs);
 
         // Если нужно передать stdin (exec -)

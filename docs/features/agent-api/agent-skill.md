@@ -68,22 +68,26 @@
 
 ### Фоновые задачи
 
-Длительные deploy, deploy выбранных/изменённых файлов, pull, export status, EPF/ERF operations и
-операции Хранилища можно запустить с `background: true`. MCP-схемы для этих операций по умолчанию
-выбирают background; синхронный MCP-вызов задаёт `background: false`. Прямые deploy/pull Agent-команды
-сохраняют синхронное поведение по умолчанию. Мутации Хранилища по умолчанию возвращают task receipt;
-`background: false` оставляет их синхронными.
+Длительные deploy, deploy выбранных/изменённых файлов, pull, export status, EPF/ERF operations,
+команды СКД (`compile`, `info`, `edit`, `validate`), операции поддержки конфигурации
+(`setObjectMode`, `enableObjectRules`, `sync`, `verify`), управление браузерными формами
+(`start`, `exec`, `shot`) и debug-команды `start`, `startFromBinding`, `waitForStop` можно запустить
+с `background: true`. MCP-схемы для этих операций по умолчанию выбирают background; синхронный
+MCP-вызов задаёт `background: false`. Прямые Agent-вызовы этих операций сохраняют синхронное
+поведение без `background`; мутации Хранилища остаются фоновыми по умолчанию и принимают
+`background: false` для синхронного вызова.
 
 Передайте `taskId` из receipt в `1c-metadata-tree.agent.task.status`, `.task.result` или `.task.cancel`
 (MCP: `cdt_task_status`, `cdt_task_result`, `cdt_task_cancel`). Receipt немедленно возвращает
 `status: "working"`; task snapshots сообщают `running`, `completed`, `failed` или подтверждённый
 `cancelled`, флаг `cancellationRequested` и `elapsedMs`. Для running задачи время растёт от момента
-создания; после terminal state `elapsedMs` фиксируется. `recentMessages` — это stage events операции,
-а не stdout/stderr процесса. Tail содержит не более 24 сообщений по 320 символов и проходит
-credential-pattern redaction. `task.result` после
+создания; после terminal state `elapsedMs` фиксируется. `recentMessages` содержит этапы операции и
+доступные свежие строки процесса. Tail содержит не более 24 сообщений по 320 символов и проходит
+credential-pattern redaction до сохранения. `task.result` после
 завершения добавляет исходный `AgentResult` без потери его typed data. Терминальные результаты
 хранятся 15 минут; running задачи не вытесняются лимитом памяти. `task.cancel` только запрашивает
-отмену: статус остаётся `working`, пока нижележащая операция не вернёт фактический результат. Для
+отмену: receipt остаётся `working`, а snapshot сохраняет `running`, пока нижележащая операция не
+вернёт фактический результат. Для
 Хранилища `inDoubt` и `acknowledged` сохраняются даже после запроса отмены.
 
 ### CFE project lifecycle

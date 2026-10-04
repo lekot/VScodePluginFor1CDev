@@ -134,16 +134,21 @@ Annotations профилей совпадают с исходной класси
 synchronized files. Только `acknowledged` даёт `success: true`; status нельзя заменять общей ошибкой
 отмены после завершения команды.
 
-Длительные deploy/deploySelected/deployChanged/pull/exportStatus и EPF/ERF операции поддерживают
-тот же `background` input; MCP schema ставит `true` по умолчанию, прямые deploy Agent-вызовы
-сохраняют синхронный default для совместимости. Task receipt содержит `taskId`; status/result/cancel
+Длительные deploy/deploySelected/deployChanged/pull/exportStatus и EPF/ERF операции, четыре SKD
+команды, четыре операции поддержки (`setObjectMode`, `enableObjectRules`, `sync`, `verify`),
+`forms.start`/`exec`/`shot` и `debug.start`/`startFromBinding`/`waitForStop` поддерживают тот же
+`background` input. MCP schema ставит `true` по умолчанию; `background: false` выполняет вызов
+синхронно. Прямые Agent-вызовы этих команд без `background` остаются синхронными; операции
+Хранилища сохраняют существующий фоновой default. Task receipt содержит `taskId`; status/result/cancel
 обращаются к общему Agent-layer TaskManager. Терминальные результаты хранятся 15 минут, запись
 ограничена 64 задачами и не вытесняет running task. Receipt возвращает `status: "working"`; task
 snapshots используют состояния `running | completed | failed | cancelled` и `elapsedMs`, который
 растёт от `createdAt` для running и фиксируется при `finishedAt` для terminal state. `recentMessages`
-содержит только stage events операции, не stdout/stderr процесса: tail до 24 sanitized сообщений
-длиной до 320 символов. Отмена запрашивает VS Code CancellationTokenSource и не подтверждается до
-фактического завершения операции; исходный AgentResult вложен в `task.result`.
+содержит этапы операции и доступные свежие строки процесса: tail до 24 sanitized сообщений длиной до
+320 символов. Output проходит credential redaction до сохранения. Отмена запрашивает VS Code
+CancellationTokenSource и не подтверждается до фактического завершения операции; для процессов с
+возможным частичным эффектом возвращается typed `inDoubt`, исходный AgentResult вкладывается в
+`task.result` без замены ответом на сам запрос отмены.
 
 ### Поддержка конфигурации
 

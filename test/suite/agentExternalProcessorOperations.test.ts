@@ -127,6 +127,58 @@ suite('agentExternalProcessorOperations', () => {
     assert.strictEqual(capturedBuild?.cancellation, token);
   });
 
+  test('preserves direct-call service options when no stage reporter is supplied', async () => {
+    let capturedDump: DumpExternalProcessorOptions | undefined;
+    let capturedBuild: BuildExternalProcessorOptions | undefined;
+    serviceModule.dumpExternalProcessor = async (options) => {
+      capturedDump = options;
+      return completed(options.outputDirectory);
+    };
+    serviceModule.buildExternalProcessor = async (options) => {
+      capturedBuild = options;
+      return completed(options.destinationPath ?? 'built.epf');
+    };
+
+    await agentDumpExternalProcessor({
+      srcPath: 'Processor.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    });
+    await agentBuildExternalProcessor({
+      rootXmlPath: 'Processor_src/Processor.xml',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    });
+
+    assert.strictEqual(capturedDump?.onOutput, undefined);
+    assert.strictEqual(capturedBuild?.onOutput, undefined);
+  });
+
+  test('forwards bounded process lines to a supplied stage reporter', async () => {
+    const dumpStages: string[] = [];
+    const buildStages: string[] = [];
+    serviceModule.dumpExternalProcessor = async (options) => {
+      options.onOutput?.('preparing artifact\nwriting artifact\n');
+      return completed(options.outputDirectory);
+    };
+    serviceModule.buildExternalProcessor = async (options) => {
+      options.onOutput?.('loading source');
+      return completed(options.destinationPath ?? 'built.epf');
+    };
+
+    await agentDumpExternalProcessor({
+      srcPath: 'Processor.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    }, undefined, (message) => dumpStages.push(message));
+    await agentBuildExternalProcessor({
+      rootXmlPath: 'Processor_src/Processor.xml',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    }, undefined, (message) => buildStages.push(message));
+
+    assert.deepStrictEqual(dumpStages, ['preparing artifact', 'writing artifact']);
+    assert.deepStrictEqual(buildStages, ['loading source']);
+  });
+
   test('inDoubt remains an Agent error and preserves staging details in data', async () => {
     const doubtful: ExternalProcessorOperationResult = {
       state: 'inDoubt',

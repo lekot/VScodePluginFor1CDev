@@ -3,6 +3,7 @@ import type { ConfigurationId } from '../services/configurationSession/types';
 import type { ParsedParentConfigurations } from './parentConfigurationsCodec';
 import { ParentConfigurationsCodec } from './parentConfigurationsCodec';
 import type { MetadataUniverseResolver } from './metadataUniverseResolver';
+import { combineSupportCancellations } from './supportTypes';
 import type {
   EnableObjectRulesRequest,
   MasterSupportSnapshot,
@@ -127,6 +128,7 @@ export class SupportModeService {
       request.configurationId,
       request.expectedGenerationId,
       async (document) => ParentConfigurationsCodec.planObjectMode(document, request),
+      request.cancellation,
     );
   }
 
@@ -144,6 +146,7 @@ export class SupportModeService {
         const universe = await this.deps.universeResolver.resolve(this.configRoot);
         return ParentConfigurationsCodec.planEnableObjectRules(document, request, universe);
       },
+      request.cancellation,
     );
   }
 
@@ -151,6 +154,7 @@ export class SupportModeService {
     configurationId: ConfigurationId,
     expectedGenerationId: string,
     createPlan: MutationPlanFactory,
+    operationCancellation?: SupportCancellation,
   ): Promise<SupportModeMutationOutcome> {
     let initialMaster: MasterSupportState;
     try {
@@ -247,7 +251,7 @@ export class SupportModeService {
         snapshot: mutation.after,
         verification: 'fast',
         targets: { kind: 'all' },
-        cancellation: this.cancellation,
+        cancellation: combineSupportCancellations(this.cancellation, operationCancellation),
       });
     } catch {
       return replicationIssue(

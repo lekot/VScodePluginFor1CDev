@@ -20,6 +20,8 @@ interface ExternalProcessorOperationOptionsBase {
   readonly context: ExternalProcessorExecutionContext;
   readonly timeoutMs?: number;
   readonly cancellation?: StreamCancellation;
+  /** Receives live decoded process output after exact Configurator credentials are redacted. */
+  readonly onOutput?: (chunk: string) => void;
 }
 
 export interface DumpExternalProcessorOptions extends ExternalProcessorOperationOptionsBase {

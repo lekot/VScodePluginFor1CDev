@@ -137,6 +137,8 @@ export interface AgentSupportSetObjectModeParams extends AgentSupportConfigurati
     objectId: string;
     targetMode: 'notEditable' | 'editableWithSupport' | 'removedFromSupport';
     expectedGenerationId: string;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 export interface AgentSupportEnableObjectRulesParams extends AgentSupportConfigurationParams {
@@ -144,6 +146,8 @@ export interface AgentSupportEnableObjectRulesParams extends AgentSupportConfigu
     targetMode: 'editableWithSupport' | 'removedFromSupport';
     expectedGenerationId: string;
     expectedMetadataUniverseGenerationId: string;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 export type AgentSupportTargetSelection =
@@ -157,10 +161,14 @@ export type AgentSupportTargetSelection =
 export interface AgentSupportSyncParams extends AgentSupportConfigurationParams {
     targets: AgentSupportTargetSelection;
     verification?: 'fast' | 'strict';
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 export interface AgentSupportVerifyParams extends AgentSupportConfigurationParams {
     targets: AgentSupportTargetSelection;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 export type AgentSupportGetLastRunParams = AgentSupportConfigurationParams;

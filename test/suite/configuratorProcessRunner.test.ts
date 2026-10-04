@@ -48,6 +48,31 @@ suite('ConfiguratorProcessRunner', () => {
     }
   });
 
+  test('streams decoded output only after exact Configurator credentials are redacted', async () => {
+    const process = controllableProcess();
+    const chunks: string[] = [];
+    const secret = 'designer-password';
+    const processOptions = options(process.spawnImpl);
+    const outcomePromise = runConfiguratorProcess({
+      ...processOptions,
+      batchArguments: {
+        ...batchArguments(),
+        executionArgs: ['DESIGNER', '/P', secret],
+      },
+      onOutput: (chunk) => chunks.push(chunk),
+    });
+    const child = await process.waitForChild();
+    child.emit('spawn');
+    process.pushStdout('current password: designer-');
+    process.pushStdout('password is masked');
+    process.close(0, null);
+
+    const outcome = await outcomePromise;
+    assert.strictEqual(outcome.status, 'acknowledged');
+    assert.ok(!chunks.join('').includes(secret));
+    assert.ok(chunks.join('').includes('<redacted>'));
+  });
+
   test('pre-start spawn failure remains retryable and effect-free', async () => {
     const spawnImpl = (() => {
       throw Object.assign(new Error('spawn denied'), { code: 'EACCES' });
@@ -88,11 +113,13 @@ function batchArguments(): ConfiguratorBatchArguments {
 interface ControllableProcess {
   readonly spawnImpl: typeof spawn;
   readonly waitForChild: () => Promise<ChildProcess>;
+  readonly pushStdout: (value: string) => void;
   readonly pushStderr: (value: string) => void;
   readonly close: (code: number | null, signal: NodeJS.Signals | null) => void;
 }
 
 function controllableProcess(): ControllableProcess {
+  let stdout = new PassThrough();
   let child: ChildProcess | undefined;
   let stderr = new PassThrough();
   let resolveChild!: (value: ChildProcess) => void;
@@ -100,9 +127,10 @@ function controllableProcess(): ControllableProcess {
     resolveChild = resolve;
   });
   const spawnImpl = (() => {
+    stdout = new PassThrough();
     stderr = new PassThrough();
     const created = new EventEmitter() as ChildProcess;
-    (created as unknown as { stdout: PassThrough }).stdout = new PassThrough();
+    (created as unknown as { stdout: PassThrough }).stdout = stdout;
     (created as unknown as { stderr: PassThrough }).stderr = stderr;
     (created as unknown as { killed: boolean }).killed = false;
     (created as unknown as { exitCode: number | null }).exitCode = null;
@@ -114,6 +142,7 @@ function controllableProcess(): ControllableProcess {
   return {
     spawnImpl,
     waitForChild: () => childReady,
+    pushStdout: (value) => stdout.write(value),
     pushStderr: (value) => stderr.write(value),
     close: (code, signal) => {
       assert.ok(child, 'Process must be spawned before close.');

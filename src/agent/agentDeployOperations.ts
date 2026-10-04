@@ -18,6 +18,7 @@ import type { InfobaseEntry } from '../infobases/models/infobaseEntry';
 import { MetadataType, type TreeNode } from '../models/treeNode';
 import { detectChangedConfigFiles, type IncrementalChangeDetectorDeps } from '../services/ibcmd/incrementalChangeDetector';
 import { runInfobaseConfigExportStatus } from '../infobases/infobaseConfigCommands';
+import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 import type { AgentResult, ConfigurationScopedParams } from './types';
 import { findBinding } from './agentBindingResolver';
 
@@ -185,6 +186,7 @@ export class AgentDeployOperations {
             const support = await this.deps.resolveSupportContext?.(configRoot);
 
             const cancellation = createCancellationScope(execution.token);
+            const processOutput = createProcessOutputLineReporter(execution.reportStage);
             const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
@@ -196,6 +198,7 @@ export class AgentDeployOperations {
                     progress,
                     token: cancellation.token,
                     support,
+                    onOutput: processOutput.accept,
                 });
 
                 return {
@@ -221,6 +224,7 @@ export class AgentDeployOperations {
                     error: deploySummaryError(summary),
                 };
             } finally {
+                processOutput.flush();
                 cancellation.dispose();
             }
         } catch (err) {
@@ -246,6 +250,7 @@ export class AgentDeployOperations {
             }
 
             const cancellation = createCancellationScope(execution.token);
+            const processOutput = createProcessOutputLineReporter(execution.reportStage);
             const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
@@ -258,6 +263,7 @@ export class AgentDeployOperations {
                     progress,
                     token: cancellation.token,
                     support,
+                    onOutput: processOutput.accept,
                 });
 
                 return {
@@ -283,6 +289,7 @@ export class AgentDeployOperations {
                     error: deploySummaryError(summary),
                 };
             } finally {
+                processOutput.flush();
                 cancellation.dispose();
             }
         } catch (err) {
@@ -336,6 +343,7 @@ export class AgentDeployOperations {
             }
 
             const cancellation = createCancellationScope(execution.token);
+            const processOutput = createProcessOutputLineReporter(execution.reportStage);
             const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
@@ -348,6 +356,7 @@ export class AgentDeployOperations {
                     progress,
                     token: cancellation.token,
                     support,
+                    onOutput: processOutput.accept,
                 });
 
                 return {
@@ -373,6 +382,7 @@ export class AgentDeployOperations {
                     error: deploySummaryError(summary),
                 };
             } finally {
+                processOutput.flush();
                 cancellation.dispose();
             }
         } catch (err) {
@@ -424,6 +434,7 @@ export class AgentDeployOperations {
             });
 
             const cancellation = createCancellationScope(execution.token);
+            const processOutput = createProcessOutputLineReporter(execution.reportStage);
             const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
@@ -435,6 +446,7 @@ export class AgentDeployOperations {
                     selectedNodes: nodes,
                     progress,
                     token: cancellation.token,
+                    onOutput: processOutput.accept,
                 });
 
                 return {
@@ -458,6 +470,7 @@ export class AgentDeployOperations {
                         : undefined,
                 };
             } finally {
+                processOutput.flush();
                 cancellation.dispose();
             }
         } catch (err) {
@@ -488,6 +501,7 @@ export class AgentDeployOperations {
             const entry = entries[0]!;
 
             const cancellation = createCancellationScope(execution.token);
+            const processOutput = createProcessOutputLineReporter(execution.reportStage);
             try {
                 const result = await runInfobaseConfigExportStatus({
                         entry,
@@ -495,6 +509,7 @@ export class AgentDeployOperations {
                         storage: this.deps.infobaseStorage,
                         token: cancellation.token,
                         ibcmdExtensionName: ctx.data!.binding.ibcmdExtensionName,
+                        onOutput: processOutput.accept,
                     });
 
                 return {
@@ -504,6 +519,7 @@ export class AgentDeployOperations {
                     error: result.status !== 'success' ? result.userMessage : undefined,
                 };
             } finally {
+                processOutput.flush();
                 cancellation.dispose();
             }
         } catch (err) {

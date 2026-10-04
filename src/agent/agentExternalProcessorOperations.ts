@@ -4,25 +4,32 @@ import {
   buildExternalProcessor,
   dumpExternalProcessor,
 } from '../services/externalProcessor/externalProcessorService';
-import type { ExternalProcessorExecutionContext } from '../services/externalProcessor/externalProcessorTypes';
+import type {
+  ExternalProcessorExecutionContext,
+  ExternalProcessorOperationResult,
+} from '../services/externalProcessor/externalProcessorTypes';
 import type {
   AgentBuildExternalProcessorParams,
   AgentDumpExternalProcessorParams,
   AgentResult,
   ExternalProcessorAgentData,
 } from './types';
+import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 
 export function agentDumpExternalProcessor(
   input: AgentDumpExternalProcessorParams,
   token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export function agentDumpExternalProcessor(
   input: unknown,
   token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export async function agentDumpExternalProcessor(
   input: unknown,
   token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>> {
   const request = parseDumpRequest(input);
   if ('state' in request) {
@@ -35,40 +42,57 @@ export async function agentDumpExternalProcessor(
         path.dirname(srcPath),
         `${path.basename(srcPath, path.extname(srcPath))}_src`
       );
-  const result = await dumpExternalProcessor({
-    externalFilePath: srcPath,
-    outputDirectory: outDir,
-    format: request.format,
-    context: request.context,
-    timeoutMs: request.timeoutMs,
-    ...(token ? { cancellation: token } : {}),
-  });
+  const output = reportStage ? createProcessOutputLineReporter(reportStage) : undefined;
+  let result: ExternalProcessorOperationResult;
+  try {
+    result = await dumpExternalProcessor({
+      externalFilePath: srcPath,
+      outputDirectory: outDir,
+      format: request.format,
+      context: request.context,
+      timeoutMs: request.timeoutMs,
+      ...(token ? { cancellation: token } : {}),
+      ...(output ? { onOutput: output.accept } : {}),
+    });
+  } finally {
+    output?.flush();
+  }
   return toAgentResult(result);
 }
 
 export function agentBuildExternalProcessor(
   input: AgentBuildExternalProcessorParams,
   token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export function agentBuildExternalProcessor(
   input: unknown,
   token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export async function agentBuildExternalProcessor(
   input: unknown,
   token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>> {
   const request = parseBuildRequest(input);
   if ('state' in request) {
     return toAgentResult(request);
   }
-  const result = await buildExternalProcessor({
-    rootXmlPath: path.resolve(request.rootXmlPath),
-    destinationPath: request.dstPath ? path.resolve(request.dstPath) : undefined,
-    context: request.context,
-    timeoutMs: request.timeoutMs,
-    ...(token ? { cancellation: token } : {}),
-  });
+  const output = reportStage ? createProcessOutputLineReporter(reportStage) : undefined;
+  let result: ExternalProcessorOperationResult;
+  try {
+    result = await buildExternalProcessor({
+      rootXmlPath: path.resolve(request.rootXmlPath),
+      destinationPath: request.dstPath ? path.resolve(request.dstPath) : undefined,
+      context: request.context,
+      timeoutMs: request.timeoutMs,
+      ...(token ? { cancellation: token } : {}),
+      ...(output ? { onOutput: output.accept } : {}),
+    });
+  } finally {
+    output?.flush();
+  }
   return toAgentResult(result);
 }
 

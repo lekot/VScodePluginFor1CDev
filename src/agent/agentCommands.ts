@@ -283,6 +283,33 @@ export function registerAgentCommands(
 
     const taskManager = new AgentTaskManager();
     context.subscriptions.push({ dispose: () => taskManager.dispose() });
+    const runAgentLongTask = <T>(
+        name: string,
+        background: boolean | undefined,
+        requestToken: vscode.CancellationToken | undefined,
+        execute: (
+            token: vscode.CancellationToken | undefined,
+            reportStage?: (message: string) => void,
+        ) => Promise<AgentResult<T>>,
+    ): Promise<AgentResult<unknown>> => {
+        if (background === true) {
+            return Promise.resolve(taskManager.start(name, async (token, reportStage) => {
+                if (token.isCancellationRequested) {
+                    return { success: false, code: 'REQUEST_CANCELLED', error: 'Операция отменена до запуска.' };
+                }
+                reportStage(`Запущена операция ${name}.`);
+                return execute(token, reportStage);
+            }));
+        }
+        if (requestToken?.isCancellationRequested) {
+            return Promise.resolve({
+                success: false,
+                code: 'REQUEST_CANCELLED',
+                error: 'Операция отменена до запуска.',
+            });
+        }
+        return execute(requestToken);
+    };
     const repositoryOperations = new AgentRepositoryOperations({
         getService: () => getRepositoryService?.() ?? null,
         getTreeProvider: getTreeDataProvider,
@@ -557,9 +584,10 @@ export function registerAgentCommands(
 
     const debugStartCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.debug.start',
-        async (params: DebugStartParams) => {
+        async (params: DebugStartParams, requestToken?: vscode.CancellationToken) => {
             const ops = new AgentDebugOperations(debugRegistry);
-            return await ops.debugStart(params);
+            return runAgentLongTask('agent.debug.start', params.background, requestToken, (token, reportStage) =>
+                ops.debugStart(params, token, reportStage));
         }
     );
 
@@ -607,9 +635,10 @@ export function registerAgentCommands(
 
     const debugWaitForStopCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.debug.waitForStop',
-        async (params: DebugWaitForStopParams) => {
+        async (params: DebugWaitForStopParams, requestToken?: vscode.CancellationToken) => {
             const ops = new AgentDebugOperations(debugRegistry);
-            return await ops.debugWaitForStop(params);
+            return runAgentLongTask('agent.debug.waitForStop', params.background, requestToken, (token, reportStage) =>
+                ops.debugWaitForStop(params, token, reportStage));
         }
     );
 
@@ -697,9 +726,10 @@ export function registerAgentCommands(
 
     const debugStartFromBindingCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.debug.startFromBinding',
-        async (params: DebugStartFromBindingParams) => {
+        async (params: DebugStartFromBindingParams, requestToken?: vscode.CancellationToken) => {
             const ops = new AgentDebugOperations(debugRegistry, getDebugDeps?.());
-            return await ops.debugStartFromBinding(params);
+            return runAgentLongTask('agent.debug.startFromBinding', params.background, requestToken, (token, reportStage) =>
+                ops.debugStartFromBinding(params, token, reportStage));
         }
     );
 
@@ -949,12 +979,13 @@ export function registerAgentCommands(
 
     const formsStartCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.start',
-        async (params: FormsStartParams) => {
+        async (params: FormsStartParams, requestToken?: vscode.CancellationToken) => {
             const ops = new FormsOperations({
                 extensionPath: context.extensionPath,
                 outputChannel: formsOutputChannel,
             });
-            return await ops.formsStart(params);
+            return runAgentLongTask('agent.forms.start', params.background, requestToken, (token, reportStage) =>
+                ops.formsStart(params, token, reportStage));
         }
     );
 
@@ -962,12 +993,13 @@ export function registerAgentCommands(
 
     const formsExecCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.exec',
-        async (params: FormsExecParams) => {
+        async (params: FormsExecParams, requestToken?: vscode.CancellationToken) => {
             const ops = new FormsOperations({
                 extensionPath: context.extensionPath,
                 outputChannel: formsOutputChannel,
             });
-            return await ops.formsExec(params);
+            return runAgentLongTask('agent.forms.exec', params.background, requestToken, (token, reportStage) =>
+                ops.formsExec(params, token, reportStage));
         }
     );
 
@@ -988,12 +1020,13 @@ export function registerAgentCommands(
 
     const formsShotCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.shot',
-        async (params: FormsShotParams = {}) => {
+        async (params: FormsShotParams = {}, requestToken?: vscode.CancellationToken) => {
             const ops = new FormsOperations({
                 extensionPath: context.extensionPath,
                 outputChannel: formsOutputChannel,
             });
-            return await ops.formsShot(params);
+            return runAgentLongTask('agent.forms.shot', params.background, requestToken, (token, reportStage) =>
+                ops.formsShot(params, token, reportStage));
         }
     );
 
@@ -1037,9 +1070,10 @@ export function registerAgentCommands(
 
     const skdCompileCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.skd.compile',
-        async (params: SkdCompileParams) => {
+        async (params: SkdCompileParams, requestToken?: vscode.CancellationToken) => {
             const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return await ops.skdCompile(params);
+            return runAgentLongTask('agent.skd.compile', params.background, requestToken, (token, reportStage) =>
+                ops.skdCompile(params, token, reportStage));
         }
     );
 
@@ -1047,9 +1081,10 @@ export function registerAgentCommands(
 
     const skdInfoCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.skd.info',
-        async (params: SkdInfoParams) => {
+        async (params: SkdInfoParams, requestToken?: vscode.CancellationToken) => {
             const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return await ops.skdInfo(params);
+            return runAgentLongTask('agent.skd.info', params.background, requestToken, (token, reportStage) =>
+                ops.skdInfo(params, token, reportStage));
         }
     );
 
@@ -1057,9 +1092,10 @@ export function registerAgentCommands(
 
     const skdEditCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.skd.edit',
-        async (params: SkdEditParams) => {
+        async (params: SkdEditParams, requestToken?: vscode.CancellationToken) => {
             const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return await ops.skdEdit(params);
+            return runAgentLongTask('agent.skd.edit', params.background, requestToken, (token, reportStage) =>
+                ops.skdEdit(params, token, reportStage));
         }
     );
 
@@ -1067,9 +1103,10 @@ export function registerAgentCommands(
 
     const skdValidateCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.skd.validate',
-        async (params: SkdValidateParams) => {
+        async (params: SkdValidateParams, requestToken?: vscode.CancellationToken) => {
             const ops = new SkdOperations({ extensionPath: context.extensionPath });
-            return await ops.skdValidate(params);
+            return runAgentLongTask('agent.skd.validate', params.background, requestToken, (token, reportStage) =>
+                ops.skdValidate(params, token, reportStage));
         }
     );
 
@@ -1158,29 +1195,41 @@ export function registerAgentCommands(
 
     const supportSetObjectModeCommand = vscode.commands.registerCommand(
         AGENT_SUPPORT_COMMAND_IDS.setObjectMode,
-        async (params: AgentSupportSetObjectModeParams) => {
-            return supportOperations()?.supportSetObjectMode(params) ?? supportUnavailable();
+        async (params: AgentSupportSetObjectModeParams, requestToken?: vscode.CancellationToken) => {
+            const ops = supportOperations();
+            if (!ops) { return supportUnavailable(); }
+            return runAgentLongTask('agent.supportSetObjectMode', params.background, requestToken, (token, reportStage) =>
+                ops.supportSetObjectMode(params, token, reportStage));
         }
     );
 
     const supportEnableObjectRulesCommand = vscode.commands.registerCommand(
         AGENT_SUPPORT_COMMAND_IDS.enableObjectRules,
-        async (params: AgentSupportEnableObjectRulesParams) => {
-            return supportOperations()?.supportEnableObjectRules(params) ?? supportUnavailable();
+        async (params: AgentSupportEnableObjectRulesParams, requestToken?: vscode.CancellationToken) => {
+            const ops = supportOperations();
+            if (!ops) { return supportUnavailable(); }
+            return runAgentLongTask('agent.supportEnableObjectRules', params.background, requestToken, (token, reportStage) =>
+                ops.supportEnableObjectRules(params, token, reportStage));
         }
     );
 
     const supportSyncCommand = vscode.commands.registerCommand(
         AGENT_SUPPORT_COMMAND_IDS.sync,
-        async (params: AgentSupportSyncParams) => {
-            return supportOperations()?.supportSync(params) ?? supportUnavailable();
+        async (params: AgentSupportSyncParams, requestToken?: vscode.CancellationToken) => {
+            const ops = supportOperations();
+            if (!ops) { return supportUnavailable(); }
+            return runAgentLongTask('agent.supportSync', params.background, requestToken, (token, reportStage) =>
+                ops.supportSync(params, token, reportStage));
         }
     );
 
     const supportVerifyCommand = vscode.commands.registerCommand(
         AGENT_SUPPORT_COMMAND_IDS.verify,
-        async (params: AgentSupportVerifyParams) => {
-            return supportOperations()?.supportVerify(params) ?? supportUnavailable();
+        async (params: AgentSupportVerifyParams, requestToken?: vscode.CancellationToken) => {
+            const ops = supportOperations();
+            if (!ops) { return supportUnavailable(); }
+            return runAgentLongTask('agent.supportVerify', params.background, requestToken, (token, reportStage) =>
+                ops.supportVerify(params, token, reportStage));
         }
     );
 
@@ -1198,7 +1247,7 @@ export function registerAgentCommands(
             if (params.background === true) {
                 return taskManager.start('agent.dumpExternalProcessor', async (token, reportStage) => {
                     reportStage('Запущена выгрузка исходников EPF/ERF.');
-                    return agentDumpExternalProcessor(params, token);
+                    return agentDumpExternalProcessor(params, token, reportStage);
                 });
             }
             if (requestToken?.isCancellationRequested) {
@@ -1215,7 +1264,7 @@ export function registerAgentCommands(
             if (params.background === true) {
                 return taskManager.start('agent.buildExternalProcessor', async (token, reportStage) => {
                     reportStage('Запущена сборка EPF/ERF.');
-                    return agentBuildExternalProcessor(params, token);
+                    return agentBuildExternalProcessor(params, token, reportStage);
                 });
             }
             if (requestToken?.isCancellationRequested) {

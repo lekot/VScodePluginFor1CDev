@@ -115,6 +115,53 @@ suite('IbcmdStreamingRunner', () => {
     assert.ok(chunks.join('').includes('out'));
   });
 
+  test('redacts ibcmd argv secrets split across live stream chunks', async () => {
+    const ctrl = createControllableSpawn();
+    const chunks: string[] = [];
+    const password = 'ibcmd-super-secret';
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: ['infobase', 'config', 'check', `--password=${password}`],
+      timeoutMs: 30_000,
+      cancellation: staticCancellation(false),
+      onStreamChunk: (chunk) => chunks.push(chunk),
+      spawnImpl: ctrl.spawnImpl,
+    });
+    ctrl.pushStdout('failure echoed: ibcmd-super-');
+    ctrl.pushStdout('secret; still running');
+    ctrl.close(1, null);
+    const outcome = await p;
+
+    assert.ok(!outcome.combinedLog.includes(password));
+    assert.ok(!chunks.join('').includes(password));
+    assert.ok(outcome.combinedLog.includes('<redacted>'));
+    assert.ok(chunks.join('').includes('<redacted>'));
+  });
+
+  test('redacts stored credentials supplied by the config operation when they are absent from argv', async () => {
+    const ctrl = createControllableSpawn();
+    const chunks: string[] = [];
+    const password = 'stored-ib-secret';
+    const p = runIbcmdStreaming({
+      executablePath: '/ibcmd',
+      args: ['infobase', 'config', 'import', '--config=C:\\temp\\ib.yaml'],
+      timeoutMs: 30_000,
+      cancellation: staticCancellation(false),
+      redactedValues: [password],
+      onStreamChunk: (chunk) => chunks.push(chunk),
+      spawnImpl: ctrl.spawnImpl,
+    });
+    ctrl.pushStderr(`credential echoed: stored-ib-`);
+    ctrl.pushStderr('secret by ibcmd');
+    ctrl.close(1, null);
+    const outcome = await p;
+
+    assert.ok(!outcome.combinedLog.includes(password));
+    assert.ok(!chunks.join('').includes(password));
+    assert.ok(outcome.combinedLog.includes('<redacted>'));
+    assert.ok(chunks.join('').includes('<redacted>'));
+  });
+
   test('times out when process does not exit', async () => {
     const ctrl = createControllableSpawn();
     const p = runIbcmdStreaming({

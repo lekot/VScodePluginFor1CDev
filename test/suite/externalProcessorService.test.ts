@@ -92,6 +92,28 @@ suite('externalProcessorService contract', () => {
     }
   });
 
+  test('forwards live Configurator chunks through the operation callback', async () => {
+    const harness = createHarness();
+    harness.fs.addFile(EPF, 'binary');
+    harness.produceDumpRoot = 'ExternalDataProcessor';
+    const chunks: string[] = [];
+    harness.processHook = async (options) => {
+      options.onOutput?.('preparing artifact\n');
+      options.onOutput?.('writing artifact\n');
+    };
+
+    const result = await harness.service.dump({
+      externalFilePath: EPF,
+      outputDirectory: path.join(ROOT, 'live-output'),
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+      onOutput: (chunk) => chunks.push(chunk),
+    });
+
+    assert.strictEqual(result.state, 'completed');
+    assert.deepStrictEqual(chunks, ['preparing artifact\n', 'writing artifact\n']);
+  });
+
   test('rejects invalid context, missing/non-file input, unsupported root and existing output before process', async () => {
     const harness = createHarness();
     harness.fs.addDirectory(EPF);

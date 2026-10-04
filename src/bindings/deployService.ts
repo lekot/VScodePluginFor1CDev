@@ -394,6 +394,7 @@ export interface DeploySelectedObjectsParams {
   progress: DeployProgressSink;
   token: vscode.CancellationToken;
   support?: DeploySupportContext;
+  onOutput?: (chunk: string) => void;
 }
 
 export interface DeployChangedFilesParams {
@@ -405,6 +406,7 @@ export interface DeployChangedFilesParams {
   progress: DeployProgressSink;
   token: vscode.CancellationToken;
   support?: DeploySupportContext;
+  onOutput?: (chunk: string) => void;
 }
 
 export interface PullSelectedObjectsParams {
@@ -415,6 +417,7 @@ export interface PullSelectedObjectsParams {
   selectedNodes: readonly TreeNode[];
   progress: DeployProgressSink;
   token: vscode.CancellationToken;
+  onOutput?: (chunk: string) => void;
 }
 
 export class DeployService {
@@ -437,6 +440,7 @@ export class DeployService {
     progress: DeployProgressSink;
     token: vscode.CancellationToken;
     support?: DeploySupportContext;
+    onOutput?: (chunk: string) => void;
   }): Promise<DeployRunSummary> {
     const catalogById = new Map(params.catalog.map((e) => [e.id, e] as const));
     const resolved = resolveConfigurationXmlDirectory(params.workspaceFolderRoot, params.binding.configRelativePath);
@@ -622,6 +626,7 @@ export class DeployService {
             token: params.token,
             logContext: 'раскатка',
             ibcmdExtensionName: params.binding.ibcmdExtensionName,
+            onOutput: params.onOutput,
           });
         });
         if (isSupportGateFailure(preflightAndImport)) {
@@ -824,6 +829,7 @@ export class DeployService {
           token: params.token,
           logContext: 'выбранные объекты',
           ibcmdExtensionName: params.binding.ibcmdExtensionName,
+          onOutput: params.onOutput,
         });
 
         if (interpreted.status === 'error' && interpreted.lockedObjects && interpreted.lockedObjects.length > 0) {
@@ -850,6 +856,7 @@ export class DeployService {
               token: params.token,
               logContext: 'выбранные объекты (без залоченных)',
               ibcmdExtensionName: params.binding.ibcmdExtensionName,
+              onOutput: params.onOutput,
             });
           }
         }
@@ -888,6 +895,7 @@ export class DeployService {
               token: params.token,
               logContext: 'выбранные объекты + Configuration.xml',
               ibcmdExtensionName: params.binding.ibcmdExtensionName,
+              onOutput: params.onOutput,
             });
             candidateFiles = retryFiles;
           }
@@ -1076,9 +1084,10 @@ export class DeployService {
           entry,
           configRoot,
           relativeFiles: candidateFiles,
-          token: params.token,
-          logContext: 'изменённые файлы',
-          ibcmdExtensionName: params.binding.ibcmdExtensionName,
+              token: params.token,
+              logContext: 'изменённые файлы',
+              ibcmdExtensionName: params.binding.ibcmdExtensionName,
+              onOutput: params.onOutput,
         });
         if (interpreted.status === 'error' && interpreted.lockedObjects?.length) {
           const filtered = filterOutLockedObjectFiles(candidateFiles, interpreted.lockedObjects);
@@ -1096,6 +1105,7 @@ export class DeployService {
               token: params.token,
               logContext: 'изменённые файлы (drift fallback)',
               ibcmdExtensionName: params.binding.ibcmdExtensionName,
+              onOutput: params.onOutput,
             });
           }
         }
@@ -1236,6 +1246,7 @@ export class DeployService {
       token: params.token,
       logContext: 'выгрузка',
       ibcmdExtensionName: params.binding.ibcmdExtensionName,
+      onOutput: params.onOutput,
     });
 
     const results: DeployItemResult[] = [];

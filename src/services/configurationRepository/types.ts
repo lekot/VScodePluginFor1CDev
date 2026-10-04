@@ -64,6 +64,8 @@ export interface ConfigurationRepositoryTransportRequest {
   readonly keepLocked?: boolean;
   readonly force?: boolean;
   readonly cancellation: RepositoryCancellation;
+  /** Receives live decoded process output after exact Configurator credentials are redacted. */
+  readonly onOutput?: (chunk: string) => void;
 }
 
 export interface RepositoryCancellation {

@@ -147,6 +147,84 @@ suite('Smoke: production MCP Agent Bridge', () => {
       assert.strictEqual(taskViaMcp.isError, true);
       assert.deepStrictEqual(taskViaMcp.structuredContent, directMissingTask);
 
+      const missingDebugSessionId = 'cdt-smoke-unknown-debug-session';
+      const receiptViaMcp = await client.callTool({
+        name: 'cdt_read_live',
+        arguments: {
+          operation: 'cdt_debug_wait_for_stop',
+          arguments: { sessionId: missingDebugSessionId },
+        },
+      });
+      const receipt = receiptViaMcp.structuredContent as {
+        success?: boolean;
+        data?: { status?: string; taskId?: string };
+      };
+      assert.strictEqual(receiptViaMcp.isError, undefined);
+      assert.strictEqual(receipt.success, true);
+      assert.strictEqual(receipt.data?.status, 'working');
+      assert.ok(receipt.data?.taskId);
+
+      const taskId = receipt.data!.taskId!;
+      const statusDeadline = Date.now() + 5_000;
+      let terminalStatus: string | undefined;
+      while (Date.now() < statusDeadline) {
+        const statusViaMcp = await client.callTool({
+          name: 'cdt_read',
+          arguments: {
+            operation: 'cdt_task_status',
+            arguments: { taskId },
+          },
+        });
+        const statusResult = statusViaMcp.structuredContent as {
+          success?: boolean;
+          data?: { taskId?: string; status?: string };
+        };
+        assert.strictEqual(statusResult.success, true);
+        assert.strictEqual(statusResult.data?.taskId, taskId);
+        terminalStatus = statusResult.data?.status;
+        if (terminalStatus !== 'running') {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.strictEqual(terminalStatus, 'failed', 'task.status must reach a terminal failed state');
+
+      const taskResultViaMcp = await client.callTool({
+        name: 'cdt_read',
+        arguments: {
+          operation: 'cdt_task_result',
+          arguments: { taskId },
+        },
+      });
+      const taskResult = taskResultViaMcp.structuredContent as {
+        success?: boolean;
+        data?: {
+          taskId?: string;
+          status?: string;
+          result?: { success?: boolean; error?: string };
+        };
+      };
+      assert.strictEqual(taskResult.success, true);
+      assert.strictEqual(taskResult.data?.taskId, taskId);
+      assert.strictEqual(taskResult.data?.status, 'failed');
+      assert.deepStrictEqual(taskResult.data?.result, {
+        success: false,
+        error: 'session not found in registry',
+      });
+
+      const synchronousFailureViaMcp = await client.callTool({
+        name: 'cdt_read_live',
+        arguments: {
+          operation: 'cdt_debug_wait_for_stop',
+          arguments: { sessionId: missingDebugSessionId, background: false },
+        },
+      });
+      assert.strictEqual(synchronousFailureViaMcp.isError, true);
+      assert.deepStrictEqual(synchronousFailureViaMcp.structuredContent, {
+        success: false,
+        error: 'session not found in registry',
+      });
+
       const direct = await vscode.commands.executeCommand(
         '1c-metadata-tree.agent.listConfigurations',
         {},

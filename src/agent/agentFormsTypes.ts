@@ -15,6 +15,8 @@ export interface FormsStartParams {
     platformPath?: string;
     /** Таймаут readiness ibsrv+chromium в мс (default 60000). */
     readyTimeoutMs?: number;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат запуска сессии веб-клиента 1С. */
@@ -27,6 +29,18 @@ export interface FormsStartResult {
     uiAccessHint?: string;
 }
 
+/** Start operation could not verify that browser/ibsrv startup had no remaining effect. */
+export interface FormsStartInDoubtResult {
+    status: 'inDoubt';
+    effectPossible: boolean;
+}
+
+/** A forms process was interrupted after it may have performed its requested effect. */
+export interface FormsOperationInDoubtResult {
+    status: 'inDoubt';
+    effectPossible: true;
+}
+
 // ─── exec ────────────────────────────────────────────────────────────────────
 
 /** Параметры выполнения JS-скрипта в браузере. */
@@ -35,6 +49,8 @@ export interface FormsExecParams {
     script: string;
     /** Таймаут в мс (default 30000). */
     timeoutMs?: number;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат выполнения JS-скрипта. */
@@ -58,6 +74,8 @@ export interface FormsStopResult {}
 export interface FormsShotParams {
     /** Путь к PNG. Если не задан — temp-файл. */
     file?: string;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат скриншота. */

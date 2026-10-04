@@ -82,6 +82,24 @@ suite('AgentTaskManager', () => {
     manager.dispose();
   });
 
+  test('redacts quoted, camel-case, and bearer credential forms in task status', async () => {
+    const manager = new AgentTaskManager();
+    const started = manager.start('deploy', async (_token, reportStage) => {
+      reportStage('RepositoryPassword="space secret" access_token=opaque --password "cli secret" Authorization: Bearer bearer-secret');
+      return { success: true };
+    });
+    const taskId = started.data!.taskId;
+    await settle();
+
+    const status = manager.status(taskId).data!;
+    const serialized = JSON.stringify(status);
+    for (const secret of ['space secret', 'opaque', 'cli secret', 'bearer-secret']) {
+      assert.ok(!serialized.includes(secret), `Task status leaked ${secret}`);
+    }
+    assert.ok(status.recentMessages.some((message) => message.includes('<redacted>')));
+    manager.dispose();
+  });
+
   test('cancel is a request until the operation settles and preserves the original inDoubt result', async () => {
     const source = new TestCancellationSource();
     const pending = deferred<AgentResult<unknown>>();

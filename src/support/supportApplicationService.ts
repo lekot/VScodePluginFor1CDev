@@ -2,6 +2,7 @@ import type { ConfigurationId } from '../services/configurationSession/types';
 import type { SupportModeService } from './supportModeService';
 import type { SupportRunJournal } from './supportRunJournal';
 import type { SupportSyncCoordinator } from './supportSyncCoordinator';
+import { combineSupportCancellations } from './supportTypes';
 import type {
   EnableObjectRulesRequest,
   MasterSupportState,
@@ -135,7 +136,7 @@ export class SupportApplicationService {
         snapshot: master.snapshot,
         verification: request.verification ?? 'fast',
         targets: request.targets,
-        cancellation: this.cancellation,
+        cancellation: combineSupportCancellations(this.cancellation, request.cancellation),
       });
       if (outcome.status !== 'completed') {
         return outcome;
@@ -182,7 +183,7 @@ export class SupportApplicationService {
       const outcome = await this.deps.coordinator.verifyOnly({
         snapshot: master.snapshot,
         targets: request.targets,
-        cancellation: this.cancellation,
+        cancellation: combineSupportCancellations(this.cancellation, request.cancellation),
       });
       if (outcome.status !== 'completed') {
         return outcome;

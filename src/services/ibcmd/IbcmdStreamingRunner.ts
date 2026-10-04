@@ -27,6 +27,8 @@ export interface IbcmdStreamingRunnerOptions {
   cancellation: IbcmdStreamCancellation;
   consoleOutputEncoding?: IbcmdConsoleOutputEncoding;
   onStreamChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void;
+  /** Additional exact values to remove from live output before any callback. */
+  redactedValues?: readonly string[];
   ringBufferMaxBytes?: number;
   spawnImpl?: typeof spawn;
   abortPattern?: RegExp;
@@ -68,6 +70,7 @@ export async function runIbcmdStreaming(
       options.consoleOutputEncoding ?? 'auto'
     ),
     ...(options.onStreamChunk ? { onStreamChunk: options.onStreamChunk } : {}),
+    redactedValues: collectIbcmdSecrets(options.args, options.redactedValues),
     ...(options.ringBufferMaxBytes !== undefined
       ? { ringBufferMaxBytes: options.ringBufferMaxBytes }
       : {}),
@@ -89,4 +92,27 @@ export async function runIbcmdStreaming(
     ...publicOutcome
   } = outcome;
   return publicOutcome;
+}
+
+function collectIbcmdSecrets(
+  args: readonly string[],
+  additionalValues: readonly string[] = [],
+): readonly string[] {
+  const secrets = new Set(additionalValues.filter((value) => value.length > 0));
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    const passwordFlag = /^--password(?:=(.*))?$/iu.exec(argument);
+    if (passwordFlag) {
+      const inlinePassword = passwordFlag[1];
+      const nextArgument = args[index + 1];
+      const password = inlinePassword !== undefined ? inlinePassword : nextArgument;
+      if (password) {
+        secrets.add(password);
+      }
+      if (inlinePassword === undefined && nextArgument !== undefined) {
+        index += 1;
+      }
+    }
+  }
+  return [...secrets];
 }

@@ -287,9 +287,11 @@ function readRepositoryStatus(result: AgentResult<unknown>): string | undefined 
 /** Store stage messages only; redact credential-shaped fragments and bound their size. */
 function sanitizeMessage(message: string, maxLength: number): string {
   const sanitized = message
-    .replace(/\b(password|passwd|пароль|token|bearer)\b(\s*[:=]\s*)[^\s,;]+/gi, '$1$2<redacted>')
-    .replace(/(\/ConfigurationRepositoryP\s+)\S+/gi, '$1<redacted>')
-    .replace(/([?&](?:password|token)=)[^&\s]+/gi, '$1<redacted>')
+    .replace(/(authorization\s*:\s*bearer\s+)\S+/gi, '$1<redacted>')
+    .replace(/((?:password|passwd|пароль|access[_-]?token|refresh[_-]?token|token|bearer|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>')
+    .replace(/(--(?:password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>')
+    .replace(/(\/ConfigurationRepositoryP\s+)(?:"[^"]*"|'[^']*'|\S+)/gi, '$1<redacted>')
+    .replace(/([?&](?:password|access[_-]?token|refresh[_-]?token|token)=)(?:"[^"]*"|'[^']*'|[^&\s]+)/gi, '$1<redacted>')
     .replace(/[\r\n\t]+/g, ' ')
     .trim();
   return sanitized.length > maxLength ? `${sanitized.slice(0, maxLength - 1)}…` : sanitized;

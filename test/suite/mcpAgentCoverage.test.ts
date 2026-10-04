@@ -609,6 +609,28 @@ suite('MCP Agent catalog coverage', () => {
       const parsed = schema(toolName).parse(VALID_INPUTS[toolName]);
       assert.strictEqual((parsed as { background: boolean }).background, true, `${toolName} defaults to background`);
     }
+    for (const toolName of [
+      'cdt_skd_compile',
+      'cdt_skd_info',
+      'cdt_skd_edit',
+      'cdt_skd_validate',
+      'cdt_forms_start',
+      'cdt_forms_exec',
+      'cdt_forms_shot',
+      'cdt_debug_start',
+      'cdt_debug_start_from_binding',
+      'cdt_debug_wait_for_stop',
+      'cdt_support_set_object_mode',
+      'cdt_support_enable_object_rules',
+      'cdt_support_sync',
+      'cdt_support_verify',
+    ]) {
+      const input = VALID_INPUTS[toolName];
+      const parsedDefault = schema(toolName).parse(input);
+      assert.strictEqual((parsedDefault as { background: boolean }).background, true, `${toolName} defaults to background`);
+      const parsedSync = schema(toolName).parse({ ...input, background: false });
+      assert.strictEqual((parsedSync as { background: boolean }).background, false, `${toolName} allows synchronous mode`);
+    }
     assert.strictEqual(accepts('cdt_debug_start', {
       rootProject: 'C:/project',
       infobase: 'Srvr=host;Ref=db',

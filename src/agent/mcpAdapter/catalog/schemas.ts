@@ -58,6 +58,7 @@ export const supportSetObjectModeInput = z.strictObject({
   objectId: supportUuid,
   targetMode: z.enum(['notEditable', 'editableWithSupport', 'removedFromSupport']),
   expectedGenerationId: supportGenerationId,
+  background: z.boolean().default(true),
 });
 
 export const supportEnableObjectRulesInput = z.strictObject({
@@ -66,17 +67,20 @@ export const supportEnableObjectRulesInput = z.strictObject({
   targetMode: z.enum(['editableWithSupport', 'removedFromSupport']),
   expectedGenerationId: supportGenerationId,
   expectedMetadataUniverseGenerationId: supportGenerationId,
+  background: z.boolean().default(true),
 });
 
 export const supportSyncInput = z.strictObject({
   configurationId: trimmedNonEmptyString,
   targets: supportTargetSelection,
   verification: z.enum(['fast', 'strict']).optional(),
+  background: z.boolean().default(true),
 });
 
 export const supportVerifyInput = z.strictObject({
   configurationId: trimmedNonEmptyString,
   targets: supportTargetSelection,
+  background: z.boolean().default(true),
 });
 
 export const supportGetLastRunInput = z.strictObject({

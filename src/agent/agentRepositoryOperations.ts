@@ -22,6 +22,7 @@ import type {
 } from './types';
 import { AgentTaskManager } from './agentTaskManager';
 import type { AgentTaskReceipt } from './agentTaskManager';
+import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 
 export interface AgentRepositoryOperationsDeps {
   readonly getService: () => ConfigurationRepositoryService | null;
@@ -57,6 +58,7 @@ export class AgentRepositoryOperations {
   async connect(
     params: AgentRepositoryConnectParams,
     requestToken?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
   ): Promise<RepositoryCommandResult> {
     const contextResult = await this.resolveContext(params.configurationId, 'process');
     if ('failure' in contextResult) { return contextResult.failure; }
@@ -83,14 +85,14 @@ export class AgentRepositoryOperations {
       params.background,
       requestToken,
       'repository.connect',
-      async (token) => {
+      async (token, onOutput) => {
         try {
           const result = await context.service.connect(context.target, infobase, {
             repositoryPath,
             repositoryUser,
             executionInfobaseId: infobase.id,
             ...(params.repositoryPassword !== undefined ? { repositoryPassword: params.repositoryPassword } : {}),
-          }, token);
+          }, token, onOutput);
           const message = redactKnownSecret(result.message, params.repositoryPassword);
           return message === result.message ? result : { ...result, message };
         } catch (error) {
@@ -98,43 +100,60 @@ export class AgentRepositoryOperations {
           throw new Error(redactKnownSecret(message, params.repositoryPassword));
         }
       },
+      reportStage,
     );
   }
 
   async disconnect(
     params: AgentRepositoryDisconnectParams,
     requestToken?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
   ): Promise<RepositoryCommandResult> {
     const contextResult = await this.resolveContext(params.configurationId, 'process');
     if ('failure' in contextResult) { return contextResult.failure; }
     const context = contextResult.context;
     return this.runMutation(
       context, 'agent.repository.disconnect', params.background, requestToken, 'repository.disconnect',
-      (token) => context.service.disconnect(context.target, token, params.force === true),
+      (token, onOutput) => context.service.disconnect(context.target, token, params.force === true, onOutput),
+      reportStage,
     );
   }
 
-  async lock(params: AgentRepositoryLockParams, requestToken?: vscode.CancellationToken): Promise<RepositoryCommandResult> {
+  async lock(
+    params: AgentRepositoryLockParams,
+    requestToken?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
+  ): Promise<RepositoryCommandResult> {
     const resolved = await this.resolveObjectContext(params.configurationId, params.path, 'process');
     if ('failure' in resolved) { return resolved.failure; }
     const { context, node } = resolved;
     return this.runMutation(
       context, 'agent.repository.lock', params.background, requestToken, 'repository.lock',
-      (token) => context.service.lock(node, token, { recursive: params.recursive, revised: params.revised }),
+      (token, onOutput) => context.service.lock(node, token, { recursive: params.recursive, revised: params.revised }, onOutput),
+      reportStage,
     );
   }
 
-  async unlock(params: AgentRepositoryUnlockParams, requestToken?: vscode.CancellationToken): Promise<RepositoryCommandResult> {
+  async unlock(
+    params: AgentRepositoryUnlockParams,
+    requestToken?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
+  ): Promise<RepositoryCommandResult> {
     const resolved = await this.resolveObjectContext(params.configurationId, params.path, 'process');
     if ('failure' in resolved) { return resolved.failure; }
     const { context, node } = resolved;
     return this.runMutation(
       context, 'agent.repository.unlock', params.background, requestToken, 'repository.unlock',
-      (token) => context.service.unlock(node, token, { recursive: params.recursive, force: params.force }),
+      (token, onOutput) => context.service.unlock(node, token, { recursive: params.recursive, force: params.force }, onOutput),
+      reportStage,
     );
   }
 
-  async commit(params: AgentRepositoryCommitParams, requestToken?: vscode.CancellationToken): Promise<RepositoryCommandResult> {
+  async commit(
+    params: AgentRepositoryCommitParams,
+    requestToken?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
+  ): Promise<RepositoryCommandResult> {
     const comment = typeof params.comment === 'string' ? params.comment.trim() : '';
     if (!comment) {
       return { success: false, code: 'INVALID_ARGUMENTS', error: 'Комментарий помещения в Хранилище не может быть пустым.' };
@@ -144,35 +163,43 @@ export class AgentRepositoryOperations {
     const { context, node } = resolved;
     return this.runMutation(
       context, 'agent.repository.commit', params.background, requestToken, 'repository.commit',
-      (token) => context.service.commit(node, token, {
+      (token, onOutput) => context.service.commit(node, token, {
         comment,
         recursive: params.recursive,
         keepLocked: params.keepLocked,
         force: params.force,
-      }),
+      }, onOutput),
+      reportStage,
     );
   }
 
-  async updateObject(params: AgentRepositoryUpdateObjectParams, requestToken?: vscode.CancellationToken): Promise<RepositoryCommandResult> {
+  async updateObject(
+    params: AgentRepositoryUpdateObjectParams,
+    requestToken?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
+  ): Promise<RepositoryCommandResult> {
     const resolved = await this.resolveObjectContext(params.configurationId, params.path, 'process');
     if ('failure' in resolved) { return resolved.failure; }
     const { context, node } = resolved;
     return this.runMutation(
       context, 'agent.repository.updateObject', params.background, requestToken, 'repository.updateObject',
-      (token) => context.service.updateObject(node, token, { recursive: params.recursive, force: params.force }),
+      (token, onOutput) => context.service.updateObject(node, token, { recursive: params.recursive, force: params.force }, onOutput),
+      reportStage,
     );
   }
 
   async updateConfiguration(
     params: AgentRepositoryUpdateConfigurationParams,
     requestToken?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
   ): Promise<RepositoryCommandResult> {
     const contextResult = await this.resolveContext(params.configurationId, 'process');
     if ('failure' in contextResult) { return contextResult.failure; }
     const context = contextResult.context;
     return this.runMutation(
       context, 'agent.repository.updateConfiguration', params.background, requestToken, 'repository.updateConfiguration',
-      (token) => context.service.updateConfiguration(context.root, token, params.force === true),
+      (token, onOutput) => context.service.updateConfiguration(context.root, token, params.force === true, onOutput),
+      reportStage,
     );
   }
 
@@ -211,14 +238,31 @@ export class AgentRepositoryOperations {
     background: boolean | undefined,
     requestToken: vscode.CancellationToken | undefined,
     stage: string,
-    operation: (token: vscode.CancellationToken) => Promise<RepositoryServiceResult>,
+    operation: (
+      token: vscode.CancellationToken,
+      onOutput?: (chunk: string) => void,
+    ) => Promise<RepositoryServiceResult>,
+    reportStage?: (message: string) => void,
   ): Promise<RepositoryCommandResult> {
-    const execute = (token: vscode.CancellationToken): Promise<AgentResult<RepositoryServiceResult>> =>
-      this.enqueueRepositoryMutation(context, kind, token, operation);
+    const execute = (
+      token: vscode.CancellationToken,
+      taskReportStage?: (message: string) => void,
+    ): Promise<AgentResult<RepositoryServiceResult>> => {
+      const output = createProcessOutputLineReporter((message) => {
+        reportStage?.(message);
+        taskReportStage?.(message);
+      });
+      return this.enqueueRepositoryMutation(
+        context,
+        kind,
+        token,
+        (operationToken) => operation(operationToken, output.accept),
+      ).finally(() => output.flush());
+    };
     if (background !== false) {
       return this.deps.taskManager.start(stage, async (token, reportStage) => {
         reportStage(`Начата операция ${stage}.`);
-        return execute(token);
+        return execute(token, reportStage);
       });
     }
     if (requestToken?.isCancellationRequested) {

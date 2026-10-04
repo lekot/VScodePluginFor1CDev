@@ -279,6 +279,8 @@ export async function runInfobaseConfigImportFromDirectory(params: {
   logContext?: string;
   /** WOW Phase 4 #64 — `ibcmd --extension` при загрузке выгрузки расширения. */
   ibcmdExtensionName?: string;
+  /** Receives live decoded process output after ibcmd credentials have been redacted. */
+  onOutput?: (chunk: string) => void;
 }): Promise<IbcmdInfobaseOperationResult> {
   const ibcmd = getIbcmdService();
   const pathResult = await ibcmd.resolveExecutablePathAsync();
@@ -363,7 +365,11 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+      redactedValues: importCredentials?.password ? [importCredentials.password] : [],
+      onStreamChunk: (chunk) => {
+        appendOutputDebounced(outputBuffer, chunk);
+        params.onOutput?.(chunk);
+      },
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
@@ -395,7 +401,11 @@ export async function runInfobaseConfigImportFromDirectory(params: {
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+      redactedValues: importCredentials?.password ? [importCredentials.password] : [],
+      onStreamChunk: (chunk) => {
+        appendOutputDebounced(outputBuffer, chunk);
+        params.onOutput?.(chunk);
+      },
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
@@ -664,6 +674,8 @@ export async function runInfobaseConfigCheck(
 }
 
 export interface IncrementalImportParams {
+  /** Receives live decoded process output after ibcmd credentials have been redacted. */
+  onOutput?: (chunk: string) => void;
   storage: InfobaseStorageService;
   entry: InfobaseEntry;
   configRoot: string;
@@ -761,7 +773,11 @@ export async function runInfobaseConfigIncrementalImport(
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+      redactedValues: importCredentials?.password ? [importCredentials.password] : [],
+      onStreamChunk: (chunk) => {
+        appendOutputDebounced(outputBuffer, chunk);
+        params.onOutput?.(chunk);
+      },
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
@@ -792,7 +808,11 @@ export async function runInfobaseConfigIncrementalImport(
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+      redactedValues: importCredentials?.password ? [importCredentials.password] : [],
+      onStreamChunk: (chunk) => {
+        appendOutputDebounced(outputBuffer, chunk);
+        params.onOutput?.(chunk);
+      },
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     });
 
@@ -843,6 +863,8 @@ export interface ExportObjectsParams {
   logContext?: string;
   /** WOW Phase 4 — `ibcmd --extension` при работе с расширением. */
   ibcmdExtensionName?: string;
+  /** Receives live decoded process output after ibcmd credentials have been redacted. */
+  onOutput?: (chunk: string) => void;
 }
 
 /**
@@ -934,7 +956,11 @@ export async function runInfobaseConfigExportObjects(
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+      redactedValues: exportCredentials?.password ? [exportCredentials.password] : [],
+      onStreamChunk: (chunk) => {
+        appendOutputDebounced(outputBuffer, chunk);
+        params.onOutput?.(chunk);
+      },
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     }));
 
@@ -1209,6 +1235,8 @@ export interface ExportConfigurationToDirectoryParams {
   token: vscode.CancellationToken;
   logContext?: string;
   ibcmdExtensionName?: string;
+  /** Receives live decoded process output after ibcmd credentials have been redacted. */
+  onOutput?: (chunk: string) => void;
 }
 
 /**
@@ -1261,7 +1289,11 @@ export async function runInfobaseConfigExportToDirectory(
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+      redactedValues: exportCredentials?.password ? [exportCredentials.password] : [],
+      onStreamChunk: (chunk) => {
+        appendOutputDebounced(outputBuffer, chunk);
+        params.onOutput?.(chunk);
+      },
       abortPattern: /Имя пользователя\s*[\s\S]*Имя пользователя\s*:/,
     }));
     flushOutputChannel(outputBuffer);
@@ -1291,6 +1323,8 @@ export interface ExportStatusParams {
   token: vscode.CancellationToken;
   /** WOW Phase 4 — `ibcmd --extension` при работе с расширением. */
   ibcmdExtensionName?: string;
+  /** Receives live decoded process output after ibcmd credentials have been redacted. */
+  onOutput?: (chunk: string) => void;
 }
 
 /**
@@ -1376,7 +1410,11 @@ export async function runInfobaseConfigExportStatus(
       timeoutMs: ibcmd.getTimeoutMs(),
       cancellation: vscodeCancellation(params.token),
       consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
-      onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
+      redactedValues: exportCredentials?.password ? [exportCredentials.password] : [],
+      onStreamChunk: (chunk) => {
+        appendOutputDebounced(outputBuffer, chunk);
+        params.onOutput?.(chunk);
+      },
       abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
     }));
 

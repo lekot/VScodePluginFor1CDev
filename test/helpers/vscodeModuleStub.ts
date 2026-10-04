@@ -272,13 +272,35 @@ const FileType = {
 } as const;
 
 class CancellationTokenSourceStub {
-  readonly token = {
-    isCancellationRequested: false,
-    onCancellationRequested: () => ({ dispose: () => undefined }),
+  private cancelled = false;
+  private readonly listeners = new Set<(...args: unknown[]) => unknown>();
+  readonly token: {
+    readonly isCancellationRequested: boolean;
+    onCancellationRequested(listener: (...args: unknown[]) => unknown): { dispose(): void };
   };
 
+  constructor() {
+    const source = this;
+    this.token = {
+      get isCancellationRequested(): boolean { return source.cancelled; },
+      onCancellationRequested(listener) {
+        if (source.cancelled) {
+          void listener(undefined);
+          return { dispose: () => undefined };
+        }
+        source.listeners.add(listener);
+        return { dispose: () => source.listeners.delete(listener) };
+      },
+    };
+  }
+
   cancel(): void {
-    this.token.isCancellationRequested = true;
+    if (this.cancelled) { return; }
+    this.cancelled = true;
+    for (const listener of [...this.listeners]) {
+      void listener(undefined);
+    }
+    this.listeners.clear();
   }
 
   dispose(): void {}

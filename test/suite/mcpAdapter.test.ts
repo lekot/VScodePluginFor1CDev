@@ -164,7 +164,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       ['cdt_write', 'cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],
       ['cdt_write_live', 'cdt_debug_stop', { sessionId: 's1' }, '1c-metadata-tree.agent.debug.stop'],
       ['cdt_read_live', 'cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],
-      ['cdt_write_live', 'cdt_skd_validate', { templatePath: 'template.xml' }, '1c-metadata-tree.agent.skd.validate'],
+      ['cdt_write_live', 'cdt_skd_validate', { templatePath: 'template.xml', background: true }, '1c-metadata-tree.agent.skd.validate'],
       ['cdt_read', 'cdt_xdto_compare', { packageName: 'p', source: '<x/>' }, '1c-metadata-tree.agent.xdto.compare'],
       [
         'cdt_write_live',
