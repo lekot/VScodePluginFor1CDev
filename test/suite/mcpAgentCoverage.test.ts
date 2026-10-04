@@ -341,6 +341,7 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'Agent path has three segments', tool: 'cdt_get_properties', input: { path: 'Catalog.Goods.Attribute' } },
   { label: 'Agent path has five segments', tool: 'cdt_set_properties', input: { path: 'Catalog.Goods.Attribute.Code.Extra', properties: {} } },
   { label: 'Agent path contains invalid identifier', tool: 'cdt_delete_object', input: { path: 'Catalog.Bad-Name' } },
+  { label: 'deleteObject rejects nested path', tool: 'cdt_delete_object', input: { path: 'Catalog.Goods.Attribute.Code' } },
   { label: 'root object path has four segments', tool: 'cdt_rename_object', input: { path: 'Catalog.Goods.Attribute.Code', newName: 'Products' } },
   { label: 'attribute path has two segments', tool: 'cdt_delete_attribute', input: { path: 'Catalog.Goods' } },
   { label: 'attribute path has invalid segment', tool: 'cdt_delete_attribute', input: { path: 'Catalog.Goods.Attribute.Bad-Name' } },
@@ -728,5 +729,21 @@ suite('MCP Agent catalog coverage', () => {
       subsystemPath: 'Subsystem.Sales',
       entries: [{ commandName: 'Catalog.Goods.Command.Open', commandGroup: 'NavigationPanelImportant', extra: true }],
     }), false);
+  });
+
+  test('ExternalDataSource Table, Field, and reserved Function paths pass MCP metadata schemas', () => {
+    assert.strictEqual(accepts('cdt_list_children', {
+      path: 'ExternalDataSource.Warehouse',
+    }), true);
+    assert.strictEqual(accepts('cdt_get_properties', {
+      path: 'ExternalDataSource.Warehouse.Table.Tasks',
+    }), true);
+    assert.strictEqual(accepts('cdt_get_properties', {
+      path: 'ExternalDataSource.Warehouse.Table.Tasks.Field.Shared',
+    }), true);
+    assert.strictEqual(accepts('cdt_set_properties', {
+      path: 'ExternalDataSource.Warehouse.Function.GetTask',
+      properties: { Comment: 'updated' },
+    }), true);
   });
 });

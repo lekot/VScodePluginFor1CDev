@@ -61,6 +61,9 @@ export function getIconForType(type: MetadataType): vscode.ThemeIcon {
     [MetadataType.StyleItem]: 'symbol-color',
 
     // Sub-elements
+    [MetadataType.Table]: 'table',
+    [MetadataType.Field]: 'symbol-field',
+    [MetadataType.Function]: 'symbol-method',
     [MetadataType.Attribute]: 'symbol-field',
     [MetadataType.TabularSection]: 'table',
     [MetadataType.Form]: 'layout',

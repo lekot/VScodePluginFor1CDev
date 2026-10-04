@@ -186,6 +186,7 @@ export const coreSuiteFiles: string[] = [
   'suite/rules/rulesE2ePipeline.test.js',
   'suite/rules/yamlRoundTrip.test.js',
   'suite/rules/agentOperations.test.js',
+  'suite/rules/agentExternalDataSourceProperties.test.js',
   'suite/rules/agentPathResolver.test.js',
   'suite/rdbgXmlCodec.test.js',
   'suite/referencesTable.test.js',

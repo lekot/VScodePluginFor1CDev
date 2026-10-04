@@ -69,6 +69,38 @@ suite('agentPathResolver', () => {
         ]);
     });
 
+    test('ExternalDataSource table path resolves to its Designer table file and retains the public selector', () => {
+        const result = resolveAgentPath(CONFIG_ROOT, 'ExternalDataSource.Source.Table.Tasks') as ReturnType<typeof resolveAgentPath> & {
+            fileRootType?: string;
+            fileNestedPath?: Array<{ type: string; name: string }>;
+        };
+        assert.ok(result.filePath.includes(path.join('ExternalDataSources', 'Source', 'Tables', 'Tasks.xml')));
+        assert.strictEqual(result.fileRootType, 'Table');
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'ExternalDataSource', name: 'Source' },
+            { type: 'Table', name: 'Tasks' },
+        ]);
+        assert.deepStrictEqual(result.fileNestedPath, [{ type: 'Table', name: 'Tasks' }]);
+    });
+
+    test('ExternalDataSource field selector is file-relative while public path remains complete', () => {
+        const result = resolveAgentPath(CONFIG_ROOT, 'ExternalDataSource.Source.Table.Tasks.Field.Code') as ReturnType<typeof resolveAgentPath> & {
+            fileRootType?: string;
+            fileNestedPath?: Array<{ type: string; name: string }>;
+        };
+        assert.ok(result.filePath.includes(path.join('ExternalDataSources', 'Source', 'Tables', 'Tasks.xml')));
+        assert.strictEqual(result.fileRootType, 'Table');
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'ExternalDataSource', name: 'Source' },
+            { type: 'Table', name: 'Tasks' },
+            { type: 'Field', name: 'Code' },
+        ]);
+        assert.deepStrictEqual(result.fileNestedPath, [
+            { type: 'Table', name: 'Tasks' },
+            { type: 'Field', name: 'Code' },
+        ]);
+    });
+
     test('Invalid path with 1 segment → throws', () => {
         assert.throws(() => resolveAgentPath(CONFIG_ROOT, 'Catalog'), /Invalid agent path/);
     });

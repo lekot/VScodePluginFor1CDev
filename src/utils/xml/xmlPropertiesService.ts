@@ -290,6 +290,103 @@ export function updatePropertiesInStructure(
   return result;
 }
 
+/** Update only the Properties node belonging to the metadata object at the
+ * document root. Nested metadata objects (for example, Attributes or Fields
+ * in ChildObjects) must retain their own properties when a root object is
+ * saved.
+ */
+export function updateRootPropertiesInStructure(
+  parsed: unknown,
+  properties: Record<string, unknown>
+): unknown {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('XML root metadata Properties element was not found.');
+  }
+
+  const document = parsed as Record<string, unknown>;
+  const metaDataObjectEntry = Object.entries(document).find(([key]) =>
+    key === 'MetaDataObject' || key.endsWith(':MetaDataObject')
+  );
+  if (metaDataObjectEntry) {
+    const [metaDataObjectKey, metaDataObjectValue] = metaDataObjectEntry;
+    const metaDataObject = firstRecord(metaDataObjectValue);
+    const rootElementEntry = metaDataObject && Object.entries(metaDataObject).find(([key]) =>
+      isElementKey(key) && hasDirectElementProperties(metaDataObject[key])
+    );
+    if (!metaDataObject || !rootElementEntry) {
+      throw new Error('XML root metadata Properties element was not found.');
+    }
+
+    const [rootElementKey, rootElementValue] = rootElementEntry;
+    const updatedMetaDataObject = {
+      ...metaDataObject,
+      [rootElementKey]: updateDirectElementProperties(rootElementValue, properties),
+    };
+    const updatedMetaDataObjectValue = Array.isArray(metaDataObjectValue)
+      ? metaDataObjectValue.map((item, index) => index === 0 ? updatedMetaDataObject : item)
+      : updatedMetaDataObject;
+    return {
+      ...document,
+      [metaDataObjectKey]: updatedMetaDataObjectValue,
+    };
+  }
+
+  // EDT object documents can have the metadata element itself as the XML root
+  // (for example, <Catalog version="2.20">...</Catalog>) without a
+  // MetaDataObject wrapper. Update that direct root only; never recurse into
+  // ChildObjects as a fallback.
+  const rootEntries = Object.entries(document).filter(([key]) => isElementKey(key));
+  if (rootEntries.length !== 1 || !hasDirectElementProperties(rootEntries[0]![1])) {
+    throw new Error('XML root metadata Properties element was not found.');
+  }
+  const [rootElementKey, rootElementValue] = rootEntries[0]!;
+  return {
+    ...document,
+    [rootElementKey]: updateDirectElementProperties(rootElementValue, properties),
+  };
+}
+
+function isElementKey(key: string): boolean {
+  return !key.startsWith('@_') && !key.startsWith('?') && key !== ':@' && !key.startsWith('#');
+}
+
+function firstRecord(value: unknown): Record<string, unknown> | undefined {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+    ? candidate as Record<string, unknown>
+    : undefined;
+}
+
+function hasDirectElementProperties(value: unknown): boolean {
+  const element = Array.isArray(value) ? firstRecord(value[0]) : firstRecord(value);
+  return Boolean(element && Object.prototype.hasOwnProperty.call(element, 'Properties'));
+}
+
+function updateDirectElementProperties(
+  value: unknown,
+  properties: Record<string, unknown>
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => updateDirectElementProperties(item, properties));
+  }
+
+  const element = firstRecord(value);
+  if (!element || !Object.prototype.hasOwnProperty.call(element, 'Properties')) {
+    return value;
+  }
+
+  const currentProperties = element.Properties;
+  const updatedProperties = Array.isArray(currentProperties)
+    ? updatePropertiesArray(currentProperties, properties)
+    : currentProperties && typeof currentProperties === 'object'
+      ? updatePropertiesObject(currentProperties as Record<string, unknown>, properties)
+      : currentProperties;
+  return {
+    ...element,
+    Properties: updatedProperties,
+  };
+}
+
 function updatePropertiesObject(
   propertiesObj: Record<string, unknown>,
   newProperties: Record<string, unknown>

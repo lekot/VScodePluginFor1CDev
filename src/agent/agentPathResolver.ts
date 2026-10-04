@@ -43,11 +43,11 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
     validatePathIdentifier(rootTag, 'тип объекта');
     validatePathIdentifier(objectName, 'имя объекта');
     if (segments.length >= 4) {
-        validatePathIdentifier(segments[2], 'тип вложенного элемента');
+        validatePathTypeIdentifier(segments[2], 'тип вложенного элемента');
         validatePathIdentifier(segments[3], 'имя вложенного элемента');
     }
     if (segments.length === 6) {
-        validatePathIdentifier(segments[4], 'тип вложенного элемента');
+        validatePathTypeIdentifier(segments[4], 'тип вложенного элемента');
         validatePathIdentifier(segments[5], 'имя вложенного элемента');
     }
 
@@ -72,6 +72,41 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
         })),
     ];
 
+    if (rootTag === MetadataType.ExternalDataSource) {
+        if (segments.length === 4 && segments[2] === 'Table') {
+            const filePath = externalDataSourceTableFilePath(configRoot, folderName, objectName, segments[3], agentPath);
+            return {
+                rootTag,
+                objectName,
+                filePath,
+                nestedPath,
+                fileRootType: 'Table',
+                fileNestedPath: [{ type: 'Table', name: segments[3] }],
+            };
+        }
+
+        if (segments.length === 6 && segments[2] === 'Table' && segments[4] === 'Field') {
+            const filePath = externalDataSourceTableFilePath(configRoot, folderName, objectName, segments[3], agentPath);
+            return {
+                rootTag,
+                objectName,
+                filePath,
+                nestedPath,
+                fileRootType: 'Table',
+                fileNestedPath: nestedPath.slice(1),
+                nestedType: 'Field',
+                nestedName: segments[5],
+            };
+        }
+
+        if (!(segments.length === 4 && segments[2] === 'Function')) {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `ExternalDataSource path must select a Table, Function, or Table Field: "${agentPath}".`,
+            );
+        }
+    }
+
     if (segments.length === 4) {
         return {
             rootTag,
@@ -95,9 +130,30 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
     };
 }
 
+function externalDataSourceTableFilePath(
+    configRoot: string,
+    folderName: string,
+    sourceName: string,
+    tableName: string,
+    agentPath: string,
+): string {
+    const filePath = path.join(configRoot, folderName, sourceName, 'Tables', `${tableName}.xml`);
+    if (!isPathInside(configRoot, filePath)) {
+        throw new AgentPathError('INVALID_AGENT_PATH', `Agent path выходит за границы конфигурации: "${agentPath}".`);
+    }
+    return filePath;
+}
+
 function validatePathIdentifier(value: string, role: string): void {
     const error = validateElementName(value, []);
     if (error) {
         throw new Error(`Некорректный ${role} "${value}": ${error}`);
     }
+}
+
+function validatePathTypeIdentifier(value: string, role: string): void {
+    if ((Object.values(MetadataType) as string[]).includes(value)) {
+        return;
+    }
+    validatePathIdentifier(value, role);
 }

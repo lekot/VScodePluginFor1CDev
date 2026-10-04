@@ -4,7 +4,7 @@ import { xmlParser } from './xml/xmlCore';
 import { XmlReadError, XmlParseError, XmlWriteError } from './xml/xmlErrors';
 import { buildXmlString, writeUtf8FileWithBackup } from './xml/xmlFileIo';
 import { generateSimpleUuid as xmlGenerateSimpleUuid } from './xml/xmlHelpers';
-import { extractProperties, updatePropertiesInStructure } from './xml/xmlPropertiesService';
+import { extractProperties, updateRootPropertiesInStructure } from './xml/xmlPropertiesService';
 import {
   ROOT_TAGS_WITHOUT_CHILDOBJECTS,
   addNestedElementInStructure,
@@ -87,7 +87,7 @@ export class XMLWriter {
     } catch (error) {
       throw new XmlParseError(`Invalid XML structure. ${error instanceof Error ? error.message : String(error)}`);
     }
-    return buildXmlString(updatePropertiesInStructure(parsed, properties));
+    return buildXmlString(updateRootPropertiesInStructure(parsed, properties));
   }
 
   /** Lists sibling names in the root ChildObjects scope or in one tabular section. */
@@ -235,7 +235,7 @@ export class XMLWriter {
       );
     }
 
-    const updated = updatePropertiesInStructure(parsed, properties);
+    const updated = updateRootPropertiesInStructure(parsed, properties);
 
     let xmlString: string;
     try {

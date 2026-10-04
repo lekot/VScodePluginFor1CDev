@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { validateElementName } from '../../../utils/elementNameValidator';
+import { MetadataType } from '../../../models/treeNode';
 
 export const configurationId = z.string().optional();
 export const emptyInput = z.strictObject({});
@@ -92,7 +93,11 @@ const AGENT_PATH_LENGTHS = new Set([2, 4, 6]);
 function isAgentPath(value: string, allowedLengths = AGENT_PATH_LENGTHS): boolean {
   const segments = value.split('.');
   return allowedLengths.has(segments.length)
-    && segments.every((segment) => validateElementName(segment, []) === null);
+    && segments.every((segment, index) => {
+      const isNestedTypeSegment = index > 0 && index % 2 === 0;
+      return (isNestedTypeSegment && (Object.values(MetadataType) as string[]).includes(segment))
+        || validateElementName(segment, []) === null;
+    });
 }
 
 export const agentPath = z.string().refine((value) => isAgentPath(value), {

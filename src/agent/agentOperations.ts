@@ -4,7 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { rulesRegistry, metadataConverter } from '../rules';
 import {
     addRootObjectToConfiguration,
@@ -73,6 +73,73 @@ const configParser = new XMLParser({
     attributeNamePrefix: '@_',
     textNodeName: '#text',
 });
+
+function xmlValuesByLocalName(record: Record<string, unknown>, expectedName: string): unknown[] {
+    return Object.entries(record)
+        .filter(([key]) => key.includes(':') ? key.slice(key.lastIndexOf(':') + 1) === expectedName : key === expectedName)
+        .flatMap(([, value]) => Array.isArray(value) ? value : [value]);
+}
+
+function xmlRecords(value: unknown): Record<string, unknown>[] {
+    const values = Array.isArray(value) ? value : [value];
+    return values.filter((item): item is Record<string, unknown> =>
+        item !== null && typeof item === 'object' && !Array.isArray(item),
+    );
+}
+
+function firstXmlRecord(record: Record<string, unknown>, expectedName: string): Record<string, unknown> | undefined {
+    return xmlValuesByLocalName(record, expectedName).flatMap(xmlRecords)[0];
+}
+
+function xmlText(value: unknown): string {
+    if (typeof value === 'string' || typeof value === 'number') {
+        return String(value).trim();
+    }
+    if (Array.isArray(value)) {
+        return value.length > 0 ? xmlText(value[0]) : '';
+    }
+    if (value && typeof value === 'object') {
+        return xmlText((value as Record<string, unknown>)['#text']);
+    }
+    return '';
+}
+
+async function readValidatedMetadataDocument(
+    filePath: string,
+    expectedRootType: string,
+    expectedName: string,
+): Promise<Record<string, unknown>> {
+    const content = await fs.promises.readFile(filePath, 'utf-8');
+    const validation = XMLValidator.validate(content);
+    if (validation !== true) {
+        const details = typeof validation === 'object' && validation !== null ? validation.err.msg : 'invalid XML';
+        throw new Error(`Некорректный XML-файл ${filePath}: ${details}`);
+    }
+
+    const parsed = configParser.parse(content);
+    const metadataObject = firstXmlRecord(parsed as Record<string, unknown>, 'MetaDataObject');
+    const roots = metadataObject
+        ? xmlValuesByLocalName(metadataObject, expectedRootType).flatMap(xmlRecords)
+        : [];
+    if (roots.length !== 1) {
+        throw new Error(`В файле ${filePath} ожидался один корневой объект ${expectedRootType}.`);
+    }
+
+    const properties = firstXmlRecord(roots[0], 'Properties');
+    const actualName = properties ? xmlText(xmlValuesByLocalName(properties, 'Name')[0]) : '';
+    if (actualName !== expectedName) {
+        throw new Error(`В файле ${filePath} ожидался объект ${expectedRootType}.${expectedName}, найден ${actualName || 'объект без имени'}.`);
+    }
+    return roots[0];
+}
+
+function externalDataSourceTableNames(root: Record<string, unknown>): string[] {
+    const childObjects = firstXmlRecord(root, 'ChildObjects');
+    if (!childObjects) {
+        return [];
+    }
+    return xmlValuesByLocalName(childObjects, 'Table').map(xmlText).filter(Boolean);
+}
 
 const cfeReadPolicyResolver = new CfeFilesystemMutationPolicyResolver();
 
@@ -167,6 +234,9 @@ export class AgentOperations {
 
     /** Builds the serializable multi-file delete plan without applying filesystem effects. */
     async planDeleteObject(params: DeleteObjectParams): Promise<MutationPlan<AgentResult>> {
+        if (params.path.split('.').length !== 2) {
+            throw new AgentPathError('INVALID_AGENT_PATH', `deleteObject supports only a root object path: "${params.path}".`);
+        }
         const { rootTag, objectName, filePath } = await this.resolveContainedAgentPath(params.path);
         await assertCfeGenericMutationAllowed(filePath, 'delete');
         const fileExpected = await expectationForPath(filePath);
@@ -397,6 +467,10 @@ export class AgentOperations {
                 };
             }
 
+            if (type === MetadataType.ExternalDataSource && objectPath.split('.').length !== 2) {
+                return { success: false, error: 'getYaml поддерживает только корневой путь ExternalDataSource. Для таблиц используйте getProperties.' };
+            }
+
             // Ищем XML-файл
             const xmlFilePath = (await this.resolveContainedAgentPath(`${type}.${name}`)).filePath;
 
@@ -431,13 +505,15 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
+            await this.validateExternalDataSourcePath(resolved);
+
             let properties: Record<string, unknown>;
             if (resolved.nestedType && resolved.nestedName) {
                 properties = await XMLWriter.readNestedElementProperties(
                     filePath,
                     resolved.nestedType,
                     resolved.nestedName,
-                    { nestedPath: resolved.nestedPath }
+                    { nestedPath: resolved.fileNestedPath ?? resolved.nestedPath }
                 );
             } else {
                 properties = await XMLWriter.readProperties(filePath);
@@ -523,17 +599,41 @@ export class AgentOperations {
             } catch {
                 return { success: false, error: `Файл объекта не найден: ${resolved.filePath}` };
             }
-            const parentPath = resolved.nestedPath ?? [{ type: resolved.rootTag, name: resolved.objectName }];
+            const validatedRoot = await this.validateExternalDataSourcePath(resolved);
+            const parentPath = resolved.fileNestedPath
+                ?? resolved.nestedPath
+                ?? [{ type: resolved.rootTag, name: resolved.objectName }];
             const children = await XMLWriter.listNestedMetadataChildren(resolved.filePath, parentPath);
+            const publicChildren = children.map((child) => {
+                const childPath = resolved.fileRootType && resolved.nestedPath
+                    ? [resolved.nestedPath[0]!, ...child.path]
+                    : child.path;
+                if (resolved.rootTag === MetadataType.ExternalDataSource && validateElementName(child.name, [])) {
+                    throw new Error(`Некорректное имя вложенного элемента ExternalDataSource: "${child.name}".`);
+                }
+                return {
+                    type: child.type,
+                    name: child.name,
+                    path: childPath.map((segment) => `${segment.type}.${segment.name}`).join('.'),
+                };
+            });
+            if (resolved.rootTag === MetadataType.ExternalDataSource && !resolved.nestedPath && validatedRoot) {
+                const tableChildren = externalDataSourceTableNames(validatedRoot).map((name) => {
+                    const nameError = validateElementName(name, []);
+                    if (nameError) {
+                        throw new Error(`Некорректное имя таблицы ExternalDataSource: "${name}": ${nameError}`);
+                    }
+                    return {
+                        type: 'Table',
+                        name,
+                        path: `${resolved.rootTag}.${resolved.objectName}.Table.${name}`,
+                    };
+                });
+                return { success: true, data: { children: [...tableChildren, ...publicChildren] } };
+            }
             return {
                 success: true,
-                data: {
-                    children: children.map((child) => ({
-                        type: child.type,
-                        name: child.name,
-                        path: child.path.map((segment) => `${segment.type}.${segment.name}`).join('.'),
-                    })),
-                },
+                data: { children: publicChildren },
             };
         } catch (err) {
             return mutationFailure(err);
@@ -547,6 +647,9 @@ export class AgentOperations {
     async deleteAttribute(params: DeleteAttributeParams): Promise<AgentResult> {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
+            if (resolved.rootTag === MetadataType.ExternalDataSource) {
+                return { success: false, error: 'deleteAttribute не поддерживает поля таблиц ExternalDataSource.' };
+            }
             const { filePath } = resolved;
             await assertCfeGenericMutationAllowed(filePath, 'delete');
 
@@ -607,6 +710,9 @@ export class AgentOperations {
 
     async deleteObject(params: DeleteObjectParams): Promise<AgentResult> {
         try {
+            if (params.path.split('.').length !== 2) {
+                return { success: false, error: `deleteObject принимает только корневой путь объекта: "${params.path}".` };
+            }
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { rootTag, objectName, filePath } = resolved;
             await assertCfeGenericMutationAllowed(filePath, 'delete');
@@ -646,6 +752,9 @@ export class AgentOperations {
 
     async renameObject(params: RenameObjectParams): Promise<AgentResult<{ filePath: string }>> {
         try {
+            if (params.path.split('.').length !== 2) {
+                return { success: false, error: `renameObject принимает только корневой путь объекта: "${params.path}".` };
+            }
             const resolved = await this.resolveContainedAgentPath(params.path);
             const { rootTag, objectName, filePath } = resolved;
             await assertCfeGenericMutationAllowed(filePath, 'rename');
@@ -712,6 +821,9 @@ export class AgentOperations {
     async addAttribute(params: AddAttributeParams): Promise<AgentResult> {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
+            if (resolved.rootTag === MetadataType.ExternalDataSource) {
+                return { success: false, error: 'addAttribute не поддерживает ExternalDataSource; используйте Fields таблицы.' };
+            }
             const { filePath, rootTag, objectName } = resolved;
             await assertCfeGenericCreateAllowed(filePath, params.name, {
                 isRootObjectCreate: false,
@@ -745,6 +857,9 @@ export class AgentOperations {
     async addTabularSection(params: AddTabularSectionParams): Promise<AgentResult> {
         try {
             const resolved = await this.resolveContainedAgentPath(params.path);
+            if (resolved.rootTag === MetadataType.ExternalDataSource) {
+                return { success: false, error: 'addTabularSection не поддерживает ExternalDataSource.' };
+            }
             const { filePath, rootTag, objectName } = resolved;
             await assertCfeGenericCreateAllowed(filePath, params.name, {
                 isRootObjectCreate: false,
@@ -827,6 +942,8 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
+            await this.validateExternalDataSourcePath(resolved);
+
             if ('Name' in params.properties) {
                 return { success: false, error: 'Нельзя менять Name через setProperties. Используйте renameObject.' };
             }
@@ -840,7 +957,7 @@ export class AgentOperations {
                     resolved.nestedName,
                     props,
                     undefined,
-                    { nestedPath: resolved.nestedPath }
+                    { nestedPath: resolved.fileNestedPath ?? resolved.nestedPath }
                 );
             } else {
                 await XMLWriter.writeProperties(filePath, props);
@@ -882,13 +999,16 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
-            const typeVal = await XMLWriter.readTypeProperty(
-                filePath,
-                resolved.nestedType,
-                resolved.nestedName,
-                resolved.tabularSection,
-                resolved.nestedPath
-            );
+            await this.validateExternalDataSourcePath(resolved);
+            const typeVal = resolved.fileRootType && !resolved.nestedType
+                ? (await XMLWriter.readProperties(filePath))['Type']
+                : await XMLWriter.readTypeProperty(
+                    filePath,
+                    resolved.nestedType,
+                    resolved.nestedName,
+                    resolved.tabularSection,
+                    resolved.fileNestedPath ?? resolved.nestedPath,
+                );
 
             // Пустой тип
             if (typeVal === undefined || typeVal === null || typeVal === '') {
@@ -958,6 +1078,8 @@ export class AgentOperations {
                 return { success: false, error: `Файл объекта не найден: ${filePath}` };
             }
 
+            await this.validateExternalDataSourcePath(resolved);
+
             // Строим TypeDefinition из массива строк
             const typeEntries = params.types.map(typeStr => {
                 if (typeStr === 'xs:string') { return { kind: 'string' as const }; }
@@ -1010,7 +1132,7 @@ export class AgentOperations {
                     { Type: typeProperty },
                     undefined,
                     {
-                        nestedPath: resolved.nestedPath,
+                        nestedPath: resolved.fileNestedPath ?? resolved.nestedPath,
                         ...(resolved.tabularSection ? { scopedTabularSectionName: resolved.tabularSection } : {}),
                     }
                 );
@@ -1105,6 +1227,48 @@ export class AgentOperations {
         const resolved = resolveAgentPath(this.configRootPath, agentPath);
         await assertPathWithinRoot(this.configRootPath, resolved.filePath);
         return resolved;
+    }
+
+    private async validateExternalDataSourcePath(
+        resolved: ReturnType<typeof resolveAgentPath>,
+    ): Promise<Record<string, unknown> | undefined> {
+        if (resolved.rootTag !== MetadataType.ExternalDataSource) {
+            return undefined;
+        }
+        const expectedRootType = resolved.fileRootType ?? resolved.rootTag;
+        const expectedName = resolved.fileRootType
+            ? resolved.fileNestedPath?.[0]?.name
+            : resolved.objectName;
+        if (!expectedName) {
+            throw new Error('Не удалось определить корневой объект XML для ExternalDataSource path.');
+        }
+
+        if (resolved.fileRootType === 'Table') {
+            const tableName = resolved.fileNestedPath?.[0]?.name;
+            const sourceFolder = MetadataTypeMapper.getDesignerFolderIdForMetadataType(MetadataType.ExternalDataSource)!;
+            const sourcePath = path.join(this.configRootPath, sourceFolder, `${resolved.objectName}.xml`);
+            await assertPathWithinRoot(this.configRootPath, sourcePath);
+            const sourceRoot = await readValidatedMetadataDocument(
+                sourcePath,
+                MetadataType.ExternalDataSource,
+                resolved.objectName,
+            );
+            const references = externalDataSourceTableNames(sourceRoot);
+            for (const reference of references) {
+                const nameError = validateElementName(reference, []);
+                if (nameError) {
+                    throw new Error(`Некорректное имя таблицы ExternalDataSource: "${reference}": ${nameError}`);
+                }
+            }
+            const referenceCount = references.filter((reference) => reference === tableName).length;
+            if (referenceCount !== 1) {
+                throw new Error(referenceCount === 0
+                    ? `Таблица "${tableName}" не объявлена в ChildObjects источника ExternalDataSource.${resolved.objectName}.`
+                    : `Ссылка на таблицу "${tableName}" неоднозначна в ExternalDataSource.${resolved.objectName}.`);
+            }
+        }
+
+        return readValidatedMetadataDocument(resolved.filePath, expectedRootType, expectedName);
     }
 }
 

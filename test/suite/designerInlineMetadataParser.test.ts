@@ -5,6 +5,7 @@ import { DesignerParser } from '../../src/parsers/designerParser';
 import { MetadataType, TreeNode } from '../../src/models/treeNode';
 import { getPropertyLabel } from '../../src/constants/propertyLabels';
 import { getPropertyEnumValues } from '../../src/constants/propertyEnumValues';
+import { XMLWriter } from '../../src/utils/XMLWriter';
 import { cleanupTempDir, createTempDir } from '../helpers/testHelpers';
 
 interface ChildFixture {
@@ -179,9 +180,110 @@ suite('DesignerParser inline metadata children', () => {
     assert.strictEqual(attributes?.type, MetadataType.Attribute);
   });
 
+  test('parses external data source tables and fields with file-relative selectors and saves the selected duplicate field', async () => {
+    const sourceName = 'Analytics';
+    const externalSourcesDir = path.join(tempDir, 'ExternalDataSources');
+    const sourceXmlPath = path.join(externalSourcesDir, `${sourceName}.xml`);
+    const tablesDir = path.join(externalSourcesDir, sourceName, 'Tables');
+    await fs.promises.mkdir(tablesDir, { recursive: true });
+    await fs.promises.writeFile(path.join(tempDir, 'Configuration.xml'),
+      '<MetaDataObject><Configuration><Properties><Name>Test</Name></Properties></Configuration></MetaDataObject>', 'utf8');
+    await fs.promises.writeFile(sourceXmlPath,
+      `<MetaDataObject version="2.18"><ExternalDataSource uuid="source-id"><Properties><Name>${sourceName}</Name><Comment>source</Comment></Properties><ChildObjects><Table>Orders</Table><Table>ArchiveOrders</Table><Table>WrongRoot</Table><Table>WrongName</Table><Table>../escape</Table><Function uuid="function-id"><Properties><Name>Orders</Name><Comment>inline function</Comment></Properties></Function></ChildObjects></ExternalDataSource></MetaDataObject>`,
+      'utf8');
+
+    const tableXml = (name: string, sourceNameInDataSource: string, fieldSourceName: string, fieldComment: string): string =>
+      `<MetaDataObject version="2.18"><Table uuid="${name}-id"><Properties><Name>${name}</Name><Comment>${name} table</Comment><TableType>Table</TableType><NameInDataSource>${sourceNameInDataSource}</NameInDataSource><TableDataType>ObjectData</TableDataType></Properties><ChildObjects><Field uuid="${name}-field-id"><Properties><Name>Identifier</Name><Comment>${fieldComment}</Comment><Type><v8:Type>xs:string</v8:Type></Type><NameInDataSource>${fieldSourceName}</NameInDataSource><AllowNull>false</AllowNull></Properties></Field></ChildObjects></Table></MetaDataObject>`;
+    const ordersXmlPath = path.join(tablesDir, 'Orders.xml');
+    const archiveXmlPath = path.join(tablesDir, 'ArchiveOrders.xml');
+    await fs.promises.writeFile(ordersXmlPath, tableXml('Orders', 'sales.orders', 'order_id', 'orders field'), 'utf8');
+    await fs.promises.writeFile(archiveXmlPath, tableXml('ArchiveOrders', 'archive.orders', 'archive_id', 'archive field'), 'utf8');
+    await fs.promises.writeFile(path.join(tablesDir, 'WrongRoot.xml'),
+      '<MetaDataObject version="2.18"><Catalog uuid="wrong-root-id"><Properties><Name>WrongRoot</Name></Properties></Catalog></MetaDataObject>', 'utf8');
+    await fs.promises.writeFile(path.join(tablesDir, 'WrongName.xml'),
+      '<MetaDataObject version="2.18"><Table uuid="wrong-name-id"><Properties><Name>DifferentName</Name><NameInDataSource>wrong.name</NameInDataSource></Properties></Table></MetaDataObject>', 'utf8');
+    await fs.promises.writeFile(path.join(externalSourcesDir, sourceName, 'escape.xml'),
+      tableXml('Escape', 'escape', 'escape_id', 'must not be loaded'), 'utf8');
+
+    const parsed = await DesignerParser.parse(tempDir);
+    const externalSources = parsed.children?.find((node) => node.name === 'ExternalDataSources');
+    const source = externalSources?.children?.find((node) => node.name === sourceName);
+    assert.ok(source, 'ExternalDataSource should be in the parsed tree');
+
+    const orders = source!.children?.find((node) => String(node.type) === 'Table' && node.name === 'Orders');
+    const archiveOrders = source!.children?.find((node) => String(node.type) === 'Table' && node.name === 'ArchiveOrders');
+    const inlineFunction = source!.children?.find((node) => String(node.type) === 'Function' && node.name === 'Orders');
+    assert.ok(orders, 'the scalar Table ref should resolve to its separate Table XML');
+    assert.ok(archiveOrders, 'all scalar Table refs should be represented');
+    assert.ok(inlineFunction, 'the inline Function should be represented independently of the same-named Table');
+    assert.ok(!source!.children?.some((node) => String(node.type) === 'Table' && node.name === 'WrongRoot'),
+      'a Table reference must not load a file whose XML root is not Table');
+    assert.ok(!source!.children?.some((node) => String(node.type) === 'Table' && node.name === 'WrongName'),
+      'a Table reference must not load a Table file with a different Properties.Name');
+    assert.ok(!source!.children?.some((node) => node.name === '../escape'), 'table references must stay inside Tables');
+    assert.strictEqual(orders!.filePath, ordersXmlPath);
+    assert.strictEqual((orders!.properties as Record<string, unknown>)['NameInDataSource'], 'sales.orders');
+    assert.strictEqual(orders!.parent, source);
+    assert.strictEqual(inlineFunction!.parentFilePath, sourceXmlPath);
+    assert.deepStrictEqual(inlineFunction!.nestedPath, [
+      { type: 'ExternalDataSource', name: sourceName },
+      { type: 'Function', name: 'Orders' },
+    ]);
+
+    const ordersField = orders!.children?.find((node) => String(node.type) === 'Field' && node.name === 'Identifier');
+    const archiveField = archiveOrders!.children?.find((node) => String(node.type) === 'Field' && node.name === 'Identifier');
+    assert.ok(ordersField, 'the inline field should appear under its Table');
+    assert.ok(archiveField, 'a duplicate field name should remain scoped to the second Table');
+    assert.strictEqual(ordersField!.parentFilePath, ordersXmlPath);
+    assert.deepStrictEqual(ordersField!.nestedPath, [
+      { type: 'Table', name: 'Orders' },
+      { type: 'Field', name: 'Identifier' },
+    ]);
+    assert.strictEqual((ordersField!.properties as Record<string, unknown>)['NameInDataSource'], 'order_id');
+    assert.strictEqual((ordersField!.properties as Record<string, unknown>)['AllowNull'], false);
+    assert.strictEqual(archiveField!.parentFilePath, archiveXmlPath);
+    assert.deepStrictEqual(archiveField!.nestedPath, [
+      { type: 'Table', name: 'ArchiveOrders' },
+      { type: 'Field', name: 'Identifier' },
+    ]);
+    assert.strictEqual(archiveField!.properties.Comment, 'archive field');
+
+    await XMLWriter.writeNestedElementProperties(
+      ordersField!.parentFilePath!,
+      ordersField!.type,
+      ordersField!.name,
+      { ...ordersField!.properties, NameInDataSource: 'saved_order_id' },
+      ['NameInDataSource'],
+      { nestedPath: ordersField!.nestedPath },
+    );
+    const fieldSavedXml = await fs.promises.readFile(ordersXmlPath, 'utf8');
+    assert.strictEqual((fieldSavedXml.match(/<NameInDataSource>saved_order_id<\/NameInDataSource>/g) ?? []).length, 1);
+    assert.strictEqual((fieldSavedXml.match(/<NameInDataSource>sales\.orders<\/NameInDataSource>/g) ?? []).length, 1);
+
+    await XMLWriter.updateProperty(orders!.filePath!, 'NameInDataSource', 'sales.orders.saved');
+    const savedOrdersXml = await fs.promises.readFile(ordersXmlPath, 'utf8');
+    const untouchedArchiveXml = await fs.promises.readFile(archiveXmlPath, 'utf8');
+    assert.strictEqual((savedOrdersXml.match(/<NameInDataSource>sales\.orders\.saved<\/NameInDataSource>/g) ?? []).length, 1);
+    assert.strictEqual((savedOrdersXml.match(/<NameInDataSource>saved_order_id<\/NameInDataSource>/g) ?? []).length, 1);
+    assert.doesNotMatch(savedOrdersXml, /<NameInDataSource>sales\.orders<\/NameInDataSource>/);
+    assert.match(untouchedArchiveXml, /<NameInDataSource>archive_id<\/NameInDataSource>/);
+
+    const lazySource = (await DesignerParser.parseTypeContents(tempDir, 'ExternalDataSources'))
+      .find((node) => node.name === sourceName)!;
+    const loadedChildren = await DesignerParser.loadChildrenForElement(
+      tempDir, 'ExternalDataSources', sourceName, lazySource,
+    );
+    assert.ok(loadedChildren.some((node) => String(node.type) === 'Table' && node.name === 'Orders'));
+    assert.ok(loadedChildren.some((node) => String(node.type) === 'Function' && node.name === 'Orders'));
+  });
+
   test('exposes Russian labels and sample-backed service enum choices in the shared property palette', () => {
     assert.strictEqual(getPropertyLabel('RootURL'), 'Корневой URL');
     assert.strictEqual(getPropertyLabel('HTTPMethod'), 'Метод HTTP');
+    assert.strictEqual(getPropertyLabel('NameInDataSource'), 'Имя в источнике данных');
+    assert.strictEqual(getPropertyLabel('TableType'), 'Тип таблицы');
+    assert.strictEqual(getPropertyLabel('AllowNull'), 'Разрешить NULL');
+    assert.strictEqual(getPropertyLabel('ReturnValue'), 'Возвращаемое значение');
     assert.deepStrictEqual(getPropertyEnumValues('ReuseSessions'), ['Use', 'DontUse', 'AutoUse']);
     assert.strictEqual(getPropertyEnumValues('HTTPMethod'), undefined);
     assert.deepStrictEqual(getPropertyEnumValues('TransferDirection'), ['In', 'Out', 'InOut']);

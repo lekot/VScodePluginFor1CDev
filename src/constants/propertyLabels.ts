@@ -97,6 +97,24 @@ export const propertyLabels: Record<string, string> = {
   // Other named metadata children
   'AddressingDimension': 'Измерение адресации',
   'References': 'Ссылки',
+
+  // External data source metadata
+  'TableType': 'Тип таблицы',
+  'TableDataType': 'Тип данных таблицы',
+  'NameInDataSource': 'Имя в источнике данных',
+  'ExpressionInDataSource': 'Выражение в источнике данных',
+  'KeyFields': 'Ключевые поля',
+  'PresentationField': 'Поле представления',
+  'ParentField': 'Поле родителя',
+  'UnfilledParentValue': 'Значение незаполненного родителя',
+  'AllowNull': 'Разрешить NULL',
+  'ReadOnly': 'Только чтение',
+  'ReturnValue': 'Возвращаемое значение',
+  'TransactionsIsolationLevel': 'Уровень изоляции транзакций',
+  'DataVersionField': 'Поле версии данных',
+  'DataLockFields': 'Поля блокировки данных',
+  'UseStandardCommands': 'Использовать стандартные команды',
+  'SearchStringModeOnInputByString': 'Режим поиска при вводе по строке',
 };
 
 /**

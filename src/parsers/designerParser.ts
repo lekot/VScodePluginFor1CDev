@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
+import { validateElementName } from '../utils/elementNameValidator';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { convertStringBooleans, extractV8String } from '../utils/xmlPropertyUtils';
 import {
@@ -1183,7 +1184,114 @@ export class DesignerParser {
       parent.children!.push(predefinedNode);
     }
 
+    if (parent.type === MetadataType.ExternalDataSource) {
+      await this.appendExternalDataSourceTables(parent, xmlContent, xmlPath);
+    }
+
     this.appendInlineMetadataChildren(parent, xmlContent, xmlPath, rootPath);
+  }
+
+  /** Resolve scalar ExternalDataSource.Table references to their separate Tables XML files. */
+  private static async appendExternalDataSourceTables(
+    parent: TreeNode,
+    parsedSource: Record<string, unknown>,
+    sourceXmlPath: string,
+  ): Promise<void> {
+    const childObjects = findChildObjects(parsedSource);
+    if (!childObjects || typeof childObjects !== 'object') {
+      return;
+    }
+
+    const tableNames = new Set<string>();
+    for (const [key, value] of Object.entries(childObjects as Record<string, unknown>)) {
+      if ((key.includes(':') ? key.slice(key.lastIndexOf(':') + 1) : key) !== 'Table') {
+        continue;
+      }
+      const references = Array.isArray(value) ? value : [value];
+      for (const reference of references) {
+        const rawName = typeof reference === 'string'
+          ? reference
+          : reference && typeof reference === 'object' && typeof (reference as Record<string, unknown>)['#text'] === 'string'
+            ? (reference as Record<string, unknown>)['#text'] as string
+            : '';
+        const name = rawName.trim();
+        if (name) {
+          tableNames.add(name);
+        }
+      }
+    }
+
+    const sourceObjectDir = path.resolve(
+      path.dirname(sourceXmlPath), path.basename(sourceXmlPath, path.extname(sourceXmlPath)),
+    );
+    const tablesDir = path.resolve(sourceObjectDir, 'Tables');
+    const validTableNames = Array.from(tableNames).filter((tableName) => {
+      const validationError = validateElementName(tableName, []);
+      if (validationError) {
+        Logger.debug(`Skipping invalid ExternalDataSource table reference "${tableName}": ${validationError}`);
+        return false;
+      }
+      const tableXmlPath = path.resolve(tablesDir, `${tableName}.xml`);
+      const relativeTablePath = path.relative(tablesDir, tableXmlPath);
+      const escapesTablesDirectory = path.isAbsolute(relativeTablePath) || relativeTablePath === '..' ||
+        relativeTablePath.startsWith(`..${path.sep}`);
+      if (escapesTablesDirectory) {
+        Logger.debug(`Skipping ExternalDataSource table reference outside Tables: ${tableName}`);
+        return false;
+      }
+      return true;
+    });
+
+    const tableNodes = await Promise.all(validTableNames.map(async (tableName) => {
+      const tableXmlPath = path.resolve(tablesDir, `${tableName}.xml`);
+      try {
+        const tableXml = await XmlParser.parseFileAsync(tableXmlPath);
+        const parsedMetadataRoot = tableXml.MetaDataObject;
+        const metadataRoot = parsedMetadataRoot && typeof parsedMetadataRoot === 'object'
+          ? parsedMetadataRoot as Record<string, unknown>
+          : tableXml;
+        const rootObjects = Object.entries(metadataRoot).filter(([key, value]) =>
+          !key.startsWith('@_') && !key.startsWith('#') && !key.startsWith('?') &&
+          value !== null && typeof value === 'object' && !Array.isArray(value),
+        );
+        const tableRoot = rootObjects.length === 1 &&
+          rootObjects[0][0].split(':').pop() === 'Table'
+          ? rootObjects[0][1] as Record<string, unknown>
+          : null;
+        if (!tableRoot) {
+          Logger.debug(`Skipping ExternalDataSource table reference ${tableName}: XML root must contain one Table object`);
+          return null;
+        }
+
+        const tableProperties = this.extractPropertiesFromElement({ Table: tableRoot });
+        const xmlTableName = tableProperties.Name;
+        if (typeof xmlTableName !== 'string' || xmlTableName.trim() !== tableName) {
+          Logger.debug(`Skipping ExternalDataSource table reference ${tableName}: XML Properties.Name does not match`);
+          return null;
+        }
+        const tableNode: TreeNode = {
+          id: `${parent.id}.Table.${tableName}`,
+          name: tableName,
+          type: MetadataType.Table,
+          properties: tableProperties,
+          children: [],
+          filePath: tableXmlPath,
+          parent,
+        };
+        const tableRootPath = this.getRootMetadataPath(tableNode, tableXml, tableName);
+        this.appendInlineMetadataChildren(tableNode, tableXml, tableXmlPath, tableRootPath);
+        return tableNode;
+      } catch (error) {
+        Logger.debug(`Failed to parse ExternalDataSource table ${tableName} at ${tableXmlPath}`, error);
+        return null;
+      }
+    }));
+
+    for (const tableNode of tableNodes) {
+      if (tableNode) {
+        parent.children!.push(tableNode);
+      }
+    }
   }
 
   private static getRootMetadataPath(

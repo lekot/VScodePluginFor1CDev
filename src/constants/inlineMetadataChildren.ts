@@ -3,6 +3,8 @@
  * Root types not listed here remain represented by their existing dedicated tree sections.
  */
 export const INLINE_METADATA_CHILD_TYPES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  ExternalDataSource: ['Table', 'Function'],
+  Table: ['Field'],
   HTTPService: ['URLTemplate'],
   URLTemplate: ['Method'],
   WebService: ['Operation'],

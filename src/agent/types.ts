@@ -233,6 +233,10 @@ export interface ResolvedAgentPath {
     filePath: string;
     /** Exact root-to-leaf selector for root and nested metadata elements. */
     nestedPath?: MetadataObjectPathSegment[];
+    /** Root tag of the XML document when it differs from the public root object (e.g. ExternalDataSource.Table). */
+    fileRootType?: string;
+    /** Selector relative to the selected XML file; `nestedPath` remains the complete public Agent API path. */
+    fileNestedPath?: MetadataObjectPathSegment[];
     /** For 4-segment and 6-segment paths: the nested element type, e.g. 'Attribute' */
     nestedType?: string;
     /** For 4-segment and 6-segment paths: the nested element name */

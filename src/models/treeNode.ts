@@ -213,6 +213,9 @@ export enum MetadataType {
   EnumValue = 'EnumValue',
   Dimension = 'Dimension',
   Resource = 'Resource',
+  Table = 'Table',
+  Field = 'Field',
+  Function = 'Function',
 
   // Extensions
   Extension = 'Extension',
