@@ -19,6 +19,22 @@ const MINIMAL_CONFIG_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </Configuration>
 </MetaDataObject>`;
 
+const EVENT_SUBSCRIPTION_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <EventSubscription uuid="11111111-1111-4111-8111-111111111111">
+    <Properties>
+      <Name>OnWrite</Name>
+      <Source>
+        <v8:Type>cfg:DocumentObject.Receipt</v8:Type>
+        <v8:Type>cfg:CatalogObject.Goods</v8:Type>
+      </Source>
+      <Event>BeforeWrite</Event>
+      <Handler>CommonModule.Handler</Handler>
+    </Properties>
+    <ChildObjects/>
+  </EventSubscription>
+</MetaDataObject>`;
+
 function writeConfigXml(dir: string): void {
     fs.writeFileSync(path.join(dir, 'Configuration.xml'), MINIMAL_CONFIG_XML, 'utf-8');
 }
@@ -459,5 +475,133 @@ suite('AgentOperations: setType', () => {
         const sections = dom.MetaDataObject.Catalog.ChildObjects.TabularSection;
         assert.strictEqual(sections[0].ChildObjects.Attribute.Properties.Type['v8:Type'], 'xs:string');
         assert.strictEqual(sections[1].ChildObjects.Attribute.Properties.Type['v8:Type'], 'xs:boolean');
+    });
+});
+
+suite('AgentOperations: EventSubscription Source', () => {
+    let tmpDir: string;
+    let ops: AgentOperations;
+    let sourcePath: string;
+
+    setup(async () => {
+        tmpDir = await createTempDir('1cviewer-agent-event-source-');
+        writeConfigXml(tmpDir);
+        const subscriptionsDir = path.join(tmpDir, 'EventSubscriptions');
+        fs.mkdirSync(subscriptionsDir, { recursive: true });
+        sourcePath = path.join(subscriptionsDir, 'OnWrite.xml');
+        fs.writeFileSync(sourcePath, EVENT_SUBSCRIPTION_XML, 'utf-8');
+        ops = new AgentOperations(tmpDir);
+    });
+
+    teardown(async () => {
+        await cleanupTempDir(tmpDir);
+    });
+
+    test('reads Source from an EventSubscription XML file', async () => {
+        const result = await ops.getSource({ path: 'EventSubscription.OnWrite' });
+        assert.ok(result.success, result.error);
+        assert.deepStrictEqual(result.data?.types, [
+            'cfg:DocumentObject.Receipt',
+            'cfg:CatalogObject.Goods',
+        ]);
+        assert.ok(result.data?.rawXml.includes('<v8:Type>cfg:DocumentObject.Receipt</v8:Type>'));
+    });
+
+    test('rejects malformed stored Source entries instead of returning a partial list', async () => {
+        const malformedXml = EVENT_SUBSCRIPTION_XML.replace(
+            '<v8:Type>cfg:CatalogObject.Goods</v8:Type>',
+            '<v8:Type>cfg:CatalogObject.Goods</v8:Type>\n        <v8:Type>cfg:UnknownKind.Invalid</v8:Type>',
+        );
+        fs.writeFileSync(sourcePath, malformedXml, 'utf-8');
+
+        const result = await ops.getSource({ path: 'EventSubscription.OnWrite' });
+        assert.strictEqual(result.success, false);
+        assert.ok(result.error, 'invalid stored Source must return a controlled error');
+    });
+
+    test('rejects unexpected stored Source elements instead of treating them as empty', async () => {
+        const malformedXml = EVENT_SUBSCRIPTION_XML.replace(
+            /<Source>[\s\S]*?<\/Source>/,
+            '<Source><Unexpected>value</Unexpected></Source>',
+        );
+        fs.writeFileSync(sourcePath, malformedXml, 'utf-8');
+
+        const result = await ops.getSource({ path: 'EventSubscription.OnWrite' });
+        assert.strictEqual(result.success, false);
+        assert.ok(result.error, 'unexpected Source structure must return a controlled error');
+    });
+
+    test('replaces Source in the file and reads the new list back', async () => {
+        const types = [
+            'cfg:InformationRegisterRecordSet.Prices',
+            'cfg:CatalogManager',
+        ];
+        const setResult = await ops.setSource({ path: 'EventSubscription.OnWrite', types });
+        assert.ok(setResult.success, setResult.error);
+
+        const dom = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
+            .parse(fs.readFileSync(sourcePath, 'utf-8'));
+        assert.deepStrictEqual(dom.MetaDataObject.EventSubscription.Properties.Source['v8:Type'], types);
+        const getResult = await ops.getSource({ path: 'EventSubscription.OnWrite' });
+        assert.ok(getResult.success, getResult.error);
+        assert.deepStrictEqual(getResult.data?.types, types);
+    });
+
+    test('empty types clear the complete Source property', async () => {
+        const setResult = await ops.setSource({ path: 'EventSubscription.OnWrite', types: [] });
+        assert.ok(setResult.success, setResult.error);
+
+        const content = fs.readFileSync(sourcePath, 'utf-8');
+        const dom = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(content);
+        assert.deepStrictEqual(dom.MetaDataObject.EventSubscription.Properties.Source, '');
+        const getResult = await ops.getSource({ path: 'EventSubscription.OnWrite' });
+        assert.ok(getResult.success, getResult.error);
+        assert.deepStrictEqual(getResult.data?.types, []);
+        assert.ok(content.includes('<Source/>'));
+    });
+
+    test('rejects malformed types before writing any part of the requested list', async () => {
+        const original = fs.readFileSync(sourcePath, 'utf-8');
+        const invalidLists = [
+            ['cfg:DocumentObject.Receipt', 'cfg:UnknownKind.Goods'],
+            ['cfg:DocumentObject'],
+            ['cfg:CatalogManager.Named'],
+            ['cfg:CatalogObject.Bad-Name'],
+            ['cfg:CatalogObject.<v8:Type>Bad</v8:Type>'],
+        ];
+
+        for (const types of invalidLists) {
+            const result = await ops.setSource({ path: 'EventSubscription.OnWrite', types });
+            assert.strictEqual(result.success, false, `expected rejection for ${types.join(', ')}`);
+            assert.strictEqual(fs.readFileSync(sourcePath, 'utf-8'), original, 'invalid input must leave the file untouched');
+        }
+    });
+
+    test('rejects a non-array or non-string type without writing', async () => {
+        const original = fs.readFileSync(sourcePath, 'utf-8');
+        const invalidValues = [null, ['cfg:CatalogObject.Goods', 42]];
+        for (const types of invalidValues) {
+            const result = await ops.setSource({
+                path: 'EventSubscription.OnWrite',
+                types: types as unknown as string[],
+            });
+            assert.strictEqual(result.success, false);
+            assert.strictEqual(fs.readFileSync(sourcePath, 'utf-8'), original);
+        }
+    });
+
+    test('rejects non-EventSubscription and nested paths without writing', async () => {
+        const original = fs.readFileSync(sourcePath, 'utf-8');
+        for (const pathValue of [
+            'Catalog.Goods',
+            'EventSubscription.OnWrite.Attribute.Source',
+            'EventSubscription.OnWrite.TabularSection.Items.Attribute.Source',
+        ]) {
+            const readResult = await ops.getSource({ path: pathValue });
+            assert.strictEqual(readResult.success, false, `getSource must reject ${pathValue}`);
+            const writeResult = await ops.setSource({ path: pathValue, types: [] });
+            assert.strictEqual(writeResult.success, false, `setSource must reject ${pathValue}`);
+            assert.strictEqual(fs.readFileSync(sourcePath, 'utf-8'), original);
+        }
     });
 });

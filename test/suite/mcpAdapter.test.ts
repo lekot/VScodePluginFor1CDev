@@ -70,12 +70,12 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('legacy opt-in registers all 83 operations alongside the seven compact tools', () => {
+  test('legacy opt-in registers all 85 operations alongside the seven compact tools', () => {
     const previous = process.env.CDT_MCP_LEGACY_TOOLS;
     process.env.CDT_MCP_LEGACY_TOOLS = '1';
     try {
       const tools = captureRegisteredTools(async () => ({ success: true }));
-      assert.strictEqual(tools.length, 90);
+      assert.strictEqual(tools.length, 92);
       assert.deepStrictEqual(
         tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
         MCP_TOOL_CATALOG.map(({ name }) => name),
@@ -94,7 +94,7 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('cdt_catalog lists all operations and serializes all 83 input schemas', async () => {
+  test('cdt_catalog lists all operations and serializes all 85 input schemas', async () => {
     const tools = captureRegisteredTools(async () => {
       assert.fail('cdt_catalog must not dispatch Agent commands');
     });
@@ -109,7 +109,7 @@ suite('MCP adapter: tool contract', () => {
       listed.data.operations.map(({ name, profile }) => ({ name, profile })),
       MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
     );
-    assert.strictEqual(listed.data.operations.length, 83);
+    assert.strictEqual(listed.data.operations.length, 85);
 
     for (const operation of MCP_OPERATION_CATALOG) {
       const result = await catalog.handler({ operation: operation.name }, { signal: signal() });

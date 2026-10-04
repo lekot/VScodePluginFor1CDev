@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **83** runtime-команды Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **85** runtime-команд Agent API для программного
 управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **83 операции Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **85 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,11 +58,11 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 83 имени, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 85 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 83 индивидуальных имени операции с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 85 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
@@ -973,15 +973,40 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 { "path": "Catalog.Товары.Attribute.Артикул" }
 ```
 
-Возвращает: `{ type: string }` — строка типа в формате `"cfg:CatalogRef.Номенклатура"` или `"xs:string"`.
+Возвращает: `{ types: string[], rawXml: string }`, например `types: ["cfg:CatalogRef.Номенклатура"]`.
 
 #### `1c-metadata-tree.agent.setType`
 
-Установить тип реквизита или колонки ТЧ.
+Полностью заменить тип реквизита или колонки ТЧ.
 
 ```json
-{ "path": "Catalog.Товары.Attribute.Артикул", "type": "cfg:CatalogRef.Номенклатура" }
+{ "path": "Catalog.Товары.Attribute.Артикул", "types": ["cfg:CatalogRef.Номенклатура"] }
 ```
+
+### Источники подписок на события (2 команды)
+
+#### `1c-metadata-tree.agent.getSource`
+
+Получить типы объектов, указанные в `Source` подписки на событие.
+
+```json
+{ "path": "EventSubscription.ПриЗаписиДокумента" }
+```
+
+Возвращает `{ types: string[], rawXml: string }`; элементы `types` имеют вид `cfg:ObjectKind.Name` или `cfg:ManagerKind`.
+
+#### `1c-metadata-tree.agent.setSource`
+
+Полностью заменить список объектов в `Source`. Пустой массив очищает `Source`.
+
+```json
+{
+  "path": "EventSubscription.ПриЗаписиДокумента",
+  "types": ["cfg:DocumentObject.РеализацияТоваров", "cfg:CatalogObject.Номенклатура"]
+}
+```
+
+Команды принимают только корневой путь `EventSubscription.Name`; вложенные пути и другие типы метаданных отклоняются.
 
 ---
 

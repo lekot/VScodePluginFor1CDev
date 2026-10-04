@@ -31,6 +31,8 @@ import type {
     SetPropertiesParams,
     GetTypeParams,
     SetTypeParams,
+    GetSourceParams,
+    SetSourceParams,
     AgentResult,
     ConfigurationScopedParams,
     AgentSupportGetStatusParams,
@@ -742,6 +744,25 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.getSource ───────────────────────────────
+
+    const getSourceCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.getSource',
+        async (params: GetSourceParams) => runForConfiguration(params, 'read', undefined, (configRoot) =>
+            new AgentOperations(configRoot).getSource(params)),
+    );
+
+    // ─── 1c-metadata-tree.agent.setSource ───────────────────────────────
+
+    const setSourceCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.setSource',
+        async (params: SetSourceParams) => runForConfiguration(params, 'write', 'agent.setSource', async (configRoot) => {
+            const result = await new AgentOperations(configRoot).setSource(params);
+            if (result.success) { getTreeDataProvider()?.refresh(); }
+            return result;
+        }),
+    );
+
     const getSubsystemCommandInterfaceCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.getSubsystemCommandInterface',
         async (params: ConfigurationScopedParams & { subsystemPath: string }) => {
@@ -1108,6 +1129,7 @@ export function registerAgentCommands(
         deploySelectedObjectsCommand, deployChangedFilesCommand,
         pullSelectedObjectsCommand, exportStatusCommand,
         getTypeCommand, setTypeCommand,
+        getSourceCommand, setSourceCommand,
         getSubsystemCommandInterfaceCommand, setSubsystemCommandVisibilityCommand,
         setSubsystemCommandOrderCommand, setSubsystemSubsystemsOrderCommand,
         listPredefinedCharacteristicsCommand,

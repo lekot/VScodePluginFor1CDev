@@ -64,6 +64,8 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
 
   tool('cdt_get_type', 'getType', 'readClosed'),
   tool('cdt_set_type', 'setType', 'writeClosed'),
+  tool('cdt_get_event_subscription_source', 'getSource', 'readClosed'),
+  tool('cdt_set_event_subscription_source', 'setSource', 'writeClosed'),
   tool('cdt_get_subsystem_command_interface', 'getSubsystemCommandInterface', 'readClosed'),
   tool('cdt_set_subsystem_command_visibility', 'setSubsystemCommandVisibility', 'writeClosed'),
   tool('cdt_set_subsystem_command_order', 'setSubsystemCommandOrder', 'writeClosed'),
@@ -191,6 +193,11 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_export_status: { configurationId: 'cfg', configPath: 'C:/project' },
   cdt_get_type: { configurationId: 'cfg', path: 'Catalog.Goods.Attribute.VendorCode' },
   cdt_set_type: { configurationId: 'cfg', path: 'Catalog.Goods.Attribute.VendorCode', types: ['xs:string'] },
+  cdt_get_event_subscription_source: { configurationId: 'cfg', path: 'EventSubscription.OnWrite' },
+  cdt_set_event_subscription_source: {
+    configurationId: 'cfg', path: 'EventSubscription.OnWrite',
+    types: ['cfg:DocumentObject.Receipt', 'cfg:CatalogManager'],
+  },
   cdt_get_subsystem_command_interface: { configurationId: 'cfg', subsystemPath: 'Subsystem.Sales' },
   cdt_set_subsystem_command_visibility: { configurationId: 'cfg', subsystemPath: 'Subsystem.Sales', commandName: 'Catalog.Goods.Command.Open', common: 'visible' },
   cdt_set_subsystem_command_order: { configurationId: 'cfg', subsystemPath: 'Subsystem.Sales', entries: [{ commandName: 'Catalog.Goods.Command.Open', commandGroup: 'NavigationPanelImportant' }] },
@@ -311,6 +318,10 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'setProperties cannot rename through Name', tool: 'cdt_set_properties', input: { path: 'Catalog.Goods', properties: { Name: 'Products' } } },
   { label: 'setType rejects unsupported primitive type', tool: 'cdt_set_type', input: { path: 'Catalog.Goods.Attribute.Code', types: ['xs:integer'] } },
   { label: 'setType rejects incomplete cfg reference', tool: 'cdt_set_type', input: { path: 'Catalog.Goods.Attribute.Code', types: ['cfg:CatalogRef'] } },
+  { label: 'event subscription source rejects nested path', tool: 'cdt_get_event_subscription_source', input: { path: 'EventSubscription.OnWrite.Attribute.Source' } },
+  { label: 'event subscription source rejects invalid object kind', tool: 'cdt_set_event_subscription_source', input: { path: 'EventSubscription.OnWrite', types: ['cfg:UnknownKind.Item'] } },
+  { label: 'event subscription source rejects missing object name', tool: 'cdt_set_event_subscription_source', input: { path: 'EventSubscription.OnWrite', types: ['cfg:DocumentObject'] } },
+  { label: 'event subscription source rejects named manager kind', tool: 'cdt_set_event_subscription_source', input: { path: 'EventSubscription.OnWrite', types: ['cfg:CatalogManager.Items'] } },
 
   { label: 'debugStart empty rootProject', tool: 'cdt_debug_start', input: { rootProject: '', infobase: 'File=C:/db', platformPath: 'C:/1cv8' } },
   { label: 'debugStart empty infobase', tool: 'cdt_debug_start', input: { rootProject: 'C:/project', infobase: '', platformPath: 'C:/1cv8' } },
@@ -439,10 +450,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 83 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 83, 'test oracle must enumerate all 83 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 83);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 83);
+  test('operation registry has the exact 85 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 85, 'test oracle must enumerate all 85 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 85);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 85);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -498,8 +509,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 83);
-    assert.strictEqual(new Set(registered).size, 83);
+    assert.strictEqual(registered.length, 85);
+    assert.strictEqual(new Set(registered).size, 85);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -512,7 +523,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 83 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 85 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
