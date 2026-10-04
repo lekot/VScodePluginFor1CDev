@@ -61,6 +61,9 @@ export function getIconForType(type: MetadataType): vscode.ThemeIcon {
     [MetadataType.StyleItem]: 'symbol-color',
 
     // Sub-elements
+    [MetadataType.Table]: 'table',
+    [MetadataType.Field]: 'symbol-field',
+    [MetadataType.Function]: 'symbol-method',
     [MetadataType.Attribute]: 'symbol-field',
     [MetadataType.TabularSection]: 'table',
     [MetadataType.Form]: 'layout',
@@ -72,6 +75,13 @@ export function getIconForType(type: MetadataType): vscode.ThemeIcon {
     [MetadataType.EnumValue]: 'symbol-enum-member',
     [MetadataType.Dimension]: 'symbol-ruler',
     [MetadataType.Resource]: 'symbol-numeric',
+    [MetadataType.URLTemplate]: 'link',
+    [MetadataType.Operation]: 'symbol-method',
+    [MetadataType.IntegrationServiceChannel]: 'plug',
+    [MetadataType.AddressingAttribute]: 'symbol-field',
+    [MetadataType.AccountingFlag]: 'symbol-boolean',
+    [MetadataType.ExtDimensionAccountingFlag]: 'symbol-boolean',
+    [MetadataType.Column]: 'symbol-field',
 
     // Extensions
     [MetadataType.Extension]: 'extensions',

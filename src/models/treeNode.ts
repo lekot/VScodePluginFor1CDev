@@ -1,3 +1,5 @@
+import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
+
 /**
  * Typed property bag for TreeNode.
  *
@@ -127,6 +129,8 @@ export interface TreeNode {
   properties: TreeNodeProperties;
   filePath?: string;
   parentFilePath?: string; // Path to parent XML file for nested elements (Attributes, etc.)
+  /** Exact root-to-leaf selector for a nested inline metadata element in its parent XML. */
+  nestedPath?: MetadataObjectPathSegment[];
   isExpanded?: boolean;
 }
 
@@ -198,10 +202,20 @@ export enum MetadataType {
   CommandSubElement = 'CommandSubElement',
   Recurrence = 'Recurrence',
   Method = 'Method',
+  URLTemplate = 'URLTemplate',
+  Operation = 'Operation',
   Parameter = 'Parameter',
+  IntegrationServiceChannel = 'IntegrationServiceChannel',
+  AddressingAttribute = 'AddressingAttribute',
+  AccountingFlag = 'AccountingFlag',
+  ExtDimensionAccountingFlag = 'ExtDimensionAccountingFlag',
+  Column = 'Column',
   EnumValue = 'EnumValue',
   Dimension = 'Dimension',
   Resource = 'Resource',
+  Table = 'Table',
+  Field = 'Field',
+  Function = 'Function',
 
   // Extensions
   Extension = 'Extension',

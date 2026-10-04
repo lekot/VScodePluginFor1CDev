@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <WebService uuid="11111111-1111-4111-8111-111111111111">
+    <Properties><Name>PublicApi</Name><Namespace>urn:test</Namespace></Properties>
+    <ChildObjects>
+      <Operation uuid="22222222-2222-4222-8222-222222222222">
+        <Properties><Name>FirstOperation</Name><ProcedureName>First</ProcedureName></Properties>
+        <ChildObjects>
+          <Parameter uuid="33333333-3333-4333-8333-333333333333">
+            <Properties><Name>Result</Name><XDTOValueType>xs:string</XDTOValueType><TransferDirection>Out</TransferDirection></Properties>
+          </Parameter>
+        </ChildObjects>
+      </Operation>
+      <Operation uuid="44444444-4444-4444-8444-444444444444">
+        <Properties><Name>SecondOperation</Name><ProcedureName>Second</ProcedureName></Properties>
+        <ChildObjects>
+          <Parameter uuid="55555555-5555-4555-8555-555555555555">
+            <Properties><Name>Result</Name><XDTOValueType>xs:boolean</XDTOValueType><TransferDirection>In</TransferDirection></Properties>
+          </Parameter>
+        </ChildObjects>
+      </Operation>
+    </ChildObjects>
+  </WebService>
+</MetaDataObject>

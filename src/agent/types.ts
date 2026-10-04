@@ -11,6 +11,7 @@ import type {
     RepositoryServiceResult,
     RepositoryTarget,
 } from '../services/configurationRepository/types';
+import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
 
 export interface AgentResult<T = void> {
     success: boolean;
@@ -193,6 +194,17 @@ export interface ListObjectsParams extends ConfigurationScopedParams {
     query?: string;
 }
 
+export interface ListChildrenParams extends ConfigurationScopedParams {
+    /** Root or nested metadata path whose named inline children should be listed. */
+    path: string;
+}
+
+export interface MetadataChildInfo {
+    type: string;
+    name: string;
+    path: string;
+}
+
 export interface ObjectInfo {
     type: string;
     name: string;
@@ -219,6 +231,12 @@ export interface ResolvedAgentPath {
     objectName: string;
     /** Absolute path to the object XML file */
     filePath: string;
+    /** Exact root-to-leaf selector for root and nested metadata elements. */
+    nestedPath?: MetadataObjectPathSegment[];
+    /** Root tag of the XML document when it differs from the public root object (e.g. ExternalDataSource.Table). */
+    fileRootType?: string;
+    /** Selector relative to the selected XML file; `nestedPath` remains the complete public Agent API path. */
+    fileNestedPath?: MetadataObjectPathSegment[];
     /** For 4-segment and 6-segment paths: the nested element type, e.g. 'Attribute' */
     nestedType?: string;
     /** For 4-segment and 6-segment paths: the nested element name */

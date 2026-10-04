@@ -70,6 +70,51 @@ export const propertyLabels: Record<string, string> = {
   'AuxiliaryObjectForm': 'Вспомогательная форма объекта',
   'AuxiliaryListForm': 'Вспомогательная форма списка',
   'AuxiliaryChoiceForm': 'Вспомогательная форма выбора',
+
+  // HTTP and web services
+  'RootURL': 'Корневой URL',
+  'ReuseSessions': 'Повторное использование сеансов',
+  'SessionMaxAge': 'Максимальный возраст сеанса',
+  'Template': 'Шаблон URL',
+  'HTTPMethod': 'Метод HTTP',
+  'Handler': 'Обработчик',
+  'Namespace': 'Пространство имён',
+  'XDTOPackages': 'Пакеты XDTO',
+  'DescriptorFileName': 'Файл описания веб-сервиса',
+  'XDTOReturningValueType': 'Тип возвращаемого значения XDTO',
+  'XDTOValueType': 'Тип значения XDTO',
+  'Nillable': 'Допускает null',
+  'Transactioned': 'Транзакционный',
+  'ProcedureName': 'Имя процедуры',
+  'TransferDirection': 'Направление передачи',
+
+  // Integration services
+  'ExternalIntegrationServiceAddress': 'Адрес внешнего сервиса интеграции',
+  'ExternalIntegrationServiceChannelName': 'Имя канала внешнего сервиса интеграции',
+  'MessageDirection': 'Направление сообщения',
+  'ReceiveMessageProcessing': 'Обработчик полученного сообщения',
+
+  // Other named metadata children
+  'AddressingDimension': 'Измерение адресации',
+  'References': 'Ссылки',
+
+  // External data source metadata
+  'TableType': 'Тип таблицы',
+  'TableDataType': 'Тип данных таблицы',
+  'NameInDataSource': 'Имя в источнике данных',
+  'ExpressionInDataSource': 'Выражение в источнике данных',
+  'KeyFields': 'Ключевые поля',
+  'PresentationField': 'Поле представления',
+  'ParentField': 'Поле родителя',
+  'UnfilledParentValue': 'Значение незаполненного родителя',
+  'AllowNull': 'Разрешить NULL',
+  'ReadOnly': 'Только чтение',
+  'ReturnValue': 'Возвращаемое значение',
+  'TransactionsIsolationLevel': 'Уровень изоляции транзакций',
+  'DataVersionField': 'Поле версии данных',
+  'DataLockFields': 'Поля блокировки данных',
+  'UseStandardCommands': 'Использовать стандартные команды',
+  'SearchStringModeOnInputByString': 'Режим поиска при вводе по строке',
 };
 
 /**

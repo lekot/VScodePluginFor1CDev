@@ -1,4 +1,5 @@
 import { MetadataType } from '../../models/treeNode';
+import type { MetadataObjectPathSegment } from '../../types/metadataObjectPath';
 
 /**
  * Same coverage as `elementOperations` TOP_LEVEL_TYPES (Designer single-object XML).
@@ -91,6 +92,8 @@ export const ROOT_TAGS_WITHOUT_CHILDOBJECTS = new Set<string>([
  */
 export type WriteNestedElementOptions = {
   scopedTabularSectionName?: string;
+  /** Exact root-to-leaf selector used for collision-safe nested property access. */
+  nestedPath?: readonly MetadataObjectPathSegment[];
 };
 
 /** Internal: Attribute nested write scoped to one tabular section by `<Name>`. */

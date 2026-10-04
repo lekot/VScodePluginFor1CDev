@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <Properties><Name>Items</Name></Properties>
+    <ChildObjects>
+      <Attribute uuid="22222222-2222-4222-8222-222222222222">
+        <Properties><Name>Code</Name><Comment>Root attribute</Comment></Properties>
+      </Attribute>
+      <TabularSection uuid="33333333-3333-4333-8333-333333333333">
+        <Properties><Name>Lines</Name></Properties>
+        <ChildObjects>
+          <Attribute uuid="44444444-4444-4444-8444-444444444444">
+            <Properties><Name>Code</Name><Comment>Column attribute</Comment></Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>

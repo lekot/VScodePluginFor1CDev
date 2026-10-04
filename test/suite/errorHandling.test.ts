@@ -63,10 +63,13 @@ suite('Error Handling Test Suite', () => {
     // Create a valid XML file
     const validXml = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject version="2.20">
-  <Properties>
-    <Name>TestCatalog</Name>
-    <Synonym>Test Catalog</Synonym>
-  </Properties>
+  <Catalog uuid="11111111-1111-4111-8111-111111111111">
+    <Properties>
+      <Name>TestCatalog</Name>
+      <Synonym>Test Catalog</Synonym>
+    </Properties>
+    <ChildObjects/>
+  </Catalog>
 </MetaDataObject>`;
     
     await fs.promises.writeFile(testPath, validXml, 'utf-8');
@@ -95,14 +98,17 @@ suite('Error Handling Test Suite', () => {
 
   test('XMLWriter should preserve properties on write error', async () => {
     const testPath = path.join(fixturesPath, 'temp-write-test.xml');
-    
+
     // Create a valid XML file
     const validXml = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject version="2.20">
-  <Properties>
-    <Name>TestCatalog</Name>
-    <Synonym>Original Synonym</Synonym>
-  </Properties>
+  <Catalog uuid="22222222-2222-4222-8222-222222222222">
+    <Properties>
+      <Name>TestCatalog</Name>
+      <Synonym>Original Synonym</Synonym>
+    </Properties>
+    <ChildObjects/>
+  </Catalog>
 </MetaDataObject>`;
     
     await fs.promises.writeFile(testPath, validXml, 'utf-8');
@@ -135,10 +141,13 @@ suite('Error Handling Test Suite', () => {
     const testPath = path.join(fixturesPath, 'temp-atomic-write-failure.xml');
     const originalXml = `<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject version="2.20">
-  <Properties>
-    <Name>AtomicTest</Name>
-    <Comment>Original Comment</Comment>
-  </Properties>
+  <Catalog uuid="33333333-3333-4333-8333-333333333333">
+    <Properties>
+      <Name>AtomicTest</Name>
+      <Comment>Original Comment</Comment>
+    </Properties>
+    <ChildObjects/>
+  </Catalog>
 </MetaDataObject>`;
     await fs.promises.writeFile(testPath, originalXml, 'utf-8');
 

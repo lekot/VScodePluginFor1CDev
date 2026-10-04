@@ -618,6 +618,12 @@ export async function saveProperties(
           node.type === MetadataType.Attribute && node.parent
             ? findTabularSectionInstanceForAttributeParent(node.parent)?.name
             : undefined;
+        const nestedWriteOptions = node.nestedPath || scopedTabularSectionName
+          ? {
+              ...(node.nestedPath ? { nestedPath: node.nestedPath } : {}),
+              ...(scopedTabularSectionName ? { scopedTabularSectionName } : {}),
+            }
+          : undefined;
 
         await runConfigurationMutation(targetFilePath, 'ui.properties.saveNested', () =>
           xmlWriter.writeNestedElementProperties(
@@ -626,7 +632,7 @@ export async function saveProperties(
             node.name,
             properties,
             changedKeys,
-            scopedTabularSectionName ? { scopedTabularSectionName } : undefined
+            nestedWriteOptions
           ));
       } else {
         // For root elements, use standard write method

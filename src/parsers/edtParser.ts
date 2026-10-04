@@ -22,6 +22,9 @@ import {
 } from '../extensionSupport/extensionXmlParser';
 import { STANDARD_MODULES } from '../constants/moduleTypes';
 import { resolveEdtBslLanguage } from './configurationBslLanguage';
+import { INLINE_METADATA_CHILD_TYPES } from '../constants/inlineMetadataChildren';
+import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
+import { listNamedMetadataChildren } from '../utils/xml/nestedMetadataObjects';
 
 /**
  * Parser for 1C EDT (Eclipse Development Tools) format metadata
@@ -229,7 +232,8 @@ export class EdtParser {
     try {
       await fs.promises.access(mdoPath);
       const mdoContent = await XmlParser.parseFileAsync(mdoPath);
-      const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath);
+      const rootPath = this.getRootMetadataPath(mdoContent, typeName, elementName);
+      const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath, rootPath);
       if (fromMdo.enumValuesNode?.children?.length) {
         children.push(fromMdo.enumValuesNode);
       }
@@ -245,6 +249,15 @@ export class EdtParser {
       if (fromMdo.tabularNode?.children?.length) {
         children.push(fromMdo.tabularNode);
       }
+      const inlineRoot: TreeNode = {
+        id: `${typeName}.${elementName}`,
+        name: rootPath[0].name,
+        type: rootPath[0].type as MetadataType,
+        properties: {},
+        children: [],
+      };
+      this.appendInlineMetadataChildren(inlineRoot, mdoContent, mdoPath, rootPath);
+      children.push(...(inlineRoot.children ?? []));
     } catch {
       // No .mdo or parse error — skip Attributes/TabularSections from MDO
     }
@@ -285,6 +298,11 @@ export class EdtParser {
     } catch (error) {
       Logger.debug(`Error reading EDT element directory ${elementPath}`, error);
     }
+    if (element) {
+      for (const child of children) {
+        child.parent = element;
+      }
+    }
     return children;
   }
 
@@ -293,7 +311,8 @@ export class EdtParser {
    */
   private static buildAttributesAndTabularFromMdo(
     mdoContent: Record<string, unknown>,
-    mdoPath: string
+    mdoPath: string,
+    rootPath: readonly MetadataObjectPathSegment[]
   ): {
     attributesNode: TreeNode | null;
     tabularNode: TreeNode | null;
@@ -325,6 +344,7 @@ export class EdtParser {
         type: MetadataType.Attribute,
         properties: flattenAttributeProperties(a),
         parentFilePath: mdoPath,
+        nestedPath: [...rootPath.map((segment) => ({ ...segment })), { type: 'Attribute', name: String(attrName) }],
       };
       attributeNode.parent = attributesNode;
       attributesNode.children!.push(attributeNode);
@@ -355,6 +375,7 @@ export class EdtParser {
         properties: { ...props },
         children: [],
         parentFilePath: mdoPath,
+        nestedPath: [...rootPath.map((segment) => ({ ...segment })), { type: 'TabularSection', name: sectionName }],
       };
 
       for (const attr of tsAttrList) {
@@ -366,6 +387,7 @@ export class EdtParser {
           type: MetadataType.Attribute,
           properties: flattenAttributeProperties(a),
           parentFilePath: mdoPath,
+          nestedPath: [...tsNode.nestedPath!, { type: 'Attribute', name: String(attrName) }],
         };
         attributeNode.parent = tsNode;
         tsNode.children!.push(attributeNode);
@@ -396,6 +418,7 @@ export class EdtParser {
           type: MetadataType.EnumValue,
           properties: flattenAttributeProperties(ev),
           parentFilePath: mdoPath,
+          nestedPath: [...rootPath.map((segment) => ({ ...segment })), { type: 'EnumValue', name: String(name) }],
         };
         evNode.parent = enumValuesNode;
         enumValuesNode.children!.push(evNode);
@@ -423,6 +446,7 @@ export class EdtParser {
           type: MetadataType.Dimension,
           properties: flattenAttributeProperties(a),
           parentFilePath: mdoPath,
+          nestedPath: [...rootPath.map((segment) => ({ ...segment })), { type: 'Dimension', name: String(dimName) }],
         };
         dimNode.parent = dimensionsNode;
         dimensionsNode.children!.push(dimNode);
@@ -450,6 +474,7 @@ export class EdtParser {
           type: MetadataType.Resource,
           properties: flattenAttributeProperties(a),
           parentFilePath: mdoPath,
+          nestedPath: [...rootPath.map((segment) => ({ ...segment })), { type: 'Resource', name: String(resName) }],
         };
         resNode.parent = resourcesNode;
         resourcesNode.children!.push(resNode);
@@ -635,7 +660,8 @@ export class EdtParser {
     }
 
     if (mdoContent) {
-      const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath);
+      const rootPath = this.getRootMetadataPath(mdoContent, typeName, elementName);
+      const fromMdo = this.buildAttributesAndTabularFromMdo(mdoContent, mdoPath, rootPath);
       if (fromMdo.enumValuesNode?.children?.length) {
         fromMdo.enumValuesNode.parent = elementNode;
         elementNode.children?.push(fromMdo.enumValuesNode);
@@ -656,6 +682,7 @@ export class EdtParser {
         fromMdo.tabularNode.parent = elementNode;
         elementNode.children?.push(fromMdo.tabularNode);
       }
+      this.appendInlineMetadataChildren(elementNode, mdoContent, mdoPath, rootPath);
     }
 
     // Add virtual module nodes based on type
@@ -968,6 +995,54 @@ export class EdtParser {
     return getMetadataTypeDescriptorByFolder(typeName)?.edtFileName ?? 'Object.mdo';
   }
 
+  private static getRootMetadataPath(
+    mdoContent: Record<string, unknown>,
+    typeName: string,
+    fallbackName: string
+  ): MetadataObjectPathSegment[] {
+    const name = this.extractPropertiesFromMdo(mdoContent).Name;
+    return [{
+      type: String(MetadataTypeMapper.map(typeName)),
+      name: typeof name === 'string' && name.trim() ? name.trim() : fallbackName,
+    }];
+  }
+
+  /** Build supported named inline metadata nodes from this same MDO file. */
+  private static appendInlineMetadataChildren(
+    parent: TreeNode,
+    parsed: Record<string, unknown>,
+    mdoPath: string,
+    rootPath: readonly MetadataObjectPathSegment[]
+  ): void {
+    if (!(parent.type in INLINE_METADATA_CHILD_TYPES) || parent.type === MetadataType.Sequence) {
+      return;
+    }
+    const parentPath = parent.nestedPath ?? rootPath;
+    const children = listNamedMetadataChildren(parsed, parentPath);
+    for (const child of children) {
+      const childPath = [...parentPath.map((segment) => ({ ...segment })), { type: child.type, name: child.name }];
+      const properties = this.extractPropertiesFromMdo({ [child.type]: child.value });
+      const rawChild = child.value as Record<string, unknown>;
+      const rawUuid = rawChild['@_uuid'] ?? rawChild.uuid;
+      if (rawUuid !== undefined && rawUuid !== null) {
+        properties.uuid = String(rawUuid);
+      }
+      const node: TreeNode = {
+        id: `${parent.id}.${child.type}.${child.name}`,
+        name: child.name,
+        type: child.type as MetadataType,
+        properties,
+        children: [],
+        parentFilePath: mdoPath,
+        nestedPath: childPath,
+        parent,
+      };
+      parent.children ??= [];
+      parent.children.push(node);
+      this.appendInlineMetadataChildren(node, parsed, mdoPath, rootPath);
+    }
+  }
+
   /**
    * Load column nodes for a tabular section instance (Designer parity) when expanding the columns placeholder.
    */
@@ -1015,6 +1090,9 @@ export class EdtParser {
           type: MetadataType.Attribute,
           properties: flattenAttributeProperties(a),
           parentFilePath: mdoPath,
+          ...(sectionInstance.nestedPath
+            ? { nestedPath: [...sectionInstance.nestedPath.map((segment) => ({ ...segment })), { type: 'Attribute', name: String(attrName) }] }
+            : {}),
         };
         out.push(attributeNode);
       }

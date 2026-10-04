@@ -28,6 +28,7 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_create_object', 'createObject', 'writeClosed'),
   tool('cdt_get_yaml', 'getYaml', 'readClosed'),
   tool('cdt_list_objects', 'listObjects', 'readClosed'),
+  tool('cdt_list_children', 'listChildren', 'readClosed'),
   tool('cdt_get_properties', 'getProperties', 'readClosed'),
   tool('cdt_add_attribute', 'addAttribute', 'writeClosed'),
   tool('cdt_add_tabular_section', 'addTabularSection', 'writeClosed'),
@@ -171,6 +172,7 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_create_object: { configurationId: 'cfg', type: 'Catalog', name: 'Goods', synonym: 'Goods', properties: { nested: { enabled: true }, values: [1, null] } },
   cdt_get_yaml: { configurationId: 'cfg', path: 'Catalog.Goods' },
   cdt_list_objects: { configurationId: 'cfg', type: 'Catalog', query: 'good' },
+  cdt_list_children: { configurationId: 'cfg', path: 'HTTPService.Api' },
   cdt_get_properties: { configurationId: 'cfg', path: 'Catalog.Goods' },
   cdt_add_attribute: { configurationId: 'cfg', path: 'Catalog.Goods', name: 'VendorCode' },
   cdt_add_tabular_section: { configurationId: 'cfg', path: 'Catalog.Goods', name: 'Items' },
@@ -339,6 +341,7 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'Agent path has three segments', tool: 'cdt_get_properties', input: { path: 'Catalog.Goods.Attribute' } },
   { label: 'Agent path has five segments', tool: 'cdt_set_properties', input: { path: 'Catalog.Goods.Attribute.Code.Extra', properties: {} } },
   { label: 'Agent path contains invalid identifier', tool: 'cdt_delete_object', input: { path: 'Catalog.Bad-Name' } },
+  { label: 'deleteObject rejects nested path', tool: 'cdt_delete_object', input: { path: 'Catalog.Goods.Attribute.Code' } },
   { label: 'root object path has four segments', tool: 'cdt_rename_object', input: { path: 'Catalog.Goods.Attribute.Code', newName: 'Products' } },
   { label: 'attribute path has two segments', tool: 'cdt_delete_attribute', input: { path: 'Catalog.Goods' } },
   { label: 'attribute path has invalid segment', tool: 'cdt_delete_attribute', input: { path: 'Catalog.Goods.Attribute.Bad-Name' } },
@@ -482,10 +485,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 96 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 96, 'test oracle must enumerate all 96 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 96);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 96);
+  test('operation registry has the exact 97 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 97, 'test oracle must enumerate all 97 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 97);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 97);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -541,8 +544,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 96);
-    assert.strictEqual(new Set(registered).size, 96);
+    assert.strictEqual(registered.length, 97);
+    assert.strictEqual(new Set(registered).size, 97);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -555,7 +558,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 96 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 97 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
@@ -726,5 +729,21 @@ suite('MCP Agent catalog coverage', () => {
       subsystemPath: 'Subsystem.Sales',
       entries: [{ commandName: 'Catalog.Goods.Command.Open', commandGroup: 'NavigationPanelImportant', extra: true }],
     }), false);
+  });
+
+  test('ExternalDataSource Table, Field, and reserved Function paths pass MCP metadata schemas', () => {
+    assert.strictEqual(accepts('cdt_list_children', {
+      path: 'ExternalDataSource.Warehouse',
+    }), true);
+    assert.strictEqual(accepts('cdt_get_properties', {
+      path: 'ExternalDataSource.Warehouse.Table.Tasks',
+    }), true);
+    assert.strictEqual(accepts('cdt_get_properties', {
+      path: 'ExternalDataSource.Warehouse.Table.Tasks.Field.Shared',
+    }), true);
+    assert.strictEqual(accepts('cdt_set_properties', {
+      path: 'ExternalDataSource.Warehouse.Function.GetTask',
+      properties: { Comment: 'updated' },
+    }), true);
   });
 });

@@ -419,6 +419,44 @@ suite('XMLWriter', () => {
       assert.ok(xmlContent.includes('<Properties>'));
     });
 
+    test('writes only the direct EDT metadata root Properties without changing inline fields', async () => {
+      const edtXml = `<?xml version="1.0" encoding="UTF-8"?>
+<Catalog xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Properties><Name>Goods</Name><Comment>root old</Comment></Properties>
+  <ChildObjects>
+    <Attribute uuid="field-id"><Properties><Name>Code</Name><Comment>field old</Comment></Properties></Attribute>
+  </ChildObjects>
+</Catalog>`;
+      fs.writeFileSync(tempXmlPath, edtXml, 'utf-8');
+
+      await XMLWriter.writeProperties(tempXmlPath, { Comment: 'root updated' });
+
+      const savedXml = fs.readFileSync(tempXmlPath, 'utf-8');
+      assert.match(savedXml, /<Comment>root updated<\/Comment>/);
+      assert.match(savedXml, /<Comment>field old<\/Comment>/);
+      assert.strictEqual((savedXml.match(/<Comment>root updated<\/Comment>/g) ?? []).length, 1);
+
+      const plannedXml = XMLWriter.buildUpdatedPropertiesXml(savedXml, { Name: 'PlannedGoods' });
+      assert.match(plannedXml, /<Name>PlannedGoods<\/Name>/);
+      assert.match(plannedXml, /<Name>Code<\/Name>/);
+      assert.match(plannedXml, /<Comment>field old<\/Comment>/);
+    });
+
+    test('fails closed when the XML root has no direct Properties and leaves the file unchanged', async () => {
+      const xmlWithoutRootProperties = `<?xml version="1.0" encoding="UTF-8"?>
+<Catalog xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <ChildObjects><Attribute uuid="field-id"><Properties><Name>Code</Name></Properties></Attribute></ChildObjects>
+</Catalog>`;
+      fs.writeFileSync(tempXmlPath, xmlWithoutRootProperties, 'utf-8');
+
+      await assert.rejects(XMLWriter.writeProperties(tempXmlPath, { Name: 'Goods' }), /root metadata Properties element/i);
+      assert.strictEqual(fs.readFileSync(tempXmlPath, 'utf-8'), xmlWithoutRootProperties);
+      assert.throws(
+        () => XMLWriter.buildUpdatedPropertiesXml(xmlWithoutRootProperties, { Name: 'Goods' }),
+        /root metadata Properties element/i,
+      );
+    });
+
     // Requirement 3.1: Type XML parsing when Type is explicitly changed
     test('Type XML parsing produces structured XML when Type is in changed properties', async () => {
       const originalXml = fs.readFileSync(passwordAttrFixturePath, 'utf-8');

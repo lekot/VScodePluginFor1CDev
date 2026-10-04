@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TreeNode, MetadataType } from '../models/treeNode';
 import { Logger } from '../utils/logger';
 import { XmlParser } from './xmlParser';
+import { validateElementName } from '../utils/elementNameValidator';
 import { MetadataTypeMapper } from '../utils/metadataTypeMapper';
 import { convertStringBooleans, extractV8String } from '../utils/xmlPropertyUtils';
 import {
@@ -23,6 +24,9 @@ import {
   extractExtensionProperties,
   extractObjectBelonging,
 } from '../extensionSupport/extensionXmlParser';
+import { INLINE_METADATA_CHILD_TYPES } from '../constants/inlineMetadataChildren';
+import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
+import { listNamedMetadataChildren } from '../utils/xml/nestedMetadataObjects';
 
 /**
  * Parser for 1C Designer format metadata
@@ -336,6 +340,11 @@ export class DesignerParser {
     const isElementPathTypeRoot = path.normalize(elementPath) === path.normalize(typeDir);
     try {
       if (isElementPathTypeRoot) {
+        if (element) {
+          for (const child of children) {
+            child.parent = element;
+          }
+        }
         return children;
       }
       const items = await fs.promises.readdir(elementPath);
@@ -344,6 +353,12 @@ export class DesignerParser {
       }
     } catch (error) {
       Logger.debug(`Error reading element directory ${elementPath}`, error);
+    }
+
+    if (element) {
+      for (const child of children) {
+        child.parent = element;
+      }
     }
 
     return children;
@@ -1025,7 +1040,9 @@ export class DesignerParser {
   private static buildAttributeNodeFromRaw(
     attr: Record<string, unknown>,
     idPrefix: string,
-    parentXmlPath: string
+    parentXmlPath: string,
+    parentPath?: readonly MetadataObjectPathSegment[],
+    childType = 'Attribute'
   ): TreeNode {
     const attrName =
       (attr.Properties && (attr.Properties as Record<string, unknown>).Name) ||
@@ -1037,6 +1054,9 @@ export class DesignerParser {
       type: MetadataType.Attribute,
       properties: flattenAttributeProperties(attr),
       parentFilePath: parentXmlPath,
+      ...(parentPath
+        ? { nestedPath: [...parentPath.map((segment) => ({ ...segment })), { type: childType, name: String(attrName) }] }
+        : {}),
     };
   }
 
@@ -1047,7 +1067,8 @@ export class DesignerParser {
   private static buildTsNodeFromRaw(
     ts: Record<string, unknown>,
     xmlFilePath: string,
-    containerNode: TreeNode
+    containerNode: TreeNode,
+    rootPath?: readonly MetadataObjectPathSegment[]
   ): TreeNode {
     const props = this.extractPropertiesFromElement({ TabularSection: ts });
     const sectionName = String(
@@ -1062,6 +1083,9 @@ export class DesignerParser {
       properties: { ...props },
       children: [],
       parentFilePath: xmlFilePath,
+      ...(rootPath
+        ? { nestedPath: [...rootPath.map((segment) => ({ ...segment })), { type: 'TabularSection', name: sectionName }] }
+        : {}),
     };
     tsNode.parent = containerNode;
 
@@ -1106,19 +1130,20 @@ export class DesignerParser {
     xmlPath: string,
     elementName: string
   ): Promise<void> {
-    const attributesNode = await this.parseAttributesFromXML(xmlContent, xmlPath, elementName);
+    const rootPath = this.getRootMetadataPath(parent, xmlContent, elementName);
+    const attributesNode = await this.parseAttributesFromXML(xmlContent, xmlPath, elementName, rootPath);
     if (attributesNode.children && attributesNode.children.length > 0) {
       attributesNode.parent = parent;
       parent.children!.push(attributesNode);
     }
 
-    const tabularNode = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName);
+    const tabularNode = await this.parseTabularSectionsFromXML(xmlContent, xmlPath, elementName, rootPath);
     if (tabularNode && tabularNode.children && tabularNode.children.length > 0) {
       this.mergeTabularNode(parent, tabularNode);
     }
 
     if (parent.type === MetadataType.Enum) {
-      const enumValuesNode = this.parseEnumValuesFromXML(xmlContent, parent.id, xmlPath);
+      const enumValuesNode = this.parseEnumValuesFromXML(xmlContent, parent.id, xmlPath, rootPath);
       if (enumValuesNode && enumValuesNode.children && enumValuesNode.children.length > 0) {
         enumValuesNode.parent = parent;
         parent.children!.push(enumValuesNode);
@@ -1130,14 +1155,15 @@ export class DesignerParser {
       MetadataType.AccumulationRegister,
       MetadataType.AccountingRegister,
       MetadataType.CalculationRegister,
+      MetadataType.Sequence,
     ];
     if (registerTypes.includes(parent.type)) {
-      const dimensionsNode = this.parseDimensionsFromXML(xmlContent, parent.id, xmlPath);
+      const dimensionsNode = this.parseDimensionsFromXML(xmlContent, parent.id, xmlPath, rootPath);
       if (dimensionsNode && dimensionsNode.children && dimensionsNode.children.length > 0) {
         dimensionsNode.parent = parent;
         parent.children!.push(dimensionsNode);
       }
-      const resourcesNode = this.parseResourcesFromXML(xmlContent, parent.id, xmlPath);
+      const resourcesNode = this.parseResourcesFromXML(xmlContent, parent.id, xmlPath, rootPath);
       if (resourcesNode && resourcesNode.children && resourcesNode.children.length > 0) {
         resourcesNode.parent = parent;
         parent.children!.push(resourcesNode);
@@ -1156,6 +1182,163 @@ export class DesignerParser {
       const predefinedNode = await this.parsePredefinedData(predefinedFilePath, parent.id);
       predefinedNode.parent = parent;
       parent.children!.push(predefinedNode);
+    }
+
+    if (parent.type === MetadataType.ExternalDataSource) {
+      await this.appendExternalDataSourceTables(parent, xmlContent, xmlPath);
+    }
+
+    this.appendInlineMetadataChildren(parent, xmlContent, xmlPath, rootPath);
+  }
+
+  /** Resolve scalar ExternalDataSource.Table references to their separate Tables XML files. */
+  private static async appendExternalDataSourceTables(
+    parent: TreeNode,
+    parsedSource: Record<string, unknown>,
+    sourceXmlPath: string,
+  ): Promise<void> {
+    const childObjects = findChildObjects(parsedSource);
+    if (!childObjects || typeof childObjects !== 'object') {
+      return;
+    }
+
+    const tableNames = new Set<string>();
+    for (const [key, value] of Object.entries(childObjects as Record<string, unknown>)) {
+      if ((key.includes(':') ? key.slice(key.lastIndexOf(':') + 1) : key) !== 'Table') {
+        continue;
+      }
+      const references = Array.isArray(value) ? value : [value];
+      for (const reference of references) {
+        const rawName = typeof reference === 'string'
+          ? reference
+          : reference && typeof reference === 'object' && typeof (reference as Record<string, unknown>)['#text'] === 'string'
+            ? (reference as Record<string, unknown>)['#text'] as string
+            : '';
+        const name = rawName.trim();
+        if (name) {
+          tableNames.add(name);
+        }
+      }
+    }
+
+    const sourceObjectDir = path.resolve(
+      path.dirname(sourceXmlPath), path.basename(sourceXmlPath, path.extname(sourceXmlPath)),
+    );
+    const tablesDir = path.resolve(sourceObjectDir, 'Tables');
+    const validTableNames = Array.from(tableNames).filter((tableName) => {
+      const validationError = validateElementName(tableName, []);
+      if (validationError) {
+        Logger.debug(`Skipping invalid ExternalDataSource table reference "${tableName}": ${validationError}`);
+        return false;
+      }
+      const tableXmlPath = path.resolve(tablesDir, `${tableName}.xml`);
+      const relativeTablePath = path.relative(tablesDir, tableXmlPath);
+      const escapesTablesDirectory = path.isAbsolute(relativeTablePath) || relativeTablePath === '..' ||
+        relativeTablePath.startsWith(`..${path.sep}`);
+      if (escapesTablesDirectory) {
+        Logger.debug(`Skipping ExternalDataSource table reference outside Tables: ${tableName}`);
+        return false;
+      }
+      return true;
+    });
+
+    const tableNodes = await Promise.all(validTableNames.map(async (tableName) => {
+      const tableXmlPath = path.resolve(tablesDir, `${tableName}.xml`);
+      try {
+        const tableXml = await XmlParser.parseFileAsync(tableXmlPath);
+        const parsedMetadataRoot = tableXml.MetaDataObject;
+        const metadataRoot = parsedMetadataRoot && typeof parsedMetadataRoot === 'object'
+          ? parsedMetadataRoot as Record<string, unknown>
+          : tableXml;
+        const rootObjects = Object.entries(metadataRoot).filter(([key, value]) =>
+          !key.startsWith('@_') && !key.startsWith('#') && !key.startsWith('?') &&
+          value !== null && typeof value === 'object' && !Array.isArray(value),
+        );
+        const tableRoot = rootObjects.length === 1 &&
+          rootObjects[0][0].split(':').pop() === 'Table'
+          ? rootObjects[0][1] as Record<string, unknown>
+          : null;
+        if (!tableRoot) {
+          Logger.debug(`Skipping ExternalDataSource table reference ${tableName}: XML root must contain one Table object`);
+          return null;
+        }
+
+        const tableProperties = this.extractPropertiesFromElement({ Table: tableRoot });
+        const xmlTableName = tableProperties.Name;
+        if (typeof xmlTableName !== 'string' || xmlTableName.trim() !== tableName) {
+          Logger.debug(`Skipping ExternalDataSource table reference ${tableName}: XML Properties.Name does not match`);
+          return null;
+        }
+        const tableNode: TreeNode = {
+          id: `${parent.id}.Table.${tableName}`,
+          name: tableName,
+          type: MetadataType.Table,
+          properties: tableProperties,
+          children: [],
+          filePath: tableXmlPath,
+          parent,
+        };
+        const tableRootPath = this.getRootMetadataPath(tableNode, tableXml, tableName);
+        this.appendInlineMetadataChildren(tableNode, tableXml, tableXmlPath, tableRootPath);
+        return tableNode;
+      } catch (error) {
+        Logger.debug(`Failed to parse ExternalDataSource table ${tableName} at ${tableXmlPath}`, error);
+        return null;
+      }
+    }));
+
+    for (const tableNode of tableNodes) {
+      if (tableNode) {
+        parent.children!.push(tableNode);
+      }
+    }
+  }
+
+  private static getRootMetadataPath(
+    parent: TreeNode,
+    xmlContent: Record<string, unknown>,
+    fallbackName: string
+  ): MetadataObjectPathSegment[] {
+    const name = this.extractPropertiesFromElement(xmlContent).Name;
+    return [{
+      type: String(parent.type),
+      name: typeof name === 'string' && name.trim() ? name.trim() : fallbackName,
+    }];
+  }
+
+  /** Build supported named inline metadata nodes from this same object file. */
+  private static appendInlineMetadataChildren(
+    parent: TreeNode,
+    parsed: Record<string, unknown>,
+    xmlPath: string,
+    rootPath: readonly MetadataObjectPathSegment[]
+  ): void {
+    if (!(parent.type in INLINE_METADATA_CHILD_TYPES) || parent.type === MetadataType.Sequence) {
+      return;
+    }
+    const parentPath = parent.nestedPath ?? rootPath;
+    const children = listNamedMetadataChildren(parsed, parentPath);
+    for (const child of children) {
+      const childPath = [...parentPath.map((segment) => ({ ...segment })), { type: child.type, name: child.name }];
+      const properties = this.extractPropertiesFromElement({ [child.type]: child.value });
+      const rawChild = child.value as Record<string, unknown>;
+      const rawUuid = rawChild['@_uuid'] ?? rawChild.uuid;
+      if (rawUuid !== undefined && rawUuid !== null) {
+        properties.uuid = String(rawUuid);
+      }
+      const node: TreeNode = {
+        id: `${parent.id}.${child.type}.${child.name}`,
+        name: child.name,
+        type: child.type as MetadataType,
+        properties,
+        children: [],
+        parentFilePath: xmlPath,
+        nestedPath: childPath,
+        parent,
+      };
+      parent.children ??= [];
+      parent.children.push(node);
+      this.appendInlineMetadataChildren(node, parsed, xmlPath, rootPath);
     }
   }
 
@@ -1366,7 +1549,8 @@ export class DesignerParser {
   private static async parseAttributesFromXML(
     xmlContent: Record<string, unknown>,
     xmlFilePath: string,
-    elementName: string
+    elementName: string,
+    rootPath: readonly MetadataObjectPathSegment[]
   ): Promise<TreeNode> {
     const attributesNode: TreeNode = {
       id: 'Attributes',
@@ -1388,7 +1572,8 @@ export class DesignerParser {
         const attrNode = this.buildAttributeNodeFromRaw(
           attr as Record<string, unknown>,
           'Attributes',
-          xmlFilePath
+          xmlFilePath,
+          rootPath
         );
         attrNode.parent = attributesNode;
         attributesNode.children!.push(attrNode);
@@ -1410,7 +1595,8 @@ export class DesignerParser {
   private static async parseTabularSectionsFromXML(
     xmlContent: Record<string, unknown>,
     xmlFilePath: string,
-    _elementName: string
+    _elementName: string,
+    rootPath: readonly MetadataObjectPathSegment[]
   ): Promise<TreeNode | null> {
     void _elementName;
     const childObjects = findChildObjects(xmlContent);
@@ -1430,7 +1616,7 @@ export class DesignerParser {
 
     for (const section of sectionList) {
       const ts = section as Record<string, unknown>;
-      const tsNode = this.buildTsNodeFromRaw(ts, xmlFilePath, tabularNode);
+      const tsNode = this.buildTsNodeFromRaw(ts, xmlFilePath, tabularNode, rootPath);
       tabularNode.children!.push(tsNode);
     }
 
@@ -1443,7 +1629,8 @@ export class DesignerParser {
   private static parseEnumValuesFromXML(
     xmlContent: Record<string, unknown>,
     parentId: string,
-    xmlPath: string
+    xmlPath: string,
+    rootPath: readonly MetadataObjectPathSegment[]
   ): TreeNode | null {
     const childObjects = findChildObjects(xmlContent);
     if (!childObjects) {return null;}
@@ -1468,6 +1655,7 @@ export class DesignerParser {
         type: MetadataType.EnumValue,
         properties: flattenAttributeProperties(ev),
         parentFilePath: xmlPath,
+        nestedPath: [...rootPath.map((segment) => ({ ...segment })), { type: 'EnumValue', name: String(name) }],
       };
       node.parent = container;
       container.children!.push(node);
@@ -1481,7 +1669,8 @@ export class DesignerParser {
   private static parseDimensionsFromXML(
     xmlContent: Record<string, unknown>,
     parentId: string,
-    xmlPath: string
+    xmlPath: string,
+    rootPath: readonly MetadataObjectPathSegment[]
   ): TreeNode | null {
     const childObjects = findChildObjects(xmlContent);
     if (!childObjects) {return null;}
@@ -1501,7 +1690,9 @@ export class DesignerParser {
       const attrNode = this.buildAttributeNodeFromRaw(
         dim as Record<string, unknown>,
         `${parentId}.Dimensions`,
-        xmlPath
+        xmlPath,
+        rootPath,
+        'Dimension'
       );
       attrNode.type = MetadataType.Dimension;
       attrNode.parent = container;
@@ -1516,7 +1707,8 @@ export class DesignerParser {
   private static parseResourcesFromXML(
     xmlContent: Record<string, unknown>,
     parentId: string,
-    xmlPath: string
+    xmlPath: string,
+    rootPath: readonly MetadataObjectPathSegment[]
   ): TreeNode | null {
     const childObjects = findChildObjects(xmlContent);
     if (!childObjects) {return null;}
@@ -1536,7 +1728,9 @@ export class DesignerParser {
       const attrNode = this.buildAttributeNodeFromRaw(
         res as Record<string, unknown>,
         `${parentId}.Resources`,
-        xmlPath
+        xmlPath,
+        rootPath,
+        'Resource'
       );
       attrNode.type = MetadataType.Resource;
       attrNode.parent = container;
@@ -1652,6 +1846,9 @@ export class DesignerParser {
         type: MetadataType.Attribute,
         properties: flattenAttributeProperties(a),
         parentFilePath: xmlPath,
+        ...(sectionInstance.nestedPath
+          ? { nestedPath: [...sectionInstance.nestedPath.map((segment) => ({ ...segment })), { type: 'Attribute', name: String(attrName) }] }
+          : {}),
       };
       out.push(attributeNode);
     }

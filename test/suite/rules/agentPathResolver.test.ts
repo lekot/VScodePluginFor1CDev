@@ -52,6 +52,53 @@ suite('agentPathResolver', () => {
         assert.strictEqual(result.tabularSection, 'Y');
         assert.strictEqual(result.nestedType, 'Attribute');
         assert.strictEqual(result.nestedName, 'Z');
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'Catalog', name: 'X' },
+            { type: 'TabularSection', name: 'Y' },
+            { type: 'Attribute', name: 'Z' },
+        ]);
+    });
+
+    test('HTTPService.X.URLTemplate.Y.Method.Z builds a full selector without a tabular scope', () => {
+        const result = resolveAgentPath(CONFIG_ROOT, 'HTTPService.X.URLTemplate.Y.Method.Z');
+        assert.strictEqual(result.tabularSection, undefined);
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'HTTPService', name: 'X' },
+            { type: 'URLTemplate', name: 'Y' },
+            { type: 'Method', name: 'Z' },
+        ]);
+    });
+
+    test('ExternalDataSource table path resolves to its Designer table file and retains the public selector', () => {
+        const result = resolveAgentPath(CONFIG_ROOT, 'ExternalDataSource.Source.Table.Tasks') as ReturnType<typeof resolveAgentPath> & {
+            fileRootType?: string;
+            fileNestedPath?: Array<{ type: string; name: string }>;
+        };
+        assert.ok(result.filePath.includes(path.join('ExternalDataSources', 'Source', 'Tables', 'Tasks.xml')));
+        assert.strictEqual(result.fileRootType, 'Table');
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'ExternalDataSource', name: 'Source' },
+            { type: 'Table', name: 'Tasks' },
+        ]);
+        assert.deepStrictEqual(result.fileNestedPath, [{ type: 'Table', name: 'Tasks' }]);
+    });
+
+    test('ExternalDataSource field selector is file-relative while public path remains complete', () => {
+        const result = resolveAgentPath(CONFIG_ROOT, 'ExternalDataSource.Source.Table.Tasks.Field.Code') as ReturnType<typeof resolveAgentPath> & {
+            fileRootType?: string;
+            fileNestedPath?: Array<{ type: string; name: string }>;
+        };
+        assert.ok(result.filePath.includes(path.join('ExternalDataSources', 'Source', 'Tables', 'Tasks.xml')));
+        assert.strictEqual(result.fileRootType, 'Table');
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'ExternalDataSource', name: 'Source' },
+            { type: 'Table', name: 'Tasks' },
+            { type: 'Field', name: 'Code' },
+        ]);
+        assert.deepStrictEqual(result.fileNestedPath, [
+            { type: 'Table', name: 'Tasks' },
+            { type: 'Field', name: 'Code' },
+        ]);
     });
 
     test('Invalid path with 1 segment → throws', () => {
