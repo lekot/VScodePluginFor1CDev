@@ -70,7 +70,7 @@ export async function runIbcmdStreaming(
       options.consoleOutputEncoding ?? 'auto'
     ),
     ...(options.onStreamChunk ? { onStreamChunk: options.onStreamChunk } : {}),
-    redactedValues: collectIbcmdSecrets(options.args, options.redactedValues),
+    ...(options.redactedValues ? { redactedValues: options.redactedValues } : {}),
     ...(options.ringBufferMaxBytes !== undefined
       ? { ringBufferMaxBytes: options.ringBufferMaxBytes }
       : {}),
@@ -92,30 +92,4 @@ export async function runIbcmdStreaming(
     ...publicOutcome
   } = outcome;
   return publicOutcome;
-}
-
-function collectIbcmdSecrets(
-  args: readonly string[],
-  additionalValues: readonly string[] = [],
-): readonly string[] {
-  const secrets = new Set(additionalValues.filter((value) => value.length > 0));
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
-    const normalizedArgument = argument.toLowerCase();
-    if (normalizedArgument.startsWith('--password=')) {
-      const inlinePassword = argument.slice('--password='.length);
-      if (inlinePassword.length > 0) {
-        secrets.add(inlinePassword);
-      }
-    } else if (normalizedArgument === '--password') {
-      const nextArgument = args[index + 1];
-      if (nextArgument) {
-        secrets.add(nextArgument);
-      }
-      if (nextArgument !== undefined) {
-        index += 1;
-      }
-    }
-  }
-  return [...secrets];
 }

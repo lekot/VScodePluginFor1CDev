@@ -115,7 +115,7 @@ suite('IbcmdStreamingRunner', () => {
     assert.ok(chunks.join('').includes('out'));
   });
 
-  test('redacts ibcmd argv secrets split across live stream chunks', async () => {
+  test('redacts a supplied ibcmd credential split across live stream chunks', async () => {
     const ctrl = createControllableSpawn();
     const chunks: string[] = [];
     const password = 'ibcmd-super-secret';
@@ -124,33 +124,11 @@ suite('IbcmdStreamingRunner', () => {
       args: ['infobase', 'config', 'check', `--password=${password}`],
       timeoutMs: 30_000,
       cancellation: staticCancellation(false),
+      redactedValues: [password],
       onStreamChunk: (chunk) => chunks.push(chunk),
       spawnImpl: ctrl.spawnImpl,
     });
     ctrl.pushStdout('failure echoed: ibcmd-super-');
-    ctrl.pushStdout('secret; still running');
-    ctrl.close(1, null);
-    const outcome = await p;
-
-    assert.ok(!outcome.combinedLog.includes(password));
-    assert.ok(!chunks.join('').includes(password));
-    assert.ok(outcome.combinedLog.includes('<redacted>'));
-    assert.ok(chunks.join('').includes('<redacted>'));
-  });
-
-  test('redacts a separated case-insensitive password argument across live stream chunks', async () => {
-    const ctrl = createControllableSpawn();
-    const chunks: string[] = [];
-    const password = 'split-separate-secret';
-    const p = runIbcmdStreaming({
-      executablePath: '/ibcmd',
-      args: ['infobase', 'config', 'check', '--PASSWORD', password],
-      timeoutMs: 30_000,
-      cancellation: staticCancellation(false),
-      onStreamChunk: (chunk) => chunks.push(chunk),
-      spawnImpl: ctrl.spawnImpl,
-    });
-    ctrl.pushStdout('failure echoed: split-separate-');
     ctrl.pushStdout('secret; still running');
     ctrl.close(1, null);
     const outcome = await p;

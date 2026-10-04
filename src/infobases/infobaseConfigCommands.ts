@@ -493,6 +493,7 @@ async function runInfobaseConfigOperation(params: {
           timeoutMs: ibcmd.getTimeoutMs(),
           cancellation: vscodeCancellation(token),
           consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+          redactedValues: credentials?.password ? [credentials.password] : [],
           onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
           abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
         });
@@ -517,6 +518,7 @@ async function runInfobaseConfigOperation(params: {
             timeoutMs: ibcmd.getTimeoutMs(),
             cancellation: vscodeCancellation(token),
             consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+            redactedValues: credentials?.password ? [credentials.password] : [],
             onStreamChunk: (chunk) => appendOutputDebounced(outputBuffer, chunk),
             abortPattern: /Имя пользователя\s*:[\s\S]*Имя пользователя\s*:/,
           });
