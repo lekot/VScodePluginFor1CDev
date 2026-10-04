@@ -1017,6 +1017,16 @@
         "category": "CDT 41"
       },
       {
+        "command": "1c-metadata-tree.createExternalArtifactProject",
+        "title": "Создать пустой проект EPF/ERF…",
+        "category": "CDT 41"
+      },
+      {
+        "command": "1c-metadata-tree.exportEmbeddedArtifact",
+        "title": "Выгрузить встроенную обработку/отчёт как EPF/ERF…",
+        "category": "CDT 41"
+      },
+      {
         "command": "1c-metadata-tree.support.setObjectMode",
         "title": "Изменить режим поддержки…",
         "category": "CDT 41"
@@ -1154,6 +1164,10 @@
         {
           "command": "1c-metadata-tree.agent.buildExternalProcessor",
           "when": "false"
+        },
+        {
+          "command": "1c-metadata-tree.exportEmbeddedArtifact",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -1161,6 +1175,11 @@
           "command": "1c-metadata-tree.configuration.createProject",
           "when": "view == 1c-metadata-tree",
           "group": "navigation"
+        },
+        {
+          "command": "1c-metadata-tree.createExternalArtifactProject",
+          "when": "view == 1c-metadata-tree",
+          "group": "navigation@1"
         },
         {
           "command": "1c-metadata-tree.refresh",
@@ -1250,6 +1269,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "1c-metadata-tree.exportEmbeddedArtifact",
+          "when": "view == 1c-metadata-tree && viewItem =~ /externalArtifactSource/",
+          "group": "1c_tools@3"
+        },
         {
           "command": "1c-metadata-tree.support.setObjectMode",
           "when": "view == 1c-metadata-tree && viewItem =~ /supportObject/",
@@ -1669,7 +1693,7 @@
     "viewsWelcome": [
       {
         "view": "1c-metadata-tree",
-        "contents": "В workspace пока нет конфигурации. [Создать пустой проект](command:1c-metadata-tree.configuration.createProject) или откройте папку существующей конфигурации."
+        "contents": "В workspace пока нет конфигурации. [Создать пустой проект](command:1c-metadata-tree.configuration.createProject) или [пустой проект EPF/ERF](command:1c-metadata-tree.createExternalArtifactProject), либо откройте папку существующей конфигурации."
       }
     ],
     "configuration": {

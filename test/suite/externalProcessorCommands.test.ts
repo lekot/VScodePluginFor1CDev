@@ -1,13 +1,21 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { MetadataType, type TreeNode } from '../../src/models/treeNode';
 import { registerExternalProcessorCommands } from '../../src/commands/externalProcessorCommands';
+import {
+  ExternalArtifactProjectService,
+} from '../../src/services/externalProcessor/externalArtifactProjectService';
 import type {
   BuildExternalProcessorOptions,
   DumpExternalProcessorOptions,
   ExternalProcessorOperationResult,
   ExternalProcessorRootInspection,
 } from '../../src/services/externalProcessor/externalProcessorTypes';
+import type {
+  CreateExternalArtifactProjectRequest,
+  ExportEmbeddedArtifactRequest,
+} from '../../src/services/externalProcessor/externalArtifactProjectTypes';
 import {
   resetVscodeTestState,
   vscodeTestState,
@@ -25,6 +33,8 @@ const serviceModule = module.require(
 const originalDump = serviceModule.dumpExternalProcessor;
 const originalBuild = serviceModule.buildExternalProcessor;
 const originalInspect = serviceModule.inspectExternalProcessorRoot;
+const originalCreateArtifact = ExternalArtifactProjectService.prototype.create;
+const originalExportEmbedded = ExternalArtifactProjectService.prototype.exportEmbedded;
 
 suite('externalProcessorCommands UI behavior', () => {
   setup(resetVscodeTestState);
@@ -32,7 +42,166 @@ suite('externalProcessorCommands UI behavior', () => {
     serviceModule.dumpExternalProcessor = originalDump;
     serviceModule.buildExternalProcessor = originalBuild;
     serviceModule.inspectExternalProcessorRoot = originalInspect;
+    ExternalArtifactProjectService.prototype.create = originalCreateArtifact;
+    ExternalArtifactProjectService.prototype.exportEmbedded = originalExportEmbedded;
     resetVscodeTestState();
+  });
+
+  test('creates an empty ERF project in the selected workspace', async () => {
+    let captured: CreateExternalArtifactProjectRequest | undefined;
+    const projectDirectory = path.resolve('workspace/NewReport_src');
+    ExternalArtifactProjectService.prototype.create = async (request) => {
+      captured = request;
+      return {
+        rootXmlPath: path.join(projectDirectory, 'NewReport.xml'),
+        kind: 'ExternalReport',
+        projectDirectory,
+      };
+    };
+    vscodeTestState.mockWorkspaceFolders.push({
+      name: 'Workspace',
+      index: 0,
+      uri: vscode.Uri.file(path.resolve('workspace')),
+    });
+    vscodeTestState.quickPickQueue.push(
+      { artifactKind: 'ExternalReport', label: 'Внешний отчёт (ERF)' },
+      { language: 'en', label: 'Английский' },
+    );
+    vscodeTestState.inputBoxQueue.push('NewReport');
+
+    await registerAndGet('1c-metadata-tree.createExternalArtifactProject')();
+
+    assert.deepStrictEqual(captured, {
+      workspaceRoot: path.resolve('workspace'),
+      name: 'NewReport',
+      kind: 'ExternalReport',
+      language: 'en',
+    });
+    assert.ok(vscodeTestState.informationLog.some((message) => message.includes(projectDirectory)));
+  });
+
+  test('exports an embedded Report and runs the existing ERF build after user selection', async () => {
+    let exportedRequest: ExportEmbeddedArtifactRequest | undefined;
+    let builtOptions: BuildExternalProcessorOptions | undefined;
+    const workspaceRoot = path.resolve('workspace');
+    const sourceRoot = path.join(workspaceRoot, 'Configuration', 'Reports', 'Report.xml');
+    const projectDirectory = path.join(workspaceRoot, 'Report_external_src');
+    const rootXmlPath = path.join(projectDirectory, 'Report.xml');
+    const destinationPath = path.join(workspaceRoot, 'Report.erf');
+    ExternalArtifactProjectService.prototype.exportEmbedded = async (request) => {
+      exportedRequest = request;
+      return { rootXmlPath, kind: 'ExternalReport', projectDirectory };
+    };
+    serviceModule.inspectExternalProcessorRoot = async () => ({
+      kind: 'ExternalReport',
+      extension: '.erf',
+      defaultDestinationPath: destinationPath,
+    });
+    serviceModule.buildExternalProcessor = async (options) => {
+      builtOptions = options;
+      return completed(destinationPath);
+    };
+    vscodeTestState.mockWorkspaceFolders.push({
+      name: 'Workspace',
+      index: 0,
+      uri: vscode.Uri.file(workspaceRoot),
+    });
+    vscodeTestState.inputBoxQueue.push(path.join(workspaceRoot, 'Report_external_src'));
+    vscodeTestState.informationMessageResult = 'Собрать EPF/ERF';
+    vscodeTestState.saveDialogQueue.push(vscode.Uri.file(destinationPath));
+    vscodeTestState.quickPickQueue.push({
+      contextKind: 'standalone',
+      label: 'Автономный режим',
+    });
+    vscodeTestState.warningMessageReturnQueue.push('Продолжить');
+    const node: TreeNode = {
+      id: 'Report.Report',
+      name: 'Report',
+      type: MetadataType.Report,
+      properties: {},
+      filePath: sourceRoot,
+    };
+
+    await registerAndGet('1c-metadata-tree.exportEmbeddedArtifact')(node);
+
+    assert.deepStrictEqual(exportedRequest, {
+      workspaceRoot,
+      sourceRootXmlPath: sourceRoot,
+      destinationDirectory: path.join(workspaceRoot, 'Report_external_src'),
+    });
+    assert.strictEqual(builtOptions?.rootXmlPath, rootXmlPath);
+    assert.strictEqual(builtOptions?.destinationPath, destinationPath);
+    assert.deepStrictEqual(builtOptions?.context, {
+      kind: 'standalone',
+      acknowledgeTypeLoss: true,
+    });
+    assert.ok(vscodeTestState.informationLog.some((message) => message.includes(projectDirectory)));
+  });
+
+  test('does not offer export for an adopted extension object', async () => {
+    let exportCalls = 0;
+    ExternalArtifactProjectService.prototype.exportEmbedded = async () => {
+      exportCalls += 1;
+      throw new Error('must not run');
+    };
+    const node: TreeNode = {
+      id: 'DataProcessor.Borrowed',
+      name: 'Borrowed',
+      type: MetadataType.DataProcessor,
+      properties: { objectBelonging: 'Adopted', extendedConfigurationObject: 'uuid' },
+      filePath: path.resolve('workspace/Configuration/DataProcessors/Borrowed.xml'),
+    };
+
+    await registerAndGet('1c-metadata-tree.exportEmbeddedArtifact')(node);
+
+    assert.strictEqual(exportCalls, 0);
+    assert.ok(vscodeTestState.errorLog.some((message) => message.includes('заимствованный объект')));
+  });
+
+  test('does not export an own object nested under an extension root', async () => {
+    let exportCalls = 0;
+    ExternalArtifactProjectService.prototype.exportEmbedded = async () => {
+      exportCalls += 1;
+      throw new Error('must not run');
+    };
+    const extensionRootMarkers: Array<Pick<TreeNode, 'type' | 'properties'>> = [
+      { type: MetadataType.Configuration, properties: { extensionPurpose: 'Customization' } },
+      { type: MetadataType.Configuration, properties: { isExtension: true } },
+      { type: MetadataType.Extension, properties: {} },
+    ];
+    const handler = registerAndGet('1c-metadata-tree.exportEmbeddedArtifact');
+    for (const [index, marker] of extensionRootMarkers.entries()) {
+      const extensionRoot: TreeNode = {
+        id: `Extension.MyExtension${index}`,
+        name: `MyExtension${index}`,
+        ...marker,
+        children: [],
+      };
+      const typeFolder: TreeNode = {
+        id: `Extension.MyExtension${index}.DataProcessors`,
+        name: 'DataProcessors',
+        type: MetadataType.Unknown,
+        properties: {},
+        children: [],
+        parent: extensionRoot,
+      };
+      const node: TreeNode = {
+        id: `DataProcessor.Own${index}`,
+        name: 'Own',
+        type: MetadataType.DataProcessor,
+        properties: {},
+        filePath: path.resolve('workspace/Extension/DataProcessors/Own.xml'),
+        children: [],
+        parent: typeFolder,
+      };
+      await handler(node);
+    }
+
+    assert.strictEqual(exportCalls, 0);
+    assert.strictEqual(
+      vscodeTestState.errorLog.filter((message) => message.includes('конфигурации-расширения')).length,
+      extensionRootMarkers.length
+    );
   });
 
   test('standalone dump requires explicit confirmation and propagates cancellation token', async () => {

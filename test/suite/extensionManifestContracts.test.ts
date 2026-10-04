@@ -188,6 +188,37 @@ suite('extension manifest contracts', () => {
     );
   });
 
+  test('exposes empty EPF/ERF creation and embedded export from the intended tree surfaces', () => {
+    const pkg = readPackageJson();
+    const createCommand = '1c-metadata-tree.createExternalArtifactProject';
+    const exportCommand = '1c-metadata-tree.exportEmbeddedArtifact';
+    assert.ok(pkg.contributes.commands.some((entry) => entry.command === createCommand));
+    assert.ok(pkg.contributes.commands.some((entry) => entry.command === exportCommand));
+    assert.ok(!pkg.contributes.menus.commandPalette.some(
+      (entry) => entry.command === createCommand && entry.when === 'false',
+    ));
+    assert.deepStrictEqual(
+      pkg.contributes.menus['view/title'].find((entry) => entry.command === createCommand),
+      { command: createCommand, when: 'view == 1c-metadata-tree', group: 'navigation@1' },
+    );
+    const welcome = pkg.contributes.viewsWelcome.find((entry) => entry.view === '1c-metadata-tree');
+    assert.ok(welcome?.contents.includes(`command:${createCommand}`));
+    assert.deepStrictEqual(
+      pkg.contributes.menus.commandPalette.find((entry) => entry.command === exportCommand),
+      { command: exportCommand, when: 'false' },
+    );
+    const contextMenu = pkg.contributes.menus['view/item/context'] as Array<{
+      command: string;
+      when?: string;
+      group?: string;
+    }>;
+    assert.deepStrictEqual(contextMenu.find((entry) => entry.command === exportCommand), {
+      command: exportCommand,
+      when: 'view == 1c-metadata-tree && viewItem =~ /externalArtifactSource/',
+      group: '1c_tools@3',
+    });
+  });
+
   test('registers test-only commands only in ExtensionMode.Test', () => {
     for (const mode of [vscode.ExtensionMode.Production, vscode.ExtensionMode.Development]) {
       resetVscodeTestState();

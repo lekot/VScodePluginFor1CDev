@@ -255,6 +255,32 @@ suite('externalProcessorService contract', () => {
     assert.ok(harness.fs.removed.includes(harness.stagingRoot!));
   });
 
+  test('exit zero with document-format diagnostics fails and does not publish the binary', async () => {
+    for (const diagnostic of [
+      'Файл - Processor.xml: ошибка формата документа - объект метаданных Command не загружен.',
+      'File - Processor.xml: document format error - the Command metadata object was not loaded.',
+    ]) {
+      const harness = createHarness();
+      harness.fs.addFile(EPF_XML, metadataXml('ExternalDataProcessor'));
+      harness.produceBuildFile = true;
+      harness.outcome = { ...acknowledgedOutcome(), combinedLog: diagnostic };
+      const destination = path.join(ROOT, `diagnostic-${harness.processCalls.length}.epf`);
+
+      const result = await harness.service.build({
+        rootXmlPath: EPF_XML,
+        destinationPath: destination,
+        context: { kind: 'standalone', acknowledgeTypeLoss: true },
+      });
+
+      assertResultCode(result, 'CONFIGURATOR_FAILED');
+      assert.strictEqual(harness.fs.has(destination), false);
+      assert.ok(harness.fs.removed.includes(harness.stagingRoot!));
+      if (result.state === 'failed') {
+        assert.strictEqual(result.combinedLog, diagnostic);
+      }
+    }
+  });
+
   test('build publication race fails closed and never replaces the racer artifact', async () => {
     const harness = createHarness();
     harness.fs.addFile(EPF_XML, metadataXml('ExternalDataProcessor'));

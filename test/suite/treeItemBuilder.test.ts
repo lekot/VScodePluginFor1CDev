@@ -85,6 +85,57 @@ suite('buildTreeItem (#80 — bindingBound context value)', () => {
     assert.strictEqual(item.contextValue, 'Forms bindingBound');
   });
 
+  test('DataProcessor and Report root items with files expose the external-artifact context token', () => {
+    for (const type of [MetadataType.DataProcessor, MetadataType.Report]) {
+      const node = makeNode({ type, filePath: `C:\\repo\\${type}.xml` });
+      const item = buildTreeItem(node, makeOptions({}));
+      assert.ok(item.contextValue?.split(/\s+/).includes('externalArtifactSource'));
+    }
+  });
+
+  test('adopted extension objects do not expose the external-artifact action', () => {
+    const item = buildTreeItem(makeNode({
+      type: MetadataType.DataProcessor,
+      filePath: 'C:\\repo\\Borrowed.xml',
+      properties: { objectBelonging: 'Adopted', extendedConfigurationObject: 'uuid' },
+    }), makeOptions({}));
+    assert.ok(!item.contextValue?.split(/\s+/).includes('externalArtifactSource'));
+  });
+
+  test('own metadata objects under any extension ancestor marker hide the export action', () => {
+    const extensionAncestors = [
+      makeNode({ type: MetadataType.Configuration, properties: { isExtension: true } }),
+      makeNode({ type: MetadataType.Extension }),
+    ];
+
+    for (const extensionRoot of extensionAncestors) {
+      const item = buildTreeItem(makeNode({
+        type: MetadataType.Report,
+        filePath: 'C:\\repo\\Extension\\Reports\\Own.xml',
+        parent: extensionRoot,
+      }), makeOptions({}));
+      assert.ok(!item.contextValue?.split(/\s+/).includes('externalArtifactSource'));
+    }
+  });
+
+  test('own metadata objects under a CFE do not expose the external-artifact action', () => {
+    const extensionRoot = makeNode({
+      type: MetadataType.Configuration,
+      properties: { extensionPurpose: 'Customization' },
+    });
+    const metadataFolder = makeNode({
+      type: MetadataType.Unknown,
+      parent: extensionRoot,
+    });
+    const item = buildTreeItem(makeNode({
+      type: MetadataType.DataProcessor,
+      filePath: 'C:\\repo\\Extension\\Configuration\\DataProcessors\\Own.xml',
+      parent: metadataFolder,
+    }), makeOptions({}));
+
+    assert.ok(!item.contextValue?.split(/\s+/).includes('externalArtifactSource'));
+  });
+
   test('Extension extensionBindingRoot with boundCount>0, massDeployment:false → contextValue = "Extension extensionBindingRoot bindingBound deployOne"', () => {
     const node = makeNode({ type: MetadataType.Extension });
     const item = buildTreeItem(node, makeOptions({ isExtensionInfobaseBindingRoot: true, bindingDeco: makeDeco(1, false) }));
