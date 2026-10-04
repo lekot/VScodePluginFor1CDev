@@ -473,12 +473,16 @@ export class ExternalProcessorService {
     }
     if (outcome.status === 'failed') {
       const cleanupError = await this.cleanup(stagingRoot);
+      const cancelledBeforeStart = outcome.errorCode === 'CONFIGURATOR_CANCELLED_BEFORE_START';
       return failed(
-        cleanupError ? 'EXTERNAL_IO_FAILED' : 'CONFIGURATOR_FAILED',
+        cleanupError
+          ? 'EXTERNAL_IO_FAILED'
+          : cancelledBeforeStart ? 'CONFIGURATOR_CANCELLED_BEFORE_START' : 'CONFIGURATOR_FAILED',
         cleanupError
           ? `Configurator failed and staging cleanup failed: ${cleanupError}`
-          : outcome.errorMessage
-            ?? `Configurator failed before acknowledgement (${outcome.errorCode}).`,
+          : cancelledBeforeStart
+            ? 'Configurator operation was cancelled before process start.'
+            : outcome.errorMessage ?? `Configurator failed before acknowledgement (${outcome.errorCode}).`,
         cleanupError ? false : outcome.retryable,
         outcome.effectPossible,
         outcome.combinedLog

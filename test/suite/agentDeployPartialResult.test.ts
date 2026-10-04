@@ -84,6 +84,65 @@ suite('Agent deploy partial result projection', () => {
     }
   });
 
+  test('exposes confirmed deploy cancellation but does not mask earlier deployment errors', async () => {
+    const original = DeployService.prototype.deployChangedFiles;
+    const summaries: DeployRunSummary[] = [
+      {
+        results: [{ infobaseId: 'ib-1', name: 'Base', status: 'success', message: 'applied' }],
+        successCount: 1,
+        errorCount: 0,
+        skippedCount: 1,
+        hasPartial: false,
+        cancelledMidChain: true,
+      },
+      {
+        results: [{
+          infobaseId: 'ib-1', name: 'Base', status: 'error', message: 'deployment failed', errorCode: 'SUPPORT_OPERATION_FAILED',
+        }],
+        successCount: 0,
+        errorCount: 1,
+        skippedCount: 1,
+        hasPartial: false,
+        cancelledMidChain: true,
+      },
+    ];
+    DeployService.prototype.deployChangedFiles = async () => summaries.shift()!;
+    try {
+      const { AgentDeployOperations } = await import('../../src/agent/agentDeployOperations');
+      const entry: InfobaseEntry = {
+        id: 'ib-1', name: 'Base', type: 'file', filePath: 'C:/base',
+        hasStoredPassword: false, createdAt: '2026-07-29T00:00:00.000Z',
+      };
+      const operations = new AgentDeployOperations({
+        bindingManager: {} as never,
+        infobaseStorage: {} as never,
+        getConfigPath: () => null,
+      });
+      Reflect.set(operations, 'resolveDeployContext', async () => ({
+        success: true,
+        data: {
+          configRoot: 'C:/configuration',
+          binding: { workspaceFolder: 'ws', configRelativePath: 'Configuration.xml', infobaseIds: ['ib-1'], massDeployment: false },
+          entries: [entry],
+          catalog: [entry],
+          workspaceFolderRoot: 'C:/workspace',
+        },
+      }));
+
+      const confirmed = await operations.deploySelectedObjects({ files: ['Catalogs/Goods.xml'] });
+      const errorAndCancellation = await operations.deploySelectedObjects({ files: ['Catalogs/Goods.xml'] });
+
+      assert.strictEqual(confirmed.success, false);
+      assert.strictEqual(confirmed.code, 'REQUEST_CANCELLED');
+      assert.match(confirmed.error ?? '', /отменена/i);
+      assert.strictEqual(errorAndCancellation.success, false);
+      assert.strictEqual(errorAndCancellation.code, 'SUPPORT_OPERATION_FAILED');
+      assert.strictEqual(errorAndCancellation.error, 'Раскатка завершена с ошибками: 1');
+    } finally {
+      DeployService.prototype.deployChangedFiles = original;
+    }
+  });
+
   test('binding resolver selects the deepest CFE binding and exposes its extension name', async () => {
     const base: ConfigurationBinding = {
       workspaceFolder: 'ws',
@@ -193,10 +252,16 @@ suite('Agent deploy partial result projection', () => {
     await fs.promises.writeFile(configDumpInfoPath, '<ConfigDumpInfo/>', 'utf8');
     const commands = await import('../../src/infobases/infobaseConfigCommands');
     const original = commands.runInfobaseConfigExportStatus;
+    let operationStatus: 'success' | 'cancelled' = 'success';
     let passedExtensionName: string | undefined;
     const stub: typeof original = async (params) => {
       passedExtensionName = params.ibcmdExtensionName;
-      return { status: 'success', exitCode: 0, userMessage: 'ok', logExcerpt: '' };
+      return {
+        status: operationStatus,
+        exitCode: operationStatus === 'success' ? 0 : null,
+        userMessage: operationStatus === 'success' ? 'ok' : 'Операция отменена.',
+        logExcerpt: '',
+      };
     };
     (commands as { runInfobaseConfigExportStatus: typeof original }).runInfobaseConfigExportStatus = stub;
     try {
@@ -231,6 +296,12 @@ suite('Agent deploy partial result projection', () => {
       const result = await operations.exportStatus({});
       assert.strictEqual(result.success, true, result.error);
       assert.strictEqual(passedExtensionName, 'SalesPatch');
+
+      operationStatus = 'cancelled';
+      const cancelled = await operations.exportStatus({});
+      assert.strictEqual(cancelled.success, false);
+      assert.strictEqual(cancelled.code, 'REQUEST_CANCELLED');
+      assert.strictEqual(cancelled.error, 'Операция отменена.');
     } finally {
       (commands as { runInfobaseConfigExportStatus: typeof original }).runInfobaseConfigExportStatus = original;
       await fs.promises.rm(root, { recursive: true, force: true });

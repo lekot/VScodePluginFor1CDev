@@ -1,7 +1,7 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **85** runtime-команд Agent API для программного
-управления метаданными, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
+Расширение CDT 41 для VS Code предоставляет **96** runtime-команд Agent API для программного
+управления метаданными, Хранилищем конфигурации, фоновыми задачами, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
 
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **85 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **96 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,13 +58,33 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 85 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 96 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 85 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 96 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
+
+### Фоновые задачи
+
+Длительные deploy, deploy выбранных/изменённых файлов, pull, export status, EPF/ERF operations и
+операции Хранилища можно запустить с `background: true`. MCP-схемы для этих операций по умолчанию
+выбирают background; синхронный MCP-вызов задаёт `background: false`. Прямые deploy/pull Agent-команды
+сохраняют синхронное поведение по умолчанию. Мутации Хранилища по умолчанию возвращают task receipt;
+`background: false` оставляет их синхронными.
+
+Передайте `taskId` из receipt в `1c-metadata-tree.agent.task.status`, `.task.result` или `.task.cancel`
+(MCP: `cdt_task_status`, `cdt_task_result`, `cdt_task_cancel`). Receipt немедленно возвращает
+`status: "working"`; task snapshots сообщают `running`, `completed`, `failed` или подтверждённый
+`cancelled`, флаг `cancellationRequested` и `elapsedMs`. Для running задачи время растёт от момента
+создания; после terminal state `elapsedMs` фиксируется. `recentMessages` — это stage events операции,
+а не stdout/stderr процесса. Tail содержит не более 24 сообщений по 320 символов и проходит
+credential-pattern redaction. `task.result` после
+завершения добавляет исходный `AgentResult` без потери его typed data. Терминальные результаты
+хранятся 15 минут; running задачи не вытесняются лимитом памяти. `task.cancel` только запрашивает
+отмену: статус остаётся `working`, пока нижележащая операция не вернёт фактический результат. Для
+Хранилища `inDoubt` и `acknowledged` сохраняются даже после запроса отмены.
 
 ### CFE project lifecycle
 
@@ -552,6 +572,43 @@ support facade. Файлы объектов, заблокированных mast
 Возвращает: `{ message: string }` — текстовый отчёт.
 
 Требует наличия `ConfigDumpInfo.xml` в каталоге конфигурации (создаётся при полной выгрузке).
+
+---
+
+### Хранилище конфигурации (8 команд)
+
+Все операции требуют точный `configurationId` из `agent.listConfigurations`; активный выбор дерева
+не используется. Для операций с объектом передавайте root dot-path ровно из двух сегментов,
+например `Catalog.Goods` или `Document.SalesOrder`. Объект находится в lazy metadata tree внутри
+выбранной конфигурации, включая CFE root. Сервис Хранилища возвращает исходный typed result в
+`AgentResult.data`: `status` — `acknowledged`, `failed`, `inDoubt` или `cancelled`, вместе с
+`affectedFullNames` и `synchronizedFiles`. Только `acknowledged` означает `AgentResult.success: true`.
+
+| Команда | Поля дополнительно к `configurationId` | Эффект |
+|---|---|---|
+| `repository.connect` | `executionInfobaseId`, `repositoryPath`, `repositoryUser`, `repositoryPassword?` | Привязать конфигурацию к Хранилищу; `executionInfobaseId` должен указывать на файловую ИБ из каталога CDT |
+| `repository.disconnect` | `force?` | Отключить конфигурацию |
+| `repository.lock` | `path`, `recursive?`, `revised?` | Захватить корневой объект |
+| `repository.unlock` | `path`, `recursive?`, `force?` | Освободить корневой объект |
+| `repository.commit` | `path`, `comment`, `recursive?`, `keepLocked?`, `force?` | Поместить объект; непустой после trim комментарий проверяется до запуска процесса |
+| `repository.updateObject` | `path`, `recursive?`, `force?` | Обновить объект из Хранилища |
+| `repository.updateConfiguration` | `force?` | Обновить всю конфигурацию |
+| `repository.getStatus` | — | Прочитать последнее локально наблюдавшееся состояние и привязку |
+
+Connect передаёт пароль только сервису Хранилища и SecretStorage. Пароль не возвращается в task
+receipt, task status/result или service result. `repository.getStatus` возвращает `live: false`:
+это локальное последнее подтверждённое состояние, команда не опрашивает live Хранилище.
+Мутации по умолчанию работают в фоне; для синхронного вызова передайте `background: false`.
+MCP tools `cdt_repository_*` используют background по умолчанию.
+
+```json
+{
+  "configurationId": "cfg-...",
+  "path": "Catalog.Goods",
+  "comment": "Release 2026.10",
+  "background": false
+}
+```
 
 ---
 

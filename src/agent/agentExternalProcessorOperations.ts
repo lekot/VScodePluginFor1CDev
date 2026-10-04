@@ -1,4 +1,5 @@
 import * as path from 'path';
+import type * as vscode from 'vscode';
 import {
   buildExternalProcessor,
   dumpExternalProcessor,
@@ -12,13 +13,16 @@ import type {
 } from './types';
 
 export function agentDumpExternalProcessor(
-  input: AgentDumpExternalProcessorParams
+  input: AgentDumpExternalProcessorParams,
+  token?: vscode.CancellationToken,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export function agentDumpExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export async function agentDumpExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
 ): Promise<AgentResult<ExternalProcessorAgentData>> {
   const request = parseDumpRequest(input);
   if ('state' in request) {
@@ -37,18 +41,22 @@ export async function agentDumpExternalProcessor(
     format: request.format,
     context: request.context,
     timeoutMs: request.timeoutMs,
+    ...(token ? { cancellation: token } : {}),
   });
   return toAgentResult(result);
 }
 
 export function agentBuildExternalProcessor(
-  input: AgentBuildExternalProcessorParams
+  input: AgentBuildExternalProcessorParams,
+  token?: vscode.CancellationToken,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export function agentBuildExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export async function agentBuildExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
 ): Promise<AgentResult<ExternalProcessorAgentData>> {
   const request = parseBuildRequest(input);
   if ('state' in request) {
@@ -59,6 +67,7 @@ export async function agentBuildExternalProcessor(
     destinationPath: request.dstPath ? path.resolve(request.dstPath) : undefined,
     context: request.context,
     timeoutMs: request.timeoutMs,
+    ...(token ? { cancellation: token } : {}),
   });
   return toAgentResult(result);
 }
@@ -76,7 +85,7 @@ function parseDumpRequest(
   }
   if (
     !record
-    || !hasOnlyKeys(record, ['srcPath', 'outDir', 'format', 'context', 'timeoutMs'])
+    || !hasOnlyKeys(record, ['srcPath', 'outDir', 'format', 'context', 'timeoutMs', 'background'])
     || !isNonEmptyString(record.srcPath)
     || (record.outDir !== undefined && !isNonEmptyString(record.outDir))
     || (record.format !== 'Plain' && record.format !== 'Hierarchical')
@@ -106,7 +115,7 @@ function parseBuildRequest(
   }
   if (
     !record
-    || !hasOnlyKeys(record, ['rootXmlPath', 'dstPath', 'context', 'timeoutMs'])
+    || !hasOnlyKeys(record, ['rootXmlPath', 'dstPath', 'context', 'timeoutMs', 'background'])
     || !isNonEmptyString(record.rootXmlPath)
     || (record.dstPath !== undefined && !isNonEmptyString(record.dstPath))
     || !isOptionalPositiveInteger(record.timeoutMs)
@@ -218,7 +227,9 @@ function toAgentResult(
   }
   return {
     success: false,
-    code: result.code,
+    code: result.state === 'failed' && result.code === 'CONFIGURATOR_CANCELLED_BEFORE_START'
+      ? 'REQUEST_CANCELLED'
+      : result.code,
     error: result.message,
     data: result,
   };

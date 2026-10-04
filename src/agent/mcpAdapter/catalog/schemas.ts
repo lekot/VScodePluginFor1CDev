@@ -208,6 +208,7 @@ export const agentDumpExternalProcessorSchema = z.strictObject({
   format: z.enum(['Plain', 'Hierarchical']),
   context: externalProcessorContext,
   timeoutMs: externalProcessorTimeout.optional(),
+  background: z.boolean().default(true),
 });
 
 export const agentBuildExternalProcessorSchema = z.strictObject({
@@ -215,4 +216,5 @@ export const agentBuildExternalProcessorSchema = z.strictObject({
   dstPath: trimmedNonEmptyString.optional(),
   context: externalProcessorContext,
   timeoutMs: externalProcessorTimeout.optional(),
+  background: z.boolean().default(true),
 });

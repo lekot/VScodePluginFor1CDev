@@ -1,14 +1,21 @@
 import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { READ_CLOSED, READ_OPEN, WRITE_OPEN } from './types';
-import { configPathInput, configurationScopeShape, emptyInput, nonEmptyString } from './schemas';
+import { configurationScopeShape, emptyInput, nonEmptyString } from './schemas';
 
 const resolveBindingInput = z.strictObject({ configPath: nonEmptyString.optional() });
+const background = z.boolean().default(true);
+const deployConfigInput = z.strictObject({
+  ...configurationScopeShape,
+  configPath: z.string().optional(),
+  background,
+});
 
 const selectedFilesInput = z.strictObject({
   ...configurationScopeShape,
   configPath: z.string().optional(),
   files: z.array(z.string()).min(1),
+  background,
 });
 
 const pullObjectsInput = z.strictObject({
@@ -16,6 +23,7 @@ const pullObjectsInput = z.strictObject({
   configPath: z.string().optional(),
   objectIds: z.array(z.string()).min(1),
   infobaseName: z.string().optional(),
+  background,
 });
 
 export const BINDINGS_DEPLOY_TOOLS: readonly McpToolDefinition[] = [
@@ -37,7 +45,7 @@ export const BINDINGS_DEPLOY_TOOLS: readonly McpToolDefinition[] = [
     name: 'cdt_deploy',
     description: 'Deploy the complete configuration to its bound infobases.',
     command: '1c-metadata-tree.agent.deploy',
-    inputSchema: configPathInput,
+    inputSchema: deployConfigInput,
     annotations: WRITE_OPEN,
   },
   {
@@ -51,7 +59,7 @@ export const BINDINGS_DEPLOY_TOOLS: readonly McpToolDefinition[] = [
     name: 'cdt_deploy_changed_files',
     description: 'Detect changed configuration files through Git and deploy them to bound infobases.',
     command: '1c-metadata-tree.agent.deployChangedFiles',
-    inputSchema: configPathInput,
+    inputSchema: deployConfigInput,
     annotations: WRITE_OPEN,
   },
   {
@@ -65,7 +73,7 @@ export const BINDINGS_DEPLOY_TOOLS: readonly McpToolDefinition[] = [
     name: 'cdt_export_status',
     description: 'Read ibcmd export status for a configuration. This starts a local ibcmd process.',
     command: '1c-metadata-tree.agent.exportStatus',
-    inputSchema: configPathInput,
+    inputSchema: deployConfigInput,
     annotations: READ_OPEN,
   },
 ] as const;

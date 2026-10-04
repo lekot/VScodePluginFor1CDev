@@ -762,6 +762,61 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.task.status",
+        "title": "Agent: Статус фоновой задачи",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.task.result",
+        "title": "Agent: Результат фоновой задачи",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.task.cancel",
+        "title": "Agent: Отменить фоновую задачу",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.connect",
+        "title": "Agent: Подключить конфигурацию к Хранилищу",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.disconnect",
+        "title": "Agent: Отключить конфигурацию от Хранилища",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.lock",
+        "title": "Agent: Захватить объект в Хранилище",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.unlock",
+        "title": "Agent: Снять захват объекта Хранилища",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.commit",
+        "title": "Agent: Поместить объект в Хранилище",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.updateObject",
+        "title": "Agent: Обновить объект из Хранилища",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.updateConfiguration",
+        "title": "Agent: Обновить конфигурацию из Хранилища",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.repository.getStatus",
+        "title": "Agent: Получить состояние Хранилища",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.getSubsystemCommandInterface",
         "title": "Agent: Получить командный интерфейс подсистемы",
         "category": "CDT 41 Agent"

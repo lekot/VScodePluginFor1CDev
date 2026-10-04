@@ -5,6 +5,12 @@ import type {
     ExternalProcessorExecutionContext,
     ExternalProcessorOperationResult,
 } from '../services/externalProcessor/externalProcessorTypes';
+import type {
+    RepositoryBinding,
+    RepositoryObservedState,
+    RepositoryServiceResult,
+    RepositoryTarget,
+} from '../services/configurationRepository/types';
 
 export interface AgentResult<T = void> {
     success: boolean;
@@ -24,6 +30,8 @@ export interface AgentDumpExternalProcessorParams {
     format: 'Plain' | 'Hierarchical';
     context: AgentExternalProcessorContext;
     timeoutMs?: number;
+    /** Run in the background and return an Agent task receipt. */
+    background?: boolean;
 }
 
 export interface AgentBuildExternalProcessorParams {
@@ -31,6 +39,8 @@ export interface AgentBuildExternalProcessorParams {
     dstPath?: string;
     context: AgentExternalProcessorContext;
     timeoutMs?: number;
+    /** Run in the background and return an Agent task receipt. */
+    background?: boolean;
 }
 
 export type ExternalProcessorAgentData = ExternalProcessorOperationResult;
@@ -39,6 +49,68 @@ export interface ConfigurationScopedParams {
     /** Exact configuration selector. Optional only for a single compatible configuration. */
     configurationId?: string;
 }
+
+export interface AgentTaskIdParams {
+    taskId: string;
+}
+
+export interface AgentRepositoryConfigurationParams {
+    /** Exact configuration identity; repository commands never use the active tree selection. */
+    configurationId: string;
+    background?: boolean;
+}
+
+export interface AgentRepositoryConnectParams extends AgentRepositoryConfigurationParams {
+  /** ID of the file infobase in the CDT catalog used for Designer repository commands. */
+  executionInfobaseId: string;
+    repositoryPath: string;
+    repositoryUser: string;
+    repositoryPassword?: string;
+}
+
+export interface AgentRepositoryDisconnectParams extends AgentRepositoryConfigurationParams {
+    force?: boolean;
+}
+
+export interface AgentRepositoryObjectParams extends AgentRepositoryConfigurationParams {
+    /** Root object dot path, for example `Catalog.Goods`. */
+    path: string;
+}
+
+export interface AgentRepositoryLockParams extends AgentRepositoryObjectParams {
+    recursive?: boolean;
+    revised?: boolean;
+}
+
+export interface AgentRepositoryUnlockParams extends AgentRepositoryObjectParams {
+    recursive?: boolean;
+    force?: boolean;
+}
+
+export interface AgentRepositoryCommitParams extends AgentRepositoryObjectParams {
+    comment: string;
+    recursive?: boolean;
+    keepLocked?: boolean;
+    force?: boolean;
+}
+
+export interface AgentRepositoryUpdateObjectParams extends AgentRepositoryObjectParams {
+    recursive?: boolean;
+    force?: boolean;
+}
+
+export interface AgentRepositoryUpdateConfigurationParams extends AgentRepositoryConfigurationParams {
+    force?: boolean;
+}
+
+export interface AgentRepositoryStatusData {
+    readonly live: false;
+    readonly target: RepositoryTarget;
+    readonly binding?: RepositoryBinding;
+    readonly observedState: RepositoryObservedState;
+}
+
+export type AgentRepositoryOperationData = RepositoryServiceResult;
 
 export interface AgentSetRoleRightsParams extends ConfigurationScopedParams {
     roleName: string;

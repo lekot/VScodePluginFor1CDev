@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { MCP_TOOL_CATALOG } from '../../../src/agent/mcpAdapter/toolCatalog';
+import { MCP_OPERATION_CATALOG, MCP_TOOL_CATALOG } from '../../../src/agent/mcpAdapter/toolCatalog';
 
 const EXTENSION_ID = 'Lekot.1c-metadata-tree-vscode';
 
@@ -70,6 +70,82 @@ suite('Smoke: production MCP Agent Bridge', () => {
         listed.tools.map((tool) => tool.name),
         MCP_TOOL_CATALOG.map((tool) => tool.name),
       );
+
+      const requiredOperationNames = [
+        'cdt_task_status',
+        'cdt_task_result',
+        'cdt_task_cancel',
+        'cdt_repository_connect',
+        'cdt_repository_disconnect',
+        'cdt_repository_lock',
+        'cdt_repository_unlock',
+        'cdt_repository_commit',
+        'cdt_repository_update_object',
+        'cdt_repository_update_configuration',
+        'cdt_repository_get_status',
+        'cdt_deploy',
+        'cdt_deploy_selected_objects',
+        'cdt_deploy_changed_files',
+        'cdt_pull_selected_objects',
+        'cdt_export_status',
+        'cdt_dump_external_processor',
+        'cdt_build_external_processor',
+      ];
+      const operationCommands = new Map(MCP_OPERATION_CATALOG.map(({ name, command }) => [name, command]));
+      const catalogViaMcp = await client.callTool({ name: 'cdt_catalog', arguments: {} });
+      const catalogData = catalogViaMcp.structuredContent as unknown as {
+        success: boolean;
+        data?: { operations?: Array<{ name: string }> };
+      };
+      assert.strictEqual(catalogData.success, true);
+      const catalogNames = new Set(catalogData.data?.operations?.map(({ name }) => name));
+      const registeredCommandIds = new Set(await vscode.commands.getCommands(true));
+      for (const operationName of requiredOperationNames) {
+        assert.ok(catalogNames.has(operationName), `MCP catalog must include ${operationName}`);
+        const command = operationCommands.get(operationName);
+        assert.ok(command, `MCP operation ${operationName} must map to an Agent command`);
+        assert.ok(registeredCommandIds.has(command!), `VS Code must register ${command}`);
+      }
+
+      const missingConfigurationId = 'cdt-smoke-unknown-configuration';
+      const missingTaskId = 'cdt-smoke-unknown-task';
+      const directMissingRepository = await vscode.commands.executeCommand<{
+        success: boolean;
+        code?: string;
+        error?: string;
+      }>('1c-metadata-tree.agent.repository.getStatus', { configurationId: missingConfigurationId });
+      assert.strictEqual(directMissingRepository?.success, false);
+      assert.strictEqual(directMissingRepository?.code, 'CONFIGURATION_ID_UNKNOWN');
+      assert.ok(directMissingRepository?.error);
+
+      const directMissingTask = await vscode.commands.executeCommand<{
+        success: boolean;
+        code?: string;
+        error?: string;
+      }>('1c-metadata-tree.agent.task.status', { taskId: missingTaskId });
+      assert.strictEqual(directMissingTask?.success, false);
+      assert.strictEqual(directMissingTask?.code, 'TASK_NOT_FOUND');
+      assert.ok(directMissingTask?.error);
+
+      const repositoryViaMcp = await client.callTool({
+        name: 'cdt_read',
+        arguments: {
+          operation: 'cdt_repository_get_status',
+          arguments: { configurationId: missingConfigurationId },
+        },
+      });
+      assert.strictEqual(repositoryViaMcp.isError, true);
+      assert.deepStrictEqual(repositoryViaMcp.structuredContent, directMissingRepository);
+
+      const taskViaMcp = await client.callTool({
+        name: 'cdt_read',
+        arguments: {
+          operation: 'cdt_task_status',
+          arguments: { taskId: missingTaskId },
+        },
+      });
+      assert.strictEqual(taskViaMcp.isError, true);
+      assert.deepStrictEqual(taskViaMcp.structuredContent, directMissingTask);
 
       const direct = await vscode.commands.executeCommand(
         '1c-metadata-tree.agent.listConfigurations',

@@ -142,6 +142,62 @@ suite('externalProcessorService contract', () => {
     assert.strictEqual(harness.processCalls.length + overwriteHarness.processCalls.length, 0);
   });
 
+  test('keeps cancellation before process start distinguishable from other configurator failures', async () => {
+    const harness = createHarness();
+    harness.fs.addFile(EPF, 'binary');
+    harness.outcome = {
+      status: 'failed',
+      errorCode: 'CONFIGURATOR_CANCELLED_BEFORE_START',
+      retryable: true,
+      started: false,
+      effectPossible: false,
+      exitCode: null,
+      signal: null,
+      combinedLog: '',
+      logTruncated: false,
+      diagnostic: { executablePath: 'C:\\1C\\1cv8.exe', args: [] },
+    };
+
+    const result = await harness.service.dump({
+      externalFilePath: EPF,
+      outputDirectory: path.join(ROOT, 'cancelled-before-start'),
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    });
+
+    assert.strictEqual(result.state, 'failed');
+    assert.strictEqual((result as { code?: string }).code, 'CONFIGURATOR_CANCELLED_BEFORE_START');
+    assert.strictEqual((result as { effectPossible?: boolean }).effectPossible, false);
+    assert.ok(harness.fs.removed.includes(harness.stagingRoot!), 'staging is cleaned after confirmed pre-start cancellation');
+  });
+
+  test('keeps cancellation after Configurator start inDoubt because the effect is unknown', async () => {
+    const harness = createHarness();
+    harness.fs.addFile(EPF, 'binary');
+    harness.outcome = {
+      status: 'inDoubt',
+      errorCode: 'CONFIGURATOR_CANCELLED_AFTER_START',
+      started: true,
+      effectPossible: true,
+      exitCode: null,
+      signal: null,
+      combinedLog: '',
+      logTruncated: false,
+      diagnostic: { executablePath: 'C:\\1C\\1cv8.exe', args: [] },
+    };
+
+    const result = await harness.service.dump({
+      externalFilePath: EPF,
+      outputDirectory: path.join(ROOT, 'cancelled-after-start'),
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    });
+
+    assert.strictEqual(result.state, 'inDoubt');
+    assert.strictEqual(result.code, 'CONFIGURATOR_IN_DOUBT');
+    assert.strictEqual(result.effectPossible, true);
+  });
+
   test('file-infobase context contributes canonical queue key and redacts password diagnostics', async () => {
     const harness = createHarness();
     harness.fs.addFile(EPF, 'binary');

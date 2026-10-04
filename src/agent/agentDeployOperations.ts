@@ -35,6 +35,8 @@ export interface AgentDeployOperationsDeps {
 export interface DeployParams extends ConfigurationScopedParams {
     /** Путь к каталогу конфигурации. Если не задан — берётся из дерева метаданных. */
     configPath?: string;
+    /** Запустить работу в фоне и вернуть task receipt. */
+    background?: boolean;
 }
 
 export interface DeployResultData {
@@ -57,10 +59,12 @@ export interface DeploySelectedObjectsParams extends ConfigurationScopedParams {
     configPath?: string;
     /** Относительные пути файлов (от корня конфигурации, forward slashes). */
     files: string[];
+    background?: boolean;
 }
 
 export interface DeployChangedFilesParams extends ConfigurationScopedParams {
     configPath?: string;
+    background?: boolean;
 }
 
 export interface PullSelectedObjectsParams extends ConfigurationScopedParams {
@@ -69,10 +73,17 @@ export interface PullSelectedObjectsParams extends ConfigurationScopedParams {
     objectIds: string[];
     /** Если несколько баз — можно указать имя. Иначе — первая привязанная. */
     infobaseName?: string;
+    background?: boolean;
 }
 
 export interface ExportStatusAgentParams extends ConfigurationScopedParams {
     configPath?: string;
+    background?: boolean;
+}
+
+interface AgentDeployExecutionOptions {
+    readonly token?: vscode.CancellationToken;
+    readonly reportStage?: (message: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +175,7 @@ export class AgentDeployOperations {
     // deploy — полная раскатка конфигурации
     // -------------------------------------------------------------------------
 
-    async deploy(params: DeployParams): Promise<AgentResult<DeployResultData>> {
+    async deploy(params: DeployParams, execution: AgentDeployExecutionOptions = {}): Promise<AgentResult<DeployResultData>> {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
@@ -173,8 +184,8 @@ export class AgentDeployOperations {
             const { binding, catalog, workspaceFolderRoot, configRoot } = ctx.data!;
             const support = await this.deps.resolveSupportContext?.(configRoot);
 
-            const cts = new vscode.CancellationTokenSource();
-            const noopProgress = { report: () => {} };
+            const cancellation = createCancellationScope(execution.token);
+            const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
                 const summary = await deployService.deployBinding({
@@ -182,14 +193,16 @@ export class AgentDeployOperations {
                     workspaceFolderRoot,
                     storage: this.deps.infobaseStorage,
                     catalog,
-                    progress: noopProgress,
-                    token: cts.token,
+                    progress,
+                    token: cancellation.token,
                     support,
                 });
 
                 return {
                     success: isDeploySummarySuccess(summary),
-                    code: summary.results.find((result) => result.errorCode)?.errorCode,
+                    code: summary.cancelledMidChain && summary.errorCount === 0
+                        ? 'REQUEST_CANCELLED'
+                        : summary.results.find((result) => result.errorCode)?.errorCode,
                     data: {
                         summary: {
                             success: summary.successCount,
@@ -208,7 +221,7 @@ export class AgentDeployOperations {
                     error: deploySummaryError(summary),
                 };
             } finally {
-                cts.dispose();
+                cancellation.dispose();
             }
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -219,7 +232,7 @@ export class AgentDeployOperations {
     // deploySelectedObjects — раскатка конкретных файлов
     // -------------------------------------------------------------------------
 
-    async deploySelectedObjects(params: DeploySelectedObjectsParams): Promise<AgentResult<DeployResultData>> {
+    async deploySelectedObjects(params: DeploySelectedObjectsParams, execution: AgentDeployExecutionOptions = {}): Promise<AgentResult<DeployResultData>> {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
@@ -232,8 +245,8 @@ export class AgentDeployOperations {
                 return { success: false, error: 'Список файлов не задан.' };
             }
 
-            const cts = new vscode.CancellationTokenSource();
-            const noopProgress = { report: () => {} };
+            const cancellation = createCancellationScope(execution.token);
+            const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
                 const summary = await deployService.deployChangedFiles({
@@ -242,14 +255,16 @@ export class AgentDeployOperations {
                     storage: this.deps.infobaseStorage,
                     catalog,
                     relativeFiles: params.files,
-                    progress: noopProgress,
-                    token: cts.token,
+                    progress,
+                    token: cancellation.token,
                     support,
                 });
 
                 return {
                     success: isDeploySummarySuccess(summary),
-                    code: summary.results.find((result) => result.errorCode)?.errorCode,
+                    code: summary.cancelledMidChain && summary.errorCount === 0
+                        ? 'REQUEST_CANCELLED'
+                        : summary.results.find((result) => result.errorCode)?.errorCode,
                     data: {
                         summary: {
                             success: summary.successCount,
@@ -268,7 +283,7 @@ export class AgentDeployOperations {
                     error: deploySummaryError(summary),
                 };
             } finally {
-                cts.dispose();
+                cancellation.dispose();
             }
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -279,7 +294,7 @@ export class AgentDeployOperations {
     // deployChangedFiles — раскатка изменённых файлов по git
     // -------------------------------------------------------------------------
 
-    async deployChangedFiles(params: DeployChangedFilesParams): Promise<AgentResult<DeployResultData>> {
+    async deployChangedFiles(params: DeployChangedFilesParams, execution: AgentDeployExecutionOptions = {}): Promise<AgentResult<DeployResultData>> {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
@@ -320,8 +335,8 @@ export class AgentDeployOperations {
                 };
             }
 
-            const cts = new vscode.CancellationTokenSource();
-            const noopProgress = { report: () => {} };
+            const cancellation = createCancellationScope(execution.token);
+            const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
                 const summary = await deployService.deployChangedFiles({
@@ -330,14 +345,16 @@ export class AgentDeployOperations {
                     storage: this.deps.infobaseStorage,
                     catalog,
                     relativeFiles: detected.relativePaths,
-                    progress: noopProgress,
-                    token: cts.token,
+                    progress,
+                    token: cancellation.token,
                     support,
                 });
 
                 return {
                     success: isDeploySummarySuccess(summary),
-                    code: summary.results.find((result) => result.errorCode)?.errorCode,
+                    code: summary.cancelledMidChain && summary.errorCount === 0
+                        ? 'REQUEST_CANCELLED'
+                        : summary.results.find((result) => result.errorCode)?.errorCode,
                     data: {
                         summary: {
                             success: summary.successCount,
@@ -356,7 +373,7 @@ export class AgentDeployOperations {
                     error: deploySummaryError(summary),
                 };
             } finally {
-                cts.dispose();
+                cancellation.dispose();
             }
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -367,7 +384,7 @@ export class AgentDeployOperations {
     // pullSelectedObjects — выгрузка объектов из ИБ
     // -------------------------------------------------------------------------
 
-    async pullSelectedObjects(params: PullSelectedObjectsParams): Promise<AgentResult<DeployResultData>> {
+    async pullSelectedObjects(params: PullSelectedObjectsParams, execution: AgentDeployExecutionOptions = {}): Promise<AgentResult<DeployResultData>> {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
@@ -406,8 +423,8 @@ export class AgentDeployOperations {
                 return { id, name, type: type as MetadataType, properties: {} };
             });
 
-            const cts = new vscode.CancellationTokenSource();
-            const noopProgress = { report: () => {} };
+            const cancellation = createCancellationScope(execution.token);
+            const progress = createAgentProgress(execution.reportStage);
             try {
                 const deployService = new DeployService();
                 const summary = await deployService.pullSelectedObjects({
@@ -416,12 +433,13 @@ export class AgentDeployOperations {
                     storage: this.deps.infobaseStorage,
                     entry: selectedEntry,
                     selectedNodes: nodes,
-                    progress: noopProgress,
-                    token: cts.token,
+                    progress,
+                    token: cancellation.token,
                 });
 
                 return {
                     success: isDeploySummarySuccess(summary),
+                    code: summary.cancelledMidChain && summary.errorCount === 0 ? 'REQUEST_CANCELLED' : undefined,
                     data: {
                         summary: {
                             success: summary.successCount,
@@ -440,7 +458,7 @@ export class AgentDeployOperations {
                         : undefined,
                 };
             } finally {
-                cts.dispose();
+                cancellation.dispose();
             }
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -451,7 +469,7 @@ export class AgentDeployOperations {
     // exportStatus — статус конфигурации через ibcmd export status
     // -------------------------------------------------------------------------
 
-    async exportStatus(params: ExportStatusAgentParams): Promise<AgentResult<{ message: string }>> {
+    async exportStatus(params: ExportStatusAgentParams, execution: AgentDeployExecutionOptions = {}): Promise<AgentResult<{ message: string }>> {
         try {
             const ctx = await this.resolveDeployContext(params.configPath);
             if (!ctx.success) {
@@ -469,28 +487,52 @@ export class AgentDeployOperations {
 
             const entry = entries[0]!;
 
-            const cts = new vscode.CancellationTokenSource();
+            const cancellation = createCancellationScope(execution.token);
             try {
                 const result = await runInfobaseConfigExportStatus({
                         entry,
                         configDumpInfoPath,
                         storage: this.deps.infobaseStorage,
-                        token: cts.token,
+                        token: cancellation.token,
                         ibcmdExtensionName: ctx.data!.binding.ibcmdExtensionName,
                     });
 
                 return {
                     success: result.status === 'success',
+                    code: result.status === 'cancelled' ? 'REQUEST_CANCELLED' : undefined,
                     data: { message: result.userMessage },
                     error: result.status !== 'success' ? result.userMessage : undefined,
                 };
             } finally {
-                cts.dispose();
+                cancellation.dispose();
             }
         } catch (err) {
             return { success: false, error: err instanceof Error ? err.message : String(err) };
         }
     }
+}
+
+function createCancellationScope(token?: vscode.CancellationToken): {
+    readonly token: vscode.CancellationToken;
+    dispose(): void;
+} {
+    if (token) {
+        return { token, dispose: () => undefined };
+    }
+    const source = new vscode.CancellationTokenSource();
+    return { token: source.token, dispose: () => source.dispose() };
+}
+
+function createAgentProgress(reportStage?: (message: string) => void): {
+    report(value: { message?: string }): void;
+} {
+    return {
+        report: ({ message }) => {
+            if (message) {
+                reportStage?.(message);
+            }
+        },
+    };
 }
 
 function isDeploySummarySuccess(summary: DeployRunSummary): boolean {

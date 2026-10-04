@@ -105,6 +105,19 @@ import type { MutationPlan } from '../services/configurationSession/mutationPlan
 import { AgentRoleRightsError, planSetRoleRights } from './agentRoleRights';
 import { resolveAgentConfiguration } from './agentConfigurationResolver';
 import { AgentPathError } from './agentPathResolver';
+import { AgentTaskManager } from './agentTaskManager';
+import { AgentRepositoryOperations } from './agentRepositoryOperations';
+import type {
+    AgentRepositoryCommitParams,
+    AgentRepositoryConnectParams,
+    AgentRepositoryDisconnectParams,
+    AgentRepositoryLockParams,
+    AgentRepositoryUpdateConfigurationParams,
+    AgentRepositoryUpdateObjectParams,
+    AgentRepositoryUnlockParams,
+    AgentTaskIdParams,
+} from './types';
+import type { ConfigurationRepositoryService } from '../services/configurationRepository/configurationRepositoryService';
 import {
     AGENT_SUPPORT_COMMAND_IDS,
     AgentSupportOperations,
@@ -145,6 +158,7 @@ export function registerAgentCommands(
     getSupportDeps?: () => AgentSupportOperationsDeps | undefined,
     /** Optional lifecycle hook used by CFE creation after registry discovery succeeds. */
     refreshCfeLifecycle?: () => Promise<void>,
+    getRepositoryService?: () => ConfigurationRepositoryService | null,
 ): void {
     const resolveSession = async (
         params: ConfigurationScopedParams = {},
@@ -177,6 +191,7 @@ export function registerAgentCommands(
         capability: keyof ConfigurationIdentity['capabilities'],
         mutationKind: string | undefined,
         operation: (configRoot: string) => Promise<AgentResult<T>>,
+        cancellation?: vscode.CancellationToken,
     ): Promise<AgentResult<T>> => {
         try {
             const session = await resolveSession(params, capability);
@@ -190,6 +205,7 @@ export function registerAgentCommands(
             }
             const outcome = await session.enqueue({
                 kind: mutationKind,
+                cancellation,
                 execute: () => operation(session.identity.rootPath),
                 commitWhen: (result) => result.success,
             });
@@ -264,6 +280,68 @@ export function registerAgentCommands(
             };
         }
     };
+
+    const taskManager = new AgentTaskManager();
+    context.subscriptions.push({ dispose: () => taskManager.dispose() });
+    const repositoryOperations = new AgentRepositoryOperations({
+        getService: () => getRepositoryService?.() ?? null,
+        getTreeProvider: getTreeDataProvider,
+        getConfigurationRegistry,
+        infobaseStorage: getDeployDeps?.()?.infobaseStorage ?? null,
+        taskManager,
+    });
+
+    const taskStatusCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.task.status',
+        (params: AgentTaskIdParams) => isTaskIdParams(params)
+            ? taskManager.status(params.taskId)
+            : invalidTaskParams(),
+    );
+    const taskResultCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.task.result',
+        (params: AgentTaskIdParams) => isTaskIdParams(params)
+            ? taskManager.result(params.taskId)
+            : invalidTaskParams(),
+    );
+    const taskCancelCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.task.cancel',
+        (params: AgentTaskIdParams) => isTaskIdParams(params)
+            ? taskManager.cancel(params.taskId)
+            : invalidTaskParams(),
+    );
+
+    const repositoryConnectCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.connect',
+        (params: AgentRepositoryConnectParams, token?: vscode.CancellationToken) => repositoryOperations.connect(params, token),
+    );
+    const repositoryDisconnectCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.disconnect',
+        (params: AgentRepositoryDisconnectParams, token?: vscode.CancellationToken) => repositoryOperations.disconnect(params, token),
+    );
+    const repositoryLockCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.lock',
+        (params: AgentRepositoryLockParams, token?: vscode.CancellationToken) => repositoryOperations.lock(params, token),
+    );
+    const repositoryUnlockCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.unlock',
+        (params: AgentRepositoryUnlockParams, token?: vscode.CancellationToken) => repositoryOperations.unlock(params, token),
+    );
+    const repositoryCommitCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.commit',
+        (params: AgentRepositoryCommitParams, token?: vscode.CancellationToken) => repositoryOperations.commit(params, token),
+    );
+    const repositoryUpdateObjectCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.updateObject',
+        (params: AgentRepositoryUpdateObjectParams, token?: vscode.CancellationToken) => repositoryOperations.updateObject(params, token),
+    );
+    const repositoryUpdateConfigurationCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.updateConfiguration',
+        (params: AgentRepositoryUpdateConfigurationParams, token?: vscode.CancellationToken) => repositoryOperations.updateConfiguration(params, token),
+    );
+    const repositoryGetStatusCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.repository.getStatus',
+        (params: { configurationId: string }) => repositoryOperations.getStatus(params),
+    );
 
     const listConfigurationsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.listConfigurations',
@@ -653,15 +731,33 @@ export function registerAgentCommands(
 
     // ─── 1c-metadata-tree.agent.deploy ───────────────────────────────────
 
+    const runDeployAgentOperation = async <T>(
+        params: ConfigurationScopedParams & { readonly background?: boolean },
+        name: string,
+        mutationKind: string | undefined,
+        operation: (configRoot: string, token?: vscode.CancellationToken, reportStage?: (message: string) => void) => Promise<AgentResult<T>>,
+        requestToken?: vscode.CancellationToken,
+    ): Promise<AgentResult<unknown>> => {
+        const run = (token?: vscode.CancellationToken, reportStage?: (message: string) => void) =>
+            runForConfiguration(params, 'process', mutationKind, (configRoot) => operation(configRoot, token, reportStage), token);
+        if (params.background === true) {
+            return taskManager.start(name, async (token, reportStage) => {
+                reportStage(`Начата операция ${name}.`);
+                return run(token, reportStage);
+            });
+        }
+        return run(requestToken);
+    };
+
     const deployCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deploy',
-        async (params: DeployParams = {}) => {
+        async (params: DeployParams = {}, requestToken?: vscode.CancellationToken) => {
             const deps = getDeployDeps?.();
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
-            return runForConfiguration(params, 'process', 'agent.deploy', (configRoot) =>
-                new AgentDeployOperations(deps).deploy({ ...params, configPath: configRoot }));
+            return runDeployAgentOperation(params, 'agent.deploy', 'agent.deploy', (configRoot, token, reportStage) =>
+                new AgentDeployOperations(deps).deploy({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
         }
     );
 
@@ -669,13 +765,13 @@ export function registerAgentCommands(
 
     const deploySelectedObjectsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deploySelectedObjects',
-        async (params: DeploySelectedObjectsParams) => {
+        async (params: DeploySelectedObjectsParams, requestToken?: vscode.CancellationToken) => {
             const deps = getDeployDeps?.();
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
-            return runForConfiguration(params, 'process', 'agent.deploySelectedObjects', (configRoot) =>
-                new AgentDeployOperations(deps).deploySelectedObjects({ ...params, configPath: configRoot }));
+            return runDeployAgentOperation(params, 'agent.deploySelectedObjects', 'agent.deploySelectedObjects', (configRoot, token, reportStage) =>
+                new AgentDeployOperations(deps).deploySelectedObjects({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
         }
     );
 
@@ -683,13 +779,13 @@ export function registerAgentCommands(
 
     const deployChangedFilesCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.deployChangedFiles',
-        async (params: DeployChangedFilesParams = {}) => {
+        async (params: DeployChangedFilesParams = {}, requestToken?: vscode.CancellationToken) => {
             const deps = getDeployDeps?.();
             if (!deps) {
                 return { success: false, error: 'Раскатка недоступна: хранилище или привязки не инициализированы.' };
             }
-            return runForConfiguration(params, 'process', 'agent.deployChangedFiles', (configRoot) =>
-                new AgentDeployOperations(deps).deployChangedFiles({ ...params, configPath: configRoot }));
+            return runDeployAgentOperation(params, 'agent.deployChangedFiles', 'agent.deployChangedFiles', (configRoot, token, reportStage) =>
+                new AgentDeployOperations(deps).deployChangedFiles({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
         }
     );
 
@@ -697,13 +793,13 @@ export function registerAgentCommands(
 
     const pullSelectedObjectsCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.pullSelectedObjects',
-        async (params: AgentPullParams) => {
+        async (params: AgentPullParams, requestToken?: vscode.CancellationToken) => {
             const deps = getDeployDeps?.();
             if (!deps) {
                 return { success: false, error: 'Выгрузка недоступна: хранилище или привязки не инициализированы.' };
             }
-            return runForConfiguration(params, 'process', 'agent.pullSelectedObjects', (configRoot) =>
-                new AgentDeployOperations(deps).pullSelectedObjects({ ...params, configPath: configRoot }));
+            return runDeployAgentOperation(params, 'agent.pullSelectedObjects', 'agent.pullSelectedObjects', (configRoot, token, reportStage) =>
+                new AgentDeployOperations(deps).pullSelectedObjects({ ...params, configPath: configRoot }, { token, reportStage }), requestToken);
         }
     );
 
@@ -711,13 +807,15 @@ export function registerAgentCommands(
 
     const exportStatusCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.exportStatus',
-        async (params: ExportStatusAgentParams = {}) => {
+        async (params: ExportStatusAgentParams = {}, requestToken?: vscode.CancellationToken) => {
             const deps = getDeployDeps?.();
             if (!deps) {
                 return { success: false, error: 'Статус недоступен: хранилище или привязки не инициализированы.' };
             }
-            return runForConfiguration(params, 'process', undefined, (configRoot) =>
-                new AgentDeployOperations(deps).exportStatus({ ...params, configPath: configRoot }));
+            return runDeployAgentOperation(params, 'agent.exportStatus', undefined, (configRoot, token, reportStage) => {
+                reportStage?.('Запрос статуса через ibcmd.');
+                return new AgentDeployOperations(deps).exportStatus({ ...params, configPath: configRoot }, { token, reportStage });
+            }, requestToken);
         }
     );
 
@@ -1095,17 +1193,35 @@ export function registerAgentCommands(
 
     const dumpExternalProcessorCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.dumpExternalProcessor',
-        async (params: AgentDumpExternalProcessorParams) => {
+        async (params: AgentDumpExternalProcessorParams, requestToken?: vscode.CancellationToken) => {
             const { agentDumpExternalProcessor } = await import('./agentExternalProcessorOperations');
-            return agentDumpExternalProcessor(params);
+            if (params.background === true) {
+                return taskManager.start('agent.dumpExternalProcessor', async (token, reportStage) => {
+                    reportStage('Запущена выгрузка исходников EPF/ERF.');
+                    return agentDumpExternalProcessor(params, token);
+                });
+            }
+            if (requestToken?.isCancellationRequested) {
+                return { success: false, code: 'REQUEST_CANCELLED', error: 'Запрос отменён до запуска операции.' };
+            }
+            return agentDumpExternalProcessor(params, requestToken);
         }
     );
 
     const buildExternalProcessorCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.buildExternalProcessor',
-        async (params: AgentBuildExternalProcessorParams) => {
+        async (params: AgentBuildExternalProcessorParams, requestToken?: vscode.CancellationToken) => {
             const { agentBuildExternalProcessor } = await import('./agentExternalProcessorOperations');
-            return agentBuildExternalProcessor(params);
+            if (params.background === true) {
+                return taskManager.start('agent.buildExternalProcessor', async (token, reportStage) => {
+                    reportStage('Запущена сборка EPF/ERF.');
+                    return agentBuildExternalProcessor(params, token);
+                });
+            }
+            if (requestToken?.isCancellationRequested) {
+                return { success: false, code: 'REQUEST_CANCELLED', error: 'Запрос отменён до запуска операции.' };
+            }
+            return agentBuildExternalProcessor(params, requestToken);
         }
     );
 
@@ -1125,6 +1241,10 @@ export function registerAgentCommands(
         debugStepInCommand, debugStepOutCommand,
         debugStartFromBindingCommand,
         resolveBindingCmd, listBindingsCmd,
+        taskStatusCommand, taskResultCommand, taskCancelCommand,
+        repositoryConnectCommand, repositoryDisconnectCommand, repositoryLockCommand, repositoryUnlockCommand,
+        repositoryCommitCommand, repositoryUpdateObjectCommand, repositoryUpdateConfigurationCommand,
+        repositoryGetStatusCommand,
         deployCommand,
         deploySelectedObjectsCommand, deployChangedFilesCommand,
         pullSelectedObjectsCommand, exportStatusCommand,
@@ -1148,4 +1268,15 @@ export function registerAgentCommands(
         supportVerifyCommand, supportGetLastRunCommand,
         dumpExternalProcessorCommand, buildExternalProcessorCommand,
     );
+}
+
+function isTaskIdParams(value: unknown): value is AgentTaskIdParams {
+    return value !== null
+        && typeof value === 'object'
+        && typeof (value as { taskId?: unknown }).taskId === 'string'
+        && Boolean((value as { taskId: string }).taskId.trim());
+}
+
+function invalidTaskParams(): AgentResult<never> {
+    return { success: false, code: 'INVALID_ARGUMENTS', error: 'Укажите непустой taskId.' };
 }
