@@ -101,15 +101,18 @@ function collectIbcmdSecrets(
   const secrets = new Set(additionalValues.filter((value) => value.length > 0));
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
-    const passwordFlag = /^--password(?:=(.*))?$/iu.exec(argument);
-    if (passwordFlag) {
-      const inlinePassword = passwordFlag[1];
-      const nextArgument = args[index + 1];
-      const password = inlinePassword !== undefined ? inlinePassword : nextArgument;
-      if (password) {
-        secrets.add(password);
+    const normalizedArgument = argument.toLowerCase();
+    if (normalizedArgument.startsWith('--password=')) {
+      const inlinePassword = argument.slice('--password='.length);
+      if (inlinePassword.length > 0) {
+        secrets.add(inlinePassword);
       }
-      if (inlinePassword === undefined && nextArgument !== undefined) {
+    } else if (normalizedArgument === '--password') {
+      const nextArgument = args[index + 1];
+      if (nextArgument) {
+        secrets.add(nextArgument);
+      }
+      if (nextArgument !== undefined) {
         index += 1;
       }
     }
