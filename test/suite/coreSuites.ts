@@ -257,6 +257,7 @@ export const coreSuiteFiles: string[] = [
   'suite/agentSkdOperations.test.js',
   'suite/agentXdtoOperations.test.js',
   'suite/externalProcessorService.test.js',
+  'suite/externalArtifactProjectService.test.js',
   'suite/agentExternalProcessorOperations.test.js',
   'suite/externalProcessorCommands.test.js',
   'suite/queryBuilder/tokenizer.test.js',

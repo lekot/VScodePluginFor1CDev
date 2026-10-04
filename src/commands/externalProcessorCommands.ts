@@ -1,10 +1,19 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { MetadataType, type TreeNode } from '../models/treeNode';
 import {
   buildExternalProcessor,
   dumpExternalProcessor,
   inspectExternalProcessorRoot,
 } from '../services/externalProcessor/externalProcessorService';
+import {
+  ExternalArtifactProjectService,
+} from '../services/externalProcessor/externalArtifactProjectService';
+import type {
+  CreateExternalArtifactProjectRequest,
+  ExternalArtifactKind,
+  ExternalArtifactProjectOutcome,
+} from '../services/externalProcessor/externalArtifactProjectTypes';
 import type {
   ExternalProcessorExecutionContext,
   ExternalProcessorOperationResult,
@@ -15,7 +24,141 @@ interface ContextChoice extends vscode.QuickPickItem {
   readonly contextKind: ExternalProcessorExecutionContext['kind'];
 }
 
+interface WorkspaceChoice extends vscode.QuickPickItem {
+  readonly folder: vscode.WorkspaceFolder;
+}
+
+interface ArtifactKindChoice extends vscode.QuickPickItem {
+  readonly artifactKind: ExternalArtifactKind;
+}
+
+interface ArtifactLanguageChoice extends vscode.QuickPickItem {
+  readonly language: CreateExternalArtifactProjectRequest['language'];
+}
+
+const externalArtifactProjectService = new ExternalArtifactProjectService();
+
 export function registerExternalProcessorCommands(context: vscode.ExtensionContext): void {
+  const createProjectCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.createExternalArtifactProject',
+    async () => {
+      const workspaceFolder = await pickWorkspaceFolder();
+      if (!workspaceFolder) {
+        return;
+      }
+      const kind = await vscode.window.showQuickPick<ArtifactKindChoice>(
+        [
+          { artifactKind: 'ExternalDataProcessor', label: 'Внешняя обработка (EPF)' },
+          { artifactKind: 'ExternalReport', label: 'Внешний отчёт (ERF)' },
+        ],
+        {
+          title: 'Новый внешний объект',
+          placeHolder: 'Выберите тип объекта',
+          canPickMany: false,
+          ignoreFocusOut: true,
+        }
+      );
+      if (!kind) {
+        return;
+      }
+      const name = await vscode.window.showInputBox({
+        title: kind.artifactKind === 'ExternalReport' ? 'Имя внешнего отчёта' : 'Имя внешней обработки',
+        prompt: 'Имя должно быть идентификатором 1С; каталог исходников получит суффикс _src',
+        ignoreFocusOut: true,
+        validateInput: validateArtifactNameInput,
+      });
+      if (name === undefined) {
+        return;
+      }
+      const language = await vscode.window.showQuickPick<ArtifactLanguageChoice>(
+        [
+          { language: 'ru', label: 'Русский' },
+          { language: 'en', label: 'Английский' },
+        ],
+        {
+          title: 'Язык синонима',
+          placeHolder: 'Выберите язык',
+          canPickMany: false,
+          ignoreFocusOut: true,
+        }
+      );
+      if (!language) {
+        return;
+      }
+
+      try {
+        const result = await externalArtifactProjectService.create({
+          workspaceRoot: workspaceFolder.uri.fsPath,
+          name: name.trim(),
+          kind: kind.artifactKind,
+          language: language.language,
+        });
+        void vscode.window.showInformationMessage(`Проект создан: ${result.projectDirectory}`);
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(result.rootXmlPath));
+      } catch (error) {
+        void vscode.window.showErrorMessage(`Не удалось создать проект: ${errorMessage(error)}`);
+      }
+    }
+  );
+
+  const exportEmbeddedCommand = vscode.commands.registerCommand(
+    '1c-metadata-tree.exportEmbeddedArtifact',
+    async (node?: TreeNode) => {
+      if (!node || (node.type !== MetadataType.DataProcessor && node.type !== MetadataType.Report)
+          || !node.filePath) {
+        void vscode.window.showErrorMessage('Выберите узел встроенной обработки или отчёта в дереве метаданных.');
+        return;
+      }
+      if (node.properties.objectBelonging || node.properties.extendedConfigurationObject) {
+        void vscode.window.showErrorMessage('Нельзя выгрузить заимствованный объект расширения как отдельный EPF/ERF.');
+        return;
+      }
+      if (hasExtensionAncestor(node)) {
+        void vscode.window.showErrorMessage('Нельзя выгрузить объект из конфигурации-расширения как отдельный EPF/ERF.');
+        return;
+      }
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(node.filePath));
+      if (!workspaceFolder) {
+        void vscode.window.showErrorMessage('Исходный объект должен находиться внутри открытого workspace.');
+        return;
+      }
+      const destinationValue = await vscode.window.showInputBox({
+        title: 'Выгрузка встроенного объекта',
+        prompt: 'Укажите новый каталог для внешнего XML-проекта',
+        value: path.join(workspaceFolder.uri.fsPath, `${node.name}_external_src`),
+        ignoreFocusOut: true,
+        validateInput: (value) => value.trim() ? undefined : 'Путь к каталогу обязателен.',
+      });
+      if (destinationValue === undefined) {
+        return;
+      }
+      const destinationDirectory = path.isAbsolute(destinationValue)
+        ? path.resolve(destinationValue)
+        : path.resolve(workspaceFolder.uri.fsPath, destinationValue);
+
+      let exported: ExternalArtifactProjectOutcome;
+      try {
+        exported = await externalArtifactProjectService.exportEmbedded({
+          workspaceRoot: workspaceFolder.uri.fsPath,
+          sourceRootXmlPath: node.filePath,
+          destinationDirectory,
+        });
+      } catch (error) {
+        void vscode.window.showErrorMessage(`Не удалось выгрузить встроенный объект: ${errorMessage(error)}`);
+        return;
+      }
+
+      const shouldBuild = await vscode.window.showInformationMessage(
+        `XML-проект создан: ${exported.projectDirectory}`,
+        'Собрать EPF/ERF'
+      );
+      if (shouldBuild !== 'Собрать EPF/ERF') {
+        return;
+      }
+      await buildExportedArtifact(exported.rootXmlPath);
+    }
+  );
+
   const dumpCommand = vscode.commands.registerCommand(
     '1c-metadata-tree.dumpExternalProcessor',
     async (uri?: vscode.Uri) => {
@@ -134,7 +277,83 @@ export function registerExternalProcessorCommands(context: vscode.ExtensionConte
     }
   );
 
-  context.subscriptions.push(dumpCommand, buildCommand);
+  context.subscriptions.push(createProjectCommand, exportEmbeddedCommand, dumpCommand, buildCommand);
+}
+
+async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) {
+    void vscode.window.showErrorMessage('Откройте папку workspace, чтобы создать XML-проект внешнего объекта.');
+    return undefined;
+  }
+  if (folders.length === 1) {
+    return folders[0];
+  }
+  const choice = await vscode.window.showQuickPick<WorkspaceChoice>(
+    folders.map((folder) => ({ folder, label: folder.name, description: folder.uri.fsPath })),
+    { title: 'Workspace для нового проекта', placeHolder: 'Выберите папку', ignoreFocusOut: true }
+  );
+  return choice?.folder;
+}
+
+function hasExtensionAncestor(node: TreeNode): boolean {
+  let ancestor = node.parent;
+  while (ancestor) {
+    if (typeof ancestor.properties.extensionPurpose === 'string'
+        || ancestor.properties.isExtension === true
+        || ancestor.type === MetadataType.Extension) {
+      return true;
+    }
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
+
+function validateArtifactNameInput(value: string): string | undefined {
+  return /^[\p{L}_][\p{L}\p{N}_]{0,79}$/u.test(value.trim())
+    ? undefined
+    : 'Имя должно быть идентификатором 1С длиной до 80 символов.';
+}
+
+async function buildExportedArtifact(rootXmlPath: string): Promise<void> {
+  let root: Awaited<ReturnType<typeof inspectExternalProcessorRoot>>;
+  try {
+    root = await inspectExternalProcessorRoot(rootXmlPath);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `XML-проект сохранён, но не удалось определить тип внешнего объекта: ${errorMessage(error)}`
+    );
+    return;
+  }
+  const destination = await vscode.window.showSaveDialog({
+    title: root.kind === 'ExternalReport' ? 'Собрать внешний отчёт' : 'Собрать внешнюю обработку',
+    defaultUri: vscode.Uri.file(root.defaultDestinationPath),
+    filters: root.extension === '.erf'
+      ? { 'Внешний отчёт 1С': ['erf'] }
+      : { 'Внешняя обработка 1С': ['epf'] },
+    saveLabel: 'Собрать',
+  });
+  if (!destination) {
+    return;
+  }
+  const executionContext = await pickExecutionContext();
+  if (!executionContext) {
+    return;
+  }
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: root.kind === 'ExternalReport' ? 'Сборка внешнего отчёта…' : 'Сборка внешней обработки…',
+      cancellable: true,
+    },
+    (_progress, token) => buildExternalProcessor({
+      rootXmlPath,
+      destinationPath: destination.fsPath,
+      context: executionContext,
+      cancellation: toStreamCancellation(token),
+    })
+  );
+  showOperationResult(result, 'Внешний файл собран');
 }
 
 async function pickExternalFile(): Promise<vscode.Uri | undefined> {

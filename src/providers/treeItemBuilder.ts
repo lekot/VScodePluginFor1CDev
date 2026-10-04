@@ -108,6 +108,15 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
       // deploy-selected-objects context menu commands become visible.
       treeItem.contextValue = `${treeItem.contextValue} bindingBound`;
     }
+    if (
+      (element.type === MetadataType.DataProcessor || element.type === MetadataType.Report)
+      && element.filePath
+      && !props?.objectBelonging
+      && !props?.extendedConfigurationObject
+      && !hasExtensionAncestor(element)
+    ) {
+      treeItem.contextValue = appendContextTokens(treeItem.contextValue, ['externalArtifactSource']);
+    }
     if (options.supportDecoration?.kind === 'object') {
       treeItem.contextValue = appendContextTokens(
         treeItem.contextValue,
@@ -262,6 +271,19 @@ export function buildTreeItem(element: TreeNode, options: TreeItemBuildOptions):
     // Return minimal tree item on error
     return new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.None);
   }
+}
+
+function hasExtensionAncestor(element: TreeNode): boolean {
+  let ancestor = element.parent;
+  while (ancestor) {
+    if (typeof ancestor.properties.extensionPurpose === 'string'
+        || ancestor.properties.isExtension === true
+        || ancestor.type === MetadataType.Extension) {
+      return true;
+    }
+    ancestor = ancestor.parent;
+  }
+  return false;
 }
 
 function appendContextTokens(

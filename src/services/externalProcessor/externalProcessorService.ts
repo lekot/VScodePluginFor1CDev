@@ -485,6 +485,19 @@ export class ExternalProcessorService {
       );
     }
 
+    if (hasDocumentFormatErrorDiagnostic(outcome.combinedLog)) {
+      const cleanupError = await this.cleanup(stagingRoot);
+      return failed(
+        cleanupError ? 'EXTERNAL_IO_FAILED' : 'CONFIGURATOR_FAILED',
+        cleanupError
+          ? `Configurator reported document format errors and staging cleanup failed: ${cleanupError}`
+          : 'Конфигуратор сообщил об ошибке формата документа; артефакт не опубликован.',
+        false,
+        true,
+        outcome.combinedLog
+      );
+    }
+
     const postcondition = await this.verifyStaging(description, stagingArtifact);
     if (postcondition.state !== 'completed') {
       if (postcondition.state === 'inDoubt') {
@@ -1067,6 +1080,11 @@ function hasUnsafeTermination(outcome: ConfiguratorProcessOutcome): boolean {
       !outcome.termination.terminated
       || outcome.termination.survivingPids.length > 0
     );
+}
+
+function hasDocumentFormatErrorDiagnostic(log: string): boolean {
+  return /(?:ошибка\s+формата\s+документа|document\s+format\s+error|error\s+in\s+document\s+format)/iu
+    .test(log);
 }
 
 function dependencyFailure(
