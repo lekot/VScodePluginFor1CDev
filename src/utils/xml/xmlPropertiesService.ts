@@ -180,7 +180,10 @@ function flattenProperties(properties: Record<string, unknown>): Record<string, 
       continue;
     }
 
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (key === 'Source' && value && typeof value === 'object') {
+      // Source uses ObjectKind values, not the reference-type grammar handled by TypeParser.
+      flattened[key] = value;
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
       const obj = value as Record<string, unknown>;
       if ('#text' in obj) {
         flattened[key] = obj['#text'];

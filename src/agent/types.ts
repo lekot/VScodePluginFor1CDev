@@ -216,6 +216,25 @@ export interface GetTypeResult {
     rawXml: string;
 }
 
+export interface GetSourceParams extends ConfigurationScopedParams {
+    /** Root EventSubscription path, for example 'EventSubscription.ПодпискаНаСобытие'. */
+    path: string;
+}
+
+export interface SetSourceParams extends ConfigurationScopedParams {
+    /** Root EventSubscription path, for example 'EventSubscription.ПодпискаНаСобытие'. */
+    path: string;
+    /** Complete replacement list of cfg:ObjectKind[.Name] types; an empty array clears Source. */
+    types: string[];
+}
+
+export interface GetSourceResult {
+    /** Parsed Source entries in canonical cfg:ObjectKind[.Name] form. */
+    types: string[];
+    /** XML fragment for the Source property. */
+    rawXml: string;
+}
+
 export interface CotPathParams extends ConfigurationScopedParams {
     /** Agent path: 'ChartOfCharacteristicTypes.Name' or plain 'Name' */
     path: string;

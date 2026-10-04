@@ -38,6 +38,8 @@ import { AgentPathError, resolveAgentPath } from './agentPathResolver';
 import { XMLWriter } from '../utils/XMLWriter';
 import { TypeParser } from '../parsers/typeParser';
 import { TypeSerializer } from '../serializers/typeSerializer';
+import { ObjectTypeParser } from '../parsers/objectTypeParser';
+import { ObjectTypeSerializer } from '../serializers/objectTypeSerializer';
 import type {
     AgentResult,
     CreateObjectParams,
@@ -57,6 +59,9 @@ import type {
     GetTypeParams,
     SetTypeParams,
     GetTypeResult,
+    GetSourceParams,
+    SetSourceParams,
+    GetSourceResult,
 } from './types';
 
 // ─── XML-парсер для Configuration.xml (без preserveOrder — нам нужен простой доступ) ───
@@ -975,6 +980,83 @@ export class AgentOperations {
         } catch (err) {
             return mutationFailure(err);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // getSource / setSource (EventSubscription)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async getSource(params: GetSourceParams): Promise<AgentResult<GetSourceResult>> {
+        try {
+            const resolved = await this.resolveEventSubscriptionPath(params.path);
+            const properties = await XMLWriter.readProperties(resolved.filePath);
+            const source = properties['Source'];
+            if (source === undefined || source === null || source === '') {
+                return { success: true, data: { types: [], rawXml: '' } };
+            }
+
+            let definition: ReturnType<typeof ObjectTypeParser.parseStrict>;
+            if (typeof source === 'string') {
+                if (!source.trim().startsWith('<')) {
+                    throw new Error('Source имеет неожиданное строковое значение.');
+                }
+                definition = ObjectTypeParser.parseStrict(source);
+            } else {
+                definition = ObjectTypeParser.parseStrictFromObject(source);
+            }
+            const rawXml = typeof source === 'string' && source.trim().startsWith('<')
+                ? source
+                : ObjectTypeSerializer.serialize(definition);
+            const types = definition.types.map(({ objectKind, objectName }) => objectName
+                ? `cfg:${objectKind}.${objectName}`
+                : `cfg:${objectKind}`);
+            return { success: true, data: { types, rawXml } };
+        } catch (err) {
+            return mutationFailure(err);
+        }
+    }
+
+    async setSource(params: SetSourceParams): Promise<AgentResult> {
+        try {
+            const resolved = await this.resolveEventSubscriptionPath(params.path);
+            if (!Array.isArray(params.types)) {
+                throw new Error('Parameter types must be an array of cfg:ObjectKind[.Name] strings.');
+            }
+
+            // Parse the entire request before touching the file so an invalid member cannot cause a partial update.
+            const definition = {
+                types: params.types.map((value) => {
+                    if (typeof value !== 'string') {
+                        throw new Error('Every Source type must be a string in cfg:ObjectKind[.Name] format.');
+                    }
+                    return ObjectTypeParser.parseSingleType(value);
+                }),
+            };
+            await assertCfeGenericMutationAllowed(resolved.filePath, 'update');
+            try {
+                await fs.promises.access(resolved.filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${resolved.filePath}` };
+            }
+
+            await XMLWriter.writeProperties(resolved.filePath, {
+                Source: ObjectTypeSerializer.serialize(definition),
+            });
+            return { success: true };
+        } catch (err) {
+            return mutationFailure(err);
+        }
+    }
+
+    private async resolveEventSubscriptionPath(agentPath: string): Promise<ReturnType<typeof resolveAgentPath>> {
+        const resolved = await this.resolveContainedAgentPath(agentPath);
+        if (agentPath.split('.').length !== 2 || resolved.rootTag !== 'EventSubscription') {
+            throw new AgentPathError(
+                'INVALID_AGENT_PATH',
+                `Source supports only an EventSubscription root path (EventSubscription.Name): "${agentPath}".`,
+            );
+        }
+        return resolved;
     }
 
     private async resolveContainedAgentPath(agentPath: string): Promise<ReturnType<typeof resolveAgentPath>> {

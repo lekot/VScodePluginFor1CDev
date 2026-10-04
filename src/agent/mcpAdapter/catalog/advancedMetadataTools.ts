@@ -1,12 +1,40 @@
 import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { READ_CLOSED, WRITE_CLOSED } from './types';
-import { agentPath, configurationScopeShape, metadataType, pathInput, stringArray } from './schemas';
+import { ObjectTypeParser } from '../../../parsers/objectTypeParser';
+import { agentPath, configurationScopeShape, metadataType, pathInput, rootObjectPath, stringArray } from './schemas';
 
 const setTypeInput = z.strictObject({
   ...configurationScopeShape,
   path: agentPath,
   types: z.array(metadataType),
+});
+
+const sourceType = z.string().refine((value) => {
+  try {
+    ObjectTypeParser.parseSingleType(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, { message: 'must be a valid cfg:ObjectKind[.Name] Source type' });
+
+const eventSubscriptionSourcePath = z.string().refine((value) => {
+  const segments = value.split('.');
+  return segments.length === 2
+    && segments[0] === 'EventSubscription'
+    && rootObjectPath.safeParse(value).success;
+}, { message: 'must have the form EventSubscription.Name' });
+
+const sourceInput = z.strictObject({
+  ...configurationScopeShape,
+  path: eventSubscriptionSourcePath,
+});
+
+const setSourceInput = z.strictObject({
+  ...configurationScopeShape,
+  path: eventSubscriptionSourcePath,
+  types: z.array(sourceType),
 });
 
 const predefinedPathInput = z.strictObject({
@@ -69,6 +97,20 @@ export const ADVANCED_METADATA_TOOLS: readonly McpToolDefinition[] = [
     description: 'Replace the type declaration of a metadata property or defined type.',
     command: '1c-metadata-tree.agent.setType',
     inputSchema: setTypeInput,
+    annotations: WRITE_CLOSED,
+  },
+  {
+    name: 'cdt_get_event_subscription_source',
+    description: 'Read the complete Source object-type list of an event subscription.',
+    command: '1c-metadata-tree.agent.getSource',
+    inputSchema: sourceInput,
+    annotations: READ_CLOSED,
+  },
+  {
+    name: 'cdt_set_event_subscription_source',
+    description: 'Replace the complete Source object-type list of an event subscription; an empty list clears it.',
+    command: '1c-metadata-tree.agent.setSource',
+    inputSchema: setSourceInput,
     annotations: WRITE_CLOSED,
   },
   {

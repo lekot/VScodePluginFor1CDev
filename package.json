@@ -717,6 +717,16 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.getSource",
+        "title": "Agent: Получить источники подписки на событие",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.setSource",
+        "title": "Agent: Установить источники подписки на событие",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.deploySelectedObjects",
         "title": "Agent: Раскатка выбранных файлов",
         "category": "CDT 41"
