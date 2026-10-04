@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **96** runtime-команд Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **97** runtime-команд Agent API для программного
 управления метаданными, Хранилищем конфигурации, фоновыми задачами, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **96 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **97 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,11 +58,11 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 96 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 97 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 96 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 97 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
@@ -216,6 +216,13 @@ MCP endpoint через `mcp.url`.
 | `Тип.Имя.Attribute.Реквизит` | `Catalog.Товары.Attribute.Артикул` | Реквизит объекта |
 | `Тип.Имя.TabularSection.ТЧ` | `Document.Заказ.TabularSection.Состав` | Табличная часть |
 | `Тип.Имя.TabularSection.ТЧ.Attribute.Колонка` | `Document.Заказ.TabularSection.Состав.Attribute.Количество` | Колонка ТЧ |
+| `HTTPService.Имя.URLTemplate.Шаблон.Method.Метод` | `HTTPService.Api.URLTemplate.Items.Method.Get` | Метод выбранного URL-шаблона |
+| `WebService.Имя.Operation.Операция.Parameter.Параметр` | `WebService.Api.Operation.Find.Parameter.Query` | Параметр выбранной операции |
+| `Тип.Имя.ChildType.ДочернийОбъект` | `Task.Tasks.AddressingAttribute.Performer` | Именованный inline-объект |
+
+Поддержанные именованные inline children: HTTPService → URLTemplate → Method; WebService → Operation → Parameter; IntegrationService → IntegrationServiceChannel; Task → AddressingAttribute; ChartOfAccounts → AccountingFlag/ExtDimensionAccountingFlag; DocumentJournal → Column; Sequence → Dimension. Вложенный путь состоит из пар type/name и разрешается внутри `ChildObjects` непосредственного родителя. Отсутствующий или неоднозначный путь завершается ошибкой до записи. UI id узла не используется как XML selector.
+
+Designer- и EDT-парсеры показывают эти узлы в том же дереве и используют общую палитру свойств. Сохранение передаёт полный selector узла в XML writer; отдельные редакторы для inline children не создаются.
 
 Тип — английское имя rootTag: `Catalog`, `Document`, `Enum`, `InformationRegister`, `CommonModule`, `Subsystem`, `Report`, `DataProcessor`, `ChartOfAccounts`, `ChartOfCharacteristicTypes`, `AccumulationRegister`, `AccountingRegister`, `CalculationRegister`, `BusinessProcess`, `Task`, `ExchangePlan`, `Constant`, `Role`, `ScheduledJob`, `HTTPService`, `WebService` и др. (46 типов).
 
@@ -365,7 +372,7 @@ uuid: a1b2c3d4-...
 
 #### `1c-metadata-tree.agent.getProperties`
 
-Получить все свойства объекта как JSON (включая дефолтные).
+Получить все свойства корневого или выбранного вложенного объекта как JSON (включая дефолтные).
 
 ```json
 {
@@ -376,6 +383,14 @@ uuid: a1b2c3d4-...
 Возвращает: `{ properties: Record<string, unknown>, ownership?, sourceUuid? }`. В основной
 конфигурации поля CFE отсутствуют; в CFE `ownership` равен `own` либо `adopted`, а `sourceUuid`
 присутствует только для заимствованного объекта.
+
+#### `1c-metadata-tree.agent.listChildren`
+
+Перечислить поддержанные именованные inline-объекты из `ChildObjects` для указанного root или nested dot-path. Результат: `{ children: [{ type, name, path }] }`; `path` можно передать в `getProperties`/`setProperties`.
+
+```json
+{ "path": "HTTPService.Api.URLTemplate.Items" }
+```
 
 #### `1c-metadata-tree.agent.listObjects`
 
@@ -397,7 +412,7 @@ uuid: a1b2c3d4-...
 
 #### `1c-metadata-tree.agent.setProperties`
 
-Изменить свойства существующего объекта. Нельзя менять `Name` (используйте `renameObject`).
+Изменить свойства корневого или выбранного вложенного объекта. Нельзя менять `Name` (используйте `renameObject`).
 
 ```json
 {

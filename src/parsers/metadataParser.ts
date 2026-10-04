@@ -120,6 +120,7 @@ export class MetadataParser {
       properties: { ...node.properties },
       filePath: node.filePath,
       parentFilePath: node.parentFilePath,
+      nestedPath: node.nestedPath?.map((segment) => ({ ...segment })),
       parent,
     };
     if (node.children) {

@@ -20,6 +20,7 @@ import type {
     CreateObjectParams,
     GetYamlParams,
     ListObjectsParams,
+    ListChildrenParams,
     GetPropertiesParams,
     AddAttributeParams,
     AddTabularSectionParams,
@@ -466,6 +467,12 @@ export function registerAgentCommands(
             return runForConfiguration(params, 'read', undefined, (configRoot) =>
                 new AgentOperations(configRoot).listObjects(params));
         }
+    );
+
+    const listChildrenCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.listChildren',
+        async (params: ListChildrenParams) => runForConfiguration(params, 'read', undefined, (configRoot) =>
+            new AgentOperations(configRoot).listChildren(params)),
     );
 
     // ─── 1c-metadata-tree.agent.getProperties ────────────────────────────────
@@ -1279,7 +1286,7 @@ export function registerAgentCommands(
         setRoleRightsCommand,
         cfeListProjectsCommand, cfeGetContextCommand, cfeValidateCommand, cfeCreateProjectCommand, cfeBorrowObjectCommand,
         cfeCreateInterceptorCommand, cfeCreateOwnFormCommand, cfeBorrowFormCommand, cfeExtendFormCommand,
-        createObjectCommand, getYamlCommand, listObjectsCommand, getPropertiesCommand,
+        createObjectCommand, getYamlCommand, listObjectsCommand, listChildrenCommand, getPropertiesCommand,
         addAttributeCommand, addTabularSectionCommand, addTabularSectionColumnCommand,
         deleteAttributeCommand, deleteTabularSectionCommand, deleteObjectCommand,
         renameObjectCommand, setPropertiesCommand,

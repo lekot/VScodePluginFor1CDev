@@ -93,6 +93,13 @@ export const METADATA_TOOLS: readonly McpToolDefinition[] = [
     annotations: READ_CLOSED,
   },
   {
+    name: 'cdt_list_children',
+    description: 'List supported named inline metadata children under a root or nested Agent API path.',
+    command: '1c-metadata-tree.agent.listChildren',
+    inputSchema: pathInput,
+    annotations: READ_CLOSED,
+  },
+  {
     name: 'cdt_get_properties',
     description: 'Read metadata object properties by Agent API path.',
     command: '1c-metadata-tree.agent.getProperties',

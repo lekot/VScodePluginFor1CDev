@@ -52,6 +52,21 @@ suite('agentPathResolver', () => {
         assert.strictEqual(result.tabularSection, 'Y');
         assert.strictEqual(result.nestedType, 'Attribute');
         assert.strictEqual(result.nestedName, 'Z');
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'Catalog', name: 'X' },
+            { type: 'TabularSection', name: 'Y' },
+            { type: 'Attribute', name: 'Z' },
+        ]);
+    });
+
+    test('HTTPService.X.URLTemplate.Y.Method.Z builds a full selector without a tabular scope', () => {
+        const result = resolveAgentPath(CONFIG_ROOT, 'HTTPService.X.URLTemplate.Y.Method.Z');
+        assert.strictEqual(result.tabularSection, undefined);
+        assert.deepStrictEqual(result.nestedPath, [
+            { type: 'HTTPService', name: 'X' },
+            { type: 'URLTemplate', name: 'Y' },
+            { type: 'Method', name: 'Z' },
+        ]);
     });
 
     test('Invalid path with 1 segment → throws', () => {

@@ -4,7 +4,7 @@
 
 Дать стандартному MCP-клиенту полный доступ к существующему Agent API расширения без дублирования предметной логики. MCP является новым транспортом над теми же VS Code Agent-командами: каждый профильный dispatcher валидирует выбранную операцию и вызывает ровно одну команду через `vscode.commands.executeCommand`. `cdt_catalog` описывает закрытый каталог и команду не вызывает. Legacy Agent Bridge `/command` остаётся совместимым.
 
-Нормативная граница Agent API — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. MCP по умолчанию публикует семь компактных tools; закрытый каталог содержит 96 операций: 85 ранее зарегистрированных операций, 3 task-команды и 8 repository-команд.
+Нормативная граница Agent API — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. MCP по умолчанию публикует семь компактных tools; закрытый каталог содержит 97 операций: 86 core-операций, 3 task-команды и 8 repository-команд.
 
 Четыре UI-команды расширения не являются Agent API, не возвращают `AgentResult` и находятся вне scope:
 
@@ -27,9 +27,9 @@
 | `cdt_verify_live` | `verify_live` | Проверка внешней системы |
 | `cdt_catalog` | — | Перечень операций и описание одной схемы |
 
-Первые шесть принимают strict input `{ operation, arguments }`. `operation` — имя операции из полного каталога и допустимо только в своём profile; `arguments` валидируется исходной strict Zod-схемой операции до dispatch. Ошибка профиля или аргументов не вызывает Agent-команду. `cdt_catalog({})` возвращает имена, описания и profile всех 96 операций; `cdt_catalog({ operation })` возвращает JSON Schema выбранной операции. Refinements, которые невозможно выразить стандартной JSON Schema, остаются runtime-проверкой Agent/Zod операции. Каталог read-only и closed-world.
+Первые шесть принимают strict input `{ operation, arguments }`. `operation` — имя операции из полного каталога и допустимо только в своём profile; `arguments` валидируется исходной strict Zod-схемой операции до dispatch. Ошибка профиля или аргументов не вызывает Agent-команду. `cdt_catalog({})` возвращает имена, описания и profile всех 97 операций; `cdt_catalog({ operation })` возвращает JSON Schema выбранной операции. Refinements, которые невозможно выразить стандартной JSON Schema, остаются runtime-проверкой Agent/Zod операции. Каталог read-only и closed-world.
 
-Переменная среды `CDT_MCP_LEGACY_TOOLS=1` дополнительно регистрирует все 96 индивидуальных operation tool с исходными схемами. По умолчанию эти индивидуальные имена не публикуются. Direct Agent API и legacy Agent Bridge `/command` от этого флага не зависят.
+Переменная среды `CDT_MCP_LEGACY_TOOLS=1` дополнительно регистрирует все 97 индивидуальных operation tool с исходными схемами. По умолчанию эти индивидуальные имена не публикуются. Direct Agent API и legacy Agent Bridge `/command` от этого флага не зависят.
 
 Annotations профилей совпадают с исходной классификацией операций: `read` = T/F/T/F, `write` = F/T/F/F, `write_idempotent` = F/T/T/F, `read_live` = T/F/T/T, `write_live` = F/T/F/T, `verify_live` = F/F/F/T. Для `cdt_catalog` используется `read` (T/F/T/F).
 
@@ -39,12 +39,15 @@ Annotations профилей совпадают с исходной класси
 
 ### Конфигурации и metadata CRUD
 
+`cdt_get_properties`, `cdt_set_properties` и `cdt_list_children` передают Agent API path как последовательность type/name-пар от корневого объекта к выбранному вложенному элементу. Поддержаны HTTPService → URLTemplate → Method, WebService → Operation → Parameter, IntegrationService → IntegrationServiceChannel, Task → AddressingAttribute, ChartOfAccounts → AccountingFlag/ExtDimensionAccountingFlag, DocumentJournal → Column и Sequence → Dimension; legacy пути атрибутов и колонок табличных частей сохраняются. `listChildren` только читает каталог дочерних элементов и возвращает `{ children: [{ type, name, path }] }`; MCP не читает и не меняет XML напрямую. Повторное имя дочернего элемента разрешается только в пределах выбранного родителя; пропущенный или неоднозначный путь возвращает ошибку до записи.
+
 | Tool | Agent command | R/D/I/O |
 |---|---|---|
 | `cdt_list_configurations` | `1c-metadata-tree.agent.listConfigurations` | T/F/T/F |
 | `cdt_create_object` | `1c-metadata-tree.agent.createObject` | F/T/F/F |
 | `cdt_get_yaml` | `1c-metadata-tree.agent.getYaml` | T/F/T/F |
 | `cdt_list_objects` | `1c-metadata-tree.agent.listObjects` | T/F/T/F |
+| `cdt_list_children` | `1c-metadata-tree.agent.listChildren` | T/F/T/F |
 | `cdt_get_properties` | `1c-metadata-tree.agent.getProperties` | T/F/T/F |
 | `cdt_add_attribute` | `1c-metadata-tree.agent.addAttribute` | F/T/F/F |
 | `cdt_add_tabular_section` | `1c-metadata-tree.agent.addTabularSection` | F/T/F/F |
@@ -350,10 +353,10 @@ Stop: запрет новых запросов → закрытие MCP sessions
 ## Критерии приёмки
 
 1. Official SDK client проходит `initialize → tools/list → tools/call → DELETE session` по discovery URL и Bearer token.
-2. Default `tools/list` содержит ровно семь уникальных compact tools; opt-in legacy добавляет 96 уникальных individual tools.
-3. `MCP_OPERATION_CATALOG` содержит 96 операций и точно покрывает все зарегистрированные Agent command IDs. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
+2. Default `tools/list` содержит ровно семь уникальных compact tools; opt-in legacy добавляет 97 уникальных individual tools.
+3. `MCP_OPERATION_CATALOG` содержит 97 операций и точно покрывает все зарегистрированные Agent command IDs. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
 4. Четыре перечисленные UI-команды отсутствуют в MCP catalog.
-5. Для всех 96 операций проверены имя, command id, strict schema, refinements и статические annotations; `cdt_catalog` сериализует JSON Schema каждой операции.
+5. Для всех 97 операций проверены имя, command id, strict schema, refinements и статические annotations; `cdt_catalog` сериализует JSON Schema каждой операции.
 6. MCP и прямой Agent-вызов дают семантически одинаковый `AgentResult`; invalid outer/inner input не dispatch-ится.
 7. Мутации проходят через существующие очереди Agent API; MCP не создаёт обходной write path.
 8. `debug.start`/`startFromBinding` не раскрывают connection strings или полный launch config ни в логах, ни в неуспешном `AgentResult.error`; отдельные тесты покрывают оба канала.

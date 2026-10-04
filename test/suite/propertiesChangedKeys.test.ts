@@ -252,6 +252,84 @@ suite('propertiesProvider changedKeys logic', () => {
     }
   });
 
+  test('saveProperties scopes HTTP and Web inline children through the full nestedPath', async () => {
+    const fixtureDir = path.join(__dirname, '..', 'fixtures', 'metadata-properties');
+    const cases: Array<{
+      fixture: string;
+      targetFile: string;
+      type: MetadataType;
+      name: string;
+      nestedPath: Array<{ type: string; name: string }>;
+      oldValue: string;
+      newValue: string;
+      propertyName: string;
+      verifyTag: string;
+    }> = [
+      {
+        fixture: 'HTTPService.xml',
+        targetFile: 'temp-properties-save-http.xml',
+        type: MetadataType.Method,
+        name: 'Get',
+        nestedPath: [
+          { type: 'HTTPService', name: 'Api' },
+          { type: 'URLTemplate', name: 'SecondRoute' },
+          { type: 'Method', name: 'Get' },
+        ],
+        oldValue: 'SecondHandler',
+        newValue: 'SavedSecondHandler',
+        propertyName: 'Handler',
+        verifyTag: 'Handler',
+      },
+      {
+        fixture: 'WebService.xml',
+        targetFile: 'temp-properties-save-web.xml',
+        type: MetadataType.Parameter,
+        name: 'Result',
+        nestedPath: [
+          { type: 'WebService', name: 'PublicApi' },
+          { type: 'Operation', name: 'SecondOperation' },
+          { type: 'Parameter', name: 'Result' },
+        ],
+        oldValue: 'xs:boolean',
+        newValue: 'xs:int',
+        propertyName: 'XDTOValueType',
+        verifyTag: 'XDTOValueType',
+      },
+    ];
+    const createdPaths: string[] = [];
+
+    try {
+      for (const item of cases) {
+        const targetPath = path.join(fixtureDir, item.targetFile);
+        createdPaths.push(targetPath);
+        fs.copyFileSync(path.join(fixtureDir, item.fixture), targetPath);
+        const node: TreeNode = {
+          id: `inline.${item.type}.${item.name}`,
+          name: item.name,
+          type: item.type,
+          properties: { Name: item.name, [item.propertyName]: item.oldValue },
+          parentFilePath: targetPath,
+          nestedPath: item.nestedPath,
+        };
+
+        await saveProperties(node, { ...node.properties, [item.propertyName]: item.newValue }, mockMsgCtx);
+
+        const xml = fs.readFileSync(targetPath, 'utf8');
+        assert.deepStrictEqual(
+          Array.from(xml.matchAll(new RegExp(`<${item.verifyTag}>([^<]*)</${item.verifyTag}>`, 'g')), (match) => match[1]),
+          item.fixture === 'HTTPService.xml'
+            ? ['FirstHandler', item.newValue]
+            : ['xs:string', item.newValue],
+          `${item.fixture} must change only the selected child`,
+        );
+      }
+    } finally {
+      for (const targetPath of createdPaths) {
+        if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+      }
+    }
+  });
+
   test('saveProperties with display string Type does NOT overwrite structured Type', async () => {
     const fixturesPath = path.join(__dirname, '../../../test/fixtures');
     const fixturePath = path.join(fixturesPath, 'designer-config/Catalogs/TestCatalogWithPasswordAttribute.xml');

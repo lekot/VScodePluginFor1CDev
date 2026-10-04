@@ -25,6 +25,8 @@ import { getDefaultPropertiesForRootTag } from '../constants/metadataDefaultValu
 import { MetadataType } from '../models/treeNode';
 import { injectInternalInfoIntoMetadataXml } from './xml/internalInfoGenerator';
 import { normalizeMetaDataObjectRoot } from './xml/metaDataObjectRootNormalizer';
+import type { MetadataObjectPathSegment } from '../types/metadataObjectPath';
+import { findMetadataElementByPath, listNamedMetadataChildren } from './xml/nestedMetadataObjects';
 import {
   requireDocumentWriteFormatProfile,
   requireWriteFormatProfile,
@@ -586,14 +588,30 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
   static async readNestedElementProperties(
     filePath: string,
     elementType: string,
-    elementName: string
+    elementName: string,
+    options?: WriteNestedElementOptions
   ): Promise<Record<string, unknown>> {
     const { parsed } = await this.readUtf8AndParse(filePath);
-    const element = this.findNestedElement(parsed, elementType, elementName);
+    const element = options?.nestedPath
+      ? findMetadataElementByPath(parsed, options.nestedPath)
+      : this.findNestedElement(parsed, elementType, elementName);
     if (!element) {
       throw new XmlReadError(`Nested element ${elementType} '${elementName}' not found in ${filePath}`);
     }
     return extractProperties(element);
+  }
+
+  /** List supported named inline ChildObjects under an exact metadata selector. */
+  static async listNestedMetadataChildren(
+    filePath: string,
+    parentPath: readonly MetadataObjectPathSegment[],
+  ): Promise<Array<{ type: string; name: string; path: MetadataObjectPathSegment[] }>> {
+    const { parsed } = await this.readUtf8AndParse(filePath);
+    return listNamedMetadataChildren(parsed, parentPath).map((child) => ({
+      type: child.type,
+      name: child.name,
+      path: [...parentPath.map((segment) => ({ ...segment })), { type: child.type, name: child.name }],
+    }));
   }
 
   /** Read the native content of a <Type> property without UI display formatting. */
@@ -601,11 +619,14 @@ ${ROOT_TAGS_WITHOUT_CHILDOBJECTS.has(rootTag) ? '' : '\t\t<ChildObjects/>\n'}\t<
     filePath: string,
     nestedElementType?: string,
     nestedElementName?: string,
-    scopedTabularSectionName?: string
+    scopedTabularSectionName?: string,
+    nestedPath?: readonly MetadataObjectPathSegment[],
   ): Promise<unknown> {
     const { parsed } = await this.readUtf8AndParse(filePath);
-    const target = nestedElementType && nestedElementName
-      ? this.findNestedElement(parsed, nestedElementType, nestedElementName, scopedTabularSectionName)
+    const target = nestedPath
+      ? findMetadataElementByPath(parsed, nestedPath)
+      : nestedElementType && nestedElementName
+        ? this.findNestedElement(parsed, nestedElementType, nestedElementName, scopedTabularSectionName)
       : parsed;
     if (!target) {
       throw new XmlReadError(

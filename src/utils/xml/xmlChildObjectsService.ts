@@ -29,6 +29,7 @@ import { xmlParser } from './xmlCore';
 import { buildXmlString } from './xmlFileIo';
 import { type WriteNestedElementOptions, type NestedAttributeScopeState } from './xmlChildObjectsConstants';
 import { isStructuredTypePropertyValue } from '../../serializers/typeSerializer';
+import { findMetadataElementByPath } from './nestedMetadataObjects';
 
 // ---------------------------------------------------------------------------
 // Internal scope-state helpers
@@ -791,6 +792,54 @@ export function buildUpdatedNestedXml(
   options?: WriteNestedElementOptions
 ): string {
   const parsed = xmlParser.parse(xmlContent);
+  if (options?.nestedPath) {
+    const target = findMetadataElementByPath(parsed, options.nestedPath);
+    const propertiesEntry = Object.entries(target).find(([key]) => key === 'Properties' || key.endsWith(':Properties'));
+    if (!propertiesEntry || !propertiesEntry[1] || typeof propertiesEntry[1] !== 'object') {
+      throw new Error(`Properties not found for nested selector "${options.nestedPath.map((item) => `${item.type}.${item.name}`).join('.')}".`);
+    }
+    const [propertiesKey, rawProperties] = propertiesEntry;
+    const updateProperties = (value: unknown): unknown => {
+      if (Array.isArray(value)) {
+        return value.map((item) => item && typeof item === 'object'
+          ? updateNestedElementPropertiesObject(item as Record<string, unknown>, properties, changedKeys)
+          : item);
+      }
+      if (value && typeof value === 'object') {
+        return updateNestedElementPropertiesObject(value as Record<string, unknown>, properties, changedKeys);
+      }
+      throw new Error('Nested Properties has an invalid XML structure.');
+    };
+    const updatedTarget = { ...target, [propertiesKey]: updateProperties(rawProperties) };
+    let replaced = 0;
+    const replaceTarget = (value: unknown): unknown => {
+      if (value === target) {
+        replaced += 1;
+        return updatedTarget;
+      }
+      if (Array.isArray(value)) {
+        return value.map(replaceTarget);
+      }
+      if (!value || typeof value !== 'object') {
+        return value;
+      }
+      const record = value as Record<string, unknown>;
+      let changed = false;
+      const result: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(record)) {
+        const updatedChild = replaceTarget(child);
+        result[key] = updatedChild;
+        changed ||= updatedChild !== child;
+      }
+      return changed ? result : value;
+    };
+    const updated = replaceTarget(parsed);
+    if (replaced !== 1) {
+      throw new Error(`Nested selector matched ${replaced} XML nodes; expected exactly one.`);
+    }
+    return buildXmlString(updated);
+  }
+
   const scopeState = buildNestedAttributeScopeState(elementType, options);
   let updated = updateNestedElementInStructure(
     parsed,

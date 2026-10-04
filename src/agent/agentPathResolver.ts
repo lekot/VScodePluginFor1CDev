@@ -24,7 +24,8 @@ export class AgentPathError extends Error {
  * Supported formats:
  *   2 segments: RootTag.ObjectName
  *   4 segments: RootTag.ObjectName.NestedType.NestedName
- *   6 segments: RootTag.ObjectName.TabularSection.TSName.NestedType.NestedName
+ *   6 segments: RootTag.ObjectName.ParentType.ParentName.NestedType.NestedName
+ *               (including the legacy TabularSection path)
  */
 export function resolveAgentPath(configRoot: string, agentPath: string): ResolvedAgentPath {
     const segments = agentPath.split('.');
@@ -33,7 +34,7 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
         throw new Error(
             `Invalid agent path: "${agentPath}". ` +
             `Expected 2 segments (RootTag.Name), 4 segments (RootTag.Name.NestedType.NestedName), ` +
-            `or 6 segments (RootTag.Name.TabularSection.TSName.NestedType.NestedName).`
+            `or 6 segments (RootTag.Name.ParentType.ParentName.NestedType.NestedName).`
         );
     }
 
@@ -63,6 +64,14 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
         return { rootTag, objectName, filePath };
     }
 
+    const nestedPath = [
+        { type: rootTag, name: objectName },
+        ...Array.from({ length: (segments.length - 2) / 2 }, (_, index) => ({
+            type: segments[2 + index * 2],
+            name: segments[3 + index * 2],
+        })),
+    ];
+
     if (segments.length === 4) {
         return {
             rootTag,
@@ -70,6 +79,7 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
             filePath,
             nestedType: segments[2],
             nestedName: segments[3],
+            nestedPath,
         };
     }
 
@@ -78,9 +88,10 @@ export function resolveAgentPath(configRoot: string, agentPath: string): Resolve
         rootTag,
         objectName,
         filePath,
-        tabularSection: segments[3],
+        ...(segments[2] === 'TabularSection' ? { tabularSection: segments[3] } : {}),
         nestedType: segments[4],
         nestedName: segments[5],
+        nestedPath,
     };
 }
 

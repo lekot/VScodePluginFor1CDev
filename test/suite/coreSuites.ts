@@ -1,6 +1,8 @@
 export const coreSuiteFiles: string[] = [
   'suite/epic36Block6Acceptance.test.js',
   'suite/designerParser.test.js',
+  'suite/designerInlineMetadataParser.test.js',
+  'suite/edtInlineMetadataParser.test.js',
   'suite/formatDetector.test.js',
   'suite/formatRank.test.js',
   'suite/formEditorTitle.test.js',
@@ -80,6 +82,8 @@ export const coreSuiteFiles: string[] = [
   'suite/formEditorProviderRouting.test.js',
   'suite/formLifecycle.integration.test.js',
   'suite/propertiesProvider.test.js',
+  'suite/propertiesChangedKeys.test.js',
+  'suite/nestedMetadataProperties.test.js',
   'suite/formModelUtils.test.js',
   'suite/formPaths.test.js',
   'suite/formModelCommands.test.js',

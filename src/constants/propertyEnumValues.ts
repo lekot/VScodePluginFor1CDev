@@ -52,6 +52,13 @@ export const propertyEnumValues: Record<string, string[]> = {
   DefaultRunMode: ['Auto', 'ManagedApplication', 'OrdinaryApplication'],
   ScriptVariant: ['Russian', 'English'],
 
+  // HTTP and web services (values observed in checked-in metadata samples)
+  ReuseSessions: ['Use', 'DontUse', 'AutoUse'],
+  TransferDirection: ['In', 'Out', 'InOut'],
+
+  // Integration services
+  MessageDirection: ['Receive', 'Send'],
+
   // EventSubscription
   Event: [
     'BeforeWrite',

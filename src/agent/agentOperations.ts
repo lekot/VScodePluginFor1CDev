@@ -45,6 +45,8 @@ import type {
     CreateObjectParams,
     GetYamlParams,
     ListObjectsParams,
+    ListChildrenParams,
+    MetadataChildInfo,
     ObjectInfo,
     GetPropertiesResult,
     GetPropertiesParams,
@@ -431,7 +433,12 @@ export class AgentOperations {
 
             let properties: Record<string, unknown>;
             if (resolved.nestedType && resolved.nestedName) {
-                properties = await XMLWriter.readNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName);
+                properties = await XMLWriter.readNestedElementProperties(
+                    filePath,
+                    resolved.nestedType,
+                    resolved.nestedName,
+                    { nestedPath: resolved.nestedPath }
+                );
             } else {
                 properties = await XMLWriter.readProperties(filePath);
             }
@@ -502,6 +509,32 @@ export class AgentOperations {
             }
 
             return { success: true, data: { objects } };
+        } catch (err) {
+            return mutationFailure(err);
+        }
+    }
+
+    /** Lists supported named inline ChildObjects for a root or nested metadata element. */
+    async listChildren(params: ListChildrenParams): Promise<AgentResult<{ children: MetadataChildInfo[] }>> {
+        try {
+            const resolved = await this.resolveContainedAgentPath(params.path);
+            try {
+                await fs.promises.access(resolved.filePath);
+            } catch {
+                return { success: false, error: `Файл объекта не найден: ${resolved.filePath}` };
+            }
+            const parentPath = resolved.nestedPath ?? [{ type: resolved.rootTag, name: resolved.objectName }];
+            const children = await XMLWriter.listNestedMetadataChildren(resolved.filePath, parentPath);
+            return {
+                success: true,
+                data: {
+                    children: children.map((child) => ({
+                        type: child.type,
+                        name: child.name,
+                        path: child.path.map((segment) => `${segment.type}.${segment.name}`).join('.'),
+                    })),
+                },
+            };
         } catch (err) {
             return mutationFailure(err);
         }
@@ -801,7 +834,14 @@ export class AgentOperations {
             const props = this.normalizeTypeProperty(params.properties);
 
             if (resolved.nestedType && resolved.nestedName) {
-                await XMLWriter.writeNestedElementProperties(filePath, resolved.nestedType, resolved.nestedName, props);
+                await XMLWriter.writeNestedElementProperties(
+                    filePath,
+                    resolved.nestedType,
+                    resolved.nestedName,
+                    props,
+                    undefined,
+                    { nestedPath: resolved.nestedPath }
+                );
             } else {
                 await XMLWriter.writeProperties(filePath, props);
             }
@@ -846,7 +886,8 @@ export class AgentOperations {
                 filePath,
                 resolved.nestedType,
                 resolved.nestedName,
-                resolved.tabularSection
+                resolved.tabularSection,
+                resolved.nestedPath
             );
 
             // Пустой тип
@@ -968,9 +1009,10 @@ export class AgentOperations {
                     resolved.nestedName,
                     { Type: typeProperty },
                     undefined,
-                    resolved.tabularSection
-                        ? { scopedTabularSectionName: resolved.tabularSection }
-                        : undefined
+                    {
+                        nestedPath: resolved.nestedPath,
+                        ...(resolved.tabularSection ? { scopedTabularSectionName: resolved.tabularSection } : {}),
+                    }
                 );
             } else {
                 await XMLWriter.writeProperties(filePath, { Type: typeProperty });
