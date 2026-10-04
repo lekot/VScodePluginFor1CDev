@@ -6,7 +6,9 @@
  */
 
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import '../helpers/vscodeStubRegister';
+import { FormsContext } from '../../src/services/forms/FormsContext';
 import { FormsOperations } from '../../src/agent/agentFormsOperations';
 
 // ─── Mock output channel ─────────────────────────────────────────────────────
@@ -70,5 +72,62 @@ suite('FormsOperations — smoke', () => {
         const result = await ops.formsExec({ script: '' });
         assert.strictEqual(result.success, false);
         assert.ok(result.error);
+    });
+});
+
+suite('FormsOperations — task cancellation contract', () => {
+    test('forms.exec passes its task token and keeps possible BSL effects inDoubt after cancellation', async () => {
+        const source = new vscode.CancellationTokenSource();
+        const context = new FormsContext();
+        let receivedToken: vscode.CancellationToken | undefined;
+        const reported: string[] = [];
+        const operations = new FormsOperations({
+            extensionPath: '/fake/extension/path',
+            outputChannel: makeMockOutputChannel() as unknown as vscode.OutputChannel,
+            context,
+            runFormsScript: async (options) => {
+                receivedToken = options.token;
+                assert.strictEqual(options.command, 'exec');
+                source.cancel();
+                return {
+                    output: 'partial result',
+                    stderr: '',
+                    exitCode: -2,
+                    cancelled: true,
+                    effectPossible: true,
+                };
+            },
+        });
+
+        const result = await operations.formsExec({ script: 'DoSomething();' }, source.token, (message) => reported.push(message));
+
+        assert.strictEqual(receivedToken, source.token);
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.code, 'FORMS_OPERATION_IN_DOUBT');
+        assert.deepStrictEqual(result.data, { status: 'inDoubt', effectPossible: true });
+        assert.ok(reported.some((message) => message.includes('Выполнение BSL')));
+        source.dispose();
+    });
+
+    test('forms.start exits before touching the session when already cancelled', async () => {
+        const source = new vscode.CancellationTokenSource();
+        source.cancel();
+        let startIbsrvCalled = false;
+        const context = new FormsContext();
+        const operations = new FormsOperations({
+            extensionPath: '/fake/extension/path',
+            outputChannel: makeMockOutputChannel() as unknown as vscode.OutputChannel,
+            context,
+            startIbsrv: async () => {
+                startIbsrvCalled = true;
+                throw new Error('must not start');
+            },
+        });
+
+        const result = await operations.formsStart({ url: 'http://localhost/' }, source.token);
+
+        assert.strictEqual(startIbsrvCalled, false);
+        assert.strictEqual(result.code, 'REQUEST_CANCELLED');
+        source.dispose();
     });
 });

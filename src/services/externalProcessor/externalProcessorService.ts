@@ -85,6 +85,7 @@ interface PreparedOperation {
   readonly context: ExternalProcessorExecutionContext;
   readonly timeoutMs: number;
   readonly cancellation: StreamCancellation;
+  readonly onOutput?: (chunk: string) => void;
   readonly infobaseEntry?: InfobaseEntry;
   readonly infobaseIdentity?: InfobaseCanonicalIdentity;
 }
@@ -176,7 +177,8 @@ export class ExternalProcessorService {
       path.resolve(options.outputDirectory),
       options.context,
       options.timeoutMs,
-      options.cancellation
+      options.cancellation,
+      options.onOutput
     );
     if ('state' in prepared) {
       return prepared;
@@ -231,7 +233,8 @@ export class ExternalProcessorService {
       destinationPath,
       options.context,
       options.timeoutMs,
-      options.cancellation
+      options.cancellation,
+      options.onOutput
     );
     if ('state' in prepared) {
       return prepared;
@@ -248,7 +251,8 @@ export class ExternalProcessorService {
     destinationPath: string,
     context: ExternalProcessorExecutionContext,
     timeoutMs: number | undefined,
-    cancellation: StreamCancellation | undefined
+    cancellation: StreamCancellation | undefined,
+    onOutput: ((chunk: string) => void) | undefined,
   ): Promise<PreparedOperation | ExternalProcessorOperationResult> {
     const contextValidation = validateContext(context);
     if (contextValidation) {
@@ -289,6 +293,7 @@ export class ExternalProcessorService {
       context,
       timeoutMs: validTimeout(timeoutMs),
       cancellation: cancellation ?? NO_CANCELLATION,
+      ...(onOutput ? { onOutput } : {}),
       ...(infobaseEntry ? { infobaseEntry } : {}),
       ...(infobaseIdentity ? { infobaseIdentity } : {}),
     };
@@ -417,6 +422,7 @@ export class ExternalProcessorService {
         batchArguments,
         timeoutMs: prepared.timeoutMs,
         cancellation: prepared.cancellation,
+        ...(prepared.onOutput ? { onOutput: prepared.onOutput } : {}),
       });
     } catch (error) {
       this.quarantine(identities, 'Configurator runner outcome was lost.');
@@ -473,12 +479,16 @@ export class ExternalProcessorService {
     }
     if (outcome.status === 'failed') {
       const cleanupError = await this.cleanup(stagingRoot);
+      const cancelledBeforeStart = outcome.errorCode === 'CONFIGURATOR_CANCELLED_BEFORE_START';
       return failed(
-        cleanupError ? 'EXTERNAL_IO_FAILED' : 'CONFIGURATOR_FAILED',
+        cleanupError
+          ? 'EXTERNAL_IO_FAILED'
+          : cancelledBeforeStart ? 'CONFIGURATOR_CANCELLED_BEFORE_START' : 'CONFIGURATOR_FAILED',
         cleanupError
           ? `Configurator failed and staging cleanup failed: ${cleanupError}`
-          : outcome.errorMessage
-            ?? `Configurator failed before acknowledgement (${outcome.errorCode}).`,
+          : cancelledBeforeStart
+            ? 'Configurator operation was cancelled before process start.'
+            : outcome.errorMessage ?? `Configurator failed before acknowledgement (${outcome.errorCode}).`,
         cleanupError ? false : outcome.retryable,
         outcome.effectPossible,
         outcome.combinedLog

@@ -1,24 +1,35 @@
 import * as path from 'path';
+import type * as vscode from 'vscode';
 import {
   buildExternalProcessor,
   dumpExternalProcessor,
 } from '../services/externalProcessor/externalProcessorService';
-import type { ExternalProcessorExecutionContext } from '../services/externalProcessor/externalProcessorTypes';
+import type {
+  ExternalProcessorExecutionContext,
+  ExternalProcessorOperationResult,
+} from '../services/externalProcessor/externalProcessorTypes';
 import type {
   AgentBuildExternalProcessorParams,
   AgentDumpExternalProcessorParams,
   AgentResult,
   ExternalProcessorAgentData,
 } from './types';
+import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 
 export function agentDumpExternalProcessor(
-  input: AgentDumpExternalProcessorParams
+  input: AgentDumpExternalProcessorParams,
+  token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export function agentDumpExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export async function agentDumpExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>> {
   const request = parseDumpRequest(input);
   if ('state' in request) {
@@ -31,35 +42,57 @@ export async function agentDumpExternalProcessor(
         path.dirname(srcPath),
         `${path.basename(srcPath, path.extname(srcPath))}_src`
       );
-  const result = await dumpExternalProcessor({
-    externalFilePath: srcPath,
-    outputDirectory: outDir,
-    format: request.format,
-    context: request.context,
-    timeoutMs: request.timeoutMs,
-  });
+  const output = reportStage ? createProcessOutputLineReporter(reportStage) : undefined;
+  let result: ExternalProcessorOperationResult;
+  try {
+    result = await dumpExternalProcessor({
+      externalFilePath: srcPath,
+      outputDirectory: outDir,
+      format: request.format,
+      context: request.context,
+      timeoutMs: request.timeoutMs,
+      ...(token ? { cancellation: token } : {}),
+      ...(output ? { onOutput: output.accept } : {}),
+    });
+  } finally {
+    output?.flush();
+  }
   return toAgentResult(result);
 }
 
 export function agentBuildExternalProcessor(
-  input: AgentBuildExternalProcessorParams
+  input: AgentBuildExternalProcessorParams,
+  token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export function agentBuildExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>>;
 export async function agentBuildExternalProcessor(
-  input: unknown
+  input: unknown,
+  token?: vscode.CancellationToken,
+  reportStage?: (message: string) => void,
 ): Promise<AgentResult<ExternalProcessorAgentData>> {
   const request = parseBuildRequest(input);
   if ('state' in request) {
     return toAgentResult(request);
   }
-  const result = await buildExternalProcessor({
-    rootXmlPath: path.resolve(request.rootXmlPath),
-    destinationPath: request.dstPath ? path.resolve(request.dstPath) : undefined,
-    context: request.context,
-    timeoutMs: request.timeoutMs,
-  });
+  const output = reportStage ? createProcessOutputLineReporter(reportStage) : undefined;
+  let result: ExternalProcessorOperationResult;
+  try {
+    result = await buildExternalProcessor({
+      rootXmlPath: path.resolve(request.rootXmlPath),
+      destinationPath: request.dstPath ? path.resolve(request.dstPath) : undefined,
+      context: request.context,
+      timeoutMs: request.timeoutMs,
+      ...(token ? { cancellation: token } : {}),
+      ...(output ? { onOutput: output.accept } : {}),
+    });
+  } finally {
+    output?.flush();
+  }
   return toAgentResult(result);
 }
 
@@ -76,7 +109,7 @@ function parseDumpRequest(
   }
   if (
     !record
-    || !hasOnlyKeys(record, ['srcPath', 'outDir', 'format', 'context', 'timeoutMs'])
+    || !hasOnlyKeys(record, ['srcPath', 'outDir', 'format', 'context', 'timeoutMs', 'background'])
     || !isNonEmptyString(record.srcPath)
     || (record.outDir !== undefined && !isNonEmptyString(record.outDir))
     || (record.format !== 'Plain' && record.format !== 'Hierarchical')
@@ -106,7 +139,7 @@ function parseBuildRequest(
   }
   if (
     !record
-    || !hasOnlyKeys(record, ['rootXmlPath', 'dstPath', 'context', 'timeoutMs'])
+    || !hasOnlyKeys(record, ['rootXmlPath', 'dstPath', 'context', 'timeoutMs', 'background'])
     || !isNonEmptyString(record.rootXmlPath)
     || (record.dstPath !== undefined && !isNonEmptyString(record.dstPath))
     || !isOptionalPositiveInteger(record.timeoutMs)
@@ -218,7 +251,9 @@ function toAgentResult(
   }
   return {
     success: false,
-    code: result.code,
+    code: result.state === 'failed' && result.code === 'CONFIGURATOR_CANCELLED_BEFORE_START'
+      ? 'REQUEST_CANCELLED'
+      : result.code,
     error: result.message,
     data: result,
   };

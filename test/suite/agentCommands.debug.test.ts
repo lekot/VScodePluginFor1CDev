@@ -11,6 +11,7 @@ import {
     resetDebugTestState,
     debugTestState,
     fireDidStartDebugSession,
+    makeMockSession,
 } from '../helpers/vscodeModuleStub';
 import { registerAgentCommands } from '../../src/agent/agentCommands';
 import { DebugSessionRegistry } from '../../src/agent/debugSessionRegistry';
@@ -83,7 +84,8 @@ suite('registerAgentCommands — debug commands registration', () => {
         // 12 CRUD + 2 type + 15 debug + 2 binding + 1 deploy + 4 agent deploy ops + 4 command interface + 4 predefined cot ops
         // + listConfigurations + (5 forms commands + 1 formsOutputChannel) + 4 skd commands + 7 xdto commands + 6 support commands + 2 external processor commands
         // + 9 CFE project commands + roles.setRights + 3 static form commands + syntaxHelp
-        assert.strictEqual(after - before, 86, `Ожидалось 86 подписок, получено ${after - before}`);
+        // + taskManager disposal + 3 task commands + 8 repository commands
+        assert.strictEqual(after - before, 98, `Ожидалось 98 подписок, получено ${after - before}`);
     });
 
     test('debug-команды не регистрируются в package.json contributes (только programmatic)', () => {
@@ -205,5 +207,73 @@ suite('registerAgentCommands — debug command proxy to AgentDebugOperations', (
         const result = await startPromise;
         assert.ok(result.success, `Expected success, got: ${result.error}`);
         assert.strictEqual(result.data?.sessionId, 'test-session');
+    });
+});
+
+suite('registerAgentCommands — long debug task receipts', () => {
+    setup(() => {
+        resetVscodeTestState();
+        resetDebugTestState();
+    });
+
+    teardown(() => {
+        resetVscodeTestState();
+        resetDebugTestState();
+    });
+
+    test('background debug.waitForStop returns immediately and task.cancel settles as confirmed cancelled', async () => {
+        const ctx = makeContext();
+        const registry = makeRegistry();
+        registry.activate(ctx as never);
+        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        const sessionId = 'receipt-wait-session';
+        fireDidStartDebugSession(makeMockSession(sessionId));
+
+        const waitHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.waitForStop');
+        const statusHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.task.status');
+        const resultHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.task.result');
+        const cancelHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.task.cancel');
+        assert.ok(waitHandler && statusHandler && resultHandler && cancelHandler);
+
+        const receipt = await (waitHandler as (params: unknown) => Promise<any>)({
+            sessionId,
+            timeoutMs: 5_000,
+            background: true,
+        });
+        assert.strictEqual(receipt.success, true);
+        assert.strictEqual(receipt.data.status, 'working');
+        const taskId = receipt.data.taskId as string;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.strictEqual(registry.get(sessionId)?.waiters.length, 1, 'operation should be waiting on a debug event');
+        assert.strictEqual((await (statusHandler as (params: unknown) => Promise<any>)({ taskId })).data.status, 'running');
+
+        const cancel = await (cancelHandler as (params: unknown) => Promise<any>)({ taskId });
+        assert.strictEqual(cancel.data.cancellationRequested, true);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        const status = await (statusHandler as (params: unknown) => Promise<any>)({ taskId });
+        const result = await (resultHandler as (params: unknown) => Promise<any>)({ taskId });
+        assert.strictEqual(status.data.status, 'cancelled');
+        assert.strictEqual(result.data.status, 'cancelled');
+        assert.strictEqual(result.data.result.code, 'REQUEST_CANCELLED');
+        assert.strictEqual(registry.get(sessionId)?.waiters.length, 0, 'cancelled waiter should be removed');
+        for (const subscription of ctx.subscriptions) { subscription.dispose(); }
+        registry.dispose();
+    });
+
+    test('direct Agent command remains synchronous when background is omitted', async () => {
+        const ctx = makeContext();
+        const registry = makeRegistry();
+        registerAgentCommands(ctx as never, () => null, async () => null, registry);
+        const waitHandler = vscodeTestState.registeredCommandHandlers.get('1c-metadata-tree.agent.debug.waitForStop');
+        assert.ok(waitHandler);
+
+        const result = await (waitHandler as (params: unknown) => Promise<any>)({ sessionId: '' });
+
+        assert.strictEqual(result.success, false);
+        assert.match(result.error, /sessionId/);
+        assert.notStrictEqual(result.data?.status, 'working');
+        for (const subscription of ctx.subscriptions) { subscription.dispose(); }
+        registry.dispose();
     });
 });

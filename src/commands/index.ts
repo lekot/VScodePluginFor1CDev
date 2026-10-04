@@ -177,6 +177,7 @@ export async function registerAllCommands({
       return facade ? { facade } : undefined;
     },
     lifecycle.loadMetadataTree,
+    () => state.configurationRepositoryService,
   );
 
   // Agent Bridge — HTTP сервер для вызова Agent API команд снаружи VS Code

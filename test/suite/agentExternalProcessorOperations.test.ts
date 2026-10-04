@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as path from 'path';
+import type * as vscode from 'vscode';
 import {
   agentBuildExternalProcessor,
   agentDumpExternalProcessor,
@@ -96,6 +97,88 @@ suite('agentExternalProcessorOperations', () => {
     });
   });
 
+  test('forwards a supplied cancellation token to both services', async () => {
+    let capturedDump: DumpExternalProcessorOptions | undefined;
+    let capturedBuild: BuildExternalProcessorOptions | undefined;
+    const token: vscode.CancellationToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: () => ({ dispose: () => undefined }),
+    };
+    serviceModule.dumpExternalProcessor = async (options) => {
+      capturedDump = options;
+      return completed(options.outputDirectory);
+    };
+    serviceModule.buildExternalProcessor = async (options) => {
+      capturedBuild = options;
+      return completed(options.destinationPath ?? 'built.epf');
+    };
+
+    await agentDumpExternalProcessor({
+      srcPath: 'Processor.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    }, token);
+    await agentBuildExternalProcessor({
+      rootXmlPath: 'Processor_src/Processor.xml',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    }, token);
+
+    assert.strictEqual(capturedDump?.cancellation, token);
+    assert.strictEqual(capturedBuild?.cancellation, token);
+  });
+
+  test('preserves direct-call service options when no stage reporter is supplied', async () => {
+    let capturedDump: DumpExternalProcessorOptions | undefined;
+    let capturedBuild: BuildExternalProcessorOptions | undefined;
+    serviceModule.dumpExternalProcessor = async (options) => {
+      capturedDump = options;
+      return completed(options.outputDirectory);
+    };
+    serviceModule.buildExternalProcessor = async (options) => {
+      capturedBuild = options;
+      return completed(options.destinationPath ?? 'built.epf');
+    };
+
+    await agentDumpExternalProcessor({
+      srcPath: 'Processor.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    });
+    await agentBuildExternalProcessor({
+      rootXmlPath: 'Processor_src/Processor.xml',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    });
+
+    assert.strictEqual(capturedDump?.onOutput, undefined);
+    assert.strictEqual(capturedBuild?.onOutput, undefined);
+  });
+
+  test('forwards bounded process lines to a supplied stage reporter', async () => {
+    const dumpStages: string[] = [];
+    const buildStages: string[] = [];
+    serviceModule.dumpExternalProcessor = async (options) => {
+      options.onOutput?.('preparing artifact\nwriting artifact\n');
+      return completed(options.outputDirectory);
+    };
+    serviceModule.buildExternalProcessor = async (options) => {
+      options.onOutput?.('loading source');
+      return completed(options.destinationPath ?? 'built.epf');
+    };
+
+    await agentDumpExternalProcessor({
+      srcPath: 'Processor.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    }, undefined, (message) => dumpStages.push(message));
+    await agentBuildExternalProcessor({
+      rootXmlPath: 'Processor_src/Processor.xml',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    }, undefined, (message) => buildStages.push(message));
+
+    assert.deepStrictEqual(dumpStages, ['preparing artifact', 'writing artifact']);
+    assert.deepStrictEqual(buildStages, ['loading source']);
+  });
+
   test('inDoubt remains an Agent error and preserves staging details in data', async () => {
     const doubtful: ExternalProcessorOperationResult = {
       state: 'inDoubt',
@@ -117,6 +200,28 @@ suite('agentExternalProcessorOperations', () => {
     assert.strictEqual(result.code, 'CONFIGURATOR_IN_DOUBT');
     assert.strictEqual(result.error, 'outcome unknown');
     assert.strictEqual(result.data, doubtful);
+  });
+
+  test('maps confirmed cancellation before Configurator start to REQUEST_CANCELLED and preserves the service result', async () => {
+    const cancelledBeforeStart = {
+      state: 'failed',
+      code: 'CONFIGURATOR_CANCELLED_BEFORE_START',
+      message: 'Configurator operation was cancelled before process start.',
+      retryable: true,
+      effectPossible: false,
+      combinedLog: '',
+    } as unknown as ExternalProcessorOperationResult;
+    serviceModule.dumpExternalProcessor = async () => cancelledBeforeStart;
+
+    const result = await agentDumpExternalProcessor({
+      srcPath: 'Processor.epf',
+      format: 'Plain',
+      context: { kind: 'standalone', acknowledgeTypeLoss: true },
+    });
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.code, 'REQUEST_CANCELLED');
+    assert.strictEqual(result.data, cancelledBeforeStart);
   });
 
   test('missing or malformed explicit context is a closed Agent error without invoking the service', async () => {

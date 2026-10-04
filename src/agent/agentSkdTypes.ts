@@ -22,6 +22,8 @@ export interface SkdCompileParams {
     value?: string;
     /** Путь к выходному XML-файлу (skd-compile.ps1: -OutputPath, обязателен). */
     outputPath: string;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат компиляции СКД. */
@@ -70,6 +72,8 @@ export interface SkdInfoParams {
     offset?: number;
     /** Путь к выходному файлу (skd-info.ps1: -OutFile). */
     outFile?: string;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат анализа СКД. */
@@ -117,6 +121,8 @@ export interface SkdEditParams {
     variant?: string;
     /** Флаг: не добавлять автоматически в отбор (skd-edit.ps1: -NoSelection). */
     noSelection?: boolean;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат редактирования СКД. */
@@ -143,6 +149,8 @@ export interface SkdValidateParams {
     maxErrors?: number;
     /** Путь к выходному файлу отчёта (skd-validate.ps1: -OutFile). */
     outFile?: string;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат валидации СКД. */
@@ -155,4 +163,10 @@ export interface SkdValidateResult {
     warningCount: number;
     /** Полный stdout вывод (строки [ERROR]/[WARN]/[OK]). */
     rawOutput: string;
+}
+
+/** PowerShell may have changed the target before a requested stop was confirmed. */
+export interface SkdOperationInDoubtResult {
+    status: 'inDoubt';
+    effectPossible: true;
 }

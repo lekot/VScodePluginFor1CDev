@@ -4,7 +4,7 @@
 
 Дать стандартному MCP-клиенту полный доступ к существующему Agent API расширения без дублирования предметной логики. MCP является новым транспортом над теми же VS Code Agent-командами: каждый профильный dispatcher валидирует выбранную операцию и вызывает ровно одну команду через `vscode.commands.executeCommand`. `cdt_catalog` описывает закрытый каталог и команду не вызывает. Legacy Agent Bridge `/command` остаётся совместимым.
 
-Нормативная граница Agent API — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. MCP по умолчанию публикует семь компактных tools; закрытый каталог содержит 83 операции: 78 прежних Agent-команд, `roles.setRights`, три статические команды формы и `syntaxHelp`.
+Нормативная граница Agent API — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. MCP по умолчанию публикует семь компактных tools; закрытый каталог содержит 96 операций: 85 ранее зарегистрированных операций, 3 task-команды и 8 repository-команд.
 
 Четыре UI-команды расширения не являются Agent API, не возвращают `AgentResult` и находятся вне scope:
 
@@ -27,9 +27,9 @@
 | `cdt_verify_live` | `verify_live` | Проверка внешней системы |
 | `cdt_catalog` | — | Перечень операций и описание одной схемы |
 
-Первые шесть принимают strict input `{ operation, arguments }`. `operation` — имя операции из полного каталога и допустимо только в своём profile; `arguments` валидируется исходной strict Zod-схемой операции до dispatch. Ошибка профиля или аргументов не вызывает Agent-команду. `cdt_catalog({})` возвращает имена, описания и profile всех 83 операций; `cdt_catalog({ operation })` возвращает JSON Schema выбранной операции. Refinements, которые невозможно выразить стандартной JSON Schema, остаются runtime-проверкой Agent/Zod операции. Каталог read-only и closed-world.
+Первые шесть принимают strict input `{ operation, arguments }`. `operation` — имя операции из полного каталога и допустимо только в своём profile; `arguments` валидируется исходной strict Zod-схемой операции до dispatch. Ошибка профиля или аргументов не вызывает Agent-команду. `cdt_catalog({})` возвращает имена, описания и profile всех 96 операций; `cdt_catalog({ operation })` возвращает JSON Schema выбранной операции. Refinements, которые невозможно выразить стандартной JSON Schema, остаются runtime-проверкой Agent/Zod операции. Каталог read-only и closed-world.
 
-Переменная среды `CDT_MCP_LEGACY_TOOLS=1` дополнительно регистрирует все 83 индивидуальных operation tool с исходными схемами. По умолчанию эти индивидуальные имена не публикуются. Direct Agent API и legacy Agent Bridge `/command` от этого флага не зависят.
+Переменная среды `CDT_MCP_LEGACY_TOOLS=1` дополнительно регистрирует все 96 индивидуальных operation tool с исходными схемами. По умолчанию эти индивидуальные имена не публикуются. Direct Agent API и legacy Agent Bridge `/command` от этого флага не зависят.
 
 Annotations профилей совпадают с исходной классификацией операций: `read` = T/F/T/F, `write` = F/T/F/F, `write_idempotent` = F/T/T/F, `read_live` = T/F/T/T, `write_live` = F/T/F/T, `verify_live` = F/F/F/T. Для `cdt_catalog` используется `read` (T/F/T/F).
 
@@ -101,6 +101,54 @@ Annotations профилей совпадают с исходной класси
 | `cdt_deploy_changed_files` | `1c-metadata-tree.agent.deployChangedFiles` | F/T/F/T |
 | `cdt_pull_selected_objects` | `1c-metadata-tree.agent.pullSelectedObjects` | F/T/F/T |
 | `cdt_export_status` | `1c-metadata-tree.agent.exportStatus` | T/F/T/T |
+
+### Фоновые задачи и репозиторий конфигурации
+
+| Tool | Agent command | R/D/I/O |
+|---|---|---|
+| `cdt_task_status` | `1c-metadata-tree.agent.task.status` | T/F/T/F |
+| `cdt_task_result` | `1c-metadata-tree.agent.task.result` | T/F/T/F |
+| `cdt_task_cancel` | `1c-metadata-tree.agent.task.cancel` | F/T/F/T |
+| `cdt_repository_connect` | `1c-metadata-tree.agent.repository.connect` | F/T/F/T |
+| `cdt_repository_disconnect` | `1c-metadata-tree.agent.repository.disconnect` | F/T/F/T |
+| `cdt_repository_lock` | `1c-metadata-tree.agent.repository.lock` | F/T/F/T |
+| `cdt_repository_unlock` | `1c-metadata-tree.agent.repository.unlock` | F/T/F/T |
+| `cdt_repository_commit` | `1c-metadata-tree.agent.repository.commit` | F/T/F/T |
+| `cdt_repository_update_object` | `1c-metadata-tree.agent.repository.updateObject` | F/T/F/T |
+| `cdt_repository_update_configuration` | `1c-metadata-tree.agent.repository.updateConfiguration` | F/T/F/T |
+| `cdt_repository_get_status` | `1c-metadata-tree.agent.repository.getStatus` | T/F/T/F |
+
+Каждый repository input является strict object и требует `configurationId`. `lock`, `unlock`,
+`commit` и `updateObject` принимают root-only dot-path `RootTag.ObjectName`; команда разрешает
+конкретный lazy tree node внутри именно выбранной конфигурации или CFE. `connect` дополнительно
+требует `executionInfobaseId`, путь, пользователя и optional password; ID должен указывать на существующую
+файловую ИБ CDT. `commit.comment` после trim должен быть непустым и проверяется до импорта или
+запуска процесса. Все repository mutations по умолчанию имеют `background: true`;
+`background: false` выполняет repository/deploy call синхронно. `task.cancel` синхронно отправляет
+запрос отмены и возвращает текущее состояние задачи; у этой команды нет параметра `background`.
+
+В `repository.getStatus` значение `live: false` явно обозначает локальное последнее наблюдавшееся
+состояние; live repository не опрашивается. Пароль Connect передаётся сервису/SecretStorage и не
+попадает в AgentResult или сообщения task. Исходный repository service result целиком находится в
+`AgentResult.data`: `acknowledged`, `failed`, `inDoubt` или `cancelled`, включая affected names и
+synchronized files. Только `acknowledged` даёт `success: true`; status нельзя заменять общей ошибкой
+отмены после завершения команды.
+
+Длительные deploy/deploySelected/deployChanged/pull/exportStatus и EPF/ERF операции, четыре SKD
+команды, четыре операции поддержки (`setObjectMode`, `enableObjectRules`, `sync`, `verify`),
+`forms.start`/`exec`/`shot` и `debug.start`/`startFromBinding`/`waitForStop` поддерживают тот же
+`background` input. MCP schema ставит `true` по умолчанию; `background: false` выполняет вызов
+синхронно. Прямые Agent-вызовы этих команд без `background` остаются синхронными; операции
+Хранилища сохраняют существующий фоновой default. Task receipt содержит `taskId`; status/result/cancel
+обращаются к общему Agent-layer TaskManager. Терминальные результаты хранятся 15 минут, запись
+ограничена 64 задачами и не вытесняет running task. Receipt возвращает `status: "working"`; task
+snapshots используют состояния `running | completed | failed | cancelled` и `elapsedMs`, который
+растёт от `createdAt` для running и фиксируется при `finishedAt` для terminal state. `recentMessages`
+содержит этапы операции и доступные свежие строки процесса: tail до 24 sanitized сообщений длиной до
+320 символов. Output проходит credential redaction до сохранения. Отмена запрашивает VS Code
+CancellationTokenSource и не подтверждается до фактического завершения операции; для процессов с
+возможным частичным эффектом возвращается typed `inDoubt`, исходный AgentResult вкладывается в
+`task.result` без замены ответом на сам запрос отмены.
 
 ### Поддержка конфигурации
 
@@ -273,7 +321,7 @@ Retryable selection учитывает только текущую master genera
   или мог стать видимым. Клиент не должен считать отсутствие файла по `stagingPath` доказательством
   отсутствия опубликованного эффекта, когда задан `publishedArtifactPath`.
 
-Cancellation проверяется перед dispatch и после его завершения. Отмена до dispatch не запускает Agent-команду. Отмена во время исполнения не прерывает уже запущенную команду: adapter дожидается её, отбрасывает результат и возвращает `{ success: false, code: "REQUEST_CANCELLED", error: "MCP request was cancelled" }` с `isError: true`. Принудительная остановка процессов, debug/forms sessions и мутаций не обещается без отдельного cancellation-контракта Agent API.
+Cancellation проверяется до dispatch; отменённый до dispatch вызов не запускает Agent-команду. MCP адаптирует `extra.signal` в VS Code CancellationToken и передаёт его синхронным Agent-командам. Для длительных Agent operations отмена передаётся runner/process tree, а очередь остаётся занята до завершения underlying promise. После abort adapter дожидается исхода команды. Typed repository service result (`acknowledged`, `failed`, `inDoubt`, `cancelled`) и task receipt сохраняются без замены на общую ошибку; это предотвращает потерю подтверждённого side effect и неопределённого исхода. Для остальных команд при abort возвращается `{ success: false, code: "REQUEST_CANCELLED", error: "MCP request was cancelled" }` с `isError: true`. Background task отменяется отдельным `cdt_task_cancel`; статус не становится `cancelled`, пока операция не завершилась подтверждённой отменой.
 
 ## Транспорт, security и trust boundary
 
@@ -302,10 +350,10 @@ Stop: запрет новых запросов → закрытие MCP sessions
 ## Критерии приёмки
 
 1. Official SDK client проходит `initialize → tools/list → tools/call → DELETE session` по discovery URL и Bearer token.
-2. Default `tools/list` содержит ровно семь уникальных compact tools; opt-in legacy добавляет 83 уникальных individual tools.
-3. `MCP_OPERATION_CATALOG` содержит 83 операции и точно покрывает все зарегистрированные Agent command IDs. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
+2. Default `tools/list` содержит ровно семь уникальных compact tools; opt-in legacy добавляет 96 уникальных individual tools.
+3. `MCP_OPERATION_CATALOG` содержит 96 операций и точно покрывает все зарегистрированные Agent command IDs. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
 4. Четыре перечисленные UI-команды отсутствуют в MCP catalog.
-5. Для всех 83 операций проверены имя, command id, strict schema, refinements и статические annotations; `cdt_catalog` сериализует JSON Schema каждой операции.
+5. Для всех 96 операций проверены имя, command id, strict schema, refinements и статические annotations; `cdt_catalog` сериализует JSON Schema каждой операции.
 6. MCP и прямой Agent-вызов дают семантически одинаковый `AgentResult`; invalid outer/inner input не dispatch-ится.
 7. Мутации проходят через существующие очереди Agent API; MCP не создаёт обходной write path.
 8. `debug.start`/`startFromBinding` не раскрывают connection strings или полный launch config ни в логах, ни в неуспешном `AgentResult.error`; отдельные тесты покрывают оба канала.

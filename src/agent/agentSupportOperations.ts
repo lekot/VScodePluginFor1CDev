@@ -1,4 +1,5 @@
 import type { ConfigurationId } from '../services/configurationSession/types';
+import type * as vscode from 'vscode';
 import type { SupportApplicationFacade } from '../support/supportApplicationServiceRegistry';
 import type {
   SupportGetLastRunOutcome,
@@ -16,6 +17,7 @@ import type {
   AgentSupportSyncParams,
   AgentSupportVerifyParams,
 } from './types';
+import type { SupportCancellation } from '../support/supportTypes';
 
 export const AGENT_SUPPORT_COMMAND_IDS = Object.freeze({
   getStatus: '1c-metadata-tree.agent.supportGetStatus',
@@ -82,46 +84,74 @@ export class AgentSupportOperations {
 
   async supportSetObjectMode(
     params: AgentSupportSetObjectModeParams,
+    token?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
   ): Promise<AgentSupportResult<SupportModeMutationOutcome>> {
+    if (token?.isCancellationRequested) {
+      return cancelledBeforeStart();
+    }
+    const cancellation = createSupportCancellation(token, reportStage);
     const outcome = await this.deps.facade.setObjectMode({
       configurationId: asConfigurationId(params.configurationId),
       objectId: params.objectId,
       targetMode: params.targetMode,
       expectedGenerationId: params.expectedGenerationId,
+      ...(cancellation ? { cancellation } : {}),
     });
     return toAgentResult(outcome, outcome.status === 'synchronized');
   }
 
   async supportEnableObjectRules(
     params: AgentSupportEnableObjectRulesParams,
+    token?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
   ): Promise<AgentSupportResult<SupportModeMutationOutcome>> {
+    if (token?.isCancellationRequested) {
+      return cancelledBeforeStart();
+    }
+    const cancellation = createSupportCancellation(token, reportStage);
     const outcome = await this.deps.facade.enableObjectRules({
       configurationId: asConfigurationId(params.configurationId),
       targetObjectId: params.targetObjectId,
       targetMode: params.targetMode,
       expectedGenerationId: params.expectedGenerationId,
       expectedMetadataUniverseGenerationId: params.expectedMetadataUniverseGenerationId,
+      ...(cancellation ? { cancellation } : {}),
     });
     return toAgentResult(outcome, outcome.status === 'synchronized');
   }
 
   async supportSync(
     params: AgentSupportSyncParams,
+    token?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
   ): Promise<AgentSupportResult<SupportSyncOperationOutcome>> {
+    if (token?.isCancellationRequested) {
+      return cancelledBeforeStart();
+    }
+    const cancellation = createSupportCancellation(token, reportStage);
     const outcome = await this.deps.facade.sync({
       configurationId: asConfigurationId(params.configurationId),
       targets: params.targets,
       ...(params.verification === undefined ? {} : { verification: params.verification }),
+      ...(cancellation ? { cancellation } : {}),
     });
     return toAgentResult(outcome, outcome.status === 'synchronized');
   }
 
   async supportVerify(
     params: AgentSupportVerifyParams,
+    token?: vscode.CancellationToken,
+    reportStage?: (message: string) => void,
   ): Promise<AgentSupportResult<SupportVerifyOperationOutcome>> {
+    if (token?.isCancellationRequested) {
+      return cancelledBeforeStart();
+    }
+    const cancellation = createSupportCancellation(token, reportStage);
     const outcome = await this.deps.facade.verify({
       configurationId: asConfigurationId(params.configurationId),
       targets: params.targets,
+      ...(cancellation ? { cancellation } : {}),
     });
     return toAgentResult(outcome, outcome.status === 'synchronized');
   }
@@ -134,6 +164,33 @@ export class AgentSupportOperations {
     });
     return toAgentResult(outcome, outcome.status === 'available');
   }
+}
+
+function createSupportCancellation(
+  token: vscode.CancellationToken | undefined,
+  reportStage: ((message: string) => void) | undefined,
+): SupportCancellation | undefined {
+  if (!token && !reportStage) {
+    return undefined;
+  }
+  return {
+    get isCancellationRequested(): boolean {
+      return token?.isCancellationRequested ?? false;
+    },
+    onCancellationRequested: (listener) => token
+      ? token.onCancellationRequested(listener)
+      : { dispose: () => undefined },
+    ...(reportStage ? { reportStage } : {}),
+  };
+}
+
+function cancelledBeforeStart(): AgentSupportResult<never> {
+  return {
+    success: false,
+    code: 'REQUEST_CANCELLED',
+    error: 'Запрос отменён до начала операции поддержки.',
+    data: undefined as never,
+  };
 }
 
 function asConfigurationId(configurationId: string): ConfigurationId {

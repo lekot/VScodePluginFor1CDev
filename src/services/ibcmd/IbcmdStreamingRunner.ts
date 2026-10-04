@@ -27,6 +27,8 @@ export interface IbcmdStreamingRunnerOptions {
   cancellation: IbcmdStreamCancellation;
   consoleOutputEncoding?: IbcmdConsoleOutputEncoding;
   onStreamChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void;
+  /** Additional exact values to remove from live output before any callback. */
+  redactedValues?: readonly string[];
   ringBufferMaxBytes?: number;
   spawnImpl?: typeof spawn;
   abortPattern?: RegExp;
@@ -68,6 +70,7 @@ export async function runIbcmdStreaming(
       options.consoleOutputEncoding ?? 'auto'
     ),
     ...(options.onStreamChunk ? { onStreamChunk: options.onStreamChunk } : {}),
+    ...(options.redactedValues ? { redactedValues: options.redactedValues } : {}),
     ...(options.ringBufferMaxBytes !== undefined
       ? { ringBufferMaxBytes: options.ringBufferMaxBytes }
       : {}),

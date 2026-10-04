@@ -93,6 +93,7 @@ async function prepareInfobaseConfigExport(params: {
           timeoutMs: ibcmd.getTimeoutMs(),
           cancellation: vscodeCancellation(params.token),
           consoleOutputEncoding: getIbcmdConsoleOutputEncodingSetting(),
+          redactedValues: credentials?.password ? [credentials.password] : [],
           onStreamChunk: () => {
             /* вывод уже в общем канале при необходимости */
           },

@@ -20,6 +20,8 @@ interface ExternalProcessorOperationOptionsBase {
   readonly context: ExternalProcessorExecutionContext;
   readonly timeoutMs?: number;
   readonly cancellation?: StreamCancellation;
+  /** Receives live decoded process output after exact Configurator credentials are redacted. */
+  readonly onOutput?: (chunk: string) => void;
 }
 
 export interface DumpExternalProcessorOptions extends ExternalProcessorOperationOptionsBase {
@@ -41,6 +43,7 @@ export type ExternalProcessorFailedErrorCode =
   | 'EXTERNAL_ROOT_UNSUPPORTED'
   | 'EXTERNAL_OUTPUT_EXISTS'
   | 'CONFIGURATOR_UNAVAILABLE'
+  | 'CONFIGURATOR_CANCELLED_BEFORE_START'
   | 'CONFIGURATOR_FAILED'
   | 'EXTERNAL_POSTCONDITION_FAILED'
   | 'EXTERNAL_PUBLISH_CONFLICT'

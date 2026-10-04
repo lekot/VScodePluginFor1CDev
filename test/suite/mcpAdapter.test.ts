@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type * as vscode from 'vscode';
 import type { AgentResult } from '../../src/agent/types';
 import {
   MCP_OPERATION_CATALOG,
@@ -29,7 +30,7 @@ interface RegisteredTool {
 }
 
 function captureRegisteredTools(
-  executeCommand: (command: string, args: Record<string, unknown>) => Promise<unknown>,
+  executeCommand: (command: string, args: Record<string, unknown>, cancellation?: vscode.CancellationToken) => Promise<unknown>,
 ): RegisteredTool[] {
   const tools: RegisteredTool[] = [];
   const server = {
@@ -70,12 +71,12 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('legacy opt-in registers all 85 operations alongside the seven compact tools', () => {
+  test('legacy opt-in registers all 96 operations alongside the seven compact tools', () => {
     const previous = process.env.CDT_MCP_LEGACY_TOOLS;
     process.env.CDT_MCP_LEGACY_TOOLS = '1';
     try {
       const tools = captureRegisteredTools(async () => ({ success: true }));
-      assert.strictEqual(tools.length, 92);
+      assert.strictEqual(tools.length, 103);
       assert.deepStrictEqual(
         tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
         MCP_TOOL_CATALOG.map(({ name }) => name),
@@ -94,7 +95,7 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('cdt_catalog lists all operations and serializes all 85 input schemas', async () => {
+  test('cdt_catalog lists all operations and serializes all 96 input schemas', async () => {
     const tools = captureRegisteredTools(async () => {
       assert.fail('cdt_catalog must not dispatch Agent commands');
     });
@@ -109,7 +110,7 @@ suite('MCP adapter: tool contract', () => {
       listed.data.operations.map(({ name, profile }) => ({ name, profile })),
       MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
     );
-    assert.strictEqual(listed.data.operations.length, 85);
+    assert.strictEqual(listed.data.operations.length, 96);
 
     for (const operation of MCP_OPERATION_CATALOG) {
       const result = await catalog.handler({ operation: operation.name }, { signal: signal() });
@@ -163,7 +164,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       ['cdt_write', 'cdt_create_object', { type: 'Catalog', name: 'Goods' }, '1c-metadata-tree.agent.createObject'],
       ['cdt_write_live', 'cdt_debug_stop', { sessionId: 's1' }, '1c-metadata-tree.agent.debug.stop'],
       ['cdt_read_live', 'cdt_forms_status', {}, '1c-metadata-tree.agent.forms.status'],
-      ['cdt_write_live', 'cdt_skd_validate', { templatePath: 'template.xml' }, '1c-metadata-tree.agent.skd.validate'],
+      ['cdt_write_live', 'cdt_skd_validate', { templatePath: 'template.xml', background: true }, '1c-metadata-tree.agent.skd.validate'],
       ['cdt_read', 'cdt_xdto_compare', { packageName: 'p', source: '<x/>' }, '1c-metadata-tree.agent.xdto.compare'],
       [
         'cdt_write_live',
@@ -171,6 +172,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
         {
           srcPath: 'C:/work/Processor.epf',
           format: 'Plain',
+          background: true,
           context: { kind: 'standalone', acknowledgeTypeLoss: true },
         },
         '1c-metadata-tree.agent.dumpExternalProcessor',
@@ -180,6 +182,7 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
         'cdt_build_external_processor',
         {
           rootXmlPath: 'C:/work/Report_src/Report.xml',
+          background: true,
           context: { kind: 'infobase', infobasePath: 'C:/db' },
         },
         '1c-metadata-tree.agent.buildExternalProcessor',
@@ -287,6 +290,69 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       code: 'REQUEST_CANCELLED',
       error: 'MCP request was cancelled',
     });
+    assert.strictEqual(result.isError, true);
+  });
+
+  test('cancellation after repository commit preserves an acknowledged service outcome', async () => {
+    const controller = new AbortController();
+    let receivedToken: vscode.CancellationToken | undefined;
+    let finish!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => { finish = resolve; });
+    const tools = captureRegisteredTools(async (_command, _args, token) => {
+      receivedToken = token;
+      return pending;
+    });
+    const invocation = tools.find(({ name }) => name === 'cdt_write_live')!.handler({
+      operation: 'cdt_repository_commit',
+      arguments: { configurationId: 'cfg', path: 'Catalog.Goods', comment: 'Release' },
+    }, { signal: controller.signal });
+
+    controller.abort();
+    assert.strictEqual(receivedToken?.isCancellationRequested, true);
+    const acknowledged = {
+      success: true,
+      data: {
+        status: 'acknowledged',
+        message: 'Commit completed.',
+        target: { configRoot: 'C:/cfg', configKind: 'cf', key: 'cf:C:/cfg' },
+        affectedFullNames: ['Справочник.Goods'],
+        synchronizedFiles: ['Catalogs/Goods.xml'],
+      },
+    };
+    finish(acknowledged);
+    const result = await invocation;
+
+    assert.deepStrictEqual(result.structuredContent, acknowledged);
+    assert.strictEqual(result.isError, undefined);
+  });
+
+  test('cancellation after repository commit preserves an inDoubt service outcome', async () => {
+    const controller = new AbortController();
+    let finish!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => { finish = resolve; });
+    const tools = captureRegisteredTools(async () => pending);
+    const invocation = tools.find(({ name }) => name === 'cdt_write_live')!.handler({
+      operation: 'cdt_repository_commit',
+      arguments: { configurationId: 'cfg', path: 'Catalog.Goods', comment: 'Release' },
+    }, { signal: controller.signal });
+
+    controller.abort();
+    const inDoubt = {
+      success: false,
+      code: 'REPOSITORY_OPERATION_IN_DOUBT',
+      error: 'The commit outcome is unknown.',
+      data: {
+        status: 'inDoubt',
+        message: 'Reconcile the repository before retrying.',
+        target: { configRoot: 'C:/cfg', configKind: 'cf', key: 'cf:C:/cfg' },
+        affectedFullNames: ['Справочник.Goods'],
+        synchronizedFiles: [],
+      },
+    };
+    finish(inDoubt);
+    const result = await invocation;
+
+    assert.deepStrictEqual(result.structuredContent, inDoubt);
     assert.strictEqual(result.isError, true);
   });
 });

@@ -68,6 +68,8 @@ export interface ConfiguratorProcessRunnerOptions {
   batchArguments: ConfiguratorBatchArguments;
   timeoutMs: number;
   cancellation: StreamCancellation;
+  /** Receives live decoded output after exact batch credentials have been redacted. */
+  onOutput?: (chunk: string) => void;
   ringBufferMaxBytes?: number;
   fatalMarkers?: readonly RegExp[];
   terminationGraceMs?: number;
@@ -135,6 +137,9 @@ export async function runConfiguratorProcess(
     timeoutMs: options.timeoutMs,
     cancellation: options.cancellation,
     redactedValues: batchSecrets(options.batchArguments.executionArgs),
+    ...(options.onOutput
+      ? { onStreamChunk: (chunk: string) => options.onOutput?.(chunk) }
+      : {}),
     inspectStreamChunk: (chunk, stream) => {
       (stream === 'stdout' ? stdoutFatalScanner : stderrFatalScanner).accept(chunk);
     },

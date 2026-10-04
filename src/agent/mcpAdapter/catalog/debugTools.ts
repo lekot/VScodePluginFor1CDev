@@ -19,6 +19,7 @@ const debugStartInput = z.strictObject({
   debugServerPort: debugServerPort.optional(),
   debuggeeType: debuggeeType.optional(),
   databasePath: z.string().optional(),
+  background: z.boolean().default(true),
 }).refine((value) => value.debuggeeType !== 'webServer'
   || Boolean(value.databasePath || /File\s*=\s*([^;]+)/i.test(value.infobase)), {
   message: 'webServer requires databasePath or a File= infobase connection string',
@@ -43,6 +44,7 @@ const exceptionFilterInput = z.strictObject({
 const waitForStopInput = z.strictObject({
   sessionId: nonEmptyString,
   timeoutMs: z.number().optional(),
+  background: z.boolean().default(true),
 });
 
 const debugFrameInput = z.strictObject({
@@ -64,12 +66,13 @@ const debugEvaluateInput = z.strictObject({
 const startFromBindingInput = z.strictObject({
   configPath: nonEmptyString.optional(),
   debuggeeType: debuggeeType.optional(),
+  background: z.boolean().default(true),
 });
 
 export const DEBUG_TOOLS: readonly McpToolDefinition[] = [
   {
     name: 'cdt_debug_start',
-    description: 'Start a 1C debug session. Launches external platform/debuggee processes.',
+    description: 'Start a 1C debug session. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.debug.start',
     inputSchema: debugStartInput,
     annotations: WRITE_OPEN,
@@ -104,7 +107,7 @@ export const DEBUG_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_debug_wait_for_stop',
-    description: 'Wait for a running debug session to stop and return its top frame.',
+    description: 'Wait for a running debug session to stop and return its top frame. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.debug.waitForStop',
     inputSchema: waitForStopInput,
     annotations: READ_OPEN,
@@ -167,7 +170,7 @@ export const DEBUG_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_debug_start_from_binding',
-    description: 'Resolve an infobase binding and start a 1C debug session.',
+    description: 'Resolve an infobase binding and start a 1C debug session. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.debug.startFromBinding',
     inputSchema: startFromBindingInput,
     annotations: WRITE_OPEN,

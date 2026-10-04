@@ -3,6 +3,7 @@
 // Каждая операция запускает соответствующий PS1-скрипт через PowerShell runner.
 
 import * as path from 'path';
+import type * as vscode from 'vscode';
 import type { AgentResult } from './types';
 import type {
     SkdCompileParams,
@@ -13,19 +14,38 @@ import type {
     SkdEditResult,
     SkdValidateParams,
     SkdValidateResult,
+    SkdOperationInDoubtResult,
 } from './agentSkdTypes';
 import { runPowerShellScript } from '../services/skd/powershellRunner';
+import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 
 // ─── SkdOperations ────────────────────────────────────────────────────────────
 
 export interface SkdOperationsDeps {
     /** Путь к корню расширения (context.extensionPath). */
     extensionPath: string;
+    /** Injectable process boundary for tests and host integrations. */
+    runPowerShellScript?: typeof runPowerShellScript;
 }
 
 /** Класс операций Agent SKD API. Инстанциируется при каждом вызове команды. */
 export class SkdOperations {
     constructor(private readonly deps: SkdOperationsDeps) {}
+
+    private async runScript(
+        opts: Parameters<typeof runPowerShellScript>[0],
+        reportStage?: (message: string) => void,
+    ): ReturnType<typeof runPowerShellScript> {
+        const output = createProcessOutputLineReporter(reportStage);
+        try {
+            return await (this.deps.runPowerShellScript ?? runPowerShellScript)({
+                ...opts,
+                onOutput: output.accept,
+            });
+        } finally {
+            output.flush();
+        }
+    }
 
     // ─── skd.compile ─────────────────────────────────────────────────────────
 
@@ -33,7 +53,13 @@ export class SkdOperations {
      * Компилирует JSON DSL СКД в XML (Template.xml).
      * Использует skd-compile.ps1 (-DefinitionFile/-Value, -OutputPath).
      */
-    async skdCompile(params: SkdCompileParams): Promise<AgentResult<SkdCompileResult>> {
+    async skdCompile(
+        params: SkdCompileParams,
+        token?: vscode.CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<SkdCompileResult | SkdOperationInDoubtResult>> {
+        const stopped = cancellationFailure(token);
+        if (stopped) { return stopped; }
         if (!params.outputPath) {
             return { success: false, error: 'параметр outputPath обязателен' };
         }
@@ -54,7 +80,11 @@ export class SkdOperations {
         }
         args.push('-OutputPath', params.outputPath);
 
-        const result = await runPowerShellScript({ scriptPath, args });
+        reportStage?.('Компиляция СКД через PowerShell.');
+        const result = await this.runScript({ scriptPath, args, token }, reportStage);
+
+        const cancelled = processCancellationFailure(result);
+        if (cancelled) { return cancelled; }
 
         if (result.exitCode !== 0) {
             const errMsg = result.stderr.trim() || result.stdout.trim() || `skd-compile failed with exit code ${result.exitCode}`;
@@ -85,7 +115,13 @@ export class SkdOperations {
      * Анализирует структуру СКД и возвращает plain-text отчёт.
      * Использует skd-info.ps1 (-TemplatePath, -Mode, и др.).
      */
-    async skdInfo(params: SkdInfoParams): Promise<AgentResult<SkdInfoResult>> {
+    async skdInfo(
+        params: SkdInfoParams,
+        token?: vscode.CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<SkdInfoResult | SkdOperationInDoubtResult>> {
+        const stopped = cancellationFailure(token);
+        if (stopped) { return stopped; }
         if (!params.templatePath) {
             return { success: false, error: 'параметр templatePath обязателен' };
         }
@@ -112,7 +148,11 @@ export class SkdOperations {
             args.push('-OutFile', params.outFile);
         }
 
-        const result = await runPowerShellScript({ scriptPath, args });
+        reportStage?.('Получение сведений о СКД через PowerShell.');
+        const result = await this.runScript({ scriptPath, args, token }, reportStage);
+
+        const cancelled = processCancellationFailure(result);
+        if (cancelled) { return cancelled; }
 
         if (result.exitCode !== 0) {
             const errMsg = result.stderr.trim() || result.stdout.trim() || `skd-info failed with exit code ${result.exitCode}`;
@@ -136,7 +176,13 @@ export class SkdOperations {
      * Атомарное редактирование СКД.
      * Использует skd-edit.ps1 (-TemplatePath, -Operation, -Value, и др.).
      */
-    async skdEdit(params: SkdEditParams): Promise<AgentResult<SkdEditResult>> {
+    async skdEdit(
+        params: SkdEditParams,
+        token?: vscode.CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<SkdEditResult | SkdOperationInDoubtResult>> {
+        const stopped = cancellationFailure(token);
+        if (stopped) { return stopped; }
         if (!params.templatePath) {
             return { success: false, error: 'параметр templatePath обязателен' };
         }
@@ -164,7 +210,11 @@ export class SkdOperations {
             args.push('-NoSelection');
         }
 
-        const result = await runPowerShellScript({ scriptPath, args });
+        reportStage?.('Редактирование СКД через PowerShell.');
+        const result = await this.runScript({ scriptPath, args, token }, reportStage);
+
+        const cancelled = processCancellationFailure(result);
+        if (cancelled) { return cancelled; }
 
         if (result.exitCode !== 0) {
             const errMsg = result.stderr.trim() || result.stdout.trim() || `skd-edit failed with exit code ${result.exitCode}`;
@@ -189,7 +239,13 @@ export class SkdOperations {
      * Валидирует структуру СКД.
      * Использует skd-validate.ps1 (-TemplatePath, -Detailed, -MaxErrors, -OutFile).
      */
-    async skdValidate(params: SkdValidateParams): Promise<AgentResult<SkdValidateResult>> {
+    async skdValidate(
+        params: SkdValidateParams,
+        token?: vscode.CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<SkdValidateResult | SkdOperationInDoubtResult>> {
+        const stopped = cancellationFailure(token);
+        if (stopped) { return stopped; }
         if (!params.templatePath) {
             return { success: false, error: 'параметр templatePath обязателен' };
         }
@@ -207,7 +263,11 @@ export class SkdOperations {
             args.push('-OutFile', params.outFile);
         }
 
-        const result = await runPowerShellScript({ scriptPath, args });
+        reportStage?.('Проверка СКД через PowerShell.');
+        const result = await this.runScript({ scriptPath, args, token }, reportStage);
+
+        const cancelled = processCancellationFailure(result);
+        if (cancelled) { return cancelled; }
 
         if (result.exitCode !== 0) {
             // exitCode 1 can mean file not found — still return as structured result
@@ -230,6 +290,43 @@ export class SkdOperations {
             },
         };
     }
+}
+
+function cancellationFailure(token: vscode.CancellationToken | undefined): AgentResult<never> | undefined {
+    return token?.isCancellationRequested
+        ? { success: false, code: 'REQUEST_CANCELLED', error: 'Операция отменена до запуска PowerShell.' }
+        : undefined;
+}
+
+function processCancellationFailure(
+    result: Awaited<ReturnType<typeof runPowerShellScript>>,
+): AgentResult<SkdOperationInDoubtResult> | AgentResult<never> | undefined {
+    if (result.cancelled && !result.effectPossible) {
+        return { success: false, code: 'REQUEST_CANCELLED', error: 'Операция отменена до запуска PowerShell.' };
+    }
+    const terminationUnconfirmed = result.termination?.terminated === false;
+    if (
+        (result.cancelled || result.cancellationRequested || result.timedOut)
+        && result.effectPossible
+        && (result.exitCode !== 0 || terminationUnconfirmed)
+    ) {
+        const survivingPids = result.termination?.survivingPids ?? [];
+        const terminationDetails = terminationUnconfirmed
+            ? ` Завершение дерева процессов PowerShell не подтверждено${survivingPids.length > 0
+                ? `; активные PID: ${survivingPids.join(', ')}`
+                : ''}.`
+            : '';
+        const operationDetails = result.timedOut
+            ? 'PowerShell превысил таймаут; исход файловой операции не подтверждён.'
+            : 'Операция отменена после запуска PowerShell; исход файловой операции не подтверждён.';
+        return {
+            success: false,
+            code: 'SKD_OPERATION_IN_DOUBT',
+            data: { status: 'inDoubt', effectPossible: true },
+            error: `${operationDetails}${terminationDetails}`,
+        };
+    }
+    return undefined;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

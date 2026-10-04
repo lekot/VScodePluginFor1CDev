@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import '../helpers/vscodeStubRegister';
 import {
   AGENT_SUPPORT_COMMAND_IDS,
@@ -6,6 +7,7 @@ import {
   AgentSupportOperations,
 } from '../../src/agent/agentSupportOperations';
 import type { SupportApplicationFacade } from '../../src/support/supportApplicationServiceRegistry';
+import type { SupportCancellation } from '../../src/support/supportTypes';
 
 type FacadeCall = {
   readonly method: keyof SupportApplicationFacade;
@@ -139,6 +141,31 @@ suite('AgentSupportOperations', () => {
         request: { configurationId: 'cfg', targets: { kind: 'all' } },
       },
     ]);
+  });
+
+  test('operation token and task stage reporter reach the support facade', async () => {
+    const calls: FacadeCall[] = [];
+    const source = new vscode.CancellationTokenSource();
+    const reported: string[] = [];
+    const operations = new AgentSupportOperations({
+      facade: createFacade(calls, {
+        verify: { status: 'synchronized', marker: 'verified' },
+      }),
+    });
+
+    const result = await operations.supportVerify({
+      configurationId: 'cfg',
+      targets: { kind: 'all' },
+    }, source.token, (message) => reported.push(message));
+
+    const request = calls[0].request as { cancellation: SupportCancellation };
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(request.cancellation.isCancellationRequested, false);
+    request.cancellation.reportStage?.('Configurator: verification started');
+    assert.deepStrictEqual(reported, ['Configurator: verification started']);
+    source.cancel();
+    assert.strictEqual(request.cancellation.isCancellationRequested, true);
+    source.dispose();
   });
 
   test('getLastRun is successful only for available outcome', async () => {

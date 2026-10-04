@@ -104,6 +104,7 @@ export class ConfigurationRepositoryTransport {
         batchArguments,
         timeoutMs: this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         cancellation: request.cancellation,
+        ...(request.onOutput ? { onOutput: request.onOutput } : {}),
       });
       return mapOutcome(request.operation, outcome, batchArguments, executable.path, objectFullNames);
     } catch (error) {

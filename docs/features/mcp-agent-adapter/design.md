@@ -2,7 +2,7 @@
 
 ## Контекст
 
-Agent API — прикладная граница: 69 команд в `registerAgentCommands` выбирают конфигурацию, проверяют capabilities, используют `ConfigurationSession` или общий application/service facade и возвращают `AgentResult`. MCP не становится вторым прикладным API и не вызывает operations/services напрямую.
+Agent API — прикладная граница: 96 команд в `registerAgentCommands` выбирают конфигурацию, проверяют capabilities, используют `ConfigurationSession` или общий application/service facade и возвращают `AgentResult`. MCP не становится вторым прикладным API и не вызывает operations/services напрямую.
 
 Четыре UI-команды `borrowToExtension`, `navigateToMainObject`, `showRelatedObjects`, `showInterceptors` не зарегистрированы `registerAgentCommands`, не имеют `AgentResult`-контракта и не входят в MCP catalog.
 
@@ -14,7 +14,7 @@ Agent API — прикладная граница: 69 команд в `registerA
 
 ### 2. Один `/mcp` route и один монолитный каталог
 
-Сохраняет единый listener и thin dispatch, но 69 schemas в одном файле создают высокую связность и неудобный review. Подход использован первой вертикалью, но не масштабируется на полный API.
+Сохраняет единый listener и thin dispatch, но 96 schemas в одном файле создают высокую связность и неудобный review. Подход использован первой вертикалью, но не масштабируется на полный API.
 
 ### 3. `/mcp` в Agent Bridge и доменные catalog modules — выбран
 
@@ -31,7 +31,7 @@ flowchart LR
     R --> K["MCP_TOOL_CATALOG"]
     K --> D["Domain catalog modules"]
     K --> V["vscode.commands.executeCommand"]
-    V --> A["69 Agent commands"]
+    V --> A["96 Agent commands"]
     A --> Q["ConfigurationSession / services / processes"]
 ```
 
@@ -40,7 +40,7 @@ HTTP errors не смешиваются с tool errors. Domain modules не ис
 ## Каталог и контракты
 
 Доменные modules размещаются под `src/agent/mcpAdapter/catalog/`: common schemas/types, metadata,
-debug, bindings/deploy, support, type/subsystem/characteristics, forms, SKD и XDTO. Порядок
+debug, bindings/deploy, support, repository, tasks, type/subsystem/characteristics, forms, SKD и XDTO. Порядок
 агрегации фиксирован для стабильного `tools/list`; имена tool и command id уникальны.
 
 Каждый definition содержит:
@@ -79,7 +79,7 @@ Source of truth для состава Agent API — фактическое вы�
 
 Тест требует:
 
-- точного равенства множеств и текущего размера 69;
+- точного равенства множеств и текущего размера 96;
 - отсутствия duplicate tool names и command ids;
 - отсутствия четырёх UI-команд вне Agent API;
 - соответствия каждого definition зафиксированным schema/annotation contracts.
@@ -94,7 +94,7 @@ Thin executor не меняется: mutating tools вызывают соотв�
 создаёт поверх него вторую очередь. Debug/forms/SKD сохраняют текущую direct semantics; MCP не
 добавляет параллельную очередь.
 
-Cancellation проверяется до и после dispatch. После dispatch принудительная отмена невозможна без изменения Agent signatures: выполняющаяся команда завершается, её результат отбрасывается, клиент получает `REQUEST_CANCELLED`.
+Cancellation проверяется перед dispatch и передаётся Agent-команде через VS Code CancellationToken. Долгие операции работают в общем TaskManager; прямой cancel запрашивает отмену через CancellationTokenSource и сохраняет task в `working` до фактического завершения underlying promise. MCP abort для синхронной repository-команды не заменяет typed `acknowledged`, `failed`, `inDoubt` или `cancelled` result общей ошибкой. Deploy/export/process runners получают тот же token, а process tree прекращается по существующему runner contract.
 
 ## Security и trust boundary
 

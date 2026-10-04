@@ -16,6 +16,7 @@ import {
   resolveConfiguratorExecutable,
   type ConfiguratorExecutableResolution,
 } from '../services/configurator/configuratorExecutableResolver';
+import { createProcessOutputLineReporter } from '../services/process/processOutputLineReporter';
 import {
   runConfiguratorProcess,
   type ConfiguratorProcessOutcome,
@@ -622,11 +623,13 @@ export class ConfiguratorSupportApplicator implements SupportApplicator {
     options: Pick<ConfiguratorProcessRunnerOptions, 'executablePath' | 'batchArguments'>,
     cancellation: SupportCancellation,
   ): Promise<ConfiguratorProcessOutcome> {
+    const output = createProcessOutputLineReporter(cancellation.reportStage);
     return (this.deps.runProcess ?? runConfiguratorProcess)({
       ...options,
       timeoutMs: this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       cancellation,
-    });
+      onOutput: output.accept,
+    }).finally(() => output.flush());
   }
 
   private createTemporaryDirectory(): Promise<string> {

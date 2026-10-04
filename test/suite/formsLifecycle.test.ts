@@ -332,7 +332,8 @@ suite('Forms process lifecycle', () => {
       const exec = await operations.formsExec({ script: 'return 1;', timeoutMs: 25 });
 
       assert.strictEqual(exec.success, false);
-      assert.match(exec.error ?? '', /124/);
+      assert.strictEqual(exec.code, 'FORMS_OPERATION_IN_DOUBT');
+      assert.deepStrictEqual(exec.data, { status: 'inDoubt', effectPossible: true });
       assert.strictEqual(context.ownsTransientProcess(runner as unknown as ChildProcess), true);
 
       const firstStop = await operations.formsStop({});
@@ -413,6 +414,53 @@ suite('Forms process lifecycle', () => {
       assert.strictEqual(result.unclosedProc, undefined);
       assert.match(result.stderr, /timeout/);
     } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('runFormsScript cancellation waits for the spawned process to exit and reports possible effects', async function () {
+    this.timeout(5_000);
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forms-cancel-runner-'));
+    const listeners = new Set<() => void>();
+    let cancelled = false;
+    const token = {
+      get isCancellationRequested(): boolean { return cancelled; },
+      onCancellationRequested(listener: () => void) {
+        listeners.add(listener);
+        return { dispose: () => listeners.delete(listener) };
+      },
+    } as unknown as vscode.CancellationToken;
+    const cancel = (): void => {
+      cancelled = true;
+      for (const listener of [...listeners]) { listener(); }
+      listeners.clear();
+    };
+    try {
+      const resourcesDir = path.join(tempDir, 'resources', 'web-test');
+      await fs.promises.mkdir(resourcesDir, { recursive: true });
+      await fs.promises.writeFile(
+        path.join(resourcesDir, 'run.mjs'),
+        'setInterval(() => {}, 1000);\n',
+        'utf8',
+      );
+
+      const resultPromise = runFormsScript({
+        extensionPath: tempDir,
+        sessionFilePath: path.join(tempDir, 'storage', 'session.json'),
+        command: 'exec',
+        args: [],
+        token,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      cancel();
+      const result = await resultPromise;
+
+      assert.strictEqual(result.cancelled, true);
+      assert.strictEqual(result.effectPossible, true);
+      assert.strictEqual(result.unclosedProc, undefined);
+      assert.notStrictEqual(result.exitCode, 0, 'the actual signal exit code must be preserved');
+    } finally {
+      cancel();
       await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
   });

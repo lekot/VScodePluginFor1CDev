@@ -10,6 +10,7 @@ const formsStartInput = z.strictObject({
   dbPath: z.string().optional(),
   platformPath: z.string().optional(),
   readyTimeoutMs: z.number().optional(),
+  background: z.boolean().default(true),
 }).refine((value) => Boolean(value.url || value.dbPath), {
   message: 'url or dbPath is required',
 });
@@ -17,9 +18,10 @@ const formsStartInput = z.strictObject({
 const formsExecInput = z.strictObject({
   script: nonEmptyString,
   timeoutMs: z.number().optional(),
+  background: z.boolean().default(true),
 });
 
-const formsShotInput = z.strictObject({ file: z.string().optional() });
+const formsShotInput = z.strictObject({ file: z.string().optional(), background: z.boolean().default(true) });
 const staticFormPath = z.string().refine((value) => {
   const target = value.trim();
   if (!target || target.includes('\0') || /^(?:[\\/]|[A-Za-z]:)/.test(target)) { return false; }
@@ -142,14 +144,14 @@ const formsEditInput = z.strictObject({
 export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   {
     name: 'cdt_forms_start',
-    description: 'Start or connect to a 1C web-client forms session. When both dbPath and url are present, dbPath takes priority.',
+    description: 'Start or connect to a 1C web-client forms session. Returns a task receipt by default; set background=false to wait synchronously. When both dbPath and url are present, dbPath takes priority.',
     command: '1c-metadata-tree.agent.forms.start',
     inputSchema: formsStartInput,
     annotations: WRITE_OPEN,
   },
   {
     name: 'cdt_forms_exec',
-    description: 'Execute arbitrary JavaScript in the connected 1C forms browser session.',
+    description: 'Execute arbitrary JavaScript in the connected 1C forms browser session. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.exec',
     inputSchema: formsExecInput,
     annotations: WRITE_OPEN,
@@ -163,7 +165,7 @@ export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_forms_shot',
-    description: 'Capture a screenshot of the connected 1C forms browser, optionally overwriting a local file.',
+    description: 'Capture a screenshot of the connected 1C forms browser, optionally overwriting a local file. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.shot',
     inputSchema: formsShotInput,
     annotations: WRITE_OPEN,

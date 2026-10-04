@@ -116,6 +116,17 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_cfe_create_own_form', 'cfe.createOwnForm', 'writeClosedIdempotent'),
   tool('cdt_cfe_borrow_form', 'cfe.borrowForm', 'writeClosedIdempotent'),
   tool('cdt_cfe_extend_form', 'cfe.extendForm', 'writeClosedIdempotent'),
+  tool('cdt_task_status', 'task.status', 'readClosed'),
+  tool('cdt_task_result', 'task.result', 'readClosed'),
+  tool('cdt_task_cancel', 'task.cancel', 'writeOpen'),
+  tool('cdt_repository_connect', 'repository.connect', 'writeOpen'),
+  tool('cdt_repository_disconnect', 'repository.disconnect', 'writeOpen'),
+  tool('cdt_repository_lock', 'repository.lock', 'writeOpen'),
+  tool('cdt_repository_unlock', 'repository.unlock', 'writeOpen'),
+  tool('cdt_repository_commit', 'repository.commit', 'writeOpen'),
+  tool('cdt_repository_update_object', 'repository.updateObject', 'writeOpen'),
+  tool('cdt_repository_update_configuration', 'repository.updateConfiguration', 'writeOpen'),
+  tool('cdt_repository_get_status', 'repository.getStatus', 'readClosed'),
   tool('cdt_roles_set_rights', 'roles.setRights', 'writeClosed'),
   tool('cdt_syntax_help', 'syntaxHelp', 'readClosed'),
 ];
@@ -270,6 +281,20 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
       credentials: { user: 'operator', password: 'secret' },
     },
   },
+  cdt_task_status: { taskId: 'task-id' },
+  cdt_task_result: { taskId: 'task-id' },
+  cdt_task_cancel: { taskId: 'task-id' },
+  cdt_repository_connect: {
+    configurationId: 'cfg', executionInfobaseId: 'file-main', repositoryPath: 'C:/repo', repositoryUser: 'operator',
+    repositoryPassword: 'secret',
+  },
+  cdt_repository_disconnect: { configurationId: 'cfg' },
+  cdt_repository_lock: { configurationId: 'cfg', path: 'Catalog.Goods' },
+  cdt_repository_unlock: { configurationId: 'cfg', path: 'Catalog.Goods' },
+  cdt_repository_commit: { configurationId: 'cfg', path: 'Catalog.Goods', comment: 'commit message' },
+  cdt_repository_update_object: { configurationId: 'cfg', path: 'Catalog.Goods' },
+  cdt_repository_update_configuration: { configurationId: 'cfg' },
+  cdt_repository_get_status: { configurationId: 'cfg' },
   cdt_roles_set_rights: {
     configurationId: 'cfg', roleName: 'Manager', objects: ['Catalog.Goods: @admin'],
   },
@@ -283,6 +308,10 @@ interface InvalidRefinementCase {
 }
 
 const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
+  { label: 'task status requires a nonblank id', tool: 'cdt_task_status', input: { taskId: '   ' } },
+  { label: 'repository connect rejects the legacy infobaseId field', tool: 'cdt_repository_connect', input: { configurationId: 'cfg', infobaseId: 'file-main', repositoryPath: 'C:/repo', repositoryUser: 'operator' } },
+  { label: 'repository path must select a root object', tool: 'cdt_repository_lock', input: { configurationId: 'cfg', path: 'Catalog.Goods.Attribute.Code' } },
+  { label: 'repository commit requires a nonblank comment', tool: 'cdt_repository_commit', input: { configurationId: 'cfg', path: 'Catalog.Goods', comment: '  \t ' } },
   { label: 'syntax help get rejects both ID and query', tool: 'cdt_syntax_help', input: { action: 'get', id: 1, query: 'other' } },
   { label: 'syntax help search requires query', tool: 'cdt_syntax_help', input: { action: 'search' } },
   { label: 'syntax help rejects a limit above 50', tool: 'cdt_syntax_help', input: { query: 'Форма', limit: 51 } },
@@ -436,7 +465,10 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'XDTO merge empty inputPath only', tool: 'cdt_xdto_merge', input: { packageName: 'p', inputPath: '', selectedIds: [] } },
 ];
 
-function schema(name: string): { safeParse(value: unknown): { success: boolean } } {
+function schema(name: string): {
+  safeParse(value: unknown): { success: boolean };
+  parse(value: unknown): unknown;
+} {
   const found = MCP_OPERATION_CATALOG.find((candidate) => candidate.name === name);
   assert.ok(found, `MCP operation is missing: ${name}`);
   return found.inputSchema;
@@ -450,10 +482,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 85 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 85, 'test oracle must enumerate all 85 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 85);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 85);
+  test('operation registry has the exact 96 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 96, 'test oracle must enumerate all 96 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 96);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 96);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -509,8 +541,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 85);
-    assert.strictEqual(new Set(registered).size, 85);
+    assert.strictEqual(registered.length, 96);
+    assert.strictEqual(new Set(registered).size, 96);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -523,7 +555,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 85 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 96 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
@@ -543,6 +575,62 @@ suite('MCP Agent catalog coverage', () => {
   });
 
   test('cross-field and trimming refinements preserve their valid boundary cases', () => {
+    assert.deepStrictEqual(schema('cdt_repository_commit').safeParse({
+      configurationId: 'cfg', path: 'Catalog.Goods', comment: '  Put changes  ',
+    }).success, true);
+    const parsedCommit = schema('cdt_repository_commit').parse({
+      configurationId: 'cfg', path: 'Catalog.Goods', comment: '  Put changes  ',
+    });
+    assert.strictEqual((parsedCommit as { comment: string }).comment, 'Put changes');
+    const parsedDeploy = schema('cdt_deploy').parse({
+      configurationId: 'cfg',
+    });
+    assert.strictEqual((parsedDeploy as { background: boolean }).background, true);
+    const parsedRepositoryCommit = schema('cdt_repository_commit').parse({
+      configurationId: 'cfg', path: 'Catalog.Goods', comment: 'Release',
+    });
+    assert.strictEqual((parsedRepositoryCommit as { background: boolean }).background, true);
+    for (const toolName of [
+      'cdt_deploy',
+      'cdt_deploy_selected_objects',
+      'cdt_deploy_changed_files',
+      'cdt_pull_selected_objects',
+      'cdt_export_status',
+      'cdt_dump_external_processor',
+      'cdt_build_external_processor',
+      'cdt_repository_connect',
+      'cdt_repository_disconnect',
+      'cdt_repository_lock',
+      'cdt_repository_unlock',
+      'cdt_repository_commit',
+      'cdt_repository_update_object',
+      'cdt_repository_update_configuration',
+    ]) {
+      const parsed = schema(toolName).parse(VALID_INPUTS[toolName]);
+      assert.strictEqual((parsed as { background: boolean }).background, true, `${toolName} defaults to background`);
+    }
+    for (const toolName of [
+      'cdt_skd_compile',
+      'cdt_skd_info',
+      'cdt_skd_edit',
+      'cdt_skd_validate',
+      'cdt_forms_start',
+      'cdt_forms_exec',
+      'cdt_forms_shot',
+      'cdt_debug_start',
+      'cdt_debug_start_from_binding',
+      'cdt_debug_wait_for_stop',
+      'cdt_support_set_object_mode',
+      'cdt_support_enable_object_rules',
+      'cdt_support_sync',
+      'cdt_support_verify',
+    ]) {
+      const input = VALID_INPUTS[toolName];
+      const parsedDefault = schema(toolName).parse(input);
+      assert.strictEqual((parsedDefault as { background: boolean }).background, true, `${toolName} defaults to background`);
+      const parsedSync = schema(toolName).parse({ ...input, background: false });
+      assert.strictEqual((parsedSync as { background: boolean }).background, false, `${toolName} allows synchronous mode`);
+    }
     assert.strictEqual(accepts('cdt_debug_start', {
       rootProject: 'C:/project',
       infobase: 'Srvr=host;Ref=db',

@@ -15,6 +15,8 @@ import { EXTERNAL_PROCESSOR_MCP_TOOLS } from './catalog/externalProcessorTools';
 import { CFE_PROJECT_TOOLS } from './catalog/cfeProjectTools';
 import { ROLE_RIGHTS_TOOLS } from './catalog/roleRightsTools';
 import { SYNTAX_HELP_TOOLS } from './catalog/syntaxHelpTools';
+import { TASK_TOOLS } from './catalog/taskTools';
+import { REPOSITORY_TOOLS } from './catalog/repositoryTools';
 import type { McpToolAnnotations, McpToolDefinition } from './catalog/types';
 import {
   READ_CLOSED,
@@ -39,6 +41,8 @@ export const LEGACY_MCP_TOOL_CATALOG: readonly McpToolDefinition[] = [
   ...SUPPORT_TOOLS,
   ...EXTERNAL_PROCESSOR_MCP_TOOLS,
   ...CFE_PROJECT_TOOLS,
+  ...TASK_TOOLS,
+  ...REPOSITORY_TOOLS,
 ];
 
 export type McpToolProfile =
@@ -142,10 +146,11 @@ export const MCP_TOOL_CATALOG: readonly CompactMcpToolDefinition[] = [
 export type AgentCommandExecutor = (
   command: string,
   args: Record<string, unknown>,
+  cancellation?: vscode.CancellationToken,
 ) => Promise<unknown>;
 
-const defaultExecutor: AgentCommandExecutor = (command, args) =>
-  Promise.resolve(vscode.commands.executeCommand(command, args));
+const defaultExecutor: AgentCommandExecutor = (command, args, cancellation) =>
+  Promise.resolve(vscode.commands.executeCommand(command, args, cancellation));
 
 function agentFailure(code: string, error: string, data?: Record<string, unknown>): AgentResult<unknown> {
   return { success: false, code, error, ...(data ? { data } : {}) };
@@ -241,12 +246,12 @@ function registerOperationTool(
 
       let result: AgentResult;
       try {
-        result = await executeCommand(tool.command, args) as AgentResult;
+        result = await executeCommand(tool.command, args, cancellationToken(extra.signal)) as AgentResult;
       } catch {
         result = exceptionResult();
       }
 
-      if (extra.signal.aborted) {
+      if (extra.signal.aborted && !isRepositoryServiceResult(tool.command, result) && !isTaskEnvelope(result)) {
         return mapAgentResult(cancellationResult());
       }
       return mapAgentResult(result);
@@ -302,17 +307,53 @@ function registerCompactTool(
 
       let result: AgentResult;
       try {
-        result = await executeCommand(operation.command, validated.data) as AgentResult;
+        result = await executeCommand(operation.command, validated.data, cancellationToken(extra.signal)) as AgentResult;
       } catch {
         result = exceptionResult();
       }
 
-      if (extra.signal.aborted) {
+      if (extra.signal.aborted && !isRepositoryServiceResult(operation.command, result) && !isTaskEnvelope(result)) {
         return mapAgentResult(cancellationResult());
       }
       return mapAgentResult(result);
     },
   );
+}
+
+function cancellationToken(signal: AbortSignal): vscode.CancellationToken {
+  return {
+    get isCancellationRequested(): boolean {
+      return signal.aborted;
+    },
+    onCancellationRequested(listener: (event: unknown) => unknown): vscode.Disposable {
+      const onAbort = () => { void listener(undefined); };
+      if (signal.aborted) {
+        onAbort();
+        return { dispose: () => undefined };
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      return { dispose: () => signal.removeEventListener('abort', onAbort) };
+    },
+  };
+}
+
+function isRepositoryServiceResult(command: string, result: AgentResult): boolean {
+  if (!command.startsWith('1c-metadata-tree.agent.repository.')) {
+    return false;
+  }
+  if (!result.data || typeof result.data !== 'object') {
+    return false;
+  }
+  const status = (result.data as { status?: unknown }).status;
+  return status === 'acknowledged' || status === 'failed' || status === 'inDoubt' || status === 'cancelled';
+}
+
+function isTaskEnvelope(result: AgentResult): boolean {
+  if (!result.data || typeof result.data !== 'object') {
+    return false;
+  }
+  const data = result.data as { taskId?: unknown; status?: unknown };
+  return typeof data.taskId === 'string' && typeof data.status === 'string';
 }
 
 export function registerMcpTools(

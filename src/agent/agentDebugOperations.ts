@@ -68,7 +68,14 @@ export class AgentDebugOperations {
     // ─── Запуск / остановка ──────────────────────────────────────────────────
 
     /** Запускает отладочную сессию 1С с заданными параметрами. */
-    async debugStart(params: DebugStartParams): Promise<AgentResult<DebugStartResult>> {
+    async debugStart(
+        params: DebugStartParams,
+        token?: vscode.CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<DebugStartResult>> {
+        if (token?.isCancellationRequested) {
+            return cancelledBeforeStart();
+        }
         // Валидация обязательных параметров
         if (!params.rootProject) {
             return { success: false, error: 'параметр rootProject обязателен' };
@@ -147,6 +154,7 @@ export class AgentDebugOperations {
         }, debugStartConfig.timeoutMs);
 
         // Запустить отладку
+        reportStage?.('Ожидание запуска отладочной сессии 1С.');
         Logger.info('AgentDebug.debugStart pre-call', {
             folderName: folder.name,
             debuggeeType: params.debuggeeType ?? 'thinClient',
@@ -175,6 +183,9 @@ export class AgentDebugOperations {
         try {
             const session = await sessionPromise;
             clearTimeout(timeoutHandle);
+            if (token?.isCancellationRequested) {
+                return await cancelStartedDebugSession(session, reportStage);
+            }
             const data: DebugStartResult = { sessionId: session.id };
             if (webServerHttpPort !== undefined) {
                 data.webServerUrl = `http://localhost:${webServerHttpPort}`;
@@ -190,7 +201,13 @@ export class AgentDebugOperations {
             }
             return { success: true, data };
         } catch {
-            return { success: false, error: 'timeout waiting for session start' };
+            return token?.isCancellationRequested
+                ? {
+                    success: false,
+                    code: 'DEBUG_START_IN_DOUBT',
+                    error: 'Отмена запрошена, но запуск не подтвердил исход сессии до таймаута.',
+                }
+                : { success: false, error: 'timeout waiting for session start' };
         }
     }
 
@@ -350,7 +367,11 @@ export class AgentDebugOperations {
     // ─── Ожидание и навигация ────────────────────────────────────────────────
 
     /** Ожидает остановки отладчика (breakpoint, exception, step) с таймаутом. */
-    async debugWaitForStop(params: DebugWaitForStopParams): Promise<AgentResult<DebugWaitForStopResult>> {
+    async debugWaitForStop(
+        params: DebugWaitForStopParams,
+        token?: vscode.CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<DebugWaitForStopResult>> {
         // Валидация
         if (!params.sessionId) {
             return { success: false, error: 'параметр sessionId обязателен' };
@@ -361,6 +382,10 @@ export class AgentDebugOperations {
             return { success: false, error: 'session not found in registry' };
         }
 
+        if (token?.isCancellationRequested) {
+            return cancelledBeforeStart();
+        }
+
         let stop: LastStop | null;
 
         // Использовать кэшированный stop если он достаточно свежий
@@ -369,22 +394,38 @@ export class AgentDebugOperations {
         } else {
             // Ждать через Promise с добавлением в waiters
             const timeoutMs = params.timeoutMs ?? 30_000;
-            stop = await new Promise<LastStop | null>((resolve) => {
+            reportStage?.(`Ожидание остановки debug-сессии ${params.sessionId}.`);
+            const waited = await new Promise<LastStop | 'cancelled' | null>((resolve) => {
                 const resolverHolder: { fn: ((s: LastStop) => void) | undefined } = { fn: undefined };
-                const timer = setTimeout(() => {
+                let settled = false;
+                const cancellationHolder: { value: vscode.Disposable | undefined } = { value: undefined };
+                const finish = (value: LastStop | 'cancelled' | null): void => {
+                    if (settled) { return; }
+                    settled = true;
+                    clearTimeout(timer);
+                    cancellationHolder.value?.dispose();
                     if (resolverHolder.fn !== undefined) {
                         const idx = entry.waiters.indexOf(resolverHolder.fn);
                         if (idx >= 0) { entry.waiters.splice(idx, 1); }
                     }
-                    resolve(null);
+                    resolve(value);
+                };
+                const timer = setTimeout(() => {
+                    finish(null);
                 }, timeoutMs);
                 const resolver = (s: LastStop) => {
-                    clearTimeout(timer);
-                    resolve(s);
+                    finish(s);
                 };
                 resolverHolder.fn = resolver;
                 entry.waiters.push(resolver);
+                cancellationHolder.value = token?.onCancellationRequested(() => finish('cancelled'));
+                if (token?.isCancellationRequested) { finish('cancelled'); }
             });
+
+            if (waited === 'cancelled') {
+                return cancelledBeforeStart();
+            }
+            stop = waited;
 
             if (!stop) {
                 return { success: false, error: 'timeout waiting for stop' };
@@ -634,7 +675,14 @@ export class AgentDebugOperations {
     // ─── Запуск по привязке ───────────────────────────────────────────────────
 
     /** Запускает отладочную сессию по configPath, автоматически резолвя binding и инфобазу. */
-    async debugStartFromBinding(params: DebugStartFromBindingParams): Promise<AgentResult<DebugStartResult>> {
+    async debugStartFromBinding(
+        params: DebugStartFromBindingParams,
+        token?: vscode.CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<DebugStartResult>> {
+        if (token?.isCancellationRequested) {
+            return cancelledBeforeStart();
+        }
         // 1. Проверка deps
         if (!this.deps?.bindingManager || !this.deps?.infobaseStorage) {
             return { success: false, error: 'AgentDebugOperations не сконфигурирован для startFromBinding (нет deps)' };
@@ -696,6 +744,7 @@ export class AgentDebugOperations {
         }
 
         // 5. Вызвать startDebuggingFromConfigPath
+        reportStage?.('Разрешена привязка; ожидание запуска отладочной сессии 1С.');
         let started: boolean;
         try {
             started = await startDebuggingFromConfigPath({
@@ -726,6 +775,9 @@ export class AgentDebugOperations {
         try {
             const session = await sessionPromise;
             clearTimeout(timeoutHandle);
+            if (token?.isCancellationRequested) {
+                return await cancelStartedDebugSession(session, reportStage);
+            }
             const data: DebugStartResult = { sessionId: session.id };
             if (webServerHttpPort !== undefined) {
                 data.webServerUrl = `http://localhost:${webServerHttpPort}`;
@@ -741,7 +793,60 @@ export class AgentDebugOperations {
             }
             return { success: true, data };
         } catch {
-            return { success: false, error: 'timeout waiting for session start' };
+            return token?.isCancellationRequested
+                ? {
+                    success: false,
+                    code: 'DEBUG_START_IN_DOUBT',
+                    error: 'Отмена запрошена, но запуск не подтвердил исход сессии до таймаута.',
+                }
+                : { success: false, error: 'timeout waiting for session start' };
         }
     }
+}
+
+function cancelledBeforeStart(): AgentResult<never> {
+    return { success: false, code: 'REQUEST_CANCELLED', error: 'Операция отменена до запуска.' };
+}
+
+async function cancelStartedDebugSession(
+    session: vscode.DebugSession,
+    reportStage?: (message: string) => void,
+): Promise<AgentResult<DebugStartResult>> {
+    reportStage?.('Отмена запрошена; останавливается запущенная debug-сессия.');
+    let termination: vscode.Disposable | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const terminated = new Promise<boolean>((resolve) => {
+        termination = vscode.debug.onDidTerminateDebugSession((ended) => {
+            if (ended.id === session.id) {
+                if (timer !== undefined) { clearTimeout(timer); }
+                termination?.dispose();
+                resolve(true);
+            }
+        });
+        timer = setTimeout(() => {
+            termination?.dispose();
+            resolve(false);
+        }, 5_000);
+    });
+    try {
+        await vscode.debug.stopDebugging(session);
+    } catch {
+        termination?.dispose();
+        if (timer !== undefined) { clearTimeout(timer); }
+        return {
+            success: false,
+            code: 'DEBUG_START_IN_DOUBT',
+            data: { sessionId: session.id },
+            error: 'Не удалось подтвердить остановку запущенной debug-сессии после запроса отмены.',
+        };
+    }
+    if (await terminated) {
+        return { success: false, code: 'REQUEST_CANCELLED', error: 'Debug-сессия остановлена после запроса отмены.' };
+    }
+    return {
+        success: false,
+        code: 'DEBUG_START_IN_DOUBT',
+        data: { sessionId: session.id },
+        error: 'Команда остановки отправлена, но завершение debug-сессии не подтверждено.',
+    };
 }

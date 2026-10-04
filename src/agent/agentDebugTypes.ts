@@ -22,6 +22,8 @@ export interface DebugStartParams {
     debuggeeType?: 'thinClient' | 'webServer';
     /** Абсолютный путь к каталогу файловой базы. Обязателен для webServer. */
     databasePath?: string;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат запуска отладочной сессии. */
@@ -94,6 +96,8 @@ export interface DebugWaitForStopParams {
     sessionId: string;
     /** Таймаут в миллисекундах (по умолчанию 30000). */
     timeoutMs?: number;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }
 
 /** Результат ожидания остановки отладчика. */
@@ -216,4 +220,6 @@ export interface DebugStartFromBindingParams {
     configPath?: string;
     /** Тип debuggee: тонкий клиент (default) или ibsrv веб-сервер. */
     debuggeeType?: 'thinClient' | 'webServer';
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
 }

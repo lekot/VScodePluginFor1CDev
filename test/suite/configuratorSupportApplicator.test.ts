@@ -98,6 +98,7 @@ suite('ConfiguratorSupportApplicator', () => {
     const cache = new SupportPayloadCache(path.join(root, 'cache'));
     const operations: string[] = [];
     const applyTrace: string[] = [];
+    const processOutputMessages: string[] = [];
     let admissionCalls = 0;
     let stagedMaster: Buffer | undefined;
     let stagedSupplier: Buffer | undefined;
@@ -119,6 +120,8 @@ suite('ConfiguratorSupportApplicator', () => {
           await writeDump(options, fixture.dumpBytes, fixture.supplierBytes);
         } else {
           applyTrace.push('runProcess');
+          options.onOutput?.('loading configuration\n');
+          options.onOutput?.('100%');
           const staging = argumentAfter(options, '/LoadConfigFromFiles');
           stagedMaster = await fs.readFile(path.join(staging, 'Ext', 'ParentConfigurations.bin'));
           stagedSupplier = await fs.readFile(
@@ -147,7 +150,10 @@ suite('ConfiguratorSupportApplicator', () => {
       target,
       fixture.snapshot,
       cold.payload,
-      NEVER_CANCELLED,
+      {
+        ...NEVER_CANCELLED,
+        reportStage: (message) => processOutputMessages.push(message),
+      },
       async () => {
         admissionCalls += 1;
         const applyRoot = await findApplyRoot(root);
@@ -168,6 +174,7 @@ suite('ConfiguratorSupportApplicator', () => {
     assert.deepStrictEqual(stagedMaster, fixture.desiredBytes);
     assert.deepStrictEqual(stagedSupplier, fixture.supplierBytes);
     assert.deepStrictEqual(operations, ['minimalDump', 'partialApply']);
+    assert.deepStrictEqual(processOutputMessages, ['loading configuration', '100%']);
     assert.strictEqual(admissionCalls, 1);
     assert.deepStrictEqual(applyTrace, ['beforeEffect', 'runProcess']);
 

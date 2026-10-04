@@ -136,6 +136,8 @@ export interface SupportMutationRequest {
   readonly objectId: string;
   readonly targetMode: ObjectSupportMode;
   readonly expectedGenerationId: string;
+  /** Per-operation cancellation, typically owned by an Agent background task. */
+  readonly cancellation?: SupportCancellation;
 }
 
 export interface EnableObjectRulesRequest {
@@ -144,6 +146,8 @@ export interface EnableObjectRulesRequest {
   readonly targetMode: 'editableWithSupport' | 'removedFromSupport';
   readonly expectedGenerationId: string;
   readonly expectedMetadataUniverseGenerationId: string;
+  /** Per-operation cancellation, typically owned by an Agent background task. */
+  readonly cancellation?: SupportCancellation;
 }
 
 export interface SupportMutationResult {
@@ -393,6 +397,47 @@ export interface SupportDisposable {
 export interface SupportCancellation {
   readonly isCancellationRequested: boolean;
   onCancellationRequested(listener: () => void): SupportDisposable;
+  /** Optional bounded progress sink for process output and operation stages. */
+  reportStage?(message: string): void;
+}
+
+/** Combine service-lifecycle and individual-operation cancellation/progress sources. */
+export function combineSupportCancellations(
+  ...sources: readonly (SupportCancellation | undefined)[]
+): SupportCancellation {
+  const active = sources.filter((source): source is SupportCancellation => source !== undefined);
+  return {
+    get isCancellationRequested(): boolean {
+      return active.some((source) => source.isCancellationRequested);
+    },
+    onCancellationRequested(listener): SupportDisposable {
+      let disposed = false;
+      let fired = false;
+      const notify = (): void => {
+        if (!disposed && !fired) {
+          fired = true;
+          listener();
+        }
+      };
+      const registrations = active.map((source) => source.onCancellationRequested(notify));
+      if (active.some((source) => source.isCancellationRequested)) {
+        notify();
+      }
+      return {
+        dispose: () => {
+          disposed = true;
+          for (const registration of registrations) {
+            registration.dispose();
+          }
+        },
+      };
+    },
+    reportStage: (message) => {
+      for (const source of active) {
+        source.reportStage?.(message);
+      }
+    },
+  };
 }
 
 export interface SupportSyncRequest {
@@ -574,11 +619,13 @@ export interface SupportSyncOperationRequest {
   readonly configurationId: ConfigurationId;
   readonly targets: TargetSelection;
   readonly verification?: 'fast' | 'strict';
+  readonly cancellation?: SupportCancellation;
 }
 
 export interface SupportVerifyOperationRequest {
   readonly configurationId: ConfigurationId;
   readonly targets: TargetSelection;
+  readonly cancellation?: SupportCancellation;
 }
 
 export interface SupportGetLastRunRequest {

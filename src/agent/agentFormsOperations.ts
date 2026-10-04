@@ -4,16 +4,18 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import type { CancellationToken } from 'vscode';
 import type { AgentResult } from './types';
 import type {
     FormsStartParams, FormsStartResult,
+    FormsStartInDoubtResult, FormsOperationInDoubtResult,
     FormsExecParams, FormsExecResult,
     FormsStopParams, FormsStopResult,
     FormsShotParams, FormsShotResult,
     FormsStatusParams, FormsStatusResult,
 } from './agentFormsTypes';
 import { FormsContext } from '../services/forms/FormsContext';
-import { startIbsrv } from '../services/forms/FormsIbsrvLauncher';
+import { IbsrvStartCancelledError, startIbsrv } from '../services/forms/FormsIbsrvLauncher';
 import { runFormsScript } from '../services/forms/runFormsScript';
 import { ensureChromiumInstalled } from '../services/forms/chromiumInstaller';
 import { getPlatformPathSetting } from '../services/metadataTreeSettings';
@@ -69,7 +71,12 @@ export class FormsOperations {
      * Если задан dbPath — сначала поднимает ibsrv, потом подключает playwright.
      * Если задан url — подключается напрямую.
      */
-    async formsStart(params: FormsStartParams): Promise<AgentResult<FormsStartResult>> {
+    async formsStart(
+        params: FormsStartParams,
+        token?: CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<FormsStartResult | FormsStartInDoubtResult>> {
+        if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
         if (!params.url && !params.dbPath) {
             return { success: false, error: 'Необходимо указать url или dbPath' };
         }
@@ -86,19 +93,24 @@ export class FormsOperations {
 
         return this.context.runExclusive(async () => {
             const ctx = this.context;
+            if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
+            reportStage?.('Остановка предыдущей сессии форм.');
             const previousCleanup = await ctx.stop();
             if (previousCleanup.errors.length > 0) {
                 return { success: false, error: `Не удалось остановить предыдущую сессию: ${previousCleanup.errors.join('; ')}` };
             }
+            if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
             try {
                 let targetUrl = params.url ?? '';
                 let ibsrvSpawned = false;
                 if (params.dbPath && platformPath) {
+                    reportStage?.('Запуск ibsrv и ожидание готовности файловой базы.');
                     const result = await (this.deps.startIbsrv ?? startIbsrv)(
                         {
                             platformPath,
                             dbPath: params.dbPath,
                             readyTimeoutMs: params.readyTimeoutMs,
+                            token,
                             onSpawned: (resource) => {
                                 ctx.setIbsrv(resource.proc, resource.port, params.dbPath!, resource.dataDir);
                             },
@@ -114,17 +126,32 @@ export class FormsOperations {
                     ibsrvSpawned = true;
                 }
 
+                if (token?.isCancellationRequested) {
+                    return this.cancelStartAfterCleanup(ctx, reportStage);
+                }
+                reportStage?.('Проверка и запуск Chromium для сессии форм.');
                 await (this.deps.ensureChromiumInstalled ?? ensureChromiumInstalled)(this.deps.extensionPath);
-                const scriptResult = await this.runScript({
+                if (token?.isCancellationRequested) {
+                    return this.cancelStartAfterCleanup(ctx, reportStage);
+                }
+                const scriptResult = await this.runShortScript({
                     command: 'start',
                     args: [targetUrl],
                     timeoutMs: params.readyTimeoutMs ?? 60_000,
+                    token,
                     detachOnReady: (stdout) => /"message":\s*"Browser ready"/.test(stdout),
                 });
-                if (scriptResult.unclosedProc) {
-                    ctx.setBrowserProc(scriptResult.unclosedProc, async () => {
-                        throw new Error('forms runner timed out before browser readiness');
-                    });
+                if (scriptResult.cancelled) {
+                    return this.cancelStartAfterCleanup(ctx, reportStage, scriptResult.effectPossible);
+                }
+                if (scriptResult.timedOut) {
+                    const cleanup = await ctx.stop();
+                    return {
+                        success: false,
+                        code: 'FORMS_START_IN_DOUBT',
+                        data: { status: 'inDoubt', effectPossible: true },
+                        error: `Запуск браузера превысил таймаут; состояние сессии не подтверждено.${cleanup.errors.length ? ` Cleanup: ${cleanup.errors.join('; ')}` : ''}`,
+                    };
                 }
                 if (scriptResult.exitCode !== 0 || !scriptResult.detachedProc) {
                     throw new Error(
@@ -139,6 +166,10 @@ export class FormsOperations {
                         throw new Error(`run.mjs stop завершился с кодом ${stopResult.exitCode}`);
                     }
                 });
+
+                if (token?.isCancellationRequested) {
+                    return this.cancelStartAfterCleanup(ctx, reportStage, true);
+                }
 
                 return {
                     success: true,
@@ -157,7 +188,17 @@ export class FormsOperations {
                 const cleanupSuffix = cleanup.errors.length > 0
                     ? ` Cleanup: ${cleanup.errors.join('; ')}`
                     : '';
-                return { success: false, error: error + cleanupSuffix };
+                if (err instanceof IbsrvStartCancelledError && cleanup.errors.length === 0) {
+                    return cancelledBeforeStart('Запуск ibsrv отменён; процессы остановлены.');
+                }
+                return token?.isCancellationRequested
+                    ? {
+                        success: false,
+                        code: 'FORMS_START_IN_DOUBT',
+                        data: { status: 'inDoubt', effectPossible: true },
+                        error: `Отмена запрошена, но состояние запуска форм не подтверждено: ${error}${cleanupSuffix}`,
+                    }
+                    : { success: false, error: error + cleanupSuffix };
             }
         });
     }
@@ -168,18 +209,29 @@ export class FormsOperations {
      * Выполняет BSL-скрипт в активной сессии браузера форм 1С.
      * Скрипт передаётся через stdin (run.mjs exec -).
      */
-    async formsExec(params: FormsExecParams): Promise<AgentResult<FormsExecResult>> {
+    async formsExec(
+        params: FormsExecParams,
+        token?: CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<FormsExecResult | FormsOperationInDoubtResult>> {
+        if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
         if (!params.script) {
             return { success: false, error: 'параметр script обязателен' };
         }
         return this.context.runExclusive(async () => {
             try {
+                if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
+                reportStage?.('Выполнение BSL в браузерной сессии форм.');
                 const result = await this.runShortScript({
                     command: 'exec',
                     args: ['-'],
                     stdin: params.script,
                     timeoutMs: params.timeoutMs,
+                    token,
                 });
+
+                const terminationFailure = formsProcessTerminationFailure(result, 'Выполнение BSL');
+                if (terminationFailure) { return terminationFailure; }
 
                 if (result.exitCode !== 0) {
                     return {
@@ -221,18 +273,29 @@ export class FormsOperations {
     /**
      * Делает скриншот активной формы 1С и сохраняет в PNG.
      */
-    async formsShot(params: FormsShotParams): Promise<AgentResult<FormsShotResult>> {
+    async formsShot(
+        params: FormsShotParams,
+        token?: CancellationToken,
+        reportStage?: (message: string) => void,
+    ): Promise<AgentResult<FormsShotResult | FormsOperationInDoubtResult>> {
+        if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
         return this.context.runExclusive(async () => {
           try {
+            if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
             const file = params.file ?? path.join(
                 os.tmpdir(),
                 `forms-shot-${Date.now()}.png`,
             );
 
+            reportStage?.('Сохранение скриншота формы.');
             const result = await this.runShortScript({
                 command: 'shot',
                 args: [file],
+                token,
             });
+
+            const terminationFailure = formsProcessTerminationFailure(result, 'Скриншот формы');
+            if (terminationFailure) { return terminationFailure; }
 
             if (result.exitCode !== 0) {
                 return {
@@ -290,4 +353,46 @@ export class FormsOperations {
           }
         });
     }
+
+    private async cancelStartAfterCleanup(
+        ctx: FormsContext,
+        reportStage?: (message: string) => void,
+        effectPossible = true,
+    ): Promise<AgentResult<FormsStartResult | FormsStartInDoubtResult>> {
+        reportStage?.('Отмена запрошена; проверяется остановка процессов сессии форм.');
+        const cleanup = await ctx.stop();
+        if (cleanup.errors.length === 0) {
+            return cancelledBeforeStart('Запуск сессии форм отменён; созданные процессы остановлены.');
+        }
+        return {
+            success: false,
+            code: 'FORMS_START_IN_DOUBT',
+            data: { status: 'inDoubt', effectPossible },
+            error: `Отмена запрошена, но остановка процессов не подтверждена: ${cleanup.errors.join('; ')}`,
+        };
+    }
+}
+
+function cancelledBeforeStart(message = 'Операция отменена до запуска процессов форм.'): AgentResult<never> {
+    return { success: false, code: 'REQUEST_CANCELLED', error: message };
+}
+
+function formsProcessTerminationFailure(
+    result: Awaited<ReturnType<typeof runFormsScript>>,
+    operation: string,
+): AgentResult<FormsOperationInDoubtResult> | AgentResult<never> | undefined {
+    if (result.cancelled && result.effectPossible === false) {
+        return cancelledBeforeStart(`${operation} отменено до запуска процесса.`);
+    }
+    if ((result.cancelled || result.timedOut || result.unclosedProc) && result.effectPossible !== false) {
+        return {
+            success: false,
+            code: 'FORMS_OPERATION_IN_DOUBT',
+            data: { status: 'inDoubt', effectPossible: true },
+            error: result.cancelled
+                ? `${operation}: процесс остановлен после запроса отмены, но эффект операции не подтверждён.`
+                : `${operation}: процесс завершился по таймауту или не подтвердил остановку; эффект операции не подтверждён.`,
+        };
+    }
+    return undefined;
 }

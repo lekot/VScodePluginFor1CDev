@@ -115,6 +115,7 @@ export class ConfigurationRepositoryService {
     infobase: InfobaseEntry,
     binding: RepositoryBinding & { readonly repositoryPassword?: string },
     token: vscode.CancellationToken,
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     if (infobase.type !== 'file') {
       return this.failure(target, [], 'Хранилище конфигурации поддерживается только для файловой ИБ.');
@@ -139,6 +140,7 @@ export class ConfigurationRepositoryService {
       }
       const outcome = await this.runTransport({
         operation: 'bind', target, infobase, binding: candidateBinding, cancellation: token,
+        onOutput,
       });
       if (outcome.status === 'inDoubt') {
         return this.inDoubtOrFailure(outcome, target, [], identity);
@@ -176,6 +178,7 @@ export class ConfigurationRepositoryService {
     target: RepositoryTarget,
     token: vscode.CancellationToken,
     force = false,
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     const infobase = await this.resolveExecutionInfobase(target);
     if (!infobase.entry) {
@@ -188,7 +191,7 @@ export class ConfigurationRepositoryService {
         return this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.');
       }
       const outcome = await this.runTransport({
-        operation: 'unbind', target, infobase: executionInfobase, binding, force, cancellation: token,
+        operation: 'unbind', target, infobase: executionInfobase, binding, force, cancellation: token, onOutput,
       });
       if (outcome.status !== 'acknowledged') {
         return this.inDoubtOrFailure(outcome, target, [], identity);
@@ -216,26 +219,29 @@ export class ConfigurationRepositoryService {
     node: TreeNode,
     token: vscode.CancellationToken,
     options: { readonly recursive?: boolean; readonly revised?: boolean } = {},
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     return this.runObjectOperation(node, 'lock', token, options.recursive !== false, {
       force: options.revised === true,
-    });
+    }, onOutput);
   }
 
   async unlock(
     node: TreeNode,
     token: vscode.CancellationToken,
     options: { readonly recursive?: boolean; readonly force?: boolean } = {},
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     return this.runObjectOperation(node, 'unlock', token, options.recursive !== false, {
       force: options.force === true,
-    });
+    }, onOutput);
   }
 
   async commit(
     node: TreeNode,
     token: vscode.CancellationToken,
     options: { readonly recursive?: boolean; readonly comment?: string; readonly keepLocked?: boolean; readonly force?: boolean } = {},
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     const target = resolveRepositoryTarget(node);
     const reference = target ? resolveRepositoryObject(node, target) : undefined;
@@ -260,6 +266,7 @@ export class ConfigurationRepositoryService {
         token,
         logContext: 'перед помещением в Хранилище',
         ...(target.extensionName ? { ibcmdExtensionName: target.extensionName } : {}),
+        onOutput,
       });
       if (imported.status !== 'success') {
         return this.fromIbcmd(imported.status, target, reference.relativeFiles, imported.userMessage);
@@ -273,6 +280,7 @@ export class ConfigurationRepositoryService {
           keepLocked: options.keepLocked === true,
           force: options.force === true,
           cancellation: token,
+          onOutput,
         });
         if (outcome.status !== 'acknowledged') {
           return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity);
@@ -297,14 +305,16 @@ export class ConfigurationRepositoryService {
     node: TreeNode,
     token: vscode.CancellationToken,
     options: { readonly recursive?: boolean; readonly force?: boolean } = {},
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
-    return this.runUpdate(node, 'updateObject', token, options.recursive !== false, options.force === true);
+    return this.runUpdate(node, 'updateObject', token, options.recursive !== false, options.force === true, onOutput);
   }
 
   async updateConfiguration(
     node: TreeNode,
     token: vscode.CancellationToken,
     force = false,
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     const target = resolveRepositoryTarget(node);
     if (!target) {
@@ -321,7 +331,7 @@ export class ConfigurationRepositoryService {
         return this.failure(target, [], 'Для конфигурации не настроено подключение к Хранилищу.');
       }
       const outcome = await this.runTransport({
-        operation: 'updateConfiguration', target, infobase: executionInfobase, binding, force, cancellation: token,
+        operation: 'updateConfiguration', target, infobase: executionInfobase, binding, force, cancellation: token, onOutput,
       });
       if (outcome.status !== 'acknowledged') {
         return this.inDoubtOrFailure(outcome, target, [], identity);
@@ -333,6 +343,7 @@ export class ConfigurationRepositoryService {
         token,
         logContext: 'после обновления из Хранилища',
         ...(target.extensionName ? { ibcmdExtensionName: target.extensionName } : {}),
+        onOutput,
       });
       if (exported.status !== 'success') {
         return this.fromIbcmd(exported.status, target, [], `Хранилище обновлено, но выгрузка файлов не выполнена: ${exported.userMessage}`);
@@ -356,6 +367,7 @@ export class ConfigurationRepositoryService {
     token: vscode.CancellationToken,
     recursive: boolean,
     extra: { readonly force: boolean },
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     const target = resolveRepositoryTarget(node);
     const reference = target ? resolveRepositoryObject(node, target) : undefined;
@@ -379,6 +391,7 @@ export class ConfigurationRepositoryService {
           objectListPath: objects.filePath,
           force: extra.force,
           cancellation: token,
+          onOutput,
         });
         if (outcome.status !== 'acknowledged') {
           return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity);
@@ -406,6 +419,7 @@ export class ConfigurationRepositoryService {
     token: vscode.CancellationToken,
     recursive: boolean,
     force: boolean,
+    onOutput?: (chunk: string) => void,
   ): Promise<RepositoryServiceResult> {
     const target = resolveRepositoryTarget(node);
     const reference = target ? resolveRepositoryObject(node, target) : undefined;
@@ -429,6 +443,7 @@ export class ConfigurationRepositoryService {
           objectListPath: objects.filePath,
           force,
           cancellation: token,
+          onOutput,
         });
         if (outcome.status !== 'acknowledged') {
           return this.inDoubtOrFailure(outcome, target, objects.fullNames, identity);
@@ -441,6 +456,7 @@ export class ConfigurationRepositoryService {
           token,
           logContext: 'после обновления из Хранилища',
           ...(target.extensionName ? { ibcmdExtensionName: target.extensionName } : {}),
+          onOutput,
         });
         if (exported.status !== 'success') {
           return this.fromIbcmd(exported.status, target, reference.relativeFiles, `Хранилище обновлено, но выгрузка объекта не выполнена: ${exported.userMessage}`);

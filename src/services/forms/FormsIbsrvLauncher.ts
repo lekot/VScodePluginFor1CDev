@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import * as vscode from 'vscode';
+import type { CancellationToken } from 'vscode';
 import { getFreePort } from '../../debug/debuggeeLauncher';
 import { isChildProcessTerminated, terminateChildProcess } from './processLifecycle';
 
@@ -23,6 +24,8 @@ export interface IbsrvStartOptions {
     httpPort?: number;
     /** Таймаут readiness в мс (default 30000). */
     readyTimeoutMs?: number;
+    /** Cancellation token checked while waiting for readiness. */
+    token?: CancellationToken;
     /**
      * Transfers process ownership immediately after spawn, before readiness can fail.
      * The owner must retain the handle and data directory until process exit is proven.
@@ -37,6 +40,14 @@ export interface IbsrvStartResult {
     proc: ChildProcess;
     /** Временный каталог --data. */
     dataDir: string;
+}
+
+/** Raised after a requested cancellation has prevented ibsrv from becoming a live session. */
+export class IbsrvStartCancelledError extends Error {
+    constructor() {
+        super('Запуск ibsrv отменён до готовности.');
+        this.name = 'IbsrvStartCancelledError';
+    }
 }
 
 /**
@@ -61,6 +72,11 @@ export async function startIbsrv(
     const port = opts.httpPort ?? await getFreePort();
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), '1c-ibsrv-'));
     const readyTimeoutMs = opts.readyTimeoutMs ?? IBSRV_DEFAULT_READY_TIMEOUT_MS;
+
+    if (opts.token?.isCancellationRequested) {
+        await fs.promises.rm(dataDir, { recursive: true, force: true });
+        throw new IbsrvStartCancelledError();
+    }
 
     const args = [
         `--database-path=${opts.dbPath}`,
@@ -108,8 +124,12 @@ export async function startIbsrv(
     opts.onSpawned?.({ url, port, proc, dataDir });
 
     // Ждём готовности ibsrv
-    const ready = await _waitForIbsrv(url, proc, readyTimeoutMs, outputChannel);
-    if (!ready) {
+    const ready = await _waitForIbsrv(url, proc, readyTimeoutMs, outputChannel, opts.token);
+    if (ready === 'cancelled') {
+        await stopIbsrv(proc);
+        throw new IbsrvStartCancelledError();
+    }
+    if (ready !== 'ready') {
         // Убиваем процесс если он ещё жив
         await stopIbsrv(proc);
         await fs.promises.rm(dataDir, { recursive: true, force: true });
@@ -140,20 +160,24 @@ async function _waitForIbsrv(
     proc: ChildProcess,
     readyTimeoutMs: number,
     outputChannel: vscode.OutputChannel,
-): Promise<boolean> {
+    token?: CancellationToken,
+): Promise<'ready' | 'timeout' | 'cancelled'> {
     const deadline = Date.now() + readyTimeoutMs;
 
     while (Date.now() < deadline) {
+        if (token?.isCancellationRequested) {
+            return 'cancelled';
+        }
         // Если процесс уже завершился — нет смысла ждать
         if (isChildProcessTerminated(proc)) {
             outputChannel.appendLine('[FormsIbsrv] Процесс завершился до готовности.');
-            return false;
+            return 'timeout';
         }
 
         try {
             const ok = await _httpProbe(url);
             if (ok) {
-                return true;
+                return token?.isCancellationRequested ? 'cancelled' : 'ready';
             }
         } catch {
             // не готов
@@ -162,7 +186,7 @@ async function _waitForIbsrv(
         await new Promise<void>((resolve) => setTimeout(resolve, IBSRV_POLL_INTERVAL_MS));
     }
 
-    return false;
+    return token?.isCancellationRequested ? 'cancelled' : 'timeout';
 }
 
 function _httpProbe(url: string): Promise<boolean> {
