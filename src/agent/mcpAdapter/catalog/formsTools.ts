@@ -27,7 +27,7 @@ const formsExecInput = z.strictObject({
   background: z.boolean().default(true),
 });
 
-const formsShotInput = z.strictObject({ file: z.string().optional(), background: z.boolean().default(true) });
+const formsShotInput = z.strictObject({ file: z.string().optional(), timeoutMs: z.number().int().positive().optional(), background: z.boolean().default(true) });
 const nativeRef = z.strictObject({ id: nonEmptyString });
 const nativeCommon = {
   timeoutMs: z.number().int().positive().optional(),
@@ -40,6 +40,13 @@ const formsNativeInput = z.discriminatedUnion('action', [
     maxDepth: z.number().int().min(0).max(20).optional(),
     maxNodes: z.number().int().positive().max(2000).optional(),
   }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('commandInterface'),
+    maxDepth: z.number().int().min(0).max(10).optional(),
+    maxNodes: z.number().int().positive().max(1000).optional(),
+  }),
+  z.strictObject({ ...nativeCommon, action: z.literal('executeCommand'), url: nonEmptyString }),
   z.strictObject({
     ...nativeCommon,
     action: z.literal('find'),
@@ -60,6 +67,40 @@ const formsNativeInput = z.discriminatedUnion('action', [
     action: z.literal('act'),
     ref: nativeRef,
     method: z.enum(['click', 'activate']),
+  }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('readTable'),
+    ref: nativeRef,
+    maxRows: z.number().int().min(0).max(10000).optional(),
+  }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('formContext'),
+    includeTables: z.boolean().optional(),
+    maxDepth: z.number().int().min(0).max(10).optional(),
+    maxNodes: z.number().int().positive().max(1000).optional(),
+    maxRows: z.number().int().min(0).max(10000).optional(),
+  }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('createSnapshot'),
+    includeTables: z.boolean().optional(),
+    maxDepth: z.number().int().min(0).max(10).optional(),
+    maxNodes: z.number().int().positive().max(1000).optional(),
+    maxRows: z.number().int().min(0).max(10000).optional(),
+  }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('compareSnapshot'),
+    snapshotId: nonEmptyString,
+  }),
+  z.strictObject({ ...nativeCommon, action: z.literal('listSnapshots') }),
+  z.strictObject({ ...nativeCommon, action: z.literal('deleteSnapshot'), snapshotId: nonEmptyString }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('uiLog'),
+    operation: z.enum(['start', 'finish', 'pause', 'resume', 'cancel']),
   }),
 ]).refine((value) => value.action !== 'find' || Boolean(value.name || value.className || value.text), {
   message: 'find requires at least one of name, className, or text',
@@ -186,14 +227,14 @@ const formsEditInput = z.strictObject({
 export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   {
     name: 'cdt_forms_start',
-    description: 'Start or connect to a 1C web-client forms session. Returns a task receipt by default; set background=false to wait synchronously. When both dbPath and url are present, dbPath takes priority.',
+    description: 'Start a 1C forms session. Web connects through Playwright using url or dbPath; native connects to an already-running TestClient using driver="native" and port. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.start',
     inputSchema: formsStartInput,
     annotations: WRITE_OPEN,
   },
   {
     name: 'cdt_forms_exec',
-    description: 'Execute a BSL script in the connected 1C web-client browser session. Available only when forms.start used driver="web". Returns a task receipt by default; set background=false to wait synchronously.',
+    description: 'Execute JavaScript in the Node Playwright context for the connected 1C web-client browser session. This is not BSL execution. Available only when forms.start used driver="web". Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.exec',
     inputSchema: formsExecInput,
     annotations: WRITE_OPEN,
@@ -207,7 +248,7 @@ export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_forms_shot',
-    description: 'Capture a screenshot of the connected 1C web-client browser, optionally overwriting a local file. Available only when forms.start used driver="web". Returns a task receipt by default; set background=false to wait synchronously.',
+    description: 'Capture a screenshot of the connected 1C web browser or the exact native TestClient window identified by the active native session port. Native capture requires a local Windows TestClient; remote or unavailable windows return an error. Optionally overwrites a local file. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.shot',
     inputSchema: formsShotInput,
     annotations: WRITE_OPEN,
@@ -221,7 +262,7 @@ export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_forms_native',
-    description: 'Inspect or interact with the active form of an already-running 1C TestClient. Requires forms.start with driver="native" and an explicit port.',
+    description: 'Inspect or interact with an already-running 1C TestClient: read its form and command interface, execute a navigation URL, read table rows, capture local snapshots and compare them, or control its UI scenario recording. Table reading may temporarily change selection; the result reports whether restoration was verified. Requires forms.start with driver="native" and an explicit port.',
     command: '1c-metadata-tree.agent.forms.native',
     inputSchema: formsNativeInput,
     annotations: WRITE_OPEN,

@@ -275,7 +275,7 @@ Retryable selection учитывает только текущую master genera
 - XDTO compare/merge требуют хотя бы одно из `inputPath`/`source`; при наличии обоих сохраняется существующий приоритет Agent API;
 - XDTO package selector требует хотя бы одно из `packageName`/`metadataPath`; если присутствуют оба, сохраняется существующее разрешение Agent API;
 - SKD compile требует ровно одно из `definitionFile`/`value` и обязательный `outputPath`;
-- forms start требует хотя бы одно из `url`/`dbPath`; оба поля одновременно разрешены, и существующий Agent runtime отдаёт приоритет `dbPath`;
+- forms start для web требует хотя бы одно из `url`/`dbPath`; оба поля одновременно разрешены, и существующий Agent runtime отдаёт приоритет `dbPath`. Native требует `driver: "native"` и целый `port` от 1 до 65535, запрещая `url`/`dbPath`;
 - `debuggeeType` — только `thinClient | webServer`; SKD `mode`, `operation`, XDTO `joinStrategy` и command visibility задаются исчерпывающими enums.
 - support UUID — канонический UUID без coercion; `configurationId` и generation ids непустые;
   `TargetSelection` является strict discriminated union `all | retryable | ids`, а `ids.targetIds`
@@ -298,7 +298,7 @@ Retryable selection учитывает только текущую master genera
 - external processors: `{srcPath,outDir?,format,context,timeoutMs?}`,
   `{rootXmlPath,dstPath?,context,timeoutMs?}`;
 - subsystem/characteristics: `{configurationId?,subsystemPath}`, `{configurationId?,subsystemPath,commandName,common}`, `{configurationId?,subsystemPath,entries: strict {commandName:string,commandGroup:string}[]}`, `{configurationId?,subsystemPath,order:string[]}`, `{configurationId?,path}`, `{configurationId?,path,predefinedName}`, `{configurationId?,path,predefinedName,types:string[]}`;
-- forms: `{url?,dbPath?,platformPath?,readyTimeoutMs?}`, `{script,timeoutMs?}`, `{}`, `{file?}`, `{}`;
+- forms: `{driver?,url?,dbPath?,platformPath?,readyTimeoutMs?,host?,port?,platformVersion?}`, `{script,timeoutMs?}`, `{}`, `{file?,timeoutMs?}`, `{}`, native action union (`overview`, `commandInterface`, `executeCommand`, `find`, `readField`, `writeField`, `act`, `readTable`, `formContext`, `createSnapshot`, `compareSnapshot`, `listSnapshots`, `deleteSnapshot`, `uiLog`);
 - SKD: `{definitionFile?,value?,outputPath}`, `{templatePath,mode?,name?,batch?,limit?,offset?,outFile?}`, `{templatePath,operation,value,dataSet?,variant?,noSelection?}`, `{templatePath,detailed?,maxErrors?,outFile?}`;
 - XDTO: `{configurationId?}`, selector + `{includeSource?}`, selector + `{outputPath?,includeSource?}`, selector + `{inputPath?,source?}`, `{configurationId?,packageName,inputPath?,source?}`, selector + `{inputPath?,source?,includeTree?,joinStrategy?}`, selector + `{inputPath?,source?,selectedIds,joinStrategy?}`.
 

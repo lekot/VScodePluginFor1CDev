@@ -127,7 +127,7 @@ suite('MCP adapter: tool contract', () => {
           type?: string;
           properties?: { action?: { const?: string } };
         }> | undefined;
-        assert.strictEqual(actionSchemas?.length, 5, 'native forms must serialize a five-action union');
+        assert.strictEqual(actionSchemas?.length, 14, 'native forms must serialize all supported native actions');
         assert.ok(actionSchemas?.every((variant) => variant.type === 'object' && variant.properties?.action?.const));
       } else {
         assert.strictEqual(schema?.type, 'object');
@@ -225,6 +225,19 @@ suite('MCP adapter: AgentResult mapping and dispatch', () => {
       (result.structuredContent as unknown as { code: string }).code,
       'INVALID_ARGUMENTS',
     );
+  });
+
+  test('snapshot comparisons use the capture options stored with the snapshot', () => {
+    const native = MCP_OPERATION_CATALOG.find(({ name }) => name === 'cdt_forms_native')!;
+    assert.strictEqual(native.inputSchema.safeParse({
+      action: 'createSnapshot', includeTables: true, maxDepth: 10, maxNodes: 1000, maxRows: 500,
+    }).success, true);
+    assert.strictEqual(native.inputSchema.safeParse({
+      action: 'compareSnapshot', snapshotId: 'snapshot-1',
+    }).success, true);
+    assert.strictEqual(native.inputSchema.safeParse({
+      action: 'compareSnapshot', snapshotId: 'snapshot-1', includeTables: true,
+    }).success, false);
   });
 
   test('syntax help rejects conflicting get selectors before Agent dispatch', async () => {

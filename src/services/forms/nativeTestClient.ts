@@ -4,6 +4,11 @@ import * as os from 'os';
 import type {
   NativeFormsAction,
   NativeFormsActionResult,
+  NativeFormsCompareSnapshotResult,
+  NativeFormsContextElement,
+  NativeFormsFormContextResult,
+  NativeFormsReadTableResult,
+  NativeFormsSnapshotInfo,
   NativeFormsObject,
   NativeFormsOverviewResult,
 } from '../../agent/agentFormsTypes';
@@ -40,6 +45,13 @@ const ATTACH_CONTEXT = 'a587a2f5-072c-44ec-b10e-36c7bd2452b5';
 const ATTACH_HANDLE = 'c677ef8c-2656-4342-b752-a03d53bcbde6';
 const GET_ACTIVE_WINDOW = '0d854d55-8a06-49ee-9e29-2f8d0e7a9f0e';
 const GET_CHILD_OBJECTS = 'c92b100a-460b-402c-b5ae-b6e2329a7234';
+const GET_COMMAND_INTERFACE = 'fb8a317d-932c-4342-abeb-2494a167cb7a';
+const EXECUTE_COMMAND = '530549e3-c8e2-4bd0-881b-e98d27b886d1';
+const GET_SELECTED_ROWS = '7374a2ee-4fc4-43ea-b30f-b0246da4a771';
+const SELECT_ALL_ROWS = '59c81cd4-31c3-4665-a11d-f742a39431d5';
+const GOTO_ROW = '112bd033-41f2-4078-9bdf-1343ce656a93';
+const UILOG = '77e9254b-03ec-4499-ae39-60dcb9e2f440';
+const GOTOROW_MAPTYPE = '3d48feae-a9c6-4c5a-a099-9eb6477630c6';
 const CHILD_OBJECTS_REQUEST = Buffer.from([0xe1, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81]);
 const GET_EDIT_TEXT = 'e9ce0326-64c1-47de-ab5b-a07142ceaf79';
 const INPUT_TEXT = '9392ed8f-88a7-473d-8e66-d11d01ea95c1';
@@ -51,6 +63,13 @@ const ACTIVATE = '5de14e75-b66f-4ff6-9a9c-819ed06cd42b';
 const RESULT_SCALAR = Buffer.from([0xe1]);
 const RESULT_COLLECTION = Buffer.from([0xe0, 0x4b, 0x55]);
 const OBJECT_KEY = /^[A-Za-z][A-Za-z0-9]*\[[0-9a-fA-F-]{36}\](?:\.[A-Za-z][A-Za-z0-9]*(?:\[([^\x5d]*)\])?)*$/;
+
+interface NativeSnapshotCaptureOptions {
+  includeTables: boolean;
+  maxDepth: number;
+  maxNodes: number;
+  maxRows: number;
+}
 
 export type NativeAttachFrameBuilder = (sessionId: string, sequence: number) => Buffer;
 
@@ -316,8 +335,9 @@ export function buildRpcFrame(options: {
   methodGuid: string;
   key?: string;
   handle?: string;
-  kind?: 'read' | 'action' | 'commit';
+  kind?: 'read' | 'read818' | 'action' | 'commit';
   middle?: Buffer;
+  pad?: number;
   result?: 'scalar' | 'collection' | 'none';
   firstBinary?: boolean;
 }): Buffer {
@@ -342,9 +362,13 @@ export function buildRpcFrame(options: {
     Buffer.from([0xd5]),
     perCall,
     options.key === undefined ? Buffer.from([0x81]) : encodeProtocolString(options.key, 0x90),
-    Buffer.from(kind === 'action' ? [0x88, 0x82, 0x81] : commit ? [0x81, 0x81, 0x81] : [0x88, 0x81, 0x81]),
+    Buffer.from(kind === 'action' ? [0x88, 0x82, 0x81]
+      : kind === 'read818' || commit ? [0x81, 0x81, 0x81]
+        : [0x88, 0x81, 0x81]),
     middle,
-    Buffer.alloc(result === 'collection' ? 4 : 3, 0x20),
+    Buffer.alloc(options.pad ?? (result === 'collection' || middle.includes(Buffer.from([0x4b, 0x53]))
+      || middle.includes(Buffer.from([0x4b, 0x55])) || middle.includes(Buffer.from([0x4b, 0x4e]))
+      || middle.subarray(-2).equals(Buffer.from([0xcb, 0x55])) ? 4 : 3), 0x20),
     SCOM_TRAILER,
   ]);
   if (!options.firstBinary) {return frame;}
@@ -567,6 +591,7 @@ interface DecodedObjectRecord {
   className: string;
   name?: string;
   text?: string;
+  url?: string;
   type?: string;
 }
 
@@ -589,17 +614,215 @@ function decodeObjectRecords(frame: Buffer, parentKey?: string): DecodedObjectRe
     const title = readRecordStringValue(frame, recordStart, boundedEnd);
     const name = readRecordStringValue(frame, title.nextOffset, boundedEnd);
     const type = readRecordType(frame, name.nextOffset, boundedEnd, className);
+    const url = readObjectUrl(frame, title.nextOffset, boundedEnd, className);
     records.push({
       key: decoded,
       handle: span.handle,
       className,
       ...(last[2] !== undefined ? { name: last[2] } : {}),
       ...(title.value !== undefined && title.value !== '' ? { text: title.value } : {}),
+      ...(url !== undefined ? { url } : {}),
       ...(type !== undefined ? { type } : {}),
     });
     seen.add(decoded);
   }
   return records;
+}
+
+function readObjectUrl(frame: Buffer, offset: number, end: number, className: string): string | undefined {
+  // TestClient stores a CIButton navigation link in its bounded descriptor:
+  // <title><e1 81><length-tagged URL>. Missing or malformed data remains unknown.
+  if (className !== 'CIButton' || offset + 2 > end
+      || frame[offset] !== 0xe1 || frame[offset + 1] !== 0x81) {return undefined;}
+  const valueOffset = offset + 2;
+  if (frame[valueOffset] === 0xe1) {return '';}
+  const value = stringAt(frame, valueOffset, [0x90]);
+  return value && valueOffset + value.size <= end ? value.text : undefined;
+}
+
+interface DecodedTableRows {
+  rows: Array<Record<string, string | null>>;
+  complete: boolean;
+}
+
+function decodeSelectedRows(frame: Buffer): DecodedTableRows {
+  const statusOffset = rpcStatusOffset(frame, GET_SELECTED_ROWS);
+  const end = resultEnd(frame);
+  if (statusOffset === undefined || end < 0
+      || !frame.subarray(statusOffset, statusOffset + 3).equals(Buffer.from([0x81, 0x81, 0x81]))) {
+    throw new NativeTestClientError('NATIVE_INVALID_RPC_REPLY', 'TestClient не вернул корректную коллекцию строк таблицы.');
+  }
+  const collectionMarker = Buffer.from([0xe0, 0x4b]);
+  const collectionOffset = frame.indexOf(collectionMarker, statusOffset + 3);
+  if (collectionOffset < 0 || collectionOffset >= end) {
+    throw new NativeTestClientError('NATIVE_INVALID_RPC_REPLY', 'Ответ TestClient не подтверждает коллекцию строк таблицы.');
+  }
+  const rows: Array<Record<string, string | null>> = [];
+  let row: Record<string, string | null> | undefined;
+  let complete = true;
+  let offset = collectionOffset + collectionMarker.length;
+  const pairMarker = Buffer.from([0xeb, 0x53]);
+  const rowMarker = Buffer.from([0xc0, 0x4b]);
+  while (offset < end) {
+    if (frame.subarray(offset, offset + 2).equals(Buffer.from([0x23, 0x95]))) {
+      offset += 18;
+      continue;
+    }
+    if (frame.subarray(offset, offset + 2).equals(rowMarker)) {
+      if (row && Object.keys(row).length > 0) {rows.push(row);}
+      row = {};
+      offset += 2;
+      continue;
+    }
+    const column = stringAt(frame, offset, [0x90]);
+    if (column && offset + column.size + 2 <= end
+        && frame.subarray(offset + column.size, offset + column.size + 2).equals(pairMarker)) {
+      const valueOffset = offset + column.size + 2;
+      const value = decodeTableValue(frame, valueOffset, end);
+      if (!value) {
+        complete = false;
+        offset += column.size + 2;
+        continue;
+      }
+      row ??= {};
+      row[column.text] = value.value;
+      complete &&= value.complete;
+      offset = valueOffset + value.size;
+      continue;
+    }
+    offset += 1;
+  }
+  if (row && Object.keys(row).length > 0) {rows.push(row);}
+  return { rows, complete };
+}
+
+function decodeTableValue(frame: Buffer, offset: number, end: number): { value: string | null; size: number; complete: boolean } | undefined {
+  if (offset >= end) {return undefined;}
+  if (frame[offset] === 0x81) {return { value: null, size: 1, complete: false };}
+  const string = stringAt(frame, offset);
+  if (string && offset + string.size <= end) {return { value: string.text, size: string.size, complete: true };}
+  if (frame[offset] === 0x8b && offset + 2 <= end) {
+    // TestClient uses 8b + byte both for compact numeric values and for one-byte display text.
+    // Keep control bytes as textual digits only when they are compact values; otherwise report unread.
+    const value = frame[offset + 1];
+    return value <= 9
+      ? { value: String(value), size: 2, complete: true }
+      : { value: String.fromCharCode(value), size: 2, complete: true };
+  }
+  if (frame[offset] === 0x8d && offset + 3 <= end) {
+    return { value: String(frame.readUInt16LE(offset + 1)), size: 3, complete: true };
+  }
+  if (frame[offset] === 0x8f && offset + 5 <= end) {
+    return { value: String(frame.readInt32LE(offset + 1)), size: 5, complete: true };
+  }
+  return undefined;
+}
+
+function encodeGotoRow(
+  toggleSelection: boolean,
+  fields: Record<string, string> | undefined,
+): Buffer {
+  const prefix = Buffer.from([0xe1, toggleSelection ? 0x82 : 0x81, 0x81, 0x82, 0xcb]);
+  if (!fields || Object.keys(fields).length === 0) {return Buffer.concat([prefix, Buffer.from([0x55])]);}
+  const entries = Object.entries(fields);
+  const encodedCount = encodeInteger(entries.length);
+  const count = entries.length < 10
+    ? Buffer.from([0xc1 + entries.length])
+    : Buffer.concat([Buffer.from([encodedCount[0] | 0x40]), encodedCount.subarray(1)]);
+  const pairs = entries.flatMap(([column, value], index) => [
+    Buffer.from(index === 0 ? [0xc0, 0x4b, 0x53] : [0x20, 0xe0, 0x4b, 0x53]),
+    encodeProtocolString(column, 0x90),
+    Buffer.from([0xeb, 0x53]),
+    encodeProtocolString(value, 0x90),
+  ]);
+  const description = Buffer.concat([
+    Buffer.from([0x23, 0x95]),
+    guidToLittleEndian(GOTOROW_MAPTYPE),
+    count,
+    ...pairs,
+  ]);
+  return Buffer.concat([prefix, description]);
+}
+
+function rowKey(row: Record<string, string | null>): string {
+  return JSON.stringify(Object.keys(row).sort().map((key) => [key, row[key]]));
+}
+
+function rowsEqual(
+  left: Array<Record<string, string | null>>,
+  right: Array<Record<string, string | null>>,
+): boolean {
+  const ordered = (rows: Array<Record<string, string | null>>) => rows.map(rowKey).sort();
+  return JSON.stringify(ordered(left)) === JSON.stringify(ordered(right));
+}
+
+function snapshotProjection(context: NativeFormsFormContextResult): unknown {
+  return {
+    window: {
+      className: context.activeWindow.className,
+      name: context.activeWindow.name,
+      text: context.activeWindow.text,
+    },
+    elements: context.elements.map((element) => ({
+      className: element.className,
+      name: element.name,
+      text: element.text,
+      url: element.url,
+      value: element.value,
+      valueStatus: element.valueStatus,
+    })),
+    tables: context.tables?.map((table) => ({
+      complete: table.complete,
+      truncated: table.truncated,
+      rowCount: table.rowCount,
+      rows: table.rows,
+    })),
+    complete: context.complete,
+    truncated: context.truncated,
+  };
+}
+
+function diffValues(before: unknown, after: unknown, limit = 1000): Array<{ path: string; before?: unknown; after?: unknown }> {
+  const changes: Array<{ path: string; before?: unknown; after?: unknown }> = [];
+  const visit = (left: unknown, right: unknown, path: string): void => {
+    if (changes.length >= limit || Object.is(left, right)) {return;}
+    if (Array.isArray(left) && Array.isArray(right)) {
+      const length = Math.max(left.length, right.length);
+      for (let index = 0; index < length && changes.length < limit; index += 1) {
+        visit(left[index], right[index], `${path}[${index}]`);
+      }
+      return;
+    }
+    if (isRecord(left) && isRecord(right)) {
+      const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort();
+      for (const key of keys) {
+        visit(left[key], right[key], path ? `${path}.${key}` : key);
+        if (changes.length >= limit) {break;}
+      }
+      return;
+    }
+    changes.push({ path, ...(left !== undefined ? { before: left } : {}), ...(right !== undefined ? { after: right } : {}) });
+  };
+  visit(before, after, '');
+  return changes;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function decodeUiLog(frame: Buffer): string | undefined {
+  const offset = rpcStatusOffset(frame, UILOG);
+  const end = resultEnd(frame);
+  if (offset === undefined || end < 0
+      || !frame.subarray(offset, offset + 4).equals(Buffer.from([0x81, 0x81, 0x81, 0xe5]))) {return undefined;}
+  const textOffset = offset + 4;
+  const xml = stringAt(frame, textOffset);
+  if (!xml || textOffset + xml.size !== end
+      || !/^\s*(?:<\?xml[\s\S]*?\?>\s*)?<(?:[A-Za-z_][\w.-]*:)?uilog(?:\s|>)/i.test(xml.text)) {
+    return undefined;
+  }
+  return xml.text;
 }
 
 interface ObjectKeySpan {
@@ -728,6 +951,12 @@ class NativeTestClientSession implements NativeFormsSession {
   // bootstrap negotiation consumes the special first-binary marker variant.
   private firstBinary = false;
   private readonly objectByRef = new Map<string, { key: string; handle: string; record: DecodedObjectRecord }>();
+  private readonly snapshots = new Map<string, {
+    info: NativeFormsSnapshotInfo;
+    value: unknown;
+    captureOptions: NativeSnapshotCaptureOptions;
+  }>();
+  private uiLogState: 'idle' | 'recording' | 'paused' = 'idle';
 
   constructor(
     private readonly channel: NativeTestClientChannel,
@@ -745,6 +974,26 @@ class NativeTestClientSession implements NativeFormsSession {
     switch (action.action) {
       case 'overview':
         return this.overview(action.maxDepth ?? 3, action.maxNodes ?? 100, options);
+      case 'commandInterface':
+        return this.commandInterface(action.maxDepth ?? 4, action.maxNodes ?? 300, options);
+      case 'executeCommand':
+        return this.executeCommand(action.url, options);
+      case 'readTable':
+        return this.readTable(action.ref.id, action.maxRows ?? 500, options);
+      case 'formContext':
+        return this.formContext(action, options);
+      case 'createSnapshot':
+        return this.createSnapshot(action, options);
+      case 'compareSnapshot':
+        return this.compareSnapshot(action.snapshotId, options);
+      case 'listSnapshots':
+        return { snapshots: [...this.snapshots.values()].map((snapshot) => ({ ...snapshot.info })) };
+      case 'deleteSnapshot': {
+        const deleted = this.snapshots.delete(action.snapshotId);
+        return { snapshotId: action.snapshotId, deleted };
+      }
+      case 'uiLog':
+        return this.uiLog(action.operation, options);
       case 'find': {
         const overview = await this.overview(4, 300, options);
         return { matches: flatten(overview.activeWindow).filter((object) => matchesObject(object, action)) };
@@ -794,7 +1043,7 @@ class NativeTestClientSession implements NativeFormsSession {
         return { ref: action.ref, performed: true };
       }
       default:
-        return assertNever(action);
+        return assertNever(action as never);
     }
   }
 
@@ -836,6 +1085,383 @@ class NativeTestClientSession implements NativeFormsSession {
     return { activeWindow: root, truncated };
   }
 
+  private async commandInterface(
+    maxDepth: number,
+    maxNodes: number,
+    options: NativeFormsExecuteOptions,
+  ): Promise<NativeFormsActionResult> {
+    const safeDepth = Math.max(0, Math.min(10, Math.floor(maxDepth)));
+    const safeNodes = Math.max(1, Math.min(1000, Math.floor(maxNodes)));
+    this.objectByRef.clear();
+    const activeReply = await this.rpc(GET_ACTIVE_WINDOW, undefined, 'read', RESULT_COLLECTION, options, false, 'collection');
+    const [activeWindow] = decodeObjectRecords(activeReply);
+    if (!activeWindow) {throw new NativeTestClientError('NATIVE_ACTIVE_WINDOW_NOT_FOUND', 'TestClient не вернул активное окно.');}
+    const interfaceReply = await this.rpc(GET_COMMAND_INTERFACE, activeWindow, 'read', RESULT_COLLECTION, options, false, 'collection');
+    const roots = decodeObjectRecords(interfaceReply, activeWindow.key);
+    const items: NativeFormsObject[] = [];
+    let count = 0;
+    let truncated = false;
+    const visit = async (record: DecodedObjectRecord, depth: number): Promise<NativeFormsObject> => {
+      const object = this.asPublicObject(record);
+      count += 1;
+      if (depth >= safeDepth) {
+        if (depth === safeDepth) {truncated = true;}
+        return object;
+      }
+      const reply = await this.rpc(GET_CHILD_OBJECTS, record, 'read', CHILD_OBJECTS_REQUEST, options);
+      const children = decodeObjectRecords(reply, record.key);
+      object.children = [];
+      for (const child of children) {
+        if (count >= safeNodes) {
+          truncated = true;
+          break;
+        }
+        object.children.push(await visit(child, depth + 1));
+      }
+      return object;
+    };
+    for (const root of roots) {
+      if (count >= safeNodes) {
+        truncated = true;
+        break;
+      }
+      items.push(await visit(root, 0));
+    }
+    return { items, truncated };
+  }
+
+  private async executeCommand(url: string, options: NativeFormsExecuteOptions): Promise<NativeFormsActionResult> {
+    const command = url.trim();
+    const hasControlCharacters = Array.from(command).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || code === 0x7f;
+    });
+    if (!command || hasControlCharacters
+        || !/^(?:e1cib\/\S.*|(?:e1c|https?):\/\/\S.*)$/i.test(command)) {
+      throw new NativeTestClientError('NATIVE_INVALID_COMMAND_URL', 'executeCommand требует URL навигации 1С или http(s)-ссылку.');
+    }
+    this.objectByRef.clear();
+    const beforeReply = await this.rpc(GET_ACTIVE_WINDOW, undefined, 'read', RESULT_COLLECTION, options, false, 'collection');
+    const [before] = decodeObjectRecords(beforeReply);
+    if (!before) {throw new NativeTestClientError('NATIVE_ACTIVE_WINDOW_NOT_FOUND', 'Не удалось определить активное окно перед командой.');}
+    const argument = encodeProtocolString(command, 0xf0);
+    await this.rpc(EXECUTE_COMMAND, before, 'action', argument, options, true, 'none');
+    try {
+      await this.rpc(EXECUTE_COMMAND, before, 'commit', argument, options, true, 'none');
+    } catch {
+      this.channel.close();
+      throw new NativeTestClientError(
+        'FORMS_OPERATION_IN_DOUBT',
+        'Команда принята на этапе action, но commit не подтверждён; навигация могла выполниться. Соединение закрыто.',
+        true,
+      );
+    }
+    let after: DecodedObjectRecord | undefined;
+    try {
+      const afterReply = await this.rpc(GET_ACTIVE_WINDOW, undefined, 'read', RESULT_COLLECTION, options, false, 'collection');
+      [after] = decodeObjectRecords(afterReply);
+    } catch {
+      this.channel.close();
+      throw new NativeTestClientError(
+        'FORMS_OPERATION_IN_DOUBT',
+        'Команда отправлена, но TestClient не позволил проверить активное окно. Соединение закрыто; эффект операции неизвестен.',
+        true,
+      );
+    }
+    if (!after) {
+      this.channel.close();
+      throw new NativeTestClientError('FORMS_OPERATION_IN_DOUBT', 'Команда отправлена, но TestClient не подтвердил активное окно.', true);
+    }
+    const window = this.asPublicObject(after);
+    return { command, windowChanged: before.key !== after.key, activeWindow: window };
+  }
+
+  private async readTable(ref: string, maxRows: number, options: NativeFormsExecuteOptions): Promise<NativeFormsReadTableResult> {
+    if (!Number.isInteger(maxRows) || maxRows < 0 || maxRows > 10_000) {
+      throw new NativeTestClientError('NATIVE_INVALID_ROW_LIMIT', 'maxRows должен быть целым числом от 0 до 10000.');
+    }
+    const target = this.requireObject(ref);
+    if (target.className !== 'Table') {
+      throw new NativeTestClientError('NATIVE_INVALID_TABLE', 'ref должен указывать на элемент класса Table.');
+    }
+
+    // Read the existing selection before changing it. GetSelectedRows only describes selected
+    // rows; an empty result here is not evidence that the table itself has no rows.
+    const original = await this.readSelectedRows(target, options);
+    try {
+      await this.rpc(SELECT_ALL_ROWS, target, 'action', Buffer.alloc(0), options, true, 'none');
+      await this.rpc(SELECT_ALL_ROWS, target, 'commit', Buffer.alloc(0), options, true, 'none');
+    } catch (mutationError) {
+      await this.restoreSelectionAfterTableFailure(target, original.rows, options, mutationError);
+    }
+    let selected: DecodedTableRows;
+    try {
+      selected = await this.readSelectedRows(target, options);
+    } catch (readError) {
+      await this.restoreSelectionAfterTableFailure(target, original.rows, options, readError);
+      throw readError;
+    }
+    const tableRows = selected.rows;
+    const truncated = tableRows.length > maxRows;
+    const complete = selected.complete && tableRows.length > 1 && !truncated;
+
+    let selectionRestored = false;
+    let selectionRestoreError: string | undefined;
+    try {
+      const restored = await this.restoreTableSelection(target, original.rows, tableRows, complete, options);
+      selectionRestored = restored.restored;
+      selectionRestoreError = restored.error;
+    } catch (error) {
+      const failure = error as Error & { code?: string };
+      if (failure.code === 'FORMS_OPERATION_IN_DOUBT') {throw error;}
+      selectionRestoreError = failure.message ?? String(error);
+    }
+
+    return {
+      ref: { id: ref },
+      rows: tableRows.slice(0, maxRows),
+      complete,
+      truncated,
+      ...(complete ? { rowCount: tableRows.length } : {}),
+      selectionRestored,
+      ...(selectionRestoreError ? { selectionRestoreError } : {}),
+    };
+  }
+
+  private async restoreSelectionAfterTableFailure(
+    target: DecodedObjectRecord,
+    originalRows: Array<Record<string, string | null>>,
+    options: NativeFormsExecuteOptions,
+    operationError: unknown,
+  ): Promise<never> {
+    let restored = false;
+    let restoreError: unknown;
+    try {
+      const restoration = await this.restoreTableSelection(target, originalRows, [], false, options);
+      restored = restoration.restored;
+      restoreError = restoration.error;
+    } catch (error) {
+      restoreError = error;
+    }
+    if (restored) {throw operationError;}
+
+    this.channel.close();
+    const reason = restoreError instanceof Error ? ` ${restoreError.message}` : '';
+    throw new NativeTestClientError(
+      'FORMS_OPERATION_IN_DOUBT',
+      `Не удалось подтвердить исходное выделение после сбоя чтения или изменения таблицы.${reason}`,
+      true,
+    );
+  }
+
+  private async readSelectedRows(
+    target: DecodedObjectRecord,
+    options: NativeFormsExecuteOptions,
+  ): Promise<DecodedTableRows> {
+    const reply = await this.rpc(GET_SELECTED_ROWS, target, 'read', RESULT_COLLECTION, options, false, 'collection');
+    return decodeSelectedRows(reply);
+  }
+
+  private async restoreTableSelection(
+    target: DecodedObjectRecord,
+    originalRows: Array<Record<string, string | null>>,
+    allRows: Array<Record<string, string | null>>,
+    allRowsComplete: boolean,
+    options: NativeFormsExecuteOptions,
+  ): Promise<{ restored: boolean; error?: string }> {
+    // 8.3.27 has no DeselectAllRows. GotoRow reduces a multi-selection to the current
+    // row; toggling that row off gives the only verified empty-selection fallback.
+    await this.gotoRow(target, false, undefined, options);
+    let current = await this.readSelectedRows(target, options);
+    if (rowsEqual(current.rows, originalRows)) {return { restored: true };}
+    if (originalRows.length === 0) {
+      if (current.rows.length > 0) {
+        await this.gotoRow(target, true, undefined, options);
+        current = await this.readSelectedRows(target, options);
+      }
+      return rowsEqual(current.rows, originalRows)
+        ? { restored: true }
+        : { restored: false, error: 'Исходное пустое выделение не удалось подтвердить.' };
+    }
+    if (!allRowsComplete || originalRows.some((row) => Object.values(row).some((value) => value === null))) {
+      return { restored: false, error: 'Набор строк неполон; исходное выделение нельзя восстановить достоверно.' };
+    }
+    const originalKeys = originalRows.map(rowKey);
+    if (new Set(originalKeys).size !== originalKeys.length) {
+      return { restored: false, error: 'В исходном выделении есть одинаковые отображаемые строки.' };
+    }
+    for (const key of originalKeys) {
+      if (allRows.filter((row) => rowKey(row) === key).length !== 1) {
+        return { restored: false, error: 'Строка исходного выделения не имеет уникального отображаемого ключа.' };
+      }
+    }
+    if (current.rows.length > 0) {
+      await this.gotoRow(target, true, undefined, options);
+      current = await this.readSelectedRows(target, options);
+      if (current.rows.length > 0) {
+        return { restored: false, error: 'Не удалось очистить выделение перед восстановлением.' };
+      }
+    }
+    for (const row of originalRows) {
+      const fields = Object.fromEntries(Object.entries(row).map(([column, value]) => [column, value!]));
+      await this.gotoRow(target, true, fields, options);
+    }
+    current = await this.readSelectedRows(target, options);
+    return rowsEqual(current.rows, originalRows)
+      ? { restored: true }
+      : { restored: false, error: 'TestClient не подтвердил восстановление исходного выделения.' };
+  }
+
+  private async gotoRow(
+    target: DecodedObjectRecord,
+    toggleSelection: boolean,
+    fields: Record<string, string> | undefined,
+    options: NativeFormsExecuteOptions,
+  ): Promise<void> {
+    const middle = encodeGotoRow(toggleSelection, fields);
+    await this.rpc(GOTO_ROW, target, 'read', middle, options, true, 'scalar', 4);
+  }
+
+  private async formContext(
+    action: Extract<NativeFormsAction, { action: 'formContext' }>,
+    options: NativeFormsExecuteOptions,
+  ): Promise<NativeFormsFormContextResult> {
+    const overview = await this.overview(action.maxDepth ?? 4, action.maxNodes ?? 300, options);
+    const all = flatten(overview.activeWindow);
+    const form = all.find((object) => object.className === 'ManagedForm' || object.className === 'UnmanagedForm');
+    const formObjects = form ? flatten(form).slice(1) : all.slice(1);
+    const tableKeyPrefixes = formObjects
+      .filter((object) => object.className === 'Table')
+      .map((object) => `${this.requireObject(object.ref.id).key}.`);
+    const elements: NativeFormsContextElement[] = [];
+    let complete = !overview.truncated;
+    for (const object of formObjects) {
+      const target = this.requireObject(object.ref.id);
+      const element: NativeFormsContextElement = { ...object };
+      const isTableColumn = target.className === 'EditField'
+        && tableKeyPrefixes.some((prefix) => target.key.startsWith(prefix));
+      if (target.className === 'EditField' && !isTableColumn) {
+        const reply = await this.rpc(GET_EDIT_TEXT, target, 'read', RESULT_SCALAR, options);
+        const value = decodeScalarText(reply, GET_EDIT_TEXT, target.type === 'InputField');
+        if (value === undefined) {
+          element.valueStatus = 'unavailable';
+          complete = false;
+        } else {
+          element.value = value;
+          element.valueStatus = 'read';
+        }
+      }
+      elements.push(element);
+    }
+    const tables: NativeFormsReadTableResult[] | undefined = action.includeTables ? [] : undefined;
+    if (tables) {
+      for (const object of formObjects.filter((item) => item.className === 'Table')) {
+        const result = await this.readTable(object.ref.id, action.maxRows ?? 500, options);
+        tables.push(result);
+        complete &&= result.complete && result.selectionRestored;
+      }
+    }
+    return {
+      activeWindow: overview.activeWindow,
+      elements,
+      ...(tables ? { tables } : {}),
+      complete,
+      truncated: overview.truncated,
+    };
+  }
+
+  private async createSnapshot(
+    action: Extract<NativeFormsAction, { action: 'createSnapshot' }>,
+    options: NativeFormsExecuteOptions,
+  ): Promise<NativeFormsActionResult> {
+    const captureOptions: NativeSnapshotCaptureOptions = {
+      includeTables: action.includeTables ?? false,
+      maxDepth: Number.isFinite(action.maxDepth) ? Math.max(0, Math.min(10, Math.floor(action.maxDepth!))) : 4,
+      maxNodes: Number.isFinite(action.maxNodes) ? Math.max(1, Math.min(1000, Math.floor(action.maxNodes!))) : 300,
+      maxRows: action.maxRows ?? 500,
+    };
+    const context = await this.withPreservedObjectRefs(
+      () => this.formContext({ action: 'formContext', ...captureOptions }, options),
+    );
+    const snapshotId = `ns-${crypto.randomUUID()}`;
+    const info: NativeFormsSnapshotInfo = {
+      snapshotId,
+      capturedAt: new Date().toISOString(),
+      complete: context.complete,
+      elementCount: context.elements.length,
+    };
+    if (this.snapshots.size >= 50) {
+      const oldest = this.snapshots.keys().next().value as string | undefined;
+      if (oldest) {this.snapshots.delete(oldest);}
+    }
+    this.snapshots.set(snapshotId, { info, value: snapshotProjection(context), captureOptions });
+    return { ...info };
+  }
+
+  private async compareSnapshot(
+    snapshotId: string,
+    options: NativeFormsExecuteOptions,
+  ): Promise<NativeFormsCompareSnapshotResult> {
+    const previous = this.snapshots.get(snapshotId);
+    if (!previous) {throw new NativeTestClientError('NATIVE_SNAPSHOT_NOT_FOUND', 'Снимок неизвестен или уже удалён.');}
+    const context = await this.withPreservedObjectRefs(
+      () => this.formContext({ action: 'formContext', ...previous.captureOptions }, options),
+    );
+    return {
+      snapshotId,
+      complete: previous.info.complete && context.complete,
+      changes: diffValues(previous.value, snapshotProjection(context)),
+    };
+  }
+
+  private async withPreservedObjectRefs<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = new Map(this.objectByRef);
+    try {
+      return await operation();
+    } finally {
+      this.objectByRef.clear();
+      for (const [ref, object] of previous) {this.objectByRef.set(ref, object);}
+    }
+  }
+
+  private async uiLog(
+    operation: Extract<NativeFormsAction, { action: 'uiLog' }>['operation'],
+    options: NativeFormsExecuteOptions,
+  ): Promise<NativeFormsActionResult> {
+    const middleByOperation = {
+      start: Buffer.from([0xe1, 0x81]),
+      finish: Buffer.from([0xe5, 0x81]),
+      pause: Buffer.from([0xe2, 0x81]),
+      resume: Buffer.from([0xe3, 0x81]),
+      cancel: Buffer.from([0xe4, 0x81]),
+    } as const;
+    if (operation === 'start' && this.uiLogState !== 'idle') {
+      throw new NativeTestClientError('NATIVE_UILOG_STATE', 'Запись UI log уже активна или приостановлена.');
+    }
+    if (operation !== 'start' && this.uiLogState === 'idle') {
+      throw new NativeTestClientError('NATIVE_UILOG_STATE', 'UI log не запущен.');
+    }
+    if (operation === 'resume' && this.uiLogState !== 'paused') {
+      throw new NativeTestClientError('NATIVE_UILOG_STATE', 'UI log не приостановлен.');
+    }
+    if (operation === 'pause' && this.uiLogState !== 'recording') {
+      throw new NativeTestClientError('NATIVE_UILOG_STATE', 'UI log не записывается.');
+    }
+    const reply = await this.rpc(UILOG, undefined, 'read818', middleByOperation[operation], options, true, 'none');
+    if (operation === 'start' || operation === 'resume') {this.uiLogState = 'recording';}
+    if (operation === 'pause') {this.uiLogState = 'paused';}
+    if (operation === 'cancel') {this.uiLogState = 'idle';}
+    if (operation === 'finish') {
+      this.uiLogState = 'idle';
+      const uilog = decodeUiLog(reply);
+      if (uilog === undefined) {
+        throw new NativeTestClientError('FORMS_OPERATION_IN_DOUBT', 'Запись завершена, но TestClient не вернул корректный XML UI log.', true);
+      }
+      return { operation, recording: false, uilog };
+    }
+    return { operation, recording: this.uiLogState === 'recording' };
+  }
+
   private asPublicObject(record: DecodedObjectRecord): NativeFormsObject {
     const ref = crypto.randomUUID();
     this.objectByRef.set(ref, { key: record.key, handle: record.handle, record });
@@ -844,6 +1470,7 @@ class NativeTestClientSession implements NativeFormsSession {
       className: record.className,
       ...(record.name !== undefined ? { name: record.name } : {}),
       ...(record.text !== undefined ? { text: record.text } : {}),
+      ...(record.url !== undefined ? { url: record.url } : {}),
     };
   }
 
@@ -856,11 +1483,12 @@ class NativeTestClientSession implements NativeFormsSession {
   private async rpc(
     methodGuid: string,
     target: { key: string; handle: string } | undefined,
-    kind: 'read' | 'action' | 'commit',
+    kind: 'read' | 'read818' | 'action' | 'commit',
     middle: Buffer,
     options: NativeFormsExecuteOptions,
     mutating = false,
     result: 'scalar' | 'collection' | 'none' = 'scalar',
+    pad?: number,
   ): Promise<Buffer> {
     this.counter = (this.counter + 1) & 0xffff;
     const frame = buildRpcFrame({
@@ -872,6 +1500,7 @@ class NativeTestClientSession implements NativeFormsSession {
       kind,
       middle,
       result,
+      pad,
       firstBinary: this.firstBinary,
     });
     this.firstBinary = false;
@@ -892,11 +1521,11 @@ class NativeTestClientSession implements NativeFormsSession {
         this.channel.close();
         throw new NativeTestClientError('NATIVE_RPC_EVENT_LIMIT', 'TestClient отправил слишком много асинхронных кадров без ответа на RPC.');
       }
-      assertBinaryReply(reply, 'RPC');
       const status = decodeRpcStatus(reply, methodGuid);
       if (status !== undefined && status !== 0) {
         throw new NativeTestClientError('NATIVE_OPERATION_REJECTED', `TestClient отклонил действие (status ${status}).`);
       }
+      assertBinaryReply(reply, 'RPC');
       return reply;
     } catch (error) {
       const reason = error instanceof Error ? error : new Error(String(error));
