@@ -480,7 +480,10 @@ suite('Native TestClient connection lifecycle', () => {
       socket.write(NETWORK_GREETING);
       socket.on('data', (chunk) => {
         secondRequest = Buffer.concat([secondRequest, chunk]);
-        if (secondRequest.length > 2) socket.destroy();
+        if (secondRequest.length >= 2) {
+          const preambleLength = secondRequest.readUInt16LE(0);
+          if (secondRequest.length >= 2 + preambleLength) socket.destroy();
+        }
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -493,8 +496,15 @@ suite('Native TestClient connection lifecycle', () => {
         connectNativeTestClientWithDependencies({ host: '127.0.0.1', port: address.port, timeoutMs: 500 }),
       );
       assert.strictEqual(connections, 2);
-      assert.ok(secondRequest.length > 4, 'second connection sends length-delimited RSA preamble and intro');
-      assert.ok(secondRequest.includes(Buffer.from('\uFEFF"n",', 'utf8')));
+      assert.ok(secondRequest.length >= 2, 'second connection sends a length-delimited RSA preamble');
+      const preambleLength = secondRequest.readUInt16LE(0);
+      assert.ok(preambleLength > 0 && secondRequest.length >= 2 + preambleLength);
+      const preamble = secondRequest.subarray(2, 2 + preambleLength).toString('utf8');
+      const match = /^\uFEFF"n",\r\n\{#base64:([A-Za-z0-9+/=]+)\},\r\n\{#base64:([A-Za-z0-9+/=]+)\}$/.exec(preamble);
+      assert.ok(match, 'network mode sends the RSA public key in the expected preamble');
+      const modulus = Buffer.from(match[1], 'base64');
+      assert.strictEqual(modulus.length, 256, 'network mode must use a 2048-bit RSA modulus');
+      assert.notStrictEqual(modulus[0] & 0x80, 0, 'modulus must have the 2048th bit set');
     } finally {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));

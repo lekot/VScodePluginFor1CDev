@@ -19,6 +19,7 @@ import { NativeTestClientChannel, SCOM_TRAILER } from './nativeTestClientProtoco
 
 const SCOM_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const NETWORK_GREETING = Buffer.from([0x53, 0xf5, 0xc6, 0x1a, 0x7b]);
+const NETWORK_RSA_MODULUS_BITS = 2048;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const FIRST_SEQUENCE = 22548;
 const MAX_SSPI_LEGS = 3;
@@ -169,7 +170,7 @@ async function openNetworkHandshake(
       throw new NativeTestClientError('NATIVE_NETWORK_HANDSHAKE_FAILED', 'TestClient не подтвердил повторное подключение в network mode.');
     }
 
-    const pair = crypto.generateKeyPairSync('rsa', { modulusLength: 1024, publicExponent: 0x10001 });
+    const pair = crypto.generateKeyPairSync('rsa', { modulusLength: NETWORK_RSA_MODULUS_BITS, publicExponent: 0x10001 });
     const jwk = pair.publicKey.export({ format: 'jwk' });
     if (!jwk.n || !jwk.e) {
       throw new NativeTestClientError('NATIVE_NETWORK_HANDSHAKE_FAILED', 'Не удалось подготовить RSA ключ для network mode.');
