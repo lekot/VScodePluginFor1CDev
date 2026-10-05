@@ -78,7 +78,6 @@ import { AgentStaticFormOperations } from './agentStaticForms';
 import { AgentSyntaxHelpOperations } from './agentSyntaxHelp';
 import type {
   FormsStartParams,
-  FormsExecParams,
   FormsStopParams,
   FormsShotParams,
   FormsStatusParams,
@@ -972,11 +971,6 @@ export function registerAgentCommands(
         }
     );
 
-    // ─── 1C Forms output channel (однократно для всей группы forms.*) ─────────
-
-    const formsOutputChannel = vscode.window.createOutputChannel('CDT 41: 1C Forms');
-    context.subscriptions.push(formsOutputChannel);
-
     const syntaxHelpOperations = new AgentSyntaxHelpOperations(context.extensionPath);
     const syntaxHelpCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.syntaxHelp',
@@ -988,26 +982,9 @@ export function registerAgentCommands(
     const formsStartCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.start',
         async (params: FormsStartParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new FormsOperations({
-                extensionPath: context.extensionPath,
-                outputChannel: formsOutputChannel,
-            });
+            const ops = new FormsOperations();
             return runAgentLongTask('agent.forms.start', params.background, requestToken, (token, reportStage) =>
                 ops.formsStart(params, token, reportStage));
-        }
-    );
-
-    // ─── 1c-metadata-tree.agent.forms.exec ───────────────────────────────────
-
-    const formsExecCommand = vscode.commands.registerCommand(
-        '1c-metadata-tree.agent.forms.exec',
-        async (params: FormsExecParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new FormsOperations({
-                extensionPath: context.extensionPath,
-                outputChannel: formsOutputChannel,
-            });
-            return runAgentLongTask('agent.forms.exec', params.background, requestToken, (token, reportStage) =>
-                ops.formsExec(params, token, reportStage));
         }
     );
 
@@ -1016,10 +993,7 @@ export function registerAgentCommands(
     const formsStopCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.stop',
         async (params: FormsStopParams = {}) => {
-            const ops = new FormsOperations({
-                extensionPath: context.extensionPath,
-                outputChannel: formsOutputChannel,
-            });
+            const ops = new FormsOperations();
             return await ops.formsStop(params);
         }
     );
@@ -1029,10 +1003,7 @@ export function registerAgentCommands(
     const formsShotCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.shot',
         async (params: FormsShotParams = {}, requestToken?: vscode.CancellationToken) => {
-            const ops = new FormsOperations({
-                extensionPath: context.extensionPath,
-                outputChannel: formsOutputChannel,
-            });
+            const ops = new FormsOperations();
             return runAgentLongTask('agent.forms.shot', params.background, requestToken, (token, reportStage) =>
                 ops.formsShot(params, token, reportStage));
         }
@@ -1043,10 +1014,7 @@ export function registerAgentCommands(
     const formsStatusCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.status',
         async (params: FormsStatusParams = {}) => {
-            const ops = new FormsOperations({
-                extensionPath: context.extensionPath,
-                outputChannel: formsOutputChannel,
-            });
+            const ops = new FormsOperations();
             return await ops.formsStatus(params);
         }
     );
@@ -1056,10 +1024,7 @@ export function registerAgentCommands(
     const formsNativeCommand = vscode.commands.registerCommand(
         '1c-metadata-tree.agent.forms.native',
         async (params: NativeFormsCommandParams, requestToken?: vscode.CancellationToken) => {
-            const ops = new FormsOperations({
-                extensionPath: context.extensionPath,
-                outputChannel: formsOutputChannel,
-            });
+            const ops = new FormsOperations();
             return runAgentLongTask('agent.forms.native', params.background, requestToken, (token, reportStage) =>
                 ops.formsNative(params, token, reportStage));
         }
@@ -1327,7 +1292,7 @@ export function registerAgentCommands(
         getPredefinedCharacteristicTypeCommand,
         setPredefinedCharacteristicTypeCommand,
         getCharacteristicValueRegistersCommand,
-        formsStartCommand, formsExecCommand, formsStopCommand,
+        formsStartCommand, formsStopCommand,
         formsShotCommand, formsStatusCommand, formsNativeCommand, formsInspectCommand, formsValidateCommand, formsEditCommand,
         syntaxHelpCommand,
         skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,

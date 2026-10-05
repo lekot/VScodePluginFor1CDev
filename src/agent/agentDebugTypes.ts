@@ -35,7 +35,7 @@ export interface DebugStartResult {
     /**
      * Подсказка агенту, как взаимодействовать с UI 1С в этой сессии.
      * Заполняется всегда: для thinClient — предупреждение что окно нативное,
-     * для webServer — инструкция открыть webServerUrl через playwright.
+     * для webServer — инструкция открыть webServerUrl в браузере.
      */
     uiAccessHint?: string;
 }

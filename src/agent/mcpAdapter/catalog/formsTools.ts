@@ -6,24 +6,10 @@ import { FORM_FORMAT_VERSIONS } from '../../agentStaticForms';
 import type { FormChildItem } from '../../../formEditor/formModel';
 
 const formsStartInput = z.strictObject({
-  driver: z.enum(['web', 'native']).optional(),
-  url: z.string().optional(),
-  dbPath: z.string().optional(),
-  platformPath: z.string().optional(),
-  readyTimeoutMs: z.number().optional(),
+  driver: z.literal('native').optional(),
+  port: z.number().int().min(1).max(65535),
   host: z.string().optional(),
-  port: z.number().int().min(1).max(65535).optional(),
   platformVersion: z.string().optional(),
-  background: z.boolean().default(true),
-}).refine((value) => value.driver === 'native'
-  ? value.port !== undefined && !value.url && !value.dbPath
-  : Boolean(value.url || value.dbPath) && value.port === undefined, {
-  message: 'native requires port and excludes url/dbPath; web requires url or dbPath and excludes port',
-});
-
-const formsExecInput = z.strictObject({
-  script: nonEmptyString,
-  timeoutMs: z.number().optional(),
   background: z.boolean().default(true),
 });
 
@@ -227,42 +213,35 @@ const formsEditInput = z.strictObject({
 export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   {
     name: 'cdt_forms_start',
-    description: 'Start a 1C forms session. Web connects through Playwright using url or dbPath; native connects to an already-running TestClient using driver="native" and port. Returns a task receipt by default; set background=false to wait synchronously.',
+    description: 'Connect to an already-running native 1C TestClient by TCP port. The optional driver must be "native"; host defaults to 127.0.0.1. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.start',
     inputSchema: formsStartInput,
     annotations: WRITE_OPEN,
   },
   {
-    name: 'cdt_forms_exec',
-    description: 'Execute JavaScript in the Node Playwright context for the connected 1C web-client browser session. This is not BSL execution. Available only when forms.start used driver="web". Returns a task receipt by default; set background=false to wait synchronously.',
-    command: '1c-metadata-tree.agent.forms.exec',
-    inputSchema: formsExecInput,
-    annotations: WRITE_OPEN,
-  },
-  {
     name: 'cdt_forms_stop',
-    description: 'Stop the browser and any ibsrv process owned by the forms session.',
+    description: 'Close the forms session connection. This does not stop the 1C TestClient process.',
     command: '1c-metadata-tree.agent.forms.stop',
     inputSchema: emptyInput,
     annotations: WRITE_OPEN,
   },
   {
     name: 'cdt_forms_shot',
-    description: 'Capture a screenshot of the connected 1C web browser or the exact native TestClient window identified by the active native session port. Native capture requires a local Windows TestClient; remote or unavailable windows return an error. Optionally overwrites a local file. Returns a task receipt by default; set background=false to wait synchronously.',
+    description: 'Capture the exact native TestClient window identified by the active session port. Requires an active session and a local Windows TestClient; remote or unavailable windows return an error. Optionally overwrites a local file. Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.shot',
     inputSchema: formsShotInput,
     annotations: WRITE_OPEN,
   },
   {
     name: 'cdt_forms_status',
-    description: 'Read the current 1C forms session status (web or native TestClient).',
+    description: 'Read whether a native TestClient session is connected and its host and port.',
     command: '1c-metadata-tree.agent.forms.status',
     inputSchema: emptyInput,
     annotations: READ_OPEN,
   },
   {
     name: 'cdt_forms_native',
-    description: 'Inspect or interact with an already-running 1C TestClient: read its form and command interface, execute a navigation URL, read table rows, capture local snapshots and compare them, or control its UI scenario recording. Table reading may temporarily change selection; the result reports whether restoration was verified. Requires forms.start with driver="native" and an explicit port.',
+    description: 'Inspect or interact with an already-running 1C TestClient: read its form and command interface, execute a navigation URL, read table rows, capture local snapshots and compare them, or control its UI scenario recording. Table reading may temporarily change selection; the result reports whether restoration was verified. Requires forms.start with an explicit port.',
     command: '1c-metadata-tree.agent.forms.native',
     inputSchema: formsNativeInput,
     annotations: WRITE_OPEN,

@@ -25,22 +25,6 @@ if not exist "%CC_1C_SKILLS_DIR%\" (
 )
 
 :: -----------------------------------------------------------------------
-:: Copy web-test scripts
-:: -----------------------------------------------------------------------
-set SRC_WT=%CC_1C_SKILLS_DIR%\.claude\skills\web-test\scripts
-set DST_WT=%RESOURCES_DIR%\web-test
-
-if not exist "%DST_WT%\" mkdir "%DST_WT%"
-
-copy /y "%SRC_WT%\browser.mjs"       "%DST_WT%\browser.mjs"       >nul || goto :copy_error
-copy /y "%SRC_WT%\dom.mjs"           "%DST_WT%\dom.mjs"           >nul || goto :copy_error
-copy /y "%SRC_WT%\run.mjs"           "%DST_WT%\run.mjs"           >nul || goto :copy_error
-copy /y "%SRC_WT%\package.json"      "%DST_WT%\package.json"      >nul || goto :copy_error
-copy /y "%SRC_WT%\package-lock.json" "%DST_WT%\package-lock.json" >nul || goto :copy_error
-
-echo [sync] web-test: 5 files OK
-
-:: -----------------------------------------------------------------------
 :: Copy skd scripts
 :: -----------------------------------------------------------------------
 set DST_SKD=%RESOURCES_DIR%\skd

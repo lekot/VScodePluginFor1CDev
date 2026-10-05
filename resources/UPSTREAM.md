@@ -8,16 +8,6 @@
 
 ## Files
 
-### resources/web-test/
-
-| File | Source |
-|------|--------|
-| `browser.mjs` | `.claude/skills/web-test/scripts/browser.mjs` |
-| `dom.mjs` | `.claude/skills/web-test/scripts/dom.mjs` |
-| `run.mjs` | `.claude/skills/web-test/scripts/run.mjs` |
-| `package.json` | `.claude/skills/web-test/scripts/package.json` |
-| `package-lock.json` | `.claude/skills/web-test/scripts/package-lock.json` |
-
 ### resources/skd/
 
 | File | Source |

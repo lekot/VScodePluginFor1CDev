@@ -624,12 +624,13 @@ suite('AgentBridge — HTTP server', () => {
 
             const quickstart = content['quickstart'] as string;
             assert.strictEqual(typeof quickstart, 'string', 'quickstart должен быть строкой');
-            assert.ok(quickstart.includes('forms.start с url или dbPath'), 'web forms.start должен принимать url или dbPath');
+            assert.ok(quickstart.includes('forms.start требует TCP port'), 'forms.start должен требовать порт TestClient');
             assert.ok(quickstart.includes('agent.forms.native'), 'quickstart должен описывать native forms API');
             assert.ok(quickstart.includes('agent.debug.start'), 'quickstart должен ссылаться на debug.start');
             assert.ok(quickstart.includes('roles\\.setRights'), 'whitelist должен включать roles.setRights');
-            assert.ok(quickstart.includes("debuggeeType='webServer'"), 'должен использоваться webServer debuggee');
+            assert.ok(quickstart.includes('debuggeeType=webServer'), 'должен использоваться webServer debuggee');
             assert.ok(quickstart.includes('webServerUrl'), 'должен использоваться URL запущенного веб-сервера');
+            assert.ok(!quickstart.includes('forms.exec'), 'web runner command must not be advertised');
             assert.ok(!quickstart.includes('forms.start с debuggeeType'), 'устаревший контракт forms.start запрещён');
         } finally {
             await b.stop();

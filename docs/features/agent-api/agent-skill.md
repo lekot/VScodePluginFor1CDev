@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **98** runtime-команд Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **97** runtime-команд Agent API для программного
 управления метаданными, Хранилищем конфигурации, фоновыми задачами, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **98 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **97 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,11 +58,11 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 98 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 97 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 98 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 97 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
@@ -133,7 +133,6 @@ metadata reference, отсутствующая или незаимствован
 
 Bearer даёт аутентифицированному локальному MCP-клиенту ту же authority, что legacy `/command`, то есть доступ ко всему Agent API. В частности:
 
-- Операция `cdt_forms_exec` исполняет произвольный JavaScript в browser session;
 - операция `cdt_debug_evaluate` исполняет BSL-выражение, которое может иметь side effects;
 - deploy/pull меняют информационные базы или workspace;
 - support set/enable/sync меняют master-файл и могут запускать Configurator для связанных ИБ;
@@ -884,7 +883,7 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 }
 ```
 
-**webServer** — ibsrv с встроенным RDBG (для Playwright / агентской работы с формами):
+**webServer** — ibsrv с встроенным RDBG и веб-клиентом для ручного открытия в браузере:
 ```json
 {
   "rootProject": "C:/reps/project/conf",
@@ -900,7 +899,7 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 Возвращает: `{ sessionId: string, webServerUrl?: string }`.
 
-`webServerUrl` — URL веб-клиента ibsrv (только для webServer). Открыть в Playwright для навигации и взаимодействия.
+`webServerUrl` — URL веб-клиента ibsrv (только для webServer). Откройте его в браузере, чтобы взаимодействовать с веб-клиентом, пока отладочная сессия активна.
 
 #### `1c-metadata-tree.agent.debug.startFromBinding`
 
@@ -1240,39 +1239,27 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 { "source": "syntax", "action": "children", "parentId": "syntax:2" }
 ```
 
-### Формы enterprise (6 команд)
+### Формы enterprise (5 команд)
 
-Управление формами веб-клиента или уже запущенного тонкого TestClient. Web backend запускает ibsrv (при dbPath) и Playwright внутри расширения; native backend подключается к TestClient по TCP и не запускает и не останавливает сам процесс 1С. Действия native-формы могут менять данные открытой базы.
+Управление формами выполняется через уже запущенный тонкий TestClient. Агент подключается к нему по TCP и не запускает и не останавливает сам процесс 1С. Действия формы могут менять данные открытой базы.
 
 #### `1c-metadata-tree.agent.forms.start`
 
-Запустить сессию. Web backend принимает URL готового ibsrv либо dbPath (ibsrv стартует автоматически); platformPath берётся из настройки `1cMetadataTree.platformPath` если не задан явно. Native backend требует `driver: "native"` и явный `port` запущенного TestClient; `host` по умолчанию `127.0.0.1`.
+Подключиться к уже запущенному TestClient по обязательному `port`. `driver: "native"` можно указать явно, а `host` по умолчанию равен `127.0.0.1`; `platformVersion` необязателен. Параметры `url`, `dbPath`, `platformPath` и `readyTimeoutMs` не поддерживаются и отклоняются.
 
 ```json
-{ "dbPath": "C:/Users/.../InfoBase", "platformPath": "C:/Program Files/1cv8/8.3.27.1859/bin" }
+{ "driver": "native", "port": 1538 }
 ```
 
-Пример native-подключения: `{ "driver": "native", "port": 1538 }`.
-
-Web возвращает `{ driver: "web", url, ibsrvSpawned, uiAccessHint }`; native возвращает `{ driver: "native", host, port, ibsrvSpawned: false, uiAccessHint }`.
-
-#### `1c-metadata-tree.agent.forms.exec`
-
-Выполнить JavaScript в контексте Node Playwright runner `run.mjs exec`. Скрипт может использовать API `browser.mjs` (navigateLink, clickElement, fillFields, readTable и т.д.). Это JavaScript автоматизации браузера, не BSL; доступно только для web backend.
-
-```json
-{ "script": "await navigateLink('Справочник.Контрагенты'); const t = await readTable(); console.log(JSON.stringify(t));" }
-```
-
-Возвращает: `{ output, stderr?, exitCode }`.
+Возвращает `{ driver: "native", host, port, uiAccessHint }`.
 
 #### `1c-metadata-tree.agent.forms.stop`
 
-Закрыть browser и остановить ibsrv (если был запущен расширением); при native-сессии закрывает только TCP-соединение, сам TestClient остаётся работать.
+Закрыть TCP-соединение; сам TestClient остаётся работать.
 
 #### `1c-metadata-tree.agent.forms.shot`
 
-Скриншот текущей web-страницы либо окна подключённого native TestClient в PNG. Native-захват доступен только для локального TestClient на Windows и выбирает процесс по порту сессии. `timeoutMs` задаёт таймаут native-захвата.
+Скриншот окна активной native-сессии в PNG. Нужна активная сессия; захват доступен только для локального TestClient на Windows и выбирает процесс по порту сессии. `timeoutMs` задаёт таймаут захвата.
 
 ```json
 { "file": "C:/tmp/shot.png" }
@@ -1283,9 +1270,9 @@ Web возвращает `{ driver: "web", url, ibsrvSpawned, uiAccessHint }`; n
 
 #### `1c-metadata-tree.agent.forms.status`
 
-Статус сессии: web — жив ли browser, ibsrv и URL; native — состояние подключения и host/port.
+Статус native-соединения и host/port. Если сессия не запущена, возвращается `{ nativeConnected: false }`.
 
-Возвращает: `{ driver, browserAlive, url?, ibsrvAlive, ibsrvPid?, nativeConnected?, host?, port? }`.
+При активной сессии возвращается `{ driver: "native", nativeConnected, host, port }`.
 
 #### `1c-metadata-tree.agent.forms.native`
 
@@ -1295,7 +1282,7 @@ Web возвращает `{ driver: "web", url, ibsrvSpawned, uiAccessHint }`; n
 { "action": "overview", "maxDepth": 4 }
 ```
 
-Чтение и изменение принимают `ref` из текущего результата `overview`, `find` или `formContext`, например `{ "action": "readField", "ref": { "id": "<ref>" } }`. `overview`, `find`, `commandInterface` и `formContext` обновляют набор ссылок; `executeCommand` очищает ссылки предыдущего окна. Снимки не инвалидируют текущие ссылки. Чтение таблицы временно меняет выделение строк и пытается восстановить его; ответ содержит `complete`, `truncated` и `selectionRestored`. Если полноту нельзя подтвердить, `complete` будет `false`, в том числе для пустого результата. `forms.exec` остаётся только web-операцией и исполняет JavaScript в Node Playwright, не BSL. `forms.shot` поддерживает web и локальный Windows TestClient.
+Чтение и изменение принимают `ref` из текущего результата `overview`, `find` или `formContext`, например `{ "action": "readField", "ref": { "id": "<ref>" } }`. `overview`, `find`, `commandInterface` и `formContext` обновляют набор ссылок; `executeCommand` очищает ссылки предыдущего окна. Снимки не инвалидируют текущие ссылки. Чтение таблицы временно меняет выделение строк и пытается восстановить его; ответ содержит `complete`, `truncated` и `selectionRestored`. Если полноту нельзя подтвердить, `complete` будет `false`, в том числе для пустого результата. `forms.shot` снимает окно локального Windows TestClient активной сессии.
 
 ---
 
@@ -1457,9 +1444,9 @@ Inline-вариант: `{ "packageName": "Demo", "source": "<xs:schema .../>" }`
 8. debug.stop({ sessionId: '...' })
 ```
 
-### Сценарий C: отладка + формы через agent API (Playwright внутри расширения)
+### Сценарий C: отладка веб-клиента 1С
 
-Агент управляет и отладчиком и формой одновременно через два разных канала, оба в agent API.
+Отладчик остаётся в Agent API. Веб-клиент открывается вручную по URL, который возвращает `debug.start`.
 
 ```
 1. resolveBinding({ configPath: 'empty_conf' })
@@ -1467,21 +1454,19 @@ Inline-вариант: `{ "packageName": "Demo", "source": "<xs:schema .../>" }`
 2. debug.start({ rootProject: '...', infobase: 'File=...', platformPath: '...', debuggeeType: 'webServer', databasePath: 'C:/Users/.../InfoBase11' })
    → { sessionId, webServerUrl: 'http://localhost:52570' }
 3. debug.setBreakpoint({ file: '...ObjectModule.bsl', line: 4 })
-4. forms.start({ url: 'http://localhost:52570' })   — подключаем playwright к тому же ibsrv
-5. forms.exec({ script: 'await navigateLink("Справочник.Контрагенты"); await clickElement("Создать"); await fillFields({Наименование:"Тест"}); await clickElement("Записать");' })
-6. debug.waitForStop({ sessionId, timeoutMs: 30000 })
+4. Открой webServerUrl в браузере и вызови действие, которое проходит через breakpoint
+5. debug.waitForStop({ sessionId, timeoutMs: 30000 })
    → { reason: 'breakpoint', threadId: 1, frameId: 1, file: '...', line: 4 }
-7. debug.evaluate({ sessionId, frameId: 1, expression: 'Отказ' })
-8. debug.continue({ sessionId, threadId: 1 })
-9. forms.stop()
-10. debug.stop({ sessionId })
+6. debug.evaluate({ sessionId, frameId: 1, expression: 'Отказ' })
+7. debug.continue({ sessionId, threadId: 1 })
+8. debug.stop({ sessionId })
 ```
 
 **Особенности webServer режима:**
 - `verified: false` при setBreakpoint — нормально, BP сработает после подключения браузера
 - `getVariables` (панель Locals) — пусто; используйте `evaluate` для конкретных переменных
 - ibsrv создаёт новые target'ы динамически при серверных операциях — расширение обнаруживает и подключает их автоматически
-- `waitForStop` нужно вызывать **до** или **одновременно** с действием forms.exec (иначе stop event будет потерян)
+- `waitForStop` нужно вызвать перед действием в браузере или одновременно с ним, чтобы не пропустить событие остановки
 
 ### Сценарий D: XDTO export/compare/merge
 

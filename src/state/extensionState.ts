@@ -135,7 +135,6 @@ export class ExtensionState {
 
   init(context: vscode.ExtensionContext): void {
     this._extensionContext = context;
-    FormsContext.get().configureStoragePath(context.globalStoragePath);
     this._infobaseStorage = new InfobaseStorageService(context.globalState, context.secrets);
     this._bindingManager = new BindingManager();
     this._infobaseManager = new InfobaseManager(this._infobaseStorage, this._bindingManager);
