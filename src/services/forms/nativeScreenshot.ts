@@ -50,6 +50,22 @@ export interface NativeScreenshotDiscovery {
   windows: NativeScreenshotWindow[];
 }
 
+export interface NativeTestClientEndpoint {
+  pid: number;
+  port: number;
+}
+
+export interface NativeTestClientPortOwner extends NativeTestClientEndpoint {
+  testClient: boolean;
+  /** Internal process creation identity for safe follow-up operations; never returned by forms.discover. */
+  createdTicks?: string;
+}
+
+interface NativeTestClientProcessDiscovery {
+  listenerPorts: Array<{ pid: number; port: number }>;
+  processes: NativeScreenshotProcess[];
+}
+
 export class NativeScreenshotError extends Error {
   public constructor(public readonly code: string, message: string) {
     super(message);
@@ -60,6 +76,48 @@ export class NativeScreenshotError extends Error {
 export interface NativeScreenshotDependencies {
   platform?: NodeJS.Platform;
   runPowerShell?: (script: string, timeoutMs: number, signal?: AbortSignal) => Promise<string>;
+}
+
+/** Lists local Windows TestClient listeners without returning their command lines. */
+export async function discoverNativeTestClientsWithDependencies(
+  timeoutMs = 15_000,
+  dependencies: NativeScreenshotDependencies = {},
+  signal?: AbortSignal,
+): Promise<NativeTestClientEndpoint[]> {
+  const owners = await inspectNativeTestClientPortOwnersWithDependencies(timeoutMs, dependencies, signal);
+  return owners
+    .filter((owner) => owner.testClient)
+    .map(({ pid, port }) => ({ pid, port }));
+}
+
+/** Internal readiness inventory that never includes executable paths or command lines. */
+export async function inspectNativeTestClientPortOwnersWithDependencies(
+  timeoutMs = 15_000,
+  dependencies: NativeScreenshotDependencies = {},
+  signal?: AbortSignal,
+  targetPort?: number,
+): Promise<NativeTestClientPortOwner[]> {
+  const platform = dependencies.platform ?? process.platform;
+  if (platform !== 'win32') {
+    throw new NativeScreenshotError('NATIVE_TESTCLIENT_UNSUPPORTED_PLATFORM', 'Поиск локального TestClient доступен только в Windows.');
+  }
+  if (targetPort !== undefined && (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)) {
+    throw new NativeScreenshotError('NATIVE_TESTCLIENT_INVALID_PORT', 'TCP-порт TestClient должен быть от 1 до 65535.');
+  }
+  const runner = dependencies.runPowerShell ?? runPowerShell;
+  const output = await runner(buildProcessDiscoveryScript(targetPort), timeoutMs, signal);
+  const discovery = parseProcessDiscovery(output);
+  const endpoints = new Map<string, NativeTestClientPortOwner>();
+  for (const listener of discovery.listenerPorts) {
+    const processInfo = discovery.processes.find((candidate) => candidate.pid === listener.pid);
+    endpoints.set(`${listener.pid}:${listener.port}`, {
+      pid: listener.pid,
+      port: listener.port,
+      testClient: Boolean(processInfo && isNativeTestClientProcess(processInfo, listener.port)),
+      ...(processInfo ? { createdTicks: processInfo.createdTicks } : {}),
+    });
+  }
+  return [...endpoints.values()].sort((a, b) => a.port - b.port || a.pid - b.pid);
 }
 
 /** Captures a local Windows TestClient window without activating or restoring it. */
@@ -141,7 +199,7 @@ export function resolveTestClientProcess(
   if (!candidate) {
     throw new NativeScreenshotError('NATIVE_SCREENSHOT_CLIENT_NOT_FOUND', `Процесс слушателя порта ${port} завершился или недоступен.`);
   }
-  if (!isTestClientProcess(candidate, port)) {
+  if (!isNativeTestClientProcess(candidate, port)) {
     throw new NativeScreenshotError(
       'NATIVE_SCREENSHOT_CLIENT_NOT_FOUND',
       `Порт ${port} принадлежит не процессу 1С TestClient с параметрами /TESTCLIENT и -TPort ${port}.`,
@@ -239,7 +297,7 @@ function validateOptions(
   return { host: options.host, port: options.port, file: path.resolve(options.file), timeoutMs };
 }
 
-function isTestClientProcess(candidate: NativeScreenshotProcess, port: number): boolean {
+export function isNativeTestClientProcess(candidate: NativeScreenshotProcess, port: number): boolean {
   const name = path.win32.basename(candidate.name).toLowerCase();
   if (name !== '1cv8.exe' && name !== '1cv8c.exe') {return false;}
   const args = candidate.commandLine;
@@ -276,6 +334,31 @@ function parseDiscovery(output: string): NativeScreenshotDiscovery {
     throw new NativeScreenshotError('NATIVE_SCREENSHOT_INVALID_RESPONSE', 'Windows вернула неполные сведения о TestClient.');
   }
   return value as NativeScreenshotDiscovery;
+}
+
+function parseProcessDiscovery(output: string): NativeTestClientProcessDiscovery {
+  const response = parsePowerShellResponse(output);
+  if (!response.ok) {throw response.error;}
+  const value = response.value as Partial<NativeTestClientProcessDiscovery>;
+  if (!Array.isArray(value.listenerPorts) || !Array.isArray(value.processes)) {
+    throw new NativeScreenshotError('NATIVE_SCREENSHOT_INVALID_RESPONSE', 'Windows вернула неполные сведения о слушателях TestClient.');
+  }
+  const listenerPorts = value.listenerPorts.filter((listener): listener is { pid: number; port: number } =>
+    Boolean(listener)
+    && Number.isInteger((listener as { pid?: unknown }).pid)
+    && Number.isInteger((listener as { port?: unknown }).port)
+    && (listener as { pid: number }).pid > 0
+    && (listener as { port: number }).port >= 1
+    && (listener as { port: number }).port <= 65535,
+  );
+  const processes = value.processes.filter((processInfo): processInfo is NativeScreenshotProcess =>
+    Boolean(processInfo)
+    && Number.isInteger((processInfo as NativeScreenshotProcess).pid)
+    && typeof (processInfo as NativeScreenshotProcess).name === 'string'
+    && typeof (processInfo as NativeScreenshotProcess).commandLine === 'string'
+    && typeof (processInfo as NativeScreenshotProcess).createdTicks === 'string',
+  );
+  return { listenerPorts, processes };
 }
 
 function parseCapture(output: string): { width: number; height: number } {
@@ -420,6 +503,38 @@ try {
   Write-Json ([ordered]@{ ok = $true; listenerPids = @($listenerPids); processes = @($processes); windows = @($windows) })
 } catch {
   Write-Json ([ordered]@{ ok = $false; code = 'NATIVE_SCREENSHOT_DISCOVERY_FAILED'; error = $_.Exception.Message })
+}`;
+}
+
+function buildProcessDiscoveryScript(targetPort?: number): string {
+  const listenerQuery = targetPort === undefined
+    ? 'Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue'
+    : `Get-NetTCPConnection -LocalPort ${targetPort} -State Listen -ErrorAction SilentlyContinue`;
+  return `${buildPowerShellOutputHelpers()}
+try {
+  $listenerPorts = @((${listenerQuery} | ForEach-Object {
+    [ordered]@{ pid = [int]$_.OwningProcess; port = [int]$_.LocalPort }
+  }))
+  $processes = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = '1cv8c.exe' OR Name = '1cv8.exe'" -ErrorAction SilentlyContinue | Where-Object {
+    [string]$_.CommandLine -match '(?i)(?:^|\\s)/TESTCLIENT(?:\\s|$)'
+  } | ForEach-Object {
+    $targetPid = [int]$_.ProcessId
+    try {
+      $runtime = [System.Diagnostics.Process]::GetProcessById($targetPid)
+      [ordered]@{ pid = $targetPid; name = [string]$_.Name; commandLine = [string]$_.CommandLine; createdTicks = [string]$runtime.StartTime.ToUniversalTime().Ticks }
+    } catch {
+      # A process may exit between CIM enumeration and the runtime identity check.
+    }
+  })
+  Write-Json ([ordered]@{ ok = $true; listenerPorts = @($listenerPorts); processes = @($processes) })
+} catch {
+  Write-Json ([ordered]@{ ok = $false; code = 'NATIVE_TESTCLIENT_DISCOVERY_FAILED'; error = $_.Exception.Message })
+}`;
+}
+
+function buildPowerShellOutputHelpers(): string {
+  return `function Write-Json($value) {
+  [Console]::Out.WriteLine((ConvertTo-Json -InputObject $value -Depth 8 -Compress))
 }`;
 }
 

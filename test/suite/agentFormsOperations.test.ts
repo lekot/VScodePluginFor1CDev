@@ -8,6 +8,7 @@ import type {
 import { FormsOperations } from '../../src/agent/agentFormsOperations';
 import { FormsContext } from '../../src/services/forms/FormsContext';
 import type { NativeFormsSession } from '../../src/services/forms/nativeFormsSession';
+import type { NativeTestClientLifecycleService } from '../../src/services/forms/nativeTestClientLifecycle';
 
 function nativeSession(
     host = '127.0.0.1',
@@ -29,6 +30,162 @@ function start(operations: FormsOperations, input: unknown) {
 }
 
 suite('FormsOperations — native TestClient contract', () => {
+    test('forms.discover returns only validated PID/port pairs and rejects arguments', async () => {
+        const operations = new FormsOperations({
+            testClientLifecycle: {
+                discover: async () => [{ pid: 1234, port: 32138 }],
+            } as Pick<NativeTestClientLifecycleService, 'discover' | 'start' | 'stop'>,
+        });
+
+        assert.deepStrictEqual(await operations.formsDiscover({}), {
+            success: true,
+            data: { clients: [{ pid: 1234, port: 32138 }] },
+        });
+        const invalid = await operations.formsDiscover({ pid: 1234 } as never);
+        assert.strictEqual(invalid.success, false);
+        assert.strictEqual(invalid.code, 'INVALID_ARGUMENTS');
+    });
+
+    test('forms.launch starts from catalog credentials, connects natively, and never returns the password', async () => {
+        const context = new FormsContext();
+        const secret = 'must-not-leak';
+        const serverEntry = {
+            id: 'server-1',
+            name: 'Server base',
+            type: 'server' as const,
+            server: 'srv',
+            database: 'ib',
+            user: 'tester',
+            hasStoredPassword: true,
+            createdAt: '2026-10-05T00:00:00.000Z',
+        };
+        let launchRequest: Record<string, unknown> | undefined;
+        const handle = {
+            child: {} as never,
+            pid: 3210,
+            port: 32138,
+            platformVersion: '8.3.27.1859',
+        };
+        const operations = new FormsOperations({
+            context,
+            infobaseStorage: {
+                getById: async () => serverEntry,
+                readPasswordSecret: async () => secret,
+            } as never,
+            testClientLifecycle: {
+                discover: async () => [],
+                start: async (request) => { launchRequest = request as unknown as Record<string, unknown>; return handle; },
+                stop: async () => 'stopped',
+            } as Pick<NativeTestClientLifecycleService, 'discover' | 'start' | 'stop'>,
+            connectNativeClient: async (options) => nativeSession(options.host, options.port),
+        });
+
+        const result = await operations.formsLaunch({ infobaseId: 'server-1' });
+
+        assert.strictEqual(result.success, true);
+        assert.deepStrictEqual(launchRequest, {
+            entry: serverEntry,
+            user: 'tester',
+            password: secret,
+            platformPath: undefined,
+            port: undefined,
+            waitTimeoutMs: 90_000,
+        });
+        assert.deepStrictEqual(result.data, {
+            pid: 3210,
+            port: 32138,
+            host: '127.0.0.1',
+            driver: 'native',
+            platformVersion: '8.3.27.1859',
+            connection: 'connected',
+            uiAccessHint: 'Используйте forms.native для чтения формы, команд, таблиц, снимков состояния и UI log. forms.shot снимает окно локального TestClient на Windows.',
+        });
+        assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+        assert.strictEqual(context.nativeSession?.connected, true);
+    });
+
+    test('forms.launch retries a transient attach rejection until native session is ready', async () => {
+        const context = new FormsContext();
+        const handle = {
+            child: {} as never,
+            pid: 4320,
+            port: 32140,
+            platformVersion: '8.3.27.1859',
+        };
+        let now = 0;
+        let connectCalls = 0;
+        const stages: string[] = [];
+        const session = nativeSession('127.0.0.1', handle.port);
+        const operations = new FormsOperations({
+            context,
+            now: () => now,
+            delay: async (milliseconds) => { now += milliseconds; },
+            testClientLifecycle: {
+                discover: async () => [],
+                start: async () => handle,
+                stop: async () => 'stopped',
+            } as Pick<NativeTestClientLifecycleService, 'discover' | 'start' | 'stop'>,
+            connectNativeClient: async () => {
+                connectCalls++;
+                if (connectCalls === 1) {throw new Error('binary stream is not ready');}
+                return session;
+            },
+        });
+
+        const result = await operations.formsLaunch(
+            { dbPath: 'C:\\db', waitTimeoutMs: 1_000 },
+            undefined,
+            (message) => stages.push(message),
+        );
+
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(connectCalls, 2);
+        assert.strictEqual(now, 500);
+        assert.ok(stages.some((stage) => stage.includes('Ожидание готовности native TestClient')));
+        assert.strictEqual(context.nativeSession?.connected, true);
+    });
+
+    test('forms.launch retries attach until timeout, then reports PID/port and cleanup status', async () => {
+        const context = new FormsContext();
+        const handle = {
+            child: {} as never,
+            pid: 4321,
+            port: 32139,
+            platformVersion: '8.3.27.1859',
+        };
+        let stopCalls = 0;
+        let now = 0;
+        let connectCalls = 0;
+        const operations = new FormsOperations({
+            context,
+            now: () => now,
+            delay: async (milliseconds) => { now += milliseconds; },
+            testClientLifecycle: {
+                discover: async () => [],
+                start: async () => handle,
+                stop: async () => { stopCalls++; return 'unknown'; },
+            } as Pick<NativeTestClientLifecycleService, 'discover' | 'start' | 'stop'>,
+            connectNativeClient: async () => { connectCalls++; throw new Error('native handshake rejected'); },
+        });
+
+        const result = await operations.formsLaunch({ dbPath: 'C:\\db', waitTimeoutMs: 1_000 });
+
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.code, 'FORMS_LAUNCH_IN_DOUBT');
+        assert.deepStrictEqual(result.data, {
+            status: 'inDoubt',
+            effectPossible: true,
+            pid: 4321,
+            port: 32139,
+            processStatus: 'unknown',
+        });
+        assert.match(result.error ?? '', /PID 4321, порт 32139/);
+        assert.match(result.error ?? '', /мог ожидать подтверждения в окне 1С/);
+        assert.strictEqual(stopCalls, 1);
+        assert.strictEqual(connectCalls, 2);
+        assert.strictEqual(context.nativeSession, undefined);
+    });
+
     test('forms.start requires a valid port, defaults the host, and accepts an omitted native driver', async () => {
         const context = new FormsContext();
         let receivedOptions: { host: string; port: number; platformVersion?: string; timeoutMs: number } | undefined;

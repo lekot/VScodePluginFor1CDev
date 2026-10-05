@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **97** runtime-команд Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **99** runtime-команд Agent API для программного
 управления метаданными, Хранилищем конфигурации, фоновыми задачами, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **97 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **99 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,11 +58,11 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 97 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 99 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 97 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 99 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
@@ -1239,13 +1239,33 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 { "source": "syntax", "action": "children", "parentId": "syntax:2" }
 ```
 
-### Формы enterprise (5 команд)
+### Формы enterprise (7 команд)
 
-Управление формами выполняется через уже запущенный тонкий TestClient. Агент подключается к нему по TCP и не запускает и не останавливает сам процесс 1С. Действия формы могут менять данные открытой базы.
+Для локального запуска и поиска TestClient поддерживается Windows. Действия формы могут менять данные открытой базы. `forms.stop` закрывает только TCP-соединение и не останавливает сам клиент.
+
+#### `1c-metadata-tree.agent.forms.discover`
+
+Найти локальные TestClient, слушающие TCP-порт. Проверяются executable, `/TESTCLIENT`, аргумент `-TPort` и соответствующий PID слушателя. Ответ содержит только `{ pid, port }`; командная строка и возможные `/P` credentials не возвращаются.
+
+```json
+{}
+```
+
+Возвращает `{ clients: [{ pid, port }] }`; пустой массив означает, что подходящий TestClient не найден.
+
+#### `1c-metadata-tree.agent.forms.launch`
+
+Запустить локальный тонкий TestClient, дождаться его TCP-порта и подключить native-сессию. Укажите ровно один источник: `dbPath` каталога файловой базы с `1Cv8.1CD` или `infobaseId` файловой/серверной записи Infobase Manager. Для серверной записи используются сохранённые учётные данные. Необязательные параметры: `platformPath`, `port`, `waitTimeoutMs` (1000–120000 мс, по умолчанию 90000) и `background` (по умолчанию `true` для MCP). При временном отказе attach команда повторяет подключение в пределах `waitTimeoutMs`; при timeout сообщает, что в клиенте могло ожидаться подтверждение или вход.
+
+```json
+{ "dbPath": "C:/temp/test-base", "port": 1843, "waitTimeoutMs": 120000 }
+```
+
+Платформа выбирается без QuickPick: явный путь вызова, настройка расширения, предпочтения записи базы, затем уникальная самая новая подходящая версия. При неоднозначности запуск завершается ошибкой. Возвращаются PID, порт, host, driver и состояние подключения. Ошибка после старта включает PID, порт и статус очистки; если завершение процесса не подтверждено, результат имеет статус `inDoubt`.
 
 #### `1c-metadata-tree.agent.forms.start`
 
-Подключиться к уже запущенному TestClient по обязательному `port`. `driver: "native"` можно указать явно, а `host` по умолчанию равен `127.0.0.1`; `platformVersion` необязателен. Параметры `url`, `dbPath`, `platformPath` и `readyTimeoutMs` не поддерживаются и отклоняются.
+Подключиться к уже запущенному TestClient по обязательному `port`. `driver: "native"` можно указать явно, а `host` по умолчанию равен `127.0.0.1`; `platformVersion` необязателен. Эта команда только подключается и не запускает процесс. Параметры `url`, `dbPath`, `platformPath` и `readyTimeoutMs` не поддерживаются и отклоняются.
 
 ```json
 { "driver": "native", "port": 1538 }

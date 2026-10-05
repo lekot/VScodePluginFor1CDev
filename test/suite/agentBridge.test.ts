@@ -624,8 +624,10 @@ suite('AgentBridge — HTTP server', () => {
 
             const quickstart = content['quickstart'] as string;
             assert.strictEqual(typeof quickstart, 'string', 'quickstart должен быть строкой');
-            assert.ok(quickstart.includes('forms.start требует TCP port'), 'forms.start должен требовать порт TestClient');
-            assert.ok(quickstart.includes('agent.forms.native'), 'quickstart должен описывать native forms API');
+            assert.ok(quickstart.includes('forms.discover ищет локальные TestClient'), 'quickstart должен описывать discovery локальных TestClient');
+            assert.ok(quickstart.includes('forms.launch запускает его'), 'quickstart должен описывать запуск и подключение TestClient');
+            assert.ok(quickstart.includes('forms.start подключается к уже работающему клиенту по TCP port'), 'forms.start должен оставаться командой подключения к запущенному TestClient');
+            assert.ok(quickstart.includes('forms.native управляет формой'), 'quickstart должен описывать native forms API');
             assert.ok(quickstart.includes('agent.debug.start'), 'quickstart должен ссылаться на debug.start');
             assert.ok(quickstart.includes('roles\\.setRights'), 'whitelist должен включать roles.setRights');
             assert.ok(quickstart.includes('debuggeeType=webServer'), 'должен использоваться webServer debuggee');

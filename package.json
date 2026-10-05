@@ -937,8 +937,18 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.forms.discover",
+        "title": "Agent: Найти запущенные TestClient",
+        "category": "CDT 41 Agent"
+      },
+      {
+        "command": "1c-metadata-tree.agent.forms.launch",
+        "title": "Agent: Запустить и подключить TestClient",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.forms.start",
-        "title": "Agent: Запустить клиент форм",
+        "title": "Agent: Подключиться к клиенту форм",
         "category": "CDT 41 Agent"
       },
       {

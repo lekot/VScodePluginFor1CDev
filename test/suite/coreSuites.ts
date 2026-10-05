@@ -256,6 +256,8 @@ export const coreSuiteFiles: string[] = [
   'suite/predefinedCharacteristicsParser.test.js',
   'suite/predefinedCharacteristicOperations.test.js',
   'suite/agentFormsOperations.test.js',
+  'suite/nativeScreenshot.test.js',
+  'suite/nativeTestClientLifecycle.test.js',
   'suite/agentStaticForms.test.js',
   'suite/agentSyntaxHelp.test.js',
   'suite/syntaxHelpUi.test.js',
