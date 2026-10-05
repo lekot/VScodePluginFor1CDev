@@ -71,12 +71,12 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('legacy opt-in registers all 97 operations alongside the seven compact tools', () => {
+  test('legacy opt-in registers all 98 operations alongside the seven compact tools', () => {
     const previous = process.env.CDT_MCP_LEGACY_TOOLS;
     process.env.CDT_MCP_LEGACY_TOOLS = '1';
     try {
       const tools = captureRegisteredTools(async () => ({ success: true }));
-      assert.strictEqual(tools.length, 104);
+      assert.strictEqual(tools.length, 105);
       assert.deepStrictEqual(
         tools.slice(0, MCP_TOOL_CATALOG.length).map(({ name }) => name),
         MCP_TOOL_CATALOG.map(({ name }) => name),
@@ -95,7 +95,7 @@ suite('MCP adapter: tool contract', () => {
     }
   });
 
-  test('cdt_catalog lists all operations and serializes all 97 input schemas', async () => {
+  test('cdt_catalog lists all operations and serializes all 98 input schemas', async () => {
     const tools = captureRegisteredTools(async () => {
       assert.fail('cdt_catalog must not dispatch Agent commands');
     });
@@ -110,7 +110,7 @@ suite('MCP adapter: tool contract', () => {
       listed.data.operations.map(({ name, profile }) => ({ name, profile })),
       MCP_OPERATION_CATALOG.map(({ name, profile }) => ({ name, profile })),
     );
-    assert.strictEqual(listed.data.operations.length, 97);
+    assert.strictEqual(listed.data.operations.length, 98);
 
     for (const operation of MCP_OPERATION_CATALOG) {
       const result = await catalog.handler({ operation: operation.name }, { signal: signal() });
@@ -121,8 +121,18 @@ suite('MCP adapter: tool contract', () => {
       assert.strictEqual(result.isError, undefined, `${operation.name}: serialization`);
       assert.strictEqual(described.success, true, `${operation.name}: catalog result`);
       assert.strictEqual(described.data?.operation?.name, operation.name);
-      assert.strictEqual(described.data?.operation?.inputSchema.type, 'object');
-      assert.ok(described.data?.operation?.inputSchema.properties, `${operation.name}: JSON Schema properties`);
+      const schema = described.data?.operation?.inputSchema;
+      if (operation.name === 'cdt_forms_native') {
+        const actionSchemas = schema?.oneOf as Array<{
+          type?: string;
+          properties?: { action?: { const?: string } };
+        }> | undefined;
+        assert.strictEqual(actionSchemas?.length, 5, 'native forms must serialize a five-action union');
+        assert.ok(actionSchemas?.every((variant) => variant.type === 'object' && variant.properties?.action?.const));
+      } else {
+        assert.strictEqual(schema?.type, 'object');
+        assert.ok(schema?.properties, `${operation.name}: JSON Schema properties`);
+      }
     }
 
     const unknown = await catalog.handler({ operation: 'cdt_no_such_operation' }, { signal: signal() });

@@ -6,13 +6,19 @@ import { FORM_FORMAT_VERSIONS } from '../../agentStaticForms';
 import type { FormChildItem } from '../../../formEditor/formModel';
 
 const formsStartInput = z.strictObject({
+  driver: z.enum(['web', 'native']).optional(),
   url: z.string().optional(),
   dbPath: z.string().optional(),
   platformPath: z.string().optional(),
   readyTimeoutMs: z.number().optional(),
+  host: z.string().optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  platformVersion: z.string().optional(),
   background: z.boolean().default(true),
-}).refine((value) => Boolean(value.url || value.dbPath), {
-  message: 'url or dbPath is required',
+}).refine((value) => value.driver === 'native'
+  ? value.port !== undefined && !value.url && !value.dbPath
+  : Boolean(value.url || value.dbPath) && value.port === undefined, {
+  message: 'native requires port and excludes url/dbPath; web requires url or dbPath and excludes port',
 });
 
 const formsExecInput = z.strictObject({
@@ -22,6 +28,42 @@ const formsExecInput = z.strictObject({
 });
 
 const formsShotInput = z.strictObject({ file: z.string().optional(), background: z.boolean().default(true) });
+const nativeRef = z.strictObject({ id: nonEmptyString });
+const nativeCommon = {
+  timeoutMs: z.number().int().positive().optional(),
+  background: z.boolean().default(true),
+};
+const formsNativeInput = z.discriminatedUnion('action', [
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('overview'),
+    maxDepth: z.number().int().min(0).max(20).optional(),
+    maxNodes: z.number().int().positive().max(2000).optional(),
+  }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('find'),
+    name: z.string().optional(),
+    className: z.string().optional(),
+    text: z.string().optional(),
+    exact: z.boolean().optional(),
+  }),
+  z.strictObject({ ...nativeCommon, action: z.literal('readField'), ref: nativeRef }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('writeField'),
+    ref: nativeRef,
+    value: z.string(),
+  }),
+  z.strictObject({
+    ...nativeCommon,
+    action: z.literal('act'),
+    ref: nativeRef,
+    method: z.enum(['click', 'activate']),
+  }),
+]).refine((value) => value.action !== 'find' || Boolean(value.name || value.className || value.text), {
+  message: 'find requires at least one of name, className, or text',
+});
 const staticFormPath = z.string().refine((value) => {
   const target = value.trim();
   if (!target || target.includes('\0') || /^(?:[\\/]|[A-Za-z]:)/.test(target)) { return false; }
@@ -151,7 +193,7 @@ export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_forms_exec',
-    description: 'Execute arbitrary JavaScript in the connected 1C forms browser session. Returns a task receipt by default; set background=false to wait synchronously.',
+    description: 'Execute a BSL script in the connected 1C web-client browser session. Available only when forms.start used driver="web". Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.exec',
     inputSchema: formsExecInput,
     annotations: WRITE_OPEN,
@@ -165,17 +207,24 @@ export const FORMS_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'cdt_forms_shot',
-    description: 'Capture a screenshot of the connected 1C forms browser, optionally overwriting a local file. Returns a task receipt by default; set background=false to wait synchronously.',
+    description: 'Capture a screenshot of the connected 1C web-client browser, optionally overwriting a local file. Available only when forms.start used driver="web". Returns a task receipt by default; set background=false to wait synchronously.',
     command: '1c-metadata-tree.agent.forms.shot',
     inputSchema: formsShotInput,
     annotations: WRITE_OPEN,
   },
   {
     name: 'cdt_forms_status',
-    description: 'Read the current 1C forms browser and ibsrv process status.',
+    description: 'Read the current 1C forms session status (web or native TestClient).',
     command: '1c-metadata-tree.agent.forms.status',
     inputSchema: emptyInput,
     annotations: READ_OPEN,
+  },
+  {
+    name: 'cdt_forms_native',
+    description: 'Inspect or interact with the active form of an already-running 1C TestClient. Requires forms.start with driver="native" and an explicit port.',
+    command: '1c-metadata-tree.agent.forms.native',
+    inputSchema: formsNativeInput,
+    annotations: WRITE_OPEN,
   },
   {
     name: 'cdt_form_inspect',

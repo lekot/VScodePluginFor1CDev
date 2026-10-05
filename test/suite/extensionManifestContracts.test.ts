@@ -109,8 +109,8 @@ suite('extension manifest contracts', () => {
         .filter((command: string) => command.startsWith('1c-metadata-tree.agent.')),
     );
 
-    assert.strictEqual(registered.size, 97, 'Includes the task, repository, role-rights, static-form, syntax-help, and child-listing commands.');
-    assert.strictEqual(contributed.size, 97, 'Manifest must contribute exactly the documented Agent API.');
+    assert.strictEqual(registered.size, 98, 'Includes the task, repository, role-rights, static-form, syntax-help, child-listing, and native-form commands.');
+    assert.strictEqual(contributed.size, 98, 'Manifest must contribute exactly the documented Agent API.');
     assert.deepStrictEqual([...contributed].sort(), [...registered].sort());
   });
 

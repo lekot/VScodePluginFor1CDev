@@ -9,6 +9,8 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import '../helpers/vscodeStubRegister';
 import { FormsContext } from '../../src/services/forms/FormsContext';
+import type { FormsStartResult, NativeFormsAction, NativeFormsActionResult } from '../../src/agent/agentFormsTypes';
+import type { NativeFormsSession } from '../../src/services/forms/nativeFormsSession';
 import { FormsOperations } from '../../src/agent/agentFormsOperations';
 
 // ─── Mock output channel ─────────────────────────────────────────────────────
@@ -129,5 +131,145 @@ suite('FormsOperations — task cancellation contract', () => {
         assert.strictEqual(startIbsrvCalled, false);
         assert.strictEqual(result.code, 'REQUEST_CANCELLED');
         source.dispose();
+    });
+});
+
+suite('FormsOperations — native TestClient contract', () => {
+    test('native start requires an explicit port and status/stop own only the socket', async () => {
+        const context = new FormsContext();
+        let connected = false;
+        let closeCount = 0;
+        let clientProcessStopped = false;
+        const session: NativeFormsSession = {
+            host: '127.0.0.1',
+            port: 32138,
+            get connected() { return connected; },
+            async execute(): Promise<NativeFormsActionResult> { throw new Error('not called'); },
+            async close() {
+                closeCount += 1;
+                connected = false;
+            },
+        };
+        const operations = new FormsOperations({
+            extensionPath: '/fake/extension/path',
+            outputChannel: makeMockOutputChannel() as unknown as vscode.OutputChannel,
+            context,
+            connectNativeClient: async (options) => {
+                assert.strictEqual(options.host, '127.0.0.1');
+                assert.strictEqual(options.port, 32138);
+                connected = true;
+                return session;
+            },
+        });
+
+        const missingPort = await operations.formsStart({ driver: 'native' });
+        assert.strictEqual(missingPort.success, false);
+        assert.match(missingPort.error ?? '', /port/);
+
+        const started = await operations.formsStart({ driver: 'native', port: 32138 });
+        assert.strictEqual(started.success, true);
+        const nativeStart = started.data as FormsStartResult | undefined;
+        assert.strictEqual(nativeStart?.driver, 'native');
+        assert.strictEqual(nativeStart?.port, 32138);
+
+        const status = await operations.formsStatus({});
+        assert.strictEqual(status.success, true);
+        assert.deepStrictEqual(status.data, {
+            driver: 'native',
+            browserAlive: false,
+            ibsrvAlive: false,
+            nativeConnected: true,
+            host: '127.0.0.1',
+            port: 32138,
+        });
+
+        const stopped = await operations.formsStop({});
+        assert.strictEqual(stopped.success, true);
+        assert.strictEqual(closeCount, 1);
+        assert.strictEqual(clientProcessStopped, false);
+        assert.strictEqual((await operations.formsStatus({})).success, false);
+        clientProcessStopped = false;
+    });
+
+    test('native action routes typed parameters and rejects web-only exec/shot', async () => {
+        const context = new FormsContext();
+        let receivedAction: NativeFormsAction | undefined;
+        let receivedTimeout: number | undefined;
+        const session: NativeFormsSession = {
+            host: 'localhost',
+            port: 32139,
+            connected: true,
+            async execute(action, options) {
+                receivedAction = action;
+                receivedTimeout = options.timeoutMs;
+                return { ref: action.action === 'writeField' ? action.ref : { id: 'field-1' }, accepted: true, text: '42' } as NativeFormsActionResult;
+            },
+            async close() { /* leave the fake server/client alive */ },
+        };
+        context.setNativeSession(session);
+        let webRunnerCalled = false;
+        const operations = new FormsOperations({
+            extensionPath: '/fake/extension/path',
+            outputChannel: makeMockOutputChannel() as unknown as vscode.OutputChannel,
+            context,
+            runFormsScript: async () => {
+                webRunnerCalled = true;
+                throw new Error('web runner must not be called for native');
+            },
+        });
+
+        const action = {
+            action: 'writeField',
+            ref: { id: 'field-1' },
+            value: '42',
+            timeoutMs: 7000,
+            background: false,
+        } as const;
+        const result = await operations.formsNative(action);
+        assert.strictEqual(result.success, true);
+        assert.deepStrictEqual(receivedAction, {
+            action: 'writeField',
+            ref: { id: 'field-1' },
+            value: '42',
+        });
+        assert.strictEqual(receivedTimeout, 7000);
+
+        const exec = await operations.formsExec({ script: 'DoSomething();' });
+        const shot = await operations.formsShot({});
+        assert.strictEqual(exec.success, false);
+        assert.match(exec.error ?? '', /только для driver="web"/);
+        assert.strictEqual(shot.success, false);
+        assert.match(shot.error ?? '', /только для driver="web"/);
+        assert.strictEqual(webRunnerCalled, false);
+    });
+
+    test('native mutation uncertainty is surfaced as inDoubt', async () => {
+        const context = new FormsContext();
+        context.setNativeSession({
+            host: 'localhost',
+            port: 32140,
+            connected: true,
+            async execute() {
+                throw Object.assign(new Error('response timed out after write'), {
+                    code: 'FORMS_OPERATION_IN_DOUBT',
+                    effectPossible: true,
+                });
+            },
+            async close() { /* no-op */ },
+        });
+        const operations = new FormsOperations({
+            extensionPath: '/fake/extension/path',
+            outputChannel: makeMockOutputChannel() as unknown as vscode.OutputChannel,
+            context,
+        });
+
+        const result = await operations.formsNative({
+            action: 'act',
+            ref: { id: 'button-1' },
+            method: 'click',
+        });
+        assert.strictEqual(result.success, false);
+        assert.strictEqual(result.code, 'FORMS_OPERATION_IN_DOUBT');
+        assert.deepStrictEqual(result.data, { status: 'inDoubt', effectPossible: true });
     });
 });

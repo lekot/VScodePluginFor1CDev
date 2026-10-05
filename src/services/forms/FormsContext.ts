@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { stopIbsrv } from './FormsIbsrvLauncher';
+import type { NativeFormsSession } from './nativeFormsSession';
 import {
     isChildProcessTerminated,
     terminateChildProcess,
@@ -34,6 +35,7 @@ export class FormsContext {
     private lifecycleQueue: Promise<void> = Promise.resolve();
     private browserCleanup?: () => Promise<void>;
     private readonly transientProcesses = new Map<ChildProcess, string>();
+    nativeSession?: NativeFormsSession;
 
     configureStoragePath(storagePath: string): void {
         this.storagePath = storagePath;
@@ -111,6 +113,17 @@ export class FormsContext {
         return !isChildProcessTerminated(this.browserProc);
     }
 
+    setNativeSession(session: NativeFormsSession): void {
+        if (this.nativeSession?.connected) {
+            throw new Error('Forms native TestClient session is already owned by this context.');
+        }
+        this.nativeSession = session;
+    }
+
+    clearNativeSession(): void {
+        this.nativeSession = undefined;
+    }
+
     /** Retains a short-lived runner that survived its command timeout. */
     adoptTransientProcess(proc: ChildProcess, resource: string): void {
         if (isChildProcessTerminated(proc)) {
@@ -127,6 +140,17 @@ export class FormsContext {
     /** Stops all owned resources in reverse acquisition order and always attempts every step. */
     async stop(): Promise<FormsStopOutcome> {
         const errors: string[] = [];
+        const nativeSession = this.nativeSession;
+        if (nativeSession) {
+            try {
+                await nativeSession.close();
+                if (!nativeSession.connected) {this.clearNativeSession();}
+                else {errors.push('native TestClient socket remained connected after close');}
+            } catch (error) {
+                errors.push(`native TestClient connection: ${toErrorMessage(error)}`);
+                if (!nativeSession.connected) {this.clearNativeSession();}
+            }
+        }
         const browserCleanup = this.browserCleanup;
         const browserProc = this.browserProc;
 

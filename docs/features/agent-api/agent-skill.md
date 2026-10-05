@@ -1,6 +1,6 @@
 # CDT 41 Agent API — Skill Reference
 
-Расширение CDT 41 для VS Code предоставляет **97** runtime-команд Agent API для программного
+Расширение CDT 41 для VS Code предоставляет **98** runtime-команд Agent API для программного
 управления метаданными, Хранилищем конфигурации, фоновыми задачами, CFE-проектами, поддержкой конфигурации, привязками, раскаткой, отладкой, статическими формами и формами enterprise,
 СКД, XDTO-пакетами и внешними EPF/ERF 1С:Предприятие. Основной транспорт для агента — стандартный Streamable HTTP MCP;
 прямой вызов через `vscode.commands.executeCommand` и legacy `/command` остаются совместимыми.
@@ -46,7 +46,7 @@
 
 Подключите MCP-клиент к `mcp.url` и настройте заголовок `Authorization: Bearer <token>` из того же discovery-файла. Endpoint принимает `POST`, `GET` и `DELETE`, использует stateful sessions и отклоняет запросы без token, не с loopback-интерфейса либо с посторонним `Host`/`Origin`.
 
-По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **97 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
+По умолчанию MCP публикует **семь компактных tools**. Шесть диспетчеров покрывают все **98 операций Agent API** по статическим профилям; `cdt_catalog` перечисляет операции и выдаёт схему по запросу.
 
 | Tool | Для чего используется |
 |---|---|
@@ -58,11 +58,11 @@
 | `cdt_verify_live` | Verification against external systems |
 | `cdt_catalog` | List all operation names and profiles, or describe one operation schema |
 
-Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 97 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
+Шесть диспетчеров принимают `{ operation, arguments }`: `operation` — прежнее имя `cdt_*` из каталога, `arguments` — прежний input Agent-команды. `cdt_catalog({})` возвращает 98 имён, краткие описания и профили; `cdt_catalog({ operation: "cdt_debug_get_variables" })` возвращает JSON Schema одной операции. Все аргументы строго валидируются прежними Zod-схемами до вызова Agent-команды; невоплотимые в JSON Schema refinements остаются runtime-проверками. Полный нормативный mapping и annotations находятся в [MCP specification](../mcp-agent-adapter/spec.md).
 
 Например, чтение списка конфигураций вызывается как `cdt_read({ operation: "cdt_list_configurations", arguments: {} })`. Установка прав вызывается через `cdt_write({ operation: "cdt_roles_set_rights", arguments: { roleName: "Менеджер", objects: ["Catalog.Товары: @view"] } })`.
 
-Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 97 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
+Если процесс расширения запущен с `CDT_MCP_LEGACY_TOOLS=1`, к семи compact tools дополнительно регистрируются 98 индивидуальных имён операций с исходными схемами. Без этой переменной по умолчанию доступны только семь инструментов. Прямые Agent-команды и legacy `/command` сохраняют прежние идентификаторы и поведение.
 
 Каждый вызов диспетчера выполняет ровно одну существующую Agent-команду и возвращает исходный `AgentResult` в `structuredContent` и JSON-копией в text content. Входные объекты строгие: неизвестные поля запрещены. Mutating tools сохраняют очереди Agent API.
 
@@ -71,7 +71,7 @@
 Длительные deploy, deploy выбранных/изменённых файлов, pull, export status, EPF/ERF operations,
 команды СКД (`compile`, `info`, `edit`, `validate`), операции поддержки конфигурации
 (`setObjectMode`, `enableObjectRules`, `sync`, `verify`), управление браузерными формами
-(`start`, `exec`, `shot`) и debug-команды `start`, `startFromBinding`, `waitForStop` можно запустить
+(`start`, `exec`, `shot`, `native`) и debug-команды `start`, `startFromBinding`, `waitForStop` можно запустить
 с `background: true`. MCP-схемы для этих операций по умолчанию выбирают background; синхронный
 MCP-вызов задаёт `background: false`. Прямые Agent-вызовы этих операций сохраняют синхронное
 поведение без `background`; мутации Хранилища остаются фоновыми по умолчанию и принимают
@@ -1240,17 +1240,19 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 { "source": "syntax", "action": "children", "parentId": "syntax:2" }
 ```
 
-### Формы enterprise (5 команд)
+### Формы enterprise (6 команд)
 
-Запуск и управление веб-клиентом 1С для агентской работы с формами. Внутри расширения запускается ibsrv (при dbPath) + playwright (с автоустановкой chromium при первом вызове).
+Управление формами веб-клиента или уже запущенного тонкого TestClient. Web backend запускает ibsrv (при dbPath) и Playwright внутри расширения; native backend подключается к TestClient по TCP и не запускает и не останавливает сам процесс 1С. Действия native-формы могут менять данные открытой базы.
 
 #### `1c-metadata-tree.agent.forms.start`
 
-Запустить сессию. Либо URL готового ibsrv, либо dbPath (ibsrv стартует автоматически). platformPath берётся из настройки `1cMetadataTree.platformPath` если не задан явно.
+Запустить сессию. Web backend принимает URL готового ibsrv либо dbPath (ibsrv стартует автоматически); platformPath берётся из настройки `1cMetadataTree.platformPath` если не задан явно. Native backend требует `driver: "native"` и явный `port` запущенного TestClient; `host` по умолчанию `127.0.0.1`.
 
 ```json
 { "dbPath": "C:/Users/.../InfoBase", "platformPath": "C:/Program Files/1cv8/8.3.27.1859/bin" }
 ```
+
+Пример native-подключения: `{ "driver": "native", "port": 1538 }`.
 
 Возвращает: `{ url, ibsrvSpawned, uiAccessHint }`.
 
@@ -1266,7 +1268,7 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 #### `1c-metadata-tree.agent.forms.stop`
 
-Закрыть browser и остановить ibsrv (если был запущен расширением).
+Закрыть browser и остановить ibsrv (если был запущен расширением); при native-сессии закрывает только TCP-соединение, сам TestClient остаётся работать.
 
 #### `1c-metadata-tree.agent.forms.shot`
 
@@ -1281,9 +1283,19 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 #### `1c-metadata-tree.agent.forms.status`
 
-Статус сессии: жив ли browser, жив ли ibsrv, URL.
+Статус сессии: web — жив ли browser, ibsrv и URL; native — состояние подключения и host/port.
 
-Возвращает: `{ browserAlive, url?, ibsrvAlive, ibsrvPid? }`.
+Возвращает: `{ driver, browserAlive, url?, ibsrvAlive, ibsrvPid?, nativeConnected?, host?, port? }`.
+
+#### `1c-metadata-tree.agent.forms.native`
+
+Работать с активным окном и объектами формы уже подключённого native TestClient. Поддерживаются действия `overview`, `find`, `readField`, `writeField` (только строковое значение) и `act` (`click` или `activate`). `find` возвращает список совпадений. Ссылка на объект действует до следующего вызова `overview` или `find` либо до отключения.
+
+```json
+{ "action": "overview", "maxDepth": 4 }
+```
+
+Чтение и изменение принимают `ref` из текущего результата `overview`/`find`, например `{ "action": "readField", "ref": { "id": "<ref>" } }`. Вызовы `forms.exec` и `forms.shot` остаются только для web backend. Таблицы, snapshots и UI log будут добавлены отдельными инкрементами.
 
 ---
 
