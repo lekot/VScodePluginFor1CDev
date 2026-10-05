@@ -18,6 +18,7 @@ import type {
 import { FormsContext } from '../services/forms/FormsContext';
 import type { NativeFormsConnector } from '../services/forms/nativeFormsSession';
 import { connectNativeTestClient } from '../services/forms/nativeTestClient';
+import { captureNativeTestClientScreenshot } from '../services/forms/nativeScreenshot';
 import { IbsrvStartCancelledError, startIbsrv } from '../services/forms/FormsIbsrvLauncher';
 import { runFormsScript } from '../services/forms/runFormsScript';
 import { ensureChromiumInstalled } from '../services/forms/chromiumInstaller';
@@ -35,6 +36,7 @@ export interface FormsOperationsDeps {
     runFormsScript?: typeof runFormsScript;
     ensureChromiumInstalled?: typeof ensureChromiumInstalled;
     connectNativeClient?: NativeFormsConnector;
+    captureNativeScreenshot?: typeof captureNativeTestClientScreenshot;
 }
 
 /** Класс операций Agent Forms API. */
@@ -189,7 +191,7 @@ export class FormsOperations {
                         ibsrvSpawned,
                         uiAccessHint:
                             `Браузер подключён к ${targetUrl}. ` +
-                            `Для работы с формами используйте forms.exec (BSL-скрипт) ` +
+                            `Для работы с формами используйте forms.exec (JavaScript в Node Playwright, не BSL) ` +
                             `или forms.shot (скриншот).`,
                     },
                 };
@@ -261,7 +263,7 @@ export class FormsOperations {
                         host: session.host,
                         port: session.port,
                         ibsrvSpawned: false,
-                        uiAccessHint: 'Используйте forms.native с action overview/find/readField/writeField/act. forms.exec и forms.shot работают только с driver="web".',
+                        uiAccessHint: 'Используйте forms.native для чтения формы, команд, таблиц, снимков состояния и UI log. forms.shot доступен для локального TestClient на Windows; forms.exec выполняет JavaScript в Node Playwright и доступен только для driver="web".',
                     },
                 };
             } catch (err) {
@@ -284,7 +286,7 @@ export class FormsOperations {
     // ─── formsExec ────────────────────────────────────────────────────────────
 
     /**
-     * Выполняет BSL-скрипт в активной сессии браузера форм 1С.
+     * Выполняет JavaScript в Node Playwright-контексте browser runner.
      * Скрипт передаётся через stdin (run.mjs exec -).
      */
     async formsExec(
@@ -299,10 +301,10 @@ export class FormsOperations {
         return this.context.runExclusive(async () => {
             try {
                 if (this.context.nativeSession) {
-                    return { success: false, error: 'forms.exec принимает BSL только для driver="web"; текущая сессия native' };
+                    return { success: false, error: 'forms.exec выполняет JavaScript в Node Playwright и доступен только для driver="web"; текущая сессия native' };
                 }
                 if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
-                reportStage?.('Выполнение BSL в браузерной сессии форм.');
+                reportStage?.('Выполнение JavaScript в Node Playwright-контексте форм.');
                 const result = await this.runShortScript({
                     command: 'exec',
                     args: ['-'],
@@ -311,7 +313,7 @@ export class FormsOperations {
                     token,
                 });
 
-                const terminationFailure = formsProcessTerminationFailure(result, 'Выполнение BSL');
+                const terminationFailure = formsProcessTerminationFailure(result, 'Выполнение JavaScript');
                 if (terminationFailure) { return terminationFailure; }
 
                 if (result.exitCode !== 0) {
@@ -352,7 +354,7 @@ export class FormsOperations {
     // ─── formsShot ────────────────────────────────────────────────────────────
 
     /**
-     * Делает скриншот активной формы 1С и сохраняет в PNG.
+     * Делает скриншот активной формы 1С и сохраняет в PNG. Для native доступен локальный Windows TestClient.
      */
     async formsShot(
         params: FormsShotParams,
@@ -362,16 +364,38 @@ export class FormsOperations {
         if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
         return this.context.runExclusive(async () => {
           try {
-            if (this.context.nativeSession) {
-                return { success: false, error: 'forms.shot доступен только для driver="web"; текущая сессия native' };
-            }
+            const nativeSession = this.context.nativeSession;
             if (token?.isCancellationRequested) { return cancelledBeforeStart(); }
             const file = params.file ?? path.join(
                 os.tmpdir(),
                 `forms-shot-${Date.now()}.png`,
             );
 
-            reportStage?.('Сохранение скриншота формы.');
+            if (nativeSession) {
+                const controller = new AbortController();
+                const cancellation = token?.onCancellationRequested(() => controller.abort());
+                try {
+                    reportStage?.('Сохранение скриншота окна TestClient.');
+                    const result = await (this.deps.captureNativeScreenshot ?? captureNativeTestClientScreenshot)({
+                        host: nativeSession.host,
+                        port: nativeSession.port,
+                        file,
+                        timeoutMs: params.timeoutMs,
+                        signal: controller.signal,
+                    });
+                    return { success: true, data: { file: result.file } };
+                } catch (err) {
+                    const failure = err as Error & { code?: string };
+                    if (token?.isCancellationRequested || failure.code === 'NATIVE_SCREENSHOT_CANCELLED') {
+                        return cancelledBeforeStart('Снятие скриншота TestClient отменено.');
+                    }
+                    return { success: false, error: failure.message ?? String(err) };
+                } finally {
+                    cancellation?.dispose();
+                }
+            }
+
+            reportStage?.('Сохранение скриншота страницы браузера.');
             const result = await this.runShortScript({
                 command: 'shot',
                 args: [file],

@@ -9,7 +9,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import '../helpers/vscodeStubRegister';
 import { FormsContext } from '../../src/services/forms/FormsContext';
-import type { FormsStartResult, NativeFormsAction, NativeFormsActionResult } from '../../src/agent/agentFormsTypes';
+import type { FormsShotResult, FormsStartResult, NativeFormsAction, NativeFormsActionResult } from '../../src/agent/agentFormsTypes';
 import type { NativeFormsSession } from '../../src/services/forms/nativeFormsSession';
 import { FormsOperations } from '../../src/agent/agentFormsOperations';
 
@@ -78,7 +78,7 @@ suite('FormsOperations — smoke', () => {
 });
 
 suite('FormsOperations — task cancellation contract', () => {
-    test('forms.exec passes its task token and keeps possible BSL effects inDoubt after cancellation', async () => {
+    test('forms.exec passes its task token and keeps possible JavaScript effects inDoubt after cancellation', async () => {
         const source = new vscode.CancellationTokenSource();
         const context = new FormsContext();
         let receivedToken: vscode.CancellationToken | undefined;
@@ -107,7 +107,7 @@ suite('FormsOperations — task cancellation contract', () => {
         assert.strictEqual(result.success, false);
         assert.strictEqual(result.code, 'FORMS_OPERATION_IN_DOUBT');
         assert.deepStrictEqual(result.data, { status: 'inDoubt', effectPossible: true });
-        assert.ok(reported.some((message) => message.includes('Выполнение BSL')));
+        assert.ok(reported.some((message) => message.includes('Выполнение JavaScript')));
         source.dispose();
     });
 
@@ -191,7 +191,7 @@ suite('FormsOperations — native TestClient contract', () => {
         clientProcessStopped = false;
     });
 
-    test('native action routes typed parameters and rejects web-only exec/shot', async () => {
+    test('native action routes typed parameters, keeps exec web-only and captures the native window for shot', async () => {
         const context = new FormsContext();
         let receivedAction: NativeFormsAction | undefined;
         let receivedTimeout: number | undefined;
@@ -208,6 +208,7 @@ suite('FormsOperations — native TestClient contract', () => {
         };
         context.setNativeSession(session);
         let webRunnerCalled = false;
+        let screenshotRequest: { host: string; port: number; file: string } | undefined;
         const operations = new FormsOperations({
             extensionPath: '/fake/extension/path',
             outputChannel: makeMockOutputChannel() as unknown as vscode.OutputChannel,
@@ -215,6 +216,10 @@ suite('FormsOperations — native TestClient contract', () => {
             runFormsScript: async () => {
                 webRunnerCalled = true;
                 throw new Error('web runner must not be called for native');
+            },
+            captureNativeScreenshot: async (options) => {
+                screenshotRequest = { host: options.host, port: options.port, file: options.file };
+                return { file: options.file, width: 1280, height: 720 };
             },
         });
 
@@ -237,10 +242,41 @@ suite('FormsOperations — native TestClient contract', () => {
         const exec = await operations.formsExec({ script: 'DoSomething();' });
         const shot = await operations.formsShot({});
         assert.strictEqual(exec.success, false);
-        assert.match(exec.error ?? '', /только для driver="web"/);
-        assert.strictEqual(shot.success, false);
-        assert.match(shot.error ?? '', /только для driver="web"/);
+        assert.match(exec.error ?? '', /JavaScript в Node Playwright/);
+        assert.strictEqual(shot.success, true);
+        assert.strictEqual((shot.data as FormsShotResult | undefined)?.file, screenshotRequest?.file);
+        assert.deepStrictEqual(
+            { host: screenshotRequest?.host, port: screenshotRequest?.port },
+            { host: 'localhost', port: 32139 },
+        );
         assert.strictEqual(webRunnerCalled, false);
+    });
+
+    test('native shot reports local-only capture errors without invoking the browser runner', async () => {
+        const context = new FormsContext();
+        context.setNativeSession({
+            host: 'remote.example',
+            port: 32141,
+            connected: true,
+            async execute(): Promise<NativeFormsActionResult> { throw new Error('not called'); },
+            async close() { /* no-op */ },
+        });
+        const operations = new FormsOperations({
+            extensionPath: '/fake/extension/path',
+            outputChannel: makeMockOutputChannel() as unknown as vscode.OutputChannel,
+            context,
+            captureNativeScreenshot: async () => {
+                throw Object.assign(new Error('Снимок доступен только для локального TestClient на localhost.'), {
+                    code: 'NATIVE_SCREENSHOT_LOCAL_ONLY',
+                });
+            },
+            runFormsScript: async () => { throw new Error('must not use browser runner'); },
+        });
+
+        const result = await operations.formsShot({});
+
+        assert.strictEqual(result.success, false);
+        assert.match(result.error ?? '', /локального TestClient/);
     });
 
     test('native mutation uncertainty is surfaced as inDoubt', async () => {

@@ -1254,11 +1254,11 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 Пример native-подключения: `{ "driver": "native", "port": 1538 }`.
 
-Возвращает: `{ url, ibsrvSpawned, uiAccessHint }`.
+Web возвращает `{ driver: "web", url, ibsrvSpawned, uiAccessHint }`; native возвращает `{ driver: "native", host, port, ibsrvSpawned: false, uiAccessHint }`.
 
 #### `1c-metadata-tree.agent.forms.exec`
 
-Выполнить JS-скрипт в контексте browser (run.mjs exec). Скрипт может использовать API browser.mjs (navigateLink, clickElement, fillFields, readTable и т.д.).
+Выполнить JavaScript в контексте Node Playwright runner `run.mjs exec`. Скрипт может использовать API `browser.mjs` (navigateLink, clickElement, fillFields, readTable и т.д.). Это JavaScript автоматизации браузера, не BSL; доступно только для web backend.
 
 ```json
 { "script": "await navigateLink('Справочник.Контрагенты'); const t = await readTable(); console.log(JSON.stringify(t));" }
@@ -1272,7 +1272,7 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 #### `1c-metadata-tree.agent.forms.shot`
 
-Скриншот текущей страницы в PNG.
+Скриншот текущей web-страницы либо окна подключённого native TestClient в PNG. Native-захват доступен только для локального TestClient на Windows и выбирает процесс по порту сессии. `timeoutMs` задаёт таймаут native-захвата.
 
 ```json
 { "file": "C:/tmp/shot.png" }
@@ -1289,13 +1289,13 @@ staging/evidence, а optional `publishedArtifactPath` — canonical destination,
 
 #### `1c-metadata-tree.agent.forms.native`
 
-Работать с активным окном и объектами формы уже подключённого native TestClient. Поддерживаются действия `overview`, `find`, `readField`, `writeField` (только строковое значение) и `act` (`click` или `activate`). `find` возвращает список совпадений. Ссылка на объект действует до следующего вызова `overview` или `find` либо до отключения.
+Работать с активным окном уже подключённого native TestClient. Поддерживаются `overview`, `find`, `readField`, `writeField` (строковое значение), `act` (`click`/`activate`), `commandInterface`, `executeCommand`, `readTable`, `formContext`, `createSnapshot`, `compareSnapshot`, `listSnapshots`, `deleteSnapshot` и `uiLog` (`start`/`finish`/`pause`/`resume`/`cancel`). `commandInterface` читает команды активного окна; `executeCommand` выполняет команду по URL. `formContext` возвращает элементы формы, а `includeTables: true` добавляет чтение найденных таблиц. Таблицы читаются через поддерживаемые TestClient операции; на 8.3.27.1859 проверена корректно описанная таблица с двумя строками, обе строки прочитаны, полнота подтверждена и выделение восстановлено. Ошибки TestClient передаются как ошибки, а не как пустая таблица. Snapshots хранятся только в памяти текущего TS-сервера и сравнивают сериализованное состояние формы.
 
 ```json
 { "action": "overview", "maxDepth": 4 }
 ```
 
-Чтение и изменение принимают `ref` из текущего результата `overview`/`find`, например `{ "action": "readField", "ref": { "id": "<ref>" } }`. Вызовы `forms.exec` и `forms.shot` остаются только для web backend. Таблицы, snapshots и UI log будут добавлены отдельными инкрементами.
+Чтение и изменение принимают `ref` из текущего результата `overview`, `find` или `formContext`, например `{ "action": "readField", "ref": { "id": "<ref>" } }`. `overview`, `find`, `commandInterface` и `formContext` обновляют набор ссылок; `executeCommand` очищает ссылки предыдущего окна. Снимки не инвалидируют текущие ссылки. Чтение таблицы временно меняет выделение строк и пытается восстановить его; ответ содержит `complete`, `truncated` и `selectionRestored`. Если полноту нельзя подтвердить, `complete` будет `false`, в том числе для пустого результата. `forms.exec` остаётся только web-операцией и исполняет JavaScript в Node Playwright, не BSL. `forms.shot` поддерживает web и локальный Windows TestClient.
 
 ---
 

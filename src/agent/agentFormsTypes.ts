@@ -85,6 +85,8 @@ export interface FormsStopResult {}
 export interface FormsShotParams {
     /** Путь к PNG. Если не задан — temp-файл. */
     file?: string;
+    /** Native window capture timeout in milliseconds (default 15000). */
+    timeoutMs?: number;
     /** Run as a tracked background Agent task when true. MCP defaults this to true. */
     background?: boolean;
 }
@@ -122,6 +124,7 @@ export interface NativeFormsObject {
     className: string;
     name?: string;
     text?: string;
+    url?: string;
     visible?: boolean;
     enabled?: boolean;
     children?: NativeFormsObject[];
@@ -129,9 +132,18 @@ export interface NativeFormsObject {
 
 export type NativeFormsAction =
     | { action: 'overview'; maxDepth?: number; maxNodes?: number }
+    | { action: 'commandInterface'; maxDepth?: number; maxNodes?: number }
+    | { action: 'executeCommand'; url: string }
     | { action: 'find'; name?: string; className?: string; text?: string; exact?: boolean }
     | { action: 'readField'; ref: NativeFormsObjectRef }
     | { action: 'writeField'; ref: NativeFormsObjectRef; value: string }
+    | { action: 'readTable'; ref: NativeFormsObjectRef; maxRows?: number }
+    | { action: 'formContext'; includeTables?: boolean; maxDepth?: number; maxNodes?: number; maxRows?: number }
+    | { action: 'createSnapshot'; includeTables?: boolean; maxDepth?: number; maxNodes?: number; maxRows?: number }
+    | { action: 'compareSnapshot'; snapshotId: string }
+    | { action: 'listSnapshots' }
+    | { action: 'deleteSnapshot'; snapshotId: string }
+    | { action: 'uiLog'; operation: 'start' | 'finish' | 'pause' | 'resume' | 'cancel' }
     | { action: 'act'; ref: NativeFormsObjectRef; method: 'click' | 'activate' };
 
 export interface NativeFormsOverviewResult {
@@ -141,6 +153,72 @@ export interface NativeFormsOverviewResult {
 
 export interface NativeFormsFindResult {
     matches: NativeFormsObject[];
+}
+
+export interface NativeFormsCommandInterfaceResult {
+    items: NativeFormsObject[];
+    truncated: boolean;
+}
+
+export interface NativeFormsExecuteCommandResult {
+    command: string;
+    windowChanged: boolean;
+    activeWindow: NativeFormsObject;
+}
+
+export type NativeFormsTableRow = Record<string, string | null>;
+
+export interface NativeFormsReadTableResult {
+    ref: NativeFormsObjectRef;
+    rows: NativeFormsTableRow[];
+    complete: boolean;
+    truncated: boolean;
+    rowCount?: number;
+    selectionRestored: boolean;
+    selectionRestoreError?: string;
+}
+
+export interface NativeFormsContextElement extends NativeFormsObject {
+    value?: string;
+    valueStatus?: 'read' | 'unavailable';
+}
+
+export interface NativeFormsFormContextResult {
+    activeWindow: NativeFormsObject;
+    elements: NativeFormsContextElement[];
+    tables?: NativeFormsReadTableResult[];
+    complete: boolean;
+    truncated: boolean;
+}
+
+export interface NativeFormsSnapshotInfo {
+    snapshotId: string;
+    capturedAt: string;
+    complete: boolean;
+    elementCount: number;
+}
+
+export interface NativeFormsCreateSnapshotResult extends NativeFormsSnapshotInfo {}
+
+export interface NativeFormsCompareSnapshotResult {
+    snapshotId: string;
+    complete: boolean;
+    changes: Array<{ path: string; before?: unknown; after?: unknown }>;
+}
+
+export interface NativeFormsListSnapshotsResult {
+    snapshots: NativeFormsSnapshotInfo[];
+}
+
+export interface NativeFormsDeleteSnapshotResult {
+    snapshotId: string;
+    deleted: boolean;
+}
+
+export interface NativeFormsUiLogResult {
+    operation: 'start' | 'finish' | 'pause' | 'resume' | 'cancel';
+    recording: boolean;
+    uilog?: string;
 }
 
 export interface NativeFormsReadFieldResult {
@@ -161,6 +239,15 @@ export interface NativeFormsActResult {
 
 export type NativeFormsActionResult =
     | NativeFormsOverviewResult
+    | NativeFormsCommandInterfaceResult
+    | NativeFormsExecuteCommandResult
+    | NativeFormsReadTableResult
+    | NativeFormsFormContextResult
+    | NativeFormsCreateSnapshotResult
+    | NativeFormsCompareSnapshotResult
+    | NativeFormsListSnapshotsResult
+    | NativeFormsDeleteSnapshotResult
+    | NativeFormsUiLogResult
     | NativeFormsFindResult
     | NativeFormsReadFieldResult
     | NativeFormsWriteFieldResult
