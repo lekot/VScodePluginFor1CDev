@@ -6,6 +6,8 @@
 
 /** Параметры запуска сессии веб-клиента 1С. */
 export interface FormsStartParams {
+    /** Session backend. The native backend connects to an already-running TestClient. */
+    driver?: 'web' | 'native';
     /** URL готового ibsrv. Взаимоисключающий с dbPath. */
     url?: string;
     /** Путь к файловой базе — TS сам спавнит ibsrv. */
@@ -15,18 +17,27 @@ export interface FormsStartParams {
     platformPath?: string;
     /** Таймаут readiness ibsrv+chromium в мс (default 60000). */
     readyTimeoutMs?: number;
+    /** TestClient TCP port. Required when driver is native. */
+    port?: number;
+    /** TestClient host (native only, defaults to 127.0.0.1). */
+    host?: string;
+    /** Informational platform version supplied by the caller (native only). */
+    platformVersion?: string;
     /** Run as a tracked background Agent task when true. MCP defaults this to true. */
     background?: boolean;
 }
 
 /** Результат запуска сессии веб-клиента 1С. */
 export interface FormsStartResult {
+    driver?: 'web' | 'native';
     /** URL, к которому подключён playwright. */
-    url: string;
+    url?: string;
     /** true если TS запустил ibsrv (forms.stop тогда его гасит). */
     ibsrvSpawned: boolean;
     /** Подсказка агенту куда navigate в playwright. */
     uiAccessHint?: string;
+    host?: string;
+    port?: number;
 }
 
 /** Start operation could not verify that browser/ibsrv startup had no remaining effect. */
@@ -91,8 +102,79 @@ export interface FormsStatusParams {}
 
 /** Результат проверки статуса сессии. */
 export interface FormsStatusResult {
+    driver?: 'web' | 'native';
     browserAlive: boolean;
     url?: string;
     ibsrvAlive: boolean;
     ibsrvPid?: number;
+    nativeConnected?: boolean;
+    host?: string;
+    port?: number;
 }
+
+export interface NativeFormsObjectRef {
+    /** Opaque session-local reference; valid until the next overview/find refresh or disconnect. */
+    id: string;
+}
+
+export interface NativeFormsObject {
+    ref: NativeFormsObjectRef;
+    className: string;
+    name?: string;
+    text?: string;
+    visible?: boolean;
+    enabled?: boolean;
+    children?: NativeFormsObject[];
+}
+
+export type NativeFormsAction =
+    | { action: 'overview'; maxDepth?: number; maxNodes?: number }
+    | { action: 'find'; name?: string; className?: string; text?: string; exact?: boolean }
+    | { action: 'readField'; ref: NativeFormsObjectRef }
+    | { action: 'writeField'; ref: NativeFormsObjectRef; value: string }
+    | { action: 'act'; ref: NativeFormsObjectRef; method: 'click' | 'activate' };
+
+export interface NativeFormsOverviewResult {
+    activeWindow: NativeFormsObject;
+    truncated: boolean;
+}
+
+export interface NativeFormsFindResult {
+    matches: NativeFormsObject[];
+}
+
+export interface NativeFormsReadFieldResult {
+    ref: NativeFormsObjectRef;
+    text: string;
+}
+
+export interface NativeFormsWriteFieldResult {
+    ref: NativeFormsObjectRef;
+    accepted: boolean;
+    text?: string;
+}
+
+export interface NativeFormsActResult {
+    ref: NativeFormsObjectRef;
+    performed: boolean;
+}
+
+export type NativeFormsActionResult =
+    | NativeFormsOverviewResult
+    | NativeFormsFindResult
+    | NativeFormsReadFieldResult
+    | NativeFormsWriteFieldResult
+    | NativeFormsActResult;
+
+export interface NativeFormsParams {
+    action: NativeFormsAction['action'];
+    /** Optional operation timeout in milliseconds. */
+    timeoutMs?: number;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
+}
+
+export type NativeFormsCommandParams = NativeFormsAction & {
+    timeoutMs?: number;
+    background?: boolean;
+};

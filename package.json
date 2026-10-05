@@ -952,6 +952,11 @@
         "category": "CDT 41 Agent"
       },
       {
+        "command": "1c-metadata-tree.agent.forms.native",
+        "title": "Agent: Управлять нативной формой",
+        "category": "CDT 41 Agent"
+      },
+      {
         "command": "1c-metadata-tree.agent.forms.exec",
         "title": "Agent: Выполнить сценарий форм",
         "category": "CDT 41 Agent"

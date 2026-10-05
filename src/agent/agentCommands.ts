@@ -82,6 +82,7 @@ import type {
   FormsStopParams,
   FormsShotParams,
   FormsStatusParams,
+  NativeFormsCommandParams,
 } from './agentFormsTypes';
 import type { StaticFormEditParams, StaticFormSelector, StaticFormValidateParams } from './agentStaticForms';
 import { SkdOperations } from './agentSkdOperations';
@@ -1050,6 +1051,20 @@ export function registerAgentCommands(
         }
     );
 
+    // ─── 1c-metadata-tree.agent.forms.native ────────────────────────────────
+
+    const formsNativeCommand = vscode.commands.registerCommand(
+        '1c-metadata-tree.agent.forms.native',
+        async (params: NativeFormsCommandParams, requestToken?: vscode.CancellationToken) => {
+            const ops = new FormsOperations({
+                extensionPath: context.extensionPath,
+                outputChannel: formsOutputChannel,
+            });
+            return runAgentLongTask('agent.forms.native', params.background, requestToken, (token, reportStage) =>
+                ops.formsNative(params, token, reportStage));
+        }
+    );
+
     // ─── Static Form.xml inspection and validation ──────────────────────────
 
     const formsInspectCommand = vscode.commands.registerCommand(
@@ -1313,7 +1328,7 @@ export function registerAgentCommands(
         setPredefinedCharacteristicTypeCommand,
         getCharacteristicValueRegistersCommand,
         formsStartCommand, formsExecCommand, formsStopCommand,
-        formsShotCommand, formsStatusCommand, formsInspectCommand, formsValidateCommand, formsEditCommand,
+        formsShotCommand, formsStatusCommand, formsNativeCommand, formsInspectCommand, formsValidateCommand, formsEditCommand,
         syntaxHelpCommand,
         skdCompileCommand, skdInfoCommand, skdEditCommand, skdValidateCommand,
         listXdtoPackagesCommand, getXdtoPackageCommand, exportXdtoXsdCommand,

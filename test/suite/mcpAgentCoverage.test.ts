@@ -81,6 +81,7 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_forms_stop', 'forms.stop', 'writeOpen'),
   tool('cdt_forms_shot', 'forms.shot', 'writeOpen'),
   tool('cdt_forms_status', 'forms.status', 'readOpen'),
+  tool('cdt_forms_native', 'forms.native', 'writeOpen'),
   tool('cdt_form_inspect', 'forms.inspect', 'readClosed'),
   tool('cdt_form_validate', 'forms.validate', 'readClosed'),
   tool('cdt_form_edit', 'forms.edit', 'writeClosed'),
@@ -224,6 +225,7 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_forms_stop: {},
   cdt_forms_shot: { file: 'C:/temp/form.png' },
   cdt_forms_status: {},
+  cdt_forms_native: { action: 'overview' },
   cdt_form_inspect: { configurationId: 'cfg', formPath: 'Catalogs/Goods/Forms/Main/Ext/Form.xml' },
   cdt_form_validate: { configurationId: 'cfg', formPath: 'CommonForms/Editor/Ext/Form.xml', formatVersion: '2.20' },
   cdt_form_edit: {
@@ -485,10 +487,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 97 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 97, 'test oracle must enumerate all 97 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 97);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 97);
+  test('operation registry has the exact 98 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 98, 'test oracle must enumerate all 98 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 98);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 98);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -544,8 +546,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 97);
-    assert.strictEqual(new Set(registered).size, 97);
+    assert.strictEqual(registered.length, 98);
+    assert.strictEqual(new Set(registered).size, 98);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -558,7 +560,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 97 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 98 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
@@ -666,11 +668,26 @@ suite('MCP Agent catalog coverage', () => {
     }), true);
   });
 
-  test('forms start accepts either or both targets, but not neither', () => {
+  test('web forms start accepts a URL or database path; native requires an explicit port', () => {
     assert.strictEqual(accepts('cdt_forms_start', { url: 'http://localhost/app' }), true);
     assert.strictEqual(accepts('cdt_forms_start', { dbPath: 'C:/db' }), true);
     assert.strictEqual(accepts('cdt_forms_start', { url: 'http://localhost/app', dbPath: 'C:/db' }), true);
     assert.strictEqual(accepts('cdt_forms_start', {}), false);
+    assert.strictEqual(accepts('cdt_forms_start', { driver: 'native', port: 32138 }), true);
+    assert.strictEqual(accepts('cdt_forms_start', { driver: 'native' }), false);
+    assert.strictEqual(accepts('cdt_forms_start', { driver: 'native', port: 32138, url: 'http://localhost/app' }), false);
+    assert.strictEqual(accepts('cdt_forms_start', { driver: 'web', url: 'http://localhost/app', port: 32138 }), false);
+  });
+
+  test('native forms actions require discriminated typed arguments', () => {
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'overview' }), true);
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'find', name: 'OK' }), true);
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'find' }), false);
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'readField', ref: { id: 'f-1' } }), true);
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'writeField', ref: { id: 'f-1' }, value: 'abc' }), true);
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'writeField', ref: { id: 'f-1' }, value: true }), false);
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'act', ref: { id: 'f-1' }, method: 'click' }), true);
+    assert.strictEqual(accepts('cdt_forms_native', { action: 'act', ref: { id: 'f-1' }, method: 'unsupported' }), false);
   });
 
   test('SKD compile requires exactly one source and constrains enums', () => {
