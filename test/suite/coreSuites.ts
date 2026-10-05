@@ -255,7 +255,6 @@ export const coreSuiteFiles: string[] = [
   'suite/commandInterfaceOperations.test.js',
   'suite/predefinedCharacteristicsParser.test.js',
   'suite/predefinedCharacteristicOperations.test.js',
-  'suite/chromiumInstaller.test.js',
   'suite/agentFormsOperations.test.js',
   'suite/agentStaticForms.test.js',
   'suite/agentSyntaxHelp.test.js',

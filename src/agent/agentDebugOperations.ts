@@ -190,14 +190,11 @@ export class AgentDebugOperations {
             if (webServerHttpPort !== undefined) {
                 data.webServerUrl = `http://localhost:${webServerHttpPort}`;
                 data.uiAccessHint =
-                    `Для работы с формами 1С откройте ${data.webServerUrl} через playwright ` +
-                    `(mcp__plugin_playwright_playwright__browser_navigate). ` +
-                    `Тогда можно кликать/заполнять формы и одновременно пользоваться debug.*.`;
+                    `Откройте веб-клиент ${data.webServerUrl} в браузере; debug.* продолжит работать параллельно.`;
             } else {
                 data.uiAccessHint =
-                    'Запущен thinClient (1cv8c.exe) — нативное окно Windows, недоступно агенту без UI-автоматизации. ' +
-                    'Чтобы управлять формами из агента, перезапустите сессию с debuggeeType="webServer" + databasePath ' +
-                    '(ibsrv HTTP-клиент + playwright) или используйте skill ui-test для кликов в нативном окне.';
+                    'Запущен thinClient (1cv8c.exe) — нативное окно Windows. Для управления формой через Agent API ' +
+                    'подключите уже запущенный TestClient с /TESTCLIENT -TPort <port> через agent.forms.start.';
             }
             return { success: true, data };
         } catch {
@@ -782,14 +779,11 @@ export class AgentDebugOperations {
             if (webServerHttpPort !== undefined) {
                 data.webServerUrl = `http://localhost:${webServerHttpPort}`;
                 data.uiAccessHint =
-                    `Для работы с формами 1С откройте ${data.webServerUrl} через playwright ` +
-                    `(mcp__plugin_playwright_playwright__browser_navigate). ` +
-                    `Тогда можно кликать/заполнять формы и одновременно пользоваться debug.*.`;
+                    `Откройте веб-клиент ${data.webServerUrl} в браузере; debug.* продолжит работать параллельно.`;
             } else {
                 data.uiAccessHint =
-                    'Запущен thinClient (1cv8c.exe) — нативное окно Windows, недоступно агенту без UI-автоматизации. ' +
-                    'Чтобы управлять формами из агента, перезапустите сессию с debuggeeType="webServer" + databasePath ' +
-                    '(ibsrv HTTP-клиент + playwright) или используйте skill ui-test для кликов в нативном окне.';
+                    'Запущен thinClient (1cv8c.exe) — нативное окно Windows. Для управления формой через Agent API ' +
+                    'подключите уже запущенный TestClient с /TESTCLIENT -TPort <port> через agent.forms.start.';
             }
             return { success: true, data };
         } catch {

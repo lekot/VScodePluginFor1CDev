@@ -2,7 +2,7 @@
 
 ## Контекст
 
-Agent API — прикладная граница: 96 команд в `registerAgentCommands` выбирают конфигурацию, проверяют capabilities, используют `ConfigurationSession` или общий application/service facade и возвращают `AgentResult`. MCP не становится вторым прикладным API и не вызывает operations/services напрямую.
+Agent API — прикладная граница: 97 команд в `registerAgentCommands` выбирают конфигурацию, проверяют capabilities, используют `ConfigurationSession` или общий application/service facade и возвращают `AgentResult`. MCP не становится вторым прикладным API и не вызывает operations/services напрямую.
 
 Четыре UI-команды `borrowToExtension`, `navigateToMainObject`, `showRelatedObjects`, `showInterceptors` не зарегистрированы `registerAgentCommands`, не имеют `AgentResult`-контракта и не входят в MCP catalog.
 
@@ -14,7 +14,7 @@ Agent API — прикладная граница: 96 команд в `registerA
 
 ### 2. Один `/mcp` route и один монолитный каталог
 
-Сохраняет единый listener и thin dispatch, но 96 schemas в одном файле создают высокую связность и неудобный review. Подход использован первой вертикалью, но не масштабируется на полный API.
+Сохраняет единый listener и thin dispatch, но 97 schemas в одном файле создают высокую связность и неудобный review. Подход использован первой вертикалью, но не масштабируется на полный API.
 
 ### 3. `/mcp` в Agent Bridge и доменные catalog modules — выбран
 
@@ -31,7 +31,7 @@ flowchart LR
     R --> K["MCP_TOOL_CATALOG"]
     K --> D["Domain catalog modules"]
     K --> V["vscode.commands.executeCommand"]
-    V --> A["96 Agent commands"]
+    V --> A["97 Agent commands"]
     A --> Q["ConfigurationSession / services / processes"]
 ```
 
@@ -51,7 +51,7 @@ debug, bindings/deploy, support, repository, tasks, type/subsystem/characteristi
 - strict Zod input schema с cross-field refinements;
 - полный статический набор `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`.
 
-Annotations консервативны и отражают худший допустимый режим. Поэтому условно пишущие `xdto.exportXsd`, `skd.info`, `skd.validate` не read-only. Произвольный JavaScript `forms.exec` и BSL `debug.evaluate` destructive/open-world. Open-world выставляется для debug/forms/deploy/status и всех SKD tools: они взаимодействуют с процессами, debuggee, браузером, информационными базами либо локальными произвольными input/output paths.
+Annotations консервативны и отражают худший допустимый режим. Поэтому условно пишущие `xdto.exportXsd`, `skd.info`, `skd.validate` не read-only. Действия `forms.native` могут менять данные открытой базы, а `debug.evaluate` выполняет BSL с возможными side effects; обе операции destructive/open-world. Open-world выставляется для debug/forms/deploy/status и всех SKD tools: они взаимодействуют с процессами, debuggee, native TestClient, информационными базами либо локальными произвольными input/output paths.
 
 Support vertical состоит из `AgentSupportOperations` и шести declarative MCP definitions.
 Agent boundary зависит только от `SupportApplicationFacade`: один метод вызывает ровно одну из операций
@@ -79,7 +79,7 @@ Source of truth для состава Agent API — фактическое вы�
 
 Тест требует:
 
-- точного равенства множеств и текущего размера 96;
+- точного равенства множеств и текущего размера 97;
 - отсутствия duplicate tool names и command ids;
 - отсутствия четырёх UI-команд вне Agent API;
 - соответствия каждого definition зафиксированным schema/annotation contracts.

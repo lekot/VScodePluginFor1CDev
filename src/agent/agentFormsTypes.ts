@@ -1,75 +1,40 @@
 // src/agent/agentFormsTypes.ts
-// Agent Forms API — типы параметров и результатов команд управления формами 1С.
-// Без зависимостей от vscode — только чистые типы.
+// Agent Forms API — types for native 1C TestClient operations.
+// No VS Code dependencies; these are plain input and result contracts.
 
 // ─── start ───────────────────────────────────────────────────────────────────
 
-/** Параметры запуска сессии веб-клиента 1С. */
+/** Connect to an already-running native TestClient. */
 export interface FormsStartParams {
-    /** Session backend. The native backend connects to an already-running TestClient. */
-    driver?: 'web' | 'native';
-    /** URL готового ibsrv. Взаимоисключающий с dbPath. */
-    url?: string;
-    /** Путь к файловой базе — TS сам спавнит ibsrv. */
-    dbPath?: string;
-    /** Путь к платформе 1С (каталог bin), для spawn ibsrv.
-     *  Если не задан — берётся из 1cMetadataTree.platformPath в настройках. */
-    platformPath?: string;
-    /** Таймаут readiness ibsrv+chromium в мс (default 60000). */
-    readyTimeoutMs?: number;
-    /** TestClient TCP port. Required when driver is native. */
-    port?: number;
-    /** TestClient host (native only, defaults to 127.0.0.1). */
+    /** The only supported driver; omitted for backwards-compatible native calls. */
+    driver?: 'native';
+    /** TestClient TCP port. Required at runtime. */
+    port: number;
+    /** TestClient host (defaults to 127.0.0.1). */
     host?: string;
-    /** Informational platform version supplied by the caller (native only). */
+    /** Informational platform version supplied by the caller. */
     platformVersion?: string;
     /** Run as a tracked background Agent task when true. MCP defaults this to true. */
     background?: boolean;
 }
 
-/** Результат запуска сессии веб-клиента 1С. */
 export interface FormsStartResult {
-    driver?: 'web' | 'native';
-    /** URL, к которому подключён playwright. */
-    url?: string;
-    /** true если TS запустил ibsrv (forms.stop тогда его гасит). */
-    ibsrvSpawned: boolean;
-    /** Подсказка агенту куда navigate в playwright. */
-    uiAccessHint?: string;
-    host?: string;
-    port?: number;
+    driver: 'native';
+    host: string;
+    port: number;
+    uiAccessHint: string;
 }
 
-/** Start operation could not verify that browser/ibsrv startup had no remaining effect. */
+/** Start operation could not verify that the connection has no remaining effect. */
 export interface FormsStartInDoubtResult {
     status: 'inDoubt';
     effectPossible: boolean;
 }
 
-/** A forms process was interrupted after it may have performed its requested effect. */
+/** A native operation was interrupted after it may have performed its requested effect. */
 export interface FormsOperationInDoubtResult {
     status: 'inDoubt';
     effectPossible: true;
-}
-
-// ─── exec ────────────────────────────────────────────────────────────────────
-
-/** Параметры выполнения JS-скрипта в браузере. */
-export interface FormsExecParams {
-    /** JS-скрипт для run.mjs exec. */
-    script: string;
-    /** Таймаут в мс (default 30000). */
-    timeoutMs?: number;
-    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
-    background?: boolean;
-}
-
-/** Результат выполнения JS-скрипта. */
-export interface FormsExecResult {
-    /** stdout run.mjs (JSON или plain). */
-    output: string;
-    stderr?: string;
-    exitCode: number;
 }
 
 // ─── stop ────────────────────────────────────────────────────────────────────
@@ -81,9 +46,8 @@ export interface FormsStopResult {}
 
 // ─── shot ────────────────────────────────────────────────────────────────────
 
-/** Параметры скриншота. */
 export interface FormsShotParams {
-    /** Путь к PNG. Если не задан — temp-файл. */
+    /** Path to the PNG file. If omitted, a temporary file is used. */
     file?: string;
     /** Native window capture timeout in milliseconds (default 15000). */
     timeoutMs?: number;
@@ -91,9 +55,8 @@ export interface FormsShotParams {
     background?: boolean;
 }
 
-/** Результат скриншота. */
 export interface FormsShotResult {
-    /** Абсолютный путь сохранённого PNG. */
+    /** Absolute path to the saved PNG. */
     file: string;
 }
 
@@ -102,14 +65,9 @@ export interface FormsShotResult {
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface FormsStatusParams {}
 
-/** Результат проверки статуса сессии. */
 export interface FormsStatusResult {
-    driver?: 'web' | 'native';
-    browserAlive: boolean;
-    url?: string;
-    ibsrvAlive: boolean;
-    ibsrvPid?: number;
-    nativeConnected?: boolean;
+    driver?: 'native';
+    nativeConnected: boolean;
     host?: string;
     port?: number;
 }

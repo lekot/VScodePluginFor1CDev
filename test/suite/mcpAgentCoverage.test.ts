@@ -77,7 +77,6 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_get_characteristic_value_registers', 'getCharacteristicValueRegisters', 'readClosed'),
 
   tool('cdt_forms_start', 'forms.start', 'writeOpen'),
-  tool('cdt_forms_exec', 'forms.exec', 'writeOpen'),
   tool('cdt_forms_stop', 'forms.stop', 'writeOpen'),
   tool('cdt_forms_shot', 'forms.shot', 'writeOpen'),
   tool('cdt_forms_status', 'forms.status', 'readOpen'),
@@ -220,8 +219,7 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_get_predefined_characteristic_type: { configurationId: 'cfg', path: 'ChartOfCharacteristicTypes.Kinds', predefinedName: 'Color' },
   cdt_set_predefined_characteristic_type: { configurationId: 'cfg', path: 'ChartOfCharacteristicTypes.Kinds', predefinedName: 'Color', types: ['xs:string'] },
   cdt_get_characteristic_value_registers: { configurationId: 'cfg', path: 'ChartOfCharacteristicTypes.Kinds' },
-  cdt_forms_start: { url: 'http://localhost/app', readyTimeoutMs: 1000 },
-  cdt_forms_exec: { script: 'return true;', timeoutMs: 1000 },
+  cdt_forms_start: { port: 32138 },
   cdt_forms_stop: {},
   cdt_forms_shot: { file: 'C:/temp/form.png' },
   cdt_forms_status: {},
@@ -385,8 +383,7 @@ const INVALID_REFINEMENT_CASES: readonly InvalidRefinementCase[] = [
   { label: 'resolveBinding supplied empty path', tool: 'cdt_resolve_binding', input: { configPath: '' } },
   { label: 'deploySelectedObjects empty files', tool: 'cdt_deploy_selected_objects', input: { files: [] } },
   { label: 'pullSelectedObjects empty objectIds', tool: 'cdt_pull_selected_objects', input: { objectIds: [] } },
-  { label: 'formsStart missing url and dbPath', tool: 'cdt_forms_start', input: {} },
-  { label: 'formsExec empty script', tool: 'cdt_forms_exec', input: { script: '' } },
+  { label: 'formsStart missing port', tool: 'cdt_forms_start', input: {} },
   { label: 'form inspect rejects traversal paths', tool: 'cdt_form_inspect', input: { formPath: 'Catalogs/Goods/Forms/../Other/Ext/Form.xml' } },
   { label: 'form inspect rejects absolute paths', tool: 'cdt_form_inspect', input: { formPath: 'C:/outside/Forms/Main/Ext/Form.xml' } },
   { label: 'form validate rejects arbitrary XML paths', tool: 'cdt_form_validate', input: { formPath: 'Catalogs/Goods/Object.xml' } },
@@ -487,10 +484,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 98 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 98, 'test oracle must enumerate all 98 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 98);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 98);
+  test('operation registry has the exact 97 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 97, 'test oracle must enumerate all 97 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 97);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 97);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -546,21 +543,22 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 98);
-    assert.strictEqual(new Set(registered).size, 98);
+    assert.strictEqual(registered.length, 97);
+    assert.strictEqual(new Set(registered).size, 97);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
       '1c-metadata-tree.navigateToMainObject',
       '1c-metadata-tree.showRelatedObjects',
       '1c-metadata-tree.showInterceptors',
+      '1c-metadata-tree.agent.forms.exec',
     ]) {
       assert.ok(!registered.includes(uiCommand), uiCommand);
       assert.ok(!MCP_OPERATION_CATALOG.some(({ command }) => command === uiCommand), uiCommand);
     }
   });
 
-  test('all 98 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 97 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
@@ -620,7 +618,6 @@ suite('MCP Agent catalog coverage', () => {
       'cdt_skd_edit',
       'cdt_skd_validate',
       'cdt_forms_start',
-      'cdt_forms_exec',
       'cdt_forms_shot',
       'cdt_debug_start',
       'cdt_debug_start_from_binding',
@@ -668,15 +665,17 @@ suite('MCP Agent catalog coverage', () => {
     }), true);
   });
 
-  test('web forms start accepts a URL or database path; native requires an explicit port', () => {
-    assert.strictEqual(accepts('cdt_forms_start', { url: 'http://localhost/app' }), true);
-    assert.strictEqual(accepts('cdt_forms_start', { dbPath: 'C:/db' }), true);
-    assert.strictEqual(accepts('cdt_forms_start', { url: 'http://localhost/app', dbPath: 'C:/db' }), true);
+  test('forms start requires a native TestClient port and rejects web-only inputs', () => {
     assert.strictEqual(accepts('cdt_forms_start', {}), false);
+    assert.strictEqual(accepts('cdt_forms_start', { port: 32138 }), true);
     assert.strictEqual(accepts('cdt_forms_start', { driver: 'native', port: 32138 }), true);
     assert.strictEqual(accepts('cdt_forms_start', { driver: 'native' }), false);
+    assert.strictEqual(accepts('cdt_forms_start', { driver: 'web', port: 32138 }), false);
+    assert.strictEqual(accepts('cdt_forms_start', { port: 32138, url: 'http://localhost/app' }), false);
+    assert.strictEqual(accepts('cdt_forms_start', { port: 32138, dbPath: 'C:/db' }), false);
+    assert.strictEqual(accepts('cdt_forms_start', { port: 32138, platformPath: 'C:/1cv8/bin' }), false);
+    assert.strictEqual(accepts('cdt_forms_start', { port: 32138, readyTimeoutMs: 1000 }), false);
     assert.strictEqual(accepts('cdt_forms_start', { driver: 'native', port: 32138, url: 'http://localhost/app' }), false);
-    assert.strictEqual(accepts('cdt_forms_start', { driver: 'web', url: 'http://localhost/app', port: 32138 }), false);
   });
 
   test('native forms actions require discriminated typed arguments', () => {

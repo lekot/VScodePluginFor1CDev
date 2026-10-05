@@ -34,7 +34,7 @@ export interface BslLaunchConfiguration extends vscode.DebugConfiguration {
   debugServerPort?: number;
   /** Absolute paths to extension configuration dump roots. */
   extensions?: string[];
-  /** Debuggee type: thin client (default) or ibsrv web server for Playwright-based agent debugging. */
+  /** Debuggee type: thin client (default) or an ibsrv web server. */
   debuggeeType?: 'thinClient' | 'webServer';
   /** Absolute path to file infobase directory. Required when debuggeeType='webServer'. */
   databasePath?: string;
