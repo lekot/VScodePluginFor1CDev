@@ -3,6 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   captureNativeTestClientScreenshotWithDependencies,
+  discoverNativeTestClientsWithDependencies,
+  inspectNativeTestClientPortOwnersWithDependencies,
   isLocalNativeTestClientHost,
   NativeScreenshotError,
   NativeScreenshotDiscovery,
@@ -57,6 +59,70 @@ function expectNativeError(code: string) {
 }
 
 suite('Native TestClient screenshot adapter', () => {
+  test('discovers only PID/port pairs whose executable and command line match the listening TestClient port', async () => {
+    const output = {
+      ok: true,
+      listenerPorts: [
+        { pid: PID, port: PORT },
+        { pid: PID, port: PORT + 1 },
+        { pid: PID + 1, port: PORT + 2 },
+      ],
+      processes: [
+        processRecord({ commandLine: `1cv8c.exe /TESTCLIENT -TPort ${PORT} /N"user" /P"secret-value"` }),
+        { ...processRecord({ pid: PID + 1, name: 'other.exe' }), commandLine: `other.exe /TESTCLIENT -TPort ${PORT + 2}` },
+      ],
+    };
+    let script = '';
+    const result = await discoverNativeTestClientsWithDependencies(4_000, {
+      platform: 'win32',
+      runPowerShell: async (captured) => {
+        script = captured;
+        return JSON.stringify(output);
+      },
+    });
+
+    assert.deepStrictEqual(result, [{ pid: PID, port: PORT }]);
+    assert.doesNotMatch(JSON.stringify(result), /commandLine|secret-value/);
+    assert.match(script, /Get-NetTCPConnection -State Listen/);
+    assert.match(script, /Get-CimInstance -ClassName Win32_Process -Filter "Name = '1cv8c\.exe' OR Name = '1cv8\.exe'"/);
+    assert.strictEqual((script.match(/Get-CimInstance/g) ?? []).length, 1, 'process metadata is fetched once, not once per listening PID');
+    assert.doesNotMatch(script, /ProcessId = \$targetPid/);
+  });
+
+  test('readiness discovery queries only its requested listener port', async () => {
+    let script = '';
+    const result = await inspectNativeTestClientPortOwnersWithDependencies(4_000, {
+      platform: 'win32',
+      runPowerShell: async (captured) => {
+        script = captured;
+        return JSON.stringify({ ok: true, listenerPorts: [{ pid: PID, port: PORT }], processes: [processRecord()] });
+      },
+    }, undefined, PORT);
+
+    assert.deepStrictEqual(result, [{ pid: PID, port: PORT, testClient: true, createdTicks: '638953200000000000' }]);
+    assert.match(script, new RegExp(`Get-NetTCPConnection -LocalPort ${PORT} -State Listen`));
+    assert.doesNotMatch(script, /Get-NetTCPConnection -State Listen/);
+  });
+
+  test('TestClient discovery is Windows-only and rejects malformed process inventory', async () => {
+    let calls = 0;
+    await assert.rejects(
+      discoverNativeTestClientsWithDependencies(1_000, {
+        platform: 'linux',
+        runPowerShell: async () => { calls++; return ''; },
+      }),
+      expectNativeError('NATIVE_TESTCLIENT_UNSUPPORTED_PLATFORM'),
+    );
+    await assert.rejects(
+      discoverNativeTestClientsWithDependencies(1_000, {
+        platform: 'win32',
+        runPowerShell: async () => JSON.stringify({ ok: true, listenerPorts: [], processes: {} }),
+      }),
+      expectNativeError('NATIVE_SCREENSHOT_INVALID_RESPONSE'),
+    );
+    assert.strictEqual(calls, 0);
+  });
+
   test('allows only explicit loopback hosts', () => {
     assert.strictEqual(isLocalNativeTestClientHost('localhost'), true);
     assert.strictEqual(isLocalNativeTestClientHost('127.12.0.8'), true);

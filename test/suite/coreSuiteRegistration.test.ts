@@ -27,6 +27,8 @@ const mustRegisterInCoreCi: readonly string[] = [
   'suite/infobaseCommands.test.js',
   'suite/infobaseConfigCommands.test.js',
   'suite/infobaseTreeProvider.test.js',
+  'suite/nativeScreenshot.test.js',
+  'suite/nativeTestClientLifecycle.test.js',
   'suite/formCommandEngineFeatureFlag.test.js',
   'suite/formPaths.test.js',
   'suite/xmlChildObjects.test.js',

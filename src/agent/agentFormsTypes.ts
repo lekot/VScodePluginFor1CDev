@@ -31,6 +31,52 @@ export interface FormsStartInDoubtResult {
     effectPossible: boolean;
 }
 
+// ─── discover / launch ──────────────────────────────────────────────────────
+
+export type FormsDiscoverParams = Record<string, never>;
+
+export interface FormsDiscoveredTestClient {
+    pid: number;
+    port: number;
+}
+
+export interface FormsDiscoverResult {
+    clients: FormsDiscoveredTestClient[];
+}
+
+export interface FormsLaunchParams {
+    /** Explicit local file infobase directory; mutually exclusive with infobaseId. */
+    dbPath?: string;
+    /** ID of a file or server infobase in the Infobase Manager catalog. */
+    infobaseId?: string;
+    /** Optional 1cv8c.exe path or platform directory. */
+    platformPath?: string;
+    /** TCP port for TestClient; automatically allocated when omitted. */
+    port?: number;
+    /** Total time to wait for process readiness and native attach (default 90000 ms, max 120000 ms). */
+    waitTimeoutMs?: number;
+    /** Run as a tracked background Agent task when true. MCP defaults this to true. */
+    background?: boolean;
+}
+
+export interface FormsLaunchResult {
+    pid: number;
+    port: number;
+    host: string;
+    driver: 'native';
+    platformVersion: string;
+    connection: 'connected';
+    uiAccessHint: string;
+}
+
+export interface FormsLaunchFailureResult {
+    status: 'failed' | 'inDoubt';
+    effectPossible: boolean;
+    pid?: number;
+    port?: number;
+    processStatus?: 'stopped' | 'unknown';
+}
+
 /** A native operation was interrupted after it may have performed its requested effect. */
 export interface FormsOperationInDoubtResult {
     status: 'inDoubt';

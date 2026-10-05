@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpToolDefinition } from './types';
 import { READ_CLOSED, READ_OPEN, WRITE_CLOSED, WRITE_OPEN } from './types';
-import { configurationScopeShape, emptyInput, nonEmptyString } from './schemas';
+import { configurationScopeShape, emptyInput, nonEmptyString, trimmedNonEmptyString } from './schemas';
 import { FORM_FORMAT_VERSIONS } from '../../agentStaticForms';
 import type { FormChildItem } from '../../../formEditor/formModel';
 
@@ -11,6 +11,17 @@ const formsStartInput = z.strictObject({
   host: z.string().optional(),
   platformVersion: z.string().optional(),
   background: z.boolean().default(true),
+});
+
+const formsLaunchInput = z.strictObject({
+  dbPath: trimmedNonEmptyString.optional(),
+  infobaseId: trimmedNonEmptyString.optional(),
+  platformPath: trimmedNonEmptyString.optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  waitTimeoutMs: z.number().int().min(1_000).max(120_000).optional(),
+  background: z.boolean().default(true),
+}).refine((value) => Number(Boolean(value.dbPath)) + Number(Boolean(value.infobaseId)) === 1, {
+  message: 'provide exactly one of dbPath or infobaseId',
 });
 
 const formsShotInput = z.strictObject({ file: z.string().optional(), timeoutMs: z.number().int().positive().optional(), background: z.boolean().default(true) });
@@ -211,6 +222,20 @@ const formsEditInput = z.strictObject({
 });
 
 export const FORMS_TOOLS: readonly McpToolDefinition[] = [
+  {
+    name: 'cdt_forms_discover',
+    description: 'Find local Windows 1C TestClient processes that are listening on the exact port passed with /TestClient. Returns only PID and port; command lines and credentials are never returned.',
+    command: '1c-metadata-tree.agent.forms.discover',
+    inputSchema: emptyInput,
+    annotations: READ_OPEN,
+  },
+  {
+    name: 'cdt_forms_launch',
+    description: 'Launch a local Windows native TestClient for one file path or Infobase Manager entry and retry native attach while it becomes ready. Default wait is 90 seconds, configurable up to 120 seconds; confirm any 1C modal prompts during this time. Returns a task receipt by default; set background=false to wait synchronously.',
+    command: '1c-metadata-tree.agent.forms.launch',
+    inputSchema: formsLaunchInput,
+    annotations: WRITE_OPEN,
+  },
   {
     name: 'cdt_forms_start',
     description: 'Connect to an already-running native 1C TestClient by TCP port. The optional driver must be "native"; host defaults to 127.0.0.1. Returns a task receipt by default; set background=false to wait synchronously.',

@@ -76,6 +76,8 @@ const EXPECTED_TOOLS: readonly ExpectedTool[] = [
   tool('cdt_set_predefined_characteristic_type', 'setPredefinedCharacteristicType', 'writeClosed'),
   tool('cdt_get_characteristic_value_registers', 'getCharacteristicValueRegisters', 'readClosed'),
 
+  tool('cdt_forms_discover', 'forms.discover', 'readOpen'),
+  tool('cdt_forms_launch', 'forms.launch', 'writeOpen'),
   tool('cdt_forms_start', 'forms.start', 'writeOpen'),
   tool('cdt_forms_stop', 'forms.stop', 'writeOpen'),
   tool('cdt_forms_shot', 'forms.shot', 'writeOpen'),
@@ -219,6 +221,8 @@ const VALID_INPUTS: Readonly<Record<string, Record<string, unknown>>> = {
   cdt_get_predefined_characteristic_type: { configurationId: 'cfg', path: 'ChartOfCharacteristicTypes.Kinds', predefinedName: 'Color' },
   cdt_set_predefined_characteristic_type: { configurationId: 'cfg', path: 'ChartOfCharacteristicTypes.Kinds', predefinedName: 'Color', types: ['xs:string'] },
   cdt_get_characteristic_value_registers: { configurationId: 'cfg', path: 'ChartOfCharacteristicTypes.Kinds' },
+  cdt_forms_discover: {},
+  cdt_forms_launch: { dbPath: 'C:/db' },
   cdt_forms_start: { port: 32138 },
   cdt_forms_stop: {},
   cdt_forms_shot: { file: 'C:/temp/form.png' },
@@ -484,10 +488,10 @@ suite('MCP Agent catalog coverage', () => {
   setup(resetVscodeTestState);
   teardown(resetVscodeTestState);
 
-  test('operation registry has the exact 97 name-command-annotation contracts', () => {
-    assert.strictEqual(EXPECTED_TOOLS.length, 97, 'test oracle must enumerate all 97 operations');
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 97);
-    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 97);
+  test('operation registry has the exact 99 name-command-annotation contracts', () => {
+    assert.strictEqual(EXPECTED_TOOLS.length, 99, 'test oracle must enumerate all 99 operations');
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ name }) => name)).size, 99);
+    assert.strictEqual(new Set(EXPECTED_TOOLS.map(({ command }) => command)).size, 99);
 
     assert.deepStrictEqual(
       MCP_OPERATION_CATALOG.map(({ name, command, annotations }) => ({ name, command, annotations })),
@@ -543,8 +547,8 @@ suite('MCP Agent catalog coverage', () => {
     const registered = vscodeTestState.registeredCommandIds;
     const expectedCommands = EXPECTED_TOOLS.map(({ command }) => command);
 
-    assert.strictEqual(registered.length, 97);
-    assert.strictEqual(new Set(registered).size, 97);
+    assert.strictEqual(registered.length, 99);
+    assert.strictEqual(new Set(registered).size, 99);
     assert.deepStrictEqual([...registered].sort(), [...expectedCommands].sort());
     for (const uiCommand of [
       '1c-metadata-tree.borrowToExtension',
@@ -558,7 +562,7 @@ suite('MCP Agent catalog coverage', () => {
     }
   });
 
-  test('all 97 valid operation fixtures pass and every root schema rejects an extra property', () => {
+  test('all 99 valid operation fixtures pass and every root schema rejects an extra property', () => {
     assert.deepStrictEqual(Object.keys(VALID_INPUTS).sort(), EXPECTED_TOOLS.map(({ name }) => name).sort());
     for (const { name } of EXPECTED_TOOLS) {
       const input = VALID_INPUTS[name];
@@ -676,6 +680,20 @@ suite('MCP Agent catalog coverage', () => {
     assert.strictEqual(accepts('cdt_forms_start', { port: 32138, platformPath: 'C:/1cv8/bin' }), false);
     assert.strictEqual(accepts('cdt_forms_start', { port: 32138, readyTimeoutMs: 1000 }), false);
     assert.strictEqual(accepts('cdt_forms_start', { driver: 'native', port: 32138, url: 'http://localhost/app' }), false);
+  });
+
+  test('forms launch requires exactly one database source and bounds port/readiness timeout', () => {
+    assert.strictEqual(accepts('cdt_forms_launch', { dbPath: 'C:/db' }), true);
+    assert.strictEqual(accepts('cdt_forms_launch', { infobaseId: 'ib-1' }), true);
+    assert.strictEqual(accepts('cdt_forms_launch', { dbPath: 'C:/db', infobaseId: 'ib-1' }), false);
+    assert.strictEqual(accepts('cdt_forms_launch', {}), false);
+    assert.strictEqual(accepts('cdt_forms_launch', { dbPath: '   ' }), false);
+    assert.strictEqual(accepts('cdt_forms_launch', { dbPath: 'C:/db', port: 65_536 }), false);
+    assert.strictEqual(accepts('cdt_forms_launch', { dbPath: 'C:/db', waitTimeoutMs: 120_000 }), true);
+    assert.strictEqual(accepts('cdt_forms_launch', { dbPath: 'C:/db', waitTimeoutMs: 120_001 }), false);
+    assert.strictEqual(accepts('cdt_forms_launch', { dbPath: 'C:/db', shell: true }), false);
+    const parsed = schema('cdt_forms_launch').parse({ dbPath: 'C:/db' }) as { background: boolean };
+    assert.strictEqual(parsed.background, true);
   });
 
   test('native forms actions require discriminated typed arguments', () => {

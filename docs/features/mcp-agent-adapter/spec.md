@@ -4,7 +4,7 @@
 
 Дать стандартному MCP-клиенту полный доступ к существующему Agent API расширения без дублирования предметной логики. MCP является новым транспортом над теми же VS Code Agent-командами: каждый профильный dispatcher валидирует выбранную операцию и вызывает ровно одну команду через `vscode.commands.executeCommand`. `cdt_catalog` описывает закрытый каталог и команду не вызывает. Legacy Agent Bridge `/command` остаётся совместимым.
 
-Нормативная граница Agent API — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. MCP по умолчанию публикует семь компактных tools; закрытый каталог содержит 97 операций: 86 core-операций, 3 task-команды и 8 repository-команд.
+Нормативная граница Agent API — функция `registerAgentCommands` в `src/agent/agentCommands.ts`. MCP по умолчанию публикует семь компактных tools; закрытый каталог содержит 99 операций: 88 core-операций, 3 task-команды и 8 repository-команд.
 
 Четыре UI-команды расширения не являются Agent API, не возвращают `AgentResult` и находятся вне scope:
 
@@ -27,9 +27,9 @@
 | `cdt_verify_live` | `verify_live` | Проверка внешней системы |
 | `cdt_catalog` | — | Перечень операций и описание одной схемы |
 
-Первые шесть принимают strict input `{ operation, arguments }`. `operation` — имя операции из полного каталога и допустимо только в своём profile; `arguments` валидируется исходной strict Zod-схемой операции до dispatch. Ошибка профиля или аргументов не вызывает Agent-команду. `cdt_catalog({})` возвращает имена, описания и profile всех 97 операций; `cdt_catalog({ operation })` возвращает JSON Schema выбранной операции. Refinements, которые невозможно выразить стандартной JSON Schema, остаются runtime-проверкой Agent/Zod операции. Каталог read-only и closed-world.
+Первые шесть принимают strict input `{ operation, arguments }`. `operation` — имя операции из полного каталога и допустимо только в своём profile; `arguments` валидируется исходной strict Zod-схемой операции до dispatch. Ошибка профиля или аргументов не вызывает Agent-команду. `cdt_catalog({})` возвращает имена, описания и profile всех 99 операций; `cdt_catalog({ operation })` возвращает JSON Schema выбранной операции. Refinements, которые невозможно выразить стандартной JSON Schema, остаются runtime-проверкой Agent/Zod операции. Каталог read-only и closed-world.
 
-Переменная среды `CDT_MCP_LEGACY_TOOLS=1` дополнительно регистрирует все 97 индивидуальных operation tool с исходными схемами. По умолчанию эти индивидуальные имена не публикуются. Direct Agent API и legacy Agent Bridge `/command` от этого флага не зависят.
+Переменная среды `CDT_MCP_LEGACY_TOOLS=1` дополнительно регистрирует все 99 индивидуальных operation tool с исходными схемами. По умолчанию эти индивидуальные имена не публикуются. Direct Agent API и legacy Agent Bridge `/command` от этого флага не зависят.
 
 Annotations профилей совпадают с исходной классификацией операций: `read` = T/F/T/F, `write` = F/T/F/F, `write_idempotent` = F/T/T/F, `read_live` = T/F/T/T, `write_live` = F/T/F/T, `verify_live` = F/F/F/T. Для `cdt_catalog` используется `read` (T/F/T/F).
 
@@ -139,7 +139,7 @@ synchronized files. Только `acknowledged` даёт `success: true`; status
 
 Длительные deploy/deploySelected/deployChanged/pull/exportStatus и EPF/ERF операции, четыре SKD
 команды, четыре операции поддержки (`setObjectMode`, `enableObjectRules`, `sync`, `verify`),
-`forms.start`/`shot`/`native` и `debug.start`/`startFromBinding`/`waitForStop` поддерживают тот же
+`forms.launch`/`start`/`shot`/`native` и `debug.start`/`startFromBinding`/`waitForStop` поддерживают тот же
 `background` input. MCP schema ставит `true` по умолчанию; `background: false` выполняет вызов
 синхронно. Прямые Agent-вызовы этих команд без `background` остаются синхронными; операции
 Хранилища сохраняют существующий фоновой default. Task receipt содержит `taskId`; status/result/cancel
@@ -209,6 +209,8 @@ Retryable selection учитывает только текущую master genera
 
 | Tool | Agent command | R/D/I/O |
 |---|---|---|
+| `cdt_forms_discover` | `1c-metadata-tree.agent.forms.discover` | T/F/T/T |
+| `cdt_forms_launch` | `1c-metadata-tree.agent.forms.launch` | F/T/F/T |
 | `cdt_forms_start` | `1c-metadata-tree.agent.forms.start` | F/T/F/T |
 | `cdt_forms_stop` | `1c-metadata-tree.agent.forms.stop` | F/T/F/T |
 | `cdt_forms_shot` | `1c-metadata-tree.agent.forms.shot` | F/T/F/T |
@@ -217,6 +219,8 @@ Retryable selection учитывает только текущую master genera
 | `cdt_form_inspect` | `1c-metadata-tree.agent.forms.inspect` | T/F/T/F |
 | `cdt_form_validate` | `1c-metadata-tree.agent.forms.validate` | T/F/T/F |
 | `cdt_form_edit` | `1c-metadata-tree.agent.forms.edit` | F/T/F/F |
+
+`cdt_forms_discover` перечисляет только локальные Windows TestClient, проверяя executable, `/TESTCLIENT`, аргумент `-TPort` и PID TCP-слушателя; наружу выходят только PID и порт. `cdt_forms_launch` принимает ровно один из `dbPath` файловой базы с `1Cv8.1CD` или `infobaseId` файловой/серверной записи каталога, запускает `1cv8c.exe`, ждёт listener того же PID и повторяет native attach до общего timeout (1000–120000 мс, по умолчанию 90000), чтобы дать подтвердить возможные диалоги 1С. При таймауте или ошибке после spawn ответ включает PID/порт и статус очистки процесса, а сообщение указывает на возможное ожидание подтверждения/входа. `forms.start` остаётся attach-only.
 
 `cdt_form_inspect` and `cdt_form_validate` read only `Forms/<name>/Ext/Form.xml` or `CommonForms/<name>/Ext/Form.xml` inside the selected configuration or extension. They accept `configurationId` and relative `formPath`; validation also accepts optional `formatVersion` (`2.17`–`2.21`). The inspect DTO includes the form tree, attributes, commands and the source-byte SHA-256 `rev`. Validation checks structural IDs/names and references. Event and command handler existence is checked only when the adjacent `Ext/Form/Module.bsl` exists; otherwise the result contains `MODULE_CHECK_SKIPPED`. `cdt_form_edit` applies a nonempty list of typed XML operations, supports side-effect-free `dryRun` with a diff, and requires the current `rev` as `ifRev` for atomic compare-and-swap commit. All three commands reject absolute paths, traversal and symlink escapes, and do not start a 1C process or browser.
 
@@ -297,7 +301,7 @@ Retryable selection учитывает только текущую master genera
 - external processors: `{srcPath,outDir?,format,context,timeoutMs?}`,
   `{rootXmlPath,dstPath?,context,timeoutMs?}`;
 - subsystem/characteristics: `{configurationId?,subsystemPath}`, `{configurationId?,subsystemPath,commandName,common}`, `{configurationId?,subsystemPath,entries: strict {commandName:string,commandGroup:string}[]}`, `{configurationId?,subsystemPath,order:string[]}`, `{configurationId?,path}`, `{configurationId?,path,predefinedName}`, `{configurationId?,path,predefinedName,types:string[]}`;
-- forms: `{driver?,port,host?,platformVersion?}`, `{}`, `{file?,timeoutMs?}`, `{}`, native action union (`overview`, `commandInterface`, `executeCommand`, `find`, `readField`, `writeField`, `act`, `readTable`, `formContext`, `createSnapshot`, `compareSnapshot`, `listSnapshots`, `deleteSnapshot`, `uiLog`);
+- forms: discover `{}`; launch `{dbPath?|infobaseId?,platformPath?,port?,waitTimeoutMs?,background?}` with exactly one of `dbPath`/`infobaseId`; start `{driver?,port,host?,platformVersion?,background?}`; stop `{}`; shot `{file?,timeoutMs?,background?}`; status `{}`; native action union (`overview`, `commandInterface`, `executeCommand`, `find`, `readField`, `writeField`, `act`, `readTable`, `formContext`, `createSnapshot`, `compareSnapshot`, `listSnapshots`, `deleteSnapshot`, `uiLog`) with optional `timeoutMs` and `background`;
 - SKD: `{definitionFile?,value?,outputPath}`, `{templatePath,mode?,name?,batch?,limit?,offset?,outFile?}`, `{templatePath,operation,value,dataSet?,variant?,noSelection?}`, `{templatePath,detailed?,maxErrors?,outFile?}`;
 - XDTO: `{configurationId?}`, selector + `{includeSource?}`, selector + `{outputPath?,includeSource?}`, selector + `{inputPath?,source?}`, `{configurationId?,packageName,inputPath?,source?}`, selector + `{inputPath?,source?,includeTree?,joinStrategy?}`, selector + `{inputPath?,source?,selectedIds,joinStrategy?}`.
 
@@ -353,10 +357,10 @@ Stop: запрет новых запросов → закрытие MCP sessions
 ## Критерии приёмки
 
 1. Official SDK client проходит `initialize → tools/list → tools/call → DELETE session` по discovery URL и Bearer token.
-2. Default `tools/list` содержит ровно семь уникальных compact tools; opt-in legacy добавляет 97 уникальных individual tools.
-3. `MCP_OPERATION_CATALOG` содержит 97 операций и точно покрывает все зарегистрированные Agent command IDs. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
+2. Default `tools/list` содержит ровно семь уникальных compact tools; opt-in legacy добавляет 99 уникальных individual tools.
+3. `MCP_OPERATION_CATALOG` содержит 99 операций и точно покрывает все зарегистрированные Agent command IDs. Coverage-invariant test реально вызывает `registerAgentCommands` на VS Code stub, получает зарегистрированные IDs из `vscodeTestState.registeredCommandIds` и требует точного равенства с command IDs каталога; regex/source parsing не считается доказательством покрытия.
 4. Четыре перечисленные UI-команды отсутствуют в MCP catalog.
-5. Для всех 97 операций проверены имя, command id, strict schema, refinements и статические annotations; `cdt_catalog` сериализует JSON Schema каждой операции.
+5. Для всех 99 операций проверены имя, command id, strict schema, refinements и статические annotations; `cdt_catalog` сериализует JSON Schema каждой операции.
 6. MCP и прямой Agent-вызов дают семантически одинаковый `AgentResult`; invalid outer/inner input не dispatch-ится.
 7. Мутации проходят через существующие очереди Agent API; MCP не создаёт обходной write path.
 8. `debug.start`/`startFromBinding` не раскрывают connection strings или полный launch config ни в логах, ни в неуспешном `AgentResult.error`; отдельные тесты покрывают оба канала.
