@@ -506,8 +506,8 @@ function validateTestClientInfobase(entry: InfobaseEntry): string | undefined {
   if (!filePath) {
     return 'Для файловой информационной базы требуется dbPath.';
   }
-  const resolvedPath = path.win32.resolve(filePath);
-  const markerPath = path.win32.join(resolvedPath, '1Cv8.1CD');
+  const resolvedPath = path.resolve(filePath);
+  const markerPath = path.join(resolvedPath, '1Cv8.1CD');
   try {
     if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
       return `Каталог файловой информационной базы не найден: ${resolvedPath}`;
